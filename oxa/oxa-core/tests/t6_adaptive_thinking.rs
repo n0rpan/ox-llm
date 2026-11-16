@@ -673,17 +673,18 @@ fn overrun_twice_is_an_error_not_a_loop() {
 }
 
 #[test]
-fn remote_model_is_unchanged() {
+fn remote_length_recovery_keeps_the_thinking_policy() {
     let env = TestEnv::new();
     let (mut st, eng) = state_with(
         &env,
-        ScriptedEngine::new(vec![overrun(), ScriptTurn::text("never asked")]).with_remote(),
+        ScriptedEngine::new(vec![overrun(), ScriptTurn::text("complete answer")]).with_remote(),
         settings(json!({})),
         ThinkingLevel::Medium,
     );
     let r = run(&mut st, "explain a.txt");
     assert!(matches!(r.end, RunEnd::Stopped));
-    assert_eq!(eng.requests().len(), 1);
+    assert_eq!(eng.requests().len(), 2);
+    assert_eq!(thinking(&eng), vec![true, true]);
     assert!(notice_texts(&r.events, Level::Info)
         .iter()
         .all(|t| t != OVERRUN_NOTICE));
