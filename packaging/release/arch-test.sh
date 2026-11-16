@@ -51,7 +51,7 @@ for variant in ox-llm ox-llm-bin; do
     ox-llm-bin) payload="$PWD/src/usr" ;;
     ox-llm) payload="$PWD/src/payload/usr" ;;
   esac
-  for binary in oxa oxe-server; do cmp "$payload/bin/$binary" "/usr/bin/$binary"; done
+  for binary in oxa oxe-server local-ai-memlat-boot; do cmp "$payload/bin/$binary" "/usr/bin/$binary"; done
   cmp "$payload/share/doc/ox-llm/NATIVE-INSTALL.md" /usr/share/doc/ox-llm/NATIVE-INSTALL.md
   python -B /smoke.py
   # Reuse #682 on each actual installed ELF, including the independently rebuilt source package.
@@ -76,7 +76,7 @@ for variant in ox-llm ox-llm-bin; do
   while read -r path; do
     [[ ! -e $path && ! -L $path ]] || { echo "left behind: $path"; exit 1; }
   done < /tmp/installed-files
-  for path in /usr/bin/oxc /usr/bin/oxa /usr/bin/oxe /usr/bin/oxe-server /usr/share/ox-llm /usr/share/doc/ox-llm /usr/share/licenses/ox-llm /usr/share/licenses/ox-llm-bin; do
+  for path in /usr/bin/local-ai-memlat-boot /usr/bin/oxc /usr/bin/oxa /usr/bin/oxe /usr/bin/oxe-server /usr/share/ox-llm /usr/share/doc/ox-llm /usr/share/licenses/ox-llm /usr/share/licenses/ox-llm-bin; do
     [[ ! -e $path && ! -L $path ]] || { echo "left behind: $path"; exit 1; }
   done
   cd /build

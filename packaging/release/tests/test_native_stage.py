@@ -20,7 +20,7 @@ class NativeStage(unittest.TestCase):
         self.root = Path(temporary.name)
         self.source = self.root / 'source'
         self.payload = self.root / 'payload'
-        for product, names in [('engine', ('oxe', 'oxe-server')), ('oxa', ('oxa',))]:
+        for product, names in [('engine', ('oxe', 'oxe-server')), ('oxa', ('oxa', 'local-ai-memlat-boot'))]:
             for name in names:
                 self.write(f'{product}/target/release/{name}',
                            '#!/bin/sh\nprintf "%s\\n" "$@" > "$CAPTURE"\n', executable=True)
@@ -50,13 +50,13 @@ class NativeStage(unittest.TestCase):
     def test_payload_has_no_python_controller_units_or_diagnostics(self):
         names = {p.relative_to(self.payload).as_posix() for p in self.payload.rglob('*')}
         self.assertEqual({p.name for p in (self.payload / 'usr/bin').iterdir()},
-                         {'oxa', 'oxe-server'})
+                         {'oxa', 'oxe-server', 'local-ai-memlat-boot'})
         self.assertFalse(any(p.endswith(('.py', '.service', '.timer')) for p in names))
         self.assertFalse((self.payload / 'usr/share/ox-llm/oxc').exists())
-        self.assertEqual([call[0][0][-2] for call in self.calls], ['server', 'oxa-cli'], 'licenses collected for each shipped native target')
+        self.assertEqual([call[0][0][-2] for call in self.calls], ['server', 'oxa-cli', 'oxc-memlat'], 'licenses collected for each shipped native target')
 
     def test_native_files_are_unmodified_and_keep_literal_arguments(self):
-        for workspace, name in [('oxa', 'oxa'), ('engine', 'oxe-server')]:
+        for workspace, name in [('oxa', 'oxa'), ('engine', 'oxe-server'), ('oxa', 'local-ai-memlat-boot')]:
             source = self.source / workspace / 'target/release' / name
             installed = self.payload / 'usr/bin' / name
             self.assertEqual(installed.read_bytes(), source.read_bytes())
@@ -64,13 +64,13 @@ class NativeStage(unittest.TestCase):
             self.assertEqual(self.capture.read_text().splitlines(), ['--literal', 'value; untouched'])
         self.assertEqual(list(self.home.iterdir()), [], 'no implicit user configuration changes')
 
-    def test_actual_tarball_contains_only_the_two_native_commands(self):
+    def test_actual_tarball_contains_only_the_native_commands(self):
         archive = self.root / 'payload.tar.gz'
         subprocess.run(['/bin/bash', str(REPO / 'packaging/release/archive.sh'), str(self.payload), str(archive)],
                        env={'PATH': os.defpath, 'HOME': str(self.home), 'SOURCE_DATE_EPOCH': '1'}, check=True)
         with tarfile.open(archive) as tar:
             commands = {entry.name.rsplit('/', 1)[-1] for entry in tar if entry.isfile() and entry.name.startswith('usr/bin/')}
-        self.assertEqual(commands, {'oxa', 'oxe-server'})
+        self.assertEqual(commands, {'oxa', 'oxe-server', 'local-ai-memlat-boot'})
 
     def test_package_notice_is_one_line_without_python(self):
         for variant in ('ox-llm', 'ox-llm-bin'):

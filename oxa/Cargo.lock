@@ -1240,6 +1240,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxc-memlat"
+version = "0.2.1"
+dependencies = [
+ "libc",
+ "regex",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

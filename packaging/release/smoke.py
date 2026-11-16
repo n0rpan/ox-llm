@@ -44,7 +44,7 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
     result = subprocess.run(['oxa', '--version'], env=env, text=True, capture_output=True, check=True)
     assert result.stdout.strip() == 'oxa 0.2.1', result.stdout
     print(result.stdout.strip())
-    for binary in ('oxa', 'oxe-server'):
+    for binary in ('oxa', 'oxe-server', 'local-ai-memlat-boot'):
         subprocess.run([binary, '--help'], env=env, stdout=subprocess.DEVNULL, check=True)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
