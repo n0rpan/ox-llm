@@ -103,10 +103,7 @@ impl Usage {
                 }
             }
         }
-        if let Some(cost) = usage["cost"]
-            .as_f64()
-            .filter(|cost| (0.0..=1e100).contains(cost))
-        {
+        if let Some(cost) = usage["cost"].as_f64().filter(|cost| (0.0..=1e100).contains(cost)) {
             self.reported_cost = Some(self.reported_cost.unwrap_or(0.0).max(cost));
         }
         if let Some(finish) = value["choices"][0]["finish_reason"].as_str() {
@@ -259,10 +256,7 @@ impl Budget {
             return Err(Refusal::ledger());
         }
         let _lock = self.exclusive().map_err(|_| Refusal::ledger())?;
-        let spent = state
-            .reader
-            .read(&self.path)
-            .map_err(|_| Refusal::ledger())?;
+        let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
         let reserved = self.outstanding().map_err(|_| Refusal::ledger())?;
         policy::daily_budget(cap, ledger_enabled, Some(spent), reserved, required)?;
         let (file, path) = self.persist(required).map_err(|_| Refusal::ledger())?;
@@ -308,8 +302,7 @@ impl Hold {
     }
     fn record(&self, usage: &Usage, outcome: Outcome) -> Value {
         let model = &self.model;
-        let mut row =
-            json!({"remote":true,"remote_provider":model.provider,"remote_model":model.upstream});
+        let mut row = json!({"remote":true,"remote_provider":model.provider,"remote_model":model.upstream});
         for (field, value) in [
             ("prompt_tokens", usage.prompt),
             ("completion_tokens", usage.output),
@@ -361,19 +354,14 @@ impl Hold {
             row["usage_missing"] = json!(true);
         }
         let actual = row["cost_usd"].as_f64();
-        let missing =
-            invalid || usage.prompt.is_none() || usage.output.is_none() || actual.is_none();
+        let missing = invalid || usage.prompt.is_none() || usage.output.is_none() || actual.is_none();
         match outcome {
             Outcome::Cancelled {
                 request_bytes,
                 streamed_bytes,
                 usage_final,
                 elapsed,
-            } if !usage_final
-                || usage.prompt.is_none()
-                || usage.output.is_none()
-                || actual.is_none() =>
-            {
+            } if !usage_final || usage.prompt.is_none() || usage.output.is_none() || actual.is_none() => {
                 let output = self.output.min(
                     (streamed_bytes as u64)
                         .max(usage.output.unwrap_or(0))
