@@ -7,9 +7,17 @@ Run it inside the project repository. The JSON file is an array:
 [{"id":"docs-fix","model":"your-model","branch":"agent/docs-fix","base":"main","prompt":"Fix documentation links."}]
 ```
 
-`base` defaults to `main`. IDs contain letters, digits, hyphens or underscores.
-IDs and branches must be unique; branches must be new. For a GitHub issue use
-`oxa work --issue 123 --model your-model`. This explicitly invokes your installed,
+`base` defaults to `main`. IDs contain 1–128 letters, digits, hyphens or underscores.
+Optional `max_time` is a positive integer number of seconds, defaulting to 2700
+(45 minutes). The task's saved deadline is shared by its worker, repair and crash
+recovery; a repair does not get a fresh budget. Each child receives its remaining
+allowance as `--max-time` for one graceful wrap-up turn. If it remains alive 60
+seconds after that allowance, the runner sends SIGTERM, then SIGKILL after another
+10 seconds. The result is interrupted and its worktree is retained. `kill` must be
+available as a trusted executable outside the project; status reads do not need it.
+IDs and branches must be unique within one file. Existing task branches can be
+continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.
+This explicitly invokes your installed,
 authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
 when the environment or user settings enable offline mode.
 Issue lookup also requires source-project trust. Git and GitHub CLI host calls use
@@ -35,7 +43,7 @@ creates detached Git metadata with callbacks suppressed on the host, then create
 the task branch and populates the fresh worktree inside the normal sandbox.
 Reference hooks, checkout hooks and smudge filters stay inside it; a reference hook
 that rejects the task branch still blocks the task.
-missing bwrap blocks before checkout or a worker starts. Configured hook directories
+Missing bwrap blocks before checkout or a worker starts. Configured hook directories
 keep their normal read-only protection: a checkout that needs to populate a tracked
 protected hook directory blocks with the worktree retained.
 Acceptance commands are frozen from the captured base commit before checkout
@@ -52,28 +60,69 @@ error blocks the task rather than producing a clean verdict.
 Agent-internal done checks may also run when the project is trusted.
 
 The runner reads the child's exit code, terminal `oxa_result` and session header,
-without retaining its event stream. A blocked, failed or interrupted worker remains
-blocked and does not consume a repair attempt. Failed acceptance after a successful
+without retaining its event stream. It checkpoints the session ID as soon as the
+header arrives. A blocked or failed worker remains blocked; an interrupted worker
+remains interrupted. Neither consumes a repair attempt. Failed acceptance after a successful
 worker continues that same saved session once, then acceptance runs once more.
-JSON lines include the worker result, session ID and captured `base_sha` and report `done`, `nothing_to_do` (no
-commits or file changes), `red` (checks still fail), or `blocked` (setup or agent
-execution failed). Exit codes are 0 for success, 1 if any task is red or blocked,
-and 2 for invalid input or output errors. A task setup failure produces a blocked
-JSON line and does not skip later tasks. If a task cannot be locked or already has
-a receipt, its existing state is preserved; a pre-worktree failure has an empty
-`worktree` in the result. Locks use kernel ownership, so an abandoned lock file
-after process death does not permanently block a task.
+JSON lines include the worker result, session ID, captured `base_sha`, saved
+`head_sha`/`tree_sha`, step, checkpoint revision and time. Outcomes are `done`,
+`nothing_to_do` (no worker commits or file changes), `red` (checks still fail),
+`blocked` (setup or execution failed), or `interrupted`. Deadline interruptions
+carry a typed `interruption: "deadline"`. Exit codes are 0 for success, 1 if any
+task is red, blocked or interrupted, and 2 for invalid input, output or checkpoint
+errors. A checkpoint/event-append error stops the entire batch before another
+action. An ordinary task setup failure produces a blocked
+JSON line and does not skip later tasks. If a task cannot be locked or has an
+incompatible receipt, its existing state is preserved; a pre-worktree failure has
+an empty `worktree` in the result. Locks use kernel ownership and are inherited
+by the worker and check/save supervisors. Killing the runner does not allow a
+second runner to start while its child still holds that lock.
 
-Worktrees and uncommitted changes remain in `.oxa-worktrees/<repository>/<id>`
+Worktrees remain in `.oxa-worktrees/<repository>/<id>`
 beside the repository (or the separate git directory). Private result receipts and
 locks live under `~/.oxa/agent/work/<repository-hash>/` (or the configured agent
-directory), outside the worker's writable Git bind. Receipts are published atomically
-without overwriting an existing receipt. Worktrees stay outside that git
-directory so the normal sandbox can bind git objects and refs for commits. No automatic
-cleanup, commit, push, PR creation or continuation is implemented yet. Inspect
-retained work before removing it with `git worktree remove`. Review task prompts
-and bases before running them.
+directory), outside the worker's writable Git bind. New receipts are published
+atomically without overwriting an existing receipt; a validated matching receipt
+is replaced atomically under the task lock when continuing. Worktrees stay outside that git
+directory so the normal sandbox can bind git objects and refs for commits.
+Before finishing, the runner saves staged, unstaged and untracked work with an
+ordinary sandboxed commit, including red, blocked and interrupted work. Normal
+hooks remain active. Unresolved merges are kept in progress; a rejecting hook or
+remaining dirty files block completion. No automatic cleanup, push or PR creation
+is implemented. Keep retained work until its saved commit has been published and
+inspected. Review task prompts and bases before running them.
 
-`done` here describes accepted local work, which may be uncommitted. This slice
-does not publish it. The saving/publication slices must bind acceptance to a clean
-committed tree and verify its recorded commit before pushing.
+`done` here describes locally checked and saved work. It does not mean published,
+externally accepted or merged. Publication must verify a clean committed export,
+bind checks to that commit and verify base-object integrity before pushing;
+ignored files in a retained working directory are not commit-bound evidence.
+
+To recover a task, run the same task file again. An unfinished checkpoint resumes
+its saved step with the original base, commands, session and offline policy.
+Recovery loads those inputs before resolving the current base branch or settings,
+so a deleted base ref or invalid new checks cannot strand an existing attempt.
+Finished successful work is returned without another worker or check run; add
+`--rerun` to the task-file or issue command to start another attempt. A task spec
+change requires a new ID. Unsupported or corrupt checkpoints are preserved and
+refused. A matching linked worktree is reused; the
+source checkout is never used as the task worktree. An existing branch checked
+out elsewhere is blocked. Dirty retained work is preserved and saved before
+retrying. A clean retained branch gets an ordinary sandboxed
+merge of the captured base; no reset, stash, force checkout or automatic fetch runs.
+
+An unfinished merge is passed to the worker with its old pending commit, the
+captured current base and at most twenty conflicted paths. The worker must finish
+that merge and merge the captured base too. Aborted or unresolved merges and branch
+switches remain blocked even if acceptance passes. Worker, merge and acceptance
+failures are retained together. Receipt replacement keeps private modes.
+
+`oxa work status --json` (also `--status`) reads checkpoints without acquiring a
+task lock, changing state, constructing a model or calling GitHub. Its separate
+`liveness` is `running`, `finished`, `interrupted`, or `unknown` when the kernel
+cannot establish ownership. A missing original parent is not proof of a stopped
+child: status also checks the inherited stdin lock. Without `--json` it prints
+one short line per task.
+
+The [checkpoint integration contract](work-state.md) defines the runner's public
+event hook. Event/situation/standing stores and their CLI adapters are a separate
+integration; this slice does not infer facts from worker prose or raw logs.

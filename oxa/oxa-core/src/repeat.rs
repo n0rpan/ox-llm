@@ -260,6 +260,7 @@ mod job_poll_tests {
                 name: "bash".to_string(),
                 args_raw: r#"{"job":"job-1"}"#.to_string(),
             }],
+            provider_history: None,
             tool_call_id: None,
         }
     }

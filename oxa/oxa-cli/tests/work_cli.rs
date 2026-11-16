@@ -33,6 +33,8 @@ fn setup(env: &TestEnv, done: &str) {
     git(env, &env.work(), &["init", "--bare", "remote.git"]);
     git(env, &env.work(), &["init", "-b", "main", "project"]);
     let project = env.work().join("project");
+    git(env, &project, &["config", "user.name", "Test"]);
+    git(env, &project, &["config", "user.email", "test@example.invalid"]);
     env.write(
         "work/project/.oxa/settings.json",
         &format!(r#"{{"done":{done}}}"#),
@@ -243,13 +245,31 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
 }
 #[test]
-fn setup_failure_records_blocked_and_keeps_existing_branch() {
+fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    git(&env, &env.work().join("project"), &["branch", "agent/test"]);
+    let project = env.work().join("project");
+    git(&env, &project, &["branch", "agent/test"]);
+    let original = git(&env, &project, &["rev-parse", "agent/test"]);
+    let occupied = env.work().join("occupied");
+    git(
+        &env,
+        &project,
+        &["worktree", "add", occupied.to_str().unwrap(), "agent/test"],
+    );
     let record = run(&env, vec![]);
     assert_eq!(record["outcome"], "blocked", "{record}");
-    assert!(record["detail"].as_str().unwrap().contains("already exists"));
+    assert!(
+        record["detail"]
+            .as_str()
+            .unwrap()
+            .contains(occupied.to_str().unwrap()),
+        "{record}"
+    );
+    assert!(record["worker"].is_null());
+    assert!(!env.work().join(".oxa-worktrees/project/test").exists());
+    assert_eq!(git(&env, &occupied, &["rev-parse", "HEAD"]), original);
+    assert_eq!(git(&env, &project, &["symbolic-ref", "--short", "HEAD"]), "main");
 }
 
 #[test]
@@ -993,7 +1013,7 @@ fn worktree_reference_hooks_run_only_inside_the_sandbox() {
     setup(&env, "[]");
     let hook = env.write(
         "work/project/.git/hooks/reference-transaction",
-        "#!/bin/sh\nprintf escaped > \"$HOME/worktree-reference-escape\" 2>/dev/null || true\nprintf ran >> reference-hook-ran\ncat >/dev/null\n",
+        "#!/bin/sh\nprintf escaped > \"$HOME/worktree-reference-escape\" 2>/dev/null || true\nprintf ran > reference-hook-ran\ncat >/dev/null\n",
     );
     std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     let record = run(&env, vec![ScriptTurn::text("finished")]);
@@ -1322,8 +1342,11 @@ fn security_failed_receipt_write_never_publishes_a_torn_record() {
     );
     let out = child.wait_with_output().unwrap();
     assert!(!out.status.success());
-    assert!(
-        !storage(&env).join("test.json").exists(),
-        "interrupted receipt write left a canonical partial record"
-    );
+    let retained: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(storage(&env).join("test.json")).unwrap())
+            .expect("the previously durable checkpoint remains complete JSON");
+    assert_eq!(retained["version"], 1);
+    assert_eq!(retained["record"]["step"], "worker", "{retained}");
+    assert_eq!(retained["record"]["outcome"], "running", "{retained}");
+    assert!(retained["record"]["checkpoint_revision"].as_u64().unwrap() > 0);
 }

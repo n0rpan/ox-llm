@@ -1,21 +1,20 @@
 //! In-process access to the controller's normalized cloud pipeline (#289).
 //!
-//! The gateway implementation owns admission, credentials, provider I/O, budget
-//! reservations and ledger settlement. This adapter reuses the HTTP engine's
-//! request builder and reply assembler; it opens no socket and reads no key.
-use crate::{build_body_for, new_idem_key, parse_info_for, Flow, ReplyAssembler, SseEvent};
+//! The gateway owns admission, provider I/O and settlement. Requests borrow the
+//! same typed fields the core uses; decoded chunks go straight to reply assembly.
+use crate::{new_idem_key, parse_info_for, Flow, ReplyAssembler};
 use oxa_proto::{
     codes, AssistantTurn, CancelToken, ChatRequest, Engine, EngineInfo, OxaError, StreamEvent, Value,
 };
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
 
-/// The same public discovery documents served by the daemon.
+/// Public model discovery; no credential or ledger access.
 pub struct GatewayDiscovery {
     pub models: Value,
     pub status: Value,
 }
 
-/// Caller metadata shared with the daemon's normalized chat entry point.
+/// Explicit caller metadata for private ledger attribution.
 /// These values are not provider headers or local engine cache hints.
 pub struct GatewayContext<'a> {
     pub origin: &'static str,
@@ -25,7 +24,7 @@ pub struct GatewayContext<'a> {
 
 /// Transport-independent access to one gateway instance.
 ///
-/// Implementations must use the daemon's admission, key, budget and ledger code,
+/// Implementations must use the shared admission, key, budget and ledger code,
 /// honor `cancel` during blocking work and stop delivery when `on` returns Stop.
 /// `Ok(())` means processing and ledger settlement have completed successfully;
 /// delivering Done alone must not release a reservation or commit success.
@@ -35,11 +34,18 @@ pub trait EmbeddedGateway: Send + Sync {
     fn discovery(&self) -> Result<GatewayDiscovery, OxaError>;
     fn chat(
         &self,
-        body: &[u8],
+        request: &ChatRequest<'_>,
         context: GatewayContext<'_>,
         cancel: &CancelToken,
-        on: &mut dyn FnMut(SseEvent) -> Flow,
+        on: &mut dyn FnMut(GatewayEvent) -> Flow,
     ) -> Result<(), OxaError>;
+}
+
+#[derive(Clone, Debug)]
+pub enum GatewayEvent {
+    Chunk(Value),
+    /// The complete reply and private ledger settlement are committed.
+    Done,
 }
 
 /// An explicitly constructed cloud-only Engine; the default remains HttpEngine.
@@ -102,8 +108,6 @@ impl Engine for EmbeddedEngine {
         if cancel.is_cancelled() {
             return Err(aborted());
         }
-        let mut body = Vec::new();
-        build_body_for(request, true, &mut body);
         let key = if request.hints.idem_key.is_empty() {
             new_idem_key()
         } else {
@@ -115,15 +119,14 @@ impl Engine for EmbeddedEngine {
             idempotency_key: &key,
         };
         let mut assembler = ReplyAssembler::new();
-        let started = Instant::now();
         let mut done = false;
         let mut emitted = false;
         let mut failure = None;
-        let outcome = self.gateway.chat(&body, context, cancel, &mut |event| {
+        let outcome = self.gateway.chat(request, context, cancel, &mut |event| {
             if failure.is_some() {
                 return Flow::Stop;
             }
-            if cancel.is_cancelled() {
+            if !matches!(event, GatewayEvent::Done) && cancel.is_cancelled() {
                 failure = Some(aborted());
                 return Flow::Stop;
             }
@@ -132,7 +135,7 @@ impl Engine for EmbeddedEngine {
                 return Flow::Stop;
             }
             match event {
-                SseEvent::Data(data) => match assembler.chunk(&data) {
+                GatewayEvent::Chunk(data) => match assembler.chunk_value(&data) {
                     Ok(events) => {
                         for event in events {
                             if cancel.is_cancelled() {
@@ -154,13 +157,7 @@ impl Engine for EmbeddedEngine {
                         return Flow::Stop;
                     }
                 },
-                SseEvent::Comment(comment) => {
-                    let seconds = started.elapsed().as_secs().min(u64::from(u32::MAX)) as u32;
-                    if let Some(event) = assembler.comment(&comment, seconds) {
-                        on(event);
-                    }
-                }
-                SseEvent::Done => done = true,
+                GatewayEvent::Done => done = true,
             }
             Flow::Continue
         });

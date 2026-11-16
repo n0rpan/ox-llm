@@ -170,6 +170,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Work(words) => {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
@@ -222,7 +223,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Ok(ep) => with_api_key(ep, &a),
             Err(e) => return report(&mut *stderr, &e),
         };
-        let engine = match engine_for(&endpoint) {
+        let user = Settings::load(&dirs, &cwd, false);
+        let engine = match crate::in_process::select(&user, &user, &dirs, || engine_for(&endpoint)) {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
@@ -421,6 +423,7 @@ fn open_named(
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
+    built.result_facts.attach(&mut session)?;
     Ok(session)
 }
 
@@ -428,6 +431,8 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    status: Option<Arc<crate::status::StatusWriter>>,
+    result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
     engine: Arc<dyn Engine>,
     store: Arc<dyn SessionStore>,
@@ -554,6 +559,7 @@ fn prepare(
         })
         .transpose()?;
     let mut notices: Vec<(Level, String)> = Vec::new();
+    let user_settings = Settings::load(dirs, cwd, false);
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -563,7 +569,9 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
-    notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    if !user_settings.bool(crate::in_process::SETTING, false) {
+        notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    }
 
     let gated = gated_resources(cwd);
     let trusted = project_trusted(
@@ -614,7 +622,12 @@ fn prepare(
     }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
-    let engine = child.wrap(engine_with_settings(&endpoint, &settings)?);
+    let engine = child.wrap(crate::in_process::select(
+        &user_settings,
+        &settings,
+        dirs,
+        || engine_with_settings(&endpoint, &settings),
+    )?);
 
     let opts = discover_opts(a, dirs, cwd, trusted)?;
     // O-152: the built-in skills' files, so the model can read their bodies (written only
@@ -824,7 +837,11 @@ fn prepare(
         no_tools: a.no_tools,
         default_edits: settings.default_tools_edits(),
     };
+    let status = (!a.no_session).then(|| Arc::new(crate::status::StatusWriter::new(a.stall_timeout)));
+    let result_facts = Arc::new(crate::result_facts::ResultFacts::new(status.clone()));
     let built = Built {
+        status,
+        result_facts,
         output_schema,
         engine,
         store,
@@ -1161,7 +1178,7 @@ fn run_headless(
     } = prep;
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
-        Err(e) => return finish_outcome(Err(e), stderr),
+        Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
     notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
@@ -1183,7 +1200,13 @@ fn run_headless(
         built.supervised_child,
     ) {
         Ok(limit) => limit,
-        Err(error) => return finish_outcome(Err(error), stderr),
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
+        }
     };
     let result = match mode {
         RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
@@ -1193,6 +1216,10 @@ fn run_headless(
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
     write_notices(stderr, ui.notes);
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
     if mode == RunMode::Json && built.supervised_child && max_tokens.is_some() {
         // Private child/parent accounting: message_end omits summaries and tool
         // prefill. Report the uncapped total, including the child's final turn.
@@ -1202,7 +1229,7 @@ fn run_headless(
         });
         let _ = writeln!(stdout, "{usage}");
     }
-    finish_outcome(result, stderr)
+    finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
 
 /// `--mode rpc`: the protocol owns stdin and stdout; notices go to stderr.
@@ -1225,7 +1252,7 @@ fn run_rpc(
     } = prep;
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
-        Err(e) => return finish_outcome(Err(e), stderr),
+        Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
     notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
@@ -1236,11 +1263,22 @@ fn run_rpc(
         built.supervised_child,
     ) {
         Ok(limit) => limit,
-        Err(error) => return finish_outcome(Err(error), stderr),
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
+        }
     };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
-    finish_outcome(serve_outcome(session, dirs, input, out), stderr)
+    let result = serve_outcome(session, dirs, input, out);
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
+    finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
 
 /// The interactive terminal: the first prompt and the further messages come from the command
@@ -1310,6 +1348,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Fork(sref) => Open::Fork(sref),
         };
         let mut session = Session::open(deps, how)?;
+        base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
     });
@@ -1340,7 +1379,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         gated,
         yolo: Some(yolo),
     };
-    match run_interactive(session, opts) {
+    let result = run_interactive(session, opts);
+    let result = match &built.status {
+        Some(status) => status.finish_interactive(result, stderr),
+        None => result,
+    };
+    match result {
         Ok(code) => code,
         Err(e) => report(stderr, &e),
     }
@@ -1379,12 +1423,7 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     const NO_LIMIT_MS: u64 = 365 * 24 * 3600 * 1000;
     // P3: the same remote-engine guard as `engine_for`.
     crate::netguard::check_endpoint(&endpoint.base_url)?;
-    let silence = settings
-        .provider_retry()
-        .timeout_ms
-        .filter(|ms| *ms > 0)
-        .or_else(|| settings.http_idle_timeout_ms())
-        .unwrap_or(NO_LIMIT_MS);
+    let silence = stream_silence_timeout(settings).unwrap_or(NO_LIMIT_MS);
     let opts = oxa_engine::StreamOpts {
         silence_limit_ms: silence,
         ..oxa_engine::StreamOpts::default()
@@ -1392,6 +1431,16 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     // The core owns session retries so every retry uses its backoff and visible notice.
     let engine = HttpEngine::new(&endpoint.base_url, endpoint.api_key.clone())?.with_opts(opts, 0);
     Ok(Arc::new(engine))
+}
+
+/// Shared by HTTP and native engines; project layers affect timeouts, while the
+/// native selector, catalog and credential locations remain user-only.
+pub(crate) fn stream_silence_timeout(settings: &Settings) -> Option<u64> {
+    settings
+        .provider_retry()
+        .timeout_ms
+        .filter(|ms| *ms > 0)
+        .or_else(|| settings.http_idle_timeout_ms())
 }
 
 /// The provider column: the controller's `remote_provider` (else `cloud`) for a cloud model,
@@ -1720,6 +1769,14 @@ fn report(err: &mut dyn Write, e: &OxaError) -> i32 {
 }
 
 fn finish_outcome(result: Result<oxa_core::RunOutcome, OxaError>, err: &mut dyn Write) -> i32 {
+    finish_outcome_facts(result, err, None)
+}
+
+fn finish_outcome_facts(
+    result: Result<oxa_core::RunOutcome, OxaError>,
+    err: &mut dyn Write,
+    facts: Option<&crate::result_facts::ResultFacts>,
+) -> i32 {
     let outcome = match result {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -1727,7 +1784,11 @@ fn finish_outcome(result: Result<oxa_core::RunOutcome, OxaError>, err: &mut dyn 
             oxa_core::RunOutcome::from_error(&error)
         }
     };
-    let _ = writeln!(err, "{}", outcome.record());
+    let _ = writeln!(
+        err,
+        "{}",
+        crate::result_facts::ResultFacts::record(outcome, facts)
+    );
     let _ = err.flush();
     outcome.exit_code()
 }
@@ -2022,6 +2083,8 @@ mod session_scratch_tests {
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
         let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
+            status: None,
+            result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             store: Arc::new(MemStore::new()),

@@ -27,13 +27,14 @@ pub(crate) fn run(
     let settings = Settings::load(dirs, &source, true);
     let commands = match request.operation {
         SupervisorOperation::Inspect => return inspect(&b, &root),
-        SupervisorOperation::Checkout { branch } => {
+        SupervisorOperation::Checkout { branch, create } => {
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
             let spec = ExecSpec {
-                command: format!(
-                    "git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b '{}' HEAD",
-                    branch.replace('\'', "'\\''")
-                ),
+                command: if create {
+                    format!("git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b '{}' HEAD", branch.replace('\'', "'\\''"))
+                } else {
+                    "git --no-replace-objects checkout HEAD -- .".into()
+                },
                 cwd: root,
                 writable: true,
                 net: sandbox.network(),
@@ -47,6 +48,68 @@ pub(crate) fn run(
             if result.exit != Some(0) || result.timed_out {
                 return Err(format!(
                     "checkout exit {:?}, timeout {}: {}",
+                    result.exit,
+                    result.timed_out,
+                    String::from_utf8_lossy(&tail)
+                ));
+            }
+            return Ok(0);
+        }
+        SupervisorOperation::Merge { base } => {
+            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            let spec = ExecSpec {
+                command: format!(
+                    "git --no-replace-objects merge --no-edit -- '{}'",
+                    base.replace('\'', "'\\''")
+                ),
+                cwd: root,
+                writable: true,
+                net: sandbox.network(),
+                timeout_s: Some(600),
+                env: git_environment(),
+            };
+            let mut tail = Vec::new();
+            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+                keep_tail(&mut tail, bytes, 8192);
+            });
+            err.write_all(&tail).map_err(|e| e.to_string())?;
+            if result.timed_out || result.exit.is_none() {
+                return Err("sandboxed base merge did not complete; worktree retained".into());
+            }
+            return Ok(i32::from(result.exit != Some(0)));
+        }
+        SupervisorOperation::Save { task_id } => {
+            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            let message = format!("oxa work: save task {task_id}").replace('\'', "'\\''");
+            let spec = ExecSpec {
+                command: format!(
+                    r#"git --no-replace-objects diff --cached --quiet --no-ext-diff --no-textconv --diff-filter=U
+work_index_status=$?
+if test "$work_index_status" -ne 0; then exit 2; fi
+git --no-replace-objects add --all || exit 2
+git --no-replace-objects rev-parse --verify --quiet MERGE_HEAD >/dev/null
+work_merge_status=$?
+if test "$work_merge_status" -ne 1; then exit 2; fi
+git --no-replace-objects diff --cached --quiet --no-ext-diff --no-textconv
+work_changes=$?
+if test "$work_changes" -eq 0; then exit 0; fi
+if test "$work_changes" -ne 1; then exit 2; fi
+git --no-replace-objects commit -m '{message}'
+"#
+                ),
+                cwd: root,
+                writable: true,
+                net: sandbox.network(),
+                timeout_s: Some(600),
+                env: git_environment(),
+            };
+            let mut tail = Vec::new();
+            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+                keep_tail(&mut tail, bytes, 8192);
+            });
+            if result.exit != Some(0) || result.timed_out {
+                return Err(format!(
+                    "save exit {:?}, timeout {}: {}",
                     result.exit,
                     result.timed_out,
                     String::from_utf8_lossy(&tail)

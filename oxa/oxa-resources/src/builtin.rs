@@ -29,6 +29,10 @@ pub const BUILTIN_SKILLS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Lead-only instructions, loaded explicitly by the lead preset. Not installed or
+/// discovered for ordinary sessions, so worker prefixes stay unchanged.
+pub const LEAD_SKILL: &str = include_str!("../builtin-skills/lead/SKILL.md");
+
 /// The identity file inside the agent directory.
 pub const IDENTITY_FILE: &str = "identity.md";
 

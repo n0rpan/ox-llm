@@ -5,7 +5,7 @@ mod common;
 use common::*;
 use oxa_proto::{tool_errors, CancelToken, Mode, Tool};
 use oxa_tools::descriptions::web_search as text;
-use oxa_web::{Brave, BraveOpts, Endpoint, Query, SearchProvider, WebSearchTool, FALLBACK_NOTICE};
+use oxa_web::{Brave, BraveOpts, Endpoint, Query, WebSearchTool, FALLBACK_NOTICE};
 use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
