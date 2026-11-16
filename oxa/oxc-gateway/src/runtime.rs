@@ -245,6 +245,10 @@ impl<'a> Call<'a> {
         self.usage.cache_read = Some(usage.cache_read_input_tokens);
         self.usage.cache_write = Some(usage.cache_creation_input_tokens);
     }
+    /// Private terminal metering only, never caller-supplied request fields.
+    pub(crate) fn metered_cost(&mut self, cost: Option<f64>) {
+        self.usage.reported_cost = cost.filter(|cost| cost.is_finite() && *cost >= 0.0);
+    }
     pub fn finish(
         mut self,
         outcome: Outcome,

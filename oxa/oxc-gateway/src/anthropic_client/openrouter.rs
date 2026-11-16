@@ -13,6 +13,7 @@ impl Client {
         cancel: &Cancellation,
         on: &mut F,
         terminal_usage: &mut Option<Usage>,
+        terminal_reported_cost: &mut Option<f64>,
     ) -> Result<Completed, Error>
     where
         F: FnMut(Event) -> Control + ?Sized,
@@ -88,10 +89,12 @@ impl Client {
                     continue;
                 };
                 if data == b"[DONE]" {
+                    let reported_cost = stream.reported_cost;
                     let (completed, chunks) = stream.finish()?;
                     // Trust metering only after a complete protocol, but save it
                     // before a callback can cancel final delivery or opt out.
                     *terminal_usage = completed.usage;
+                    *terminal_reported_cost = reported_cost;
                     deliver(chunks, cancel, on)?;
                     if cancel.is_cancelled() {
                         return Err(Error::Cancelled);
@@ -176,6 +179,7 @@ struct Stream<'a> {
     tools: BTreeMap<u64, Value>,
     reason: Option<&'static str>,
     usage: Option<Usage>,
+    reported_cost: Option<f64>,
 }
 impl<'a> Stream<'a> {
     fn new(chat: &Chat<'a>, key: &'a Key) -> Self {
@@ -192,6 +196,7 @@ impl<'a> Stream<'a> {
             tools: BTreeMap::new(),
             reason: None,
             usage: None,
+            reported_cost: None,
         }
     }
     fn chunk(&self, delta: Value, reason: Option<&str>) -> Value {
@@ -210,6 +215,11 @@ impl<'a> Stream<'a> {
                 return Err(Error::Protocol);
             }
             self.usage = Some(usage(raw)?);
+            // Only the upstream terminal usage can supply cost. Missing/invalid
+            // values retain catalog pricing; zero is a valid reported charge.
+            self.reported_cost = raw["cost"]
+                .as_f64()
+                .filter(|cost| cost.is_finite() && *cost >= 0.0);
         }
         if choices.is_empty() {
             return Ok(out);
@@ -325,9 +335,13 @@ impl<'a> Stream<'a> {
             "model":self.model,"choices":[{"index":0,"delta":{},"finish_reason":reason}]}),
         );
         if self.include_usage {
+            let mut normalized = usage.openai();
+            if let Some(cost) = self.reported_cost {
+                normalized["cost"] = json!(cost);
+            }
             out.push(
                 json!({"id":"chatcmpl_openrouter","object":"chat.completion.chunk","created":self.created,
-                "model":self.model,"choices":[],"usage":usage.openai()}),
+                "model":self.model,"choices":[],"usage":normalized}),
             );
         }
         Ok((

@@ -135,6 +135,7 @@ impl Gateway {
         let key = call.key_handle();
         let history = History::new(model, key.expose(), payload);
         let mut terminal_usage = None;
+        let mut terminal_reported_cost = None;
         let request = Chat {
             base_url: model.endpoint().as_str(),
             upstream_model: model.upstream(),
@@ -160,7 +161,14 @@ impl Gateway {
         };
         let result = if model.info().provider == crate::catalog::Provider::OpenRouter {
             self.client
-                .stream_openrouter(request, &key, cancel, &mut deliver, &mut terminal_usage)
+                .stream_openrouter(
+                    request,
+                    &key,
+                    cancel,
+                    &mut deliver,
+                    &mut terminal_usage,
+                    &mut terminal_reported_cost,
+                )
                 .await
         } else {
             self.client
@@ -181,6 +189,9 @@ impl Gateway {
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
             call.metered(usage);
+            if model.info().provider == crate::catalog::Provider::OpenRouter {
+                call.metered_cost(terminal_reported_cost);
+            }
         }
         let (outcome, status, code) = match &result {
             Ok(_) => (Outcome::Complete, 200, None),
