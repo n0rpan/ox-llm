@@ -155,6 +155,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
+    key("oxa.maxTurns", Kind::Number, "null"),
     key(
         "oxa.mode",
         Kind::Enum(&["plan", "workspace", "ask"]),
