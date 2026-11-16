@@ -38,6 +38,7 @@ pub fn fork_file(
     cwd: &Path,
     id: Option<&str>,
 ) -> Result<SessionRef, OxaError> {
+    let _lifecycle = store.spill_lifecycle_lock(src)?;
     let entries = store.load(src)?;
     if entries.is_empty() {
         return Err(OxaError::new(
@@ -92,6 +93,7 @@ fn copy_branch(
     tip: &str,
     cwd: &Path,
 ) -> Result<SessionRef, OxaError> {
+    let _lifecycle = store.spill_lifecycle_lock(src)?;
     let tree = Tree::new(store.load(src)?);
     if tree.get(tip).is_none() {
         return Err(not_found(tip, src));

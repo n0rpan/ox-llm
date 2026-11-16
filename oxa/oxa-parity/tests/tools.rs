@@ -837,19 +837,21 @@ fn tools_018() {
 
 /// TOOLS-019 (P): tool selection with defaults, `--tools`, `-xt`, `-nbt`, `-nt`, globs; exclusion wins.
 /// pi: `cli.md#tools`. INVARIANT (W3): resolved once per prefix epoch; the list is the frozen `tools` array.
-/// INVARIANT (O-146): oxa's default set is the seven built-ins plus `subagent` where O-146 offers
-/// it (not on the Rust Flash engine, not below a 32K window); it is selected like a built-in.
+/// INVARIANT: lead defaults include ask plus subagent where O-146 offers it
+/// (not on the Rust Flash engine, not below a 32K window); it is selected like a built-in.
 #[test]
 fn tools_019() {
     let env = TestEnv::new();
-    let seven: Vec<String> = ALL_SEVEN.iter().map(|s| s.to_string()).collect();
-    let mut all = seven.clone();
+    let mut lead: Vec<String> = ALL_SEVEN.iter().map(|s| s.to_string()).collect();
+    lead.push("ask".to_string());
+    lead.sort();
+    let mut all = lead.clone();
     all.push("subagent".to_string());
     all.sort();
     assert_eq!(
         offered(&env, &[]),
         all,
-        "oxa default (large, non-Flash model): the seven built-ins and subagent"
+        "oxa default (large, non-Flash model): eight lead built-ins and subagent"
     );
     let flash = FakeOpts {
         model: "flash".to_string(),
@@ -867,7 +869,7 @@ fn tools_019() {
             out,
             reqs: srv.requests(),
         };
-        assert_eq!(declared_names(&ran), seven, "{what}: the seven built-ins");
+        assert_eq!(declared_names(&ran), lead, "{what}: the eight lead built-ins");
     }
     assert_eq!(
         offered(&env, &["-t", "read,ls"]),
@@ -884,7 +886,7 @@ fn tools_019() {
     assert_eq!(offered(&env, &["-xt", "bash"]), no_bash, "exclude-tools");
     assert_eq!(
         offered(&env, &["-xt", "subagent"]),
-        seven,
+        lead,
         "exclude-tools subagent"
     );
     assert!(
