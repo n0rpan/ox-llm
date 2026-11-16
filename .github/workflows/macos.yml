@@ -1,0 +1,46 @@
+name: oxa macOS (non-required)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'oxa/**'
+      - '.github/workflows/macos.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oxa-macos-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  oxa-macos:
+    name: oxa release workspace (macOS arm64, non-required)
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '3'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Isolated environment and release toolchain
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          root=$(mktemp -d "$RUNNER_TEMP/oxa-macos.XXXXXX")
+          mkdir -p "$root/home" "$root/cargo" "$root/rustup" "$root/tmp"
+          export HOME="$root/home" CARGO_HOME="$root/cargo" RUSTUP_HOME="$root/rustup" TMPDIR="$root/tmp"
+          rustup toolchain install 1.99.1 --profile minimal
+          for name in HOME CARGO_HOME RUSTUP_HOME TMPDIR; do
+            echo "$name=${!name}" >> "$GITHUB_ENV"
+          done
+          echo "$RUSTUP_HOME/toolchains/1.99.1-aarch64-apple-darwin/bin" >> "$GITHUB_PATH"
+      - name: Build release workspace (Linux release default features)
+        working-directory: oxa
+        run: cargo build --release --locked --workspace
+      - name: Test release workspace
+        working-directory: oxa
+        run: cargo test --release --locked --workspace --no-fail-fast
