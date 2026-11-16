@@ -24,6 +24,8 @@ pub const SENSITIVE_HOME: &[&str] = &[
     ".config/gh",
     ".config/hub",
     ".config/oxc",
+    // Keep explicit credential entries even below a denied directory: file tools and the
+    // sandbox resolve each entry separately to protect symlink targets outside that directory.
     ".config/oxc/llm/cloud-secrets.json",
     ".config/local-ai/llm/cloud-secrets.json",
     // #252: the experimental ChatGPT subscription tokens, beside the cloud keys.
@@ -224,19 +226,13 @@ mod tests {
             ".config/oxc/llm/chatgpt-auth.json",
             ".config/local-ai/llm/chatgpt-auth.json",
         ] {
-            let p = home.join(rel);
+            // Each file must be resolved independently even when its lexical parent is
+            // denied: it (or `llm`) may link to a target outside that parent (#544).
             assert!(
-                deny.iter().any(|d| p.starts_with(d)),
-                "{rel} is not denied: {deny:?}"
+                deny.contains(&home.join(rel)),
+                "{rel} is not explicitly denied: {deny:?}"
             );
         }
-        // #252 review: `.config/oxc` already covers the new-path token file, so assert the
-        // legacy one, which no parent entry covers, on its own.
-        let legacy = home.join(".config/local-ai/llm/chatgpt-auth.json");
-        assert!(
-            deny.iter().all(|d| d == &legacy || !legacy.starts_with(d)) && deny.contains(&legacy),
-            "{deny:?}"
-        );
     }
 
     use super::*;
