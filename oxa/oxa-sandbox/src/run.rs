@@ -319,6 +319,7 @@ fn execute(
 /// spawned it (the parent pid is taken before the fork); if the parent already died, the child
 /// exits at once. Linux only: the signal fires when the thread that forked the child exits, so
 /// the forking thread must stay alive until the child is waited for.
+#[cfg(target_os = "linux")]
 pub fn die_with_parent(cmd: &mut Command) {
     let parent = std::process::id() as libc::pid_t;
     // SAFETY: the closure runs in the forked child before exec and calls only async-signal-safe
@@ -329,6 +330,20 @@ pub fn die_with_parent(cmd: &mut Command) {
                 libc::_exit(1);
             }
             Ok(())
+        });
+    }
+}
+
+/// Refuse to spawn when Linux parent-death supervision is unavailable.
+#[cfg(not(target_os = "linux"))]
+pub fn die_with_parent(cmd: &mut Command) {
+    // SAFETY: the child returns a fixed error before exec; no process is launched.
+    unsafe {
+        cmd.pre_exec(|| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "parent-death supervision is supported only on Linux",
+            ))
         });
     }
 }
@@ -357,11 +372,13 @@ impl PinnedCwd {
             let name = std::ffi::CString::new(name.as_bytes()).map_err(std::io::Error::other)?;
             // SAFETY: dir is open and name is a valid single-component C string.
             let fd = unsafe {
-                libc::openat(
-                    dir.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
+                libc::openat(dir.as_raw_fd(), name.as_ptr(), {
+                    #[cfg(target_os = "linux")]
+                    let access = libc::O_PATH;
+                    #[cfg(not(target_os = "linux"))]
+                    let access = libc::O_RDONLY;
+                    access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC
+                })
             };
             if fd < 0 {
                 return Err(std::io::Error::last_os_error());
@@ -460,6 +477,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn die_with_parent_command_runs_normally() {
         let mut cmd = Command::new("true");
         die_with_parent(&mut cmd);

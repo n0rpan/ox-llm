@@ -149,9 +149,16 @@ impl StdioTransport {
                 if libc::setsid() < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
+                #[cfg(target_os = "linux")]
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
                     return Err(std::io::Error::last_os_error());
                 }
+                #[cfg(not(target_os = "linux"))]
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "MCP child parent-death supervision is supported only on Linux",
+                ));
+                #[cfg(target_os = "linux")]
                 Ok(())
             });
         }

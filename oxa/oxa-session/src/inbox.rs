@@ -159,6 +159,7 @@ impl Inbox {
         unsafe { libc::write(self.retry.as_raw_fd(), (&value as *const u64).cast(), 8) };
     }
 
+    #[cfg(target_os = "linux")]
     pub fn watch(
         agent_dir: &Path,
         id: &str,
@@ -243,6 +244,21 @@ impl Inbox {
         })
     }
 }
+#[cfg(not(target_os = "linux"))]
+impl Inbox {
+    /// Native file notification is not available on this platform yet.
+    pub fn watch(
+        _agent_dir: &Path,
+        _id: &str,
+        _deliver: impl FnMut(String) -> bool + Send + 'static,
+    ) -> io::Result<Self> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "session inbox watching is supported only on Linux",
+        ))
+    }
+}
+
 impl Drop for Inbox {
     fn drop(&mut self) {
         self.stopping.store(true, Ordering::Relaxed);

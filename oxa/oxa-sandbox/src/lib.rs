@@ -194,6 +194,7 @@ fn insert_args_fd(argv: &mut Vec<String>, fd: i32) {
 
 /// A pipe holding `data` (closed write end); returns the read end with `O_CLOEXEC` set, so
 /// no other child spawned meanwhile inherits it. Only the bwrap child clears the flag.
+#[cfg(target_os = "linux")]
 fn args_pipe(data: &[u8]) -> Result<i32, String> {
     let mut fds = [-1i32; 2];
     // SAFETY: `fds` is a valid array of two ints; the fds are closed below or by the caller.
@@ -211,6 +212,11 @@ fn args_pipe(data: &[u8]) -> Result<i32, String> {
         return Err("cannot pass the sandbox environment".to_string());
     }
     Ok(fds[0])
+}
+
+#[cfg(not(target_os = "linux"))]
+fn args_pipe(_data: &[u8]) -> Result<i32, String> {
+    Err("sandbox unavailable: bubblewrap isolation is supported only on Linux".into())
 }
 
 impl Bwrap {
@@ -266,7 +272,7 @@ impl Bwrap {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod secret_tests {
     use super::*;
 

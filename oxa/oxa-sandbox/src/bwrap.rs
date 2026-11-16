@@ -621,6 +621,9 @@ pub(crate) fn create_missing_git_files_homes(
 /// (`gitdirs::alias_refusal`) against what the command could still write (the writable cwd, the
 /// layout's read-write binds), with the git directories read-only.
 pub(crate) fn refusal(s: &ExecSpec, home: &Path, layout: &Layout) -> Option<String> {
+    if !cfg!(target_os = "linux") {
+        return Some("sandbox unavailable: bubblewrap isolation is supported only on Linux".into());
+    }
     // sbx-symhome: the masks are decided on canonical paths; without them, nothing runs.
     for (what, p) in [("working directory", s.cwd.as_path()), ("home directory", home)] {
         if let Err(e) = std::fs::canonicalize(p) {
@@ -1163,6 +1166,7 @@ fn push(a: &mut Vec<String>, xs: &[&str]) {
 
 /// The body of `Bwrap::detect` (lib.rs, architect-owned, must delegate here): find `bwrap` on
 /// `path_var` and probe it. Failure = `no_sandbox` with a hint.
+#[cfg(target_os = "linux")]
 pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaError> {
     let bwrap = find_on_path(path_var, "bwrap").ok_or_else(|| {
         OxaError::new(codes::NO_SANDBOX, "bwrap is not available; bash is disabled").with_hint(MISSING_HINT)
@@ -1180,8 +1184,22 @@ pub(crate) fn detect_bwrap(path_var: &str, home: &Path) -> Result<Bwrap, OxaErro
 
 /// The body of `Sandbox::check` for [`Bwrap`] (lib.rs, architect-owned, must delegate here):
 /// re-run the probe for `b.bwrap`.
+#[cfg(target_os = "linux")]
 pub(crate) fn check_bwrap(b: &Bwrap) -> Result<(), OxaError> {
     probe(&b.bwrap)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn detect_bwrap(_path_var: &str, _home: &Path) -> Result<Bwrap, OxaError> {
+    Err(OxaError::new(
+        codes::NO_SANDBOX,
+        "sandbox unavailable: bubblewrap isolation is supported only on Linux",
+    ))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn check_bwrap(_b: &Bwrap) -> Result<(), OxaError> {
+    detect_bwrap("", Path::new("/")).map(|_| ())
 }
 
 /// The first absolute PATH entry holding an executable `name`. Relative entries are ignored.
