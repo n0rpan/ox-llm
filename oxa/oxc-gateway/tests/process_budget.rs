@@ -324,12 +324,10 @@ fn persisted_state_is_private_bounded_metadata_and_new_days_are_independent() {
         .is_ok());
     drop(hold);
     assert!(budget.reserve(&json!(0.0017), true, &model(), 100).is_ok());
-    fs::OpenOptions::new()
-        .write(true)
-        .open(snapshot)
-        .unwrap()
-        .set_len(2 * 1024 * 1024 + 1)
-        .unwrap();
+    let mut oversized = fs::read(&snapshot).unwrap();
+    oversized.resize(2 * 1024 * 1024 + 1, b' ');
+    assert!(serde_json::from_slice::<Value>(&oversized).is_ok());
+    fs::write(snapshot, oversized).unwrap();
     assert!(Budget::new(home.path())
         .reserve(&json!(1), true, &model(), 100)
         .is_err());
@@ -376,7 +374,9 @@ fn malformed_or_unsafe_persisted_state_fails_closed() {
         let home = Home::new();
         let path = home.0.join(format!("requests.jsonl{suffix}"));
         let other = home.0.join("other");
-        fs::write(&other, "synthetic").unwrap();
+        let valid = b"{\"failed\":false,\"holds\":{}}";
+        fs::write(&other, valid).unwrap();
+        fs::set_permissions(&other, fs::Permissions::from_mode(0o600)).unwrap();
         symlink(&other, &path).unwrap();
         assert!(Budget::new(home.path())
             .reserve(&json!(1), true, &model(), 100)
@@ -390,9 +390,9 @@ fn malformed_or_unsafe_persisted_state_fails_closed() {
         assert!(Budget::new(home.path())
             .reserve(&json!(1), true, &model(), 100)
             .is_err());
-        assert_eq!(fs::read_to_string(&other).unwrap(), "synthetic");
+        assert_eq!(fs::read(&other).unwrap(), valid);
         fs::remove_file(&path).unwrap();
-        fs::write(&path, b"{}").unwrap();
+        fs::write(&path, valid).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(Budget::new(home.path())
             .reserve(&json!(1), true, &model(), 100)
