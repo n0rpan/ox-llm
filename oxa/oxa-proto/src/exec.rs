@@ -123,11 +123,132 @@ pub trait Sandbox: Send + Sync {
     }
 }
 
-/// The YOLO switch of a process (O-182): while it is on, the policy answers every question
-/// it would have asked the user with "allow" and counts it. It removes prompts only: a
-/// `Decision::Deny` (the deny-list of keys and tokens, git hooks, plan mode) stands, writes to
-/// the project's `.oxa` configuration still ask, and the sandbox is not touched by it at all.
-/// Cloning shares the switch (the policy of every session and the UI hold the same one).
+/// How much the policy decides on its own (#202). `Standard` asks the user what the mode table
+/// asks; `Auto` answers those questions with "allow" while the sandbox, the deny-list and the
+/// protected paths stay on; `Yolo` is full access: no prompts, bash runs without the sandbox in
+/// the user's own environment; the file tools have no deny-list or protected paths.
+/// Plan mode stays read-only under every level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Autonomy {
+    #[default]
+    Standard,
+    Auto,
+    Yolo,
+}
+
+impl Autonomy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Autonomy::Standard => "standard",
+            Autonomy::Auto => "auto",
+            Autonomy::Yolo => "yolo",
+        }
+    }
+    fn from_u8(v: u8) -> Autonomy {
+        match v {
+            1 => Autonomy::Auto,
+            2 => Autonomy::Yolo,
+            _ => Autonomy::Standard,
+        }
+    }
+    fn to_u8(self) -> u8 {
+        match self {
+            Autonomy::Standard => 0,
+            Autonomy::Auto => 1,
+            Autonomy::Yolo => 2,
+        }
+    }
+}
+
+/// The permission modes the user picks (#202): `standard` (prompts), `auto` (no prompts,
+/// sandbox and deny-list on; the default of a fresh install), `yolo` (full access) and `plan`
+/// (read-only). `permissions.defaultMode` holds one of these names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionMode {
+    Standard,
+    Auto,
+    Yolo,
+    Plan,
+}
+
+impl PermissionMode {
+    pub const ALL: [PermissionMode; 4] = [
+        PermissionMode::Standard,
+        PermissionMode::Auto,
+        PermissionMode::Yolo,
+        PermissionMode::Plan,
+    ];
+    /// The mode of a fresh install.
+    pub const DEFAULT: PermissionMode = PermissionMode::Auto;
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PermissionMode::Standard => "standard",
+            PermissionMode::Auto => "auto",
+            PermissionMode::Yolo => "yolo",
+            PermissionMode::Plan => "plan",
+        }
+    }
+    pub fn parse(s: &str) -> Option<PermissionMode> {
+        Self::ALL.into_iter().find(|m| m.as_str() == s.trim())
+    }
+    /// How much the mode allows: plan < standard < auto < yolo. A project's settings may only
+    /// pick a mode whose rank is not above the user's.
+    pub fn rank(self) -> u8 {
+        match self {
+            PermissionMode::Plan => 0,
+            PermissionMode::Standard => 1,
+            PermissionMode::Auto => 2,
+            PermissionMode::Yolo => 3,
+        }
+    }
+    /// The autonomy level of the mode (plan keeps prompts as they are: it denies itself).
+    pub fn autonomy(self) -> Autonomy {
+        match self {
+            PermissionMode::Auto => Autonomy::Auto,
+            PermissionMode::Yolo => Autonomy::Yolo,
+            PermissionMode::Standard | PermissionMode::Plan => Autonomy::Standard,
+        }
+    }
+    /// The mode shown for a session's table mode and the process's autonomy.
+    pub fn of(mode: Mode, autonomy: Autonomy) -> PermissionMode {
+        match (mode, autonomy) {
+            (Mode::Plan, _) => PermissionMode::Plan,
+            (_, Autonomy::Standard) => PermissionMode::Standard,
+            (_, Autonomy::Auto) => PermissionMode::Auto,
+            (_, Autonomy::Yolo) => PermissionMode::Yolo,
+        }
+    }
+    /// The mode key's cycle: standard -> auto -> yolo -> standard (plan -> standard).
+    pub fn next(self) -> PermissionMode {
+        match self {
+            PermissionMode::Standard => PermissionMode::Auto,
+            PermissionMode::Auto => PermissionMode::Yolo,
+            PermissionMode::Yolo | PermissionMode::Plan => PermissionMode::Standard,
+        }
+    }
+    /// One line on what the mode does (start notices, stderr in print/rpc runs, the picker).
+    pub fn describe(self) -> &'static str {
+        match self {
+            PermissionMode::Standard => {
+                "prompts before actions outside the workspace; sandbox and deny-list on"
+            }
+            PermissionMode::Auto => {
+                "no prompts; the bash sandbox, the deny-list and the protected paths stay on"
+            }
+            PermissionMode::Yolo => {
+                "full access: no prompts, bash runs without the sandbox in your own environment, \
+                 no deny-list and no protected paths for the file tools"
+            }
+            PermissionMode::Plan => "read-only: plans, writes nothing",
+        }
+    }
+}
+
+/// The autonomy switch of a process (O-182, #202): [`Autonomy`] as one shared value. `Auto`
+/// answers the mode table's questions with "allow" and counts them; floor prompts still ask.
+/// At `Yolo` outside plan mode the file tools also allow floor prompts and denials, and bash
+/// runs without the sandbox. Only questions count, not bypassed denials (#443). Cloning shares
+/// the switch (the policy of every session, the bash tool and the UI hold the same one).
 #[derive(Debug, Clone, Default)]
 pub struct YoloSwitch {
     inner: std::sync::Arc<YoloInner>,
@@ -135,21 +256,31 @@ pub struct YoloSwitch {
 
 #[derive(Debug, Default)]
 struct YoloInner {
-    on: std::sync::atomic::AtomicBool,
+    level: std::sync::atomic::AtomicU8,
     approved: std::sync::atomic::AtomicU64,
 }
 
 impl YoloSwitch {
-    pub fn new(on: bool) -> YoloSwitch {
+    pub fn new(level: Autonomy) -> YoloSwitch {
         let switch = YoloSwitch::default();
-        switch.set(on);
+        switch.set_level(level);
         switch
     }
-    pub fn is_on(&self) -> bool {
-        self.inner.on.load(std::sync::atomic::Ordering::SeqCst)
+    pub fn level(&self) -> Autonomy {
+        Autonomy::from_u8(self.inner.level.load(std::sync::atomic::Ordering::SeqCst))
     }
-    pub fn set(&self, on: bool) {
-        self.inner.on.store(on, std::sync::atomic::Ordering::SeqCst);
+    pub fn set_level(&self, level: Autonomy) {
+        self.inner
+            .level
+            .store(level.to_u8(), std::sync::atomic::Ordering::SeqCst);
+    }
+    /// No prompts (`auto` or `yolo`).
+    pub fn is_on(&self) -> bool {
+        self.level() != Autonomy::Standard
+    }
+    /// Full access (`yolo`).
+    pub fn full(&self) -> bool {
+        self.level() == Autonomy::Yolo
     }
     /// How many questions were answered with "allow" since the process started.
     pub fn approved(&self) -> u64 {
@@ -189,5 +320,10 @@ pub trait Policy: Send {
     /// ([`crate::ToolCtx::hidden`]). `None` (the default) = the policy hides nothing.
     fn path_filter(&self) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
         None
+    }
+    /// The walk filter for the active table mode. Full access may lift the filter outside
+    /// plan mode, while plan mode must keep the floor. Other policies retain their filter.
+    fn path_filter_for_mode(&self, _mode: Mode) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
+        self.path_filter()
     }
 }
