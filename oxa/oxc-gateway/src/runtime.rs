@@ -14,6 +14,10 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
+fn supported(provider: Provider) -> bool {
+    matches!(provider, Provider::Anthropic | Provider::OpenRouter)
+}
+
 pub struct Options {
     pub access: Access,
     pub daily_budget_usd: Option<f64>,
@@ -100,9 +104,7 @@ impl Runtime {
         })
     }
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
-        self.catalog
-            .models()
-            .filter(|model| model.provider == Provider::Anthropic)
+        self.catalog.models().filter(|model| supported(model.provider))
     }
     fn audit(&self, model: &str, context: Context<'_>) -> Result<(Daily, Entry), Refusal> {
         if !self.ledger_enabled {
@@ -125,17 +127,17 @@ impl Runtime {
         let known = self
             .catalog
             .configured(alias)
-            .filter(|model| model.info().provider == Provider::Anthropic);
+            .filter(|model| supported(model.info().provider));
         let mut audit = known.map(|_| self.audit(alias, context));
         let mut key = None;
         let result = (|| {
             let model = self.catalog.resolve(Some(alias)).map_err(catalog_error)?;
-            if model.info().provider != Provider::Anthropic {
+            if !supported(model.info().provider) {
                 return Err(Refusal {
                     status: 503,
                     code: "cloud_provider_unavailable",
                     param: "model",
-                    message: "This gateway currently supports Anthropic models.",
+                    message: "This gateway currently supports Anthropic and OpenRouter models.",
                 });
             }
             let price = self.prices.get(alias);
@@ -156,7 +158,7 @@ impl Runtime {
                 self.key_file
                     .as_ref()
                     .map_err(|_| Refusal::credentials())?
-                    .read("anthropic")
+                    .read(model.info().provider.as_str())
                     .map_err(|_| Refusal::credentials())?,
             );
             let (daily, _) = audit
@@ -165,7 +167,7 @@ impl Runtime {
                 .as_ref()
                 .map_err(Clone::clone)?;
             let billing = accounting::Model {
-                provider: "anthropic".into(),
+                provider: model.info().provider.as_str().into(),
                 upstream: model.upstream().into(),
                 context: u64::from(model.info().context_window),
                 max_output: u64::from(model.info().max_output),
@@ -186,7 +188,7 @@ impl Runtime {
         })();
         if let Err(error) = &result {
             if let (Some(model), Some(Ok((daily, entry)))) = (known, audit) {
-                let fields = json!({"remote":true,"remote_provider":"anthropic","remote_model":model.upstream(),
+                let fields = json!({"remote":true,"remote_provider":model.info().provider.as_str(),"remote_model":model.upstream(),
                     "cost_usd":0.0,"settled":"not_forwarded"});
                 let _ = daily.budget().write_unpaid(|| {
                     entry
@@ -204,10 +206,10 @@ impl Runtime {
         if let Some(model) = self
             .catalog
             .configured(alias)
-            .filter(|model| model.info().provider == Provider::Anthropic)
+            .filter(|model| supported(model.info().provider))
         {
             if let Ok((daily, entry)) = self.audit(alias, context) {
-                let fields = json!({"remote":true,"remote_provider":"anthropic","remote_model":model.upstream(),
+                let fields = json!({"remote":true,"remote_provider":model.info().provider.as_str(),"remote_model":model.upstream(),
                     "cost_usd":0.0,"settled":"not_forwarded"});
                 let _ = daily.budget().write_unpaid(|| {
                     entry

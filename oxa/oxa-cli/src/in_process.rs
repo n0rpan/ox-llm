@@ -52,16 +52,18 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
         .ok_or_else(invalid)?;
     let mut routes = Vec::with_capacity(models.len());
     for (alias, value) in models {
-        if text(value, "provider")? != "anthropic" {
-            return Err(OxaError::unsupported("this in-process cloud provider"));
-        }
+        let (provider, default_endpoint) = match text(value, "provider")? {
+            "anthropic" => (Provider::Anthropic, "https://api.anthropic.com"),
+            "openrouter" => (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
+            _ => return Err(OxaError::unsupported("this in-process cloud provider")),
+        };
         let endpoint = match value.get("base_url") {
-            None => "https://api.anthropic.com",
+            None => default_endpoint,
             Some(value) => value.as_str().ok_or_else(invalid)?,
         };
         let model = Model::new(
             alias,
-            Provider::Anthropic,
+            provider,
             text(value, "upstream_model")?,
             endpoint,
             limit(value, "context_window")?,

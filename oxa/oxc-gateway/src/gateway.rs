@@ -1,5 +1,8 @@
 //! One admission/stream/settlement path, with Done only after a durable row.
 #[cfg(test)]
+#[path = "../tests/common/openrouter_cases.rs"]
+mod openrouter_tests;
+#[cfg(test)]
 #[path = "../tests/common/gateway_cases.rs"]
 mod tests;
 use crate::{
@@ -54,8 +57,8 @@ impl Error {
             param,
             message: match error {
                 anthropic_client::Error::Cancelled => "Request cancelled.",
-                anthropic_client::Error::Request(_) => "Invalid Anthropic request.",
-                _ => "The Anthropic upstream request failed.",
+                anthropic_client::Error::Request(_) => "Invalid cloud request.",
+                _ => "The cloud upstream request failed.",
             },
         }
     }
@@ -142,32 +145,38 @@ impl Gateway {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
         };
-        let result = self
-            .client
-            .stream_with_blocks(
-                request,
-                &key,
-                cancel,
-                &mut |event| match event {
-                    anthropic_client::Event::Sending => {
-                        if cancel.is_cancelled() {
-                            return Control::Stop;
-                        }
-                        call.mark_forwarded();
-                        Control::Continue
-                    }
-                    anthropic_client::Event::Chunk(chunk) => {
-                        call.observe(&chunk);
-                        on(Event::Chunk(chunk))
-                    }
-                },
-                |index| {
-                    let id = history.at(index)?;
-                    self.replay.lock().ok()?.restore(id)
-                },
-                &mut terminal_usage,
-            )
-            .await;
+        let mut deliver = |event| match event {
+            anthropic_client::Event::Sending => {
+                if cancel.is_cancelled() {
+                    return Control::Stop;
+                }
+                call.mark_forwarded();
+                Control::Continue
+            }
+            anthropic_client::Event::Chunk(chunk) => {
+                call.observe(&chunk);
+                on(Event::Chunk(chunk))
+            }
+        };
+        let result = if model.info().provider == crate::catalog::Provider::OpenRouter {
+            self.client
+                .stream_openrouter(request, &key, cancel, &mut deliver, &mut terminal_usage)
+                .await
+        } else {
+            self.client
+                .stream_with_blocks(
+                    request,
+                    &key,
+                    cancel,
+                    &mut deliver,
+                    |index| {
+                        let id = history.at(index)?;
+                        self.replay.lock().ok()?.restore(id)
+                    },
+                    &mut terminal_usage,
+                )
+                .await
+        };
         // This record survives cancellation during final chunk delivery and
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
@@ -197,7 +206,9 @@ impl Gateway {
                 let outcome = if matches!(
                     *error,
                     anthropic_client::Error::Http(400 | 401 | 403 | 404 | 413 | 429)
-                ) {
+                ) || model.info().provider == crate::catalog::Provider::OpenRouter
+                    && *error == anthropic_client::Error::Http(402)
+                {
                     Outcome::Refused
                 } else {
                     Outcome::Failed
@@ -211,8 +222,10 @@ impl Gateway {
         // client will echo. Keep them only after settlement, before Done lets
         // another request continue the conversation. A miss never crosses a
         // model/endpoint/credential/history boundary.
-        if let Ok(mut replay) = self.replay.lock() {
-            replay.remember(history.after(&completed.assistant), &completed.native_blocks);
+        if model.info().provider == crate::catalog::Provider::Anthropic {
+            if let Ok(mut replay) = self.replay.lock() {
+                replay.remember(history.after(&completed.assistant), &completed.native_blocks);
+            }
         }
         // Settlement committed success; a late cancel cannot retract a paid turn.
         let _ = on(Event::Done);

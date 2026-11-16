@@ -1,4 +1,4 @@
-//! Anthropic-only streaming transport for the in-process walking skeleton.
+//! Streaming transport for the in-process gateway; OpenRouter shares the pool.
 //! The caller owns discovery, admission, request-time key reads and settlement.
 use crate::{
     anthropic_request,
@@ -15,6 +15,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, fmt, time::Duration};
 
 pub mod models;
+#[cfg(feature = "anthropic-gateway")]
+mod openrouter;
 
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
@@ -302,6 +304,11 @@ struct Decoder {
 }
 impl Decoder {
     fn push(&mut self, byte: u8) -> Result<Option<Value>, Error> {
+        self.push_data(byte)?
+            .map(|data| serde_json::from_slice(&data).map_err(|_| Error::Protocol))
+            .transpose()
+    }
+    fn push_data(&mut self, byte: u8) -> Result<Option<Vec<u8>>, Error> {
         if byte == b'\n' && self.after_cr {
             self.after_cr = false;
             return Ok(None);
@@ -316,10 +323,9 @@ impl Decoder {
             if self.data.is_empty() {
                 return Ok(None);
             }
-            let data = std::mem::take(&mut self.data);
-            return serde_json::from_slice(&data[..data.len() - 1])
-                .map(Some)
-                .map_err(|_| Error::Protocol);
+            let mut data = std::mem::take(&mut self.data);
+            data.pop(); // The final SSE data-line separator.
+            return Ok(Some(data));
         }
         let data = if line == b"data" {
             Some(&b""[..])
