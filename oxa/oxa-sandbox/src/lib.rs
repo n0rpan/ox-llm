@@ -106,6 +106,19 @@ impl Sandbox for Bwrap {
     fn scratch_dir(&self) -> Option<&Path> {
         self.layout.scratch.as_ref().map(|s| s.path())
     }
+    fn preserves_host_path(&self, path: &Path) -> bool {
+        // File tools also name hidden home/agent files on the host (notably spill output).
+        // Preserve their identity so the policy, including its deny-list, sees that path.
+        std::iter::once(&self.home)
+            .chain(self.layout.agent_dir.iter())
+            .chain(self.layout.read.iter())
+            .chain(self.layout.write.iter())
+            .chain(self.layout.git.paths())
+            .chain(self.layout.git.worktree.iter())
+            .any(|root| {
+                path.starts_with(root) || std::fs::canonicalize(root).is_ok_and(|real| path.starts_with(real))
+            })
+    }
     fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
         self.layout.scratch_root.as_ref()?;
         Some(Arc::new(self.session()))

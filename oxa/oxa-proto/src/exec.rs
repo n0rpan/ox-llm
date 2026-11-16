@@ -91,6 +91,12 @@ pub trait Sandbox: Send + Sync {
     fn scratch_dir(&self) -> Option<&std::path::Path> {
         None
     }
+    /// Paths deliberately named on the host (explicit mounts, git data and agent outputs)
+    /// must not be reinterpreted as session `/tmp`. This is path identity, not a permission
+    /// grant: the file tools still check the resulting host path with the policy.
+    fn preserves_host_path(&self, _path: &Path) -> bool {
+        false
+    }
     /// #457: the sandbox for one new or reopened session: the same machine view, with the
     /// state that belongs to a single session (its scratch directory at `/tmp`) of its own,
     /// released when the session drops it. `None` (the default) = share `self` unchanged.

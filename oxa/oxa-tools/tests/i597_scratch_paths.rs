@@ -6,7 +6,7 @@ use oxa_fake::TestEnv;
 use oxa_proto::{
     Access, CancelToken, ExecResult, ExecSpec, Mode, OxaError, Sandbox, Tool, ToolCtx, ToolOutput, Value,
 };
-use oxa_tools::{FindTool, GrepTool, LsTool, ReadTool};
+use oxa_tools::{EditTool, FindTool, GrepTool, LsTool, ReadTool, WriteTool};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 
@@ -144,4 +144,60 @@ fn a_workspace_under_tmp_keeps_its_own_paths() {
         assert_eq!(out.text, "NOTE\n", "{p}");
     }
     std::fs::remove_dir_all(&ws).ok();
+}
+
+#[test]
+fn relative_paths_outside_cwd_still_name_host_files() {
+    let env = TestEnv::new();
+    let outside = env.write("outside.txt", "host content\n");
+    let sb = Scratchy {
+        scratch: Some(env.tmp()),
+    };
+    let (access, out) = run(&ReadTool::new(), &sb, &env, &json!({"path": "../outside.txt"}));
+    assert_eq!(access, vec![Access::Read(outside)]);
+    assert_eq!(out.text, "host content\n");
+}
+
+#[test]
+fn spill_and_scratch_host_paths_are_not_remapped_again() {
+    let env = TestEnv::new();
+    let scratch = env.write("scratch/note.txt", "scratch\n");
+    let spill = env.tmp().join("out.txt");
+    std::fs::write(&spill, "full output\n").unwrap();
+    let sb = Scratchy {
+        scratch: Some(scratch.parent().unwrap().to_path_buf()),
+    };
+    for (path, content) in [(scratch, "scratch\n"), (spill, "full output\n")] {
+        let (access, out) = run(&ReadTool::new(), &sb, &env, &json!({"path": path}));
+        assert_eq!(access, vec![Access::Read(path)]);
+        assert_eq!(out.text, content);
+    }
+}
+
+#[test]
+fn write_edit_and_read_use_the_same_scratch_file() {
+    let env = TestEnv::new();
+    let sb = Scratchy {
+        scratch: Some(env.tmp()),
+    };
+    // A unique path under the test root also gives us a host namesake. It must stay untouched.
+    let host = env.write("namesake.txt", "host\n");
+    assert!(host.starts_with("/tmp"));
+    let scratch_file = env.tmp().join(host.strip_prefix("/tmp").unwrap());
+    let args = json!({"path": host, "content": "before\n"});
+    let (access, out) = run(&WriteTool::new(), &sb, &env, &args);
+    assert_eq!(access, vec![Access::Write(scratch_file.clone())]);
+    assert!(!out.is_error, "{}", out.text);
+    let (access, out) = run(
+        &EditTool::new(),
+        &sb,
+        &env,
+        &json!({"path": host, "oldText": "before", "newText": "after"}),
+    );
+    assert_eq!(access, vec![Access::Write(scratch_file.clone())]);
+    assert!(!out.is_error, "{}", out.text);
+    let (access, out) = run(&ReadTool::new(), &sb, &env, &json!({"path": host}));
+    assert_eq!(access, vec![Access::Read(scratch_file)]);
+    assert_eq!(out.text, "after\n");
+    assert_eq!(std::fs::read_to_string(host).unwrap(), "host\n");
 }

@@ -3338,7 +3338,13 @@ fn key_013() {
     let t = Setup::new()
         .profile(TermProfile::kitty())
         .fake(three_models())
-        .replies("model answer", 3)
+        .script(&[
+            text("model answer"),
+            // The visible answer is not an idle-session witness: hold the stream open after
+            // its content delta, longer than the harness's 250 ms screen-quiet interval.
+            json!({"text": "model answer", "fault": {"kind": "stall", "bytes": 350, "ms": 1500}}),
+            text("model answer"),
+        ])
         .start();
     assert!(footer(&t.screen()).contains("model-a"), "{:?}", t.screen());
     t.key("ctrl+l");
@@ -3364,13 +3370,15 @@ fn key_013() {
     t.type_text("two");
     t.key("enter");
     assert_eq!(t.wait_chats(2)[1].model, "model-a");
-    // The selector needs an idle session: wait until the reply to "two" is on the screen
-    // below its prompt, then for a settled screen.
-    t.wait("the second reply", |s| {
+    // The selector needs an idle session: answer text and even a quiet screen can precede
+    // the stream's end. Wait for the busy indicator to clear, just as Tui::prompt does.
+    t.wait("the second reply and idle session", |s| {
         let rows = s.rows();
-        rows.iter()
-            .position(|r| r.trim() == "two")
-            .is_some_and(|i| rows[i..].iter().any(|r| r.contains("model answer")))
+        !s.contains("Working")
+            && rows
+                .iter()
+                .position(|r| r.trim() == "two")
+                .is_some_and(|i| rows[i..].iter().any(|r| r.contains("model answer")))
     });
     t.settle();
     // ctrl+s in the selector: select and save as the default model.
