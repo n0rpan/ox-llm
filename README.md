@@ -37,12 +37,12 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
   The Python bootstrap belongs to the legacy v0.2.0 installation.
 - **Prebuilt, any Linux:** each release attaches `ox-llm-<version>-linux-aarch64.tar.gz` and
   `ox-llm-<version>-linux-x86_64.tar.gz` (oxc, oxa, oxe, licences) with SBOMs, `SHA256SUMS` and build provenance.
-- **Cloud only, no local engine:** [oxc/docs/CLOUD-ONLY-QUICKSTART.md](oxc/docs/CLOUD-ONLY-QUICKSTART.md)
-  (any Linux, x86_64 or arm64; cloud models through oxc, plus oxa).
-- **Code (installed runtime):** run `oxc code` in a project directory, or press the code button in the widget. Both
-  start oxa against the controller.
-- **Other clients:** any OpenAI-compatible client can use `http://127.0.0.1:8092/v1`. See
-  [oxc/docs/OTHER-CLIENTS.md](oxc/docs/OTHER-CLIENTS.md).
+- **Cloud only:** configure the native user `oxa.cloud` catalog and run `oxa` directly;
+  see [native installation](docs/NATIVE-INSTALL.md). No Python controller service is installed.
+- **Code:** run `oxa` (or the compatibility `oxc code`) in a project directory.
+- **Panel, LAN share and Studio:** disabled in the Rust-only default install.
+- **Legacy v0.2.0 clients:** the old controller setup is documented in
+  [OTHER-CLIENTS](oxc/docs/OTHER-CLIENTS.md); it is not the new default install.
 - **Reproduce:** [oxc/docs/REPRODUCE.md](oxc/docs/REPRODUCE.md).
 - **Build the engine:** `cd engine && cargo build --release --locked -p server --bin oxe-server`
   ([engine/README.md](engine/README.md)).
@@ -51,12 +51,12 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
 
 ## The coding agent: oxa
 
-oxa is the default coding client. `oxc code` and the widget's code button start it with
-`OXA_ENGINE_URL` set to the controller (`http://127.0.0.1:8092`). Started by hand, oxa reads its
-endpoint from `OXA_ENGINE_URL` or from `~/.oxa/agent/models.json`.
+oxa is the default coding client. The native default uses the in-process gateway and
+native local engine path; `oxc code` simply starts that same oxa binary. Explicit HTTP
+endpoint configuration remains a separate client option, not a Python install step.
 
 oxa's bash tool runs inside a bubblewrap (`bwrap`) sandbox; without `bwrap` the bash tool refuses
-to run. From `oxc/`, `PYTHONPATH=src python3 -B -m oxc doctor` reports prerequisites.
+to run. The legacy source diagnostics remain in the repository, outside the default install.
 
 ## Flash: the expert sidecar on an unencrypted partition
 

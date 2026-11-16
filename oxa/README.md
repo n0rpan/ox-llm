@@ -11,14 +11,17 @@ Build from the `oxa/` directory of the checkout:
 ```console
 $ cargo build --release --locked -p oxa-cli
 $ export PATH="$PWD/target/release:$PATH"
-$ export OXA_ENGINE_URL=http://127.0.0.1:8092
 $ cd ~/project
 $ oxa
 ```
 
 See [tools and context handling](docs/pages/tools-context.md) for the defaults.
 
-`OXA_ENGINE_URL` defaults to the controller on `http://127.0.0.1:8092`. Without a running engine oxa stops with an error that names the address. For one answer from a script, use print mode:
+The Rust-only default uses the native local path and in-process gateway. Configure
+trusted user model/launch metadata or a cloud catalog before the first task; see
+[native installation](../docs/NATIVE-INSTALL.md). `OXA_ENGINE_URL` is for explicit
+HTTP configurations, not a required controller service. For one answer from a
+script, use print mode:
 
 ```console
 $ oxa -p --tools read,ls "List the files"
