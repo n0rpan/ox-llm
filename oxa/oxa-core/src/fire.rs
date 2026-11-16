@@ -628,7 +628,7 @@ impl Ui for PromptTap<'_> {
 }
 
 /// The title a permission prompt is reported with.
-fn access_title(a: &oxa_proto::Access) -> String {
+pub(crate) fn access_title(a: &oxa_proto::Access) -> String {
     use oxa_proto::Access;
     match a {
         Access::Read(p) => format!("read {}", p.display()),
