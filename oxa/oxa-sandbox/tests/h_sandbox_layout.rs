@@ -134,6 +134,9 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "MISE_STATE_DIR",
         "/tmp/mise-state",
         "--setenv",
+        "SCCACHE_DIR",
+        "/tmp/.cache/sccache",
+        "--setenv",
         "TMPDIR",
         "/tmp",
         "--setenv",
@@ -180,6 +183,7 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
             "CARGO_HOME",
             "MISE_DATA_DIR",
             "MISE_STATE_DIR",
+            "SCCACHE_DIR",
             "TMPDIR",
             "XDG_CACHE_HOME"
         ],
