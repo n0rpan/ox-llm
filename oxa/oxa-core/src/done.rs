@@ -38,22 +38,24 @@ fn tree_fingerprint(cwd: &Path) -> Option<u64> {
 /// Entries the non-git walk looks at before it gives up (`None`: no checks from tree changes).
 const WALK_CAP: usize = 20_000;
 
-/// Hash of every file's relative path, size and modification time under `cwd`, without
-/// following symlinks and without `.git`, `node_modules` and `target`; `None` above
-/// [`WALK_CAP`] entries.
+/// Hash of every readable file's relative path, size and modification time under `cwd`, plus
+/// contents for regular files up to 1 MiB (like the git probe). Does not follow symlinks or descend
+/// into `.git`, `node_modules`, `target` or unreadable subdirectories. `None` above [`WALK_CAP`]
+/// entries or when `cwd` cannot be read.
 fn walk_fingerprint(cwd: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let mut seen = 0usize;
     let mut stack = vec![cwd.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let mut entries: Vec<_> = std::fs::read_dir(&dir).ok()?.filter_map(|e| e.ok()).collect();
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) if dir == cwd => return None,
+            Err(_) => continue,
+        };
+        let mut entries = walk_entries(entries, &mut seen)?;
         entries.sort_by_key(|e| e.file_name());
         for e in entries {
-            seen += 1;
-            if seen > WALK_CAP {
-                return None;
-            }
             let name = e.file_name();
             let Ok(m) = std::fs::symlink_metadata(e.path()) else {
                 continue;
@@ -62,12 +64,29 @@ fn walk_fingerprint(cwd: &Path) -> Option<u64> {
             dir.strip_prefix(cwd).ok().hash(&mut h);
             m.len().hash(&mut h);
             m.modified().ok().hash(&mut h);
+            if m.is_file() && m.len() <= (1 << 20) {
+                std::fs::read(e.path()).ok().hash(&mut h);
+            }
             if m.is_dir() && !matches!(name.to_str(), Some(".git" | "node_modules" | "target")) {
                 stack.push(e.path());
             }
         }
     }
     Some(h.finish())
+}
+
+fn walk_entries<T>(entries: impl Iterator<Item = std::io::Result<T>>, seen: &mut usize) -> Option<Vec<T>> {
+    let mut collected = Vec::new();
+    for entry in entries {
+        *seen += 1;
+        if *seen > WALK_CAP {
+            return None;
+        }
+        if let Ok(entry) = entry {
+            collected.push(entry);
+        }
+    }
+    Some(collected)
 }
 
 /// The git part of [`tree_fingerprint`]; `None` outside a git repo, without git, or on a timeout.
@@ -367,4 +386,59 @@ fn tail(s: &str) -> String {
         from += 1;
     }
     format!("[output truncated]\n{}", &s[from..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn walk_entries_stops_enumerating_at_the_remaining_budget() {
+        let mut seen = WALK_CAP - 2;
+        let mut reads = 0;
+        let entries = (0..10).map(|n| {
+            reads += 1;
+            Ok(n)
+        });
+        assert!(walk_entries(entries, &mut seen).is_none());
+        assert_eq!(reads, 3, "stop before collecting or sorting the whole directory");
+    }
+
+    #[test]
+    fn walk_entries_counts_errors_against_the_budget() {
+        let mut seen = WALK_CAP - 1;
+        let entries = [Ok(1), Err(std::io::Error::other("unreadable entry")), Ok(2)];
+        assert!(walk_entries(entries.into_iter(), &mut seen).is_none());
+        assert_eq!(seen, WALK_CAP + 1);
+    }
+
+    #[test]
+    fn walk_entries_accepts_exactly_the_budget() {
+        let mut seen = WALK_CAP - 2;
+        assert_eq!(
+            walk_entries([Ok(1), Ok(2)].into_iter(), &mut seen),
+            Some(vec![1, 2])
+        );
+        assert_eq!(seen, WALK_CAP);
+        assert_eq!(
+            walk_entries(std::iter::empty::<std::io::Result<()>>(), &mut seen),
+            Some(vec![])
+        );
+    }
+
+    #[test]
+    fn walk_fingerprint_detects_same_size_same_mtime_edits() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.work().join("existing.txt");
+        std::fs::write(&path, "before").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let before = walk_fingerprint(&env.work()).unwrap();
+        assert_eq!(walk_fingerprint(&env.work()), Some(before));
+        std::fs::write(&path, "after!").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        assert_ne!(walk_fingerprint(&env.work()), Some(before));
+    }
 }

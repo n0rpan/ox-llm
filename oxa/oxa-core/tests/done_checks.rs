@@ -820,6 +820,22 @@ fn non_builtin_tool_edit_outside_git_triggers_checks() {
 }
 
 #[test]
+fn non_builtin_tool_edit_outside_git_with_unreadable_subdirectory_triggers_checks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    let blocked = env.work().join("unreadable");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(std::fs::read_dir(&blocked).is_err(), "fixture must be unreadable");
+    let unchanged = outside(&env, false);
+    let changed = outside(&env, true);
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(unchanged.is_empty(), "{unchanged:?}");
+    assert_eq!(changed, vec!["done check: true ok".to_string()]);
+}
+
+#[test]
 fn non_builtin_tool_without_changes_runs_no_checks() {
     let env = TestEnv::new();
     std::fs::write(env.work().join("a.txt"), "a").unwrap();
