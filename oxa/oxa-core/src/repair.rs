@@ -432,23 +432,24 @@ pub(crate) fn repair_turn(
 pub(crate) fn schema_repair_turn(
     st: &mut SessionState,
     turn: &AssistantTurn,
-    repaired: &mut bool,
+    repaired: &mut Option<crate::output_schema::OutputValidationError>,
     sink: &mut dyn EventSink,
 ) -> Result<bool, OxaError> {
     let Some(schema) = &st.output_schema else {
         return Ok(false);
     };
-    if schema.matches(turn.msg.content.as_deref().unwrap_or_default()) {
-        return Ok(false);
-    }
-    if *repaired {
+    let error = match schema.validate(turn.msg.content.as_deref().unwrap_or_default()) {
+        Ok(()) => return Ok(false),
+        Err(error) => error,
+    };
+    if repaired.is_some() {
         return Err(OxaError::new(
             oxa_proto::codes::SCHEMA_MISMATCH,
-            "Final answer did not match the output schema after one repair turn",
+            format!("Final answer did not match the output schema after one repair turn: {error}"),
         ));
     }
     let content = format!(
-        "Your final answer did not match the output schema. Return only valid JSON matching this schema:\n{}",
+        "Your final answer did not match the output schema: {error}. Return only valid JSON matching this schema:\n{}",
         schema.value()
     );
     persist(
@@ -461,7 +462,7 @@ pub(crate) fn schema_repair_turn(
         },
         sink,
     )?;
-    *repaired = true;
+    *repaired = Some(error);
     Ok(true)
 }
 

@@ -1,6 +1,8 @@
 //! Caller-driven ownership of one local engine. No daemon or background thread.
 #![cfg(unix)]
 
+pub mod launch_profile;
+pub mod lifecycle;
 pub mod queue;
 
 use nix::errno::Errno;

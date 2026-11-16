@@ -1,14 +1,20 @@
 //! Opt-in, sequential unattended task execution. Worktrees are retained on every outcome.
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+mod checkpoint;
+mod execute;
+mod state;
+mod status;
+pub use status::{status, Liveness, Status};
 mod tree;
+pub use state::{CheckpointKind, CheckpointObserver, Step};
 mod worker;
-pub use worker::{WorkerOutcome, WorkerResult};
+mod worker_wait;
+pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult};
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -18,7 +24,7 @@ mod facts_io;
 pub mod incidents;
 pub mod situation;
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
     pub id: String,
@@ -27,6 +33,11 @@ pub struct Task {
     #[serde(default = "default_base")]
     pub base: String,
     pub prompt: String,
+    #[serde(default = "default_max_time")]
+    pub max_time: u64,
+}
+fn default_max_time() -> u64 {
+    45 * 60
 }
 fn default_base() -> String {
     "main".into()
@@ -35,13 +46,15 @@ fn default_base() -> String {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
+    Running,
+    Interrupted,
     Done,
     NothingToDo,
     Red,
     Blocked,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Record {
     pub id: String,
     pub branch: String,
@@ -51,6 +64,13 @@ pub struct Record {
     pub worker: Option<WorkerResult>,
     pub session_id: Option<String>,
     pub base_sha: Option<String>,
+    pub checkpoint_revision: u64,
+    pub checkpoint_kind: CheckpointKind,
+    pub checkpoint_at_ms: u64,
+    pub step: Step,
+    pub head_sha: Option<String>,
+    pub tree_sha: Option<String>,
+    pub interruption: Option<WorkerInterruption>,
 }
 
 /// An immutable task/base/check snapshot, built before any task in its batch runs.
@@ -58,6 +78,7 @@ pub struct PlannedTask {
     task: Task,
     base_sha: String,
     commands: Vec<String>,
+    checkpoint_revision: Option<u64>,
 }
 impl PlannedTask {
     pub fn task(&self) -> &Task {
@@ -84,7 +105,42 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
         task,
         base_sha,
         commands,
+        checkpoint_revision: None,
     })
+}
+
+/// Recover immutable inputs before consulting today's mutable base/settings.
+/// New attempts still freeze a fresh plan before any worker in the batch runs.
+pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: bool) -> Result<PlannedTask> {
+    validate(&task)?;
+    let path = policy.storage.join(format!("{}.json", task.id));
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return plan_task(repo, task, policy);
+        }
+        Err(error) => return Err(format!("task checkpoint: {error}")),
+        Ok(metadata) if !metadata.is_file() => return Err("unsafe task checkpoint".into()),
+        Ok(_) => {}
+    }
+    let saved = state::load(&path)?;
+    if saved.task != task {
+        return Err("task specification changed; use a new task id".into());
+    }
+    if saved.record.step != Step::Finished
+        || (!rerun && matches!(saved.record.outcome, Outcome::Done | Outcome::NothingToDo))
+    {
+        let execution = saved.execution.ok_or("missing task execution checkpoint")?;
+        if saved.record.base_sha.as_deref() != Some(&execution.base) {
+            return Err("saved task base disagrees with execution checkpoint".into());
+        }
+        return Ok(PlannedTask {
+            task,
+            base_sha: execution.base,
+            commands: execution.commands,
+            checkpoint_revision: Some(saved.record.checkpoint_revision),
+        });
+    }
+    plan_task(repo, task, policy)
 }
 
 fn output(mut command: Command) -> Result<Output> {
@@ -148,14 +204,32 @@ pub fn read_tasks(path: &Path) -> Result<Vec<Task>> {
     }
     Ok(tasks)
 }
-fn validate(task: &Task) -> Result<()> {
-    if task.id.is_empty()
-        || !task
-            .id
+fn valid_task_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
+}
+fn validate(task: &Task) -> Result<()> {
+    if !valid_task_id(&task.id) {
+        return Err("task id must contain 1..128 letters, digits, - or _".into());
+    }
+    let allowance =
+        std::time::Duration::from_secs(task.max_time).checked_add(std::time::Duration::from_secs(70));
+    if task.max_time == 0
+        || allowance.is_none_or(|duration| std::time::Instant::now().checked_add(duration).is_none())
     {
-        return Err("task id must contain only letters, digits, - or _".into());
+        return Err("max_time must be a positive number of seconds that fits the runtime clock".into());
+    }
+    if task
+        .max_time
+        .checked_mul(1000)
+        .and_then(|ms| ms.checked_add(70_000))
+        .and_then(|ms| ms.checked_add(state::now_ms()))
+        .is_none()
+    {
+        return Err("max_time is too large for a durable deadline".into());
     }
     if task.model.trim().is_empty() || task.prompt.trim().is_empty() {
         return Err("model and prompt are required".into());
@@ -198,6 +272,7 @@ pub fn issue_task(
         branch: format!("agent/{number}-work"),
         base: default_base(),
         prompt: format!("Implement issue #{number}: {title}\n\n{body}"),
+        max_time: default_max_time(),
     })
 }
 
@@ -215,11 +290,13 @@ fn done_commands(policy: &RunPolicy, root: &Path, base: &str) -> Result<Vec<Stri
     }
 }
 /// Private runner data stays outside every workspace and writable Git bind.
+#[derive(Clone)]
 pub struct RunPolicy {
     /// Absolute tool path approved by the front end's trusted-executable checks.
     pub git_binary: PathBuf,
     /// Installed tools only; repository code is invoked inside the sandbox.
     pub host_path: std::ffi::OsString,
+    pub terminate_binary: Option<PathBuf>,
     pub offline: bool,
     pub storage: PathBuf,
 }
@@ -236,6 +313,7 @@ pub struct SupervisorRequest {
 pub enum SupervisorOperation {
     Checkout { branch: String, create: bool },
     Merge { base: String },
+    Save { task_id: String },
     Checks { commands: Vec<String> },
     Inspect,
 }
@@ -324,33 +402,28 @@ fn dirty_worktree(
     }
 }
 
-fn worker_and_checks(
-    worker: &Result<worker::Worker>,
-    merge: Result<()>,
-    checks: Result<String>,
-) -> Result<String> {
-    let mut errors = Vec::new();
-    match worker {
-        Ok(worker) => errors.extend(worker.failure()),
-        Err(error) => errors.push(format!("worker: {error}")),
-    }
-    if let Err(error) = merge {
-        errors.push(format!("merge verification: {error}"));
-    }
-    let failures = match checks {
-        Ok(failures) => failures,
-        Err(error) => {
-            errors.push(error);
-            String::new()
+#[derive(Debug)]
+pub enum RunError {
+    Blocked(String),
+    Checkpoint(String),
+}
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Blocked(error) | Self::Checkpoint(error) => f.write_str(error),
         }
-    };
-    if errors.is_empty() {
-        return Ok(failures);
     }
-    if !failures.is_empty() {
-        errors.push(format!("Acceptance checks:\n{failures}"));
+}
+impl std::error::Error for RunError {}
+impl From<String> for RunError {
+    fn from(value: String) -> Self {
+        Self::Blocked(value)
     }
-    Err(errors.join("\n"))
+}
+impl From<&str> for RunError {
+    fn from(value: &str) -> Self {
+        Self::Blocked(value.into())
+    }
 }
 
 pub fn blocked_record(task: &Task, detail: String) -> Record {
@@ -363,7 +436,33 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         worker: None,
         session_id: None,
         base_sha: None,
+        checkpoint_revision: 0,
+        checkpoint_kind: CheckpointKind::TaskTransition,
+        checkpoint_at_ms: 0,
+        step: Step::Finished,
+        head_sha: None,
+        tree_sha: None,
+        interruption: None,
     }
+}
+
+/// Recover the bounded pending observation before opening a lead's facts view.
+/// This never acquires a task lock, changes a task file or starts a worker.
+pub fn recover_checkpoints(
+    storage: &Path,
+    observer: &dyn CheckpointObserver,
+) -> std::result::Result<(), RunError> {
+    match fs::metadata(storage) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(RunError::Checkpoint(error.to_string())),
+        Ok(metadata) if !metadata.is_dir() => {
+            return Err(RunError::Checkpoint("checkpoint root is not a directory".into()))
+        }
+        Ok(_) => {}
+    }
+    checkpoint::Repository::open(storage, observer)
+        .map(|_| ())
+        .map_err(RunError::Checkpoint)
 }
 pub fn run_task_with_policy(
     repo: &Path,
@@ -371,23 +470,34 @@ pub fn run_task_with_policy(
     planned: &PlannedTask,
     policy: &RunPolicy,
 ) -> Result<Record> {
+    run_task_with_observer(repo, binary, planned, policy, false, &|_: &Record| Ok(()))
+        .map_err(|e| e.to_string())
+}
+
+/// Checkpoint/observer failures are fatal to the batch; ordinary task failures
+/// remain per-task blocked records. No observer can read or write private State.
+pub fn run_task_with_observer(
+    repo: &Path,
+    binary: &Path,
+    planned: &PlannedTask,
+    policy: &RunPolicy,
+    rerun: bool,
+    observer: &dyn CheckpointObserver,
+) -> std::result::Result<Record, RunError> {
     let task = &planned.task;
     validate(task)?;
-    let root = checked(git(policy, repo, &["rev-parse", "--show-toplevel"]))?;
-    let root = PathBuf::from(root);
-    let common = checked(git(
+    let root = PathBuf::from(checked(git(policy, repo, &["rev-parse", "--show-toplevel"]))?);
+    let common = PathBuf::from(checked(git(
         policy,
         &root,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    ))?;
-    let common = PathBuf::from(common);
-    let storage = &policy.storage;
+    ))?);
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(storage)
+        .create(&policy.storage)
         .map_err(|e| e.to_string())?;
-    let lock_path = storage.join(format!("{}.lock", task.id));
+    let lock_path = policy.storage.join(format!("{}.lock", task.id));
     let lock_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -399,12 +509,12 @@ pub fn run_task_with_policy(
     lock_file
         .try_lock()
         .map_err(|e| format!("task {} is already running: {e}", task.id))?;
-    // Keep the inode so a crashed runner leaves no stale ownership and concurrent
-    // runners cannot acquire locks on two different files with the same name.
-    let receipt = storage.join(format!("{}.json", task.id));
+    // The inherited lock retains its inode; status never tries to acquire it.
+    let receipt = policy.storage.join(format!("{}.json", task.id));
     let replacing = receipt.exists();
-    // The common git directory must not be an ancestor of the child cwd: the sandbox
-    // deliberately refuses writable git binds with that layout.
+    if planned.checkpoint_revision.is_some() && !replacing {
+        return Err("task checkpoint disappeared after planning; retry the task file".into());
+    }
     let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
         common.parent().ok_or("git directory has no parent")?
     } else {
@@ -415,104 +525,101 @@ pub fn run_task_with_policy(
         .ok_or("repository has no parent for worktrees")?;
     let name = repo_dir.file_name().ok_or("repository has no directory name")?;
     let trees = parent.join(".oxa-worktrees").join(name);
-    fs::create_dir_all(&trees).map_err(|e| e.to_string())?;
     let tree = trees.join(&task.id);
-    tree::check_receipt(&receipt, &tree, task)?;
-    let mut record = Record {
-        id: task.id.clone(),
-        branch: task.branch.clone(),
-        worktree: tree.clone(),
-        outcome: Outcome::Blocked,
-        detail: String::new(),
-        worker: None,
-        session_id: None,
-        base_sha: Some(planned.base_sha.clone()),
+    let fresh = |revision| {
+        let mut record = blocked_record(task, String::new());
+        record.worktree = tree.clone();
+        record.base_sha = Some(planned.base_sha.clone());
+        record.checkpoint_revision = revision;
+        let mut state = state::State::new(task.clone(), record, policy.offline);
+        state.execution = Some(state::Execution {
+            initial: None,
+            base: planned.base_sha.clone(),
+            prompt: task.prompt.clone(),
+            commands: planned.commands.clone(),
+            worker_error: None,
+            merge_error: None,
+            failures: String::new(),
+        });
+        state
     };
-    let result = (|| -> Result<Outcome> {
-        let base = &planned.base_sha;
-        let commands = &planned.commands;
-        let prepared = tree::prepare(&root, &tree, task, base, binary, policy, &lock_file)?;
-        let tree = tree.canonicalize().map_err(|e| e.to_string())?;
-        let first = worker::run(binary, &tree, task, &prepared.prompt, policy, &lock_file, None);
-        if let Ok(worker) = &first {
-            record.worker = Some(worker.result.clone());
-            record.session_id = worker.session.clone();
+    let mut writer = state::Writer::new(receipt.clone(), replacing);
+    let mut state = if replacing {
+        let old = state::load(&receipt)?;
+        if planned
+            .checkpoint_revision
+            .is_some_and(|revision| revision != old.record.checkpoint_revision)
+        {
+            return Err("task checkpoint changed after planning; retry the task file".into());
         }
-        let failures = worker_and_checks(
-            &first,
-            tree::ensure_merged(policy, &tree, base, &task.branch),
-            acceptance(binary, &tree, &root, commands, policy, &lock_file),
-        )?;
-        let first = first?;
-        if !failures.is_empty() {
-            let repair = worker::run(
-                binary,
-                &tree,
-                task,
-                &format!("External acceptance checks failed. Repair once:\n{failures}"),
-                policy,
-                &lock_file,
-                first.session.as_deref(),
-            );
-            if let Ok(worker) = &repair {
-                record.worker = Some(worker.result.clone());
-                record.session_id = worker.session.clone();
+        if old.task != *task || old.record.worktree != tree {
+            return Err("task specification changed; use a new task id".into());
+        }
+        writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
+        if old.record.step == Step::Finished {
+            if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
+                return Ok(old.record);
             }
-            let failures = worker_and_checks(
-                &repair,
-                tree::ensure_merged(policy, &tree, base, &task.branch),
-                acceptance(binary, &tree, &root, commands, policy, &lock_file),
-            )?;
-            if !failures.is_empty() {
-                record.detail = failures;
-                return Ok(Outcome::Red);
-            }
-        }
-        let head = checked(git(policy, &tree, &["rev-parse", "HEAD"]))?;
-        let dirty = dirty_worktree(binary, &tree, &root, policy, &lock_file)?;
-        Ok(if head == prepared.initial && !dirty {
-            Outcome::NothingToDo
+            let mut new = fresh(old.record.checkpoint_revision);
+            new.offline |= old.offline;
+            new
         } else {
-            Outcome::Done
-        })
-    })();
-    match result {
-        Ok(outcome) => record.outcome = outcome,
-        Err(e) => record.detail = e,
-    }
-    save_receipt(&receipt, &record, replacing)?;
-    Ok(record)
-}
-
-fn save_receipt(path: &Path, record: &Record, replacing: bool) -> Result<()> {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
-    let result = (|| -> Result<()> {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|e| e.to_string())?;
-        file.write_all(&serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        if replacing {
-            // Only the task's already validated receipt is replaced under its lock.
-            fs::rename(&temporary, path).map_err(|e| e.to_string())?;
-        } else {
-            fs::hard_link(&temporary, path).map_err(|e| e.to_string())?;
-            fs::remove_file(&temporary).map_err(|e| e.to_string())?;
+            old
         }
-        fs::File::open(path.parent().ok_or("receipt has no parent")?)
-            .and_then(|parent| parent.sync_all())
-            .map_err(|e| e.to_string())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
+    } else {
+        fresh(0)
+    };
+    state.offline |= policy.offline;
+    let policy = RunPolicy {
+        offline: state.offline,
+        ..policy.clone()
+    };
+    // Replaying the prior checkpoint precedes this first new checkpoint or action.
+    let step = state.record.step;
+    writer
+        .save(&mut state, step, observer)
+        .map_err(RunError::Checkpoint)?;
+    match (execute::Runner {
+        repo: &root,
+        binary,
+        policy: &policy,
+        lock: &lock_file,
+        writer: &mut writer,
+        observer,
+    })
+    .drive(&mut state)
+    {
+        Ok(()) => {}
+        Err(RunError::Checkpoint(error)) => return Err(RunError::Checkpoint(error)),
+        Err(RunError::Blocked(error)) => {
+            state.record.outcome = if state.record.outcome == Outcome::Interrupted
+                || state
+                    .record
+                    .worker
+                    .as_ref()
+                    .is_some_and(|worker| matches!(worker.outcome, WorkerOutcome::Interrupted))
+            {
+                Outcome::Interrupted
+            } else {
+                Outcome::Blocked
+            };
+            state.record.detail = error;
+        }
     }
-    result
+    writer
+        .save(&mut state, Step::Saving, observer)
+        .map_err(RunError::Checkpoint)?;
+    if let Err(error) = execute::save_work(&root, binary, task, &policy, &lock_file, &mut state.record) {
+        if state.record.outcome != Outcome::Interrupted {
+            state.record.outcome = Outcome::Blocked;
+        }
+        if !state.record.detail.is_empty() {
+            state.record.detail.push('\n');
+        }
+        state.record.detail.push_str(&format!("save: {error}"));
+    }
+    writer
+        .save(&mut state, Step::Finished, observer)
+        .map_err(RunError::Checkpoint)?;
+    Ok(state.record)
 }

@@ -4,6 +4,9 @@ use chrono::{DateTime, FixedOffset};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 
+pub mod chatgpt;
+pub use chatgpt::classify_chatgpt_refusal;
+
 // Keep the same refusal result as the native Anthropic discovery helper.
 pub use crate::anthropic_client::models::Refusal;
 
