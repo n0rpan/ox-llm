@@ -11,7 +11,7 @@ install=native.install
 depends=('glibc' 'gcc-libs' 'bubblewrap' 'bash')
 provides=("ox-llm=$pkgver")
 conflicts=('ox-llm')
-options=('!lto' '!debug' '!strip')
+options=('!lto' '!debug' '!strip' 'docs')
 source=("ox-llm-${pkgver}-linux-${CARCH}.tar.gz")
 sha256sums=("${OX_BINARY_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}")
 

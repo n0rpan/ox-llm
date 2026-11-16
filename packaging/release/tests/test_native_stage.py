@@ -91,10 +91,14 @@ class NativeStage(unittest.TestCase):
     def test_runtime_metadata_does_not_require_python(self):
         for variant in ('ox-llm', 'ox-llm-bin'):
             recipe = REPO / 'packaging/arch' / variant / 'PKGBUILD'
-            result = subprocess.run(['/bin/bash', '-c', '. "$1"; printf "%s\\n" "${depends[@]}"',
+            result = subprocess.run(['/bin/bash', '-c', '. "$1"; printf "%s\\n" "${depends[@]}" --OPTIONS-- "${options[@]}"',
                                      'recipe', str(recipe)], env=self.env,
                                     capture_output=True, text=True, check=True)
-            dependencies = result.stdout.splitlines()
+            lines = result.stdout.splitlines()
+            split = lines.index("--OPTIONS--")
+            dependencies, options = lines[:split], lines[split + 1:]
+            self.assertIn("docs", options, "the required native upgrade guide must survive package tidying")
+            self.assertNotIn("!docs", options)
             self.assertNotIn('python', dependencies)
             self.assertIn('bash', dependencies)
 

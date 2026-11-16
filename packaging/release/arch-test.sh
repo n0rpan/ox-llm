@@ -18,6 +18,15 @@ pkgver=$(sed -n 's/^pkgver=//p' /recipes/ox-llm/PKGBUILD)
 [[ $(sed -n 's/^pkgver=//p' /recipes/ox-llm-bin/PKGBUILD) == "$pkgver" ]]
 cp "ox-llm-$VERSION-linux-$(uname -m).tar.gz" "ox-llm-$pkgver-linux-$(uname -m).tar.gz"
 export OX_BINARY_SHA256=$(sha256sum "ox-llm-$pkgver-linux-$(uname -m).tar.gz" | cut -d' ' -f1)
+# The official slim image excludes usr/share/doc/*. Keep its other policies and
+# allow only our required guide in this private CI config, never a user's config.
+ci_pacman=/build/package-pacman.conf
+cp /etc/pacman.conf "$ci_pacman"
+cat >> "$ci_pacman" <<'POLICY'
+
+[options]
+NoExtract = !usr/share/doc !usr/share/doc/ !usr/share/doc/ox-llm !usr/share/doc/ox-llm/*
+POLICY
 # Rebuild first so both installed variants use the same immutable-source proof harness.
 for variant in ox-llm ox-llm-bin; do
   install -d -o builder -g builder "/build/$variant"
@@ -33,16 +42,17 @@ for variant in ox-llm ox-llm-bin; do
   if grep -qE '(^| )E: |^Error:' /tmp/namcap.log; then exit 1; fi
   cp "$package" /packages/
   cp /tmp/namcap.log "/packages/namcap-$variant.txt"
-  pacman -U --noconfirm "$package"
-  pacman -Ql "$variant" | awk '{print $2}' | while read -r path; do
+  pacman --config "$ci_pacman" -U --noconfirm "$package"
+  pacman --config "$ci_pacman" -Ql "$variant" | awk '{print $2}' | while read -r path; do
     if [[ ! -d $path ]]; then echo "$path"; fi
   done > /tmp/installed-files
   # Installation must preserve the exact native bytes qualified from the payload.
   case $variant in
-    ox-llm-bin) payload="$PWD/src/usr/bin" ;;
-    ox-llm) payload="$PWD/src/payload/usr/bin" ;;
+    ox-llm-bin) payload="$PWD/src/usr" ;;
+    ox-llm) payload="$PWD/src/payload/usr" ;;
   esac
-  for binary in oxa oxe-server; do cmp "$payload/$binary" "/usr/bin/$binary"; done
+  for binary in oxa oxe-server; do cmp "$payload/bin/$binary" "/usr/bin/$binary"; done
+  cmp "$payload/share/doc/ox-llm/NATIVE-INSTALL.md" /usr/share/doc/ox-llm/NATIVE-INSTALL.md
   python -B /smoke.py
   # Reuse #682 on each actual installed ELF, including the independently rebuilt source package.
   source_root="/build/ox-llm/src/ox-llm-$OX_SOURCE_COMMIT"
@@ -61,8 +71,8 @@ for variant in ox-llm ox-llm-bin; do
     2>&1 | tee -a "$receipt"
   rm -rf "$proof_home"
   trap - EXIT
-  pacman -Qkk "$variant"
-  pacman -Rns --noconfirm "$variant"
+  pacman --config "$ci_pacman" -Qkk "$variant"
+  pacman --config "$ci_pacman" -Rns --noconfirm "$variant"
   while read -r path; do
     [[ ! -e $path && ! -L $path ]] || { echo "left behind: $path"; exit 1; }
   done < /tmp/installed-files
