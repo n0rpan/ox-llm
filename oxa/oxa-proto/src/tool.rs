@@ -1,5 +1,5 @@
 use crate::{Access, CancelToken, Mode, Sandbox, Ui, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Permission class of a tool.
@@ -130,12 +130,30 @@ pub struct ToolCtx<'a> {
     /// How the built-ins shape their results in this epoch ([`ToolTune::default`] = the
     /// unshaped baseline; `diet` and the page caps shape it further).
     pub tune: ToolTune,
+    /// #518: for each path the call's `Tool::access` named and the permission check allowed,
+    /// the real location the check judged (symlinks resolved, [`Policy::decide_pinned`]). A file
+    /// tool opens only that location: a link swapped after the check is refused, not followed.
+    /// Empty when nothing was checked (a direct call).
+    ///
+    /// [`Policy::decide_pinned`]: crate::Policy::decide_pinned
+    pub checked: &'a [(PathBuf, PathBuf)],
     /// #517: the paths no tool may show (the policy's deny-list, [`Policy::path_filter`]).
     /// The policy only judges the path a tool names, so a tool that walks a directory
     /// (`grep`, `find`, `ls`) skips what this hides. `None` = nothing hidden.
     ///
     /// [`Policy::path_filter`]: crate::Policy::path_filter
     pub hidden: Option<Arc<dyn PathFilter>>,
+}
+
+impl ToolCtx<'_> {
+    /// #518: the real location the permission check judged for `path` (as `Tool::access`
+    /// reported it), if it was checked.
+    pub fn checked_real(&self, path: &Path) -> Option<&Path> {
+        self.checked
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, real)| real.as_path())
+    }
 }
 
 /// #517: the deny-list as a cheap check for the entries of a directory walk.

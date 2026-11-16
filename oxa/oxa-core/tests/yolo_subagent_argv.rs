@@ -84,6 +84,7 @@ fn child_argv(env: &TestEnv, h: &SubagentHooks, hint: &str) -> Vec<String> {
     let work = env.work();
     let cancel = CancelToken::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &work,
         spill_dir: &spill,
         sandbox: &sandbox,

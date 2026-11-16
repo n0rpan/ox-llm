@@ -40,6 +40,7 @@ fn run_tool(tool: &dyn Tool, env: &TestEnv, args: Value) -> ToolOutput {
     let cancel = CancelToken::new();
     let sandbox = NoSandbox;
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -277,6 +278,7 @@ fn access_reports_normalised_paths() {
     let cancel = CancelToken::new();
     let sandbox = NoSandbox;
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,

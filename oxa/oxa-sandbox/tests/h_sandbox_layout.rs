@@ -137,6 +137,9 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "SCCACHE_DIR",
         "/tmp/.cache/sccache",
         "--setenv",
+        "SCCACHE_SERVER_UDS",
+        "/tmp/.sccache.sock",
+        "--setenv",
         "TMPDIR",
         "/tmp",
         "--setenv",
@@ -184,6 +187,7 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
             "MISE_DATA_DIR",
             "MISE_STATE_DIR",
             "SCCACHE_DIR",
+            "SCCACHE_SERVER_UDS",
             "TMPDIR",
             "XDG_CACHE_HOME"
         ],

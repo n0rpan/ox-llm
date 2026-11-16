@@ -285,12 +285,15 @@ pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Optio
 
 /// #494: git keeps `.git/config` read-only in the sandbox (a writable config could run code
 /// outside it), so a command that must rewrite it fails with "Device or resource busy" after
-/// it has done the rest, e.g. `git branch -m` renames the ref first. Say so. Only git's own
-/// error line counts (it starts with `error: could not write config file`); the same words
-/// quoted in an issue body or a log do not. The note names the file from that line: the
-/// repository config gets the "branch was renamed" wording, any other config (for example the
-/// global `~/.gitconfig`) a plain one.
-pub(crate) fn git_config_note(output: &str) -> Option<String> {
+/// it has done the rest, e.g. `git branch -m` renames the ref first. Say so. Only a failed
+/// command with git's own error line counts (it starts with `error: could not write config
+/// file`); the same words quoted in an issue body or a successful command's log do not.
+/// The note names the file from that line: the repository config gets the "branch was renamed"
+/// wording, any other config (for example the global `~/.gitconfig`) a plain one.
+pub(crate) fn git_config_note(output: &str, exit: Option<i32>) -> Option<String> {
+    if exit == Some(0) {
+        return None;
+    }
     const PREFIX: &str = "error: could not write config file ";
     let rest = output.lines().find_map(|l| l.trim_end().strip_prefix(PREFIX))?;
     // `<path>: <strerror>`; the path may itself contain ": " only in odd cases, so split at the last one.
@@ -534,7 +537,7 @@ impl BashTool {
             .sandbox
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
-        let note = note.or_else(|| git_config_note(&output));
+        let note = note.or_else(|| git_config_note(&output, res.exit));
         let note = note.or_else(|| gh_comments_note(raw_command, &output, res.exit).map(str::to_string));
         let shown = if output.is_empty() {
             match note {
@@ -670,6 +673,7 @@ echo '\''a'\'''"#
         let cwd = Path::new("/work");
         let env = vec![("OXA_SESSION_ID".to_string(), "s".to_string())];
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: sb,
@@ -749,24 +753,31 @@ echo '\''a'\'''"#
     #[test]
     fn git_config_note_needs_git_error_line_and_names_the_file() {
         // Quoted text (an issue body, a log) is not a failed git command.
-        assert!(
-            git_config_note("the log says error: could not write config file .git/config: x\n").is_none()
-        );
         assert!(git_config_note(
-            r#"{"body":"error: could not write config file .git/config: Device or resource busy"}"#
+            "the log says error: could not write config file .git/config: x\n",
+            Some(1),
         )
         .is_none());
-        assert!(git_config_note("a: could not write config file x\n").is_none());
+        assert!(git_config_note(
+            r#"{"body":"error: could not write config file .git/config: Device or resource busy"}"#,
+            Some(1),
+        )
+        .is_none());
+        assert!(git_config_note("a: could not write config file x\n", Some(1)).is_none());
         // The global config is named as such, without the repository wording.
         let g = git_config_note(
             "error: could not write config file /home/u/.gitconfig: Device or resource busy\n",
+            Some(1),
         )
         .expect("note");
         assert!(g.contains("/home/u/.gitconfig"), "{g}");
         assert!(!g.contains(".git/config"), "{g}");
         assert!(!g.contains("renamed"), "{g}");
-        let r = git_config_note("error: could not write config file .git/config: Device or resource busy\n")
-            .expect("note");
+        let r = git_config_note(
+            "error: could not write config file .git/config: Device or resource busy\n",
+            Some(1),
+        )
+        .expect("note");
         assert!(r.contains(".git/config") && r.contains("renamed"), "{r}");
     }
 
@@ -884,6 +895,58 @@ echo '\''a'\'''"#
             assert!(!res.is_error);
             assert_eq!(res.text, "(no output)", "{cmd}");
         }
+    }
+
+    /// #565: even verbatim git diagnostics printed by a successful inspection are just data.
+    #[test]
+    fn git_config_note_requires_failure_for_every_config_path() {
+        for path in [".git/config", "/work/.git/config", "/home/u/.gitconfig"] {
+            let output = format!("error: could not write config file {path}: Device or resource busy\n");
+            for exit in [Some(0), Some(128), None] {
+                let sb = Fake::ok(output.as_bytes(), exit);
+                let (res, _) = run_with(
+                    &sb,
+                    json!({"command": "cat recorded-output"}),
+                    Mode::Workspace,
+                    &CancelToken::new(),
+                );
+                if exit == Some(0) {
+                    assert!(!res.is_error);
+                    assert_eq!(res.text, output, "successful inspection of {path}");
+                } else {
+                    assert!(res.text.contains(&format!("git could not write {path}:")));
+                    assert_eq!(
+                        res.text.contains("branch was renamed"),
+                        path != "/home/u/.gitconfig"
+                    );
+                }
+            }
+        }
+    }
+
+    /// #565: the phrase inside quoted data of a successful command is not a git failure.
+    #[test]
+    fn git_config_note_ignores_quoted_text_in_successful_command() {
+        let out = b"{\"body\":\"git said: could not write config file\"}\n";
+        let sb = Fake::ok(out, Some(0));
+        let (res, _) = run_with(
+            &sb,
+            json!({"command": "gh issue view 494"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(!res.is_error);
+        assert!(!res.text.contains("read-only in the sandbox"), "{}", res.text);
+        assert_eq!(res.text.trim_end().lines().count(), 1, "{}", res.text);
+        // Even a line starting with git's words does not count when the command succeeded.
+        let sb = Fake::ok(b"error: could not write config file x\n", Some(0));
+        let (res, _) = run_with(
+            &sb,
+            json!({"command": "echo"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(!res.text.contains("read-only in the sandbox"), "{}", res.text);
     }
 
     #[test]
@@ -1032,6 +1095,7 @@ echo '\''a'\'''"#
         let cwd = Path::new("/work");
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: &sb,
@@ -1051,6 +1115,7 @@ echo '\''a'\'''"#
         let cwd = Path::new("/work");
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: &sb,
@@ -1097,6 +1162,7 @@ echo '\''a'\'''"#
         let env: Vec<(String, String)> = Vec::new();
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: sb,
@@ -1213,6 +1279,7 @@ echo '\''a'\'''"#
         let env: Vec<(String, String)> = Vec::new();
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: sb,
@@ -1466,6 +1533,7 @@ mod poll_tests {
         let env: Vec<(String, String)> = Vec::new();
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: sb,

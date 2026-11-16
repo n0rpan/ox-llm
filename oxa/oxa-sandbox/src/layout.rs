@@ -362,7 +362,17 @@ impl Layout {
             })
             .map(|d| d.display().to_string())
             .unwrap_or_else(|| "/tmp/.cache/sccache".to_string());
-        env.retain(|(n, _)| n != "TMPDIR" && n != "XDG_CACHE_HOME" && n != "SCCACHE_DIR");
+        // #435: with the host network shared, every sandbox (and the user's own builds) would
+        // meet the same sccache server on its default loopback port, and that server runs the
+        // compile in its own mount namespace, where this checkout may not exist. A Unix socket
+        // in the private `/tmp` gives each sandbox its own server.
+        env.retain(|(n, _)| {
+            !matches!(
+                n.as_str(),
+                "TMPDIR" | "XDG_CACHE_HOME" | "SCCACHE_DIR" | "SCCACHE_SERVER_UDS" | "SCCACHE_SERVER_PORT"
+            )
+        });
+        env.push(("SCCACHE_SERVER_UDS".to_string(), "/tmp/.sccache.sock".to_string()));
         env.push(("TMPDIR".to_string(), "/tmp".to_string()));
         env.push(("XDG_CACHE_HOME".to_string(), "/tmp/.cache".to_string()));
         env.push(("SCCACHE_DIR".to_string(), sccache_dir));
@@ -594,6 +604,39 @@ mod tests {
             let l = Layout::build(&inputs);
             assert!(l.write.contains(&dir));
             assert!(l.env.contains(&("SCCACHE_DIR".into(), dir.display().to_string())));
+        }
+    }
+
+    /// #435: sandboxes that share the host network (bash network on) also shared the sccache
+    /// server's loopback port, so one sandbox's compile ran in another sandbox's server, whose
+    /// mount namespace has no such checkout ("error writing dependencies ... No such file or
+    /// directory"). The server socket lives in the private `/tmp`, whatever the caller set.
+    #[test]
+    fn sccache_server_socket_is_private_to_the_sandbox() {
+        for user in [
+            vec![],
+            vec![(
+                "SCCACHE_SERVER_UDS".to_string(),
+                "/run/user/1000/shared.sock".to_string(),
+            )],
+            vec![("SCCACHE_SERVER_PORT".to_string(), "4226".to_string())],
+        ] {
+            let env = oxa_fake::TestEnv::new();
+            let l = Layout::build(&LayoutInputs {
+                home: env.home(),
+                env: user,
+                ..Default::default()
+            });
+            let uds: Vec<_> = l.env.iter().filter(|(k, _)| k == "SCCACHE_SERVER_UDS").collect();
+            assert_eq!(
+                uds,
+                [&("SCCACHE_SERVER_UDS".to_string(), "/tmp/.sccache.sock".to_string())]
+            );
+            assert!(
+                !l.env.iter().any(|(k, _)| k == "SCCACHE_SERVER_PORT"),
+                "{:?}",
+                l.env
+            );
         }
     }
 

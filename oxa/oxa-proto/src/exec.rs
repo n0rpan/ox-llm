@@ -170,6 +170,13 @@ impl YoloSwitch {
 /// The permission policy: a pure table over (mode, access, cwd) plus per-session grants.
 pub trait Policy: Send {
     fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision;
+    /// #518: [`Policy::decide`], plus, for an [`Access::Read`] or [`Access::Write`], the real
+    /// location (symlinks resolved) the decision covers. The caller hands it to the tool
+    /// (`ToolCtx::checked`), which then opens that location and nothing else, so a symlink
+    /// swapped between the check and the open cannot redirect it. The default pins nothing.
+    fn decide_pinned(&self, mode: Mode, a: &Access, cwd: &Path) -> (Decision, Option<PathBuf>) {
+        (self.decide(mode, a, cwd), None)
+    }
     /// Record an [`Answer::Session`] grant for `a`. Grants never outlive the session.
     fn remember(&mut self, a: &Access);
     /// Update the active session's spill directory after opening or switching sessions.

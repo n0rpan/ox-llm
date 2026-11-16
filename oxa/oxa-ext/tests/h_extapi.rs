@@ -390,6 +390,7 @@ fn run_tool(host: &ExtensionHost, name: &str, args: Value, call_id: &str) -> oxa
         call_id.to_string(),
     )];
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &NoSandbox,

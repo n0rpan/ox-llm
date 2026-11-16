@@ -344,8 +344,17 @@ fn table(mode: Mode, a: &Access, cwd: &Path) -> Decision {
     }
 }
 
-impl Policy for ModePolicy {
-    fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
+/// A verdict before YOLO: `AskAlways` is the safety floor's prompt, which YOLO never turns
+/// into an allow.
+#[derive(Clone, Copy)]
+enum Verdict {
+    Is(Decision),
+    AskAlways,
+}
+
+impl ModePolicy {
+    /// The verdict for `a` with the grants, before YOLO.
+    fn verdict(&self, mode: Mode, a: &Access, cwd: &Path) -> Verdict {
         if let Access::Read(p) | Access::Write(p) = a {
             let abs = crate::paths::normalize(p, cwd);
             // B3: the deny-list beats the mode, the cwd and every grant.
@@ -354,7 +363,7 @@ impl Policy for ModePolicy {
                 _ => self.guard.denies(&abs),
             };
             if denied {
-                return Decision::Deny(deny_reasons::SENSITIVE);
+                return Verdict::Is(Decision::Deny(deny_reasons::SENSITIVE));
             }
             // #492, #531: the advertised built-in skills and oxa's own spill files are read
             // without asking, wherever the cwd is.
@@ -362,32 +371,77 @@ impl Policy for ModePolicy {
                 && (self.guard.is_builtin_skill(&abs)
                     || self.spill_dir.as_ref().is_some_and(|dir| is_inside(&abs, dir)))
             {
-                return Decision::Allow;
+                return Verdict::Is(Decision::Allow);
             }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.
             if let Access::Write(_) = a {
                 let protected = protected_write(&abs, cwd)
                     .or_else(|| self.guard.protects_home_file(&abs, cwd).then_some(false));
                 match (protected, mode) {
-                    (Some(true), _) => return Decision::Deny(deny_reasons::GIT_PROTECTED),
-                    (Some(false), Mode::Plan) => return Decision::Deny(deny_reasons::PLAN_WRITE),
-                    (Some(false), _) => return Decision::Ask,
+                    (Some(true), _) => return Verdict::Is(Decision::Deny(deny_reasons::GIT_PROTECTED)),
+                    (Some(false), Mode::Plan) => {
+                        return Verdict::Is(Decision::Deny(deny_reasons::PLAN_WRITE))
+                    }
+                    (Some(false), _) => return Verdict::AskAlways,
                     (None, _) => {}
                 }
             }
         }
         // Grants only turn Ask into Allow; a Deny from the table always stands.
-        match table(mode, a, cwd) {
+        Verdict::Is(match table(mode, a, cwd) {
             Decision::Ask if self.granted(a) => Decision::Allow,
-            Decision::Ask => match &self.yolo {
+            d => d,
+        })
+    }
+}
+
+/// The stricter of two verdicts: a `Deny` (the first one's reason first), the floor's prompt,
+/// a prompt, then `Allow`.
+fn stricter(a: Verdict, b: Verdict) -> Verdict {
+    use Verdict::{AskAlways, Is};
+    match (a, b) {
+        (Is(Decision::Deny(r)), _) | (_, Is(Decision::Deny(r))) => Is(Decision::Deny(r)),
+        (AskAlways, _) | (_, AskAlways) => AskAlways,
+        (Is(Decision::Ask), _) | (_, Is(Decision::Ask)) => Is(Decision::Ask),
+        _ => Is(Decision::Allow),
+    }
+}
+
+impl Policy for ModePolicy {
+    fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
+        self.decide_pinned(mode, a, cwd).0
+    }
+
+    /// #518: the path is resolved once; the verdict covers both the path as named and that real
+    /// location (the stricter one wins), and the real location is what the tool may open.
+    fn decide_pinned(&self, mode: Mode, a: &Access, cwd: &Path) -> (Decision, Option<PathBuf>) {
+        let (verdict, pin) = match a {
+            Access::Read(p) | Access::Write(p) => {
+                let abs = crate::paths::normalize(p, cwd);
+                // A path that does not resolve (a link loop) pins its lexical form: the open
+                // then fails or lands elsewhere and is refused.
+                let real = resolve_real(&abs).unwrap_or(abs);
+                let at_real = match a {
+                    Access::Read(_) => Access::Read(real.clone()),
+                    _ => Access::Write(real.clone()),
+                };
+                let d = stricter(self.verdict(mode, a, cwd), self.verdict(mode, &at_real, cwd));
+                (d, Some(real))
+            }
+            _ => (self.verdict(mode, a, cwd), None),
+        };
+        let decision = match verdict {
+            Verdict::AskAlways => Decision::Ask,
+            Verdict::Is(Decision::Ask) => match &self.yolo {
                 Some(switch) if switch.is_on() => {
                     switch.count();
                     Decision::Allow
                 }
                 _ => Decision::Ask,
             },
-            d => d,
-        }
+            Verdict::Is(d) => d,
+        };
+        (decision, pin)
     }
 
     fn set_spill_dir(&mut self, dir: &Path) {
