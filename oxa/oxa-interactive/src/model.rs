@@ -732,8 +732,10 @@ pub struct InteractiveOpts {
     pub initial_parts: Vec<Part>,
     /// Further messages from the command line, sent as follow-ups in order.
     pub initial_follow_ups: Vec<String>,
-    /// `--theme` override (a name or a path).
+    /// Initial theme override (a name or a path).
     pub theme: Option<String>,
+    /// Ordered discovered and explicit theme files/directories (later paths win).
+    pub theme_paths: Vec<std::path::PathBuf>,
     /// Startup notices from loading settings, resources and extensions.
     pub notices: Vec<(Level, String)>,
     /// Environment snapshot for capability detection, editor and clipboard choice.

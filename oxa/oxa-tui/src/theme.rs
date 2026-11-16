@@ -631,7 +631,7 @@ pub struct ThemeInfo {
     pub path: Option<PathBuf>,
 }
 
-/// Built-ins plus every `*.json` in `dirs` (later directories win on equal names), sorted:
+/// Built-ins plus JSON files and every `*.json` in `dirs` (later paths win on equal names), sorted:
 /// built-ins first in [`crate::BUILTIN_THEME_NAMES`] order, then by name.
 ///
 /// A custom theme cannot shadow a built-in name (built-ins are listed first, as in pi). Files
@@ -639,13 +639,17 @@ pub struct ThemeInfo {
 pub fn list_themes(dirs: &[PathBuf]) -> Vec<ThemeInfo> {
     let mut custom: BTreeMap<String, PathBuf> = BTreeMap::new();
     for dir in dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
+        let mut files: Vec<PathBuf> = if dir.is_file() {
+            vec![dir.clone()]
+        } else {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "json") && p.is_file())
+                .collect()
         };
-        let mut files: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|x| x == "json") && p.is_file())
-            .collect();
         files.sort();
         for path in files {
             if let Ok(theme) = load_theme_file(&path, ColorMode::TrueColor) {

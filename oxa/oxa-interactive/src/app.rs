@@ -1834,7 +1834,7 @@ pub(crate) fn resolve_ui_theme(
     if skin_of(opts).is_oxa() && crate::skin::env_no_color(&opts.env) {
         return Ok(Theme::plain());
     }
-    let dirs = vec![opts.dirs.agent_dir.join("themes")];
+    let dirs = &opts.theme_paths;
     match name.trim() {
         "oxa" => Ok(oxa_theme(&oxa_builtin_palette(), "oxa", caps.color)),
         "oxa-omarchy" => match load_omarchy_palette(&omarchy_candidates(opts)) {
@@ -1844,9 +1844,9 @@ pub(crate) fn resolve_ui_theme(
                 theme.source = Some(path);
                 Ok(theme)
             }
-            None => resolve_theme("system", &dirs, caps.color, colors),
+            None => resolve_theme("system", dirs, caps.color, colors),
         },
-        other => resolve_theme(other, &dirs, caps.color, colors),
+        other => resolve_theme(other, dirs, caps.color, colors),
     }
 }
 
@@ -1895,11 +1895,12 @@ pub(crate) fn terminal_colors_from(
     (colors != TerminalColors::default()).then_some(colors)
 }
 
-pub(crate) fn load_theme(opts: &InteractiveOpts, caps: TermCaps, colors: Option<&TerminalColors>) -> Theme {
-    let name = theme_name(opts);
-    resolve_ui_theme(opts, &name, caps, colors)
-        .or_else(|_| resolve_ui_theme(opts, "dark", caps, colors))
-        .unwrap_or_else(|_| Theme::plain())
+pub(crate) fn load_theme(
+    opts: &InteractiveOpts,
+    caps: TermCaps,
+    colors: Option<&TerminalColors>,
+) -> Result<Theme, OxaError> {
+    resolve_ui_theme(opts, &theme_name(opts), caps, colors)
 }
 
 pub(crate) fn push_notice(vm: &mut ViewModel, level: Level, text: String) {

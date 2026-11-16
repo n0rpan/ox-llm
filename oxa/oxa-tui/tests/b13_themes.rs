@@ -257,6 +257,24 @@ fn css_colours_for_export() {
 }
 
 #[test]
+fn explicit_theme_files_are_listed_and_resolved_by_json_name() {
+    let env = TestEnv::new();
+    let path = env.write("custom.json", &theme_json(json!({}), &[]));
+    let paths = vec![path.clone()];
+    assert!(list_themes(&paths)
+        .iter()
+        .any(|t| t.name == "test" && t.path.as_ref() == Some(&path)));
+    let theme = resolve_theme("test", &paths, ColorMode::TrueColor, None).unwrap();
+    assert_eq!(theme.source, Some(path));
+    assert_eq!(
+        resolve_theme("test/test", &paths, ColorMode::TrueColor, None)
+            .unwrap()
+            .name,
+        "test"
+    );
+}
+
+#[test]
 fn themes_on_disk_are_listed_and_resolved() {
     let env = TestEnv::new();
     let dir = env.root().join("themes");
