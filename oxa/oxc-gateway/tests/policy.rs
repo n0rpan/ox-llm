@@ -2,7 +2,7 @@
 use oxc_gateway::policy::{before_credentials, daily_budget, Refusal};
 use serde_json::json;
 
-fn refusal(error: Refusal, status: u16, code: &str, param: &str) {
+fn refusal(error: Refusal, status: u16, code: &str, kind: &str, param: &str) {
     assert_eq!(error.status, status);
     assert_eq!(error.code, code);
     assert_eq!(error.param, param);
@@ -10,14 +10,7 @@ fn refusal(error: Refusal, status: u16, code: &str, param: &str) {
     let detail = &body["error"];
     assert_eq!(detail["code"], code);
     assert_eq!(detail["param"], param);
-    assert_eq!(
-        detail["type"],
-        match status {
-            403 => "permission_error",
-            429 => "rate_limit_error",
-            _ => "cloud_error",
-        }
-    );
+    assert_eq!(detail["type"], kind);
     assert!(detail["message"]
         .as_str()
         .is_some_and(|message| !message.trim().is_empty()));
@@ -30,6 +23,7 @@ fn offline_and_shared_requests_are_refused_before_admission() {
             before_credentials(&json!({}), shared, offline, true).unwrap_err(),
             403,
             code,
+            "permission_error",
             "model",
         );
     }
@@ -42,6 +36,7 @@ fn requests_cannot_multiply_the_reserved_completion() {
             before_credentials(&json!({"n":n}), false, false, true).unwrap_err(),
             400,
             "invalid_value",
+            "cloud_error",
             "n",
         );
     }
@@ -56,6 +51,7 @@ fn unknown_prices_and_missing_budget_have_distinct_client_errors() {
         before_credentials(&json!({}), false, false, false).unwrap_err(),
         400,
         "cloud_pricing_unavailable",
+        "cloud_error",
         "pricing",
     );
     for cap in [json!(null), json!(false), json!(-1), json!(0), json!("1")] {
@@ -63,6 +59,7 @@ fn unknown_prices_and_missing_budget_have_distinct_client_errors() {
             daily_budget(&cap, true, Some(0.0), 0.0, 0.0).unwrap_err(),
             403,
             "budget_not_configured",
+            "permission_error",
             "model",
         );
     }
@@ -75,6 +72,7 @@ fn spending_and_outstanding_holds_both_reduce_available_budget() {
             daily_budget(&json!(1), true, Some(spent), held, required).unwrap_err(),
             429,
             "budget_exceeded",
+            "rate_limit_error",
             "model",
         );
     }
@@ -88,12 +86,14 @@ fn unusable_ledger_or_invalid_accounting_has_a_clean_unavailable_error() {
         daily_budget(&json!(1), false, Some(0.0), 0.0, 0.1).unwrap_err(),
         503,
         "cloud_ledger_unavailable",
+        "cloud_error",
         "model",
     );
     refusal(
         daily_budget(&json!(1), true, None, 0.0, 0.1).unwrap_err(),
         503,
         "cloud_ledger_unavailable",
+        "cloud_error",
         "model",
     );
     for bad in [f64::NAN, f64::INFINITY, -1.0] {
@@ -102,6 +102,7 @@ fn unusable_ledger_or_invalid_accounting_has_a_clean_unavailable_error() {
                 daily_budget(&json!(1), true, Some(spent), held, required).unwrap_err(),
                 503,
                 "cloud_ledger_unavailable",
+                "cloud_error",
                 "model",
             );
         }
@@ -114,7 +115,14 @@ fn missing_credentials_and_ledger_errors_keep_their_public_classification() {
         Refusal::credentials(),
         503,
         "cloud_credentials_unavailable",
+        "cloud_error",
         "model",
     );
-    refusal(Refusal::ledger(), 503, "cloud_ledger_unavailable", "model");
+    refusal(
+        Refusal::ledger(),
+        503,
+        "cloud_ledger_unavailable",
+        "cloud_error",
+        "model",
+    );
 }

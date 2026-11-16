@@ -784,3 +784,19 @@ fn replay_after_overflow_compaction_keeps_the_new_key() {
         "the replay reuses the effective key"
     );
 }
+
+/// #512: a replayed cut stream is a request of its own: counted in the stats (usage unknown).
+#[test]
+fn a_replayed_cut_stream_counts_as_a_request() {
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text("a longer reply that is cut");
+    cut.chunk = 1;
+    cut.fault = Some(Fault::DropAt { bytes: 5 });
+    let (mut st, eng) = state(&env, vec![cut, ScriptTurn::text("full reply")], json!({}));
+    say(&mut st, "hello");
+    let end = run_loop(&mut st, &mut VecSink::default(), &mut HeadlessUi::default()).expect("run_loop");
+    assert_eq!(end, RunEnd::Stopped);
+    assert_eq!(eng.requests().len(), 2);
+    assert_eq!(st.stats.requests, 2, "the cut request and the replay");
+    assert_eq!(st.stats.assistant_messages, 1);
+}

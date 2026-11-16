@@ -1101,6 +1101,7 @@ fn call_tool(
             cancel: &cancel,
             env: &st.tool_env,
             tune: st.tune,
+            hidden: st.policy.path_filter(),
         };
         tool.access(args, &cx)
             .map_err(|m| OxaError::new(codes::INVALID, m))?

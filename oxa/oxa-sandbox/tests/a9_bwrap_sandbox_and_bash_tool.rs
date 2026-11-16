@@ -606,6 +606,7 @@ fn bash_tool_refuses_without_sandbox() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let marker = home.join("ran");
     let cmd = format!("touch {}", marker.display());
@@ -635,6 +636,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let tool = oxa_tools::BashTool::new();
     let run = |args: serde_json::Value| tool.run(&args, &cx, &mut |_| {});
@@ -679,6 +681,12 @@ fn bash_tool_exit_code_and_timeout_lines() {
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.ends_with(notice), "{command}: {}", out.text);
     }
+    // A failing command also gets a notice, since the scratch lifetime may be the cause (#525).
+    for command in ["cat /tmp/oxa-525-missing", "echo TMPDIR; exit 1"] {
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains(notice), "{}", out.text);
+    }
     for error in [
         "Read-only file system",
         "Permission denied",
@@ -704,7 +712,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
     );
     assert!(!out.is_error, "{}", out.text);
     assert_eq!(live, "scratch\n");
-    assert!(out.text.contains("discarded after each command"));
+    assert!(out.text.ends_with(notice), "{}", out.text);
     let out = run(serde_json::json!({ "command": "test ! -e /tmp/oxa-98-tool" }));
     assert!(!out.is_error, "{}", out.text);
     let out = run(serde_json::json!({ "command": "echo lost > ~/oxa-98-tool" }));
