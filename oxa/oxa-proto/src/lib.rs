@@ -46,8 +46,10 @@ mod tool;
 mod ui;
 mod wire;
 
+pub mod control;
 pub mod guard;
 pub mod panic;
+pub mod work;
 
 pub use engine::*;
 pub use entry::*;

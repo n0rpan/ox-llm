@@ -323,7 +323,13 @@ pub fn run_json_outcome(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
-    write_record(out, &session_header_record(&session_header(session)))?;
+    let mut header = session_header_record(&session_header(session));
+    header["statusFile"] = session
+        .state()
+        .status_file
+        .map(|p| p.to_string_lossy().into_owned())
+        .into();
+    write_record(out, &header)?;
     let mut ui = HeadlessUi::default();
     let mut sink = JsonSink {
         out: &mut *out,

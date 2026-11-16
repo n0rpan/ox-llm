@@ -78,6 +78,7 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
     /// Sticky soft termination request: zero, or a `WrapUpReason` discriminant.
     pub wrap_up: std::sync::atomic::AtomicU8,

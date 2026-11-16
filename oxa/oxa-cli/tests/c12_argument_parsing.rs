@@ -389,6 +389,53 @@ fn subcommands_split() {
     assert_eq!(a.messages, ["summarise", "install"]);
 }
 
+#[test]
+fn agent_options_keep_command_words_as_prompts() {
+    for word in [
+        "mcp",
+        "install",
+        "remove",
+        "update",
+        "list",
+        "config",
+        "identity",
+        "report-issue",
+        "wipe",
+        "work",
+        "auth",
+        "login",
+        "logout",
+    ] {
+        for flags in [&["--model", "m"][..], &["-c"][..]] {
+            let mut words = flags.to_vec();
+            words.extend([word, "example"]);
+            let a = parse(&words);
+            assert_eq!(a.subcommand, None, "{words:?}");
+            assert_eq!(a.messages, [word, "example"]);
+        }
+        if word != "work" {
+            let a = parse(&["--offline", word, "example"]);
+            assert_eq!(a.subcommand, None, "{word}");
+            assert_eq!(a.messages, [word, "example"]);
+        }
+    }
+}
+
+#[test]
+fn only_the_offline_work_prefix_dispatches_after_options() {
+    let a = parse(&["--offline", "work", "tasks.json"]);
+    assert!(a.offline);
+    assert_eq!(a.subcommand, Some(Subcommand::Work(argv(&["tasks.json"]))));
+    for flags in [&["-p"][..], &["--model", "m"][..], &["--"][..]] {
+        let mut words = vec!["--offline"];
+        words.extend(flags);
+        words.extend(["work", "tasks.json"]);
+        let a = parse(&words);
+        assert_eq!(a.subcommand, None, "{words:?}");
+        assert_eq!(a.messages, ["work", "tasks.json"]);
+    }
+}
+
 /// Extra: help lists the flags and the extension flags.
 #[test]
 fn usage_text_lists_flags_and_extension_flags() {
