@@ -1,7 +1,10 @@
 //! Caller-driven ownership of one local engine. No daemon or background thread.
 #![cfg(unix)]
 
+mod child_auth;
 pub mod lifecycle;
+pub mod memory;
+pub mod native;
 pub mod queue;
 pub mod transport;
 
@@ -16,10 +19,11 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// Trusted launch configuration. Do not put credentials in arguments.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config {
     pub executable: PathBuf,
     pub arguments: Vec<OsString>,
+    pub environment: std::collections::BTreeMap<OsString, OsString>,
     pub startup_timeout: Duration,
     pub health_interval: Duration,
     pub unhealthy_limit: u32,
@@ -27,6 +31,15 @@ pub struct Config {
     pub restart_backoff: Duration,
     /// Restarts after the initial attempt; never reset by successful health.
     pub max_restarts: u32,
+}
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("executable", &"[configured]")
+            .field("argument_count", &self.arguments.len())
+            .field("environment_count", &self.environment.len())
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +131,7 @@ impl Supervisor {
             .args(&self.config.arguments)
             // Ambient model/provider settings and credentials must not cross this boundary.
             .env_clear()
+            .envs(&self.config.environment)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
