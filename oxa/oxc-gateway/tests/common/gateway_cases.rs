@@ -388,6 +388,24 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
     let content = json!({"choices":[{"index":0,"delta":{"content":"synthetic paid content ".repeat(16)},"finish_reason":null}]});
     for (name, frames, known) in [
         (
+            "completed length with incomplete arguments",
+            vec![
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"synthetic-call","function":{"name":"bash","arguments":r#"{"command":"synthetic"#}}]},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}),
+                final_usage.clone(),
+            ],
+            true,
+        ),
+        (
+            "length incomplete arguments then broken stream",
+            vec![
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"synthetic-call","function":{"name":"bash","arguments":r#"{"command":"synthetic"#}}]},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}),
+                final_usage.clone(),
+            ],
+            true,
+        ),
+        (
             "early zero usage then generation",
             vec![early_usage.clone(), content],
             false,
@@ -429,7 +447,10 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             if !known {
                 bytes.extend_from_slice(b"data: {malformed\n\n");
             }
-            // Known controls end after valid final usage but before [DONE].
+            if name.starts_with("completed length") {
+                bytes.extend_from_slice(b"data: [DONE]\n\n");
+            }
+            // Other known controls end after valid final usage but before [DONE].
             vec![
                 openai::Reply::json(catalog),
                 openai::Reply::raw(200, "text/event-stream", bytes, vec![]),
@@ -465,21 +486,46 @@ fn go_stream_usage_must_follow_a_validated_terminal_transition() {
             ..Context::default()
         };
         let mut done = false;
+        let mut length = false;
+        let mut arguments_delivered = false;
         let driver = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        let error = driver
-            .block_on(
-                gateway.chat_payload(&payload, context(), &Cancellation::default(), &mut |event| {
-                    done |= matches!(event, Event::Done);
-                    Control::Continue
-                }),
-            )
-            .err()
-            .expect("broken stream must not complete");
-        assert_eq!(error.refusal().code, "cloud_upstream_stream_broken", "{name}");
-        assert!(!done, "{name}");
+        let result = driver.block_on(gateway.chat_payload(
+            &payload,
+            context(),
+            &Cancellation::default(),
+            &mut |event| {
+                done |= matches!(event, Event::Done);
+                if let Event::Chunk(chunk) = event {
+                    length |= chunk.pointer("/choices/0/finish_reason") == Some(&json!("length"));
+                    if let Some(calls) = chunk
+                        .pointer("/choices/0/delta/tool_calls")
+                        .and_then(Value::as_array)
+                    {
+                        arguments_delivered |= calls
+                            .iter()
+                            .any(|call| call.pointer("/function/arguments").is_some());
+                    }
+                }
+                Control::Continue
+            },
+        ));
+        if name.starts_with("completed length") {
+            let complete = result.expect("length finish with final usage must complete");
+            assert_eq!(complete.finish_reason, "length");
+            assert_eq!(complete.assistant["tool_calls"], json!([]));
+            assert!(done);
+        } else {
+            let error = result.err().expect("broken stream must not complete");
+            assert_eq!(error.refusal().code, "cloud_upstream_stream_broken", "{name}");
+            assert!(!done, "{name}");
+        }
+        if name.contains("length") {
+            assert!(length, "length transition must be delivered: {name}");
+            assert!(!arguments_delivered, "incomplete arguments stay private: {name}");
+        }
         let saved = rows(&fixture);
         assert_eq!(saved.len(), 1, "{name}");
         assert_eq!(

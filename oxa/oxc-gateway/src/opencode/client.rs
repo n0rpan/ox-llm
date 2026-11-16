@@ -337,6 +337,13 @@ where
                         return Err(Error::Cancelled);
                     }
                 }
+                // A length stop cannot authorize a tool execution. Discard
+                // private argument fragments instead of parsing/publishing an
+                // incomplete JSON value; still deliver the terminal transition
+                // and consume final usage for authoritative settlement.
+                if reason == "length" {
+                    tool_slots.clear();
+                }
                 let mut arguments = Vec::new();
                 for (index, call) in &tool_slots {
                     let raw = call["function"]["arguments"].as_str().ok_or(Error::Protocol)?;
