@@ -228,7 +228,10 @@ impl Hooks for Trigger {
             source: oxa_proto::Source::Extension(String::new()),
         }]
     }
-    fn run_command(&self, _name: &str, _args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+    fn run_command(&self, _name: &str, args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+        if args == "quiet" {
+            return Ok(());
+        }
         let host = self.host.lock().unwrap().clone().expect("attached");
         host.call(trigger("from the command")).map(|_| ())
     }
@@ -237,6 +240,58 @@ impl Hooks for Trigger {
     }
     fn attach(&self, host: Arc<dyn Host>) {
         *self.host.lock().unwrap() = Some(host);
+    }
+    fn shortcuts(&self) -> Vec<oxa_proto::ShortcutSpec> {
+        vec![oxa_proto::ShortcutSpec {
+            key: oxa_proto::KeyId::parse("ctrl+y").unwrap(),
+            description: "quiet shortcut".into(),
+        }]
+    }
+    fn run_shortcut(&self, _: &oxa_proto::KeyId, ui: &mut dyn Ui) -> Result<(), OxaError> {
+        self.run_command("go", "quiet", ui)
+    }
+}
+
+#[derive(Debug, Default)]
+struct OperationProgress(Mutex<Vec<&'static str>>);
+impl oxa_core::ProgressObserver for OperationProgress {
+    fn notify(&self, _: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
+        match progress {
+            oxa_core::Progress::RunStart => self.0.lock().unwrap().push("working"),
+            oxa_core::Progress::Settled(_) => self.0.lock().unwrap().push("idle"),
+            _ => {},
+        }
+    }
+}
+
+#[test]
+fn empty_queue_returns_progress_to_idle_without_an_agent_settled_event() {
+    let env = TestEnv::new();
+    let mut session = open(&env, vec![], vec![]);
+    let trace = Arc::new(OperationProgress::default());
+    session.set_progress_observer(trace.clone());
+    let mut sink = oxa_proto::VecSink::default();
+    assert_eq!(session.run_queued(&mut sink, &mut HeadlessUi::default()).unwrap(), None);
+    assert!(!sink.0.iter().any(|event| matches!(event, AgentEvent::AgentSettled { .. })));
+    assert_eq!(*trace.0.lock().unwrap(), ["working", "idle"]);
+}
+
+#[test]
+fn quiet_extension_operations_return_progress_to_idle_without_an_agent_settled_event() {
+    for shortcut in [false, true] {
+        let env = TestEnv::new();
+        let mut session = open(&env, vec![], vec![Arc::new(Trigger::default())]);
+        let trace = Arc::new(OperationProgress::default());
+        session.set_progress_observer(trace.clone());
+        let mut sink = oxa_proto::VecSink::default();
+        let mut ui = HeadlessUi::default();
+        if shortcut {
+            session.run_shortcut(&oxa_proto::KeyId::parse("ctrl+y").unwrap(), &mut sink, &mut ui).unwrap();
+        } else {
+            session.run_command("go", "quiet", &mut sink, &mut ui).unwrap();
+        }
+        assert!(!sink.0.iter().any(|event| matches!(event, AgentEvent::AgentSettled { .. })));
+        assert_eq!(*trace.0.lock().unwrap(), ["working", "idle"]);
     }
 }
 
