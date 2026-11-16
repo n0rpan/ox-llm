@@ -236,11 +236,15 @@ An invalid saved binding refuses the request before provider I/O.
 A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
 existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
 other applications' credentials or start a sign-in. Configure the user-only
-`oxa.cloud.subscription` object with positive `daily_requests` and `daily_tokens`
-and the approved public refresh `client_id`. The refresh endpoint defaults to
-`https://auth.openai.com/oauth/token`; `refresh_timeout_ms` defaults to 15000,
-with the client's 30-second maximum. These settings contain no access or refresh
-token. Tests use explicit synthetic identifiers and loopback endpoints.
+`oxa.cloud.subscription_limits` object with positive integer `daily_requests`
+and `daily_tokens`. The separate optional `oxa.cloud.subscription` refresh object
+accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the
+experimental public identity approved in #252. The refresh endpoint is fixed at
+`https://auth.openai.com/oauth/token` and cannot be overridden in settings.
+`refresh_timeout_ms` defaults to 15000, must be positive and is bounded by the
+client's 30-second maximum. These settings contain no access or refresh token.
+Client transport tests inject loopback endpoints privately; production refresh
+configuration never supplies one.
 
 Subscription calls require their own positive request/token caps, retain actual
 token usage and settle zero USD. Unknown paid work retains its full token bound;

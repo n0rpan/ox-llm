@@ -38,8 +38,7 @@ fn settings(env: &TestEnv, base: &str, subscription: bool) {
         "oxa":{"envNote":false,"bootPreload":false,"engine":{"inProcessCloud":true},
         // Full-window worst-cache reservation is 0.010288; two settled turns
         // leave room for the third, then actual spend refuses a fourth.
-        "cloud":{"daily_budget_usd":0.010368,"subscription":{"daily_requests":3,"daily_tokens":100000,
-            "client_id":"synthetic-client","refresh_endpoint":base.trim_end_matches("/v1").to_owned()+"/token"},
+        "cloud":{"daily_budget_usd":0.010368,"subscription_limits":{"daily_requests":3,"daily_tokens":100000},
         "models":{MODEL:{"provider":if subscription{"chatgpt"}else{"openai"},"base_url":endpoint,
             "upstream_model":"synthetic-openai","context_window":4096,"max_output":16,
             "pricing":{"input_per_million":2,"output_per_million":3,"cache_read_per_million":0.2,"cache_write_per_million":2.5}}}}}}

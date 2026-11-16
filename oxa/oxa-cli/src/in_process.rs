@@ -92,36 +92,7 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
         };
         routes.push((model, billing));
     }
-    let subscription_config = cloud.get("subscription").filter(|value| !value.is_null());
-    let subscription_limits = subscription_config
-        .map(|value| {
-            SubscriptionLimits::new(
-                value["daily_requests"].as_u64().ok_or_else(invalid)?,
-                value["daily_tokens"].as_u64().ok_or_else(invalid)?,
-            )
-            .map_err(|_| invalid())
-        })
-        .transpose()?;
-    let subscription = if needs_subscription {
-        subscription_config
-            .map(|value| {
-                Ok::<_, OxaError>(Subscription {
-                    client_id: text(value, "client_id")?.into(),
-                    refresh_endpoint: match value.get("refresh_endpoint") {
-                        None => "https://auth.openai.com/oauth/token",
-                        Some(value) => value.as_str().ok_or_else(invalid)?,
-                    }
-                    .into(),
-                    timeout: Duration::from_millis(match value.get("refresh_timeout_ms") {
-                        None => 15_000,
-                        Some(value) => value.as_u64().ok_or_else(invalid)?,
-                    }),
-                })
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    let (subscription, subscription_limits) = subscription_options(cloud, needs_subscription)?;
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
@@ -147,4 +118,123 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
         OxaError::new(refusal.code, refusal.message)
     })?;
     Ok(Arc::new(EmbeddedEngine::from_gateway(gateway)))
+}
+
+// One canonical cap object shared with the other subscription routes. Refresh
+// identity/timeouts are separate and never supply an implicit/unlimited cap.
+fn subscription_options(
+    cloud: &Value,
+    needed: bool,
+) -> Result<(Option<Subscription>, Option<SubscriptionLimits>), OxaError> {
+    let limits = cloud
+        .get("subscription_limits")
+        .map(|value| {
+            SubscriptionLimits::new(
+                value["daily_requests"].as_u64().ok_or_else(invalid)?,
+                value["daily_tokens"].as_u64().ok_or_else(invalid)?,
+            )
+            .map_err(|_| invalid())
+        })
+        .transpose()?;
+    if !needed {
+        return Ok((None, limits));
+    }
+    let config = cloud.get("subscription");
+    if config.is_some_and(|value| !value.is_object() || value.get("refresh_endpoint").is_some()) {
+        return Err(invalid());
+    }
+    // Public experimental identity approved in #252/#726, not a credential.
+    let client_id = match config.and_then(|value| value.get("client_id")) {
+        None => "app_EMoamEEZ73f0CkXaXp7hrann",
+        Some(value) => value.as_str().ok_or_else(invalid)?,
+    };
+    if client_id.is_empty()
+        || client_id.len() > 128
+        || !client_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+    {
+        return Err(invalid());
+    }
+    let timeout = match config.and_then(|value| value.get("refresh_timeout_ms")) {
+        None => 15_000,
+        Some(value) => value.as_u64().filter(|n| *n > 0).ok_or_else(invalid)?,
+    };
+    Ok((
+        Some(Subscription {
+            client_id: client_id.into(),
+            // Production refresh cannot send a token to a setting-selected origin.
+            // The client contract's loopback injection belongs only to its tests.
+            refresh_endpoint: "https://auth.openai.com/oauth/token".into(),
+            timeout: Duration::from_millis(timeout.min(30_000)),
+        }),
+        limits,
+    ))
+}
+
+#[cfg(test)]
+mod subscription_factory_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn canonical_caps_and_public_refresh_defaults_are_separate() {
+        let cloud = json!({"subscription_limits":{"daily_requests":3,"daily_tokens":100000}});
+        let (refresh, caps) = subscription_options(&cloud, true).unwrap();
+        let refresh = refresh.unwrap();
+        assert_eq!(refresh.client_id, "app_EMoamEEZ73f0CkXaXp7hrann");
+        assert_eq!(refresh.refresh_endpoint, "https://auth.openai.com/oauth/token");
+        assert_eq!(refresh.timeout, Duration::from_secs(15));
+        let caps = caps.unwrap();
+        assert_eq!((caps.requests(), caps.tokens()), (3, 100000));
+        let (refresh, caps) = subscription_options(
+            &json!({"subscription":{"daily_requests":99,"daily_tokens":999}}),
+            true,
+        )
+        .unwrap();
+        assert!(refresh.is_some());
+        assert!(caps.is_none(), "refresh object is never a second cap setting");
+        let (refresh, caps) = subscription_options(&cloud, false).unwrap();
+        assert!(refresh.is_none());
+        assert!(
+            caps.is_some(),
+            "Go shares the same canonical limits without ChatGPT refresh"
+        );
+    }
+    #[test]
+    fn malformed_caps_ids_timeouts_and_refresh_redirects_refuse_locally() {
+        for value in [
+            json!(null),
+            json!({}),
+            json!({"daily_requests":0,"daily_tokens":1}),
+            json!({"daily_requests":1,"daily_tokens":0}),
+            json!({"daily_requests":-1,"daily_tokens":1}),
+            json!({"daily_requests":1.5,"daily_tokens":1}),
+            json!({"daily_requests":1,"daily_tokens":"1"}),
+        ] {
+            assert!(subscription_options(&json!({"subscription_limits":value}), true).is_err());
+        }
+        for id in ["", "bad id", "bad/id", "bad\nid", "λ", &"a".repeat(129)] {
+            assert!(subscription_options(&json!({"subscription":{"client_id":id}}), true).is_err());
+        }
+        for id in ["A", "synthetic-client_1.2", &"a".repeat(128)] {
+            let (refresh, _) = subscription_options(&json!({"subscription":{"client_id":id}}), true).unwrap();
+            assert_eq!(refresh.unwrap().client_id, id);
+        }
+        for value in [json!(0), json!(-1), json!(1.5), json!("1000")] {
+            assert!(
+                subscription_options(&json!({"subscription":{"refresh_timeout_ms":value}}), true).is_err()
+            );
+        }
+        for endpoint in [
+            "https://example.invalid/token",
+            "http://127.0.0.1:9/token",
+            "https://auth.openai.com/oauth/token",
+        ] {
+            assert!(
+                subscription_options(&json!({"subscription":{"refresh_endpoint":endpoint}}), true).is_err()
+            );
+        }
+        assert!(subscription_options(&json!({"subscription":false}), true).is_err());
+    }
 }
