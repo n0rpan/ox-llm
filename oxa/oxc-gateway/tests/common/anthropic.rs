@@ -349,12 +349,7 @@ fn write_reply(stream: &mut impl Write, reply: &Reply) -> io::Result<()> {
         stream.write_all(b"0\r\n\r\n")
     }
 }
-fn write_fragments(
-    stream: &mut impl Write,
-    bytes: &[u8],
-    fragment: usize,
-    terminal: bool,
-) -> io::Result<()> {
+fn write_fragments(stream: &mut impl Write, bytes: &[u8], fragment: usize, terminal: bool) -> io::Result<()> {
     let mut chunks = bytes.chunks(fragment).peekable();
     while let Some(bytes) = chunks.next() {
         write!(stream, "{:x}\r\n", bytes.len())?;
@@ -434,7 +429,9 @@ mod mock_health {
         let complete = Reply::text("Synthetic", 1, 0, 0, 1);
         let incomplete = Reply::events(vec![json!({"type":"message_delta"})]);
         let raw = Reply::wire("text/event-stream", b"synthetic raw body");
-        for reply in [complete, incomplete, raw] {
+        let mut delayed = Reply::text("Synthetic delayed", 1, 0, 0, 1);
+        delayed.stop_delay = Duration::from_millis(1);
+        for reply in [complete, incomplete, raw, delayed] {
             let terminal = reply.bytes.ends_with(b"data: {\"type\":\"message_stop\"}\n\n");
             let mut wire = Vec::new();
             write_reply(&mut wire, &reply).unwrap();
@@ -456,6 +453,46 @@ mod mock_health {
                 }
             }
         }
+    }
+
+    #[test]
+    fn stop_delay_separates_content_from_the_terminal_event() {
+        #[derive(Default)]
+        struct TimedWrites(Vec<(Instant, Vec<u8>)>);
+        impl Write for TimedWrites {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.push((Instant::now(), bytes.to_vec()));
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut reply = Reply::text("Synthetic delayed", 1, 0, 0, 1);
+        reply.fragment = usize::MAX;
+        reply.stop_delay = Duration::from_millis(20);
+        let mut writes = TimedWrites::default();
+        write_reply(&mut writes, &reply).unwrap();
+        let event_time = |event: &[u8]| {
+            writes
+                .0
+                .iter()
+                .find(|(_, bytes)| bytes.windows(event.len()).any(|part| part == event))
+                .unwrap()
+                .0
+        };
+        assert!(
+            event_time(b"event: message_stop\n").duration_since(event_time(b"event: message_delta\n"))
+                >= reply.stop_delay
+        );
+        assert_eq!(writes.0.last().unwrap().1, b"\r\n0\r\n\r\n");
+
+        reply.stop_delay = DEADLINE;
+        assert_eq!(
+            write_reply(&mut Vec::new(), &reply).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 
     #[test]
