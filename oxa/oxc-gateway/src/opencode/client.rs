@@ -234,6 +234,7 @@ where
                     _ => Err(Error::Protocol),
                 })
                 .transpose()?;
+            let mut argument_parts = Vec::new();
             if !choices.is_empty() {
                 if !chunk["choices"][0]["delta"].is_object() {
                     return Err(Error::Protocol);
@@ -264,11 +265,15 @@ where
                             call["function"]["name"] =
                                 String::from_utf8(bytes).map_err(|_| Error::Protocol)?.into();
                         }
-                        if let Some(args) = call["function"].get("arguments").filter(|v| !v.is_null()) {
-                            let field = Field::ToolArguments(index);
-                            let safe = redactor.feed(field, args.as_str().ok_or(Error::Protocol)?);
-                            seen_fields.insert(field);
-                            call["function"]["arguments"] = safe.into();
+                        if let Some(args) = call["function"]
+                            .as_object_mut()
+                            .and_then(|function| function.remove("arguments"))
+                        {
+                            match args {
+                                Value::String(args) => argument_parts.push((index, args)),
+                                Value::Null => {}
+                                _ => return Err(Error::Protocol),
+                            }
                         }
                     }
                 }
@@ -277,6 +282,15 @@ where
             chunk["model"] = alias.into();
             crate::redaction::value(&mut chunk, key);
             collect(&chunk, &mut text, &mut reasoning, &mut tool_slots)?;
+            // Argument strings contain another JSON layer. Retain fragments
+            // privately until the complete decoded value can be checked.
+            for (index, args) in argument_parts {
+                let call = tool_slots.get_mut(&index).ok_or(Error::Protocol)?;
+                let Value::String(buffer) = &mut call["function"]["arguments"] else {
+                    return Err(Error::Protocol);
+                };
+                buffer.push_str(&args);
+            }
             if let Some(value) = chunk.get("usage").filter(|v| !v.is_null()) {
                 // Accept a separate final usage frame or usage on a validated
                 // finish frame, never an interim record during generation.
@@ -315,6 +329,21 @@ where
                     }
                     let chunk = json!({"model":alias,"choices":[{"index":0,"delta":{"tool_calls":[{"index":index,"function":{"name":tail}}]},"finish_reason":null}]});
                     collect(&chunk, &mut text, &mut reasoning, &mut tool_slots)?;
+                    if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
+                        return Err(Error::Cancelled);
+                    }
+                }
+                let mut arguments = Vec::new();
+                for (index, call) in &tool_slots {
+                    let raw = call["function"]["arguments"].as_str().ok_or(Error::Protocol)?;
+                    let decoded: Value = serde_json::from_str(raw).map_err(|_| Error::Protocol)?;
+                    if echoes_credential(&decoded, key) {
+                        return Err(Error::Protocol);
+                    }
+                    arguments.push(json!({"index":index,"function":{"arguments":raw}}));
+                }
+                if !arguments.is_empty() {
+                    let chunk = json!({"model":alias,"choices":[{"index":0,"delta":{"tool_calls":arguments},"finish_reason":null}]});
                     if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                         return Err(Error::Cancelled);
                     }
