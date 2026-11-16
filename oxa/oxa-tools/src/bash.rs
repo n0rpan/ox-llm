@@ -458,9 +458,10 @@ impl BashTool {
             output
         };
         let ui = json!({ "exit": res.exit, "timedOut": res.timed_out });
-        let note = std::env::var("HOME")
-            .ok()
-            .and_then(|h| unmounted_home_note(&output, &h, cx.cwd));
+        let note = cx
+            .sandbox
+            .home()
+            .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
         let note = note.or_else(|| git_config_note(&output).map(str::to_string));
         let shown = if output.is_empty() {
             errors::BASH_NO_OUTPUT.to_string()
@@ -548,6 +549,7 @@ echo '\''a'\'''"#
         result: ExecResult,
         chunks: Vec<Vec<u8>>,
         seen: Mutex<Option<ExecSpec>>,
+        home: Option<PathBuf>,
     }
 
     impl Fake {
@@ -561,6 +563,7 @@ echo '\''a'\'''"#
                 },
                 chunks: vec![output.to_vec()],
                 seen: Mutex::new(None),
+                home: None,
             }
         }
     }
@@ -571,6 +574,9 @@ echo '\''a'\'''"#
                 Some(e) => Err(e.clone()),
                 None => Ok(()),
             }
+        }
+        fn home(&self) -> Option<&Path> {
+            self.home.as_deref()
         }
         fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
             Vec::new()
@@ -599,6 +605,34 @@ echo '\''a'\'''"#
         let mut streamed = String::new();
         let out = BashTool::new().run(&args, &cx, &mut |t| streamed.push_str(t));
         (out, streamed)
+    }
+
+    /// #526: the note uses the sandbox's home, never the process `$HOME`.
+    #[test]
+    fn unmounted_home_note_follows_the_sandbox_home() {
+        let msg = b"cat: /home/sess/other/x: No such file or directory\n";
+        let mut sb = Fake::ok(msg, Some(1));
+        sb.home = Some(PathBuf::from("/home/sess"));
+        let (out, _) = run_with(
+            &sb,
+            json!({"command": "cat /home/sess/other/x"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(
+            out.text.contains("/home/sess/other/x: not found."),
+            "{}",
+            out.text
+        );
+        // A sandbox that does not know its home adds no note, whatever the process `$HOME` is.
+        let sb = Fake::ok(msg, Some(1));
+        let (out, _) = run_with(
+            &sb,
+            json!({"command": "cat /home/sess/other/x"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(!out.text.contains("not found."), "{}", out.text);
     }
 
     #[test]
