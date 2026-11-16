@@ -1,5 +1,7 @@
 import re
 import os
+import shutil
+import tempfile
 import subprocess
 import unittest
 from pathlib import Path
@@ -41,6 +43,24 @@ class ReleaseAssets(unittest.TestCase):
                     self.assertEqual(source, f'ox-llm-0.2.1-linux-{arch}.tar.gz')
                 else:
                     self.assertEqual(source, 'ox-llm-' + '0' * 40 + '.tar.gz')
+
+
+    def test_release_environment_resolves_itself_when_sourced_by_a_workflow(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'source'
+            scripts = root / 'packaging/release'
+            scripts.mkdir(parents=True)
+            shutil.copyfile(W.parents[1] / 'packaging/release/environment.sh', scripts / 'environment.sh')
+            caller = scripts / 'build.sh'
+            caller.write_text('source "$(dirname "$0")/environment.sh"\n' + 'printf "%s" "$PWD"\n')
+            env = {'PATH': os.defpath, 'HOME': temporary, 'CARGO_HOME':temporary+'/cargo',
+                   'RUSTUP_HOME':temporary+'/rustup', 'SOURCE_DATE_EPOCH':'1'}
+            for command in (["/bin/bash", str(caller)],
+                            ["/bin/bash", "-c", 'source "$1"; printf "%s" "$PWD"',
+                             "workflow-step", str(scripts / 'environment.sh')]):
+                result = subprocess.run(command, cwd=temporary, env=env,
+                                        text=True, capture_output=True, check=True)
+                self.assertEqual(result.stdout, str(root))
 
 
 if __name__ == '__main__':
