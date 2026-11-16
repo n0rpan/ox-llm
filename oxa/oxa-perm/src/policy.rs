@@ -318,7 +318,8 @@ impl ModePolicy {
     pub fn new() -> ModePolicy {
         ModePolicy::default()
     }
-    /// B3: deny the paths of `guard` to the file tools, in every mode, whatever the grants.
+    /// B3: deny the paths of `guard` to the file tools, whatever the grants, except for
+    /// user-selected full-access `yolo` outside plan mode.
     pub fn with_guard(mut self, guard: PathGuard) -> ModePolicy {
         self.hidden = Some(Arc::new(guard.hidden_paths()));
         self.guard = guard;
@@ -328,9 +329,9 @@ impl ModePolicy {
     /// `Decision::Allow` and is counted on the switch; the safety floor is unchanged: the
     /// deny-list (B3) and git's files (B4) stay `Deny`, plan mode's `Deny`s stand, and a write
     /// to the project's protected configuration (`.oxa`) still asks. At `Autonomy::Yolo` (full
-    /// access) every `Ask` and every `Deny` (of the table and of `mandatory()`) becomes `Allow`
-    /// outside plan mode, counted on the switch (owner's decision on #202); in plan mode it
-    /// answers as `Auto`.
+    /// access) every `Ask` and every `Deny` becomes `Allow` outside plan mode (owner's decision
+    /// on #202/#314); only questions count as auto-approved, not bypassed denials (#443).
+    /// In plan mode it answers as `Auto`.
     pub fn with_yolo(mut self, switch: YoloSwitch) -> ModePolicy {
         self.yolo = Some(switch);
         self
@@ -427,16 +428,8 @@ fn table(mode: Mode, a: &Access, cwd: &Path) -> Decision {
     }
 }
 
-<<<<<<< HEAD
-impl ModePolicy {
-    /// The decision of every level but full access: the deny-list and the protected paths,
-    /// then the table, the grants and the `auto` answer.
-    fn decide_floor(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
-        if let Some(d) = self.mandatory(mode, a, cwd) {
-            return d;
-=======
-/// A verdict before YOLO: `AskAlways` is the safety floor's prompt, which YOLO never turns
-/// into an allow.
+/// A verdict before autonomy is applied: `AskAlways` is the safety floor's prompt, which
+/// `auto` never turns into an allow. Only user-selected `yolo` outside plan mode bypasses it.
 #[derive(Clone, Copy)]
 enum Verdict {
     Is(Decision),
@@ -476,7 +469,6 @@ impl ModePolicy {
                     (None, _) => {}
                 }
             }
->>>>>>> origin/main
         }
         // Grants only turn Ask into Allow; a Deny from the table always stands.
         Verdict::Is(match table(mode, a, cwd) {
@@ -521,7 +513,16 @@ impl Policy for ModePolicy {
             }
             _ => (self.verdict(mode, a, cwd), None),
         };
+        // Owner decision (#202/#314): yolo outside plan mode lifts every file-tool
+        // guard. Resolve and pin first, so the open still uses the checked location.
+        let full = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan);
         let decision = match verdict {
+            Verdict::Is(Decision::Deny(_)) if full.is_some() => Decision::Allow,
+            Verdict::AskAlways if full.is_some() => {
+                // #443: only questions count as auto-approved; bypassed denials do not.
+                full.unwrap().count();
+                Decision::Allow
+            }
             Verdict::AskAlways => Decision::Ask,
             Verdict::Is(Decision::Ask) => match &self.yolo {
                 Some(switch) if switch.is_on() => {
@@ -543,53 +544,6 @@ impl Policy for ModePolicy {
     fn set_inherited_spill_dirs(&mut self, dirs: &[PathBuf]) {
         self.guard.inherited_spills = dirs.to_vec();
         self.hidden = Some(Arc::new(self.guard.hidden_paths()));
-    }
-
-    /// The mandatory floor (B3 deny-list, B4 protected files): it holds at every autonomy
-    /// level but `yolo` outside plan mode.
-    fn mandatory(&self, mode: Mode, a: &Access, cwd: &Path) -> Option<Decision> {
-        if let Access::Read(p) | Access::Write(p) = a {
-            let abs = crate::paths::normalize(p, cwd);
-            // B3: the deny-list beats the mode, the cwd and every grant.
-            let denied = match a {
-                Access::Read(_) => self.guard.denies_read(&abs),
-                _ => self.guard.denies(&abs),
-            };
-            if denied {
-                return Some(Decision::Deny(deny_reasons::SENSITIVE));
-            }
-            // B4: files that run outside the sandbox later: never (git) or ask, no grant.
-            if let Access::Write(_) = a {
-                let protected = protected_write(&abs, cwd)
-                    .or_else(|| self.guard.protects_home_file(&abs, cwd).then_some(false));
-                match (protected, mode) {
-                    (Some(true), _) => return Some(Decision::Deny(deny_reasons::GIT_PROTECTED)),
-                    (Some(false), Mode::Plan) => return Some(Decision::Deny(deny_reasons::PLAN_WRITE)),
-                    (Some(false), _) => return Some(Decision::Ask),
-                    (None, _) => {}
-                }
-            }
-        }
-        None
-    }
-}
-
-impl Policy for ModePolicy {
-    fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
-        // #202: full access (yolo) outside plan mode: no prompt, but the hard floor (B3
-        // deny-list, B4 git hooks/config) still refuses (AGENTS.md hard rule 1; review of #314).
-        // What would have asked is counted as auto-approved.
-        if let Some(switch) = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan) {
-            if let Some(d @ Decision::Deny(_)) = self.mandatory(mode, a, cwd) {
-                return d;
-            }
-            // The floor counts what its table asked (the `auto` answer); the rest is counted here.
-            if self.decide_floor(mode, a, cwd) != Decision::Allow {
-                switch.count();
-            }
-            return Decision::Allow;
-        }
-        self.decide_floor(mode, a, cwd)
     }
 
     fn remember(&mut self, a: &Access) {
@@ -617,6 +571,13 @@ impl Policy for ModePolicy {
     }
 
     fn path_filter(&self) -> Option<Arc<dyn PathFilter>> {
+        self.path_filter_for_mode(Mode::Workspace)
+    }
+
+    fn path_filter_for_mode(&self, mode: Mode) -> Option<Arc<dyn PathFilter>> {
+        if mode != Mode::Plan && self.yolo.as_ref().is_some_and(YoloSwitch::full) {
+            return None;
+        }
         self.hidden.clone().map(|h| h as Arc<dyn PathFilter>)
     }
 }

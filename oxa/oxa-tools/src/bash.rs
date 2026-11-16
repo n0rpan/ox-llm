@@ -431,13 +431,8 @@ impl BashTool {
     }
 
     /// Issue #127 (b): start `command` detached and return its job id at once.
-<<<<<<< HEAD
-    fn start_job(&self, command: &str, cx: &ToolCtx) -> ToolOutput {
-        if let Err(e) = self.sandbox(cx).check() {
-=======
     fn start_job(&self, command: &str, timeout_s: Option<u32>, cx: &ToolCtx) -> ToolOutput {
-        if let Err(e) = cx.sandbox.check() {
->>>>>>> origin/main
+        if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
         let command = match self.shell.command(command) {
@@ -448,16 +443,10 @@ impl BashTool {
             command,
             cwd: cx.cwd.to_path_buf(),
             writable: !matches!(cx.mode, Mode::Plan),
-<<<<<<< HEAD
             net: net_for(cx.mode, self.sandbox(cx).network()),
-            // A background job has no timeout: it runs until it exits or the session ends.
-            timeout_s: None,
-=======
-            net: net_for(cx.mode, cx.sandbox.network()),
             // A background job has no timeout unless the call names one: it runs until it
             // exits, is killed (`bash {job, kill: true}`) or the session ends.
             timeout_s,
->>>>>>> origin/main
             env: cx.env.to_vec(),
         };
         match self.jobs.spawn(spec) {

@@ -129,7 +129,7 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/thinking [level]` | set the thinking level: off, minimal, low, medium, high, xhigh, max |
 | `/mode [standard\|auto\|yolo\|plan\|workspace\|ask] [--save]` | set the permission mode; no argument opens the picker; `--save` makes it the default |
 | `/auto` | permission mode auto: no prompts; the sandbox and the deny-list stay on |
-| `/yolo [on\|off]` | toggle yolo, full access: no prompts, bash without the sandbox, the deny-list and git hooks/config stay refused |
+| `/yolo [on\|off]` | toggle yolo, full access: no prompts, bash without the sandbox, no deny-list or protected paths for file tools |
 | `/settings` | open the settings selector |
 | `/theme [name]` | choose a theme |
 | `/compact [instructions]` | compact the context now, with optional guidance for the summary |

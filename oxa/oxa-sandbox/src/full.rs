@@ -35,6 +35,18 @@ impl FullAccess {
         }
     }
 
+    /// Reuse the process's switch and launch settings with the session's own sandbox.
+    /// In particular, auto/plan bash and the rest of the session must share one scratch dir.
+    pub fn with_inner(&self, inner: Arc<dyn Sandbox>) -> FullAccess {
+        FullAccess {
+            inner,
+            switch: self.switch.clone(),
+            path_var: self.path_var.clone(),
+            home: self.home.clone(),
+            offline: self.offline,
+        }
+    }
+
     /// `s` bypasses the sandbox: full access is on and the spec may write (not plan mode).
     fn bypass(&self, s: &ExecSpec) -> bool {
         self.switch.full() && s.writable

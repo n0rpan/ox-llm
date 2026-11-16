@@ -300,3 +300,63 @@ fn auto_child_bash_stays_in_the_sandbox() {
         "a child's bash wrote outside the work tree under --auto"
     );
 }
+
+/// The full-access wrapper must use the session's sandbox, not its pre-session template.
+#[test]
+fn auto_bash_keeps_session_scratch_between_commands() {
+    let env = TestEnv::new();
+    let srv = FakeServer::start(
+        vec![
+            ScriptTurn::tool(
+                "save",
+                "bash",
+                r#"{"command":"printf scratch-marker > /tmp/oxa-yolo-scratch"}"#,
+            ),
+            ScriptTurn::tool("load", "bash", r#"{"command":"cat /tmp/oxa-yolo-scratch"}"#),
+            ScriptTurn::text("done"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let out = run_oxa(&env, &srv.url(), &["-p", "--auto", "save then load"], "");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let reqs = srv.requests();
+    let result = reqs
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Tool)
+        .and_then(|m| m.content.as_deref())
+        .unwrap_or_default();
+    assert!(
+        result.contains("scratch-marker"),
+        "session scratch lost: {result}"
+    );
+}
+
+/// Real file-tool opens, not only policy answers: yolo lifts the credential and git/config
+/// floor; auto keeps its denials and the protected project-config question.
+#[test]
+fn yolo_file_tools_read_credentials_and_write_git_and_project_config() {
+    for rel in [".git/hooks/pre-commit", ".git/config", ".oxa/settings.json"] {
+        let env = TestEnv::new();
+        let target = env.work().join(rel);
+        let (out, _) = run(&env, write_call(&target), &["-p", "--auto", "write it"]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(!target.exists(), "auto must keep the floor for {rel}");
+        let (out, _) = run(&env, write_call(&target), &["-p", "--yolo", "write it"]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x", "{rel}");
+    }
+    let env = TestEnv::new();
+    let secret = env.write("home/.ssh/id_test", "synthetic-sensitive-marker\n");
+    let read = || ScriptTurn::tool("c1", "read", &json!({"path": secret}).to_string());
+    let (out, reqs) = run(&env, read(), &["-p", "--auto", "read it"]);
+    assert!(out.status.success());
+    assert!(tool_result(&reqs).contains("keys, tokens or agent state"));
+    let (out, reqs) = run(&env, read(), &["-p", "--yolo", "read it"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(tool_result(&reqs).contains("synthetic-sensitive-marker"));
+}

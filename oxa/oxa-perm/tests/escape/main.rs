@@ -149,7 +149,7 @@ fn project_config_asks_and_plan_denies() {
         decide(&p, Mode::Plan, write(cfg.clone()), &cwd),
         Decision::Deny(oxa_perm::deny_reasons::PLAN_WRITE)
     );
-    // The deny-list wins at `auto` and at `yolo` (yolo keeps the hard floor); plan mode refuses writes.
+    // Auto keeps the floor; user-selected yolo bypasses it outside plan mode.
     let with = |level| {
         ModePolicy::new()
             .with_guard(PathGuard::new(&env.home(), &env.agent_dir(), &env.tmp()))
@@ -165,13 +165,10 @@ fn project_config_asks_and_plan_denies() {
         Decision::Deny(oxa_perm::deny_reasons::GIT_PROTECTED)
     );
     let yolo = with(oxa_proto::Autonomy::Yolo);
-    for (path, reason) in [
-        (env.home().join(".ssh/id"), oxa_perm::deny_reasons::SENSITIVE),
-        (cwd.join(".git/config"), oxa_perm::deny_reasons::GIT_PROTECTED),
-    ] {
+    for path in [env.home().join(".ssh/id"), cwd.join(".git/config")] {
         assert_eq!(
             decide(&yolo, Mode::Workspace, write(path.clone()), &cwd),
-            Decision::Deny(reason)
+            Decision::Allow
         );
         assert!(matches!(
             decide(&yolo, Mode::Plan, write(path), &cwd),

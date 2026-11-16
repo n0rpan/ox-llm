@@ -753,7 +753,7 @@ pub fn oxa_footer(
 /// the badge and the text.
 pub fn oxa_yolo_banner(ms: u64, motion: bool, width: u16, theme: &Theme, skin: Skin) -> String {
     let g = glyphs(skin);
-    let what = "no prompts, bash runs without the sandbox, credentials and git hooks stay refused";
+    let what = "no prompts, no sandbox, no deny-list or protected paths";
     let label = badge("YOLO MODE", "error", theme);
     let line = if motion && !theme.is_plain() && !g.flames.is_empty() {
         let frame = g.flames[(ms / 120) as usize % g.flames.len()];

@@ -635,8 +635,8 @@ fn yolo_toggle_shows_the_flame_the_banner_and_goes_away() {
     );
     let text = term.all_text();
     assert!(
-        text.contains("bash runs without the sandbox, credentials and git hooks stay refused"),
-        "the banner says what stays"
+        text.contains("no prompts, no sandbox, no deny-list or protected paths"),
+        "the banner says that full access removes the file-tool guards too"
     );
     assert!(
         text.contains("YOLO full access: no prompts"),

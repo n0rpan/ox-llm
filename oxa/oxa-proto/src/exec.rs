@@ -126,8 +126,8 @@ pub trait Sandbox: Send + Sync {
 /// How much the policy decides on its own (#202). `Standard` asks the user what the mode table
 /// asks; `Auto` answers those questions with "allow" while the sandbox, the deny-list and the
 /// protected paths stay on; `Yolo` is full access: no prompts, bash runs without the sandbox in
-/// the user's own environment; the file tools ask nothing, but the deny-list and the git hooks/config
-/// stay refused. Plan mode stays read-only under every level.
+/// the user's own environment; the file tools have no deny-list or protected paths.
+/// Plan mode stays read-only under every level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Autonomy {
     #[default]
@@ -237,17 +237,17 @@ impl PermissionMode {
             }
             PermissionMode::Yolo => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \
-                 the file tools still refuse the deny-list and git hooks/config"
+                 no deny-list and no protected paths for the file tools"
             }
             PermissionMode::Plan => "read-only: plans, writes nothing",
         }
     }
 }
 
-/// The autonomy switch of a process (O-182, #202): [`Autonomy`] as one shared value. While it
-/// is not `Standard`, the policy answers every question it would have asked the user with
-/// "allow" and counts it; at `Yolo` the bash tool also runs without the sandbox (plan mode
-/// excepted) and the file tools lose the deny-list and the protected paths. Cloning shares
+/// The autonomy switch of a process (O-182, #202): [`Autonomy`] as one shared value. `Auto`
+/// answers the mode table's questions with "allow" and counts them; floor prompts still ask.
+/// At `Yolo` outside plan mode the file tools also allow floor prompts and denials, and bash
+/// runs without the sandbox. Only questions count, not bypassed denials (#443). Cloning shares
 /// the switch (the policy of every session, the bash tool and the UI hold the same one).
 #[derive(Debug, Clone, Default)]
 pub struct YoloSwitch {
@@ -320,5 +320,10 @@ pub trait Policy: Send {
     /// ([`crate::ToolCtx::hidden`]). `None` (the default) = the policy hides nothing.
     fn path_filter(&self) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
         None
+    }
+    /// The walk filter for the active table mode. Full access may lift the filter outside
+    /// plan mode, while plan mode must keep the floor. Other policies retain their filter.
+    fn path_filter_for_mode(&self, _mode: Mode) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
+        self.path_filter()
     }
 }

@@ -240,9 +240,10 @@ fn a_child_started_with_auto_allows_a_write_and_still_asks_for_oxa() {
 
 /// #202, owner's decision on #314 ("yolo should be yolo"): outside plan mode `yolo` removes
 /// every guard of the file tools: the table's questions, the deny-list, git's files and the
-/// protected configuration (`.oxa`, the home's startup files) are all allowed and counted.
+/// protected configuration (`.oxa`, the home's startup files) are all allowed. Questions are
+/// counted once; overridden denials are not approvals (#443).
 #[test]
-fn yolo_keeps_the_hard_floor_and_asks_nothing() {
+fn yolo_removes_every_guard_and_counts_only_questions_once() {
     let env = TestEnv::new();
     let switch = YoloSwitch::new(Autonomy::Yolo);
     let p = policy(&env, &switch);
@@ -256,8 +257,8 @@ fn yolo_keeps_the_hard_floor_and_asks_nothing() {
             assert_eq!(p.decide(mode, a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
             assert_eq!(switch.approved(), before + 1, "{a:?} is counted once");
         }
-        // The hard floor stands (review of #314): credentials and git hooks/config are refused,
-        // not counted.
+        // Owner decision on #314: credentials and git hooks/config are allowed.
+        // #443: overriding a denial is full access, not an auto-approved question.
         for a in [
             Access::Read(home.join(".ssh/id_ed25519")),
             Access::Write(home.join(".aws/credentials")),
@@ -265,11 +266,8 @@ fn yolo_keeps_the_hard_floor_and_asks_nothing() {
             Access::Write(cwd.join(".git/config")),
         ] {
             let before = switch.approved();
-            assert!(
-                matches!(p.decide(mode, &a, &cwd), Decision::Deny(_)),
-                "{a:?} in {mode:?}"
-            );
-            assert_eq!(switch.approved(), before, "{a:?} is not counted");
+            assert_eq!(p.decide(mode, &a, &cwd), Decision::Allow, "{a:?} in {mode:?}");
+            assert_eq!(switch.approved(), before, "{a:?}: a bypass is not an approval");
         }
         // What only asked (project config, the home's startup files) is allowed and counted.
         for a in [
@@ -375,7 +373,39 @@ fn yolo_description_says_every_guard_is_gone() {
     use oxa_proto::PermissionMode;
     let text = PermissionMode::Yolo.describe();
     assert!(text.contains("without the sandbox"), "{text}");
-    assert!(!text.contains("not limited"), "{text}");
-    assert!(!text.contains("no deny-list"), "{text}");
-    assert!(text.contains("deny-list"), "{text}");
+    assert!(text.contains("no deny-list"), "{text}");
+    assert!(text.contains("no protected paths"), "{text}");
+}
+
+/// Full access also applies to the pinned path used by file tools, including directory walks.
+/// Switching down restores both the deny-list verdict and the walk filter immediately.
+#[test]
+fn yolo_pins_credential_symlinks_without_hiding_them_and_auto_restores_the_filter() {
+    let env = TestEnv::new();
+    let cwd = env.work();
+    let secret = env.home().join(".ssh/id_test");
+    std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
+    std::fs::write(&secret, "SYNTHETIC").unwrap();
+    let alias = cwd.join("linked-key");
+    std::os::unix::fs::symlink(&secret, &alias).unwrap();
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    let p = policy(&env, &switch);
+    for a in [Access::Read(alias.clone()), Access::Write(alias.clone())] {
+        let (decision, pin) = p.decide_pinned(Mode::Workspace, &a, &cwd);
+        assert_eq!(decision, Decision::Allow);
+        assert_eq!(pin.as_deref(), Some(secret.as_path()));
+    }
+    assert_eq!(switch.approved(), 0, "#443: bypassed denials are not approvals");
+    let visible = || p.path_filter().is_none_or(|f| !f.hides(&secret));
+    assert!(visible(), "yolo directory walks must not hide credentials");
+    assert!(
+        p.path_filter_for_mode(Mode::Plan).unwrap().hides(&secret),
+        "plan mode keeps the filter even while the switch is yolo"
+    );
+    switch.set_level(Autonomy::Auto);
+    assert!(!visible(), "auto directory walks restore the credential filter");
+    assert_eq!(
+        p.decide_pinned(Mode::Workspace, &Access::Read(alias), &cwd).0,
+        Decision::Deny(deny_reasons::SENSITIVE)
+    );
 }
