@@ -217,7 +217,16 @@ mod tests {
 
     fn script(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
         let p = dir.join(name);
-        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        // Write in a separate process: a concurrent fork in this test process must not
+        // inherit a writable script fd and make exec fail with ETXTBSY after we close it.
+        let status = std::process::Command::new("/bin/sh")
+            .env_clear()
+            .args(["-c", "printf '%s\\n' \"$2\" > \"$1\"", "write-test-script"])
+            .arg(&p)
+            .arg(format!("#!/bin/sh\n{body}"))
+            .status()
+            .unwrap();
+        assert!(status.success());
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         p
     }
@@ -248,9 +257,23 @@ mod tests {
     fn a_well_behaved_helper_gives_its_token() {
         let d = tmp("ok");
         let gh = script(&d, "gh", "echo SYNTH_TOKEN");
-        // A parallel test's fork can hold the script's write fd (ETXTBSY): retry the spawn.
-        let got = (0..5).find_map(|_| gh_token_from(&gh, GH_DEADLINE));
+        let got = gh_token_from(&gh, GH_DEADLINE);
         assert_eq!(got.as_deref(), Some("SYNTH_TOKEN"));
+    }
+
+    #[test]
+    fn helpers_remain_executable_during_parallel_spawns() {
+        std::thread::scope(|scope| {
+            for worker in 0..8 {
+                scope.spawn(move || {
+                    let d = tmp(&format!("parallel-{worker}"));
+                    for _ in 0..32 {
+                        let gh = script(&d, "gh", "echo SYNTH_TOKEN");
+                        assert_eq!(gh_token_from(&gh, GH_DEADLINE).as_deref(), Some("SYNTH_TOKEN"));
+                    }
+                });
+            }
+        });
     }
 
     /// #122: with cwd = home, a `gh` in a user-owned directory under home (`~/.local/bin`)
