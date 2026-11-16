@@ -7,8 +7,8 @@ use crate::SessionState;
 use oxa_compact::prompt::{branch_summary_user_message, BRANCH_SUMMARY_PREAMBLE};
 use oxa_compact::{branch_entries, branch_summary_request, file_lists};
 use oxa_proto::{
-    codes, rebase_why, AgentEvent, Entry, EntryBody, EventSink, HookPoint, HookReply, Level, OxaError, Part,
-    Role, TurnKind, Ui, Value, WireMsg,
+    codes, AgentEvent, Entry, EntryBody, EventSink, HookPoint, HookReply, Level, OxaError, Part, Role,
+    TurnKind, Ui, Value, WireMsg,
 };
 use oxa_session::{fork_session, SessionRef, Transcript, Tree};
 use serde_json::json;
@@ -371,8 +371,7 @@ pub(crate) fn branch_summary_max(st: &SessionState) -> u32 {
 /// Point the transcript at the active branch: one `leaf_move` rebase.
 fn rebase_to_leaf(st: &mut SessionState) {
     let branch = branch_of_leaf(st);
-    let head = Transcript::project(&branch).wire().to_vec();
-    st.transcript.rebase(head, rebase_why::LEAF_MOVE);
+    st.transcript.restore_persisted(Transcript::project(&branch));
 }
 
 /// The entries from the root to the active leaf, root first, owned.
@@ -392,9 +391,9 @@ fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<()
             return Err(not_found(leaf));
         }
         let branch: Vec<Entry> = tree.branch(leaf).into_iter().cloned().collect();
-        Ok((tree, Transcript::project(&branch).wire().to_vec()))
+        Ok((tree, Transcript::project(&branch)))
     })();
-    let (tree, head) = match loaded {
+    let (tree, destination) = match loaded {
         Ok(value) => value,
         Err(error) => {
             st.store.abort_lock();
@@ -403,8 +402,8 @@ fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<()
     };
     // Adopt the destination and its writer lock together, releasing the old session.
     st.store.commit_lock();
-    if head.as_slice() != st.transcript.wire() {
-        st.transcript.rebase(head, rebase_why::LEAF_MOVE);
+    if destination.wire() != st.transcript.wire() {
+        st.transcript.restore_persisted(destination);
     }
     st.tree = tree;
     st.sref = dst.clone();

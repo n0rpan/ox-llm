@@ -382,3 +382,40 @@ fn changed_earlier_message_invalidates_every_later_carrier() {
     );
     assert!(t.wire()[1].provider_history.is_none());
 }
+
+#[test]
+fn raw_wire_rebase_cannot_gain_destination_authority_from_a_leaf_move_label() {
+    let mut t = Transcript::default();
+    t.push(WireMsg::user("outgoing"));
+    t.rebase(
+        vec![WireMsg::user("destination"), assistant()],
+        rebase_why::LEAF_MOVE,
+    );
+    assert!(t.wire()[1].provider_history.is_none());
+}
+
+#[test]
+fn persisted_restore_respects_the_destinations_existing_prefix_invalidation() {
+    let entries = vec![
+        entry("u", None, WireMsg::user("original")),
+        entry("a", Some("u"), assistant()),
+        Entry {
+            id: "edit".into(),
+            parent: Some("a".into()),
+            ts_ms: 1000,
+            body: EntryBody::ContextEdit {
+                target: "u".into(),
+                replacement: Some("changed".into()),
+            },
+        },
+    ];
+    let destination = Transcript::project(&entries);
+    assert!(destination.wire()[1].provider_history.is_none());
+    let mut t = Transcript::default();
+    t.push(WireMsg::user("unrelated"));
+    t.push(assistant());
+    t.restore_persisted(destination.clone());
+    assert_eq!(t.wire(), destination.wire());
+    assert_eq!(t.rebases().last().unwrap().why, rebase_why::LEAF_MOVE);
+    assert!(t.wire()[1].provider_history.is_none());
+}

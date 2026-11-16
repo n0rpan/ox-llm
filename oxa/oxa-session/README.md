@@ -26,9 +26,16 @@ unrelated unknown entries keep their existing recovery rules. The session layer 
 verify or create provider HMACs. `encode_visible_entry` is used for hooks, RPC and export;
 engine wire JSON, token estimates, rebase JSON and Debug also omit the private items.
 
-Rebases retain only the original carriers along the unchanged visible prefix. A changed
+Context/hook rebases retain only the original carriers along the unchanged visible prefix. A changed
 frozen prefix drops all carriers; compaction or an earlier visible edit drops affected later
 carriers. No supplied carrier is rebound, re-signed or promoted from hook/rebase JSON.
 Compaction validates closed tool-call/result exchanges on both sides of the cut before
 summarizing/writing, and validates persisted cuts again on resume. Ordinary appends add no
 ancestry traversal; compaction persistence reads the existing branch for validation.
+
+Session and leaf navigation use `restore_persisted` with the destination's projected
+transcript, not a rewrite against the conversation being left. They retain the original
+destination carrier bytes, including carriers beyond the outgoing wire length, while
+respecting invalidation already applied by the destination's fold. This trusted storage
+path is separate from raw hook rebases; merely passing `leaf_move` to `rebase` grants no
+replacement authority. Provider route/prefix validation still applies without rebinding.

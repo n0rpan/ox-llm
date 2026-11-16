@@ -255,6 +255,18 @@ impl Transcript {
         let origins = vec![None; head.len()];
         self.install(head, origins, why);
     }
+    /// Restore the wire of a destination projected from persisted session/tree entries.
+    /// Navigation is not a rewrite of the outgoing conversation: retain the destination's
+    /// original opaque carriers, including invalidation already performed by its fold.
+    /// Callers must use `project` over stored entries, never a hook-supplied wire. This does
+    /// not authenticate, rebind or re-sign replay; provider validation remains authoritative.
+    /// As with navigation's previous `rebase`, the current frozen prefix stays in force.
+    pub fn restore_persisted(&mut self, destination: Transcript) {
+        let wire = Arc::unwrap_or_clone(destination.wire);
+        let origins = vec![None; wire.len()];
+        self.install_prepared(wire, origins, rebase_why::LEAF_MOVE);
+    }
+
     /// Refuse a compaction cut inside a tool exchange or retaining an unfinished batch.
     pub fn validate_compaction_cut(&self, cut: usize) -> Result<(), oxa_proto::OxaError> {
         let cut = cut.min(self.wire.len());
@@ -376,6 +388,9 @@ impl Transcript {
                 message.provider_history = None;
             }
         }
+        self.install_prepared(wire, origins, why);
+    }
+    fn install_prepared(&mut self, wire: Vec<WireMsg>, origins: Vec<Option<String>>, why: &'static str) {
         assert!(rebase_why::ALL.contains(&why), "unknown rebase cause: {why:?}");
         let before = self.wire.len();
         self.wire = Arc::new(wire);
