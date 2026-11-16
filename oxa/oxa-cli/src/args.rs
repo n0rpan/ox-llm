@@ -45,6 +45,8 @@ impl std::fmt::Debug for ApiKey {
 /// Every flag of cli.md that oxa keeps. Field comments give the spellings.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Args {
+    /// The restricted, one-shot `lead --shadow` preset (not a general CLI flag).
+    pub lead_shadow: bool,
     pub subcommand: Option<Subcommand>,
     /// Positional prompt words (each is one prompt in print/json mode, as pi).
     pub messages: Vec<String>,
@@ -168,6 +170,10 @@ const SESSION_ID_ERROR: &str = "Session id must be non-empty, contain only alpha
 
 /// Subcommands take every following word raw; they are parsed by their own modules.
 const COMMANDS: &[(&str, &str)] = &[
+    (
+        "oxa lead --shadow [--model MODEL]",
+        "Read ./state and return proposal JSON without taking actions",
+    ),
     (
         "oxa status <session-id|session-file>",
         "Read a saved session's current progress and stall signal",
@@ -501,6 +507,9 @@ fn positional(a: &mut Args, word: &str) {
 /// parsing. `@file` is collected into `files`. Omitted pi commands (`auth`) =
 /// `unsupported_in_oxa`.
 pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaError> {
+    if argv.first().is_some_and(|word| word == "lead") {
+        return crate::lead_shadow::args(&argv[1..]);
+    }
     let mut a = Args::default();
     let mut i = 0;
     let mut stop = false;

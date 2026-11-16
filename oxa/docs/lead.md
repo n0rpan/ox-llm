@@ -4,9 +4,9 @@ The lead is an ordinary oxa session with an embedded, lead-only `lead` skill.
 Its instructions are exported as `oxa_resources::LEAD_SKILL` for the preset;
 ordinary sessions neither discover nor install this skill. It does not enable
 runner access by itself.
-`oxa lead`, its restricted session preset, the `work` tool and the commands below
-are pending integration with the runner. Do not use this document as a list of
-commands supported by the current binary.
+`oxa lead --shadow` runs one read-only print turn and returns proposal JSON.
+Live `oxa lead`, the `work` tool and the slash commands below are pending runner
+integration.
 
 The preset must work with both the TUI and print driver, using the same session
 store, engine selection, turn loop and result contract as ordinary oxa. It adds
@@ -48,7 +48,39 @@ owner intent. Escape newlines in individual fact fields before applying the
 12-line cap, and summarize overflow rather than dropping the source reference.
 Unreadable or stale facts remain unknown.
 
-## Shadow stage (available without the lead command)
+## Shadow stage
+
+In a fresh private directory outside any checkout, create empty sibling `home/`
+and `agent/` directories and a `work/state/` directory containing bounded
+`digest.txt`, `board.txt` and `verdicts.txt` exports of the same observations the
+orchestrator uses. The digest includes `as_of_seq`. Use owner-only files and
+directories; do not include credentials, logs or transcripts. Set the absolute
+binary path and configured engine/model, then run once:
+
+```sh lead-command-shadow
+cd "$LEAD_SHADOW_DIR/work"
+env -i PATH="$PATH" HOME="$LEAD_SHADOW_DIR/home" \
+  OXA_AGENT_DIR="$LEAD_SHADOW_DIR/agent" OXA_SYSTEM_SKILLS_DIR='' \
+  OXA_ENGINE_URL="$LEAD_ENGINE_URL" \
+  "$LEAD_OXA_BIN" lead --shadow --model "$LEAD_MODEL" --max-time 120
+```
+
+This uses the ordinary print driver with the embedded lead instructions in the
+system prefix and the embedded proposal schema. No skill/schema copying is
+needed. It disables resource discovery and all hook registries (including exec
+hooks, MCP, extensions and codemode), and exposes exactly `read`, `grep`, `find`
+and `ls`. It never saves a session or applies a proposal. Tool/instruction
+overrides and live mode are refused. The only optional arguments are `--model`,
+`--provider`, `--max-time`, `--max-tokens` and `--offline`; the default time limit
+is 120 seconds. Engine selection and offline enforcement use the ordinary path.
+Offline therefore requires an engine permitted by that path.
+
+The orchestrator compares the JSON with its actual decisions and files each
+wrong/missing action, unsupported fact, ignored hold or reminder as a SHADOW
+issue with the input observation and proposal. This fixture-tested entry point
+does not establish that real comparison or supervised acceptance.
+
+### Explicit ordinary-session recipe
 
 The proposal schema is [lead-proposals.schema.json](lead-proposals.schema.json).
 It uses only the current `--output-schema` subset. Proposals are observations

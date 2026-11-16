@@ -546,18 +546,24 @@ fn prepare(
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<Prep, OxaError> {
-    let output_schema = a
-        .output_schema
-        .as_ref()
-        .map(|file| {
-            let path = cwd.join(file);
-            let text = std::fs::read_to_string(&path)
-                .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
-            let value = serde_json::from_str(&text)
-                .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
-            oxa_core::output_schema::OutputSchema::new(value)
-        })
-        .transpose()?;
+    let output_schema = if a.lead_shadow {
+        Some(oxa_core::output_schema::OutputSchema::new(
+            serde_json::from_str(crate::lead_shadow::SCHEMA)
+                .map_err(|_| OxaError::new(codes::INVALID, "Invalid embedded lead schema"))?,
+        )?)
+    } else {
+        a.output_schema
+            .as_ref()
+            .map(|file| {
+                let path = cwd.join(file);
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
+                let value = serde_json::from_str(&text)
+                    .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
+                oxa_core::output_schema::OutputSchema::new(value)
+            })
+            .transpose()?
+    };
     let mut notices: Vec<(Level, String)> = Vec::new();
     let user_settings = Settings::load(dirs, cwd, false);
     let (models, diags) = ModelsConfig::load(dirs, env);
@@ -656,7 +662,14 @@ fn prepare(
         }
     }
     // Resources, package sources included (E10).
-    let resources = discover(dirs, cwd, &settings, &opts);
+    let resources = if a.lead_shadow {
+        Resources {
+            append_system: vec![oxa_resources::LEAD_SKILL.to_owned()],
+            ..Resources::default()
+        }
+    } else {
+        discover(dirs, cwd, &settings, &opts)
+    };
     notices.extend(resources.diagnostics.iter().map(|d| {
         let text = match &d.path {
             Some(p) => format!("{}: {}", p.display(), d.message),
@@ -791,21 +804,25 @@ fn prepare(
         dirs.home.clone(),
         oxa_proto::offline(),
     ));
-    let hook_sets = build_hooks(
-        &HookInputs {
-            args: a,
-            dirs,
-            cwd,
-            settings: &settings,
-            resources: &resources,
-            sandbox: &sandbox,
-            trusted,
-            nested: child.nested(),
-            env,
-            yolo: yolo.clone(),
-        },
-        &mut notices,
-    )?;
+    let hook_sets = if a.lead_shadow {
+        HookSets::default()
+    } else {
+        build_hooks(
+            &HookInputs {
+                args: a,
+                dirs,
+                cwd,
+                settings: &settings,
+                resources: &resources,
+                sandbox: &sandbox,
+                trusted,
+                nested: child.nested(),
+                env,
+                yolo: yolo.clone(),
+            },
+            &mut notices,
+        )?
+    };
     // `ctx.mode` of the extensions (pi's names).
     if let Some(ext) = &hook_sets.extensions {
         ext.set_mode(match mode {
