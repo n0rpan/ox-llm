@@ -9,9 +9,20 @@ tests protect requests/streams, admission budgets, private accounting, secret
 handling and clean refusals. Python wording and CLI compatibility are not goals.
 The existing `policy` and `secrets` features are independently selectable.
 The `pricing` and `accounting` features supply cache-aware charges and atomic
-per-process reservations. Share a daily Budget across requests and retain each
-hold until its writer callback commits the private settlement row. Failed writes
-block further spending. Cross-process admission is a later series step.
+process-shared reservations. Retain each hold until its writer callback commits
+and syncs the private settlement row. A short file lock covers spend, persisted
+holds and admission; it is released before any upstream work. Independent Budget
+instances and processes use the same private daily files. Failed writes or an
+abandoned potentially paid hold block further spending across processes.
+
+The ledger directory must already be owned by this user with mode 0700. Daily
+`.budget-lock` and `.holds` files are owner-only and contain only random hold IDs,
+reserved amounts and a failure flag. Bounded state reads reject malformed,
+interrupted, oversized, non-owner or non-private files. Rows are locked and synced
+before their holds are removed. No runtime, thread or resident file descriptor is
+added to an idle gateway. A crashed process retains its unknown reservations;
+there is deliberately no automatic timeout or PID-based release of possibly paid
+work. The next calendar day has a separate reservation file.
 
 ```sh
 cargo check --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --no-default-features
@@ -22,6 +33,9 @@ Tests use synthetic credential files and run in the required CI job with private
 HOME, cleared environment and an isolated network. No real credentials or cloud
 calls are used. The shared workspace's gateway job also runs formatting and
 strict Clippy; its result is included in `gate`.
+
+Linux accounting tests require `strace` for actual syscall ordering and injected
+sync failures. CI installs it for the isolated gateway suite.
 
 CI creates a synthetic file with a different owner before dropping capabilities
 and passes its path as `OXC_SECRET_OWNER_PATH` to the ownership test. Root test
