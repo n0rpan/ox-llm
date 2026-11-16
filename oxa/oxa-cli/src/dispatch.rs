@@ -381,6 +381,8 @@ struct Prep {
     /// CLI-024: `-n/--name`, trimmed and non-empty; written as a `session_info` entry once
     /// the session is open.
     name: Option<String>,
+    /// Explicit user continuation may resume a paused, unexhausted stored goal.
+    continue_goal: bool,
 }
 
 /// Startup warnings after opening the session, so restored/selected model limits are final.
@@ -890,6 +892,7 @@ fn prepare(
         notices,
         gated,
         name,
+        continue_goal: a.continue_,
     })
 }
 
@@ -1197,12 +1200,26 @@ fn run_headless(
         session_id,
         mut notices,
         name,
+        continue_goal,
         ..
     } = prep;
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
+    if continue_goal {
+        if let Some(mut goal) = session
+            .goal()
+            .filter(|g| g.status == oxa_session::GoalStatus::Paused && !g.exhausted())
+        {
+            if let Err(error) = goal
+                .resume()
+                .and_then(|()| session.set_goal(Some(goal), &mut oxa_proto::VecSink::default()))
+            {
+                return finish_outcome_facts(Err(error), stderr, Some(&built.result_facts));
+            }
+        }
+    }
     let mut prompts = prompts;
     if let Some(goal) = session.goal() {
         if goal.status == oxa_session::GoalStatus::Pursuing {
@@ -1382,6 +1399,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         mut notices,
         gated,
         name,
+        ..
     } = prep;
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
