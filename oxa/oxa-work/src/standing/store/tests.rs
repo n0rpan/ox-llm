@@ -431,6 +431,92 @@ fn a_late_answer_is_retained_even_when_its_question_is_the_oldest() {
 }
 
 #[test]
+fn a_failed_fact_reservation_cannot_strand_policy_at_projection_capacity() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid takes no arguments and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::process::CommandExt;
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .env_clear()
+            .args([
+                "--exact",
+                "standing::store::tests::a_failed_fact_reservation_cannot_strand_policy_at_projection_capacity",
+            ])
+            .uid(65534)
+            .gid(65534)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts.clone());
+    standing.rule(0, Authority::Owner, 1, hold(true, None)).unwrap();
+    let existing = standing.ask(1, 2, question()).unwrap();
+    for revision in 1..=126 {
+        facts
+            .append(
+                Checkpoint {
+                    source: "runner".into(),
+                    revision,
+                },
+                revision + 10,
+                Fact::TaskStarted(oxa_proto::work::Running {
+                    task: format!("busy-{revision}"),
+                    host: "local".into(),
+                    branch: format!("agent/busy-{revision}"),
+                    worktree: "/tmp/synthetic".into(),
+                    session_id: None,
+                    step: oxa_proto::work::TaskStep::Preparing,
+                }),
+            )
+            .unwrap();
+    }
+    let root = fixture.0.join("facts");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = standing.ask(2, 500, question());
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err(), "facts reservation unexpectedly succeeded");
+    facts
+        .append(
+            Checkpoint {
+                source: "runner".into(),
+                revision: 127,
+            },
+            600,
+            Fact::TaskStarted(oxa_proto::work::Running {
+                task: "last-slot".into(),
+                host: "local".into(),
+                branch: "agent/last-slot".into(),
+                worktree: "/tmp/synthetic".into(),
+                session_id: None,
+                step: oxa_proto::work::TaskStep::Preparing,
+            }),
+        )
+        .unwrap();
+    let read = standing
+        .read()
+        .expect("a failed reservation stranded every standing operation");
+    assert_eq!(read.revision, 2);
+    assert_eq!(read.open_asks().count(), 1);
+    standing
+        .answer(2, Authority::Owner, 700, answer(&existing))
+        .unwrap();
+    assert!(standing.read().unwrap().open_asks().next().is_none());
+    assert_eq!(facts.situation().unwrap().running.len(), 127);
+    assert!(matches!(
+        standing.with_guard(Action::Update, subject(), |_| Ok(())),
+        Err(GuardError::Refused(_))
+    ));
+}
+
+#[test]
 fn recovery_syncs_the_prepared_policy_before_committing_its_fact() {
     use std::os::unix::fs::PermissionsExt;
     // SAFETY: geteuid has no arguments, pointers or failure mode.
