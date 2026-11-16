@@ -224,7 +224,7 @@ impl Session {
         // resumed session restores its own recorded level (`restore_settings`).
         // MOD-004: a model that does not keep its reasoning (`preserve_thinking: false`, Flash)
         // starts with thinking off unless the CLI asks for it.
-        let startup_thinking = if info.caps.preserve_thinking == Some(false) {
+        let startup_thinking = if starts_without_thinking(&info.caps) {
             ThinkingLevel::Off
         } else {
             settings.startup_thinking(model.as_deref().unwrap_or(&info.model))
@@ -2071,5 +2071,31 @@ mod tests {
             .expect("stored prompt");
         assert_eq!(crate::envnote::strip_note(&texts[1], parts), "now");
         assert!(s.st.next_turn.is_empty());
+    }
+}
+
+/// MOD-004: a local engine that does not keep reasoning in history starts with thinking off. A
+/// cloud model (`remote`) never does: it publishes `preserve_thinking: false` too, but its
+/// effort is a plain request field, so it gets the normal level (#483).
+fn starts_without_thinking(caps: &oxa_proto::EngineCaps) -> bool {
+    caps.preserve_thinking == Some(false) && !caps.remote
+}
+
+#[cfg(test)]
+mod startup_thinking_tests {
+    use super::*;
+
+    #[test]
+    fn cloud_model_does_not_start_with_thinking_off() {
+        let flash = oxa_proto::EngineCaps {
+            preserve_thinking: Some(false),
+            ..Default::default()
+        };
+        assert!(starts_without_thinking(&flash));
+        let cloud = oxa_proto::EngineCaps {
+            remote: true,
+            ..flash
+        };
+        assert!(!starts_without_thinking(&cloud));
     }
 }

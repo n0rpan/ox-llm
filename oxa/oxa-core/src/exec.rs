@@ -721,7 +721,7 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
         return mk(
             Value::Null,
             exec,
-            Plan::Done(ToolOutput::error(tool_errors::BAD_JSON)),
+            Plan::Done(ToolOutput::error(bad_args_text(call))),
         );
     };
 
@@ -1017,6 +1017,20 @@ fn tool_ctx(st: &SessionState) -> ToolCtx<'_> {
         cancel: &st.shared.cancel,
         env: &st.tool_env,
         tune: st.tune,
+    }
+}
+
+/// The error text for arguments that are not a JSON object; an empty string says so, so the
+/// model (and the progress line) can tell why and retry (#483).
+fn bad_args_text(call: &ToolCall) -> String {
+    if call.args_raw.trim().is_empty() {
+        format!(
+            "{} (empty arguments: call `{}` again with its arguments as a JSON object)",
+            tool_errors::BAD_JSON,
+            call.name
+        )
+    } else {
+        tool_errors::BAD_JSON.to_string()
     }
 }
 
@@ -1397,5 +1411,28 @@ pub(crate) fn reply_event(turn: &AssistantTurn, ts_ms: u64) -> EventMessage {
         tool_name: None,
         is_error: false,
         error_message: None,
+    }
+}
+
+#[cfg(test)]
+mod bad_args_tests {
+    use super::*;
+
+    fn call(raw: &str) -> ToolCall {
+        ToolCall {
+            id: "c".into(),
+            name: "read".into(),
+            args_raw: raw.into(),
+        }
+    }
+
+    #[test]
+    fn empty_arguments_get_a_retry_hint() {
+        for raw in ["", "  \n"] {
+            let t = bad_args_text(&call(raw));
+            assert!(t.starts_with(tool_errors::BAD_JSON), "{t}");
+            assert!(t.contains("empty arguments") && t.contains("`read`"), "{t}");
+        }
+        assert_eq!(bad_args_text(&call("[1]")), tool_errors::BAD_JSON);
     }
 }
