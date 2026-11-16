@@ -28,14 +28,26 @@ pub(crate) struct DoneState {
 /// Seconds a git probe may run before the fingerprint gives up (`None`: checks stay as they were).
 const PROBE_TIMEOUT_S: u64 = 20;
 
+/// Seconds within which a file's change time may still equal a later change's (coarse clocks).
+const RACY_WINDOW_S: u64 = 2;
+
+/// The file was modified or changed less than [`RACY_WINDOW_S`] ago (or in the future).
+fn recent(m: &std::fs::Metadata) -> bool {
+    m.modified()
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_none_or(|age| age.as_secs() < RACY_WINDOW_S)
+}
+
 /// Hash of the work folder's git file list (index entries and untracked files) with each file's
-/// size and modification time; `None` outside a git repo, without git, or on a timeout.
+/// size, times, inode and mode (contents only of just-touched files); `None` outside a git repo, without git, or on a timeout.
 /// The probes run on the host, so they only list files (`ls-files`): nothing that can start a
 /// repository-configured program (`status` and `diff` run clean filters, textconv, external
 /// diff). Files are stat-ed here instead of diffed by git.
 fn tree_fingerprint(cwd: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
     let git = |args: &[&str]| -> Option<Vec<u8>> {
         let mut child = std::process::Command::new("git")
             .args(["-c", "core.fsmonitor=false"])
@@ -79,9 +91,13 @@ fn tree_fingerprint(cwd: &Path) -> Option<u64> {
             Ok(m) => {
                 m.len().hash(&mut h);
                 m.modified().ok().hash(&mut h);
-                // Small untracked-or-not files: contents too, so an edit that keeps size and
-                // time (coarse clocks) is still seen.
-                if m.is_file() && m.len() <= (1 << 20) {
+                // Inode, mode and change time catch a rewrite that keeps size and mtime.
+                m.ino().hash(&mut h);
+                m.mode().hash(&mut h);
+                (m.ctime(), m.ctime_nsec()).hash(&mut h);
+                // Only a file touched within the clock's resolution of now can hide a change
+                // behind unchanged stamps; reading every file would cost tens of MB per call.
+                if m.is_file() && m.len() <= (1 << 20) && recent(&m) {
                     std::fs::read(&path).ok().hash(&mut h);
                 }
             }
@@ -321,4 +337,39 @@ fn tail(s: &str) -> String {
         from += 1;
     }
     format!("[output truncated]\n{}", &s[from..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tree_fingerprint;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn fingerprint_sees_a_mode_change_of_an_old_untracked_file() {
+        let dir = std::env::temp_dir().join(format!("oxa-fp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git_ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(git_ok, "git init");
+        let f = dir.join("a.sh");
+        std::fs::write(&f, "echo hi\n").unwrap();
+        // Old mtime: the change below cannot be seen through contents or mtime.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let before = tree_fingerprint(&dir).unwrap();
+        assert_eq!(before, tree_fingerprint(&dir).unwrap(), "stable without changes");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_ne!(before, tree_fingerprint(&dir).unwrap(), "chmod is a change");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
