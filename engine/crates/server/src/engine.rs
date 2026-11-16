@@ -225,7 +225,7 @@ pub struct StubEngine {
     pub n_evaluated: usize,
     /// LONG-APPEND tests: wall time per prefilled token (a fake slow engine; zero by default)
     pub prefill_sleep_per_token: std::time::Duration,
-    /// state-store tests: wall time of every `save_state` (a fake slow disk; zero by default)
+    /// state-store tests: wall time of every `snap_save` (a fake slow disk; zero by default)
     pub save_sleep: std::time::Duration,
     /// fair-slicing tests: wall time per decoded token (zero by default)
     pub decode_sleep: std::time::Duration,
@@ -389,9 +389,6 @@ impl Engine for StubEngine {
     }
     fn save_state(&mut self, w: &mut dyn std::io::Write) -> Result<()> {
         let e = |e: std::io::Error| EngineError(e.to_string());
-        if !self.save_sleep.is_zero() {
-            std::thread::sleep(self.save_sleep);
-        }
         for &t in &self.tokens {
             w.write_all(&t.to_le_bytes()).map_err(e)?;
         }
@@ -450,6 +447,9 @@ impl Engine for StubEngine {
     }
     fn snap_save(&mut self, s: &StubSnapshot, w: &mut dyn std::io::Write) -> Result<()> {
         let e = |e: std::io::Error| EngineError(e.to_string());
+        if !self.save_sleep.is_zero() {
+            std::thread::sleep(self.save_sleep);
+        }
         w.write_all(&(s.tokens.len() as u64).to_le_bytes())
             .map_err(e)?;
         w.write_all(&(s.script_pos as u64).to_le_bytes()).map_err(e)

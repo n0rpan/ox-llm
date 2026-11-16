@@ -406,6 +406,30 @@ fn a_session_being_left_keeps_its_resume_points_on_disk() {
     }
 }
 
+/// The state store serializes snapshots, not whole-sequence states. Its fake disk delay must
+/// cover both saved checkpoints and the live head so timing tests exercise the actual write path.
+#[test]
+fn stub_state_store_save_delay_covers_snapshots() {
+    let mut e = StubEngine::new(32, 300, 0, vec![]);
+    e.prefill(&[1, 2, 3]).unwrap();
+    let snap = e.snapshot().unwrap();
+    e.save_sleep = Duration::from_millis(40);
+    for live in [false, true] {
+        let mut bytes = Vec::new();
+        let start = Instant::now();
+        if live {
+            e.snap_save_live(&mut bytes).unwrap();
+        } else {
+            e.snap_save(&snap, &mut bytes).unwrap();
+        }
+        assert!(
+            start.elapsed() >= e.save_sleep,
+            "snapshot serialization must include the fake disk delay (live={live})"
+        );
+        assert_eq!(bytes.len(), 16);
+    }
+}
+
 /// The park write of a session being left runs on the new request's path: its wall time is part of
 /// that request's `timings.ckpt_ms` (issue #584), and only when the park write ran.
 #[test]
