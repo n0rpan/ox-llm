@@ -21,14 +21,24 @@ pub mod deny_reasons {
 }
 
 /// B3 (wave H lane `harden`): the deny-list of the file tools, the same paths the bash sandbox
-/// masks. `allow` holds the exceptions inside a denied path (the spill files of the sessions,
-/// under the agent directory's `tmp`, which the read tool must reach as before).
+/// masks. `allow` holds the exceptions inside a denied path (codemode's shared spill directory,
+/// `<tmp>/codemode`); `spill` is the current session's spill directory (`<tmp>/<session id>`).
+/// Fork/clone ancestors' spills are read-only exceptions; unrelated sessions stay denied.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathGuard {
     deny: Vec<PathBuf>,
     allow: Vec<PathBuf>,
+    /// The current session's spill directory: the full output of a capped result is read from
+    /// here without asking (#522).
+    spill: Option<PathBuf>,
+    /// Source sessions of a fork/clone: copied history still points at these outputs.
+    inherited_spills: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
+    /// Clipboard images use generated names directly under tmp, not a session directory.
+    paste_dir: Option<PathBuf>,
+    /// A pasted-image name cannot override a credential path that resolves to that image.
+    paste_deny: Vec<PathBuf>,
     /// The home directory and its startup files, keys and agent settings
     /// (`oxa_proto::guard::PROTECTED_IN_HOME`): a write asks when the cwd is the home
     /// directory or above it (O-199 first run: oxa started in `$HOME`).
@@ -38,7 +48,8 @@ pub struct PathGuard {
 
 impl PathGuard {
     /// The deny-list of `home` and `agent_dir` only (use [`PathGuard::with_real_home`] to add the
-    /// account's real home), with `tmp_dir` (the spill files) excepted.
+    /// account's real home), with codemode's spill directory under `tmp_dir` excepted. The
+    /// session's own spill directory is set with [`PathGuard::set_spill_dir`].
     pub fn new(home: &Path, agent_dir: &Path, tmp_dir: &Path) -> PathGuard {
         PathGuard::with_real_home(home, None, agent_dir, tmp_dir)
     }
@@ -57,14 +68,29 @@ impl PathGuard {
         }
         deny.sort();
         deny.dedup();
+        // Only the agent-state mask is excepted for images, never a credential mask. Keep
+        // these paths separate so a credential symlink to a generated image stays denied.
+        let mut paste_deny = sensitive_paths(home, None);
+        paste_deny.retain(|p| p != &home.join(".oxa/agent"));
+        if let Some(r) = real_home.filter(|r| *r != home) {
+            paste_deny.extend(
+                sensitive_paths(r, None)
+                    .into_iter()
+                    .filter(|p| p != &r.join(".oxa/agent")),
+            );
+        }
         let mut home_protected = home_protected_paths(home);
         if let Some(r) = real_home.filter(|r| *r != home) {
             home_protected.extend(home_protected_paths(r));
         }
         PathGuard {
             deny,
-            allow: vec![tmp_dir.to_path_buf()],
+            allow: vec![tmp_dir.join("codemode")],
+            spill: None,
+            inherited_spills: Vec::new(),
             read_allow: vec![agent_dir.join("builtin-skills")],
+            paste_dir: Some(tmp_dir.to_path_buf()),
+            paste_deny,
             home: home.to_path_buf(),
             home_protected,
         }
@@ -81,14 +107,43 @@ impl PathGuard {
                 || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
     }
 
-    /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
-    pub fn denies(&self, p: &Path) -> bool {
-        self.deny.iter().any(|d| is_inside(p, d)) && !self.allow.iter().any(|a| is_inside(p, a))
+    /// Point the exception at the spill directory of the session now running. Switching
+    /// sessions revokes inherited exceptions until its ancestry is supplied again.
+    pub fn set_spill_dir(&mut self, dir: &Path) {
+        self.spill = Some(dir.to_path_buf());
+        self.inherited_spills.clear();
     }
 
-    /// Like [`PathGuard::denies`] for a read: the built-in skills are readable.
+    /// `p` (absolute) is inside the current session's spill directory.
+    pub fn is_spill(&self, p: &Path) -> bool {
+        self.spill.as_ref().is_some_and(|s| is_inside(p, s))
+    }
+
+    /// `p` is output of this session or a fork/clone ancestor, not an unrelated session.
+    fn is_readable_spill(&self, p: &Path) -> bool {
+        self.is_spill(p) || self.inherited_spills.iter().any(|s| is_inside(p, s))
+    }
+
+    /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
+    pub fn denies(&self, p: &Path) -> bool {
+        self.deny.iter().any(|d| is_inside(p, d))
+            && !self.allow.iter().any(|a| is_inside(p, a))
+            && !self.is_spill(p)
+    }
+
+    /// Like [`PathGuard::denies`] for a read, with skills, inherited output and pasted images
+    /// excepted. Images still go through the ordinary outside-project approval table.
     pub fn denies_read(&self, p: &Path) -> bool {
-        self.denies(p) && !self.is_builtin_skill(p)
+        let pasted = self
+            .paste_dir
+            .as_ref()
+            .is_some_and(|dir| match (resolve_real(p), resolve_real(dir)) {
+                (Some(real), Some(root)) => {
+                    is_pasted_image(&real, &root) && !self.paste_deny.iter().any(|d| is_inside(&real, d))
+                }
+                _ => false,
+            });
+        self.denies(p) && !self.is_builtin_skill(p) && !self.is_readable_spill(p) && !pasted
     }
 
     /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
@@ -112,11 +167,35 @@ impl PathGuard {
         };
         let mut allow = both(&self.allow);
         allow.extend(both(&self.read_allow));
+        allow.extend(both(&self.spill.iter().cloned().collect::<Vec<_>>()));
+        allow.extend(both(&self.inherited_spills));
         HiddenPaths {
             deny: both(&self.deny),
             allow,
+            paste_dirs: both(&self.paste_dir.iter().cloned().collect::<Vec<_>>()),
+            paste_deny: both(&self.paste_deny),
         }
     }
+}
+
+/// Match only clipboard.rs's `paste-<16 lowercase hex digits>.<image extension>` directly
+/// under the resolved tmp root. Callers resolve symlinks before matching, so an image name
+/// cannot expose a key or another session's output through a link.
+fn is_pasted_image(real: &Path, tmp: &Path) -> bool {
+    if real.parent() != Some(tmp) {
+        return false;
+    }
+    let Some(name) = real.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some((hash, ext)) = name.strip_prefix("paste-").and_then(|n| n.split_once('.')) else {
+        return false;
+    };
+    hash.len() == 16
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && matches!(ext, "png" | "jpg" | "gif" | "webp")
 }
 
 /// #517: the deny-list of a [`PathGuard`] as a [`PathFilter`] for walked entries.
@@ -125,11 +204,18 @@ pub struct HiddenPaths {
     deny: Vec<PathBuf>,
     /// The readable exceptions inside a denied path (spill files, built-in skills).
     allow: Vec<PathBuf>,
+    /// Resolved roots for generated clipboard images, including ones pasted after this snapshot.
+    paste_dirs: Vec<PathBuf>,
+    /// Credential masks still apply even to a file with a generated image name.
+    paste_deny: Vec<PathBuf>,
 }
 
 impl PathFilter for HiddenPaths {
     fn hides(&self, real: &Path) -> bool {
-        self.deny.iter().any(|d| real.starts_with(d)) && !self.allow.iter().any(|a| real.starts_with(a))
+        self.deny.iter().any(|d| real.starts_with(d))
+            && !self.allow.iter().any(|a| real.starts_with(a))
+            && (!self.paste_dirs.iter().any(|d| is_pasted_image(real, d))
+                || self.paste_deny.iter().any(|d| real.starts_with(d)))
     }
 }
 
@@ -208,8 +294,6 @@ fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
 pub struct ModePolicy {
     grants: Vec<Access>,
     guard: PathGuard,
-    /// Only the active session's output is readable without asking, not all of agent/tmp.
-    spill_dir: Option<PathBuf>,
     /// #517: `guard` for the file tools' directory walks (`None` without a guard).
     hidden: Option<Arc<HiddenPaths>>,
     /// O-182: while on, a question of the table is answered with "allow" (see
@@ -224,10 +308,7 @@ impl PartialEq for ModePolicy {
             (Some(a), Some(b)) => a.same(b),
             _ => false,
         };
-        self.grants == other.grants
-            && self.guard == other.guard
-            && self.spill_dir == other.spill_dir
-            && same_switch
+        self.grants == other.grants && self.guard == other.guard && same_switch
     }
 }
 
@@ -365,11 +446,10 @@ impl ModePolicy {
             if denied {
                 return Verdict::Is(Decision::Deny(deny_reasons::SENSITIVE));
             }
-            // #492, #531: the advertised built-in skills and oxa's own spill files are read
-            // without asking, wherever the cwd is.
+            // #492, #522, #531: advertised built-in skills and this session's output
+            // (including fork/clone ancestry) are read without asking, wherever the cwd is.
             if matches!(a, Access::Read(_))
-                && (self.guard.is_builtin_skill(&abs)
-                    || self.spill_dir.as_ref().is_some_and(|dir| is_inside(&abs, dir)))
+                && (self.guard.is_builtin_skill(&abs) || self.guard.is_readable_spill(&abs))
             {
                 return Verdict::Is(Decision::Allow);
             }
@@ -445,7 +525,13 @@ impl Policy for ModePolicy {
     }
 
     fn set_spill_dir(&mut self, dir: &Path) {
-        self.spill_dir = Some(dir.to_path_buf());
+        self.guard.set_spill_dir(dir);
+        self.hidden = Some(Arc::new(self.guard.hidden_paths()));
+    }
+
+    fn set_inherited_spill_dirs(&mut self, dirs: &[PathBuf]) {
+        self.guard.inherited_spills = dirs.to_vec();
+        self.hidden = Some(Arc::new(self.guard.hidden_paths()));
     }
 
     fn remember(&mut self, a: &Access) {
