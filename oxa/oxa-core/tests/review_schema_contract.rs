@@ -303,3 +303,60 @@ fn lossless_numbers_preserve_syntax_enum_and_extreme_exponents() {
     let string = OutputSchema::new(json!({"enum":["1e400\\\"1"]})).unwrap();
     assert!(string.matches(&json!("1e400\\\"1").to_string()));
 }
+
+#[test]
+fn four_hundred_digit_integers_and_large_exponents_validate_without_panics() {
+    let positive = "9".repeat(400);
+    let negative = format!("-{positive}");
+    let schema = OutputSchema::new(json!({
+        "type":"object", "properties":{
+            "line":{"type":"integer","minimum":1},
+            "confidence":{"type":"number","maximum":1}
+        }
+    }))
+    .unwrap();
+    for number in [&positive, "1e400"] {
+        assert!(schema.validate(&format!(r#"{{"line":{number}}}"#)).is_ok());
+        let error = schema
+            .validate(&format!(r#"{{"confidence":{number}}}"#))
+            .unwrap_err();
+        assert_eq!(error.instance_path, "/confidence");
+        assert_eq!(error.message, "Number is above maximum");
+    }
+    let error = schema.validate(&format!(r#"{{"line":{negative}}}"#)).unwrap_err();
+    assert_eq!(error.instance_path, "/line");
+    assert_eq!(error.message, "Number is below minimum");
+}
+
+#[test]
+fn whole_number_boundaries_preserve_exact_decimal_semantics() {
+    let schema = OutputSchema::new(json!({
+        "type":"integer", "minimum":9007199254740993_u64, "maximum":9007199254740993_u64
+    }))
+    .unwrap();
+    for number in [
+        "9007199254740993",
+        "9007199254740993.000",
+        "900719925474099300e-2",
+    ] {
+        assert!(schema.validate(number).is_ok(), "{number}");
+    }
+    for number in [
+        "9007199254740992.9999999999999999",
+        "9007199254740993.0000000000000001",
+        "9007199254740992",
+        "9007199254740994",
+    ] {
+        assert!(schema.validate(number).is_err(), "{number}");
+    }
+}
+
+#[test]
+fn parser_private_number_maps_cannot_panic_numeric_checks() {
+    let schema = OutputSchema::new(json!({"type":"number","minimum":0})).unwrap();
+    // This is an object, not a JSON number. Some serde_json feature sets decode
+    // its private representation as a Number; it must never bypass our view check.
+    assert!(schema
+        .validate(r#"{"$serde_json::private::Number":"1e400"}"#)
+        .is_err());
+}

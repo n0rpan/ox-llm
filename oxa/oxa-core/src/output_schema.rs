@@ -325,6 +325,12 @@ fn validate_value(
         instance_path: path.to_owned(),
         message,
     };
+    // Arbitrary-precision serde_json can also decode its private number-map
+    // representation from an object. Such a value has no lexical number in our
+    // second view: fail closed rather than treating it as one or unwrapping it.
+    if value.is_number() && raw.as_str().is_none() {
+        return Err(fail("Invalid JSON number representation"));
+    }
     if let Some(kind) = schema.get("type").and_then(Value::as_str) {
         let valid = match kind {
             "object" => value.is_object(),
