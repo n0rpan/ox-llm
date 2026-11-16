@@ -161,6 +161,88 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
 }
 
 #[test]
+fn native_credential_diagnostics_name_only_the_local_attempted_store() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    for case in [
+        "missing",
+        "provider",
+        "mode",
+        "symlink",
+        "repository",
+        "upstream",
+        "success",
+    ] {
+        let env = TestEnv::new();
+        assert!(!env.root().ancestors().any(|p| p.join(".git").exists()));
+        let replies = match case {
+            "upstream" => vec![Reply::error(401, CREDENTIAL)],
+            "success" => vec![Reply::text("Synthetic configured answer", 11, 7, 3, 5)],
+            _ => vec![],
+        };
+        let mock = MockAnthropic::start(replies);
+        settings(&env, &mock.base_url(), true);
+        match case {
+            "missing" => {}
+            "provider" => write_key(&env, &json!({"other":{"api_key":CREDENTIAL}}).to_string()),
+            _ => write_key(&env, &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string()),
+        }
+        match case {
+            "mode" => fs::set_permissions(key_path(&env), fs::Permissions::from_mode(0o644)).unwrap(),
+            "symlink" => {
+                let target = key_path(&env).with_extension("synthetic");
+                fs::rename(key_path(&env), &target).unwrap();
+                symlink(target, key_path(&env)).unwrap();
+            }
+            "repository" => fs::create_dir(env.home().join(".config/.git")).unwrap(),
+            _ => {}
+        }
+        let output = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic credential check"],
+            None,
+        );
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!diagnostic.contains(CREDENTIAL), "{case}: {diagnostic}");
+        assert!(!stdout.contains(CREDENTIAL), "{case}: {stdout}");
+        match case {
+            "success" => {
+                success(&output);
+                assert!(stdout.contains("Synthetic configured answer"));
+                assert_eq!(mock.requests().len(), 1);
+            }
+            "upstream" => {
+                assert!(!output.status.success());
+                assert!(
+                    !diagnostic.contains(key_path(&env).to_str().unwrap()),
+                    "{diagnostic}"
+                );
+                assert!(diagnostic.contains("upstream"), "{diagnostic}");
+                assert_eq!(mock.requests().len(), 1);
+            }
+            _ => {
+                assert_eq!(output.status.code(), Some(5), "{case}: {diagnostic}");
+                assert!(
+                    diagnostic.contains(key_path(&env).to_str().unwrap()),
+                    "{case}: {diagnostic}"
+                );
+                assert!(
+                    diagnostic.contains("local credential store"),
+                    "{case}: {diagnostic}"
+                );
+                assert!(mock.requests().is_empty());
+            }
+        }
+        for row in rows(&env) {
+            assert!(!row.to_string().contains(env.home().to_str().unwrap()));
+            assert!(!row.to_string().contains(CREDENTIAL));
+        }
+        mock.finish();
+    }
+}
+
+#[test]
 fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
     let env = TestEnv::new();
     let mock = MockAnthropic::start(vec![]);

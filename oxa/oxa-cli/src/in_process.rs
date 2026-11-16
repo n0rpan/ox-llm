@@ -76,9 +76,10 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
     };
     // These existing private locations are denied to both file tools and bash.
     // Discovery prepares the key parent only; it reads no key and opens no ledger.
+    let credential_path = dirs.home.join(".config/oxc/llm/cloud-secrets.json");
     let runtime = Runtime::new(
         routes,
-        dirs.home.join(".config/oxc/llm/cloud-secrets.json"),
+        credential_path.clone(),
         dirs.agent_dir.join("cloud-ledger"),
         Options {
             access: Access::Enabled,
@@ -92,5 +93,8 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
         let refusal = e.refusal();
         OxaError::new(refusal.code, refusal.message)
     })?;
-    Ok(Arc::new(EmbeddedEngine::from_gateway(gateway)))
+    Ok(Arc::new(EmbeddedEngine::from_gateway_with_local_diagnostics(
+        gateway,
+        credential_path,
+    )))
 }

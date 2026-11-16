@@ -7,21 +7,65 @@ use oxc_gateway::{
     ledger,
 };
 use serde_json::{json, Map, Value};
-use std::sync::{Arc, OnceLock};
+use std::{
+    path::{Path, PathBuf},
+    sync::{Arc, OnceLock},
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxc_gateway::policy::Refusal;
+
+    #[test]
+    fn local_credential_context_never_changes_public_or_upstream_failures() {
+        let path = Path::new("/synthetic/home/.config/oxc/llm/cloud-secrets.json");
+        let refusal = Refusal::credentials();
+        let public = refusal.body();
+        let ordinary = normalize(Error::Refused(refusal.clone()), None);
+        assert!(!ordinary.message.contains("/synthetic"));
+        let local = normalize(Error::Refused(refusal.clone()), Some(path));
+        assert_eq!(local.code, ordinary.code);
+        assert!(local.message.contains(path.to_str().unwrap()));
+        assert_eq!(refusal.body(), public);
+        assert!(!public.to_string().contains("/synthetic"));
+        for status in [401, 403] {
+            assert_eq!(
+                normalize(Error::Upstream(ClientError::Http(status)), Some(path)),
+                normalize(Error::Upstream(ClientError::Http(status)), None)
+            );
+        }
+        assert_eq!(
+            normalize(Error::Refused(Refusal::ledger()), Some(path)),
+            normalize(Error::Refused(Refusal::ledger()), None)
+        );
+    }
+}
 
 struct Backend {
     gateway: Gateway,
+    local_credential_path: Option<PathBuf>,
     driver: OnceLock<Result<tokio::runtime::Runtime, OxaError>>,
 }
 impl EmbeddedEngine {
     pub fn from_gateway(gateway: Gateway) -> Self {
+        Self::gateway_backend(gateway, None)
+    }
+    /// Trusted local CLI diagnostics only. This is the path already supplied to
+    /// the runtime, not a selector or an additional credential read. Never use
+    /// this constructor for remote/API error delivery.
+    pub fn from_gateway_with_local_diagnostics(gateway: Gateway, credential_path: PathBuf) -> Self {
+        Self::gateway_backend(gateway, Some(credential_path))
+    }
+    fn gateway_backend(gateway: Gateway, local_credential_path: Option<PathBuf>) -> Self {
         Self::new(Arc::new(Backend {
             gateway,
+            local_credential_path,
             driver: OnceLock::new(),
         }))
     }
 }
-fn normalize(error: Error) -> OxaError {
+fn normalize(error: Error, local_credential_path: Option<&Path>) -> OxaError {
     if matches!(error, Error::Upstream(ClientError::Cancelled)) {
         return OxaError::new(codes::ABORTED, "request cancelled");
     }
@@ -29,8 +73,19 @@ fn normalize(error: Error) -> OxaError {
     if refusal.code == "budget_not_configured" {
         refusal.message = "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.";
     }
-    let normalized =
+    let mut normalized =
         crate::info::http_error_with(refusal.status, refusal.body().to_string().as_bytes(), None);
+    // Only admission's local reader failure may name the attempted store.
+    // Upstream authentication errors and the public refusal remain unchanged.
+    if matches!(&error, Error::Refused(r) if r.code == "cloud_credentials_unavailable") {
+        if let Some(path) = local_credential_path {
+            normalized.message = format!(
+                "{} Checked local credential store: {}. Verify the provider entry and owner-only file protections.",
+                normalized.message,
+                path.display()
+            );
+        }
+    }
     if normalized.code == codes::BUDGET_EXHAUSTED {
         normalized.with_hint("adjust oxa.cloud.daily_budget_usd in oxa user settings, or wait for the next spend day; this is not retried")
     } else {
@@ -105,6 +160,6 @@ impl EmbeddedGateway for Backend {
         driver
             .block_on(self.gateway.chat(request, context, cancel, &mut deliver))
             .map(|_| ())
-            .map_err(normalize)
+            .map_err(|error| normalize(error, self.local_credential_path.as_deref()))
     }
 }
