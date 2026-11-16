@@ -427,10 +427,11 @@ impl BashTool {
         }
 
         let mut output = String::from_utf8_lossy(&res.output).into_owned();
-        let persistence_relevant = raw_command.contains("/tmp")
-            || raw_command.contains("TMPDIR")
-            || (res.exit != Some(0)
-                && [
+        // #525: only a failing command gets the notice (a success that merely mentions /tmp is noise).
+        let persistence_relevant = res.exit != Some(0)
+            && (raw_command.contains("/tmp")
+                || raw_command.contains("TMPDIR")
+                || [
                     "read-only file system",
                     "permission denied",
                     "operation not permitted",
