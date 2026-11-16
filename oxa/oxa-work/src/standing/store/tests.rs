@@ -350,6 +350,108 @@ fn answers_are_owner_bound_to_a_question_and_do_not_release_holds() {
     assert!(standing.answer(3, Authority::Owner, 4, answer(&ask)).is_err());
 }
 
+fn fill_view_with_open_asks(standing: &Standing) -> Vec<Ask> {
+    standing.rule(0, Authority::Owner, 1, hold(true, None)).unwrap();
+    let initial = standing.read().unwrap();
+    let mut request = question();
+    request.question = "\"".repeat(512);
+    request.meanwhile = Some("\"".repeat(512));
+    request.source = super::super::Source::Command {
+        command: "\"".repeat(512),
+    };
+    request.options.push(super::super::QuestionOption {
+        label: "Later".into(),
+        detail: String::new(),
+    });
+    request.options.push(super::super::QuestionOption {
+        label: "Reconsider".into(),
+        detail: String::new(),
+    });
+    for width in (1..=512).rev() {
+        for option in &mut request.options {
+            option.detail = "\"".repeat(width);
+        }
+        let mut projected = initial.clone();
+        projected.revision = 41;
+        projected.at = 41;
+        projected.asks = (2..=41)
+            .map(|revision| Ask {
+                id: format!("A-{revision}"),
+                revision,
+                scope: request.scope.clone(),
+                question: request.question.clone(),
+                options: request.options.clone(),
+                recommended: request.recommended.clone(),
+                meanwhile: request.meanwhile.clone(),
+                at: revision,
+                source: request.source.clone(),
+                answer: None,
+                proposal: None,
+            })
+            .collect();
+        if serde_json::to_vec(&projected).unwrap().len() <= MAX_VIEW - 1024 {
+            break;
+        }
+    }
+    let asks: Vec<_> = (2..=41)
+        .map(|revision| standing.ask(revision - 1, revision, request.clone()).unwrap())
+        .collect();
+    let before = standing.read().unwrap();
+    let mut projected = before.next(41, 42).unwrap();
+    let mut rule = Rule {
+        kind: Kind::Note,
+        scope: Scope::Repository,
+        value: Value::Text("p".into()),
+        said: "Keep the owner instructions".into(),
+        source: super::super::Source::Command {
+            command: "note".into(),
+        },
+        supersedes: None,
+    };
+    Standing::stage_rule(&mut projected, Authority::Owner, 42, rule.clone()).unwrap();
+    let padding = MAX_VIEW - 16 - serde_json::to_vec(&projected).unwrap().len();
+    assert!(padding < 1024, "remaining padding: {padding}");
+    rule.value = Value::Text("p".repeat(padding + 1));
+    standing.rule(41, Authority::Owner, 42, rule).unwrap();
+    let read = standing.read().unwrap();
+    assert_eq!(serde_json::to_vec(&read).unwrap().len(), MAX_VIEW - 16);
+    assert!(!read.history_truncated);
+    assert_eq!(read.open_asks().count(), 40);
+    asks
+}
+
+#[test]
+fn answering_near_the_byte_limit_closes_the_ask_even_when_its_history_is_trimmed() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts.clone());
+    let asks = fill_view_with_open_asks(&standing);
+    let cursor = facts.situation().unwrap().as_of_seq;
+    let answered = standing
+        .answer(42, Authority::Owner, 43, answer(&asks[0]))
+        .expect("the owner must be able to close an ask to free capacity");
+    assert!(answered.answer.is_some());
+    let reopened = Standing::open(&fixture.0.join("standing"), facts.clone()).unwrap();
+    let (read, situation) = reopened.read_facts().unwrap();
+    assert_eq!(read.revision, 43);
+    assert!(read.history_truncated);
+    assert_eq!(read.open_asks().count(), 39);
+    assert!(!read.asks.iter().any(|ask| ask.id == asks[0].id));
+    assert_eq!(situation.standing_revision, 43);
+    assert_eq!(situation.asks.len(), 39);
+    assert!(!situation.asks.iter().any(|ask| ask.id == asks[0].id));
+    let events = facts.events_after(cursor, 64).unwrap().events;
+    assert_eq!(events.len(), 1);
+    let Fact::StandingChanged(change) = &events[0].fact else {
+        panic!("standing change")
+    };
+    assert_eq!(change.ask_closed.as_ref().unwrap().id, asks[0].id);
+    assert!(reopened.is_held(480).unwrap().is_some());
+    assert!(reopened
+        .with_guard(Action::Update, subject(), |_| Ok(()))
+        .is_err());
+}
+
 #[test]
 fn an_ask_capacity_refusal_does_not_reserve_a_stuck_standing_revision() {
     let fixture = Fixture::new();
