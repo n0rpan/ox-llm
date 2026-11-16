@@ -153,6 +153,36 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
 }
 
 #[test]
+fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
+    let env = TestEnv::new();
+    let mock = MockAnthropic::start(vec![]);
+    settings(&env, &mock.base_url(), true);
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    value["oxa"]["cloud"]
+        .as_object_mut()
+        .unwrap()
+        .remove("daily_budget_usd");
+    fs::write(path, value.to_string()).unwrap();
+    write_key(&env, "invalid synthetic JSON");
+    let output = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic budget setup"],
+        None,
+    );
+    assert!(!output.status.success());
+    let diagnostic = String::from_utf8_lossy(&output.stderr);
+    assert!(diagnostic.contains("oxa.cloud.daily_budget_usd"), "{diagnostic}");
+    assert!(!diagnostic.contains(" in oxc"), "{diagnostic}");
+    assert!(mock.requests().is_empty());
+    let rows = rows(&env);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["status"], 403);
+    assert_eq!(rows[0]["error"], "budget_not_configured");
+    assert_eq!(rows[0]["cost_usd"], 0.0);
+}
+
+#[test]
 fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
     let env = TestEnv::new();
     env.write("work/note.txt", "SYNTHETIC PROOF\n");
@@ -248,6 +278,9 @@ fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
         None,
     );
     assert_eq!(exhausted.status.code(), Some(oxa_proto::EXIT_BUDGET));
+    let diagnostic = String::from_utf8_lossy(&exhausted.stderr);
+    assert!(diagnostic.contains("oxa.cloud.daily_budget_usd"), "{diagnostic}");
+    assert!(!diagnostic.contains(" in oxc"), "{diagnostic}");
     assert_eq!(mock.requests().len(), 2);
     let all = rows(&env);
     assert_eq!(all.len(), 3);
