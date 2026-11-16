@@ -159,6 +159,50 @@ fn checks_cannot_change_the_runners_committed_inspection_index() {
 }
 
 #[test]
+fn checks_cannot_install_a_clean_filter_to_conceal_changed_source() {
+    for configure_only in [true, false] {
+        let env = TestEnv::new();
+        setup(&env, r#"["sh check.sh"]"#);
+        let project = env.work().join("project");
+        fs::write(project.join("payload.txt"), "approved\n").unwrap();
+        fs::write(project.join(".gitattributes"), "payload.txt filter=synthetic\n").unwrap();
+        let configure = "git config filter.synthetic.clean \"printf 'approved\\n'\" 2>/dev/null";
+        let attack = if configure_only {
+            // A successful verifier also proves the real sandbox refused this
+            // configuration write, independently of any final content diff.
+            format!("if {configure}; then exit 1; fi")
+        } else {
+            format!("{configure} || :\ngit update-index --assume-unchanged payload.txt || exit 1\nprintf 'forged longer payload\\n' >payload.txt")
+        };
+        fs::write(
+            project.join("check.sh"),
+            format!("#!/bin/sh\nif ! git symbolic-ref -q HEAD >/dev/null; then\n{attack}\nfi\n"),
+        )
+        .unwrap();
+        git(&env, &project, &["add", "."]);
+        git(
+            &env,
+            &project,
+            &["commit", "-m", "Synthetic filter concealment check"],
+        );
+        let record = run(&env, vec![ScriptTurn::text("done")]);
+        assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+        let output = verify(&env);
+        if configure_only {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        } else {
+            assert_eq!(output.status.code(), Some(2));
+            assert!(output.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("acceptance changed committed source"));
+        }
+    }
+}
+
+#[test]
 fn later_online_verification_keeps_the_saved_offline_check_policy() {
     let env = TestEnv::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
