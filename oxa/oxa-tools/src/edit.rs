@@ -132,10 +132,13 @@ fn save_with(
         return rewrite(file, content);
     }
     let parent = target.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let dir = std::fs::File::open(parent)?;
-    crate::checked::verify_at(parent, &dir)?;
-    let name = target.file_name().unwrap_or_default();
-    match replace(&dir, name, content, Some(&meta)) {
+    let result = (|| {
+        let dir = std::fs::File::open(parent)?;
+        crate::checked::verify_at(parent, &dir)?;
+        let name = target.file_name().unwrap_or_default();
+        replace(&dir, name, content, Some(&meta))
+    })();
+    match result {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => rewrite(file, content),
         other => other,
     }
@@ -225,7 +228,7 @@ impl Tool for EditTool {
         let opened = OpenOptions::new()
             .read(true)
             .write(true)
-            .open(&target)
+            .open(&abs)
             .and_then(|f| crate::checked::verify_at(&target, &f).map(|()| f));
         let mut file = match opened {
             Ok(f) => f,
@@ -261,6 +264,43 @@ impl Tool for EditTool {
 mod save_tests {
     use super::*;
     use std::os::unix::fs::MetadataExt;
+
+    #[test]
+    fn atomic_save_refuses_a_parent_swapped_after_the_file_was_opened() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.write("work/dir/file", "before");
+        let outside = env.write("outside/file", "unrelated");
+        let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        std::fs::rename(env.work().join("dir"), env.work().join("saved")).unwrap();
+        std::os::unix::fs::symlink(outside.parent().unwrap(), env.work().join("dir")).unwrap();
+        let error = save(&path, &mut file, b"after").unwrap_err();
+        assert!(error.to_string().contains("changed after the permission check"));
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "unrelated");
+        assert_eq!(
+            std::fs::read_to_string(env.work().join("saved/file")).unwrap(),
+            "before"
+        );
+    }
+
+    #[test]
+    fn replacement_fallback_writes_the_open_file_not_a_swapped_leaf() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.write("work/file", "before");
+        let outside = env.write("outside/file", "unrelated");
+        let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let original = env.work().join("original");
+        std::fs::rename(&path, &original).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+        let mut attempted = false;
+        save_with(&path, &mut file, b"after", |_, _, _, _| {
+            attempted = true;
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap();
+        assert!(attempted);
+        assert_eq!(std::fs::read_to_string(original).unwrap(), "after");
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "unrelated");
+    }
 
     #[test]
     fn replacement_permission_denied_falls_back_even_as_root() {

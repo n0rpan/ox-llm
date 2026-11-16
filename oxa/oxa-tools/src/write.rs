@@ -94,17 +94,20 @@ fn write_file(args: &Value, cx: &ToolCtx) -> Result<(usize, bool), String> {
         Some(p) => p.to_path_buf(),
         None => return Err(format!("Path has no parent directory: {path}")),
     };
-    fs::create_dir_all(&parent).map_err(|e| write_io_error(path, &e))?;
-    // The temp file and the rename go through this directory, opened once and checked: a
-    // directory swapped for a link later does not move the write.
-    let dir = File::open(&parent).map_err(|e| write_io_error(path, &e))?;
+    // Pinned parents are created component by component through directory descriptors, so a
+    // swapped ancestor cannot redirect even the creation of missing intermediate directories.
+    let dir = if pin.is_some() {
+        checked::create_parent(&parent)
+    } else {
+        fs::create_dir_all(&parent).and_then(|()| File::open(&parent))
+    }
+    .map_err(|e| write_io_error(path, &e))?;
     if pin.is_some() {
         checked::verify_at(&parent, &dir).map_err(|e| write_io_error(path, &e))?;
     }
 
     let name = target.file_name().unwrap_or_default();
-    replace_file(&dir, name, content.as_bytes(), existing.as_ref())
-        .map_err(|e| write_io_error(path, &e))?;
+    replace_file(&dir, name, content.as_bytes(), existing.as_ref()).map_err(|e| write_io_error(path, &e))?;
     Ok((content.len(), created))
 }
 
@@ -198,7 +201,10 @@ mod tests {
         let (tmp, mut file) = create_temp(&dir, Some(&meta)).unwrap();
         assert_eq!(file.metadata().unwrap().permissions().mode() & 0o077, 0);
         file.write_all(b"private edited content").unwrap();
-        assert_eq!(fs::read(env.work().join(&tmp)).unwrap(), b"private edited content");
+        assert_eq!(
+            fs::read(env.work().join(&tmp)).unwrap(),
+            b"private edited content"
+        );
     }
 
     #[test]

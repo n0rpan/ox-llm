@@ -138,6 +138,28 @@ fn a_write_whose_pinned_directory_became_a_link_is_refused() {
     assert_eq!(leftovers.len(), 1, "no temp file left outside");
 }
 
+#[test]
+fn a_write_does_not_create_missing_parents_behind_a_swapped_link() {
+    let env = TestEnv::new();
+    let work = real(env.work());
+    let outside = env.root().join("outside");
+    fs::create_dir(&outside).unwrap();
+    symlink(&outside, work.join("d")).unwrap();
+    let out = run_pinned(
+        &WriteTool::new(),
+        &env,
+        "d/new/deeper/file",
+        work.join("d/new/deeper/file"),
+        json!({"content": "new content"}),
+    );
+    assert!(out.is_error, "{}", out.text);
+    assert_eq!(
+        fs::read_dir(outside).unwrap().count(),
+        0,
+        "no stray directories outside"
+    );
+}
+
 /// Codex review of #550: a link to a file whose name is not UTF-8 is written through to that
 /// file, not renamed over a look-alike with the replacement character.
 #[test]
@@ -161,4 +183,60 @@ fn a_write_through_a_link_keeps_a_non_utf8_target_name() {
     assert!(!out.is_error, "{}", out.text);
     assert_eq!(fs::read_to_string(&target).unwrap(), "new\n");
     assert_eq!(fs::read_to_string(&lookalike).unwrap(), "unrelated\n");
+}
+
+#[test]
+fn a_pinned_edit_is_atomic_and_keeps_a_non_utf8_target_name() {
+    use std::ffi::OsStr;
+    use std::io::Read;
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let work = real(env.work());
+    let target = work.join(OsStr::from_bytes(b"caf\xff.txt"));
+    fs::write(&target, "before\n").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+    let mut old = fs::File::open(&target).unwrap();
+    let lookalike = work.join("caf\u{FFFD}.txt");
+    fs::write(&lookalike, "unrelated\n").unwrap();
+    symlink(&target, work.join("link")).unwrap();
+    let out = run_pinned(
+        &EditTool::new(),
+        &env,
+        "link",
+        target.clone(),
+        json!({"oldText": "before", "newText": "after"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(fs::read_to_string(&target).unwrap(), "after\n");
+    assert_eq!(fs::read_to_string(lookalike).unwrap(), "unrelated\n");
+    assert!(work.join("link").is_symlink());
+    assert_eq!(
+        fs::metadata(&target).unwrap().permissions().mode() & 0o7777,
+        0o640
+    );
+    let mut original = String::new();
+    old.read_to_string(&mut original).unwrap();
+    assert_eq!(original, "before\n", "the original inode is not truncated");
+}
+
+#[test]
+fn a_pinned_edit_works_without_directory_read_permission() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let target = real(env.write("work/search-only/file", "before\n"));
+    let parent = target.parent().unwrap();
+    // The file is writable and searchable, but opening the directory for reading is forbidden.
+    // Root may bypass the mode; the existing injected PermissionDenied test covers its fallback.
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o100)).unwrap();
+    let out = run_pinned(
+        &EditTool::new(),
+        &env,
+        "search-only/file",
+        target.clone(),
+        json!({"oldText": "before", "newText": "after"}),
+    );
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(fs::read_to_string(target).unwrap(), "after\n");
 }

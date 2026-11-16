@@ -40,16 +40,106 @@ pub(crate) fn verify_at(expected: &Path, file: &File) -> io::Result<()> {
 }
 
 /// Whether `file` is at `expected`: the kernel's own path of the open file. Without `/proc`,
-/// the same device and inode as `expected` (looked up again; the best that is left).
+/// compare device and inode against a descriptor opened without following any symlinks.
 fn is_at(expected: &Path, file: &File) -> io::Result<bool> {
     match std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())) {
         Ok(real) => Ok(real == expected),
-        Err(_) => {
-            use std::os::unix::fs::MetadataExt;
-            let (a, b) = (file.metadata()?, std::fs::metadata(expected)?);
-            Ok(a.dev() == b.dev() && a.ino() == b.ino())
-        }
+        Err(_) => is_at_without_proc(expected, file),
     }
+}
+
+fn is_at_without_proc(expected: &Path, file: &File) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let opened = (|| {
+        if let Some(name) = expected.file_name() {
+            let dir = open_dir_chain(expected.parent().unwrap(), false)?;
+            open_in(&dir, name, false)
+        } else {
+            open_dir_chain(expected, false)
+        }
+    })();
+    let other = match opened {
+        Ok(other) => other,
+        Err(e) if redirected(&e) || e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let (a, b) = (file.metadata()?, other.metadata()?);
+    Ok(a.dev() == b.dev() && a.ino() == b.ino())
+}
+
+fn redirected(e: &io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR))
+}
+
+/// Create a pinned real parent path without ever following a substituted ancestor symlink.
+/// Each mkdir and subsequent open is relative to the already opened ancestor, not its name.
+pub(crate) fn create_parent(expected: &Path) -> io::Result<File> {
+    open_dir_chain(expected, true).map_err(|e| {
+        if redirected(&e) {
+            io::Error::other(SWAPPED)
+        } else {
+            e
+        }
+    })
+}
+
+fn open_dir_chain(expected: &Path, create: bool) -> io::Result<File> {
+    use std::path::Component;
+    if !expected.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected a real absolute path",
+        ));
+    }
+    let mut dir = File::open("/")?;
+    for component in expected.components() {
+        let name = match component {
+            Component::RootDir => continue,
+            Component::Normal(name) => name,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "expected a real absolute path",
+                ))
+            }
+        };
+        dir = match open_in(&dir, name, true) {
+            Err(e) if create && e.kind() == io::ErrorKind::NotFound => {
+                let c = c_name(name)?;
+                // SAFETY: dir is open and c is a valid, single-component C string.
+                if unsafe { libc::mkdirat(dir.as_raw_fd(), c.as_ptr(), 0o777) } != 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::AlreadyExists {
+                        return Err(error);
+                    }
+                }
+                open_in(&dir, name, true)?
+            }
+            other => other?,
+        };
+    }
+    Ok(dir)
+}
+
+fn open_in(dir: &File, name: &OsStr, directory: bool) -> io::Result<File> {
+    let c = c_name(name)?;
+    // O_PATH requires search permission, not directory read permission, and cannot block on
+    // special files. A final symlink may open as a link itself but cannot match the target inode.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let access = libc::O_PATH;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let access = libc::O_RDONLY | libc::O_NONBLOCK;
+    let mut flags = access | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+    if directory {
+        flags |= libc::O_DIRECTORY;
+    }
+    // SAFETY: dir is open and c is a valid, single-component C string.
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: fd was just opened and nothing else owns it.
+    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 /// A file name as a C string (`openat`/`renameat` take one component, relative to a directory).
@@ -87,5 +177,46 @@ pub(crate) fn remove_in(dir: &File, name: &str) {
     if let Ok(c) = c_name(name) {
         // SAFETY: `dir` is an open directory and `c` a valid C string.
         unsafe { libc::unlinkat(dir.as_raw_fd(), c.as_ptr(), 0) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn metadata_fallback_rejects_redirected_ancestors_and_leaf_links() {
+        let env = oxa_fake::TestEnv::new();
+        let outside = env.write("outside/file", "synthetic private content");
+        let file = File::open(&outside).unwrap();
+        let work = std::fs::canonicalize(env.work()).unwrap();
+        symlink(outside.parent().unwrap(), work.join("swapped")).unwrap();
+        assert!(!is_at_without_proc(&work.join("swapped/file"), &file).unwrap());
+        symlink(&outside, work.join("leaf")).unwrap();
+        assert!(!is_at_without_proc(&work.join("leaf"), &file).unwrap());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn metadata_fallback_needs_only_search_permission_on_ancestors() {
+        use std::os::unix::fs::PermissionsExt;
+        let env = oxa_fake::TestEnv::new();
+        let path = std::fs::canonicalize(env.write("work/dir/file", "normal content")).unwrap();
+        let file = File::open(&path).unwrap();
+        let dir = path.parent().unwrap();
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o100)).unwrap();
+        let result = is_at_without_proc(&path, &file);
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.unwrap());
+    }
+
+    #[test]
+    fn metadata_fallback_accepts_unchanged_files_and_directories() {
+        let env = oxa_fake::TestEnv::new();
+        let path = std::fs::canonicalize(env.write("work/file", "normal content")).unwrap();
+        assert!(is_at_without_proc(&path, &File::open(&path).unwrap()).unwrap());
+        let dir = path.parent().unwrap();
+        assert!(is_at_without_proc(dir, &File::open(dir).unwrap()).unwrap());
     }
 }
