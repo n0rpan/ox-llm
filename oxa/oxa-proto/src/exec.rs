@@ -179,6 +179,9 @@ pub trait Policy: Send {
     }
     /// Record an [`Answer::Session`] grant for `a`. Grants never outlive the session.
     fn remember(&mut self, a: &Access);
+    /// Update the active session's spill directory after opening or switching sessions.
+    /// Policies may allow reads of that session's output without granting the whole tmp tree.
+    fn set_spill_dir(&mut self, _dir: &Path) {}
     /// #517: the deny-list for the entries a tool finds by walking an allowed directory
     /// ([`crate::ToolCtx::hidden`]). `None` (the default) = the policy hides nothing.
     fn path_filter(&self) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
