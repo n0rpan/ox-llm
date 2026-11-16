@@ -402,25 +402,6 @@ impl<'a> Call<'a> {
                 request.messages,
             )
     }
-    pub fn seal_history(
-        &self,
-        request: &oxa_proto::ChatRequest<'_>,
-        assistant: &oxa_proto::WireMsg,
-        items: Vec<Value>,
-    ) -> Result<oxa_proto::ProviderHistory, Refusal> {
-        self.entry
-            .as_ref()
-            .ok_or_else(Refusal::ledger)?
-            .ledger()
-            .seal_provider_history(
-                self.model,
-                &self.provider_account_scope(),
-                request.prefix,
-                request.messages,
-                assistant,
-                items,
-            )
-    }
     pub fn mark_forwarded(&mut self) {
         self.forwarded = true;
         self.hold.as_mut().expect("unsettled call").mark_forwarded();
