@@ -282,10 +282,14 @@ impl Codec for Subject {
 
 record!(
     /// Stable source/revision identifies a durable observation on restart, before its event seq.
-    Checkpoint { source: String, revision: u64 } |s| {
-        atom(&s.source, 64)?;
-        require(s.revision > 0, "checkpoint revision must be positive")
-    }
+    Checkpoint {
+        source: String,
+        revision: u64
+    } | s
+        | {
+            atom(&s.source, 64)?;
+            require(s.revision > 0, "checkpoint revision must be positive")
+        }
 );
 record!(
     PullRequest {
@@ -429,9 +433,13 @@ impl Fact {
 
 record!(
     /// Sequence is repository-local, starts at one and never resets on rotation.
-    Event { seq: u64, at_ms: u64, checkpoint: Checkpoint, fact: Fact } |s| {
-        require(s.seq > 0, "event sequence must be positive")
-    }
+    Event {
+        seq: u64,
+        at_ms: u64,
+        checkpoint: Checkpoint,
+        fact: Fact
+    } | s
+        | { require(s.seq > 0, "event sequence must be positive") }
 );
 record!(
     /// A bounded materialized read view, not task state. Never drop running/blocked/asks to fit.

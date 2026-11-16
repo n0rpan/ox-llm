@@ -148,6 +148,13 @@ pub fn from_user_settings(
         None => default_cutoff.is_some(),
         Some(value) => value.as_bool().ok_or(Error::Settings)?,
     };
+    // The native parser accepts these controls only as separate argv words.
+    if extra
+        .iter()
+        .any(|word| word.starts_with("--mtp-max-ctx=") || word.starts_with("--mtp-sampled="))
+    {
+        return Err(Error::Arguments);
+    }
     let has_flag = |flag: &str| extra.iter().any(|word| word.split('=').next() == Some(flag));
     let raw_cutoff = has_flag("--mtp-max-ctx");
     let raw_sampled = has_flag("--mtp-sampled");
