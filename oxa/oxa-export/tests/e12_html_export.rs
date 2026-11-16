@@ -489,3 +489,27 @@ fn base64_vectors() {
     assert_eq!(base64_encode(b"Man"), "TWFu");
     assert_eq!(base64_encode(&[0xfb, 0xff]), "+/8=");
 }
+
+#[test]
+fn persisted_private_replay_is_excluded_from_exported_session_data() {
+    let mut wire = WireMsg::assistant("visible");
+    wire.provider_history = Some(
+        oxa_proto::ProviderHistory::new(
+            [1; 32],
+            [2; 32],
+            vec![serde_json::json!({
+        "type":"reasoning","encrypted_content":"synthetic-private-replay"})],
+        )
+        .unwrap(),
+    );
+    let e = entry("synthetic", None, 1, msg(wire));
+    let mut bytes = vec![];
+    encode_entry(&e, &mut bytes);
+    assert!(String::from_utf8_lossy(&bytes).contains("synthetic-private-replay"));
+    let decoded = oxa_session::decode_entry(&bytes).unwrap();
+    let public = session_data_json(&header(), &[decoded], &ExportOpts::default()).unwrap();
+    let text = String::from_utf8_lossy(&public);
+    assert!(!text.contains("synthetic-private-replay"));
+    assert!(!text.contains("provider_history"));
+    assert!(text.contains("visible"));
+}

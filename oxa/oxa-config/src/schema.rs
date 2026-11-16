@@ -141,6 +141,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
+    key("oxa.cloud", Kind::Object, "{}"),
     // V020-OPTIMIZE #7: unset = on.
     key("oxa.compaction.idleSummary", Kind::Bool, "null"),
     // L5 mid-run: unset = on.

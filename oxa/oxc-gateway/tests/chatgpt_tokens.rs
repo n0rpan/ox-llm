@@ -230,3 +230,74 @@ fn processes_refresh_once() {
     }
     assert_eq!(fs::read(temp.0.join("refresh-called")).unwrap(), b"once");
 }
+
+#[test]
+fn nonblocking_refresh_reports_only_busy_and_preserves_checks() {
+    use nix::fcntl::{Flock, FlockArg};
+    let temp = Temp::new();
+    let path = temp.tokens(1.0);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(temp.0.join("chatgpt-auth.lock"))
+        .unwrap();
+    let held = Flock::lock(file, FlockArg::LockExclusive).unwrap();
+    let before = fs::read(&path).unwrap();
+    let busy = chatgpt_tokens::try_credentials(&path, |_| -> Result<TokenRecord, Error> {
+        panic!("busy lock must not call refresh")
+    })
+    .unwrap();
+    assert!(busy.is_none());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    drop(held);
+    let record = chatgpt_tokens::try_credentials(&path, |_| Ok::<_, Error>(renewed()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.access_token(), ACCESS);
+    let fresh = chatgpt_tokens::try_credentials(&path, never).unwrap().unwrap();
+    assert_eq!(fresh.access_token(), ACCESS);
+    let linked = temp.0.join("linked.json");
+    symlink(&path, &linked).unwrap();
+    assert!(matches!(
+        chatgpt_tokens::try_credentials(&linked, never),
+        Err(Error::Unavailable)
+    ));
+}
+
+#[test]
+fn jwt_expiry_bounds_optimistic_metadata_before_the_refresh_margin() {
+    let record = TokenRecord::new(
+        "e30.eyJleHAiOjEwMDB9.synthetic".into(),
+        REFRESH.into(),
+        ACCOUNT.into(),
+        1_000_000.0,
+    )
+    .unwrap();
+    assert_eq!(record.expires_at(), 1000.0);
+    assert!(!record.is_fresh_at(881.0));
+    assert!(record.is_fresh_at(879.0));
+}
+
+#[test]
+fn expiry_hint_does_not_trust_malformed_claims_or_extend_the_stored_lifetime() {
+    for access in [
+        "opaque-synthetic",
+        "e30.not+url.synthetic",
+        "e30.W10.synthetic",
+        "e30.eyJleHAiOm51bGx9.synthetic",
+        "e30.eyJleHAiOjEwMDB9=.synthetic",
+    ] {
+        let record = TokenRecord::new(access.into(), REFRESH.into(), ACCOUNT.into(), 500.0).unwrap();
+        assert_eq!(record.expires_at(), 500.0);
+    }
+    let record = TokenRecord::new(
+        "e30.eyJleHAiOjEwMDB9.synthetic".into(),
+        REFRESH.into(),
+        ACCOUNT.into(),
+        500.0,
+    )
+    .unwrap();
+    assert_eq!(record.expires_at(), 500.0);
+}
