@@ -56,6 +56,7 @@ class Gate(unittest.TestCase):
         self.assertTrue(manifests)
         self.assertEqual(set(manifests), {'oxa/Cargo.toml'})
         self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features', block)
+        self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features -p oxa-engine', block)
         self.assertIn('bwrap --unshare-user --unshare-net --cap-drop ALL', block)
         self.assertIn('env -i ', block)
         self.assertIn('sudo chown 65534:65534 "$gateway_owner_fixture"', block)

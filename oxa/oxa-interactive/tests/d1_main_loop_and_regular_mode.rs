@@ -736,6 +736,7 @@ fn blocks_from_entries_attach_results_to_calls() {
                         name: "bash".into(),
                         args_raw: "{\"command\":\"ls\"}".into(),
                     }],
+                    provider_history: None,
                     tool_call_id: None,
                 },
                 parts: Vec::new(),
@@ -793,6 +794,7 @@ fn blocks_from_entries_keep_error_flag_and_ui_of_results() {
             name: "bash".into(),
             args_raw: "{}".into(),
         }],
+        provider_history: None,
         tool_call_id: None,
     };
     let entries = vec![

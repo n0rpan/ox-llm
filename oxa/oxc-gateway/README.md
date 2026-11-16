@@ -53,8 +53,9 @@ cargo run --locked --offline --manifest-path oxa/Cargo.toml -p oxa-cli \
 
 It emits five samples of idle/streaming RSS and threads, startup/request time to
 the first text, and the overhead against a direct request with the same body.
-Results contain numbers only. This initial slice does not link the gateway into
-the production binary; consumer slices must measure their own footprint.
+Results contain numbers only. The default oxa binary does not link the gateway;
+the optional `oxa-engine/in-process-gateway` bridge is described below. Measure
+each consumer's binary with its selected features.
 
 The `cloud-only` feature provides a typed, immutable catalog. Construct validated
 `catalog::Model` values from trusted user settings, then create a `Catalog` with
@@ -74,7 +75,7 @@ rows are owner-only. Explicit session and idempotency identifiers use separate
 keyed HMAC domains. The entry API accepts no request body, and records no prompt,
 response, agent fingerprint or inferred session/gap telemetry. Billing fields
 are validated and serialized through one writer; failed appends fail admission
-closed. Cross-process admission follows the walking-skeleton series.
+closed. Admission uses the process-shared reservations described above.
 
 `KeyFile::prepare` binds an approved parent directory once per configuration;
 each read opens the key file afresh without following its final link and checks
@@ -101,5 +102,32 @@ redaction and is only appropriate without sensitive data.
 `finish` rejects truncated/error streams. Only terminal output usage followed by
 `message_stop` is trusted, with input, cache reads and cache writes kept separate.
 Trusted usage remains available when public usage is disabled. Native tests
-cover these contracts without Python peers or byte-exact goldens. Transport and
-the production caller that supplies the redactor follow in S5/S6.
+cover these contracts without Python peers or byte-exact goldens. The native
+`anthropic_client` transport supplies the credential redactor; the gateway
+settles the request before reporting success.
+
+`anthropic-gateway` composes typed catalog configuration, private admission,
+native transport and consuming settlement. `Runtime::new` takes validated model
+routes with optional prices and explicit private paths; its default options
+refuse cloud use. Discovery borrows public metadata and reads no key or ledger.
+`Gateway::chat` takes the same borrowed `oxa_proto::ChatRequest` used by the core,
+without a request-byte conversion at the engine boundary. Decoded chunks pass
+straight to reply assembly. Only the frozen tools schema needs decoding.
+
+Known refusals write private zero-spend rows. Documented Anthropic HTTP refusals
+(400, 401, 403, 404, 413, 429) settle at zero as `refused`; timeout, server and
+transport failures retain the conservative charge. Paid calls retain process-shared
+reservations until durable settlement; interrupted guards conservatively record
+unknown paid work. Trusted terminal cache usage settles even if public usage is
+omitted or final delivery cancels. Unknown paid cancellations retain the full
+reserved charge. Done follows a successful append; later cancellation cannot
+retract an already settled reply. Failed appends block subsequent admissions.
+Opaque thinking replay is bounded and scoped to history, tools, model, endpoint
+and credential; it never appears in public chunks or ledger diagnostics.
+
+The optional `oxa-engine/in-process-gateway` bridge delivers callbacks on the
+calling thread. Construction/discovery starts no worker. The first chat lazily
+creates one parked I/O worker for pooled connections and concurrent calls.
+Shared `CancelToken` notifications wake network waits directly, with no timer
+or relay token. Async consumers use `Gateway::chat` directly. Production setting
+and factory selection are the subsequent default-off S7 slice.

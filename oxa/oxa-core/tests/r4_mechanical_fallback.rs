@@ -159,6 +159,7 @@ fn read_call(id: &str, path: &str) -> WireMsg {
             name: "read".to_string(),
             args_raw: format!(r#"{{"path":"{path}"}}"#),
         }],
+        provider_history: None,
         tool_call_id: None,
     }
 }
