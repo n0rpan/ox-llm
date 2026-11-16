@@ -158,3 +158,28 @@ fn invalid_names_and_upstream_controls_are_refused_without_echoing_them() {
         );
     }
 }
+
+#[test]
+fn remote_endpoints_require_https_but_loopback_mocks_can_use_http() {
+    for endpoint in [
+        "http://api.example.invalid/v1",
+        "http://192.0.2.1/v1",
+        "http://10.0.0.1/v1",
+        "http://0.0.0.0/v1",
+        "http://[::]/v1",
+    ] {
+        assert_eq!(
+            Model::new("cloud", Provider::Anthropic, "upstream", endpoint, 4096, 512).unwrap_err(),
+            Error::InvalidEndpoint
+        );
+    }
+    for endpoint in [
+        "https://api.example.invalid/v1",
+        "http://localhost:1234/v1",
+        "http://127.0.0.1:1234/v1",
+        "http://127.0.0.2:1234/v1",
+        "http://[::1]:1234/v1",
+    ] {
+        assert!(Model::new("cloud", Provider::Anthropic, "upstream", endpoint, 4096, 512).is_ok());
+    }
+}

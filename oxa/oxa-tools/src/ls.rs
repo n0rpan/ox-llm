@@ -66,8 +66,15 @@ impl Tool for LsTool {
         };
 
         // Sorted case-insensitively; the raw name breaks ties so the order is total.
+        // #517: the deny-list entries of an allowed directory are not listed.
+        let real_dir = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         let mut names: Vec<String> = reader
             .filter_map(|e| e.ok())
+            .filter(|e| {
+                !cx.hidden
+                    .as_ref()
+                    .is_some_and(|h| h.hides(&real_dir.join(e.file_name())))
+            })
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));

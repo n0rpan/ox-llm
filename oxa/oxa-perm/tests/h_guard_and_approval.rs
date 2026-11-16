@@ -91,6 +91,50 @@ fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
     );
 }
 
+/// #544: a denied directory does not cover a child's symlink target in the workspace.
+#[test]
+fn symlinked_oxc_credentials_are_denied() {
+    for link_directory in [false, true] {
+        let env = TestEnv::new();
+        let llm = env.home().join(".config/oxc/llm");
+        let credentials = env.work().join("credentials");
+        let names = ["cloud-secrets.json", "chatgpt-auth.json"];
+        for name in names {
+            env.write(&format!("work/credentials/{name}"), "synthetic credential");
+        }
+        if link_directory {
+            std::fs::create_dir_all(llm.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&credentials, &llm).unwrap();
+        } else {
+            std::fs::create_dir_all(&llm).unwrap();
+            for name in names {
+                std::os::unix::fs::symlink(credentials.join(name), llm.join(name)).unwrap();
+            }
+        }
+        let p = guarded(&env);
+        for name in names {
+            for path in [credentials.join(name), llm.join(name)] {
+                for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+                    for access in [Access::Read(path.clone()), Access::Write(path.clone())] {
+                        assert_eq!(
+                            p.decide(mode, &access, &env.work()),
+                            SENSITIVE,
+                            "directory link={link_directory}, {mode:?}, {access:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // Naming a credential target must not restrict unrelated project files.
+        for access in [
+            Access::Read(credentials.join("notes.txt")),
+            Access::Write(credentials.join("notes.txt")),
+        ] {
+            assert_eq!(p.decide(Mode::Workspace, &access, &env.work()), Decision::Allow);
+        }
+    }
+}
+
 #[test]
 fn protected_project_files_ask_or_are_refused() {
     let env = TestEnv::new();

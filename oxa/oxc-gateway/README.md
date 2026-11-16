@@ -52,3 +52,19 @@ Catalog construction reads no credential or ledger and starts no engine.
 
 Native policy tests assert client status, code, type and parameter, with a
 nonempty explanation. They protect error classification without wording parity.
+
+The `ledger` feature supplies private request rows and one shared budget per local
+calendar day. Keep one `Ledger` per gateway and clone its handles across calls;
+an admitted call retains its original day over midnight. The install salt and
+rows are owner-only. Explicit session and idempotency identifiers use separate
+keyed HMAC domains. The entry API accepts no request body, and records no prompt,
+response, agent fingerprint or inferred session/gap telemetry. Billing fields
+are validated and serialized through one writer; failed appends fail admission
+closed. Cross-process admission follows the walking-skeleton series.
+
+`KeyFile::prepare` binds an approved parent directory once per configuration;
+each read opens the key file afresh without following its final link and checks
+owner, mode and size again. No key bytes or key descriptor are cached. Secrets
+use UTF-8 JSON (an optional UTF-8 BOM is accepted); UTF-16/32 and nonfinite JSON
+extensions are refused. The copied conversion/normalization buffers are gone.
+Model endpoints require HTTPS, with HTTP limited to loopback fixtures.
