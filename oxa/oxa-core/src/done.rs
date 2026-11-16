@@ -1,6 +1,6 @@
 //! `done` setting (issue #104): shell commands oxa runs itself before it reports completion.
-//! A run that edited files (`edit` / `write` succeeded, or a `bash` call changed the git tree) and is
-//! about to stop runs them in the session sandbox; a failure goes back to the model as a user
+//! A run that edited files (`edit` / `write` succeeded, or a `bash`, sub-agent, MCP or extension
+//! tool call changed the work folder) and is about to stop runs them in the session sandbox; a failure goes back to the model as a user
 //! message, at most [`MAX_ROUNDS`] times. An entry `in <dir>: <command>` runs in `<dir>`, a folder
 //! of the session folder, instead of in the session folder itself.
 use crate::exec::CallResult;
@@ -21,7 +21,7 @@ pub(crate) struct DoneState {
     /// A file tool succeeded since the last check.
     dirty: bool,
     rounds: u32,
-    /// `git` fingerprint of the work folder at the last look (`None`: not a git repo).
+    /// Fingerprint of the work folder at the last look (`None`: too big to look at).
     tree: Option<u64>,
 }
 
@@ -29,11 +29,52 @@ pub(crate) struct DoneState {
 const PROBE_TIMEOUT_S: u64 = 20;
 
 /// Hash of the work folder's git file list (index entries and untracked files) with each file's
-/// size and modification time; `None` outside a git repo, without git, or on a timeout.
+/// size and modification time. Outside a git repo, without git, or on a timeout it is a bounded
+/// walk of the folder ([`walk_fingerprint`]).
+fn tree_fingerprint(cwd: &Path) -> Option<u64> {
+    git_fingerprint(cwd).or_else(|| walk_fingerprint(cwd))
+}
+
+/// Entries the non-git walk looks at before it gives up (`None`: no checks from tree changes).
+const WALK_CAP: usize = 20_000;
+
+/// Hash of every file's relative path, size and modification time under `cwd`, without
+/// following symlinks and without `.git`, `node_modules` and `target`; `None` above
+/// [`WALK_CAP`] entries.
+fn walk_fingerprint(cwd: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut seen = 0usize;
+    let mut stack = vec![cwd.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let mut entries: Vec<_> = std::fs::read_dir(&dir).ok()?.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            seen += 1;
+            if seen > WALK_CAP {
+                return None;
+            }
+            let name = e.file_name();
+            let Ok(m) = std::fs::symlink_metadata(e.path()) else {
+                continue;
+            };
+            name.hash(&mut h);
+            dir.strip_prefix(cwd).ok().hash(&mut h);
+            m.len().hash(&mut h);
+            m.modified().ok().hash(&mut h);
+            if m.is_dir() && !matches!(name.to_str(), Some(".git" | "node_modules" | "target")) {
+                stack.push(e.path());
+            }
+        }
+    }
+    Some(h.finish())
+}
+
+/// The git part of [`tree_fingerprint`]; `None` outside a git repo, without git, or on a timeout.
 /// The probes run on the host, so they only list files (`ls-files`): nothing that can start a
 /// repository-configured program (`status` and `diff` run clean filters, textconv, external
 /// diff). Files are stat-ed here instead of diffed by git.
-fn tree_fingerprint(cwd: &Path) -> Option<u64> {
+fn git_fingerprint(cwd: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
     use std::os::unix::ffi::OsStrExt;
     let git = |args: &[&str]| -> Option<Vec<u8>> {
@@ -108,9 +149,14 @@ impl DoneState {
         }
     }
 
-    /// After a batch with a `bash` call: a changed git tree counts as an edit.
+    /// After a batch with any tool that may change files (`bash`, sub-agent, MCP and extension
+    /// tools; not the read-only built-ins): a changed work folder counts as an edit.
     pub(crate) fn note_bash(&mut self, st: &SessionState, results: &[CallResult]) {
-        if self.tree.is_none() || !results.iter().any(|r| r.tool_name == "bash") {
+        const READ_ONLY: [&str; 4] = ["read", "grep", "find", "ls"];
+        if self.dirty
+            || self.tree.is_none()
+            || results.iter().all(|r| READ_ONLY.contains(&r.tool_name.as_str()))
+        {
             return;
         }
         let now = tree_fingerprint(&st.cwd);
