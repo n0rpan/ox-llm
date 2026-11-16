@@ -372,3 +372,134 @@ fn cancellation_never_caps_a_known_charge_at_the_reservation() {
     assert_eq!(row["cost_usd"], 0.004);
     assert_eq!(budget.spend().unwrap(), 0.004);
 }
+
+fn plain_model() -> Model {
+    let mut model = model();
+    model.price =
+        Price::from_model(&json!({"pricing":{"input_per_million":1,"output_per_million":2}}))
+            .unwrap();
+    model
+}
+/// Child side of the cross-process tests: the parent re-runs this test binary with
+/// `OXC_TEST_CHILD=<ledger>|<cap>|<forward 0/1>`. The child reserves, reports on stdout
+/// and keeps the hold until the parent closes stdin (or kills it).
+#[test]
+fn child_process_reserver() {
+    let Ok(spec) = std::env::var("OXC_TEST_CHILD") else {
+        return;
+    };
+    let mut parts = spec.split('|');
+    let ledger = PathBuf::from(parts.next().unwrap());
+    let cap: f64 = parts.next().unwrap().parse().unwrap();
+    let forward = parts.next() == Some("1");
+    let budget = Budget::new(ledger);
+    let hold = budget.reserve(&json!(cap), true, &plain_model(), 100);
+    match hold {
+        Ok(mut hold) => {
+            if forward {
+                hold.mark_forwarded();
+            }
+            println!("held");
+            io::Write::flush(&mut io::stdout()).unwrap();
+            let mut sink = String::new();
+            let _ = io::stdin().read_line(&mut sink);
+            drop(hold);
+        }
+        Err(refusal) => {
+            println!("refused {}", refusal.code);
+            io::Write::flush(&mut io::stdout()).unwrap();
+        }
+    }
+}
+fn spawn_child(ledger: &Path, cap: f64, forward: bool) -> std::process::Child {
+    std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "child_process_reserver",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(
+            "OXC_TEST_CHILD",
+            format!("{}|{}|{}", ledger.display(), cap, u8::from(forward)),
+        )
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+fn child_result(child: &mut std::process::Child) -> String {
+    use io::BufRead;
+    let stdout = child.stdout.as_mut().unwrap();
+    let mut lines = io::BufReader::new(stdout).lines();
+    lines
+        .by_ref()
+        .map(|line| line.unwrap())
+        // The harness prefixes the first line with "test <name> ... ".
+        .filter_map(|line| {
+            let tail = line.rsplit("... ").next().unwrap().to_string();
+            (tail == "held" || tail.starts_with("refused")).then_some(tail)
+        })
+        .next()
+        .unwrap_or_default()
+}
+#[test]
+fn two_processes_cannot_together_reserve_more_than_the_cap() {
+    let home = Home::new();
+    let mut children: Vec<_> = (0..6)
+        .map(|_| spawn_child(&home.ledger(), 0.003, false))
+        .collect();
+    let results: Vec<String> = children.iter_mut().map(child_result).collect();
+    let held = results.iter().filter(|r| *r == "held").count();
+    assert_eq!(held, 2, "{results:?}");
+    assert!(results
+        .iter()
+        .all(|r| r == "held" || r.contains("budget_exceeded")));
+    // The parent sees the children's persisted holds too.
+    let budget = Budget::new(home.ledger());
+    assert_eq!(
+        budget
+            .reserve(&json!(0.003), true, &plain_model(), 100)
+            .err()
+            .unwrap()
+            .code,
+        "budget_exceeded"
+    );
+    for child in &mut children {
+        drop(child.stdin.take());
+        child.wait().unwrap();
+    }
+    assert!(budget
+        .reserve(&json!(0.003), true, &plain_model(), 100)
+        .is_ok());
+}
+#[test]
+fn a_killed_process_releases_an_unforwarded_hold_but_keeps_a_forwarded_one() {
+    let home = Home::new();
+    let budget = Budget::new(home.ledger());
+    let mut child = spawn_child(&home.ledger(), 0.0015, false);
+    assert_eq!(child_result(&mut child), "held");
+    assert!(budget
+        .reserve(&json!(0.0015), true, &plain_model(), 100)
+        .is_err());
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(budget
+        .reserve(&json!(0.0015), true, &plain_model(), 100)
+        .is_ok());
+    let home = Home::new();
+    let budget = Budget::new(home.ledger());
+    let mut child = spawn_child(&home.ledger(), 0.0015, true);
+    assert_eq!(child_result(&mut child), "held");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    // The request may have been paid and no row was written: stay reserved (fail closed).
+    assert_eq!(
+        budget
+            .reserve(&json!(0.0015), true, &plain_model(), 100)
+            .err()
+            .unwrap()
+            .code,
+        "budget_exceeded"
+    );
+}

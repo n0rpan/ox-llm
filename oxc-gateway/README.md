@@ -13,7 +13,11 @@ reference's 25% OpenRouter headroom. Output must already be validated and bounde
 by the gateway; zero is refused here too.
 
 Share one `Budget` per daily ledger path across request tasks. `reserve` locks
-spend plus outstanding holds atomically. Mark the hold forwarded before sending
+spend plus outstanding holds atomically, also across processes: an exclusive
+`flock` on `<ledger>.lock` covers read-spend + reserve, and holds are persisted
+as files in `<ledger>.holds/`, each kept `flock`ed by its owner. A hold of a
+dead process is released unless it was already forwarded (possibly paid, never
+recorded): that one stays reserved until the day's ledger rolls over. Mark the hold forwarded before sending
 any potentially paid bytes. `finish` writes fixed remote settlement fields via a
 callback while retaining the reservation, then releases it. The callback must add
 the existing private request metadata (origin, IDs, HMACs, timings); never add
