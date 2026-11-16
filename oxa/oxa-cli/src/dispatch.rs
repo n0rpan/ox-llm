@@ -1073,7 +1073,13 @@ fn run_headless(
     let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
     {
         Ok(limit) => limit,
-        Err(error) => return finish_outcome(Err(error), stderr),
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome(result, stderr);
+        }
     };
     let result = match mode {
         RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
@@ -1116,7 +1122,13 @@ fn run_rpc(
     let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
     {
         Ok(limit) => limit,
-        Err(error) => return finish_outcome(Err(error), stderr),
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome(result, stderr);
+        }
     };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
@@ -1227,7 +1239,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         gated,
         yolo: Some(yolo),
     };
-    match run_interactive(session, opts) {
+    let result = run_interactive(session, opts);
+    let result = match &built.status {
+        Some(status) => status.finish_interactive(result, stderr),
+        None => result,
+    };
+    match result {
         Ok(code) => code,
         Err(e) => report(stderr, &e),
     }

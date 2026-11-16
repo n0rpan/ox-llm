@@ -7,14 +7,24 @@ use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Progress<'a> {
-    Session { file: Option<&'a Path> },
+    Session {
+        file: Option<&'a Path>,
+    },
     RunStart,
-    RequestStart { kind: TurnKind, remote: bool },
-    RequestEnd { usage: Option<Usage>, remote: bool },
+    RequestStart {
+        kind: TurnKind,
+        remote: bool,
+    },
+    RequestEnd {
+        usage: Option<Usage>,
+        remote: bool,
+    },
     Advanced,
     ToolStart(&'a str),
     ToolEnd,
     Settled(RunOutcome),
+    Closing,
+    /// The front end has its aggregate result and has finished shutdown.
     Finished(RunOutcome),
 }
 

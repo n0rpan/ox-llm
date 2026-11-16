@@ -936,7 +936,6 @@ pub(crate) fn thinking_level_select(
 /// `AgentSettled` record afterwards, once the claim is released (the busy-race rule: the record
 /// is the last thing an operation does).
 pub(crate) fn agent_settled(st: &mut SessionState, aborted: bool, sink: &mut dyn EventSink, ui: &mut dyn Ui) {
-    crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
     observe(
         st,
         HookPoint::AgentSettled,
@@ -944,6 +943,7 @@ pub(crate) fn agent_settled(st: &mut SessionState, aborted: bool, sink: &mut dyn
         ui,
         |_| json!({ "aborted": aborted }),
     );
+    crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
 }
 
 /// `agent_before_settle` (pi `_runBeforeSettleBoundary`): fired after a run that ended without

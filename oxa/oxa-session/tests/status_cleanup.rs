@@ -13,11 +13,17 @@ fn delete_and_purge_remove_only_the_exact_status_sibling() {
         let unrelated = status.with_extension("unrelated");
         std::fs::write(&status, "synthetic status").unwrap();
         std::fs::write(&unrelated, "keep").unwrap();
-        if purge { purge_session_file(&sref.path).unwrap(); } else { store.remove(&sref).unwrap(); }
+        if purge {
+            purge_session_file(&sref.path).unwrap();
+        } else {
+            store.remove(&sref).unwrap();
+        }
         assert!(!sref.path.exists());
         assert!(!status.exists());
         assert_eq!(std::fs::read_to_string(unrelated).unwrap(), "keep");
-        if purge { purge_session_file(&sref.path).unwrap(); }
+        if purge {
+            purge_session_file(&sref.path).unwrap();
+        }
     }
 }
 
@@ -31,9 +37,16 @@ fn status_symlinks_are_unlinked_without_touching_their_targets() {
         let target = env.work().join("keep");
         std::fs::write(&target, "synthetic unrelated data").unwrap();
         symlink(&target, &status).unwrap();
-        if purge { purge_session_file(&sref.path).unwrap(); } else { store.remove(&sref).unwrap(); }
+        if purge {
+            purge_session_file(&sref.path).unwrap();
+        } else {
+            store.remove(&sref).unwrap();
+        }
         assert!(std::fs::symlink_metadata(status).is_err());
-        assert_eq!(std::fs::read_to_string(target).unwrap(), "synthetic unrelated data");
+        assert_eq!(
+            std::fs::read_to_string(target).unwrap(),
+            "synthetic unrelated data"
+        );
     }
 }
 
@@ -46,7 +59,11 @@ fn cleanup_errors_are_reported_without_deleting_a_directory_or_its_session() {
         let status = sref.path.with_extension("status.json");
         std::fs::create_dir(&status).unwrap();
         std::fs::write(status.join("keep"), "unchanged").unwrap();
-        let result = if purge { purge_session_file(&sref.path) } else { store.remove(&sref).map(|_| ()) };
+        let result = if purge {
+            purge_session_file(&sref.path)
+        } else {
+            store.remove(&sref).map(|_| ())
+        };
         assert!(result.is_err());
         assert!(sref.path.is_file());
         assert_eq!(std::fs::read_to_string(status.join("keep")).unwrap(), "unchanged");

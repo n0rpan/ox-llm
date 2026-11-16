@@ -156,6 +156,26 @@ impl StatusWriter {
         result
     }
 
+    pub(crate) fn finish_interactive(
+        &self,
+        result: Result<i32, OxaError>,
+        err: &mut dyn Write,
+    ) -> Result<i32, OxaError> {
+        let outcome = match &result {
+            Ok(0) => RunOutcome::Done,
+            Ok(130) => RunOutcome::Interrupted,
+            Ok(_) => RunOutcome::Failed("interactive_exit"),
+            Err(e) => RunOutcome::from_error(e),
+        };
+        // Interactive exit describes the UI session, rather than accumulating independent
+        // prompt failures the way an unattended batch must.
+        if let Some(snapshot) = &mut self.state.lock().unwrap_or_else(|p| p.into_inner()).active {
+            snapshot.settled = outcome;
+        }
+        self.finish(Ok(outcome), err)?;
+        result
+    }
+
     fn write(&self, snapshot: &mut Snapshot) -> std::io::Result<()> {
         let bytes = serde_json::to_vec(&snapshot.record(
             self.timeout_ms,
@@ -176,6 +196,17 @@ impl ProgressObserver for StatusWriter {
         let now = now_ms();
         if let Progress::Session { file } = progress {
             if state.active.as_ref().is_some_and(|s| s.session == *session) {
+                if let Some(snapshot) = &mut state.active {
+                    if matches!(snapshot.phase, "closing" | "finished") {
+                        snapshot.phase = "idle";
+                        snapshot.running = false;
+                        snapshot.outcome = None;
+                        snapshot.progress = now;
+                        if let Err(e) = self.write(snapshot) {
+                            state.error.get_or_insert_with(|| write_error(&e));
+                        }
+                    }
+                }
                 return;
             }
             if let Some(snapshot) = &mut state.active {
@@ -217,6 +248,9 @@ impl ProgressObserver for StatusWriter {
         if snapshot.session != *session {
             return;
         } // A cancelled helper of a session left behind.
+        if snapshot.outcome.is_some() && !matches!(progress, Progress::RunStart | Progress::Finished(_)) {
+            return;
+        }
         let force = match progress {
             Progress::Session { .. } => true,
             Progress::RunStart => {
@@ -264,6 +298,11 @@ impl ProgressObserver for StatusWriter {
                 true
             }
             Progress::Advanced => false,
+            Progress::Closing => {
+                snapshot.running = true;
+                snapshot.phase = "closing";
+                true
+            }
             Progress::Settled(outcome) | Progress::Finished(outcome) => {
                 snapshot.running = false;
                 snapshot.unreported = snapshot.unreported.saturating_add(snapshot.requests as u64);
@@ -606,5 +645,46 @@ mod tests {
             writer.join().unwrap();
         });
         assert_eq!(read_snapshot(&path).unwrap()["step"], 49);
+    }
+
+    #[test]
+    fn closing_is_active_and_late_helpers_cannot_reopen_a_final_record() {
+        let env = TestEnv::new();
+        let session = SessionRef {
+            id: "one".into(),
+            path: env.work().join("one.jsonl"),
+        };
+        let path = session.path.with_extension("status.json");
+        let writer = StatusWriter::new(Some(Duration::from_secs(1)));
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        writer.notify(
+            &session,
+            Progress::RequestStart {
+                kind: TurnKind::Prefill,
+                remote: false,
+            },
+        );
+        writer.notify(&session, Progress::Closing);
+        let closing = read_snapshot(&path).unwrap();
+        assert_eq!(closing["phase"], "closing");
+        assert!(closing["stall_deadline_ms"].as_u64().is_some());
+        assert!(closing["outcome"].is_null());
+        writer.finish(Ok(RunOutcome::Done), &mut Vec::new()).unwrap();
+        let final_bytes = fs::read(&path).unwrap();
+        writer.notify(
+            &session,
+            Progress::RequestEnd {
+                usage: Some(Usage::default()),
+                remote: false,
+            },
+        );
+        writer.notify(&session, Progress::Advanced);
+        assert_eq!(fs::read(&path).unwrap(), final_bytes);
+        assert_eq!(read_snapshot(&path).unwrap()["tokens"]["complete"], false);
     }
 }

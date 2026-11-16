@@ -737,7 +737,7 @@ impl Session {
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
-        crate::progress::notify(&self.st, crate::Progress::Finished(self.st.stats.outcome));
+        crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
             &mut self.st,
