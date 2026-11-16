@@ -26,7 +26,7 @@ pub(crate) fn run(
 ) -> i32 {
     let result = (|| -> Result<i32, String> {
         if let [flag, request] = args {
-            if flag == "--acceptance" {
+            if flag == "--supervise" {
                 return crate::work_checks::run(request, cwd, env, dirs, err);
             }
         }

@@ -155,9 +155,41 @@ pub struct RunPolicy {
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct AcceptanceRequest {
+pub struct SupervisorRequest {
     pub source: PathBuf,
-    pub commands: Vec<String>,
+    pub operation: SupervisorOperation,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SupervisorOperation {
+    Checks { commands: Vec<String> },
+    Inspect,
+}
+
+fn supervise(
+    binary: &Path,
+    root: &Path,
+    request: SupervisorRequest,
+    policy: &RunPolicy,
+    lock: &fs::File,
+) -> Result<Output> {
+    let mut command = Command::new(binary);
+    if policy.offline {
+        command.arg("--offline");
+    }
+    command
+        .env("PATH", &policy.host_path)
+        .current_dir(root)
+        .args([
+            "work",
+            "--supervise",
+            &serde_json::to_string(&request).map_err(|e| e.to_string())?,
+        ])
+        // The deterministic supervisor retains ownership if this runner dies.
+        .stdin(lock.try_clone().map_err(|e| e.to_string())?)
+        .output()
+        .map_err(|e| format!("work supervisor: {e}"))
 }
 
 fn acceptance(
@@ -171,31 +203,50 @@ fn acceptance(
     if commands.is_empty() {
         return Ok(String::new());
     }
-    let request = AcceptanceRequest {
-        source: source.to_path_buf(),
-        commands: commands.to_vec(),
-    };
-    let mut command = Command::new(binary);
-    if policy.offline {
-        command.arg("--offline");
-    }
-    let out = command
-        .env("PATH", &policy.host_path)
-        .current_dir(root)
-        .args([
-            "work",
-            "--acceptance",
-            &serde_json::to_string(&request).map_err(|e| e.to_string())?,
-        ])
-        // The deterministic supervisor retains ownership if this runner dies.
-        .stdin(lock.try_clone().map_err(|e| e.to_string())?)
-        .output()
-        .map_err(|e| format!("acceptance supervisor: {e}"))?;
+    let out = supervise(
+        binary,
+        root,
+        SupervisorRequest {
+            source: source.to_path_buf(),
+            operation: SupervisorOperation::Checks {
+                commands: commands.to_vec(),
+            },
+        },
+        policy,
+        lock,
+    )?;
     let diagnostic = String::from_utf8_lossy(&out.stderr).into_owned();
     match out.status.code() {
         Some(0) => Ok(String::new()),
         Some(1) => Ok(diagnostic),
         _ => Err(format!("acceptance could not run: {diagnostic}")),
+    }
+}
+
+fn dirty_worktree(
+    binary: &Path,
+    root: &Path,
+    source: &Path,
+    policy: &RunPolicy,
+    lock: &fs::File,
+) -> Result<bool> {
+    let out = supervise(
+        binary,
+        root,
+        SupervisorRequest {
+            source: source.to_path_buf(),
+            operation: SupervisorOperation::Inspect,
+        },
+        policy,
+        lock,
+    )?;
+    match out.status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err(format!(
+            "worktree inspection could not run: {}",
+            String::from_utf8_lossy(&out.stderr)
+        )),
     }
 }
 
@@ -314,8 +365,8 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
             }
         }
         let head = checked(git(policy, &tree, &["rev-parse", "HEAD"]))?;
-        let dirty = checked(git(policy, &tree, &["status", "--porcelain"]))?;
-        Ok(if head == initial && dirty.is_empty() {
+        let dirty = dirty_worktree(binary, &tree, &root, policy, &lock_file)?;
+        Ok(if head == initial && !dirty {
             Outcome::NothingToDo
         } else {
             Outcome::Done

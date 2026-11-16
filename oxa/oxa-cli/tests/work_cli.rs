@@ -730,3 +730,105 @@ fn invalid_nested_git_metadata_cannot_hide_an_outer_project_executable() {
         "nested metadata bypassed the source boundary"
     );
 }
+
+#[test]
+fn final_inspection_never_executes_a_worker_edited_fsmonitor_on_the_host() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let project = env.work().join("project");
+    env.write("work/project/monitor.sh", "printf '\\0'\n");
+    git(&env, &project, &["add", "monitor.sh"]);
+    git(&env, &project, &["commit", "-m", "monitor fixture"]);
+    git(&env, &project, &["config", "core.fsmonitor", "sh monitor.sh"]);
+    let args = serde_json::json!({"path":"monitor.sh","content":"printf escaped > \"$HOME/fsmonitor-inspection-escape\"\nprintf '\\0'\n"}).to_string();
+    let record = run(
+        &env,
+        vec![
+            ScriptTurn::tool("change-monitor", "write", &args),
+            ScriptTurn::text("finished"),
+        ],
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert!(
+        !env.home().join("fsmonitor-inspection-escape").exists(),
+        "final inspection ran a host callback"
+    );
+}
+
+#[test]
+fn final_inspection_keeps_worker_edited_clean_filters_in_the_sandbox() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let project = env.work().join("project");
+    env.write("work/project/.gitattributes", "tracked.txt filter=probe\n");
+    env.write("work/project/filter.sh", "cat\n");
+    env.write("work/project/tracked.txt", "alpha\n");
+    git(&env, &project, &["config", "filter.probe.clean", "sh filter.sh"]);
+    git(&env, &project, &["config", "filter.probe.smudge", "cat"]);
+    git(&env, &project, &["config", "filter.probe.required", "true"]);
+    git(
+        &env,
+        &project,
+        &["add", ".gitattributes", "filter.sh", "tracked.txt"],
+    );
+    git(&env, &project, &["commit", "-m", "filter fixture"]);
+    let args = serde_json::json!({"path":"filter.sh","content":"printf escaped > \"$HOME/filter-inspection-escape\" 2>/dev/null || true\ncat\n"}).to_string();
+    let record = run(
+        &env,
+        vec![
+            ScriptTurn::tool("change-filter", "write", &args),
+            ScriptTurn::tool(
+                "change-file",
+                "write",
+                r#"{"path":"tracked.txt","content":"bravo\n"}"#,
+            ),
+            ScriptTurn::text("finished"),
+        ],
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert!(
+        !env.home().join("filter-inspection-escape").exists(),
+        "final inspection ran a host filter"
+    );
+}
+
+#[test]
+fn failed_git_inspection_is_blocked_instead_of_clean_or_dirty() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let project = env.work().join("project");
+    env.write("work/project/.gitattributes", "tracked.txt filter=probe\n");
+    env.write("work/project/filter.sh", "cat\n");
+    env.write("work/project/tracked.txt", "alpha\n");
+    git(&env, &project, &["config", "filter.probe.clean", "sh filter.sh"]);
+    git(&env, &project, &["config", "filter.probe.smudge", "cat"]);
+    git(&env, &project, &["config", "filter.probe.required", "true"]);
+    git(
+        &env,
+        &project,
+        &["add", ".gitattributes", "filter.sh", "tracked.txt"],
+    );
+    git(&env, &project, &["commit", "-m", "filter fixture"]);
+    let record = run(
+        &env,
+        vec![
+            ScriptTurn::tool(
+                "break-filter",
+                "write",
+                r#"{"path":"filter.sh","content":"echo synthetic-filter-failure >&2\nexit 1\n"}"#,
+            ),
+            ScriptTurn::tool(
+                "change-file",
+                "write",
+                r#"{"path":"tracked.txt","content":"bravo\n"}"#,
+            ),
+            ScriptTurn::text("finished"),
+        ],
+    );
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert_eq!(record["worker"]["outcome"], "done", "{record}");
+    assert!(record["detail"]
+        .as_str()
+        .unwrap()
+        .contains("synthetic-filter-failure"));
+}

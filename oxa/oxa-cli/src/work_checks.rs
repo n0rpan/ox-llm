@@ -1,8 +1,8 @@
-//! Deterministic acceptance supervisor; no engine or model is constructed here.
+//! Deterministic check/inspection supervisor; no engine or model is constructed here.
 use oxa_config::{Dirs, Env, Settings};
-use oxa_proto::{CancelToken, ExecSpec};
+use oxa_proto::{CancelToken, ExecSpec, Sandbox};
 use oxa_sandbox::Bwrap;
-use oxa_work::AcceptanceRequest;
+use oxa_work::{SupervisorOperation, SupervisorRequest};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -14,24 +14,29 @@ pub(crate) fn run(
     dirs: &Dirs,
     err: &mut dyn Write,
 ) -> Result<i32, String> {
-    let request: AcceptanceRequest = serde_json::from_str(request).map_err(|e| e.to_string())?;
+    let request: SupervisorRequest = serde_json::from_str(request).map_err(|e| e.to_string())?;
     let source = request.source.canonicalize().map_err(|e| e.to_string())?;
     if !crate::work_cmd::trusted(&source, env, dirs)? {
-        return Err("acceptance source project is not trusted".into());
+        return Err("supervisor source project is not trusted".into());
     }
     let root = cwd.canonicalize().map_err(|e| e.to_string())?;
+    let mut b = Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home).map_err(|e| e.to_string())?;
+    b.layout = crate::sandbox_layout::layout(env, dirs, &root, false, &mut vec![]);
+    let b = b.with_git_dirs(&root);
+    b.check().map_err(|e| e.to_string())?;
+    let commands = match request.operation {
+        SupervisorOperation::Inspect => return inspect(&b, &root),
+        SupervisorOperation::Checks { commands } => commands,
+    };
     let settings = Settings::load(dirs, &source, true);
     let shell = oxa_tools::ShellConfig {
         shell_path: settings.shell_path(&dirs.home),
         command_prefix: settings.shell_command_prefix(),
     };
-    let mut b = Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home).map_err(|e| e.to_string())?;
-    b.layout = crate::sandbox_layout::layout(env, dirs, &root, false, &mut vec![]);
-    let sandbox = crate::netguard::with_net(Arc::new(b.with_git_dirs(&root)), &settings);
-    sandbox.check().map_err(|e| e.to_string())?;
+    let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
     let mut failed = false;
     let mut diagnostics = Vec::new();
-    for entry in request.commands {
+    for entry in commands {
         let (directory, text) = match entry.strip_prefix("in ").and_then(|s| s.split_once(':')) {
             Some((dir, command)) => (Some(dir.trim()), command.trim()),
             None => (None, entry.as_str()),
@@ -82,6 +87,39 @@ pub(crate) fn run(
         err.write_all(&diagnostics).map_err(|e| e.to_string())?;
     }
     Ok(i32::from(failed))
+}
+
+// Exit codes are the only result: repository callbacks cannot forge a clean
+// verdict by printing JSON or diagnostics. Git failures remain distinct from dirty.
+fn inspect(sandbox: &Bwrap, root: &Path) -> Result<i32, String> {
+    let spec = ExecSpec {
+        command: r#"git --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -z | {
+    work_dirty=0
+    while IFS= read -r -d '' work_entry; do work_dirty=1; done
+    exit "$work_dirty"
+}
+work_probe_status=("${PIPESTATUS[@]}")
+if test "${work_probe_status[0]}" -ne 0; then exit 2; fi
+exit "${work_probe_status[1]}"
+"#
+        .into(),
+        cwd: root.to_path_buf(),
+        writable: false,
+        net: false,
+        timeout_s: Some(600),
+        env: Vec::new(),
+    };
+    let mut tail = Vec::new();
+    let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+        keep_tail(&mut tail, bytes, 8192);
+    });
+    match (result.exit, result.timed_out) {
+        (Some(code @ (0 | 1)), false) => Ok(code),
+        _ => Err(format!(
+            "sandboxed Git inspection failed: {}",
+            String::from_utf8_lossy(&tail)
+        )),
+    }
 }
 
 fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {

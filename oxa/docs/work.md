@@ -27,6 +27,9 @@ not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
 missing or unusable bwrap blocks the task. Each check has the same ten-minute limit
 as agent-internal done checks. `in subdirectory: command` selects a folder inside
 that sandbox; escaping the worktree is rejected.
+The final Git inspection is also sandboxed, with a read-only workspace, no network
+and fsmonitor disabled. Clean filters stay inside that sandbox; an inspection
+error blocks the task rather than producing a clean verdict.
 Agent-internal done checks may also run when the project is trusted.
 
 The runner reads the child's exit code, terminal `oxa_result` and session header,
