@@ -12,9 +12,42 @@ use std::fs::{self, File};
 use std::io;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+
+// The release workflow requires the binary extracted from its exact tarball.
+// Normal workspace checks retain the Cargo-built binary; an explicit bad artifact
+// never falls back to that binary and silently turns into a development proof.
+fn proof_binary(release: Option<&Path>, required: bool) -> Result<PathBuf, &'static str> {
+    let path = match release {
+        Some(path) => path,
+        None if required => return Err("release artifact binary is required"),
+        None => Path::new(env!("CARGO_BIN_EXE_oxa")),
+    };
+    if !path.is_absolute() {
+        return Err("proof binary path must be absolute");
+    }
+    let path = path.canonicalize().map_err(|_| "proof binary is unavailable")?;
+    if !path.is_file() {
+        return Err("proof binary must be a file");
+    }
+    Ok(path)
+}
+
+#[test]
+fn required_release_artifact_cannot_fall_back_to_development_binary() {
+    assert!(proof_binary(None, true).is_err());
+    let env = TestEnv::new();
+    assert!(proof_binary(Some(&env.root().join("missing-artifact")), true).is_err());
+    assert!(proof_binary(Some(&env.root().join("missing-artifact")), false).is_err());
+    assert!(proof_binary(Some(Path::new("relative-oxa")), true).is_err());
+    assert!(proof_binary(Some(env.root()), true).is_err());
+    assert_eq!(
+        proof_binary(Some(Path::new(env!("CARGO_BIN_EXE_oxa"))), true).unwrap(),
+        proof_binary(None, false).unwrap()
+    );
+}
 
 fn python_shims(env: &TestEnv) -> std::path::PathBuf {
     let bin = env.root().join("shim-bin");
@@ -69,6 +102,12 @@ fn controller_trap_detects_a_connection_without_a_request() {
 
 #[test]
 fn print_uses_native_gateway_without_python_or_controller() {
+    let release = std::env::var_os("OXA_TEST_RELEASE_OXA");
+    let binary = proof_binary(
+        release.as_deref().map(Path::new),
+        std::env::var_os("OXA_TEST_REQUIRE_RELEASE_ARTIFACT").is_some(),
+    )
+    .expect("select proof binary");
     let env = TestEnv::new();
     let mock = MockAnthropic::start(vec![Reply::text("native-gateway-proof", 11, 7, 3, 5)]);
     let controller = TcpListener::bind("127.0.0.1:0").expect("owned controller trap");
@@ -116,7 +155,7 @@ fn print_uses_native_gateway_without_python_or_controller() {
     let mut child = Command::new(tracer)
         .args(["-f", "-e", "trace=execve,connect", "-o"])
         .arg(&trace_path)
-        .arg(env!("CARGO_BIN_EXE_oxa"))
+        .arg(&binary)
         .args([
             "-p",
             "--no-session",
@@ -162,8 +201,10 @@ fn print_uses_native_gateway_without_python_or_controller() {
             "connected to controller port {port}"
         );
     }
+    let mut selected_binary_executed = false;
     for line in trace.lines().filter(|line| line.contains("execve(\"")) {
         let executable = line.split("execve(\"").nth(1).unwrap().split('"').next().unwrap();
+        selected_binary_executed |= Path::new(executable) == binary;
         let name = Path::new(executable)
             .file_name()
             .unwrap()
@@ -171,6 +212,10 @@ fn print_uses_native_gateway_without_python_or_controller() {
             .to_lowercase();
         assert!(!name.starts_with("python"), "a Python-named executable ran");
     }
+    assert!(
+        selected_binary_executed,
+        "the selected artifact must actually execute"
+    );
     assert!(!Path::new(&marker).exists(), "a Python interpreter was invoked");
     let stdout = fs::read_to_string(stdout_path).unwrap();
     let stderr = fs::read_to_string(stderr_path).unwrap();
