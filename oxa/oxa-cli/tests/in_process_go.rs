@@ -502,3 +502,128 @@ fn encoded_credentials_in_streamed_tool_arguments_never_execute() {
         mock.assert_healthy();
     }
 }
+
+// #798 composition controls: the ordinary reader is the only credential reader.
+// Fixtures stay outside source repositories and use only loopback HTTP.
+fn go_diagnostic_env() -> TestEnv {
+    let env = TestEnv::new();
+    assert!(!env.root().ancestors().any(|p| p.join(".git").exists()));
+    env
+}
+
+fn go_local_credential_failure_names_store(case: &str) {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.home().join(".config/oxc/llm/cloud-secrets.json");
+    match case {
+        "missing" => fs::remove_file(&path).unwrap(),
+        "missing-provider" => fs::write(&path, r#"{"synthetic":"not-a-provider"}"#).unwrap(),
+        "mode" => fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap(),
+        "symlink" => {
+            let target = env.root().join("synthetic-store.json");
+            fs::rename(&path, &target).unwrap();
+            symlink(target, &path).unwrap();
+        }
+        "repository" => fs::create_dir(path.parent().unwrap().join(".git")).unwrap(),
+        _ => unreachable!(),
+    }
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(output.status.code(), Some(5), "{case}");
+    assert_eq!(terminal(&output)["error_class"], "cloud_credentials_unavailable");
+    assert!(
+        mock.requests().is_empty(),
+        "local failure must precede HTTP: {case}"
+    );
+    assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("attempted protected store"),
+        "missing local stage: {case}: {stderr}"
+    );
+    assert!(
+        stderr.contains(path.to_str().unwrap()),
+        "missing attempted path: {case}"
+    );
+    assert!(!stderr.contains(CREDENTIAL));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains(path.to_str().unwrap()));
+    mock.assert_healthy();
+}
+
+#[test]
+fn go_missing_store_diagnostic_precedes_any_http() {
+    go_local_credential_failure_names_store("missing");
+}
+#[test]
+fn go_missing_provider_diagnostic_precedes_any_http() {
+    go_local_credential_failure_names_store("missing-provider");
+}
+#[test]
+fn go_unsafe_mode_diagnostic_precedes_any_http() {
+    go_local_credential_failure_names_store("mode");
+}
+#[test]
+fn go_symlink_diagnostic_precedes_any_http() {
+    go_local_credential_failure_names_store("symlink");
+}
+#[test]
+fn go_repository_diagnostic_precedes_any_http() {
+    go_local_credential_failure_names_store("repository");
+}
+
+#[test]
+fn go_discovery_401_keeps_the_public_error_without_claiming_a_local_store_failure() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start(vec![Reply::error(401, "invalid_request_error", CREDENTIAL)]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(terminal(&output)["error_class"], "cloud_credentials_unavailable");
+    assert_eq!(mock.requests().len(), 1);
+    assert_eq!(mock.requests()[0].method, "GET");
+    assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("attempted protected store"));
+    assert!(!stderr.contains(CREDENTIAL));
+    assert!(!stderr.contains(
+        env.home()
+            .join(".config/oxc/llm/cloud-secrets.json")
+            .to_str()
+            .unwrap()
+    ));
+    mock.assert_healthy();
+}
+
+#[test]
+fn go_chat_401_keeps_the_public_error_without_claiming_a_local_store_failure() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::error(401, "invalid_request_error", CREDENTIAL),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(terminal(&output)["error_class"], "cloud_credentials_unavailable");
+    assert_eq!(mock.requests().len(), 2);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 503);
+    assert_eq!(ledger[0]["error"], "cloud_credentials_unavailable");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("attempted protected store"),
+        "upstream401 mislabeled local: {stderr}"
+    );
+    assert!(!stderr.contains(CREDENTIAL));
+    assert!(!stderr.contains(
+        env.home()
+            .join(".config/oxc/llm/cloud-secrets.json")
+            .to_str()
+            .unwrap()
+    ));
+    mock.assert_healthy();
+}

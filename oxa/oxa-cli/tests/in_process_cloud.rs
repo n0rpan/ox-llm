@@ -172,13 +172,18 @@ fn native_local_credentials_diagnostic_names_attempted_store_only_on_stderr() {
         };
         let model = Model::new(MODEL, Provider::Anthropic, UPSTREAM, &mock.base_url(), 128000, 16).unwrap();
         let runtime = Runtime::new(
-            [(model, Price::from_model(&json!({"free":true})))],
+            [(
+                model,
+                Price::from_model(&json!({"free":true})).map(oxc_gateway::billing::Billing::Metered),
+            )],
             path,
             env.agent_dir().join("TEST-api-ledger"),
             Options {
                 access: Access::Enabled,
                 daily_budget_usd: Some(1.0),
                 ledger_enabled: true,
+                subscription: None,
+                subscription_limits: None,
             },
         )
         .unwrap();
