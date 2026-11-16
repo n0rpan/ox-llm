@@ -204,6 +204,97 @@ fn live_discovery_lists_chat_models_only_and_offline_precedes_credentials() {
 }
 
 #[test]
+fn non_json_discovery_refusals_keep_http_classification_without_exposing_body() {
+    for (status, expected) in [
+        (401, "cloud_credentials_unavailable"),
+        (403, "cloud_forbidden"),
+        (429, "subscription_limit_reached"),
+    ] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start(vec![Reply::raw(
+            status,
+            "text/html",
+            format!("<html>{CREDENTIAL}</html>").into_bytes(),
+            vec![],
+        )]);
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["-p", "--no-tools", "Synthetic task"]);
+        assert_eq!(terminal(&output)["error_class"], expected);
+        assert!(!output.status.success());
+        assert_eq!(mock.requests().len(), 1);
+        assert_eq!(mock.requests()[0].method, "GET");
+        assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn invalid_discovery_reports_only_fixed_stage_categories_before_any_inference() {
+    for (case, message) in [
+        ("json", "Go model discovery returned invalid JSON."),
+        ("envelope", "Go model discovery has an invalid data envelope."),
+        ("id", "Go model discovery has an invalid model id."),
+        ("canonical", "Go model discovery has an invalid canonical id."),
+        ("context", "Go model discovery has an invalid context limit."),
+        ("output", "Go model discovery has an invalid output limit."),
+        ("exceeds", "Go model discovery output limit exceeds context."),
+        ("api", "Go model discovery has invalid API metadata."),
+        ("endpoint", "Go model discovery has an unsafe API endpoint."),
+        ("duplicate", "Go model discovery repeats a model id."),
+        (
+            "echo",
+            "Go model discovery contained a credential; metadata was refused.",
+        ),
+    ] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            if case == "json" {
+                return vec![Reply::raw(
+                    200,
+                    "application/json",
+                    b"<html>synthetic</html>".to_vec(),
+                    vec![],
+                )];
+            }
+            let mut value = discovery(base);
+            match case {
+                "envelope" => value["data"] = json!({}),
+                "id" => value["data"][0]["id"] = "invalid id".into(),
+                "canonical" => value["data"][0]["canonical_id"] = Value::Null,
+                "context" => value["data"][0]["limit"]["context"] = 0.into(),
+                "output" => value["data"][0]["limit"]["output"] = 0.into(),
+                "exceeds" => value["data"][0]["limit"]["output"] = 32769.into(),
+                "api" => value["data"][0]["api"] = json!([]),
+                "endpoint" => {
+                    value["data"][0]["api"]["chat-completions"]["base_url"] =
+                        format!("{base}/outside/v1").into()
+                }
+                "duplicate" => {
+                    let item = value["data"][0].clone();
+                    value["data"].as_array_mut().unwrap().push(item);
+                }
+                "echo" => value["unexpected"] = CREDENTIAL.into(),
+                _ => unreachable!(),
+            }
+            vec![Reply::json(value)]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["-p", "--no-tools", "Synthetic task"]);
+        assert!(!output.status.success());
+        assert_eq!(terminal(&output)["error_class"], "cloud_discovery_invalid");
+        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        assert!(output.stdout.is_empty());
+        assert_eq!(mock.requests().len(), 1);
+        assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+        mock.assert_healthy();
+    }
+}
+
+#[test]
 fn authenticated_discovery_never_publishes_an_echoed_credential() {
     for field in [
         "/data/0/id",
