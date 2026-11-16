@@ -8,6 +8,8 @@ publish.workspace = true
 
 [features]
 default = []
+upstream-anthropic-request = ["dep:serde_json"]
+upstream-anthropic-stream = ["dep:serde_json"]
 cloud-only = ["dep:url"]
 pricing = ["dep:serde_json", "dep:bigdecimal", "dep:num-traits"]
 accounting = ["policy", "pricing", "dep:nix", "dep:getrandom"]
