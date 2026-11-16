@@ -152,6 +152,20 @@ fn run_inner(
         let mut replays: u32 = 0;
         let turn = loop {
             if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                let text = "Request skipped for wrap-up.".to_string();
+                let progress = persist(
+                    st,
+                    EntryBody::Shown {
+                        text: text.clone(),
+                        why: shown_why::ABORTED,
+                    },
+                    sink,
+                )?;
+                let mut message = pending.clone();
+                message.stop = Some(StopReason::Aborted);
+                message.error_message = Some(text);
+                finish_discarded_turn(st, sink, ui, message, (turn_index, &progress.id));
+                turn_index += 1;
                 continue 'turns;
             }
             let mut capture = Capture {
@@ -235,11 +249,23 @@ fn run_inner(
                     } else {
                         partial
                     };
-                    persist(st, EntryBody::Shown { text, why }, sink)?;
-                    if !wrapping_up
-                        && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0
-                        && e.code != oxa_proto::codes::ABORTED
-                    {
+                    let progress = persist(st, EntryBody::Shown { text, why }, sink)?;
+                    let soft_stop = st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0;
+                    if soft_stop {
+                        let mut message = pending.clone();
+                        if let EntryBody::Shown { text, .. } = progress.body {
+                            message.msg.content = Some(text);
+                        }
+                        message.stop = Some(if e.code == oxa_proto::codes::ABORTED {
+                            StopReason::Aborted
+                        } else {
+                            StopReason::Error
+                        });
+                        message.error_message = Some(e.to_string());
+                        finish_discarded_turn(st, sink, ui, message, (turn_index, &progress.id));
+                        turn_index += 1;
+                    }
+                    if !wrapping_up && soft_stop && e.code != oxa_proto::codes::ABORTED {
                         // The final turn may save work, but cannot erase the failure
                         // that made this request unsuccessful.
                         wrap_up_failure = Some(e);
@@ -261,6 +287,22 @@ fn run_inner(
                 if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                     // The normal fallback is a new request. A pending stop instead
                     // gets the bounded final instruction from the outer turn loop.
+                    let progress = persist(
+                        st,
+                        EntryBody::Shown {
+                            text: "Thinking reached its output limit; wrapping up.".to_string(),
+                            why: shown_why::CUT,
+                        },
+                        sink,
+                    )?;
+                    finish_discarded_turn(
+                        st,
+                        sink,
+                        ui,
+                        reply_event(&turn, now_ms()),
+                        (turn_index, &progress.id),
+                    );
+                    turn_index += 1;
                     continue 'turns;
                 }
                 retried = true;
@@ -279,7 +321,7 @@ fn run_inner(
                     "The reply ran out of output tokens before any answer, even without thinking.",
                 )
                 .with_hint("Ask for a shorter answer or split the task.");
-                persist(
+                let progress = persist(
                     st,
                     EntryBody::Shown {
                         text: e.to_string(),
@@ -293,6 +335,14 @@ fn run_inner(
                 });
                 if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
                     wrap_up_failure = Some(e);
+                    finish_discarded_turn(
+                        st,
+                        sink,
+                        ui,
+                        reply_event(&turn, now_ms()),
+                        (turn_index, &progress.id),
+                    );
+                    turn_index += 1;
                     continue 'turns;
                 }
                 return Ok(RunEnd::Failed(e));
@@ -603,6 +653,22 @@ pub(crate) fn persist(
     let entry = append_entry(st, body)?;
     sink.emit(&AgentEvent::EntryAppended { entry: entry.clone() });
     Ok(entry)
+}
+
+/// Close a visible request replaced by wrap-up without adding an assistant message to the
+/// wire. Its entry ID identifies the shown progress record, including for an unissued request.
+fn finish_discarded_turn(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    message: EventMessage,
+    ids: (u32, &str),
+) {
+    sink.emit(&AgentEvent::MessageEnd {
+        message: message.clone(),
+    });
+    crate::fire::message(st, HookPoint::MessageEnd, &message, sink, ui);
+    turn_end(st, sink, ui, message, Vec::new(), (ids.0, ids.1, &[]));
 }
 
 fn turn_end(

@@ -229,7 +229,7 @@ pub(crate) fn turn_end(
     ui: &mut dyn Ui,
 ) {
     observe(st, HookPoint::TurnEnd, sink, ui, |st| {
-        let aborted = st.shared.cancel.is_cancelled();
+        let aborted = st.shared.cancel.is_cancelled() || message.stop == Some(oxa_proto::StopReason::Aborted);
         json!({
             "turnIndex": index,
             "message": message_json(message),
