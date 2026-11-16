@@ -177,6 +177,12 @@ pub struct Layout {
     /// #457: the session directory, mounted at `/tmp` (`scratch.rs`). `None` = a fresh tmpfs
     /// per command.
     pub scratch: Option<std::sync::Arc<Scratch>>,
+    /// #457: where each session's directory is created ([`crate::scratch_root`]; set by the
+    /// front end). `None` = no session directories.
+    pub scratch_root: Option<PathBuf>,
+    /// #457: the user's cache home ([`crate::user_cache_home`]), whose read-write bound caches
+    /// are linked from `/tmp/.cache`. Empty = none.
+    pub cache_home: PathBuf,
 }
 
 /// The inputs of [`Layout::build`].
@@ -331,7 +337,9 @@ impl Layout {
             env.push(("MISE_STATE_DIR".to_string(), "/tmp/mise-state".to_string()));
         }
         // #457: one writable temp and cache home for every tool (gh, pip, sccache, mise, ...):
-        // the session directory at `/tmp`. Never a host cache path, which is read-only here.
+        // the session directory at `/tmp`. Never a host cache path, which is read-only here;
+        // the user's own `XDG_CACHE_HOME` keeps its read-write bound caches through the links
+        // `with_scratch` makes (`cache_home`).
         env.retain(|(n, _)| n != "TMPDIR" && n != "XDG_CACHE_HOME");
         env.push(("TMPDIR".to_string(), "/tmp".to_string()));
         env.push(("XDG_CACHE_HOME".to_string(), "/tmp/.cache".to_string()));
@@ -356,13 +364,16 @@ impl Layout {
             git: GitBinds::default(),
             mask_runtime_ipc: false,
             scratch: None,
+            scratch_root: None,
+            cache_home: crate::scratch::user_cache_home(&i.home, &i.env),
         }
     }
 
-    /// #457: mount `scratch` at `/tmp` for every command, and link the read-write caches
-    /// under `~/.cache` from its `.cache` (see `scratch.rs`).
-    pub fn with_scratch(mut self, home: &Path, scratch: Scratch) -> Layout {
-        scratch.link_caches(home, &self.write);
+    /// #457: mount `scratch` at `/tmp` for every command, and link the read-write bound
+    /// caches of the user's cache home ([`Layout::cache_home`]) from its `.cache` (see
+    /// `scratch.rs`).
+    pub fn with_scratch(mut self, scratch: Scratch) -> Layout {
+        scratch.link_caches(&self.cache_home, &self.write);
         self.scratch = Some(std::sync::Arc::new(scratch));
         self
     }

@@ -58,7 +58,7 @@ What a command sees:
 |---|---|
 | `/` (system files, toolchains, and any other path your account can read) | read-only |
 | your home directory | empty, except the entries below. The exception is a session started in the home directory or above it, see [Starting in your home directory](#starting-in-your-home-directory) |
-| `/tmp` | a new empty directory for each command |
+| `/tmp` | the session's own scratch directory, kept between its commands (see below) |
 | the project directory | read-write (read-only in plan mode) |
 | your toolchains: `PATH` entries under home, rustup, mise and asdf, nvm and similar, uv, pipx, pyenv and rbenv, git configuration | read-only |
 | package caches of pip, uv, go, cargo registry, npm, pnpm, yarn, bun, deno | read-write |
@@ -212,3 +212,7 @@ Session files are `0600`. The Brave key is never written to a session, an export
 oxa shows no startup notice about this (it would fill small terminals). The note is appended to bash results that mention /tmp or fail with a read-only or permission error; this contextual reminder is the only place the model sees it.
 
 Workspace writes persist (except protected paths), as do configured writable binds, package caches and permitted git data. Other paths are read-only or hidden. /tmp is the session's private scratch: it persists between commands of one session and is deleted when the session ends (`TMPDIR` and `XDG_CACHE_HOME` point into it). Do not report scratch files as saved; put deliverables in the workspace.
+
+Each session gets its own scratch directory, `~/.cache/oxa/scratch/<pid>-<n>` on the host (mode 0700), created when the session starts or is reopened. It is deleted when the session ends: at `/new`, `/resume`, fork, clone or any other switch to another session, and when oxa exits. A resumed session therefore starts with an empty /tmp; two sessions never share one. A directory left behind by an oxa that was killed is removed when a later oxa creates its next session directory. Hook commands do not belong to a session and get a new empty /tmp for each command. If the directory cannot be created, every command gets a new empty /tmp instead.
+
+Inside the sandbox `XDG_CACHE_HOME` is always `/tmp/.cache`. Shared caches stay shared: each entry of your cache home (your `XDG_CACHE_HOME` when it is an absolute path, otherwise `~/.cache`) that is bound read-write, for example through `writePaths`, appears as `/tmp/.cache/<name>`, so tools write to the same cache as your own builds. Everything else a tool caches goes to the session's scratch and is deleted with it. With a custom `XDG_CACHE_HOME`, entries of `~/.cache` are not linked.

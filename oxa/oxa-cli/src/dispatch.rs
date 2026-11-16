@@ -392,10 +392,12 @@ struct Built {
 impl Built {
     /// Fresh `Deps` (the policy and built-in tools are not `Clone`).
     fn deps(&self, session_id: Option<String>) -> Deps {
+        // #457: the session's own sandbox (its scratch directory at /tmp), dropped with it.
+        let sandbox = self.sandbox.for_session().unwrap_or_else(|| self.sandbox.clone());
         // Issue #127 (b): one background-job registry per session, sharing the session's
         // sandbox. The session kills its jobs on close/shutdown.
         let jobs = Arc::new(oxa_tools::JobRegistry::new());
-        jobs.set_sandbox(self.sandbox.clone());
+        jobs.set_sandbox(sandbox.clone());
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
@@ -422,7 +424,7 @@ impl Built {
                     ))
                     .with_yolo(self.yolo.clone()),
             ),
-            sandbox: self.sandbox.clone(),
+            sandbox,
             settings: self.settings.clone(),
             dirs: self.dirs.clone(),
             cwd: self.cwd.clone(),
@@ -662,9 +664,10 @@ fn prepare(
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
             b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
-            // #457: one session directory at /tmp for every command of this session.
-            match oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&dirs.home)) {
-                Ok(s) => b.layout = b.layout.with_scratch(&dirs.home, s),
+            // #457: each session gets its own directory at /tmp (`Built::deps`).
+            let root = oxa_sandbox::scratch_root(&dirs.home);
+            match std::fs::create_dir_all(&root) {
+                Ok(()) => b.layout.scratch_root = Some(root),
                 Err(e) => notices.push((
                     Level::Warning,
                     format!("no session scratch directory ({e}); /tmp is discarded after each command"),
@@ -1789,5 +1792,84 @@ mod model_limits_tests {
             .split_whitespace()
             .collect();
         assert_eq!(&row[2..], &["?", "?", "?", "?"]);
+    }
+}
+
+#[cfg(test)]
+mod session_scratch_tests {
+    use super::*;
+    use oxa_proto::ExecSpec;
+    use oxa_sandbox::{Layout, NetSandbox};
+
+    /// The host directory a session's sandbox mounts at `/tmp` (`None` = a fresh tmpfs).
+    fn tmp_dir(d: &Deps, cwd: &Path) -> Option<PathBuf> {
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: cwd.to_path_buf(),
+            writable: true,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        };
+        let a = d.sandbox.bwrap_args(&spec);
+        a.windows(3)
+            .find(|w| w[0] == "--bind" && w[2] == "/tmp")
+            .map(|w| PathBuf::from(&w[1]))
+    }
+
+    /// #457 (Codex P2): every session the process opens (the first one, `/new`, `/resume`,
+    /// fork and clone all go through `Built::deps`) gets its own scratch directory, and the
+    /// directory is deleted when that session's dependencies are dropped. The process sandbox
+    /// itself (exec hooks) keeps the per-command tmpfs.
+    #[test]
+    fn each_session_gets_its_own_scratch_and_drops_it() {
+        let env = oxa_fake::TestEnv::new();
+        let home = env.home();
+        let root = oxa_sandbox::scratch_root(&home);
+        let bwrap = Bwrap {
+            bwrap: PathBuf::from("/usr/bin/bwrap"),
+            home: home.clone(),
+            layout: Layout {
+                scratch_root: Some(root.clone()),
+                ..Layout::default()
+            },
+        };
+        let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
+        let built = Built {
+            engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+            store: Arc::new(MemStore::new()),
+            sandbox: base.clone(),
+            settings: Settings::default(),
+            dirs: Dirs::under(env.root()),
+            cwd: env.work(),
+            resources: Resources::default(),
+            selection: ToolSelection::default(),
+            model: None,
+            thinking: None,
+            mode: None,
+            hook_sets: HookSets::default(),
+            yolo: oxa_proto::YoloSwitch::new(false),
+        };
+        let first = built.deps(None);
+        let second = built.deps(None);
+        let a = tmp_dir(&first, &env.work()).expect("first session has a scratch directory");
+        let b = tmp_dir(&second, &env.work()).expect("second session has a scratch directory");
+        assert_ne!(a, b, "two sessions share one /tmp");
+        assert!(a.starts_with(&root) && b.starts_with(&root), "{a:?} {b:?}");
+        std::fs::write(a.join("left-by-first"), "x").unwrap();
+        assert!(!b.join("left-by-first").exists());
+        assert_eq!(
+            first.sandbox.persistence_notice(),
+            Some(oxa_sandbox::SCRATCH_NOTICE)
+        );
+        assert!(base
+            .persistence_notice()
+            .unwrap()
+            .contains("discarded after each command"));
+        drop(first);
+        assert!(!a.exists(), "the first session's scratch outlived it");
+        assert!(b.is_dir(), "ending one session removed another's scratch");
+        drop(second);
+        assert!(!b.exists(), "the second session's scratch outlived it");
     }
 }

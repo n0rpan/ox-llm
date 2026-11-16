@@ -31,10 +31,11 @@ pub use offline::{no_network_argv, offline_argv};
 pub use run::{
     die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
 };
-pub use scratch::{scratch_root, Scratch};
+pub use scratch::{scratch_root, user_cache_home, Scratch};
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The bwrap sandbox.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,6 +55,19 @@ impl Bwrap {
     /// names the package and the sysctl to check.
     pub fn detect(path_var: &str, home: &Path) -> Result<Bwrap, OxaError> {
         bwrap::detect_bwrap(path_var, home)
+    }
+
+    /// #457: this sandbox for one session: a fresh session directory under
+    /// [`Layout::scratch_root`] at `/tmp`, removed when the returned sandbox (and every clone
+    /// of it) is dropped. Without a root, or when the directory cannot be created, `/tmp` is a
+    /// fresh tmpfs per command and [`Sandbox::persistence_notice`] says so.
+    pub fn session(&self) -> Bwrap {
+        let mut b = self.clone();
+        b.layout.scratch = None;
+        if let Some(Ok(s)) = self.layout.scratch_root.as_deref().map(Scratch::create) {
+            b.layout = b.layout.with_scratch(s);
+        }
+        b
     }
 
     /// sbx-git: bind the git data of `cwd` that lies outside it (a worktree's gitdir and common
@@ -85,6 +99,10 @@ impl Sandbox for Bwrap {
         } else {
             Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
         }
+    }
+    fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
+        self.layout.scratch_root.as_ref()?;
+        Some(Arc::new(self.session()))
     }
     fn check(&self) -> Result<(), OxaError> {
         bwrap::check_bwrap(self)
@@ -124,7 +142,7 @@ impl Sandbox for Bwrap {
 }
 
 /// #457: the notice with a session directory at `/tmp`.
-pub const SCRATCH_NOTICE: &str = "Sandbox: /tmp is this session's scratch (also TMPDIR and XDG_CACHE_HOME): it persists between commands and is deleted when the session ends; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.";
+pub const SCRATCH_NOTICE: &str = "Sandbox: /tmp is this session's own scratch (also TMPDIR and XDG_CACHE_HOME): it persists between the commands of this session and is deleted when the session ends (/new, /resume, switching session, or quitting oxa); a resumed session starts with an empty /tmp. Save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.";
 
 /// Environment variables that carry a secret: kept out of the bwrap command line (visible to
 /// other processes) and handed over through `bwrap --args <fd>` instead.

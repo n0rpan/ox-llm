@@ -961,7 +961,7 @@ fn golden_session_dir_is_bound_at_tmp_before_every_mask() {
     let l = machine(&env);
     let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&env.home())).expect("scratch");
     let dir = sc.path().to_path_buf();
-    let l = l.with_scratch(&env.home(), sc);
+    let l = l.with_scratch(sc);
     let a =
         oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &env.work(), true), &env.home(), &l));
     let s = shown(&a, &env);
@@ -982,4 +982,163 @@ fn golden_session_dir_is_bound_at_tmp_before_every_mask() {
         &machine(&env),
     ));
     assert_eq!(shown(&a, &env)[..HEAD.len()], strs(HEAD)[..]);
+}
+
+/// The links `with_scratch` made in the session directory, as (name, target).
+fn cache_links(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(dir.join(".cache"))
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            let t = std::fs::read_link(e.path()).expect("only links in .cache");
+            (e.file_name().to_string_lossy().into_owned(), t)
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+fn cache_layout(env: &TestEnv, user_env: Vec<(String, String)>, write_extra: Vec<PathBuf>) -> Layout {
+    Layout::build(&LayoutInputs {
+        home: env.home(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin".into(),
+        env: user_env,
+        write_extra,
+        ..LayoutInputs::default()
+    })
+}
+
+/// #457: without `XDG_CACHE_HOME` the user's cache home is `~/.cache`: each read-write bound
+/// cache in it is linked from `/tmp/.cache/<name>`; an unbound one (`~/.cache/gh`) is not.
+#[test]
+fn default_cache_home_links_its_read_write_caches() {
+    let env = TestEnv::new();
+    let home = env.home();
+    for d in [".cache/sccache", ".cache/pip", ".cache/gh"] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
+    let l = cache_layout(&env, Vec::new(), Vec::new());
+    assert_eq!(l.cache_home, home.join(".cache"));
+    let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&home)).expect("scratch");
+    let dir = sc.path().to_path_buf();
+    let _l = l.with_scratch(sc);
+    assert_eq!(
+        cache_links(&dir),
+        vec![
+            ("pip".to_string(), home.join(".cache/pip")),
+            ("sccache".to_string(), home.join(".cache/sccache")),
+        ]
+    );
+}
+
+/// #457 review: a user-set `XDG_CACHE_HOME` keeps its shared caches. The rule: the shared
+/// caches are the read-write bound entries of the user's cache home (`$XDG_CACHE_HOME`, else
+/// `~/.cache`), linked from `/tmp/.cache/<name>`; everything else caches in the session.
+/// `~/.cache/pip` is not the user's pip cache here, so it is not linked; an entry under a
+/// bound cache home is (the whole home bound by `writePaths`).
+#[test]
+fn user_cache_home_keeps_its_read_write_caches() {
+    let env = TestEnv::new();
+    let home = env.home();
+    let xdg = env.root().join("data/cache");
+    for d in ["sccache", "pip", "unbound"] {
+        std::fs::create_dir_all(xdg.join(d)).unwrap();
+    }
+    std::fs::create_dir_all(home.join(".cache/pip")).unwrap();
+    let user = vec![("XDG_CACHE_HOME".to_string(), xdg.display().to_string())];
+    let l = cache_layout(&env, user.clone(), vec![xdg.join("sccache"), xdg.join("pip")]);
+    assert_eq!(l.cache_home, xdg);
+    // Inside, the cache home is still the session's, never the read-only host path.
+    assert!(
+        l.env.contains(&("XDG_CACHE_HOME".into(), "/tmp/.cache".into())),
+        "{:?}",
+        l.env
+    );
+    let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&home)).expect("scratch");
+    let dir = sc.path().to_path_buf();
+    let _l = l.with_scratch(sc);
+    assert_eq!(
+        cache_links(&dir),
+        vec![
+            ("pip".to_string(), xdg.join("pip")),
+            ("sccache".to_string(), xdg.join("sccache")),
+        ]
+    );
+
+    // The whole cache home bound read-write: every entry in it is shared.
+    let l = cache_layout(&env, user, vec![xdg.clone()]);
+    let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&home)).expect("scratch");
+    let dir = sc.path().to_path_buf();
+    let _l = l.with_scratch(sc);
+    assert_eq!(cache_links(&dir).len(), 3, "{:?}", cache_links(&dir));
+
+    // A relative `XDG_CACHE_HOME` is ignored, as the XDG rule says: `~/.cache` again.
+    let l = cache_layout(
+        &env,
+        vec![("XDG_CACHE_HOME".into(), "rel/cache".into())],
+        Vec::new(),
+    );
+    assert_eq!(l.cache_home, home.join(".cache"));
+}
+
+/// #457 review: each session of one `Bwrap` gets its own directory at `/tmp`, removed when
+/// that session's sandbox is dropped; the process sandbox keeps a per-command tmpfs. When no
+/// directory can be made, the session falls back to the tmpfs and its notice says so.
+#[test]
+fn every_session_has_its_own_scratch() {
+    let env = TestEnv::new();
+    let home = env.home();
+    let root = oxa_sandbox::scratch_root(&home);
+    let base = Bwrap {
+        bwrap: PathBuf::from("/usr/bin/bwrap"),
+        home: home.clone(),
+        layout: Layout {
+            scratch_root: Some(root.clone()),
+            ..Layout::default()
+        },
+    };
+    let tmp = |b: &dyn Sandbox| {
+        let a = b.bwrap_args(&spec("true", &env.work(), true));
+        a.windows(3)
+            .find(|w| w[0] == "--bind" && w[2] == "/tmp")
+            .map(|w| PathBuf::from(&w[1]))
+    };
+    assert_eq!(tmp(&base), None, "the process sandbox has no session directory");
+    let one = base.for_session().expect("a session sandbox");
+    let two = base.for_session().expect("a session sandbox");
+    let (a, b) = (tmp(one.as_ref()).unwrap(), tmp(two.as_ref()).unwrap());
+    assert_ne!(a, b);
+    assert!(a.is_dir() && b.is_dir() && a.starts_with(&root));
+    assert_eq!(one.persistence_notice(), Some(oxa_sandbox::SCRATCH_NOTICE));
+    let clone = one.clone();
+    drop(one);
+    assert!(a.is_dir(), "removed while the session still holds it");
+    drop(clone);
+    assert!(!a.exists(), "the session directory outlived its session");
+    assert!(b.is_dir());
+    drop(two);
+    assert!(!b.exists());
+
+    // No root: no session sandbox of its own.
+    let plain = Bwrap {
+        layout: Layout::default(),
+        ..base.clone()
+    };
+    assert!(plain.for_session().is_none());
+    // A root that cannot be created (a file is in the way): the per-command tmpfs.
+    std::fs::write(env.root().join("blocker"), "").unwrap();
+    let blocked = Bwrap {
+        layout: Layout {
+            scratch_root: Some(env.root().join("blocker/scratch")),
+            ..Layout::default()
+        },
+        ..base
+    };
+    let s = blocked.for_session().expect("a session sandbox");
+    assert_eq!(tmp(s.as_ref()), None);
+    assert!(s
+        .persistence_notice()
+        .unwrap()
+        .contains("discarded after each command"));
 }

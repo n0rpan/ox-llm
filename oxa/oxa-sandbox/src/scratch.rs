@@ -1,20 +1,35 @@
-//! #457: the session directory. One host directory per oxa process, mounted at `/tmp` inside
-//! every sandboxed command of the session (instead of a fresh tmpfs per command), so scratch
+//! #457: the session directory. One host directory per oxa session, mounted at `/tmp` inside
+//! every sandboxed command of that session (instead of a fresh tmpfs per command), so scratch
 //! work survives from one bash call to the next. `TMPDIR=/tmp` and `XDG_CACHE_HOME=/tmp/.cache`
 //! point into it (`Layout::build`), which gives every XDG tool (gh, pip, sccache, mise, ...) a
-//! writable cache home without a bind per tool. The package caches the layout already binds
-//! read-write under `~/.cache` are linked from `/tmp/.cache/<name>`, so they stay shared with
-//! the user's own builds.
+//! writable cache home without a bind per tool.
 //!
-//! It lives at `~/.cache/oxa/scratch/<pid>-<n>` (mode 0700, never under the agent directory)
-//! and is deleted when the last handle drops; directories of processes that are gone are
-//! removed when the next one is created.
+//! The user's cache home ([`user_cache_home`]: `$XDG_CACHE_HOME` when set to an absolute path,
+//! else `~/.cache`) keeps its shared caches: each entry of it that the layout binds read-write
+//! (directly or through a bound parent) is linked from `/tmp/.cache/<name>`, so it stays the
+//! cache of the user's own builds. Everything else a tool caches goes to the session.
+//!
+//! It lives at `~/.cache/oxa/scratch/<pid>-<n>` (mode 0700, never under the agent directory).
+//! Each session gets its own (`Bwrap::session`, when a session starts, at `/new`, `/resume`,
+//! fork and clone); it is deleted when that session ends: when it is replaced by another one
+//! or oxa exits. A directory left by an oxa that was killed is removed when a later oxa
+//! creates its next one.
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The parent of every session directory of `home`.
 pub fn scratch_root(home: &Path) -> PathBuf {
     home.join(".cache/oxa/scratch")
+}
+
+/// The user's cache home, as the XDG tools outside the sandbox see it: `XDG_CACHE_HOME` from
+/// `env` when it is an absolute path (the XDG rule ignores a relative one), else `~/.cache`.
+pub fn user_cache_home(home: &Path, env: &[(String, String)]) -> PathBuf {
+    env.iter()
+        .find(|(k, _)| k == "XDG_CACHE_HOME")
+        .map(|(_, v)| PathBuf::from(v))
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home.join(".cache"))
 }
 
 /// A session directory; removed on drop.
@@ -47,13 +62,20 @@ impl Scratch {
         &self.path
     }
 
-    /// Link `/tmp/.cache/<name>` to each writable bind directly under `~/.cache` (the bind
-    /// keeps its host path inside, so the link resolves there). Links only to what is bound.
-    pub(crate) fn link_caches(&self, home: &Path, write: &[PathBuf]) {
-        let cache = home.join(".cache");
-        for w in write.iter().filter(|w| w.parent() == Some(cache.as_path())) {
-            if let Some(name) = w.file_name() {
-                let _ = std::os::unix::fs::symlink(w, self.path.join(".cache").join(name));
+    /// Link `/tmp/.cache/<name>` to each entry of the user's cache home `cache` that a
+    /// read-write bind in `write` covers (the bind keeps its host path inside, so the link
+    /// resolves there). Links only to what is bound read-write; nothing for an empty `cache`.
+    pub(crate) fn link_caches(&self, cache: &Path, write: &[PathBuf]) {
+        if !cache.is_absolute() {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(cache) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if write.iter().any(|w| p.starts_with(w)) {
+                let _ = std::os::unix::fs::symlink(&p, self.path.join(".cache").join(e.file_name()));
             }
         }
     }
