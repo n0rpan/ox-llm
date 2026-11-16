@@ -252,7 +252,7 @@ impl Settings {
     pub fn tool_output_cap(&self) -> usize {
         self.u32("oxa.toolOutputCap", 16384) as usize
     }
-    /// `defaultTools` after patches; `None` = oxa's default (all seven built-ins), i.e. no
+    /// `defaultTools` after patches; `None` = oxa's default built-ins, i.e. no
     /// layer sets `defaultTools`.
     pub fn default_tools(&self) -> Option<Vec<String>> {
         if self.user.get("defaultTools").is_none() && self.project.get("defaultTools").is_none() {
@@ -262,7 +262,7 @@ impl Settings {
     }
     /// The `+x` / `-x` entries of `defaultTools` when every layer that sets it only edits the
     /// default selection (no layer gives a plain list), user layer first; `None` otherwise.
-    /// [`Settings::default_tools`] resolves such edits against the seven built-ins; the tool
+    /// [`Settings::default_tools`] resolves such edits against the default built-ins; the tool
     /// selection uses these entries to edit the members of oxa's default selection that come
     /// from hook sets (the `subagent` tool, O-146). Within one layer an exclusion wins, as in
     /// the merge, so a `+x` of a layer that also has `-x` is left out.
