@@ -31,3 +31,5 @@ pub mod anthropic_client;
 
 #[cfg(all(feature = "anthropic-client", feature = "pricing"))]
 pub mod openrouter;
+#[cfg(all(feature = "anthropic-client", feature = "pricing"))]
+pub mod status;
