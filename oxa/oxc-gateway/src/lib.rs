@@ -11,6 +11,8 @@ pub mod share;
 
 #[cfg(feature = "cloud-only")]
 pub mod catalog;
+#[cfg(feature = "pricing")]
+pub mod catalog_overlay;
 pub mod discovery_cache;
 #[cfg(feature = "ledger")]
 pub mod ledger;
