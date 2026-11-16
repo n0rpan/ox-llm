@@ -177,6 +177,9 @@ The compaction rules are in [compaction.md](compaction.md).
 
 ### Native cloud gateway
 
+See [Run oxa without Python](no-python.md) for setup, remaining Python dependencies
+and a loopback-only manual check.
+
 Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
 gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned

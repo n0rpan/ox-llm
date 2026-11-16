@@ -41,6 +41,7 @@ pub struct Refresh<'a> {
     pub client_id: &'a str,
     pub timeout: Duration,
 }
+#[derive(Clone)]
 pub enum Auth<'a> {
     ApiKey(&'a Key),
     Subscription {
@@ -60,6 +61,7 @@ impl fmt::Debug for Refresh<'_> {
         f.write_str("Refresh([redacted])")
     }
 }
+#[derive(Clone, Copy)]
 pub struct Chat<'a> {
     pub base_url: &'a str,
     pub upstream_model: &'a str,
@@ -113,8 +115,13 @@ pub enum Error {
     Endpoint,
     Request(&'static str),
     Credentials,
+    /// Subscription refresh/recovery failed; status surfaces must show signed out.
+    SignedOut,
     Refresh,
-    Http { status: u16, refusal: Option<Refusal> },
+    Http {
+        status: u16,
+        refusal: Option<Refusal>,
+    },
     Transport,
     Protocol,
     TooLarge,
@@ -127,6 +134,7 @@ impl fmt::Display for Error {
             Self::Endpoint => f.write_str("Invalid OpenAI endpoint"),
             Self::Request(param) => write!(f, "Invalid OpenAI request field: {param}"),
             Self::Credentials => f.write_str("OpenAI credentials unavailable"),
+            Self::SignedOut => f.write_str("ChatGPT signed out; sign in again"),
             Self::Refresh => f.write_str("OpenAI token refresh failed"),
             Self::Http { status, .. } => write!(f, "OpenAI upstream answered HTTP {status}"),
             Self::Transport => f.write_str("OpenAI connection failed"),
@@ -137,18 +145,40 @@ impl fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+impl Error {
+    pub fn subscription_state(&self) -> Option<crate::status::State> {
+        matches!(self, Self::SignedOut).then_some(crate::status::State::SignedOut)
+    }
+}
+// Secret-bearing recovery state is local to one logical request, never an error
+// or Debug value. No continuation/session state is kept on Client.
+#[derive(Default)]
+struct Recovery {
+    rejected: Option<String>,
+    retired: Vec<String>,
+    expired: bool,
+}
 #[derive(Clone)]
 pub struct Client(reqwest::Client);
 impl Client {
     pub fn new() -> Result<Self, Error> {
-        reqwest::Client::builder()
+        Self::with_read_timeout(Some(Duration::from_secs(1800)))
+    }
+    /// Use the caller's selected silence timeout for each upstream read, never
+    /// a total-generation deadline. None disables the read timeout; connection
+    /// setup and the complete credential-refresh exchange remain bounded.
+    pub fn with_read_timeout(read_timeout: Option<Duration>) -> Result<Self, Error> {
+        let mut builder = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(Duration::from_secs(30))
-            .read_timeout(Duration::from_secs(1800))
-            .build()
-            .map(Self)
-            .map_err(|_| Error::Setup)
+            .connect_timeout(Duration::from_secs(30));
+        if let Some(timeout) = read_timeout {
+            if std::time::Instant::now().checked_add(timeout).is_none() {
+                return Err(Error::Setup);
+            }
+            builder = builder.read_timeout(timeout);
+        }
+        builder.build().map(Self).map_err(|_| Error::Setup)
     }
     pub async fn stream<F>(
         &self,
@@ -176,6 +206,28 @@ impl Client {
     where
         F: FnMut(Event) -> Control + ?Sized,
     {
+        let mut recovery = Recovery::default();
+        for attempt in 0..2 {
+            recovery.expired = false;
+            let result = self
+                .stream_attempt(chat, auth.clone(), cancel, on, terminal_usage, &mut recovery)
+                .await;
+            if recovery.expired && attempt == 0 {
+                continue;
+            }
+            return result;
+        }
+        unreachable!("bounded recovery always returns")
+    }
+    async fn stream_attempt<F: FnMut(Event) -> Control + ?Sized>(
+        &self,
+        chat: Chat<'_>,
+        auth: Auth<'_>,
+        cancel: &Cancellation,
+        on: &mut F,
+        terminal_usage: &mut Option<Usage>,
+        recovery: &mut Recovery,
+    ) -> Result<Completed, Error> {
         *terminal_usage = None;
         if cancel.is_cancelled() {
             return Err(Error::Cancelled);
@@ -205,7 +257,6 @@ impl Client {
             return Err(Error::TooLarge);
         }
         let record;
-        let retired;
         let mut sensitive = Vec::new();
         let (access, account) = match auth {
             Auth::ApiKey(key) => {
@@ -218,11 +269,20 @@ impl Client {
                 refresh,
             } => {
                 let credentials = self
-                    .credentials(token_path, expected_account_id, refresh, cancel)
+                    .credentials(
+                        token_path,
+                        expected_account_id,
+                        refresh,
+                        cancel,
+                        recovery.rejected.as_deref(),
+                    )
                     .await?;
                 record = credentials.0;
-                retired = credentials.1;
-                sensitive.extend(retired.iter().map(String::as_str));
+                recovery.retired.extend(credentials.1);
+                recovery.retired.extend(
+                    [record.access_token(), record.refresh_token(), record.account_id()].map(str::to_owned),
+                );
+                sensitive.extend(recovery.retired.iter().map(String::as_str));
                 sensitive.extend([record.access_token(), record.refresh_token(), record.account_id()]);
                 (record.access_token(), Some(record.account_id()))
             }
@@ -256,6 +316,15 @@ impl Client {
             let status = response.status().as_u16();
             let headers = response.headers().clone();
             let bytes = bounded(response, MAX_ERROR, cancel).await?;
+            if subscription && status == 401 {
+                if serde_json::from_slice::<Value>(&bytes).ok().is_some_and(|v| {
+                    v["error"]["code"] == "token_expired" || v["error"]["type"] == "token_expired"
+                }) {
+                    recovery.rejected = Some(access.to_owned());
+                    recovery.expired = true;
+                }
+                return Err(Error::SignedOut);
+            }
             let refusal = if subscription {
                 rate_limits::chatgpt::classify_chatgpt_refusal(status, &bytes, &headers)
                     .map(Refusal::Subscription)
@@ -308,6 +377,15 @@ impl Client {
                     Some("response.completed" | "response.incomplete" | "response.failed" | "error")
                 );
                 let chunks = translator.event(&event);
+                // A normalized error is the translator's rejection signal.
+                // Do not wait for a terminal event/EOF from a peer held open.
+                if chunks.iter().any(|chunk| chunk.get("error").is_some()) {
+                    return Err(if cancel.is_cancelled() {
+                        Error::Cancelled
+                    } else {
+                        Error::Protocol
+                    });
+                }
                 if terminal {
                     let native = translator.finish();
                     if native.failed {
@@ -407,11 +485,13 @@ impl Client {
         expected_account_id: &str,
         refresh: Refresh<'_>,
         cancel: &Cancellation,
+        rejected_access: Option<&str>,
     ) -> Result<(chatgpt_tokens::TokenRecord, Vec<String>), Error> {
         if expected_account_id.is_empty() {
             return Err(Error::Credentials);
         }
         let expected_account_id = expected_account_id.to_owned();
+        let rejected_access = rejected_access.map(str::to_owned);
         let endpoint = validate_endpoint(refresh.endpoint)?;
         let timeout = refresh.timeout.min(REFRESH_TIMEOUT);
         if timeout.is_zero() || refresh.client_id.is_empty() || refresh.client_id.len() > 128 {
@@ -426,6 +506,7 @@ impl Client {
         let _refresh_guard = CancelOnDrop(cancel_task.clone());
         let handle = tokio::runtime::Handle::current();
         let deadline = tokio::time::Instant::now() + timeout;
+        let refreshing = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let acquire = async {
             loop {
                 let (path, client_id, client, cancel_task, handle, endpoint, expected_account_id) = (
@@ -437,20 +518,28 @@ impl Client {
                     endpoint.clone(),
                     expected_account_id.clone(),
                 );
+                let rejected_access = rejected_access.clone();
+                let refreshing = Arc::clone(&refreshing);
                 let attempt = tokio::task::spawn_blocking(move || {
                     let mut retired = Vec::new();
-                    let record = chatgpt_tokens::try_credentials(&path, |old| {
+                    let mut blocked = None;
+                    let mut refreshed = false;
+                    let refresher = |old: &chatgpt_tokens::TokenRecord| {
                         retired.extend([
                             old.access_token().to_owned(),
                             old.refresh_token().to_owned(),
                             old.account_id().to_owned(),
                         ]);
                         if old.account_id() != expected_account_id {
+                            blocked = Some(Error::Credentials);
                             return Err(Error::Credentials);
                         }
                         if cancel_task.is_cancelled() {
+                            blocked = Some(Error::Cancelled);
                             return Err(Error::Cancelled);
                         }
+                        refreshed = true;
+                        refreshing.store(true, std::sync::atomic::Ordering::Release);
                         // Both lock acquisition and the complete exchange share
                         // one firm deadline; the HTTP timer runs under the lock.
                         handle.block_on(async {
@@ -460,19 +549,29 @@ impl Client {
                                 result = tokio::time::timeout_at(deadline, client.refresh(endpoint, &client_id, old, &cancel_task)) => result.map_err(|_|Error::Refresh)?,
                             }
                         })
+                    };
+                    let record = match rejected_access.as_deref() {
+                        Some(rejected) => {
+                            chatgpt_tokens::try_credentials_after_rejection(&path, rejected, refresher)
+                        }
+                        None => chatgpt_tokens::try_credentials(&path, refresher),
+                    }
+                    .map_err(|_| {
+                        blocked.unwrap_or(if refreshed {
+                            Error::SignedOut
+                        } else {
+                            Error::Credentials
+                        })
                     })?;
                     if record
                         .as_ref()
                         .is_some_and(|record| record.account_id() != expected_account_id)
                     {
-                        return Err(chatgpt_tokens::Error::InvalidRecord);
+                        return Err(Error::Credentials);
                     }
-                    Ok::<_, chatgpt_tokens::Error>(record.map(|record| (record, retired)))
+                    Ok::<_, Error>(record.map(|record| (record, retired)))
                 });
-                let result = attempt
-                    .await
-                    .map_err(|_| Error::Credentials)?
-                    .map_err(|_| Error::Credentials)?;
+                let result = attempt.await.map_err(|_| Error::Credentials)??;
                 if let Some(result) = result {
                     return Ok(result);
                 }
@@ -484,7 +583,9 @@ impl Client {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(Error::Cancelled),
-            result = tokio::time::timeout_at(deadline, acquire) => result.map_err(|_|Error::Credentials)?,
+            result = tokio::time::timeout_at(deadline, acquire) => result.map_err(|_| {
+                if refreshing.load(std::sync::atomic::Ordering::Acquire) { Error::SignedOut } else { Error::Credentials }
+            })?,
         }
     }
 
@@ -520,15 +621,17 @@ impl Client {
             .map_or(Some(old.refresh_token()), Value::as_str)
             .filter(|s| !s.is_empty())
             .ok_or(Error::Refresh)?;
-        let lifetime = value["expires_in"]
-            .as_u64()
-            .filter(|n| *n > 120)
-            .ok_or(Error::Refresh)?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| Error::Refresh)?
-            .as_secs();
-        let expires = now.checked_add(lifetime).ok_or(Error::Refresh)? as f64;
+        let expires = match value.get("expires_in") {
+            Some(value) => {
+                let lifetime = value.as_u64().filter(|n| *n > 120).ok_or(Error::Refresh)?;
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| Error::Refresh)?
+                    .as_secs();
+                now.checked_add(lifetime).ok_or(Error::Refresh)? as f64
+            }
+            None => chatgpt_tokens::access_expiry(access).ok_or(Error::Refresh)?,
+        };
         chatgpt_tokens::TokenRecord::new(access.into(), refresh.into(), old.account_id().into(), expires)
             .map_err(|_| Error::Refresh)
     }
