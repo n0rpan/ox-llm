@@ -47,6 +47,7 @@ pub struct Reply {
     bytes: Vec<u8>,
     fragment: usize,
     gate: Option<mpsc::Receiver<()>>,
+    stop_delay: Duration,
 }
 impl Reply {
     /// Cache input is separate from ordinary input on the native wire.
@@ -77,6 +78,7 @@ impl Reply {
             bytes,
             fragment: 7,
             gate: None,
+            stop_delay: Duration::ZERO,
         }
     }
     pub fn error(status: u16, message: &str) -> Self {
@@ -89,6 +91,7 @@ impl Reply {
                 .into_bytes(),
             fragment: 7,
             gate: None,
+            stop_delay: Duration::ZERO,
         }
     }
     /// Malformed/truncated protocol cases use the same fragmented peer.
@@ -100,6 +103,7 @@ impl Reply {
             bytes: bytes.to_vec(),
             fragment: 7,
             gate: None,
+            stop_delay: Duration::ZERO,
         }
     }
     pub fn redirect(location: &str) -> Self {
@@ -115,6 +119,13 @@ impl Reply {
         let (tx, rx) = mpsc::channel();
         self.gate = Some(rx);
         (self, tx)
+    }
+    /// Hold the native terminal event briefly so footprint samples cover a live
+    /// stream, using this same owned peer rather than another mock implementation.
+    pub fn before_stop_delay(mut self, delay: Duration) -> Self {
+        assert!(delay < DEADLINE);
+        self.stop_delay = delay;
+        self
     }
 }
 
@@ -306,11 +317,22 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
         write!(stream, "{name}: {value}\r\n")?;
     }
     stream.write_all(b"\r\n")?;
-    for bytes in reply.bytes.chunks(reply.fragment) {
+    let split = reply
+        .bytes
+        .windows(b"event: message_stop\n".len())
+        .position(|part| part == b"event: message_stop\n")
+        .unwrap_or(reply.bytes.len());
+    write_fragments(&mut stream, &reply.bytes[..split], reply.fragment)?;
+    thread::sleep(reply.stop_delay);
+    write_fragments(&mut stream, &reply.bytes[split..], reply.fragment)?;
+    stream.write_all(b"0\r\n\r\n")
+}
+fn write_fragments(stream: &mut TcpStream, bytes: &[u8], fragment: usize) -> io::Result<()> {
+    for bytes in bytes.chunks(fragment) {
         write!(stream, "{:x}\r\n", bytes.len())?;
         stream.write_all(bytes)?;
         stream.write_all(b"\r\n")?;
         stream.flush()?;
     }
-    stream.write_all(b"0\r\n\r\n")
+    Ok(())
 }
