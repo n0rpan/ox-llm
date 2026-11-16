@@ -20,6 +20,9 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new(mock: &MockAnthropic) -> Self {
+        Self::for_endpoint(&mock.base_url())
+    }
+    pub fn for_endpoint(endpoint: &str) -> Self {
         let root = std::env::temp_dir().join(format!(
             "oxc-skeleton-{}-{}",
             std::process::id(),
@@ -45,7 +48,7 @@ impl Fixture {
                     MODEL:{
                         "kind":"remote/anthropic",
                         "upstream_model":UPSTREAM,
-                        "base_url":mock.base_url(),
+                        "base_url":endpoint,
                         "context_window":1024,
                         "max_output":16,
                         "pricing":{

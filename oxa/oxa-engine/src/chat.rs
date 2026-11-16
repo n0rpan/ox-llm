@@ -79,6 +79,13 @@ pub fn build_body_for(r: &ChatRequest, remote: bool, out: &mut Vec<u8>) {
         }
     }
     if remote {
+        if let Some(schema) = r.output_schema {
+            out.extend_from_slice(b",\"response_format\":");
+            let format = serde_json::json!({"type":"json_schema", "json_schema":{
+                "name":"oxa_output", "schema":schema
+            }});
+            out.extend_from_slice(format.to_string().as_bytes());
+        }
         out.extend_from_slice(b",\"max_tokens\":");
         out.extend_from_slice(r.max_tokens.to_string().as_bytes());
         out.extend_from_slice(b",\"reasoning_effort\":\"");
@@ -140,6 +147,10 @@ impl ReplyAssembler {
     pub fn chunk(&mut self, data: &str) -> Result<Vec<StreamEvent>, OxaError> {
         let v: Value =
             serde_json::from_str(data).map_err(|e| broken(format!("malformed stream chunk: {e}")))?;
+        self.chunk_value(&v)
+    }
+    /// Assemble already-decoded gateway chunks without encoding and reparsing them.
+    pub fn chunk_value(&mut self, v: &Value) -> Result<Vec<StreamEvent>, OxaError> {
         let obj = v
             .as_object()
             .ok_or_else(|| broken("a stream chunk is not a JSON object".to_string()))?;

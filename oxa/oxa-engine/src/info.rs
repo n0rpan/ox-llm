@@ -221,6 +221,7 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
             thinking_budget: flag(c, "thinking_budget") && !flag(c, "remote"),
             park_disk_only: c.get("park").and_then(Value::as_str) == Some("disk"),
             remote: flag(c, "remote"),
+            response_format: flag(c, "remote") && flag(c, "response_format"),
             remote_provider: match c.get("remote_provider").and_then(Value::as_str) {
                 Some("openrouter") => Some("openrouter"),
                 Some("anthropic") => Some("anthropic"),
