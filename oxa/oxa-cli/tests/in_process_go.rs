@@ -186,6 +186,17 @@ fn live_discovery_lists_chat_models_only_and_offline_precedes_credentials() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
     setup(&env, &format!("http://{}", mock.address()));
+    // Live Go discovery must extend, rather than replace, the same factory's
+    // static routes. No other provider credential is installed by setup().
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    settings["oxa"]["engine"]["inProcessLocal"] = json!(false);
+    for provider in ["anthropic", "openrouter", "openai", "chatgpt"] {
+        settings["oxa"]["cloud"]["models"][format!("synthetic-{provider}")] = json!({"provider":provider,"upstream_model":"synthetic-model",
+                "context_window":32768,"max_output":64,"pricing":{
+                    "input_per_million":1,"output_per_million":2}});
+    }
+    fs::write(&path, settings.to_string()).unwrap();
     let output = run(&env, &["--list-models"]);
     assert_eq!(
         output.status.code(),
@@ -194,7 +205,11 @@ fn live_discovery_lists_chat_models_only_and_offline_precedes_credentials() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains(MODEL));
+    for provider in ["anthropic", "openrouter", "openai", "chatgpt"] {
+        assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("synthetic-{provider}")));
+    }
     assert!(!String::from_utf8_lossy(&output.stdout).contains("synthetic-messages"));
+    assert!(!env.home().join(".config/oxc/llm/chatgpt-auth.json").exists());
     assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
     fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
     let output = run(&env, &["--offline", "-p", "Synthetic request"]);
