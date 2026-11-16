@@ -233,6 +233,9 @@ pub(crate) fn request_budget(st: &SessionState, thinking: bool) -> Option<u64> {
 /// The notice shown when a thinking-only overrun is retried without thinking.
 pub const OVERRUN_NOTICE: &str = "thinking used the whole output budget; answered without thinking";
 
+/// Stable terminal class when the single no-thinking fallback still has no answer.
+pub(crate) const OVERRUN_ERROR_CLASS: &str = "thinking_overrun";
+
 /// A reply cut at the output limit with nothing to show or run.
 pub(crate) fn empty_length(turn: &oxa_proto::AssistantTurn) -> bool {
     turn.finish == oxa_proto::Finish::Length

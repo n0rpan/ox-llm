@@ -662,7 +662,11 @@ fn overrun_twice_is_an_error_not_a_loop() {
         ThinkingLevel::Medium,
     );
     let r = run(&mut st, "explain a.txt");
-    assert!(matches!(r.end, RunEnd::Failed(_)), "{:?}", r.end);
+    assert!(
+        matches!(&r.end, RunEnd::Failed(error) if error.code == "thinking_overrun"),
+        "{:?}",
+        r.end
+    );
     assert_eq!(eng.requests().len(), 2, "no further retry");
     assert_eq!(notice_texts(&r.events, Level::Error).len(), 1);
 }
