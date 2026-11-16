@@ -9,16 +9,20 @@ tests protect requests/streams, admission budgets, private accounting, secret
 handling and clean refusals. Python wording and CLI compatibility are not goals.
 The existing `policy` and `secrets` features are independently selectable.
 The `pricing` and `accounting` features supply cache-aware charges and atomic
-cross-process reservations. Admission and settlement take an exclusive `flock`
-on `<ledger>.lock`; holds are persisted in `<ledger>.holds/` with an owner lock.
-Dead unforwarded holds are released; forwarded holds remain reserved if their
-owner dies before recording settlement. Share a daily Budget across requests and
-retain each hold until its writer callback commits the private settlement row.
-Mark holds forwarded before sending any potentially paid bytes. Failed writes
-block further spending. Missing/failed usage costs the full reservation;
-cancellation uses final usage or a bounded byte/time estimate including hidden
-reasoning and cache-write premiums. Known actual charges are never capped at
-the reservation; OpenRouter's reported cost is authoritative.
+process-shared reservations. Retain each hold until its writer callback commits
+and syncs the private settlement row. A short file lock covers spend, persisted
+holds and admission; it is released before any upstream work. Independent Budget
+instances and processes use the same private daily files. Failed writes or an
+abandoned potentially paid hold block further spending across processes.
+
+The ledger directory must already be owned by this user with mode 0700. Daily
+`.budget-lock` and `.holds` files are owner-only and contain only random hold IDs,
+reserved amounts and a failure flag. Bounded state reads reject malformed,
+interrupted, oversized, non-owner or non-private files. Rows are locked and synced
+before their holds are removed. No runtime, thread or resident file descriptor is
+added to an idle gateway. A crashed process retains its unknown reservations;
+there is deliberately no automatic timeout or PID-based release of possibly paid
+work. The next calendar day has a separate reservation file.
 
 ```sh
 cargo check --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --no-default-features
@@ -29,6 +33,9 @@ Tests use synthetic credential files and run in the required CI job with private
 HOME, cleared environment and an isolated network. No real credentials or cloud
 calls are used. The shared workspace's gateway job also runs formatting and
 strict Clippy; its result is included in `gate`.
+
+Linux accounting tests require `strace` for actual syscall ordering and injected
+sync failures. CI installs it for the isolated gateway suite.
 
 CI creates a synthetic file with a different owner before dropping capabilities
 and passes its path as `OXC_SECRET_OWNER_PATH` to the ownership test. Root test
@@ -48,3 +55,30 @@ It emits five samples of idle/streaming RSS and threads, startup/request time to
 the first text, and the overhead against a direct request with the same body.
 Results contain numbers only. This initial slice does not link the gateway into
 the production binary; consumer slices must measure their own footprint.
+
+The `cloud-only` feature provides a typed, immutable catalog. Construct validated
+`catalog::Model` values from trusted user settings, then create a `Catalog` with
+explicit `Access`. Discovery borrows `ModelInfo` values with each model's token
+limits; private upstream IDs and endpoints are excluded from those values and
+Debug output. Disabled/offline catalogs hide and refuse models. An explicit
+unknown model is refused rather than silently selecting another provider.
+Catalog construction reads no credential or ledger and starts no engine.
+
+Native policy tests assert client status, code, type and parameter, with a
+nonempty explanation. They protect error classification without wording parity.
+
+The `ledger` feature supplies private request rows and one shared budget per local
+calendar day. Keep one `Ledger` per gateway and clone its handles across calls;
+an admitted call retains its original day over midnight. The install salt and
+rows are owner-only. Explicit session and idempotency identifiers use separate
+keyed HMAC domains. The entry API accepts no request body, and records no prompt,
+response, agent fingerprint or inferred session/gap telemetry. Billing fields
+are validated and serialized through one writer; failed appends fail admission
+closed. Cross-process admission follows the walking-skeleton series.
+
+`KeyFile::prepare` binds an approved parent directory once per configuration;
+each read opens the key file afresh without following its final link and checks
+owner, mode and size again. No key bytes or key descriptor are cached. Secrets
+use UTF-8 JSON (an optional UTF-8 BOM is accepted); UTF-16/32 and nonfinite JSON
+extensions are refused. The copied conversion/normalization buffers are gone.
+Model endpoints require HTTPS, with HTTP limited to loopback fixtures.

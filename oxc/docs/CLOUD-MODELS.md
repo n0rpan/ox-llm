@@ -358,4 +358,8 @@ oxc logout chatgpt                # removes the token file
   `cloud.chatgpt.daily_tokens` do.
 - `/_local/status` → `cloud.subscription` shows `signed_in` and the remaining allowance the
   backend reported (`used_percent`, `resets_at`, `window_minutes`).
-- LAN-share guests never see or reach these models; offline mode refuses them.
+- LAN-share guests never see or reach these models unless the owner sets
+  `cloud.share_with_lan: true` (default off, only the boolean `true` counts). With it on, guests
+  may list and use the API-key models; their requests count against the same daily budget and
+  the ledger rows are marked `origin: remote` and `lan_guest: true`. The ChatGPT subscription is
+  never shared with guests. Offline mode refuses all cloud models.

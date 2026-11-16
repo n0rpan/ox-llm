@@ -64,9 +64,11 @@ At most two repairs can follow each other. A valid tool call resets the count. T
 
 ## Repeated calls
 
-A model can get stuck making the same tool call again and again. When a call (any tool: `read`, `bash`, `grep`, `find`, `ls`, `web_search`, MCP and extension tools) has returned the same result three times in a row, with the same arguments and nothing else in between, oxa still runs it but sends a short note instead of the result: the result is unchanged and already in the conversation, change approach. Failing results count too. The second note is the last: the next identical call ends the run with a stop message. A re-run after an edit or any other call, a command whose output changed (a test after a fix, a polling command), or the same call after a new prompt is never affected.
+A model can get stuck making the same tool call again and again. When a call (any tool: `read`, `bash`, `grep`, `find`, `ls`, `web_search`, MCP and extension tools) has returned the same result three times in a row, with the same arguments and nothing else in between, oxa still runs it but sends a short note instead of the result: the result is unchanged and already in the conversation, change approach. Failing results count too. The second note is the last: the next identical call ends the run with a stop message. An `edit` or `write` that failed changed nothing, so it does not end the run: `read`, failing `edit`, `read`, failing `edit` is caught like the plain repeat. A re-run after a successful edit or any other call, a command whose output changed (a test after a fix, a polling command), or the same call after a new prompt is never affected.
 
 `oxa.toolRepeatGuard: false` turns this off.
+
+Loops that vary too much for this guard (calls that alternate, output with a timestamp) are not detected. To bound them, set `oxa.maxTurns` to a number of model replies: a run that reaches it ends with a `turn_limit` error. It is off by default.
 
 ## Thinking on tool follow-ups
 

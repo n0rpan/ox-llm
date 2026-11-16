@@ -95,7 +95,42 @@ fn run_inner(
     let mut turn_index: u32 = 0;
     let mut done = crate::done::DoneState::default();
     done.begin(st);
-    loop {
+    let mut wrapping_up = false;
+    let mut wrap_up_failure = None;
+    // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
+    let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
+    'turns: loop {
+        if max_turns > 0 && turn_index >= max_turns && !wrapping_up {
+            let e = crate::repeat::turn_limit_error(max_turns);
+            persist(
+                st,
+                EntryBody::Shown {
+                    text: e.to_string(),
+                    why: shown_why::FAILED,
+                },
+                sink,
+            )?;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Error,
+                text: e.to_string(),
+            });
+            return Ok(RunEnd::Failed(e));
+        }
+        if !wrapping_up {
+            let reason = match st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
+                1 => Some(crate::WrapUpReason::TimeLimit),
+                2 => Some(crate::WrapUpReason::Signal),
+                _ => None,
+            };
+            if let Some(reason) = reason {
+                wrapping_up = true;
+                push_user(st, crate::prompt::WRAP_UP.to_string(), sink, ui, run_msgs)?;
+                sink.emit(&AgentEvent::Notice {
+                    level: Level::Info,
+                    text: reason.notice().to_string(),
+                });
+            }
+        }
         // E-INT 1: host requests that arrived since the last step (queries, appends) are
         // served between steps; session-shape actions wait for settlement.
         crate::host::serve_host(st, false, sink, ui);
@@ -122,23 +157,41 @@ fn run_inner(
         crate::think::before_reply(st, ui);
         let mut opts = RequestOpts {
             kind: TurnKind::Chat,
-            max_tokens: None,
-            thinking: None,
+            max_tokens: wrapping_up.then_some(1024),
+            thinking: wrapping_up.then_some(false),
             background: false,
             snapshot_keep: false,
             extra: Vec::new(),
             events: true,
             idem_key: String::new(),
         };
-        let thinking_on = crate::think::request_thinking(st, TurnKind::Chat);
+        let thinking_on = !wrapping_up && crate::think::request_thinking(st, TurnKind::Chat);
         let mut retried = false;
         let mut replays: u32 = 0;
         let turn = loop {
+            if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                let text = "Request skipped for wrap-up.".to_string();
+                let progress = persist(
+                    st,
+                    EntryBody::Shown {
+                        text: text.clone(),
+                        why: shown_why::ABORTED,
+                    },
+                    sink,
+                )?;
+                let mut message = pending.clone();
+                message.stop = Some(StopReason::Aborted);
+                message.error_message = Some(text);
+                finish_discarded_turn(st, sink, ui, message, (turn_index, &progress.id));
+                turn_index += 1;
+                continue 'turns;
+            }
             let mut capture = Capture {
                 inner: &mut *sink,
                 text: String::new(),
                 got_data: false,
                 detector: crate::loopguard::LoopDetector::new(),
+                reasoning_detector: crate::loopguard::LoopDetector::new(),
                 cancel: st.shared.cancel.clone(),
                 looped: false,
             };
@@ -147,7 +200,11 @@ fn run_inner(
             if opts.idem_key.is_empty() {
                 opts.idem_key = crate::retry::fresh_idem_key(st);
             }
-            let res = crate::retry::chat_with_retry_keyed(st, &mut opts, &mut capture, ui);
+            let res = if wrapping_up {
+                crate::exec::request(st, &opts, &mut capture, ui)
+            } else {
+                crate::retry::chat_with_retry_keyed(st, &mut opts, &mut capture, ui)
+            };
             let partial = std::mem::take(&mut capture.text);
             let got_data = capture.got_data;
             let looped = capture.looped;
@@ -178,6 +235,8 @@ fn run_inner(
                     // `Shown { cut }` (never sent, W2) and the request is resent from the same
                     // wire; a fresh `MessageStart` opens the replay's message.
                     replays += 1;
+                    // The cut request ran and its usage never arrived: count the request.
+                    st.stats.requests += 1;
                     let text = if partial.is_empty() {
                         e.to_string()
                     } else {
@@ -211,8 +270,31 @@ fn run_inner(
                     } else {
                         partial
                     };
-                    persist(st, EntryBody::Shown { text, why }, sink)?;
-                    return Ok(if why == shown_why::ABORTED {
+                    let progress = persist(st, EntryBody::Shown { text, why }, sink)?;
+                    let soft_stop = st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0;
+                    if soft_stop {
+                        let mut message = pending.clone();
+                        if let EntryBody::Shown { text, .. } = progress.body {
+                            message.msg.content = Some(text);
+                        }
+                        message.stop = Some(if e.code == oxa_proto::codes::ABORTED {
+                            StopReason::Aborted
+                        } else {
+                            StopReason::Error
+                        });
+                        message.error_message = Some(e.to_string());
+                        finish_discarded_turn(st, sink, ui, message, (turn_index, &progress.id));
+                        turn_index += 1;
+                    }
+                    if !wrapping_up && soft_stop && e.code != oxa_proto::codes::ABORTED {
+                        // The final turn may save work, but cannot erase the failure
+                        // that made this request unsuccessful.
+                        wrap_up_failure = Some(e);
+                        continue 'turns;
+                    }
+                    return Ok(if let Some(error) = wrap_up_failure {
+                        RunEnd::Failed(error)
+                    } else if why == shown_why::ABORTED {
                         RunEnd::Aborted
                     } else {
                         RunEnd::Failed(e)
@@ -221,11 +303,32 @@ fn run_inner(
             };
             // #184: thinking ran to the output limit and nothing else came out.
             if !retried && crate::think::reasoning_only_overrun(st, &turn, thinking_on) {
+                crate::think::record_overrun(st, ui);
+                account_discarded(st, &turn);
+                if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                    // The normal fallback is a new request. A pending stop instead
+                    // gets the bounded final instruction from the outer turn loop.
+                    let progress = persist(
+                        st,
+                        EntryBody::Shown {
+                            text: "Thinking reached its output limit; wrapping up.".to_string(),
+                            why: shown_why::CUT,
+                        },
+                        sink,
+                    )?;
+                    finish_discarded_turn(
+                        st,
+                        sink,
+                        ui,
+                        reply_event(&turn, now_ms()),
+                        (turn_index, &progress.id),
+                    );
+                    turn_index += 1;
+                    continue 'turns;
+                }
                 retried = true;
                 opts.thinking = Some(false);
                 opts.idem_key = String::new();
-                crate::think::record_overrun(st, ui);
-                account_discarded(st, &turn);
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Info,
                     text: crate::think::OVERRUN_NOTICE.to_string(),
@@ -235,11 +338,11 @@ fn run_inner(
             if retried && crate::think::empty_length(&turn) {
                 account_discarded(st, &turn);
                 let e = OxaError::new(
-                    oxa_proto::codes::STREAM_BROKEN,
+                    crate::think::OVERRUN_ERROR_CLASS,
                     "The reply ran out of output tokens before any answer, even without thinking.",
                 )
                 .with_hint("Ask for a shorter answer or split the task.");
-                persist(
+                let progress = persist(
                     st,
                     EntryBody::Shown {
                         text: e.to_string(),
@@ -251,6 +354,18 @@ fn run_inner(
                     level: Level::Error,
                     text: e.to_string(),
                 });
+                if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                    wrap_up_failure = Some(e);
+                    finish_discarded_turn(
+                        st,
+                        sink,
+                        ui,
+                        reply_event(&turn, now_ms()),
+                        (turn_index, &progress.id),
+                    );
+                    turn_index += 1;
+                    continue 'turns;
+                }
                 return Ok(RunEnd::Failed(e));
             }
             break turn;
@@ -372,8 +487,11 @@ fn run_inner(
             );
             turn_index += 1;
 
-            if st.shared.cancel.is_cancelled() {
-                return Ok(RunEnd::Aborted);
+            if st.shared.cancel.is_cancelled() || wrapping_up {
+                return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
+            }
+            if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                continue;
             }
             // The repeat guard gave up: the same call after its notices ends the run.
             if let Some(r) = results.iter().find(|r| r.stop) {
@@ -388,9 +506,13 @@ fn run_inner(
                 )?;
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Error,
-                    text,
+                    text: text.clone(),
                 });
-                return Ok(RunEnd::Stopped);
+                // The files edited so far are still checked and the result shown; the run is
+                // over, so a failure is not sent back to the model.
+                let _ = crate::done::check(st, &mut done, sink, ui);
+                // Giving up is not a finished task: a caller must not read it as success.
+                return Ok(RunEnd::Failed(OxaError::new(crate::repeat::ERROR_CODE, text)));
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
@@ -420,6 +542,12 @@ fn run_inner(
 
         turn_end(st, sink, ui, reply, Vec::new(), (turn_index, &reply_entry, &[]));
         turn_index += 1;
+        if wrapping_up {
+            return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
+        }
+        if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            continue;
+        }
         if crate::repair::repair_turn(st, &turn, sink)? {
             continue;
         }
@@ -428,6 +556,9 @@ fn run_inner(
         }
         if let Some(text) = crate::done::check(st, &mut done, sink, ui) {
             crate::done::inject(st, text, sink, ui, run_msgs)?;
+            continue;
+        }
+        if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             continue;
         }
         return Ok(RunEnd::Stopped);
@@ -549,6 +680,22 @@ pub(crate) fn persist(
     Ok(entry)
 }
 
+/// Close a visible request replaced by wrap-up without adding an assistant message to the
+/// wire. Its entry ID identifies the shown progress record, including for an unissued request.
+fn finish_discarded_turn(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    message: EventMessage,
+    ids: (u32, &str),
+) {
+    sink.emit(&AgentEvent::MessageEnd {
+        message: message.clone(),
+    });
+    crate::fire::message(st, HookPoint::MessageEnd, &message, sink, ui);
+    turn_end(st, sink, ui, message, Vec::new(), (ids.0, ids.1, &[]));
+}
+
 fn turn_end(
     st: &mut SessionState,
     sink: &mut dyn EventSink,
@@ -565,9 +712,9 @@ fn turn_end(
     crate::fire::turn_end(st, ids.0, &message, &tool_results, (ids.1, ids.2), sink, ui);
 }
 
-/// A request whose reply is not kept (the overrun turn and a failed retry): its tokens still
+/// A request whose reply is not kept (the overrun turn, a failed retry and a context-full cut): its tokens still
 /// count in the stats. No `Usage` entry, so the cache expectation is not moved by it.
-fn account_discarded(st: &mut SessionState, turn: &oxa_proto::AssistantTurn) {
+pub(crate) fn account_discarded(st: &mut SessionState, turn: &oxa_proto::AssistantTurn) {
     st.stats.requests += 1;
     st.stats.prompt_tokens += turn.usage.prompt as u64;
     st.stats.completion_tokens += turn.usage.completion as u64;
@@ -706,6 +853,11 @@ fn miss_cause_for(st: &SessionState, first: bool) -> &'static str {
 /// #456: a stream that broke after output (not our own loop stop) is resent while the retry
 /// policy allows it. A refusal after output (budget, settlement) is never resent. A break before output is already retried inside `chat_with_retry`.
 fn replayable(st: &SessionState, e: &OxaError, got_data: bool, looped: bool, replays: u32) -> bool {
+    // A failed request yields to the final turn once a soft stop is pending.
+    // The final attempt itself must not be replayed either.
+    if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+        return false;
+    }
     let r = st.settings.retry();
     e.code == oxa_proto::codes::STREAM_BROKEN
         && got_data
@@ -746,6 +898,8 @@ struct Capture<'a> {
     text: String,
     got_data: bool,
     detector: crate::loopguard::LoopDetector,
+    /// #513: a loop inside the reasoning is stopped the same way (kept apart from the answer).
+    reasoning_detector: crate::loopguard::LoopDetector,
     cancel: oxa_proto::CancelToken,
     looped: bool,
 }
@@ -756,16 +910,26 @@ impl EventSink for Capture<'_> {
             self.text.clear();
             self.got_data = false;
             self.detector.reset();
+            self.reasoning_detector.reset();
             self.looped = false;
         }
         if let AgentEvent::MessageUpdate { delta, .. } = e {
             self.got_data = true;
-            if let oxa_proto::MessageDelta::TextDelta { delta, .. } = delta {
-                self.text.push_str(delta);
-                if !self.looped && self.detector.push(delta) {
+            match delta {
+                oxa_proto::MessageDelta::TextDelta { delta, .. } => {
+                    self.text.push_str(delta);
+                    if !self.looped && self.detector.push(delta) {
+                        self.looped = true;
+                        self.cancel.cancel();
+                    }
+                }
+                oxa_proto::MessageDelta::ThinkingDelta { delta, .. }
+                    if !self.looped && self.reasoning_detector.push(delta) =>
+                {
                     self.looped = true;
                     self.cancel.cancel();
                 }
+                _ => {}
             }
         }
         self.inner.emit(e);

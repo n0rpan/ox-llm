@@ -29,6 +29,10 @@ In `workspace`, bash runs without asking, in the sandbox described below. Bash h
 
 Paths are resolved before the check: `..` is followed and a symbolic link that points outside the project counts as outside.
 
+Capped tool results are an exception to the outside-project read question: the file tools can read the running session's full-output spill directory without asking, in every mode, including `ask` and unattended runs. This recovers output the session already received, not a new permission to run the tool or read its original inputs. Forks and clones also read their source sessions' spills without asking, following the saved session ancestry so inherited output paths keep working after a resume. Those inherited directories are read-only to the file tools; unrelated sessions and the rest of the agent state remain denied. The bash sandbox is unchanged. When another action needs approval in an unattended run, the refusal says nobody is available to approve it, rather than claiming a user declined.
+
+Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain readable with the ordinary outside-project approval (or an existing session grant / YOLO), not the no-prompt spill exception. This read-only exception covers generated image names directly under the temporary directory, not unrelated sessions, arbitrary temporary files or symlinks into denied state.
+
 ### YOLO: no prompts
 
 `oxa --yolo`, `/yolo [on|off]` or Ctrl+Alt+O switches the questions off: whatever a mode would have asked is allowed at once and counted. Use it when you want a run to go through without stopping, in a project you can restore.
@@ -58,7 +62,7 @@ What a command sees:
 |---|---|
 | `/` (system files, toolchains, and any other path your account can read) | read-only |
 | your home directory | empty, except the entries below. The exception is a session started in the home directory or above it, see [Starting in your home directory](#starting-in-your-home-directory) |
-| `/tmp` | a new empty directory for each command |
+| `/tmp` | the session's own scratch directory, kept between its commands (see below) |
 | the project directory | read-write (read-only in plan mode) |
 | your toolchains: `PATH` entries under home, rustup, mise and asdf, nvm and similar, uv, pipx, pyenv and rbenv, git configuration | read-only |
 | package caches of pip, uv, go, cargo registry, npm, pnpm, yarn, bun, deno | read-write |
@@ -71,6 +75,8 @@ What a command sees:
 | file ownership | only your own uid is mapped; root-owned system files (for example `/usr/bin/python3`) show as uid 65534 (`nobody`), and `id` shows your uid plus group `nobody` |
 
 Tools that insist on "owned by root or the caller" (stat/ownership checks, some wrappers, sudo-like or ssh strict-mode checks) fail only inside the sandbox because of this uid mapping. That is an artifact of the user namespace, not a repo bug, and no flag maps host root without extra privilege; report such failures as environmental.
+
+The same mapping limits what a command can write as metadata. Setting a POSIX ACL (`setfacl`, or `fsetxattr` on `system.posix_acl_access`) that names a user id or group id other than the mapped ones fails with `EINVAL`, because the kernel cannot represent an unmapped id in the namespace; the same goes for `chown` to another id. Named entries for your own uid and gid, and ACLs with only owner, group, mask and other entries, work. A test or script that needs a foreign named uid in an ACL has to run outside the sandbox.
 
 The environment of a command starts empty. It gets `PATH`, `HOME`, `LANG`, `TERM` and `AI_AGENT`, the toolchain variables that are set (for example `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `NVM_DIR`, `UV_CACHE_DIR`, and the `MISE_*` variables), and the variables oxa sets for the session (`OXA_SESSION_ID`, and `OXA_SESSION_FILE` unless the session is ephemeral). Every other variable is dropped, including your API keys and tokens. A toolchain variable whose name contains `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` is never passed.
 
@@ -89,10 +95,11 @@ Writable package caches are shared with your own builds. A crate or Go module th
 
 ### The deny-list
 
-These paths are masked inside the sandbox, and the file tools refuse them in every mode, whatever the grants or settings say. The list is fixed. Each entry is a path under your home directory, except oxa's own agent directory, which is masked wherever `OXA_AGENT_DIR` puts it.
+These paths are masked inside the sandbox, and the file tools refuse them in every mode, whatever the grants or settings say. `grep`, `find` and `ls` on a folder above them (your home directory, `~/.config`) skip them: their names and contents are not shown. The list is fixed. Each entry is a path under your home directory, except oxa's own agent directory, which is masked wherever `OXA_AGENT_DIR` puts it.
 
-- SSH, GPG, and cloud credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`.
-- Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh` (see below), `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`.
+- SSH, GPG, and cloud credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`, `~/.s3cfg`, `~/.config/rclone`, `~/.config/hcloud`, `~/.config/doctl`, `~/.config/sops/age`.
+- Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh` (see below), `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`, `~/.gem/credentials`, `~/.m2/settings.xml`, `~/.gradle/gradle.properties`, `~/.config/github-copilot`.
+- Container registry logins: `~/.config/containers/auth.json`, `~/.local/share/containers/auth.json` (and `~/.docker/config.json`, below).
 - oxa Cloud keys: `~/.config/oxc/llm/cloud-secrets.json`.
 - Password stores and keyrings: `~/.password-store`, `~/.local/share/keyrings`, `~/.config/op`, `~/.config/Bitwarden`, `~/.pki`.
 - Browser profiles: Firefox, Thunderbird, Chrome, Chromium, Brave, Edge, Vivaldi and Opera profile directories.
@@ -213,4 +220,8 @@ Session files are `0600`. The Brave key is never written to a session, an export
 
 oxa shows no startup notice about this (it would fill small terminals). The note is appended to bash results that mention /tmp or fail with a read-only or permission error; this contextual reminder is the only place the model sees it.
 
-Workspace writes persist (except protected paths), as do configured writable binds, package caches and permitted git data. Other paths are read-only or hidden. /tmp is private scratch: writes there are discarded after each command, not saved on the host. Do not report scratch files as saved; put deliverables in the workspace.
+Workspace writes persist (except protected paths), as do configured writable binds, package caches and permitted git data. Other paths are read-only or hidden. /tmp is the session's private scratch: it persists between commands of one session and is deleted when the session ends (`TMPDIR` and `XDG_CACHE_HOME` point into it). Do not report scratch files as saved; put deliverables in the workspace.
+
+Each session gets its own scratch directory, `~/.cache/oxa/scratch/<pid>-<n>` on the host (mode 0700), created when the session starts or is reopened. It is deleted when the session ends: at `/new`, `/resume`, fork, clone or any other switch to another session, and when oxa exits. A resumed session therefore starts with an empty /tmp; two sessions never share one. A directory left behind by an oxa that was killed is removed when a later oxa creates its next session directory. Hook commands do not belong to a session and get a new empty /tmp for each command. If the directory cannot be created, every command gets a new empty /tmp instead.
+
+Inside the sandbox `XDG_CACHE_HOME` is always `/tmp/.cache`. Shared caches stay shared: each entry of your cache home (your `XDG_CACHE_HOME` when it is an absolute path, otherwise `~/.cache`) that is bound read-write, for example through `writePaths`, appears as `/tmp/.cache/<name>`, so tools write to the same cache as your own builds. Everything else a tool caches goes to the session's scratch and is deleted with it. With a custom `XDG_CACHE_HOME`, entries of `~/.cache` are not linked.

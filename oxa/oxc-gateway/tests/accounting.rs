@@ -22,6 +22,8 @@ impl Home {
             SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
         ));
         fs::create_dir(&path).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
         Self(path)
     }
     fn ledger(&self) -> PathBuf {
@@ -439,7 +441,7 @@ fn two_processes_cannot_together_reserve_more_than_the_cap() {
     assert!(budget.reserve(&json!(0.003), true, &plain_model(), 100).is_ok());
 }
 #[test]
-fn a_killed_process_releases_an_unforwarded_hold_but_keeps_a_forwarded_one() {
+fn a_killed_process_keeps_unknown_holds_even_before_forwarding() {
     let home = Home::new();
     let budget = Budget::new(home.ledger());
     let mut child = spawn_child(&home.ledger(), 0.0015, false);
@@ -447,7 +449,11 @@ fn a_killed_process_releases_an_unforwarded_hold_but_keeps_a_forwarded_one() {
     assert!(budget.reserve(&json!(0.0015), true, &plain_model(), 100).is_err());
     child.kill().unwrap();
     child.wait().unwrap();
-    assert!(budget.reserve(&json!(0.0015), true, &plain_model(), 100).is_ok());
+    // Main's durable snapshots deliberately retain every crashed owner's hold.
+    assert_eq!(
+        budget.reserve(&json!(0.0015), true, &plain_model(), 100).err().unwrap().code,
+        "budget_exceeded"
+    );
     let home = Home::new();
     let budget = Budget::new(home.ledger());
     let mut child = spawn_child(&home.ledger(), 0.0015, true);
@@ -638,29 +644,23 @@ fn failed_settlement_keeps_the_forwarded_hold_for_other_processes() {
     let result = child_result(&mut child);
     drop(child.stdin.take());
     assert!(child.wait().unwrap().success());
-    assert_eq!(result, "refused budget_exceeded");
+    assert_eq!(result, "refused cloud_ledger_unavailable");
 }
 
 #[test]
-fn abandoned_unforwarded_holds_are_reaped_before_parsing() {
+fn malformed_persisted_holds_are_never_reaped_or_reset() {
     let home = Home::new();
     let path = home.ledger();
-    let dir = path.with_file_name("requests-synthetic.jsonl.holds");
-    fs::create_dir(&dir).unwrap();
+    let holds = path.with_file_name("requests-synthetic.jsonl.holds");
+    use std::os::unix::fs::PermissionsExt;
     for contents in ["", "invalid", "0.", "0.0015"] {
-        let abandoned = dir.join("synthetic.hold");
-        fs::write(&abandoned, contents).unwrap();
-        let budget = Budget::new(path.clone());
-        let hold = budget.reserve(&json!(0.0015), true, &plain_model(), 100).unwrap();
-        assert!(!abandoned.exists());
-        drop(hold);
-        fs::create_dir_all(&dir).unwrap();
+        fs::write(&holds, contents).unwrap();
+        fs::set_permissions(&holds, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(Budget::new(path.clone())
+            .reserve(&json!(0.0015), true, &plain_model(), 100)
+            .is_err());
+        assert_eq!(fs::read_to_string(&holds).unwrap(), contents);
     }
-    // Forwarded holds must still fail closed even if their contents are invalid.
-    fs::write(dir.join("synthetic.sent"), "").unwrap();
-    assert!(Budget::new(path)
-        .reserve(&json!(0.0015), true, &plain_model(), 100)
-        .is_err());
 }
 
 #[test]
@@ -669,18 +669,14 @@ fn forwarding_persistence_failure_is_returned_before_paid_bytes_can_be_sent() {
     let path = home.ledger();
     let budget = Budget::new(path.clone());
     let mut hold = budget.reserve(&json!(0.0015), true, &plain_model(), 100).unwrap();
-    let dir = path.with_file_name("requests-synthetic.jsonl.holds");
-    let unforwarded = fs::read_dir(&dir).unwrap().next().unwrap().unwrap().path();
-    let sent = unforwarded.with_extension("sent");
-    // Deterministically prevent the rename, including when tests run as root.
-    fs::create_dir(&sent).unwrap();
+    let holds = path.with_file_name("requests-synthetic.jsonl.holds");
+    let snapshot = fs::read(&holds).unwrap();
+    fs::write(&holds, "invalid").unwrap();
     assert!(hold.mark_forwarded().is_err());
-    assert!(unforwarded.exists());
-    fs::remove_dir(&sent).unwrap();
+    fs::write(&holds, snapshot).unwrap();
     // The failed budget stays latched; a retry must not silently permit sending.
     assert!(hold.mark_forwarded().is_err());
     drop(hold);
-    assert!(!unforwarded.exists());
     assert!(Budget::new(path)
         .reserve(&json!(0.0015), true, &plain_model(), 100)
         .is_ok());

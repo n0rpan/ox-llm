@@ -85,6 +85,8 @@ pub(crate) fn chat_with_retry_keyed(
         let (res, got_data) = probed_request(st, opts, sink, ui);
         let err = match res {
             Ok(turn) if opts.max_tokens != Some(0) && context_full(st, &turn) => {
+                // The reply is dropped, but the request ran: its tokens count in the stats.
+                crate::agent_loop::account_discarded(st, &turn);
                 let err = OxaError::new(
                     codes::CONTEXT_OVERFLOW,
                     format!(
@@ -134,6 +136,11 @@ pub(crate) fn chat_with_retry_keyed(
             return Err(err);
         }
 
+        if st.shared.gate.wrap_up.load(Ordering::SeqCst) != 0 {
+            finish_failed(sink, retries, &err);
+            return Err(err);
+        }
+
         if err.code == codes::CONTEXT_OVERFLOW {
             if !overflowed {
                 overflowed = true;
@@ -148,6 +155,10 @@ pub(crate) fn chat_with_retry_keyed(
                         let aborted = OxaError::new(codes::ABORTED, "aborted");
                         finish_failed(sink, retries, &aborted);
                         return Err(aborted);
+                    }
+                    if st.shared.gate.wrap_up.load(Ordering::SeqCst) != 0 {
+                        finish_failed(sink, retries, &err);
+                        return Err(err);
                     }
                     // The wire changed under the compaction: this is a new logical request.
                     opts.idem_key = fresh_idem_key(st);

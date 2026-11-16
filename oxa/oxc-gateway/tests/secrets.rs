@@ -282,13 +282,21 @@ fn flat_and_nested_keys_accept_the_maximum_and_reject_invalid_types_and_characte
 }
 
 #[test]
-fn supported_encodings_and_unused_nonfinite_values_do_not_change_the_key() {
+fn utf8_json_is_accepted_and_other_encodings_or_nonfinite_values_are_refused() {
     let home = Home::new();
     let text = r#"{"anthropic":{"api_key":"synthetic-encoded-credential"}}"#;
-    let mut formats = vec![
+    for bytes in [
         text.as_bytes().to_vec(),
         [b"\xef\xbb\xbf".as_slice(), text.as_bytes()].concat(),
-    ];
+        br#"{"anthropic":"synthetic-\u0065ncoded-credential"}"#.to_vec(),
+    ] {
+        let path = home.write(&bytes);
+        assert_eq!(
+            secrets::read(&path, "anthropic").unwrap().expose(),
+            "synthetic-encoded-credential"
+        );
+    }
+    let mut formats = Vec::new();
     for little in [false, true] {
         let utf16: Vec<u8> = text
             .encode_utf16()
@@ -324,12 +332,11 @@ fn supported_encodings_and_unused_nonfinite_values_do_not_change_the_key() {
         br#"{"unused":[NaN,Infinity,-Infinity],"anthropic":{"api_key":"synthetic-encoded-credential"}}"#
             .to_vec(),
     );
-    formats.push(br#"{"anthropic":"synthetic-\u0065ncoded-credential"}"#.to_vec());
     for bytes in formats {
         let path = home.write(&bytes);
         assert_eq!(
-            secrets::read(&path, "anthropic").unwrap().expose(),
-            "synthetic-encoded-credential"
+            secrets::read(&path, "anthropic").err(),
+            Some(secrets::Error::Unavailable)
         );
     }
 }

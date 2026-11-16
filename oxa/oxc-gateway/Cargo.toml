@@ -8,8 +8,10 @@ publish.workspace = true
 
 [features]
 default = []
+cloud-only = ["dep:url"]
 pricing = ["dep:serde_json", "dep:bigdecimal", "dep:num-traits"]
-accounting = ["policy", "pricing", "dep:nix"]
+accounting = ["policy", "pricing", "dep:nix", "dep:getrandom"]
+ledger = ["accounting", "secrets", "dep:chrono", "dep:getrandom", "dep:hmac", "dep:sha2"]
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
 transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
@@ -17,8 +19,13 @@ transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
 [dependencies]
 bigdecimal = { version = "0.4", optional = true }
 num-traits = { version = "0.2", optional = true }
+url = { version = "2", optional = true }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
-nix = { version = "0.30", features = ["user"], optional = true }
+nix = { version = "0.30", features = ["user", "fs"], optional = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"], optional = true }
+getrandom = { version = "0.3", optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"], optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
 futures-util = { version = "0.3", optional = true }

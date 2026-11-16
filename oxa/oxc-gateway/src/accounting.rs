@@ -1,30 +1,17 @@
-//! Reservations and settlement fields. A hold remains reserved until its row is
-//! written to the ledger; write failures stop spending.
-//!
-//! Several processes (every in-process oxa loop is its own gateway) share one daily
-//! ledger, so admission is serialized with an exclusive `flock` on `<ledger>.lock`
-//! around read-spend + reserve, and every hold is persisted as a file in
-//! `<ledger>.holds/` (one file per hold, 0600, in the 0700 ledger directory). The owner
-//! keeps an `flock` on its hold file for as long as it lives, so a hold whose lock
-//! can be taken belongs to a dead process: an unforwarded one is released, a forwarded
-//! one (possibly paid, never recorded) stays reserved for the rest of the day.
+//! Process-shared reservations and settlement fields. A hold remains reserved until
+//! its row is written to the ledger; write failures stop spending.
 use crate::{
     policy::{self, Refusal},
     pricing::{Cache, Price},
+    reservations::Shared,
     spend::SpendReader,
 };
 use serde_json::{json, Value};
 use std::{
-    ffi::OsString,
-    fs::{self, File, OpenOptions, TryLockError},
-    io::{self, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
-    },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    io,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::Duration,
 };
 
 #[derive(Clone, Debug)]
@@ -48,13 +35,11 @@ pub struct Budget {
 pub struct Hold {
     budget: Budget,
     model: Model,
-    /// Persisted hold; the open file carries the owner's `flock`.
-    file: Option<File>,
-    path: PathBuf,
     reserved: f64,
     output: u64,
     forwarded: bool,
     settled: bool,
+    id: String,
 }
 #[derive(Clone, Default, Debug)]
 pub struct Usage {
@@ -119,106 +104,9 @@ fn exhausted() -> Refusal {
         param: "model",
     }
 }
-const SENT: &str = ".sent";
-const HOLD: &str = ".hold";
-static HOLD_SEQ: AtomicU64 = AtomicU64::new(0);
-fn sibling(path: &Path, suffix: &str) -> PathBuf {
-    let mut name = OsString::from(path.as_os_str());
-    name.push(suffix);
-    PathBuf::from(name)
-}
-fn private_dir(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-}
-fn private_file(path: &Path, create_new: bool) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC);
-    if create_new {
-        options.create_new(true);
-    } else {
-        options.create(true).truncate(false);
-    }
-    options.open(path)
-}
 impl Budget {
-    fn lock_path(&self) -> PathBuf {
-        sibling(&self.path, ".lock")
-    }
-    fn holds_dir(&self) -> PathBuf {
-        sibling(&self.path, ".holds")
-    }
-    /// Cross-process admission/settlement lock. Held only for a ledger read and a
-    /// handful of tiny files; released when the returned file is dropped.
-    fn exclusive(&self) -> io::Result<File> {
-        if let Some(parent) = self.path.parent() {
-            private_dir(parent)?;
-        }
-        let file = private_file(&self.lock_path(), false)?;
-        file.lock()?;
-        Ok(file)
-    }
-    /// Sum of live holds and of holds left by a dead process after forwarding.
-    /// Dead unforwarded holds are removed. Call with the exclusive lock held.
-    fn outstanding(&self) -> io::Result<f64> {
-        let entries = match fs::read_dir(self.holds_dir()) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0.0),
-            Err(error) => return Err(error),
-        };
-        let mut total = 0.0;
-        for entry in entries {
-            let path = entry?.path();
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            let forwarded = name.ends_with(SENT);
-            if !forwarded && !name.ends_with(HOLD) {
-                return Err(io::ErrorKind::InvalidData.into());
-            }
-            let mut file = OpenOptions::new()
-                .read(true)
-                .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_CLOEXEC)
-                .open(&path)?;
-            match file.try_lock() {
-                // The owner may have died before finishing the amount write.
-                Ok(()) if !forwarded => {
-                    fs::remove_file(&path)?;
-                    continue;
-                }
-                Ok(()) | Err(TryLockError::WouldBlock) => {}
-                Err(TryLockError::Error(error)) => return Err(error),
-            }
-            let amount: f64 = io::read_to_string(&mut file)?
-                .trim()
-                .parse()
-                .ok()
-                .filter(|n: &f64| n.is_finite() && *n >= 0.0)
-                .ok_or(io::ErrorKind::InvalidData)?;
-            total += amount;
-        }
-        Ok(total)
-    }
-    fn persist(&self, amount: f64) -> io::Result<(File, PathBuf)> {
-        let dir = self.holds_dir();
-        private_dir(&dir)?;
-        let id = format!(
-            "{}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos()),
-            HOLD_SEQ.fetch_add(1, Ordering::Relaxed)
-        );
-        let path = dir.join(format!("{id}{HOLD}"));
-        let mut file = private_file(&path, true)?;
-        file.lock()?;
-        file.write_all(format!("{amount:?}").as_bytes())?;
-        Ok((file, path))
-    }
-    /// One instance per daily ledger path; share it across all request tasks.
+    /// Ledger directories must already be private (0700) and owned by this user.
+    /// Independent instances and processes share persisted daily reservations.
     pub fn new(path: PathBuf) -> Self {
         Self {
             path,
@@ -228,6 +116,10 @@ impl Budget {
     pub fn spend(&self) -> Result<f64, Refusal> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.failed {
+            return Err(Refusal::ledger());
+        }
+        let shared = Shared::open(&self.path).map_err(|_| Refusal::ledger())?;
+        if shared.failed {
             return Err(Refusal::ledger());
         }
         state.reader.read(&self.path).map_err(|_| Refusal::ledger())
@@ -259,20 +151,22 @@ impl Budget {
         if state.failed {
             return Err(Refusal::ledger());
         }
-        let _lock = self.exclusive().map_err(|_| Refusal::ledger())?;
+        let mut shared = Shared::open(&self.path).map_err(|_| Refusal::ledger())?;
+        if shared.failed {
+            return Err(Refusal::ledger());
+        }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
-        let reserved = self.outstanding().map_err(|_| Refusal::ledger())?;
-        policy::daily_budget(cap, ledger_enabled, Some(spent), reserved, required)?;
-        let (file, path) = self.persist(required).map_err(|_| Refusal::ledger())?;
+        policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
+        let id = shared.insert(required).map_err(|_| Refusal::ledger())?;
+        shared.save().map_err(|_| Refusal::ledger())?;
         Ok(Hold {
             budget: self.clone(),
             model: model.clone(),
-            file: Some(file),
-            path,
             reserved: required,
             output,
             forwarded: false,
             settled: false,
+            id,
         })
     }
 }
@@ -280,36 +174,23 @@ impl Hold {
     pub fn reserved(&self) -> f64 {
         self.reserved
     }
-    /// Persists the flag (a rename that keeps the owner's lock): if this process dies
-    /// afterwards, other processes keep the hold reserved. A failure latches the budget.
-    /// The caller must not send potentially paid bytes unless this succeeds.
+    /// Verify the persisted reservation before sending potentially paid bytes.
+    /// All holds already survive a process crash, including before forwarding.
     pub fn mark_forwarded(&mut self) -> Result<(), Refusal> {
-        let budget = self.budget.clone();
-        let mut state = budget.state.lock().unwrap_or_else(|e| e.into_inner());
-        if state.failed {
-            return Err(Refusal::ledger());
-        }
-        if self.forwarded {
-            return Ok(());
-        }
-        let sent = self.path.with_extension("sent");
-        let moved = budget.exclusive().and_then(|_lock| {
-            fs::rename(&self.path, &sent)?;
-            self.path = sent;
+        let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
+        let checked = (|| {
+            let shared = Shared::open(&self.budget.path)?;
+            if shared.failed || !shared.holds.contains_key(&self.id) {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
             Ok(())
-        });
-        if moved.is_err() {
+        })();
+        if state.failed || checked.is_err() {
             state.failed = true;
             return Err(Refusal::ledger());
         }
         self.forwarded = true;
         Ok(())
-    }
-    /// Remove the persisted hold. Call with the exclusive lock held, after the row.
-    fn release(&mut self) {
-        let _ = fs::remove_file(&self.path);
-        let _ = fs::remove_dir(self.budget.holds_dir());
-        self.file = None;
     }
     fn record(&self, usage: &Usage, outcome: Outcome) -> Value {
         let model = &self.model;
@@ -412,7 +293,8 @@ impl Hold {
         row
     }
     /// The writer merges these fixed remote fields with its private request
-    /// metadata and appends one complete row. Never put prompts/replies in it.
+    /// metadata and durably appends one complete row to this daily ledger
+    /// (for example with spend::append_private). Never put prompts/replies in it.
     pub fn finish(
         mut self,
         usage: &Usage,
@@ -420,21 +302,24 @@ impl Hold {
         write: impl FnOnce(&Value) -> io::Result<()>,
     ) -> Result<Value, Refusal> {
         let row = self.record(usage, outcome);
-        let budget = self.budget.clone();
-        let mut state = budget.state.lock().unwrap_or_else(|e| e.into_inner());
-        // Row first, then release, both under the lock: another process sees the hold,
-        // or the row, or briefly both - never neither.
-        let lock = budget.exclusive();
-        let result = lock.map_err(|_| Refusal::ledger()).and_then(|_lock| {
-            write(&row).map_err(|_| Refusal::ledger())?;
-            self.release();
-            Ok(())
-        });
+        let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut shared = Shared::open(&self.budget.path).map_err(|_| Refusal::ledger())?;
+        if !shared.holds.contains_key(&self.id) {
+            return Err(Refusal::ledger());
+        }
+        let result = write(&row);
         if result.is_err() {
             state.failed = true;
+            shared.failed = true;
+        } else {
+            shared.holds.remove(&self.id);
         }
         self.settled = true;
-        result.map(|()| row)
+        if shared.save().is_err() {
+            state.failed = true;
+            return Err(Refusal::ledger());
+        }
+        result.map(|()| row).map_err(|_| Refusal::ledger())
     }
 }
 impl Drop for Hold {
@@ -442,16 +327,21 @@ impl Drop for Hold {
         if self.settled {
             return;
         }
-        let budget = self.budget.clone();
-        let mut state = budget.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
         // Before forwarding it is safe to release an abandoned admission. A
-        // potentially paid request without a recorded settlement fails closed: its
-        // file stays (the lock is released with the file) and keeps counting.
-        if self.forwarded {
+        // potentially paid request without a recorded settlement fails closed.
+        let result = (|| {
+            let mut shared = Shared::open(&self.budget.path)?;
+            if self.forwarded || !shared.holds.contains_key(&self.id) {
+                state.failed = true;
+                shared.failed = true;
+            } else {
+                shared.holds.remove(&self.id);
+            }
+            shared.save()
+        })();
+        if result.is_err() {
             state.failed = true;
-            self.file = None;
-        } else if let Ok(_lock) = budget.exclusive() {
-            self.release();
         }
     }
 }

@@ -107,28 +107,38 @@ fn every_type_holding_the_key_redacts_it() {
 }
 
 #[test]
-fn isolation_refuses_a_key_file_under_the_real_home() {
-    let Some(home) = oxa_web::real_home() else {
-        return; // no passwd entry: nothing to protect
-    };
+fn isolation_refuses_an_existing_key_file_under_the_real_home() {
+    // The "real home" is a stand-in directory holding a key file: it is refused unread.
+    let env = TestEnv::new();
+    write_key(&env, "file-key-not-real", 0o600);
     let i = KeyInputs {
-        env_key: None,
-        agent_dir: home.join(".oxa/agent"),
-        isolation: true,
-        real_home: Some(home.clone()),
+        real_home: Some(env.root().to_path_buf()),
+        ..inputs(&env, None)
     };
     match load_key(&i) {
         KeyStatus::Refused(t) => assert!(t.contains("OXA_TEST_ISOLATION=1"), "{t}"),
-        other => panic!("the real key file must never be read under isolation: {other:?}"),
+        other => panic!("a key file under the real home must never be read under isolation: {other:?}"),
     }
-    // Without a known real home, isolation refuses every file.
-    let env = TestEnv::new();
-    write_key(&env, "file-key-not-real", 0o600);
+    // Without a known real home, isolation refuses every existing file.
     let i = KeyInputs {
         real_home: None,
         ..inputs(&env, None)
     };
     assert!(matches!(load_key(&i), KeyStatus::Refused(_)));
+}
+
+/// Issue #495: an isolated HOME below the real home (a worktree) with no key file must not
+/// warn about a key that does not exist.
+#[test]
+fn isolation_under_the_real_home_without_a_key_file_is_missing() {
+    let env = TestEnv::new();
+    for real_home in [Some(env.root().to_path_buf()), None] {
+        let i = KeyInputs {
+            real_home,
+            ..inputs(&env, None)
+        };
+        assert_eq!(load_key(&i), KeyStatus::Missing);
+    }
 }
 
 #[test]
@@ -226,11 +236,10 @@ fn guard_testenv_environment_isolates_the_provider() {
     let get = |n: &str| vars.iter().find(|(k, _)| k == n).map(|(_, v)| v.clone());
     assert_eq!(get("OXA_TEST_ISOLATION").as_deref(), Some("1"));
     assert_eq!(get("BRAVE_SEARCH_API_KEY"), None);
-    let Some(home) = oxa_web::real_home() else {
-        return;
-    };
-    let (cfg, _) = WebConfig::from_env(&get, &home.join(".oxa/agent"), None);
+    write_key(&env, "file-key-not-real", 0o600);
+    let (mut cfg, _) = WebConfig::from_env(&get, &env.agent_dir(), None);
     assert!(cfg.opts.isolation);
+    cfg.key.real_home = Some(env.root().to_path_buf());
     assert!(matches!(load_key(&cfg.key), KeyStatus::Refused(_)));
     assert!(WebSearchHooks::new(cfg).tools().is_empty());
 }
