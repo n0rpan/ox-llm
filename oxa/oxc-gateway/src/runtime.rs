@@ -323,7 +323,8 @@ impl Runtime {
                             .map_err(|_| Refusal::credentials())?,
                     )
                 }
-                _ => return Err(Refusal::credentials()),
+                #[cfg(not(feature = "upstream-openai"))]
+                Provider::ChatGpt => return Err(Refusal::credentials()),
             });
             let (daily, _) = audit
                 .as_ref()
