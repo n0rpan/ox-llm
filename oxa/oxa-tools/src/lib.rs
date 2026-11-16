@@ -120,3 +120,27 @@ pub fn resolve_path(cwd: &Path, arg: &str) -> PathBuf {
     }
     out
 }
+
+/// #597: the same path identity for every file tool's permission check and execution.
+/// Explicit absolute `/tmp` paths name session scratch, except host mounts and outputs.
+/// Relative paths retain their host-cwd meaning, including `..` outside the workspace.
+/// This translates names only: the policy still judges the resolved host path.
+pub fn resolve_tool_path(cx: &oxa_proto::ToolCtx, arg: &str) -> PathBuf {
+    let abs = resolve_path(cx.cwd, arg);
+    let Ok(rest) = abs.strip_prefix("/tmp") else {
+        return abs;
+    };
+    let Some(scratch) = cx.sandbox.file_scratch_dir(cx.mode) else {
+        return abs;
+    };
+    if !Path::new(arg).is_absolute()
+        || abs.starts_with(cx.cwd)
+        || std::fs::canonicalize(cx.cwd).is_ok_and(|real| abs.starts_with(real))
+        || abs.starts_with(cx.spill_dir)
+        || abs.starts_with(scratch)
+        || cx.sandbox.preserves_host_path(&abs)
+    {
+        return abs;
+    }
+    scratch.join(rest)
+}
