@@ -604,35 +604,108 @@ fn parallel_reads_in_call_order() {
     w1_holds(&eng.requests());
 }
 
-/// X2: a length stop is surfaced, never auto-continued (pi's behaviour). The old one-continue
-/// sent a request ending in the cut assistant message with `max_tokens > 0`, which the real
-/// engine refuses (400); the scripted engine now mimics that rule, so it cannot hide it. The
-/// test keeps its acceptance name.
+/// A local length cut continues after an append-only instruction and an advertised prefill.
 #[test]
 fn length_continue_once() {
     let env = TestEnv::new();
     let mut first = ScriptTurn::text("part one");
     first.finish = Finish::Length;
-    let turns = vec![first, ScriptTurn::text("never requested")];
+    let turns = vec![first, ScriptTurn::text("completed task")];
     let (mut st, eng) = scripted_state(&env, turns, Vec::new(), Mode::Workspace);
     say(&mut st, "write a lot");
     let (end, events) = run(&mut st);
     assert_eq!(end, RunEnd::Stopped);
-    assert_eq!(eng.requests().len(), 1, "no automatic continue");
-    assert_eq!(eng.remaining(), 1, "the second turn was not consumed");
-    // The cut reply is kept as streamed (W1/W2) and its stop reason is shown as `length`.
+    assert_eq!(eng.requests().len(), 3, "chat, prefill, continuation");
+    assert_eq!(eng.remaining(), 0);
     let wire = st.transcript.wire();
-    assert_eq!(wire.last().unwrap().content.as_deref(), Some("part one"));
+    assert_eq!(wire[1].content.as_deref(), Some("part one"));
+    assert_eq!(wire.last().unwrap().content.as_deref(), Some("completed task"));
+    assert!(!st.stats.output_truncated);
     assert!(events.iter().any(|e| matches!(e, AgentEvent::MessageEnd { message } if message.stop == Some(oxa_proto::StopReason::Length))));
-    // No request ends in the cut reply with `max_tokens > 0` (since F9 the engine would answer
-    // it as a NEW turn, which is not a continuation either).
     for r in eng.requests() {
         assert!(
             !(r.max_tokens > 0 && r.messages.last().map(|m| m.role) == Some(oxa_proto::Role::Assistant)),
-            "a request continuing the cut reply was sent"
+            "a generating request needs an explicit continuation instruction"
         );
     }
     w1_holds(&eng.requests());
+}
+
+/// A completed cloud reply cut at the limit is kept as progress and regenerated off-wire.
+#[test]
+fn remote_length_recovery_drops_the_cut_reply() {
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text("UNFINISHED_PARTIAL");
+    cut.finish = Finish::Length;
+    let eng = Arc::new(ScriptedEngine::new(vec![cut, ScriptTurn::text("complete answer")]).with_remote());
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        vec![],
+        Mode::Workspace,
+        vec![],
+    );
+    say(&mut st, "complete the task");
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    let requests = eng.requests();
+    assert_eq!(requests.len(), 2, "cloud recovery sends no local prefill");
+    assert_ne!(
+        requests[0].idem_key, requests[1].idem_key,
+        "a completed cut response needs a fresh request"
+    );
+    assert!(!requests[1]
+        .messages
+        .iter()
+        .any(|m| m.content.as_deref() == Some("UNFINISHED_PARTIAL")));
+    assert!(!st.stats.output_truncated);
+    assert!(st.tree.entries().iter().any(|e| matches!(&e.body, EntryBody::Shown { text, why } if text == "UNFINISHED_PARTIAL" && *why == shown_why::CUT)));
+}
+
+/// The existing byte-N replay and new length recovery complete one run together.
+#[test]
+fn a_stream_cut_then_length_cut_still_completes() {
+    for remote in [false, true] {
+        let env = TestEnv::new();
+        let mut broken = ScriptTurn::text("stream fragment");
+        broken.chunk = 1;
+        broken.fault = Some(oxa_fake::Fault::DropAt { bytes: 5 });
+        let mut cut = ScriptTurn::text("length fragment");
+        cut.finish = Finish::Length;
+        let scripted = ScriptedEngine::new(vec![broken, cut, ScriptTurn::text("complete answer")]);
+        let eng = Arc::new(if remote { scripted.with_remote() } else { scripted });
+        let mut st = build(
+            &env,
+            eng.clone(),
+            Arc::new(MemStore::new()),
+            vec![],
+            Mode::Workspace,
+            vec![],
+        );
+        say(&mut st, "finish the task");
+        let (end, events) = run(&mut st);
+        assert_eq!(end, RunEnd::Stopped);
+        let requests = eng.requests();
+        assert_eq!(requests.len(), if remote { 3 } else { 4 });
+        assert_eq!(
+            requests[0].idem_key, requests[1].idem_key,
+            "transport replay keeps its key"
+        );
+        assert_ne!(requests[1].idem_key, requests.last().unwrap().idem_key);
+        assert_eq!(
+            st.transcript.wire().last().unwrap().content.as_deref(),
+            Some("complete answer")
+        );
+        assert!(!st.stats.output_truncated);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::AgentEnd { .. }))
+                .count(),
+            1
+        );
+    }
 }
 
 /// A refusal (`content_filter`) keeps the streamed text, shows a one-line notice and does not retry.
@@ -761,15 +834,14 @@ fn length_stop_with_tool_calls_fails_them_and_continues() {
     w1_holds(&reqs);
 }
 
-/// X2 through the real HTTP contract: the length stop needs no further request; the request the
-/// old auto-continue sent (the wire ending in the cut reply) is, since F9, a new turn.
+/// Length recovery uses supported HTTP requests, without implicit assistant prefill.
 #[test]
 fn length_stop_over_http_sends_no_unsupported_request() {
     let env = TestEnv::new();
     let mut cut = ScriptTurn::text("part one");
     cut.finish = Finish::Length;
     let server = oxa_fake::FakeServer::start(
-        vec![cut, ScriptTurn::text("never requested")],
+        vec![cut, ScriptTurn::text("completed task")],
         oxa_fake::FakeOpts::default(),
     )
     .unwrap();
@@ -786,38 +858,15 @@ fn length_stop_over_http_sends_no_unsupported_request() {
     say(&mut st, "write a lot");
     let (end, _) = run(&mut st);
     assert_eq!(end, RunEnd::Stopped);
-    assert_eq!(server.requests().len(), 1, "no continuation request");
-
-    // What the old auto-continue sent: the wire ending in the cut reply, max_tokens > 0.
-    let wire = st.transcript.wire().to_vec();
-    assert_eq!(wire.last().unwrap().role, oxa_proto::Role::Assistant);
-    let hints = oxa_proto::Hints {
-        session: "s",
-        idem_key: "",
-        kind: oxa_proto::TurnKind::Chat,
-        background: false,
-        snapshot_keep: false,
-    };
-    let req = |max_tokens| ChatRequest {
-        prefix: &st.prefix,
-        messages: &wire,
-        model: "fake-model",
-        max_tokens,
-        thinking: false,
-        thinking_budget: None,
-        preserve_thinking: true,
-        sampling: None,
-        hints,
-    };
-    // F9: the engine answers it as a NEW turn (history + reply), not a continuation, not a 400.
-    let t = engine
-        .chat(&req(st.info.max_output), &CancelToken::new(), &mut |_| {})
-        .expect("a trailing assistant message is history");
-    assert_eq!(t.msg.content.as_deref(), Some("never requested"));
-    // The same history as an H6 prefill is fine.
-    engine
-        .chat(&req(0), &CancelToken::new(), &mut |_| {})
-        .expect("H6 prefill after a reply");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].max_tokens, 0);
+    assert_eq!(requests[1].kind, "prefill");
+    assert_eq!(requests[2].messages.last().unwrap().role, oxa_proto::Role::User);
+    assert_eq!(
+        requests[2].reply.as_ref().unwrap().content.as_deref(),
+        Some("completed task")
+    );
 }
 
 /// tool_errors texts
@@ -1137,17 +1186,28 @@ fn guard_extension_append_is_persisted() {
     assert_eq!(st.transcript.wire().len(), 3, "user, hook note, reply");
 }
 
-/// A run that hits the length limit ends with exactly one `AgentEnd` and one request.
+/// Exhausted length recovery is bounded and the run emits exactly one `AgentEnd`.
 #[test]
 fn length_continue_then_stop_emits_one_agent_end() {
     let env = TestEnv::new();
     let mut only = ScriptTurn::text("cut");
     only.finish = Finish::Length;
-    let (mut st, eng) = scripted_state(&env, vec![only.clone(), only], Vec::new(), Mode::Workspace);
+    let (mut st, eng) = scripted_state(
+        &env,
+        vec![only.clone(), only, ScriptTurn::text("never asked")],
+        Vec::new(),
+        Mode::Workspace,
+    );
+    st.settings = Settings::from_values(
+        serde_json::json!({"retry":{"enabled":true,"maxRetries":1}}),
+        serde_json::json!({}),
+    );
     say(&mut st, "x");
     let (end, events) = run(&mut st);
     assert_eq!(end, RunEnd::Stopped);
-    assert_eq!(eng.requests().len(), 1);
+    assert_eq!(eng.requests().len(), 3, "two generations and one prefill");
+    assert_eq!(eng.remaining(), 1);
+    assert!(st.stats.output_truncated);
     let ends = events
         .iter()
         .filter(|e| matches!(e, AgentEvent::AgentEnd { .. }))
