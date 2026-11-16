@@ -7,9 +7,7 @@ use oxa_config::{Dirs, QueueMode, Settings};
 use oxa_core::{Deps, Open, Queue, Session, Shared, ToolSelection};
 use oxa_fake::{ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
-use oxa_proto::{
-    Access, AgentEvent, Decision, EntryBody, HeadlessUi, Mode, Part, Policy, ThinkingLevel, VecSink,
-};
+use oxa_proto::{Access, AgentEvent, Decision, EntryBody, HeadlessUi, Mode, Part, ThinkingLevel, VecSink};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore};
