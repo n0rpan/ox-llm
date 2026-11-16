@@ -334,6 +334,19 @@ impl Client {
                         ..Usage::default()
                     });
                     *terminal_usage = usage.clone();
+                    // Identity must agree with the untouched private replay. Never
+                    // execute a renamed/reidentified call to hide a credential.
+                    if !withheld
+                        && native.assistant["tool_calls"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .flat_map(|call| [call["id"].as_str(), call["function"]["name"].as_str()])
+                            .flatten()
+                            .any(|identity| redactor.secrets.iter().any(|secret| identity.contains(secret)))
+                    {
+                        return Err(Error::Protocol);
+                    }
                     for chunk in chunks {
                         if chunk.pointer("/choices/0/delta/tool_calls").is_some() {
                             pending_tools.push(chunk);
@@ -662,15 +675,12 @@ impl<'a> Fields<'a> {
         }
         if let Some(calls) = delta["tool_calls"].as_array() {
             for (i, call) in calls.iter().enumerate() {
-                for field in ["id", "name", "arguments"] {
-                    let path = if field == "id" {
-                        format!("/choices/0/delta/tool_calls/{i}/id")
-                    } else {
-                        format!("/choices/0/delta/tool_calls/{i}/function/{field}")
-                    };
-                    if chunk.pointer(&path).is_some_and(Value::is_string) {
-                        fields.push((path, format!("tool:{}:{field}", call["index"])));
-                    }
+                // The translator emits whole IDs and names. The real consumer
+                // assigns IDs and treats repeated names idempotently; suffix
+                // flushing would corrupt both. Only arguments are fragments.
+                let path = format!("/choices/0/delta/tool_calls/{i}/function/arguments");
+                if chunk.pointer(&path).is_some_and(Value::is_string) {
+                    fields.push((path, format!("tool:{}:arguments", call["index"])));
                 }
             }
         }
@@ -702,11 +712,7 @@ impl<'a> Fields<'a> {
                 let (index, field) = rest.rsplit_once(':').ok_or(Error::Protocol)?;
                 let index: usize = index.parse().map_err(|_| Error::Protocol)?;
                 let mut call = serde_json::json!({"index":index});
-                if field == "id" {
-                    call["id"] = Value::String(text)
-                } else {
-                    call["function"][field] = Value::String(text)
-                }
+                call["function"][field] = Value::String(text);
                 delta["tool_calls"] = serde_json::json!([call]);
             } else {
                 delta[&id] = Value::String(text)

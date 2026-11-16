@@ -129,41 +129,19 @@ async fn both_modes_three_tools_done_only_partial_and_empty_completed_output() {
                 assert!(!call["function"]["arguments"].as_str().unwrap().is_empty());
                 let _: Value = serde_json::from_str(call["function"]["arguments"].as_str().unwrap()).unwrap();
             }
-            let mut streamed: std::collections::BTreeMap<usize, (String, String, String)> =
-                Default::default();
+            let mut assembler = oxa_engine::ReplyAssembler::new();
             for chunk in &chunks {
-                for call in chunk
-                    .pointer("/choices/0/delta/tool_calls")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                {
-                    let entry = streamed
-                        .entry(call["index"].as_u64().unwrap() as usize)
-                        .or_default();
-                    entry.0.push_str(call["id"].as_str().unwrap_or(""));
-                    entry.1.push_str(
-                        call.pointer("/function/name")
-                            .and_then(Value::as_str)
-                            .unwrap_or(""),
-                    );
-                    entry.2.push_str(
-                        call.pointer("/function/arguments")
-                            .and_then(Value::as_str)
-                            .unwrap_or(""),
-                    );
-                }
+                assembler.chunk_value(chunk).unwrap();
             }
-            assert_eq!(streamed.len(), 3);
-            for (i, call) in calls.iter().enumerate() {
-                assert_eq!(
-                    (&streamed[&i].0, &streamed[&i].1, &streamed[&i].2),
-                    (
-                        &call["id"].as_str().unwrap().to_owned(),
-                        &call["function"]["name"].as_str().unwrap().to_owned(),
-                        &call["function"]["arguments"].as_str().unwrap().to_owned()
-                    )
-                );
+            // The request opts out of public usage; provide the trusted private
+            // terminal counts as the gateway owner does before assembly finishes.
+            assembler.chunk_value(&json!({"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":9,"total_tokens":21}})).unwrap();
+            let turn = assembler.finish(oxa_proto::ThinkingLevel::Off).unwrap();
+            assert_eq!(turn.msg.tool_calls.len(), calls.len());
+            for (streamed, call) in turn.msg.tool_calls.iter().zip(calls) {
+                assert_eq!(streamed.id, call["id"].as_str().unwrap());
+                assert_eq!(streamed.name, call["function"]["name"].as_str().unwrap());
+                assert_eq!(streamed.args_raw, call["function"]["arguments"].as_str().unwrap());
             }
             let usage = complete.usage.unwrap();
             assert_eq!(usage.prompt, Some(12));
@@ -1017,6 +995,14 @@ async fn incomplete_unexecuted_call_does_not_poison_a_new_user_turn() {
             assert!(chunks
                 .iter()
                 .all(|chunk| chunk.pointer("/choices/0/delta/tool_calls").is_none()));
+            let mut assembler = oxa_engine::ReplyAssembler::new();
+            for chunk in &chunks {
+                assembler.chunk_value(chunk).unwrap();
+            }
+            assembler.chunk_value(&json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}})).unwrap();
+            let delivered = assembler.finish(oxa_proto::ThinkingLevel::Off).unwrap();
+            assert!(delivered.msg.tool_calls.is_empty());
+            assert_eq!(delivered.msg.content.as_deref(), Some("Visible partial answer"));
             assert!(!format!("{complete:?}").contains("opaque-synthetic-partial"));
             let mut next = payload();
             let messages = next["messages"].as_array_mut().unwrap();
@@ -1099,5 +1085,184 @@ async fn subscription_account_switch_refuses_before_refresh_or_paid_sending() {
         assert!(mock.requests().is_empty());
         assert_eq!(fs::read(&path).unwrap(), before);
         assert!(!format!("{error:?} {error}").contains("synthetic-other-account"));
+    }
+}
+
+// Exercise the production consumer: IDs replace atomically and repeated names
+// are idempotent, unlike a test-only concatenating approximation.
+#[tokio::test]
+async fn atomic_tool_identity_survives_credential_prefix_redaction_in_real_assembler() {
+    for subscription in [false, true] {
+        let fixture = Fixture::new();
+        let items = vec![
+            json!({"id":"fc_prefix","type":"function_call","call_id":"call_s","name":"ss","arguments":"{}","status":"completed"}),
+            json!({"id":"fc_other","type":"function_call","call_id":"other_sy","name":"read_s","arguments":"{}","status":"completed"}),
+        ];
+        let response = Reply::events(vec![json!({"type":"response.completed","response":{
+            "id":"resp_synthetic","status":"completed","output":items,
+            "usage":{"input_tokens":12,"output_tokens":9}
+        }})]);
+        let mock = MockOpenAi::start(vec![response, Reply::multi_tool_no_deltas()]);
+        let base = mock.base_url();
+        let path = fixture.token_path(true);
+        let auth = || {
+            if subscription {
+                Auth::Subscription {
+                    token_path: &path,
+                    expected_account_id: "synthetic-account",
+                    refresh: client::Refresh {
+                        endpoint: &base,
+                        client_id: "synthetic-client",
+                        timeout: std::time::Duration::from_secs(1),
+                    },
+                }
+            } else {
+                Auth::ApiKey(&fixture.key)
+            }
+        };
+        let mut assembler = oxa_engine::ReplyAssembler::new();
+        let mut chunks = vec![];
+        let mut body = payload();
+        body["stream_options"]["include_usage"] = json!(true);
+        let completed = Client::new()
+            .unwrap()
+            .stream(
+                chat(&base, &body, &[]),
+                auth(),
+                &Cancellation::default(),
+                &mut |e| {
+                    if let Event::Chunk(c) = e {
+                        assembler.chunk_value(&c).unwrap();
+                        chunks.push(c);
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap();
+        let turn = assembler.finish(oxa_proto::ThinkingLevel::Off).unwrap();
+        assert_eq!(turn.msg.tool_calls.len(), 2);
+        for (i, call) in turn.msg.tool_calls.iter().enumerate() {
+            assert_eq!(
+                call.id,
+                items[i]["call_id"].as_str().unwrap(),
+                "mode subscription={subscription}"
+            );
+            assert_eq!(call.name, items[i]["name"].as_str().unwrap());
+            assert_eq!(
+                call.id,
+                completed.assistant["tool_calls"][i]["id"].as_str().unwrap()
+            );
+            assert_eq!(
+                call.name,
+                completed.assistant["tool_calls"][i]["function"]["name"]
+                    .as_str()
+                    .unwrap()
+            );
+            assert_eq!(call.id, completed.replay_items[i]["call_id"].as_str().unwrap());
+            assert_eq!(call.name, completed.replay_items[i]["name"].as_str().unwrap());
+            let ids: Vec<_> = chunks
+                .iter()
+                .flat_map(|c| {
+                    c["choices"][0]["delta"]["tool_calls"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                })
+                .filter(|c| c["index"] == json!(i))
+                .filter_map(|c| c["id"].as_str())
+                .filter(|id| !id.is_empty())
+                .collect();
+            assert_eq!(ids, vec![call.id.as_str()]);
+        }
+        assert_eq!(completed.output_items.as_ref(), items.as_slice());
+        let mut next = payload();
+        let messages = next["messages"].as_array_mut().unwrap();
+        messages.push(completed.assistant.clone());
+        for call in &turn.msg.tool_calls {
+            messages.push(
+                json!({"role":"tool","tool_call_id":call.id,"content":"synthetic error","is_error":true}),
+            );
+        }
+        messages.push(json!({"role":"user","content":"Continue"}));
+        let replay = [Some(request::ReplayItems::new(completed.replay_items.to_vec()))];
+        Client::new()
+            .unwrap()
+            .stream(
+                chat(&base, &next, &replay),
+                auth(),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await
+            .unwrap();
+        let requests = mock.wait_for_requests(2);
+        let input = requests[1].body["input"].as_array().unwrap();
+        for call in &turn.msg.tool_calls {
+            assert!(input
+                .iter()
+                .any(|v| v["type"] == "function_call" && v["call_id"] == call.id));
+            assert!(input
+                .iter()
+                .any(|v| v["type"] == "function_call_output" && v["call_id"] == call.id));
+        }
+        mock.assert_healthy();
+    }
+}
+
+#[tokio::test]
+async fn credential_in_tool_identity_refuses_before_execution_without_rewriting_replay() {
+    for subscription in [false, true] {
+        for field in ["call_id", "name"] {
+            let fixture = Fixture::new();
+            let mut item = json!({"type":"function_call","id":"fc_synthetic","call_id":"call_s","name":"ss","arguments":"{}","status":"completed"});
+            item[field] = json!(format!("prefix_{KEY}_suffix"));
+            let mock = MockOpenAi::start(vec![Reply::events(vec![
+                json!({"type":"response.output_item.done","output_index":0,"item":item}),
+                json!({"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":12,"output_tokens":9}}}),
+            ])]);
+            let base = mock.base_url();
+            let path = fixture.token_path(true);
+            let auth = if subscription {
+                Auth::Subscription {
+                    token_path: &path,
+                    expected_account_id: "synthetic-account",
+                    refresh: client::Refresh {
+                        endpoint: &base,
+                        client_id: "synthetic-client",
+                        timeout: std::time::Duration::from_secs(1),
+                    },
+                }
+            } else {
+                Auth::ApiKey(&fixture.key)
+            };
+            let mut usage = None;
+            let mut assembler = oxa_engine::ReplyAssembler::new();
+            let mut chunks = vec![];
+            let error = Client::new()
+                .unwrap()
+                .stream_with_usage(
+                    chat(&base, &payload(), &[]),
+                    auth,
+                    &Cancellation::default(),
+                    &mut |e| {
+                        if let Event::Chunk(c) = e {
+                            assembler.chunk_value(&c).unwrap();
+                            chunks.push(c);
+                        }
+                        Control::Continue
+                    },
+                    &mut usage,
+                )
+                .await
+                .unwrap_err();
+            assert!(matches!(error, client::Error::Protocol));
+            assert!(!format!("{error:?}").contains(KEY));
+            assert_eq!(usage.unwrap().output, Some(9));
+            assert!(chunks
+                .iter()
+                .all(|c| c.pointer("/choices/0/delta/tool_calls").is_none()));
+            mock.assert_healthy();
+        }
     }
 }
