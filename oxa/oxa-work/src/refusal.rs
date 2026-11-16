@@ -134,7 +134,7 @@ mod tests {
     }
     #[test]
     fn existing_live_unsupported_and_different_tasks_are_preserved() {
-        for kind in ["live", "unsupported", "different", "locked"] {
+        for kind in ["live", "unsupported", "different", "cached", "locked"] {
             let (_fixture, policy, facts, task, common) = fixture();
             let path = policy.storage.join("test.json");
             let mut record = crate::blocked_record(&task, String::new());
@@ -142,6 +142,14 @@ mod tests {
             let mut saved = state::State::new(task.clone(), record, true);
             let mut writer = state::Writer::new(path.clone(), false);
             writer.save(&mut saved, Step::Preparing, &facts).unwrap();
+            if matches!(kind, "different" | "cached" | "locked") {
+                saved.record.outcome = if kind == "cached" {
+                    Outcome::Done
+                } else {
+                    Outcome::Blocked
+                };
+                writer.save(&mut saved, Step::Finished, &facts).unwrap();
+            }
             if kind == "unsupported" {
                 saved.version += 1;
                 fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
@@ -163,8 +171,15 @@ mod tests {
             }
             let before = fs::read(&path).unwrap();
             let seq = facts.situation().unwrap().as_of_seq;
-            let refused =
-                checkpoint_plan_refusal(&common, &input, "refused".into(), &policy, true, &facts).unwrap();
+            let refused = checkpoint_plan_refusal(
+                &common,
+                &input,
+                "refused".into(),
+                &policy,
+                kind != "cached",
+                &facts,
+            )
+            .unwrap();
             assert_eq!(refused.checkpoint_revision, 0);
             assert_eq!(fs::read(&path).unwrap(), before);
             assert_eq!(facts.situation().unwrap().as_of_seq, seq);
