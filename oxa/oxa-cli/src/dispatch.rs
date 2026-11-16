@@ -1454,12 +1454,17 @@ pub(crate) fn stream_silence_timeout(settings: &Settings) -> Option<u64> {
         .or_else(|| settings.http_idle_timeout_ms())
 }
 
-/// The provider column: the controller's `remote_provider` (else `cloud`) for a cloud model,
-/// the endpoint name for a local one.
+/// The provider column: the controller's `remote_provider`, else the remote model id's
+/// provider prefix (or `cloud` for an unprefixed id); the endpoint name for a local one.
 fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
     match (info.caps.remote, info.caps.remote_provider) {
         (_, Some(p)) => p.to_string(),
-        (true, None) => "cloud".to_string(),
+        (true, None) => info
+            .limits_for
+            .split_once('/')
+            .filter(|(provider, model)| !provider.is_empty() && !model.is_empty())
+            .map_or("cloud", |(provider, _)| provider)
+            .to_string(),
         _ => endpoint.to_string(),
     }
 }
@@ -1986,6 +1991,29 @@ mod model_limits_tests {
         };
         assert_eq!(col0("anthropic/claude-sonnet-5-5"), "anthropic");
         assert_eq!(col0("local"), "oxe");
+    }
+
+    #[test]
+    fn list_models_provider_falls_back_to_remote_model_prefix() {
+        let mut info = CatalogEngine.info(None).unwrap();
+        info.caps.remote = true;
+        info.caps.remote_provider = None;
+        for (id, expected) in [
+            ("chatgpt/subscription-model", "chatgpt"),
+            ("future-provider/model", "future-provider"),
+            ("unprefixed-model", "cloud"),
+            ("/model", "cloud"),
+            ("provider/", "cloud"),
+        ] {
+            info.limits_for = id.to_string();
+            assert_eq!(row_provider("oxe", &info), expected, "{id}");
+        }
+        info.limits_for = "chatgpt/subscription-model".to_string();
+        info.caps.remote_provider = Some("openrouter");
+        assert_eq!(row_provider("oxe", &info), "openrouter", "gateway provider wins");
+        info.caps.remote_provider = None;
+        info.caps.remote = false;
+        assert_eq!(row_provider("oxe", &info), "oxe", "local endpoint is unchanged");
     }
 
     /// A failing per-model `info(Some(id))` degrades only that row: '?' in the context,
