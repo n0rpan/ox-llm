@@ -127,6 +127,11 @@ it refuses an account switch. `oxa logout chatgpt` removes the checked token
 record under the refresh lock and keeps that lock for concurrent refresh safety.
 These commands are separate from chat/RPC and unavailable from agent tools.
 
+A failure before atomic publication leaves the previous token record unchanged.
+If the directory sync fails after atomic rename, the command returns a fixed
+storage error: the new record is already visible, but its crash durability is
+uncertain. The command does not roll back the record or repeat the token exchange.
+
 ### MCP commands
 
 ```console

@@ -415,6 +415,9 @@ impl Directory {
                 renameat(&self.file, name.as_os_str(), &self.file, self.name.as_os_str())
                     .map_err(|_| Error::Unavailable)?;
             }
+            // Publication has committed. A directory-fsync error is returned
+            // unchanged: visibility is established, crash durability uncertain.
+            // Do not roll back, journal, or replay an OAuth exchange.
             sync(&self.file).map_err(|_| Error::Unavailable)
         })();
         if result.is_err() {
@@ -489,11 +492,24 @@ fn try_lock(dir: &Directory) -> Result<Option<Flock<File>>, Error> {
 /// Owner login only. Nonblocking admission shares the permanent refresh lock;
 /// `None` means retry under the caller's deadline/cancellation. Creation never
 /// replaces an existing entry. Explicit replacement still cannot switch account.
+/// Failures before atomic rename preserve the previous record. If directory
+/// fsync fails AFTER rename, the new entry is visible but durability is uncertain;
+/// return the fixed error, without rollback or retrying the token exchange.
 pub fn try_install(
     path: &Path,
     record: &TokenRecord,
     replace: bool,
     expected_accounts: &[&str],
+) -> Result<Option<()>, Error> {
+    install_sync(path, record, replace, expected_accounts, File::sync_all)
+}
+
+fn install_sync(
+    path: &Path,
+    record: &TokenRecord,
+    replace: bool,
+    expected_accounts: &[&str],
+    sync: impl FnMut(&File) -> std::io::Result<()>,
 ) -> Result<Option<()>, Error> {
     if expected_accounts
         .iter()
@@ -528,8 +544,20 @@ pub fn try_install(
             return Err(Error::Account);
         }
     }
-    dir.publish(record, !present)?;
+    dir.publish_sync(record, !present, sync)?;
     Ok(Some(()))
+}
+
+// Test-only access to the real locked install path, with only fsync injected.
+#[cfg(test)]
+pub(super) fn try_install_sync(
+    path: &Path,
+    record: &TokenRecord,
+    replace: bool,
+    expected: &[&str],
+    sync: impl FnMut(&File) -> std::io::Result<()>,
+) -> Result<Option<()>, Error> {
+    install_sync(path, record, replace, expected, sync)
 }
 
 /// Owner logout only; remove the checked record under the SAME lock as refresh.

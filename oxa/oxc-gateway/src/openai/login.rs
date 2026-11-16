@@ -241,6 +241,8 @@ impl Login {
     }
     /// Exactly one exchange, then publish through the existing token module.
     /// Whole-operation deadline includes headers/body and refresh-lock waiting.
+    /// Any publication error is terminal, even if rename already made the record
+    /// visible and its directory sync failed. Never exchange the code again.
     pub fn finish(
         &mut self,
         code: Code,
@@ -248,6 +250,16 @@ impl Login {
         replace: bool,
         expected: &[&str],
         cancelled: &AtomicBool,
+    ) -> Result<(), Error> {
+        self.finish_install(code, cancelled, |record| {
+            chatgpt_tokens::try_install(path, record, replace, expected)
+        })
+    }
+    fn finish_install(
+        &mut self,
+        code: Code,
+        cancelled: &AtomicBool,
+        mut install: impl FnMut(&TokenRecord) -> Result<Option<()>, chatgpt_tokens::Error>,
     ) -> Result<(), Error> {
         self.check(cancelled)?;
         if self.exchanged || code.state != self.state {
@@ -261,10 +273,9 @@ impl Login {
         let record = runtime.block_on(self.exchange(code, cancelled))?;
         loop {
             self.check(cancelled)?;
-            if chatgpt_tokens::try_install(path, &record, replace, expected)
-                .map_err(Error::Storage)?
-                .is_some()
-            {
+            // Retry only nonblocking lock contention (None). Any store error,
+            // including uncertain durability AFTER publication, is terminal.
+            if install(&record).map_err(Error::Storage)?.is_some() {
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(10));
@@ -669,5 +680,90 @@ mod tests {
         );
         assert_eq!(fs::read(home.path()).unwrap(), previous);
         drop(lock);
+    }
+    #[test]
+    fn publication_boundary_errors_are_fixed_and_never_repeat_the_exchange() {
+        use std::os::unix::fs::MetadataExt;
+        for replace in [false, true] {
+            for after_rename in [false, true] {
+                let home = Home::new();
+                let previous = replace.then(|| home.old());
+                let peer = mock::MockOpenAi::start(vec![mock::Reply::json(reply())]);
+                let mut login = flow(&peer.base_url(), Duration::from_secs(2));
+                let stop = AtomicBool::new(false);
+                let code = login.pasted_callback(&callback(&login), &stop).unwrap();
+                let mut installs = 0;
+                let mut syncs = 0;
+                let mut expected_record = Value::Null;
+                let error = login
+                    .finish_install(code, &stop, |record| {
+                        installs += 1;
+                        expected_record = json!({"access_token":record.access_token(),"refresh_token":record.refresh_token(),
+                            "account_id":record.account_id(),"expires_at":record.expires_at()});
+                        chatgpt_tokens::try_install_sync(
+                            &home.path(),
+                            record,
+                            replace,
+                            &["synthetic-account"],
+                            |file| {
+                                syncs += 1;
+                                if after_rename && syncs == 1 {
+                                    file.sync_all()
+                                } else {
+                                    Err(std::io::Error::other("synthetic private fault detail"))
+                                }
+                            },
+                        )
+                    })
+                    .unwrap_err();
+                assert_eq!(installs, 1);
+                assert_eq!(syncs, if after_rename { 2 } else { 1 });
+                assert_eq!(error, Error::Storage(chatgpt_tokens::Error::Unavailable));
+                assert_eq!(
+                    error.to_string(),
+                    "ChatGPT credential store operation failed: token file unavailable"
+                );
+                assert_eq!(format!("{error:?}"), "Storage(Unavailable)");
+                if after_rename {
+                    assert_eq!(
+                        serde_json::from_slice::<Value>(&fs::read(home.path()).unwrap()).unwrap(),
+                        expected_record
+                    );
+                    let record = chatgpt_tokens::read(&home.path()).unwrap();
+                    assert_eq!(record.access_token(), "synthetic-new-access");
+                    assert_eq!(record.refresh_token(), "synthetic-new-refresh");
+                    assert_eq!(record.account_id(), "synthetic-account");
+                    let meta = fs::metadata(home.path()).unwrap();
+                    assert_eq!(meta.mode() & 0o777, 0o600);
+                    assert_eq!(meta.nlink(), 1);
+                    if let Some(previous) = &previous {
+                        assert_ne!(fs::read(home.path()).unwrap(), *previous);
+                    }
+                } else if let Some(previous) = previous {
+                    assert_eq!(fs::read(home.path()).unwrap(), previous);
+                } else {
+                    assert!(!home.path().exists());
+                }
+                assert!(fs::read_dir(&home.0).unwrap().all(|entry| !entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".tmp")));
+                let lock = home.0.join("chatgpt-auth.lock");
+                let inode = fs::metadata(&lock).unwrap().ino();
+                let state_after_error = fs::read(home.path()).ok();
+                // The same flow refuses BEFORE both transport and installation,
+                // even when the first error happened after committed rename.
+                let code = login.pasted_callback(&callback(&login), &stop).unwrap();
+                assert_eq!(
+                    login.finish(code, &home.path(), replace, &[], &stop),
+                    Err(Error::Callback)
+                );
+                assert_eq!(peer.wait_for_requests(1).len(), 1);
+                assert_eq!(peer.requests().len(), 1);
+                assert_eq!(fs::read(home.path()).ok(), state_after_error);
+                assert_eq!(fs::metadata(lock).unwrap().ino(), inode);
+            }
+        }
     }
 }
