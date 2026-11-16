@@ -179,7 +179,7 @@ async fn openrouter_credit_refusal_does_not_charge_the_reservation() {
 }
 #[tokio::test]
 async fn openrouter_cancel_on_final_chunk_preserves_private_usage() {
-    let mock = MockAnthropic::start(vec![wire(chunks(), true)]);
+    let mock = MockAnthropic::start(vec![wire(chunks_with_cost(Some(json!(0.25))), true)]);
     let (gateway, fixture) = gateway(&mock);
     let result = gateway
         .chat_payload(
@@ -201,6 +201,9 @@ async fn openrouter_cancel_on_final_chunk_preserves_private_usage() {
     assert_eq!(row["status"], 499);
     assert_eq!(row["settled"], "usage");
     assert_eq!(row["cached_tokens"], 7);
+    assert_eq!(row["reported_cost_usd"], 0.25);
+    assert_eq!(row["cost_usd"], 0.25);
+    mock.finish();
 }
 
 #[tokio::test]
@@ -358,4 +361,119 @@ async fn openrouter_fragmented_tools_and_usage_on_finish_chunk() {
     assert_eq!(call["function"]["name"], "read");
     assert_eq!(rows(&fixture)[0]["settled"], "usage");
     mock.finish();
+}
+
+fn chunks_with_cost(cost: Option<Value>) -> Vec<Value> {
+    let mut events = chunks();
+    if let Some(cost) = cost {
+        events[3]["usage"]["cost"] = cost;
+    }
+    events
+}
+
+#[tokio::test]
+async fn openrouter_reported_cost_reaches_ledger_and_budget_with_or_without_public_usage() {
+    for reported in [0.0, 0.00000001, 1.0, 1e101] {
+        for include_usage in [false, true] {
+            let mock = MockAnthropic::start(vec![wire(chunks_with_cost(Some(json!(reported))), true)]);
+            let (gateway, fixture) = gateway(&mock);
+            let mut request = payload(include_usage);
+            // Client-supplied billing fields are never a source of settled cost.
+            request["usage"] = json!({"cost":0.5});
+            request["cost"] = json!(0.5);
+            request["reported_cost"] = json!(0.5);
+            let mut public_usage = None;
+            gateway
+                .chat_payload(
+                    &request,
+                    Context::default(),
+                    &Cancellation::default(),
+                    &mut |event| {
+                        match event {
+                            Event::Chunk(value) => {
+                                if value.get("usage").is_some() {
+                                    public_usage = Some(value["usage"].clone());
+                                }
+                            }
+                            Event::Done => {
+                                let row = rows(&fixture).pop().unwrap();
+                                assert_eq!(row["cost_usd"], json!(reported));
+                                assert_eq!(row["reported_cost_usd"], json!(reported));
+                            }
+                        }
+                        Control::Continue
+                    },
+                )
+                .await
+                .unwrap();
+            let row = rows(&fixture).pop().unwrap();
+            assert_eq!(row["settled"], "usage");
+            assert_eq!(row["cost_usd"], json!(reported));
+            assert!(row["catalog_cost_usd"]
+                .as_f64()
+                .is_some_and(|cost| cost > 0.0 && cost < 1.0));
+            assert_eq!(public_usage.is_some(), include_usage);
+            if let Some(usage) = public_usage {
+                assert_eq!(usage["cost"], json!(reported));
+            }
+            if reported >= 1.0 {
+                let error = gateway
+                    .chat_payload(
+                        &payload(false),
+                        Context::default(),
+                        &Cancellation::default(),
+                        &mut |_| panic!("budget refusal must precede forwarding"),
+                    )
+                    .await
+                    .err()
+                    .unwrap();
+                assert_eq!(error.refusal().code, "budget_exceeded");
+            }
+            assert_eq!(mock.requests().len(), 1);
+            let sent = &mock.requests()[0].body;
+            for name in ["usage", "cost", "reported_cost"] {
+                assert!(sent.get(name).is_none());
+            }
+            mock.finish();
+        }
+    }
+}
+
+#[tokio::test]
+async fn openrouter_absent_or_invalid_reported_cost_uses_catalog() {
+    for cost in [
+        None,
+        Some(Value::Null),
+        Some(json!(-0.1)),
+        Some(json!("0.1")),
+        Some(json!(true)),
+        Some(json!({"cost":0.1})),
+    ] {
+        let mock = MockAnthropic::start(vec![wire(chunks_with_cost(cost), true)]);
+        let (gateway, fixture) = gateway(&mock);
+        let mut public_usage = None;
+        gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    if let Event::Chunk(value) = event {
+                        if value.get("usage").is_some() {
+                            public_usage = Some(value["usage"].clone());
+                        }
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap();
+        let row = rows(&fixture).pop().unwrap();
+        assert_eq!(row["cost_usd"], row["catalog_cost_usd"]);
+        assert!(row["cost_usd"].as_f64().is_some_and(|cost| cost > 0.0));
+        assert!(row.get("reported_cost_usd").is_none());
+        assert!(public_usage.unwrap().get("cost").is_none());
+        assert_eq!(row["settled"], "usage");
+        mock.finish();
+    }
 }
