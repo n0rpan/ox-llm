@@ -19,3 +19,4 @@ unsafe_code = "forbid"
 
 [dev-dependencies]
 oxa-fake.workspace = true
+
