@@ -505,6 +505,7 @@ mod tests {
     fn failed_tool_line_carries_the_reason() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut sink = PrintSink {
+            wrap_up: None,
             out: &mut out,
             err: &mut err,
             last: None,
