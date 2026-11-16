@@ -181,7 +181,7 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
             "GH_CACHE_DIR",
             "MISE_CACHE_DIR",
             "MISE_DATA_DIR",
-            "MISE_STATE_DIR"
+            "MISE_STATE_DIR",
         ],
         "no token, no key, nothing unlisted"
     );
