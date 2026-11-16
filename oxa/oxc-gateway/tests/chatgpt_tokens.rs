@@ -265,3 +265,39 @@ fn nonblocking_refresh_reports_only_busy_and_preserves_checks() {
         Err(Error::Unavailable)
     ));
 }
+
+#[test]
+fn jwt_expiry_bounds_optimistic_metadata_before_the_refresh_margin() {
+    let record = TokenRecord::new(
+        "e30.eyJleHAiOjEwMDB9.synthetic".into(),
+        REFRESH.into(),
+        ACCOUNT.into(),
+        1_000_000.0,
+    )
+    .unwrap();
+    assert_eq!(record.expires_at(), 1000.0);
+    assert!(!record.is_fresh_at(881.0));
+    assert!(record.is_fresh_at(879.0));
+}
+
+#[test]
+fn expiry_hint_does_not_trust_malformed_claims_or_extend_the_stored_lifetime() {
+    for access in [
+        "opaque-synthetic",
+        "e30.not+url.synthetic",
+        "e30.W10.synthetic",
+        "e30.eyJleHAiOm51bGx9.synthetic",
+        "e30.eyJleHAiOjEwMDB9=.synthetic",
+    ] {
+        let record = TokenRecord::new(access.into(), REFRESH.into(), ACCOUNT.into(), 500.0).unwrap();
+        assert_eq!(record.expires_at(), 500.0);
+    }
+    let record = TokenRecord::new(
+        "e30.eyJleHAiOjEwMDB9.synthetic".into(),
+        REFRESH.into(),
+        ACCOUNT.into(),
+        500.0,
+    )
+    .unwrap();
+    assert_eq!(record.expires_at(), 500.0);
+}

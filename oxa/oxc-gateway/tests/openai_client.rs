@@ -398,7 +398,7 @@ async fn refresh_timeout_releases_lock_without_forwarding_or_replacing_tokens() 
     )
     .await
     .unwrap();
-    assert!(matches!(result, Err(client::Error::Credentials)));
+    assert!(matches!(result, Err(client::Error::SignedOut)));
     assert_eq!(fs::read(&path).unwrap(), before);
     assert_eq!(refresh.requests().len(), 1);
     // A second real request must acquire the same lock and refresh successfully.
@@ -648,6 +648,7 @@ async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
         json!({"access_token":KEY,"expires_in":0,"error":"synthetic-refresh"}),
         json!({"access_token":"","refresh_token":"synthetic-refresh","expires_in":3600}),
         json!({"access_token":KEY,"expires_in":"synthetic-refresh"}),
+        json!({"access_token":"e30.eyJleHAiOjEwMDB9.synthetic","refresh_token":"synthetic-refresh","expires_in":3600}),
     ] {
         let refresh = MockOpenAi::start(vec![Reply::json(reply)]);
         let base = refresh.base_url();
@@ -673,7 +674,14 @@ async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
             .await
             .err()
             .unwrap();
-        assert_eq!(error, client::Error::Credentials);
+        assert_eq!(error, client::Error::SignedOut);
+        let status = oxc_gateway::status::ProviderStatus {
+            remaining_usd: None,
+            source: oxc_gateway::status::Source::NotReported,
+            state: error.subscription_state().unwrap(),
+            checked_at: UNIX_EPOCH,
+        };
+        assert!(status.render_card().contains("State: signed out"));
         assert_eq!(fs::read(&path).unwrap(), before);
         let diagnostic = format!("{error:?} {error}");
         assert!(!diagnostic.contains(KEY) && !diagnostic.contains("synthetic-refresh"));
@@ -1504,4 +1512,284 @@ fn unrepresentable_read_timeout_is_a_fixed_setup_error() {
         Client::with_read_timeout(Some(std::time::Duration::MAX)),
         Err(client::Error::Setup)
     ));
+}
+
+fn subscription_auth<'a>(path: &'a std::path::Path, refresh: &'a str) -> Auth<'a> {
+    Auth::Subscription {
+        token_path: path,
+        expected_account_id: "synthetic-account",
+        refresh: client::Refresh {
+            endpoint: refresh,
+            client_id: "synthetic-client",
+            timeout: std::time::Duration::from_secs(2),
+        },
+    }
+}
+
+#[tokio::test]
+async fn codex_shaped_refresh_without_expires_in_is_stored_before_forwarding() {
+    let fixture = Fixture::new();
+    let path = fixture.token_path(false);
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"e30.eyJleHAiOjQxMDI0NDQ4MDB9.synthetic", "refresh_token":"synthetic-rotated-refresh"}),
+    )]);
+    let upstream = MockOpenAi::start(vec![answer()]);
+    let base = upstream.base_url();
+    let endpoint = refresh.base_url();
+    let mut forwarded = false;
+    let result = Client::new()
+        .unwrap()
+        .stream(
+            chat(&base, &payload(), &[]),
+            subscription_auth(&path, &endpoint),
+            &Cancellation::default(),
+            &mut |e| {
+                if matches!(e, Event::Sending) {
+                    let record = chatgpt_tokens::read(&path).unwrap();
+                    assert_eq!(record.access_token(), "e30.eyJleHAiOjQxMDI0NDQ4MDB9.synthetic");
+                    assert_eq!(record.refresh_token(), "synthetic-rotated-refresh");
+                    forwarded = true;
+                }
+                Control::Continue
+            },
+        )
+        .await;
+    assert!(result.is_ok(), "Codex-shaped token-only refresh must succeed");
+    assert!(forwarded);
+    assert_eq!(refresh.requests().len(), 1);
+    assert_eq!(upstream.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn token_expired_401_refreshes_and_retries_once_in_the_same_session() {
+    let fixture = Fixture::new();
+    let path = fixture.token_path(true);
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}),
+    )]);
+    let upstream = MockOpenAi::start(vec![
+        answer(),
+        Reply::error(401, "token_expired", "synthetic expiry"),
+        answer(),
+    ]);
+    let base = upstream.base_url();
+    let endpoint = refresh.base_url();
+    let client = Client::new().unwrap();
+    for _ in 0..2 {
+        let result = client
+            .stream(
+                chat(&base, &payload(), &[]),
+                subscription_auth(&path, &endpoint),
+                &Cancellation::default(),
+                &mut |_| Control::Continue,
+            )
+            .await;
+        assert!(result.is_ok(), "token expiry in a running session must recover");
+    }
+    assert_eq!(refresh.requests().len(), 1);
+    let requests = upstream.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[1].body_bytes, requests[2].body_bytes);
+    assert_eq!(
+        requests[1].header("authorization"),
+        Some("Bearer synthetic-openai-credential")
+    );
+    assert_eq!(
+        requests[2].header("authorization"),
+        Some("Bearer synthetic-recovered-access")
+    );
+    assert_eq!(
+        chatgpt_tokens::read(&path).unwrap().refresh_token(),
+        "synthetic-rotated-refresh"
+    );
+}
+
+#[tokio::test]
+async fn expired_recovery_is_bounded_and_excludes_api_keys_and_other_refusals() {
+    for (subscription, code, expected_refreshes, expected_requests) in [
+        (true, "token_expired", 1, 2),
+        (true, "invalid_api_key", 0, 1),
+        (false, "token_expired", 0, 1),
+    ] {
+        let fixture = Fixture::new();
+        let path = fixture.token_path(true);
+        let before = fs::read(&path).unwrap();
+        let refresh = MockOpenAi::start(vec![Reply::json(
+            json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}),
+        )]);
+        let upstream = MockOpenAi::start(vec![
+            Reply::error(401, code, "synthetic refusal"),
+            Reply::error(401, code, "synthetic repeated refusal"),
+        ]);
+        let endpoint = refresh.base_url();
+        let base = upstream.base_url();
+        let auth = if subscription {
+            subscription_auth(&path, &endpoint)
+        } else {
+            Auth::ApiKey(&fixture.key)
+        };
+        let mut delivered = false;
+        let error = Client::new()
+            .unwrap()
+            .stream(
+                chat(&base, &payload(), &[]),
+                auth,
+                &Cancellation::default(),
+                &mut |e| {
+                    delivered |= matches!(e, Event::Chunk(_));
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap_err();
+        if subscription {
+            assert_eq!(error, client::Error::SignedOut);
+            assert_eq!(
+                error.subscription_state(),
+                Some(oxc_gateway::status::State::SignedOut)
+            );
+        } else {
+            assert!(matches!(error, client::Error::Http { status: 401, .. }));
+        }
+        assert!(!delivered);
+        assert_eq!(refresh.requests().len(), expected_refreshes);
+        assert_eq!(upstream.requests().len(), expected_requests);
+        if expected_refreshes == 0 {
+            assert_eq!(fs::read(&path).unwrap(), before);
+        }
+        assert!(!format!("{error:?} {error}").contains(KEY));
+    }
+}
+
+#[tokio::test]
+async fn running_client_rechecks_proactive_expiry_without_a_restart() {
+    let fixture = Fixture::new();
+    let path = fixture.token_path(true);
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}),
+    )]);
+    let upstream = MockOpenAi::start(vec![answer(), answer()]);
+    let base = upstream.base_url();
+    let endpoint = refresh.base_url();
+    let client = Client::new().unwrap();
+    client
+        .stream(
+            chat(&base, &payload(), &[]),
+            subscription_auth(&path, &endpoint),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    assert!(refresh.requests().is_empty());
+    // Advance the owned synthetic record into the proactive window; same client,
+    // process and route. No wall-clock sleeps or real credential files.
+    fixture.token_path(false);
+    client
+        .stream(
+            chat(&base, &payload(), &[]),
+            subscription_auth(&path, &endpoint),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    assert_eq!(refresh.requests().len(), 1);
+    assert_eq!(
+        upstream.requests()[1].header("authorization"),
+        Some("Bearer synthetic-recovered-access")
+    );
+}
+
+#[test]
+fn forced_refresh_child() {
+    let Some(path) = std::env::var_os("OPENAI_FORCE_REFRESH_FIXTURE") else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    let base = std::env::var("OPENAI_FORCE_UPSTREAM").unwrap();
+    let endpoint = std::env::var("OPENAI_FORCE_ENDPOINT").unwrap();
+    let mut sends = 0;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                Client::new().unwrap().stream(
+                    chat(&base, &payload(), &[]),
+                    subscription_auth(&path, &endpoint),
+                    &Cancellation::default(),
+                    &mut |e| {
+                        if matches!(e, Event::Sending) {
+                            sends += 1;
+                            if sends == 2 {
+                                assert_eq!(
+                                    chatgpt_tokens::read(&path).unwrap().refresh_token(),
+                                    "synthetic-rotated-refresh"
+                                );
+                            }
+                        }
+                        Control::Continue
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        });
+    assert_eq!(sends, 2);
+}
+
+#[tokio::test]
+async fn concurrent_processes_refresh_a_rejected_generation_once() {
+    let fixture = Fixture::new();
+    let path = fixture.token_path(true);
+    let refresh = MockOpenAi::start(vec![Reply::json(
+        json!({"access_token":"synthetic-recovered-access","refresh_token":"synthetic-rotated-refresh","expires_in":3600}),
+    )]);
+    let (first, release_first) = Reply::error(401, "token_expired", "synthetic expiry").gated();
+    let (second, release_second) = Reply::error(401, "token_expired", "synthetic expiry").gated();
+    let upstream = MockOpenAi::start(vec![first, second, answer(), answer()]);
+    let children: Vec<_> = (0..2)
+        .map(|_| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "forced_refresh_child"])
+                .env_clear()
+                .env("HOME", &fixture.root)
+                .env("PATH", "/usr/bin:/bin")
+                .env("OPENAI_FORCE_REFRESH_FIXTURE", &path)
+                .env("OPENAI_FORCE_UPSTREAM", upstream.base_url())
+                .env("OPENAI_FORCE_ENDPOINT", refresh.base_url())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(upstream.wait_for_requests(2).len(), 2);
+    release_first.send(()).unwrap();
+    release_second.send(()).unwrap();
+    for child in children {
+        assert!(
+            child.wait_with_output().unwrap().status.success(),
+            "synthetic refresh child failed"
+        );
+    }
+    assert_eq!(refresh.requests().len(), 1);
+    let requests = upstream.wait_for_requests(4);
+    assert_eq!(requests.len(), 4);
+    assert!(requests[..2]
+        .iter()
+        .all(|r| r.header("authorization") == Some("Bearer synthetic-openai-credential")));
+    assert!(requests[2..]
+        .iter()
+        .all(|r| r.header("authorization") == Some("Bearer synthetic-recovered-access")));
+    assert_eq!(
+        chatgpt_tokens::read(&path).unwrap().refresh_token(),
+        "synthetic-rotated-refresh"
+    );
+    refresh.assert_healthy();
+    upstream.assert_healthy();
 }

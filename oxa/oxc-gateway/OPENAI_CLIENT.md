@@ -135,3 +135,23 @@ disabled, and remains cancellable. Held-peer regressions cover delayed headers,
 quiet SSE after visible output, progress extending beyond the read timeout and
 quiet cancellation, in both auth modes. Settings selection and production
 factory/provider dispatch remain with the owner.
+
+Issue #726: freshness also bounds persisted expiry by the access JWT's exp hint.
+That unverified hint can only shorten lifetime; it never selects an account,
+endpoint, issuer or scope. The existing 120-second proactive margin remains.
+Refresh accepts Codex-shaped token-only replies when a usable JWT expiry exists;
+opaque replies still require a usable expires_in. Rotated tokens are atomically
+persisted before use. A subscription token_expired401, before any response data
+is delivered, permits one refresh-and-retry of the same body. The lock re-read
+reuses another process's fresh rotation instead of refreshing it again. API keys,
+other refusals and started streams never enter this recovery path. Private
+redaction retains both rejected and renewed credentials across the attempt.
+
+Failed refresh/recovery yields typed SignedOut and subscription_state() supplies
+State::SignedOut for the existing #627 card, without inventing a balance. File
+safety/account mismatch remains a credential refusal, and lock admission timeout
+stays unavailable until a refresher actually starts. Cancellation still wins;
+firm refresh deadlines and atomic storage checks are unchanged. Same-client and
+concurrent-process tests use synthetic records only. The small legacy exception
+corrects expiry precedence and rechecks JWT expiry in stored records; no legacy
+forwarding, billing, auth endpoint or sign-in changes are introduced.
