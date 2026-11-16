@@ -98,7 +98,8 @@ reproducibility result as well as the tarball's file list before installing.
 
 Run makepkg as an unprivileged user in a fresh directory. Install the PKGBUILD's
 build dependencies first. Copy the source archive from the verified artifact and
-`packaging/arch/ox-llm/PKGBUILD` into that directory. Set these to the inspected
+`packaging/arch/ox-llm/PKGBUILD` together with its adjacent `native.install`
+into that directory. Set these to the inspected
 workflow's source identity and commit timestamp (use literal values):
 
 ```sh
@@ -116,7 +117,8 @@ source artifact is mandatory; there is intentionally no release URL before the
 owner publishes a release. On ARM install GCC 16 or newer and the pinned Rust
 version before building; do not replace the documented CPU flags with `native`.
 
-For the binary variant use `packaging/arch/ox-llm-bin/PKGBUILD` beside the verified
+For the binary variant copy `packaging/arch/ox-llm-bin/PKGBUILD` and its adjacent
+`native.install` beside the verified
 `ox-llm-0.2.0-linux-ARCH.tar.gz` artifact:
 
 ```sh
