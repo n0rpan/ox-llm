@@ -86,8 +86,7 @@ impl Price {
                 return Some(Self(price));
             }
         }
-        (raw["free"] == true)
-            .then(|| Self(json!({"input_per_million":0.0,"output_per_million":0.0})))
+        (raw["free"] == true).then(|| Self(json!({"input_per_million":0.0,"output_per_million":0.0})))
     }
     pub fn normalized(&self) -> &Value {
         &self.0
@@ -106,9 +105,7 @@ impl Price {
         let price = if let Some(tiers) = self.0["tiers"].as_array() {
             tiers.iter().find(|tier| {
                 tier["max_prompt_tokens"].is_null()
-                    || tier["max_prompt_tokens"]
-                        .as_u64()
-                        .is_some_and(|n| prompt <= n)
+                    || tier["max_prompt_tokens"].as_u64().is_some_and(|n| prompt <= n)
             })?
         } else {
             &self.0
@@ -124,18 +121,11 @@ impl Price {
             }
             _ => BigDecimal::from(prompt) * decimal(input.max(read_rate).max(write_rate)),
         };
-        ((input_cost + BigDecimal::from(output) * decimal(out)) / BigDecimal::from(1_000_000))
-            .to_f64()
+        ((input_cost + BigDecimal::from(output) * decimal(out)) / BigDecimal::from(1_000_000)).to_f64()
     }
     /// Bound input by the entire catalog window, across every pricing tier and
     /// cache-write rate. OpenRouter adds the reference's 25% routing headroom.
-    pub fn reservation(
-        &self,
-        provider: &str,
-        upstream: &str,
-        context: u64,
-        output: u64,
-    ) -> Option<f64> {
+    pub fn reservation(&self, provider: &str, upstream: &str, context: u64, output: u64) -> Option<f64> {
         if context > 100_000_000 || output > 10_000_000 {
             return None;
         }

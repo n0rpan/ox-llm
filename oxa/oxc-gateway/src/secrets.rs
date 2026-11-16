@@ -171,13 +171,9 @@ fn parse(bytes: &[u8]) -> Option<Value> {
             quoted = true;
             normalized.push(byte);
             index += 1;
-        } else if let Some(token) = [
-            b"NaN".as_slice(),
-            b"Infinity".as_slice(),
-            b"-Infinity".as_slice(),
-        ]
-        .iter()
-        .find(|token| bytes[index..].starts_with(token))
+        } else if let Some(token) = [b"NaN".as_slice(), b"Infinity".as_slice(), b"-Infinity".as_slice()]
+            .iter()
+            .find(|token| bytes[index..].starts_with(token))
         {
             normalized.extend_from_slice(b"null");
             index += token.len();
@@ -197,8 +193,7 @@ pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
     }
     let resolved = resolve(path, &mut 0).map_err(|_| Error::Unavailable)?;
     if resolved.ancestors().skip(1).any(|parent| {
-        parent.join(".git").exists()
-            || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
+        parent.join(".git").exists() || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
     }) {
         return Err(Error::InRepository);
     }
@@ -239,9 +234,7 @@ pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
     };
     let key = raw
         .as_str()
-        .filter(|key| {
-            !key.is_empty() && key.len() <= 8192 && key.bytes().all(|b| (33..=126).contains(&b))
-        })
+        .filter(|key| !key.is_empty() && key.len() <= 8192 && key.bytes().all(|b| (33..=126).contains(&b)))
         .ok_or(Error::Unavailable)?;
     Ok(Key(key.into()))
 }
