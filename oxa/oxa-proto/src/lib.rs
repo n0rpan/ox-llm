@@ -48,6 +48,7 @@ mod wire;
 
 pub mod guard;
 pub mod panic;
+pub mod work;
 
 pub use engine::*;
 pub use entry::*;

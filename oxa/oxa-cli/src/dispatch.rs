@@ -170,6 +170,9 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            Subcommand::Work(words) => {
+                return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
+            }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
@@ -425,6 +428,7 @@ fn open_named(
     name: Option<&str>,
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
+    session.set_output_schema(built.output_schema.clone());
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
@@ -435,6 +439,7 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    output_schema: Option<oxa_core::output_schema::OutputSchema>,
     engine: Arc<dyn Engine>,
     store: Arc<dyn SessionStore>,
     sandbox: Arc<dyn Sandbox>,
@@ -547,6 +552,18 @@ fn prepare(
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<Prep, OxaError> {
+    let output_schema = a
+        .output_schema
+        .as_ref()
+        .map(|file| {
+            let path = cwd.join(file);
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
+            let value = serde_json::from_str(&text)
+                .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
+            oxa_core::output_schema::OutputSchema::new(value)
+        })
+        .transpose()?;
     let mut notices: Vec<(Level, String)> = Vec::new();
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
@@ -559,112 +576,16 @@ fn prepare(
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
     notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
 
-    // Trust: the user's own settings decide the default; project settings load only when the
-    // project is trusted.
-    let user_settings = Settings::load(dirs, cwd, false);
-    let default = match user_settings.string("defaultProjectTrust").as_deref() {
-        Some("always") => DefaultTrust::Trust,
-        Some("never") => DefaultTrust::Untrusted,
-        _ => DefaultTrust::Ask,
-    };
     let gated = gated_resources(cwd);
-    // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
-    // an explicit `-na` still wins.
-    let approve = a
-        .approve
-        .or_else(|| matches!(env.get("OXA_TRUST_PROJECT"), Some("1" | "true")).then_some(true));
-    let mut trust_store = TrustStore::load(&dirs.trust_file());
-    // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
-    // saved decision and the default (pi's `resolveProjectTrusted`).
-    let extension = if approve.is_none() && !gated.is_empty() {
-        extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, &mut notices)
-    } else {
-        None
-    };
-    let interactive = mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty;
-    let saved = trust_store.lookup(cwd);
-    let outcome = resolve_trust(&TrustInputs {
-        flag: approve,
-        extension,
-        saved,
-        default,
-        interactive,
-        has_gated: !gated.is_empty(),
-    });
-    // B4: the user answered the trust question in this start (it approves the content too).
-    let mut asked_now = false;
-    let trusted = match outcome {
-        TrustOutcome::Trusted => true,
-        TrustOutcome::Untrusted => false,
-        TrustOutcome::AskUser => {
-            // The trust dialog (D10) on the terminal, before the session exists. A dismissed
-            // question leaves the project untrusted for this run and is asked again next time.
-            let (keymap, _) = Keymap::load(dirs);
-            let choice = ask_trust_interactive(env.pairs(), &keymap, &cwd.display().to_string(), &gated)?;
-            asked_now = true;
-            let file = dirs.trust_file();
-            match choice {
-                Some(TrustChoice::Trust) => {
-                    trust_store.save(&file, cwd, true)?;
-                    true
-                }
-                Some(TrustChoice::TrustParent) => {
-                    trust_store.save(&file, cwd.parent().unwrap_or(cwd), true)?;
-                    true
-                }
-                Some(TrustChoice::NoTrust) => {
-                    trust_store.save(&file, cwd, false)?;
-                    false
-                }
-                Some(TrustChoice::Skip) | None => {
-                    notices.push((
-                        Level::Warning,
-                        "the project is not trusted for this run; /trust saves a decision".to_string(),
-                    ));
-                    false
-                }
-            }
-        }
-    };
-    // B4: what runs outside the sandbox loads only as the user approved it (content hashes).
-    let trusted = if trusted && !gated.is_empty() {
-        crate::approval::check(crate::approval::Check {
-            env,
-            dirs,
-            cwd,
-            store: &mut trust_store,
-            via_flag: approve == Some(true),
-            via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
-            asked_now,
-            interactive,
-            notices: &mut notices,
-        })?
-    } else {
-        trusted
-    };
-    // #201: a project trusted by a saved decision gets its approval baseline now (also with
-    // no project config yet), before any tool runs: `.oxa` / `.agents` content the session
-    // creates is then new at the next start and goes through the normal approval.
-    if trusted && saved == Some(true) {
-        trust_store.record_baseline(&dirs.trust_file(), cwd)?;
-    }
-    if !trusted && !gated.is_empty() {
-        notices.push((
-            Level::Warning,
-            format!(
-                "project resources were skipped (not trusted): {}",
-                gated.join(", ")
-            ),
-        ));
-    }
-    // `done` is a project-only key in practice: an untrusted project's list is never merged,
-    // so say that its checks will not run.
-    if !trusted && Settings::project_declares_done(dirs, cwd) {
-        notices.push((
-            Level::Warning,
-            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
-        ));
-    }
+    let trusted = project_trusted(
+        a,
+        env,
+        dirs,
+        cwd,
+        &gated,
+        mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty,
+        &mut notices,
+    )?;
     let mut settings = child.apply(Settings::load(dirs, cwd, trusted));
     // CLI-045 (pi cli.md): `--verbose` overrides `quietStartup` for this run (in memory only).
     if a.verbose {
@@ -915,6 +836,7 @@ fn prepare(
         default_edits: settings.default_tools_edits(),
     };
     let built = Built {
+        output_schema,
         engine,
         store,
         sandbox,
@@ -943,6 +865,123 @@ fn prepare(
 }
 
 /// The resource discovery options of the flags.
+/// The same project trust and executable-content approval for sessions and workers.
+pub(crate) fn project_trusted(
+    a: &Args,
+    env: &Env,
+    dirs: &Dirs,
+    cwd: &Path,
+    gated: &[String],
+    interactive: bool,
+    notices: &mut Vec<(Level, String)>,
+) -> Result<bool, OxaError> {
+    // Trust: the user's own settings decide the default; project settings load only when the
+    // project is trusted.
+    let user_settings = Settings::load(dirs, cwd, false);
+    let default = match user_settings.string("defaultProjectTrust").as_deref() {
+        Some("always") => DefaultTrust::Trust,
+        Some("never") => DefaultTrust::Untrusted,
+        _ => DefaultTrust::Ask,
+    };
+    // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
+    // an explicit `-na` still wins.
+    let approve = a
+        .approve
+        .or_else(|| matches!(env.get("OXA_TRUST_PROJECT"), Some("1" | "true")).then_some(true));
+    let mut trust_store = TrustStore::load(&dirs.trust_file());
+    // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
+    // saved decision and the default (pi's `resolveProjectTrusted`).
+    let extension = if approve.is_none() && !gated.is_empty() {
+        extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, notices)
+    } else {
+        None
+    };
+    let saved = trust_store.lookup(cwd);
+    let outcome = resolve_trust(&TrustInputs {
+        flag: approve,
+        extension,
+        saved,
+        default,
+        interactive,
+        has_gated: !gated.is_empty(),
+    });
+    // B4: the user answered the trust question in this start (it approves the content too).
+    let mut asked_now = false;
+    let trusted = match outcome {
+        TrustOutcome::Trusted => true,
+        TrustOutcome::Untrusted => false,
+        TrustOutcome::AskUser => {
+            // The trust dialog (D10) on the terminal, before the session exists. A dismissed
+            // question leaves the project untrusted for this run and is asked again next time.
+            let (keymap, _) = Keymap::load(dirs);
+            let choice = ask_trust_interactive(env.pairs(), &keymap, &cwd.display().to_string(), gated)?;
+            asked_now = true;
+            let file = dirs.trust_file();
+            match choice {
+                Some(TrustChoice::Trust) => {
+                    trust_store.save(&file, cwd, true)?;
+                    true
+                }
+                Some(TrustChoice::TrustParent) => {
+                    trust_store.save(&file, cwd.parent().unwrap_or(cwd), true)?;
+                    true
+                }
+                Some(TrustChoice::NoTrust) => {
+                    trust_store.save(&file, cwd, false)?;
+                    false
+                }
+                Some(TrustChoice::Skip) | None => {
+                    notices.push((
+                        Level::Warning,
+                        "the project is not trusted for this run; /trust saves a decision".to_string(),
+                    ));
+                    false
+                }
+            }
+        }
+    };
+    // B4: what runs outside the sandbox loads only as the user approved it (content hashes).
+    let trusted = if trusted && !gated.is_empty() {
+        crate::approval::check(crate::approval::Check {
+            env,
+            dirs,
+            cwd,
+            store: &mut trust_store,
+            via_flag: approve == Some(true),
+            via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
+            asked_now,
+            interactive,
+            notices,
+        })?
+    } else {
+        trusted
+    };
+    // #201: a project trusted by a saved decision gets its approval baseline now (also with
+    // no project config yet), before any tool runs: `.oxa` / `.agents` content the session
+    // creates is then new at the next start and goes through the normal approval.
+    if trusted && saved == Some(true) {
+        trust_store.record_baseline(&dirs.trust_file(), cwd)?;
+    }
+    if !trusted && !gated.is_empty() {
+        notices.push((
+            Level::Warning,
+            format!(
+                "project resources were skipped (not trusted): {}",
+                gated.join(", ")
+            ),
+        ));
+    }
+    // `done` is a project-only key in practice: an untrusted project's list is never merged,
+    // so say that its checks will not run.
+    if !trusted && Settings::project_declares_done(dirs, cwd) {
+        notices.push((
+            Level::Warning,
+            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
+        ));
+    }
+    Ok(trusted)
+}
+
 fn discover_opts(a: &Args, dirs: &Dirs, cwd: &Path, trusted: bool) -> Result<DiscoverOpts, OxaError> {
     Ok(DiscoverOpts {
         trusted,
@@ -1281,7 +1320,9 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
         };
-        Session::open(deps, how)
+        let mut session = Session::open(deps, how)?;
+        session.set_output_schema(base.output_schema.clone());
+        Ok(session)
     });
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
@@ -1992,6 +2033,7 @@ mod session_scratch_tests {
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
         let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
+            output_schema: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             store: Arc::new(MemStore::new()),
             sandbox: base.clone(),

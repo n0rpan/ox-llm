@@ -93,6 +93,7 @@ fn state_with(
         gate: Default::default(),
     });
     let st = SessionState {
+        output_schema: None,
         engine,
         store,
         hooks: Vec::new(),

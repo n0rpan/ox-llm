@@ -14,6 +14,8 @@ pub enum ModeArg {
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    /// `oxa work <taskfile> | --issue N --model MODEL`.
+    Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
     Mcp(Vec<String>),
     /// `oxa install|remove|update|list ..`: the verb and the words after it.
@@ -50,6 +52,8 @@ pub struct Args {
     pub files: Vec<String>,
     /// `-p`, `--print`.
     pub print: bool,
+    /// `--output-schema FILE`: validate final text as JSON, with one repair turn.
+    pub output_schema: Option<String>,
     /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
     /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
@@ -193,6 +197,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
     ),
     (
+        "oxa work <taskfile> | --issue N --model MODEL",
+        "Run tasks in isolated worktrees with external acceptance checks",
+    ),
+    (
         "oxa wipe --session <id> | --all [--yes] [--engine]",
         "Delete one session (or every session) and its spill files; --engine also drops the engine's state",
     ),
@@ -225,6 +233,7 @@ const OPTIONS: &[(&str, &str)] = &[
         "Thinking level: off, minimal, low, medium, high, xhigh, max",
     ),
     ("--mode <mode>", "Output mode: text (default), json, or rpc"),
+    ("--output-schema <file>", "Check final JSON against a schema; retry once on mismatch"),
     (
         "--print, -p",
         "Non-interactive mode: process the prompts and exit",
@@ -374,7 +383,11 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
+<<<<<<< HEAD
         "send" => Subcommand::Send(rest.to_vec()),
+=======
+        "work" => Subcommand::Work(rest.to_vec()),
+>>>>>>> origin/main
         "auth" => return Err(OxaError::unsupported("the auth command")),
         // pi's provider sign-in (`pi login [--api-key] [--no-browser]`, `pi logout`).
         "login" | "logout" => {
@@ -486,19 +499,17 @@ fn positional(a: &mut Args, word: &str) {
 /// `unsupported_in_oxa`.
 pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaError> {
     let mut a = Args::default();
-    if let Some(first) = argv.first() {
-        if !first.starts_with('-') && !first.starts_with('@') {
-            if let Some(sub) = subcommand(first, &argv[1..])? {
-                a.subcommand = Some(sub);
-                return Ok(a);
-            }
-        }
-    }
     let mut i = 0;
     let mut stop = false;
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
+        if !stop && (i == 1 || (arg == "work" && argv[..i - 1].iter().all(|word| word == "--offline"))) {
+            if let Some(sub) = subcommand(arg, &argv[i..])? {
+                a.subcommand = Some(sub);
+                break;
+            }
+        }
         if stop || !arg.starts_with('-') {
             positional(&mut a, arg);
             continue;
@@ -543,6 +554,7 @@ fn parse_flag(
             no_value(inline, flag)?;
             a.print = true;
         }
+        "--output-schema" => a.output_schema = Some(value(argv, i, inline, flag, "a file")?),
         "--mode" => {
             let v = value(argv, i, inline, flag, "text, json, or rpc")?;
             a.mode = Some(match v.as_str() {
