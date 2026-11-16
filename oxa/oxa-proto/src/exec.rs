@@ -81,6 +81,11 @@ pub trait Sandbox: Send + Sync {
     fn persistence_notice(&self) -> Option<&str> {
         None
     }
+    /// #526: the home directory this sandbox hides (not the process's `$HOME`), so tools
+    /// need not read the process environment. `None` (the default) = unknown.
+    fn home(&self) -> Option<&std::path::Path> {
+        None
+    }
     /// #457: the sandbox for one new or reopened session: the same machine view, with the
     /// state that belongs to a single session (its scratch directory at `/tmp`) of its own,
     /// released when the session drops it. `None` (the default) = share `self` unchanged.
