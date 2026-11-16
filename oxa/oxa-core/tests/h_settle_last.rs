@@ -104,13 +104,17 @@ fn trigger(text: &str) -> HostAction {
 struct Trigger {
     host: Mutex<Option<Arc<dyn Host>>>,
     wrap: Mutex<Option<(Handle, oxa_core::WrapUpReason, HookPoint)>>,
+    wrap_skip: Mutex<usize>,
 }
 
 impl Hooks for Trigger {
     fn fire(&self, p: HookPoint, _payload: &Value, _ui: &mut dyn Ui) -> HookReply {
         let mut wrap = self.wrap.lock().unwrap();
         if wrap.as_ref().is_some_and(|(_, _, point)| *point == p) {
-            if let Some((handle, reason, _)) = wrap.take() {
+            let mut skip = self.wrap_skip.lock().unwrap();
+            if *skip > 0 {
+                *skip -= 1;
+            } else if let Some((handle, reason, _)) = wrap.take() {
                 handle.request_wrap_up(reason);
             }
         }
@@ -309,6 +313,94 @@ fn wrap_up_requested_inside_before_settle_gets_a_final_turn() {
                 probe.events.last(),
                 Some(AgentEvent::AgentSettled { aborted: true })
             ));
+        }
+    }
+}
+
+#[test]
+fn wrap_up_replaces_the_normal_thinking_fallback_with_a_final_attempt() {
+    check_thinking_overrun_wrap_up(1);
+}
+
+#[test]
+fn wrap_up_after_an_exhausted_thinking_fallback_gets_a_final_attempt() {
+    check_thinking_overrun_wrap_up(2);
+}
+
+fn check_thinking_overrun_wrap_up(stop_request: usize) {
+    use oxa_core::{RunOutcome, WrapUpReason};
+    for reason in [WrapUpReason::TimeLimit, WrapUpReason::Signal] {
+        for final_fails in [false, true] {
+            let env = TestEnv::new();
+            let hook = Arc::new(Trigger::default());
+            let mut thinking = ScriptTurn::text("");
+            thinking.text = None;
+            thinking.reasoning = Some("considering the task".into());
+            thinking.finish = oxa_proto::Finish::Length;
+            let mut turns = vec![thinking.clone()];
+            if stop_request == 2 {
+                thinking.reasoning = None;
+                turns.push(thinking);
+            }
+            turns.push(if final_fails {
+                ScriptTurn::fault(oxa_fake::Fault::Refuse)
+            } else {
+                ScriptTurn::text("final summary")
+            });
+            turns.push(ScriptTurn::text("unexpected extra request"));
+            let engine = Arc::new(ScriptedEngine::new(turns));
+            let mut d = deps(&env, engine.clone(), vec![hook.clone()]);
+            d.thinking = Some(oxa_proto::ThinkingLevel::Medium);
+            d.settings = Settings::from_values(
+                serde_json::json!({"retry":{
+                    "enabled":true,"maxRetries":2,"baseDelayMs":1,"maxAgentDelayMs":5
+                }}),
+                serde_json::json!({}),
+            );
+            let mut s = Session::open(d, Open::New).unwrap();
+            *hook.wrap.lock().unwrap() = Some((s.handle(), reason, HookPoint::AfterProviderResponse));
+            *hook.wrap_skip.lock().unwrap() = stop_request - 1;
+            let mut probe = Probe::new(s.handle());
+            s.prompt("go".into(), vec![], &mut probe, &mut HeadlessUi::default())
+                .unwrap();
+
+            let requests = engine.requests();
+            assert_eq!(
+                requests.len(),
+                stop_request + 1,
+                "{reason:?}/{final_fails}: one final attempt"
+            );
+            assert!(requests[0].thinking);
+            let final_request = requests.last().unwrap();
+            assert!(!final_request.thinking);
+            assert!(final_request.max_tokens <= 1024);
+            assert_ne!(
+                final_request.messages, requests[0].messages,
+                "final instruction replaces the normal fallback"
+            );
+            assert_ne!(final_request.idem_key, requests[stop_request - 1].idem_key);
+            let expected = if stop_request == 2 {
+                RunOutcome::Failed("thinking_overrun")
+            } else if final_fails {
+                RunOutcome::Failed(oxa_proto::codes::ENGINE_DOWN)
+            } else {
+                RunOutcome::Interrupted
+            };
+            assert_eq!(*s.outcome(), expected);
+            if !final_fails {
+                assert_eq!(
+                    s.inner().stats.requests as usize,
+                    requests.len(),
+                    "discarded requests remain accounted"
+                );
+                assert!(probe.events.iter().any(|event| matches!(event,
+                    AgentEvent::MessageEnd { message } if message.msg.content.as_deref() == Some("final summary"))));
+            }
+            assert!(!probe
+                .events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::AutoRetryStart { .. })));
+            probe.assert_settled_idle(1);
         }
     }
 }
