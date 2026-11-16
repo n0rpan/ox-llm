@@ -1,5 +1,6 @@
 //! A3: the session file store and the entry codec.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (file format: docs/session-format.md)
+use crate::meta::meta_of_parts;
 use crate::{SessionHeader, SessionMeta, SessionRef, SessionStore};
 use oxa_proto::{
     codes, names, shown_why, Entry, EntryBody, FrozenPrefix, Mode, OxaError, Part, Role, ThinkingLevel,
@@ -1415,44 +1416,6 @@ fn match_id(query: &str, ids: &[&str]) -> Result<usize, OxaError> {
             "session id prefix `{query}` is ambiguous: {n} sessions match"
         ))
         .with_hint("give more characters of the id, or the session path")),
-    }
-}
-
-/// The metadata of a session, built from its header and entries (see [`SessionMeta`]).
-fn meta_of_parts(sref: SessionRef, header: &SessionHeader, entries: &[Entry]) -> SessionMeta {
-    let mut name = None;
-    let mut modified_ms = header.ts_ms;
-    let mut message_count = 0u32;
-    let mut first_message: Option<String> = None;
-    let mut all_text = String::new();
-    for e in entries {
-        modified_ms = modified_ms.max(e.ts_ms);
-        match &e.body {
-            EntryBody::SessionInfo { name: n } => name = if n.is_empty() { None } else { Some(n.clone()) },
-            EntryBody::Msg { wire, .. } if matches!(wire.role, Role::User | Role::Assistant) => {
-                message_count += 1;
-                let text = crate::meta::message_text(&e.body);
-                if !all_text.is_empty() {
-                    all_text.push('\n');
-                }
-                all_text.push_str(text);
-                if wire.role == Role::User && first_message.is_none() && !text.trim().is_empty() {
-                    first_message = Some(text.split_whitespace().collect::<Vec<_>>().join(" "));
-                }
-            }
-            _ => {}
-        }
-    }
-    SessionMeta {
-        sref,
-        cwd: header.cwd.clone(),
-        name,
-        created_ms: header.ts_ms,
-        modified_ms,
-        message_count,
-        first_message: first_message.unwrap_or_default(),
-        all_text,
-        parent_session: header.parent_session.clone(),
     }
 }
 
