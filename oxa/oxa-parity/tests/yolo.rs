@@ -42,16 +42,19 @@ fn yolo_auto_approves_what_would_have_asked() {
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
     let target = outside.join("out.txt");
+    // Explicit absolute /tmp paths now name session scratch (#597). A cwd-relative path
+    // still names this host file outside the workspace, which is what this test exercises.
+    let tool_path = Path::new("../elsewhere/out.txt");
 
-    let (out, reqs) = run(&env, write_call(&target), &["-p", "write it"]);
+    let (out, reqs) = run(&env, write_call(tool_path), &["-p", "write it"]);
     assert!(out.status.success());
     assert!(
         !target.exists(),
         "without --yolo the write outside the work tree is not approved"
     );
-    assert!(!tool_result(&reqs).is_empty());
+    assert!(tool_result(&reqs).contains("Permission denied"));
 
-    let (out, _) = run(&env, write_call(&target), &["-p", "--yolo", "write it"]);
+    let (out, _) = run(&env, write_call(tool_path), &["-p", "--yolo", "write it"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(
         std::fs::read_to_string(&target).ok().as_deref(),
@@ -167,11 +170,13 @@ fn yolo_child_writes_without_a_prompt() {
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
     let target = outside.join("child.txt");
+    // As above, name the outside host file relative to cwd, not through session /tmp.
+    let tool_path = Path::new("../elsewhere/child.txt");
 
     let (out, _) = subagent_run(
         &env,
         "write",
-        write_call(&target),
+        write_call(tool_path),
         &["-p", "--yolo", "delegate it"],
     );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -185,7 +190,7 @@ fn yolo_child_writes_without_a_prompt() {
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
     let target = outside.join("child.txt");
-    let (out, reqs) = subagent_run(&env, "write", write_call(&target), &["-p", "delegate it"]);
+    let (out, reqs) = subagent_run(&env, "write", write_call(tool_path), &["-p", "delegate it"]);
     assert!(out.status.success());
     assert!(
         !target.exists(),
