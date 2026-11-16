@@ -247,5 +247,5 @@ fn print_uses_native_gateway_without_python_or_controller() {
     assert_eq!(rows[0]["settled"], "usage");
     assert!((rows[0]["cost_usd"].as_f64().unwrap() - 0.0000459).abs() < 1e-12);
     assert!(!rows[0].to_string().contains(CREDENTIAL));
-    mock.assert_healthy();
+    mock.finish();
 }
