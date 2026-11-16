@@ -844,7 +844,15 @@ fn apply(
             };
             Ok(serde_json::json!({ "model": model, "remote": remote }))
         }
+        HostAction::AccountRunTokens(tokens) => {
+            crate::Handle {
+                shared: st.shared.clone(),
+            }
+            .account_tokens(tokens);
+            Ok(Value::Null)
+        }
         HostAction::EngineLimits => Ok(serde_json::json!({
+            "remainingTokens": crate::Handle { shared: st.shared.clone() }.remaining_tokens(),
             "sessionId": st.sref.id,
             "model": st.model,
             "remote": st.info.caps.remote,
