@@ -156,6 +156,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
     key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
+    key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).

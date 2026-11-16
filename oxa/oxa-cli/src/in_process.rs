@@ -35,6 +35,17 @@ pub(crate) fn select(
     dirs: &Dirs,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
+    if user.bool(oxc_local::LOCAL_SETTING, false) {
+        return oxc_local::configured_engine(
+            user.get("oxa.local"),
+            dirs.agent_dir.join("local-engine"),
+            oxa_engine::StreamOpts {
+                silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
+                    .unwrap_or(365 * 24 * 3600 * 1000),
+                ..oxa_engine::StreamOpts::default()
+            },
+        );
+    }
     if !user.bool(SETTING, false) {
         return http();
     }
