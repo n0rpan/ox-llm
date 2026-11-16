@@ -192,6 +192,7 @@ impl Runtime {
     }
     pub fn begin(&self, payload: &Value, context: Context<'_>) -> Result<Call<'_>, Refusal> {
         let owner_origin = matches!(context.origin, crate::ledger::Origin::Oxa);
+        let shared = context.guest_key_name.is_some();
         let alias = payload["model"].as_str().ok_or_else(|| invalid("model"))?;
         if matches!(self.catalog.resolve(Some(alias)), Err(catalog::Error::Disabled)) {
             return Err(catalog_error(catalog::Error::Disabled));
@@ -212,6 +213,8 @@ impl Runtime {
                     message: "This cloud provider is not available in this build.",
                 });
             }
+            let billing = self.billings.get(alias);
+            policy::before_credentials(payload, shared, false, billing.is_some())?;
             if model.info().provider == Provider::OpenCode && !owner_origin {
                 return Err(Refusal {
                     status: 403,
@@ -220,8 +223,6 @@ impl Runtime {
                     message: "This subscription provider is available only to the owner agent.",
                 });
             }
-            let billing = self.billings.get(alias);
-            policy::before_credentials(payload, false, false, billing.is_some())?;
             let billing = billing.expect("policy validated billing");
             let mut output = u64::from(model.info().max_output);
             for field in ["max_tokens", "max_completion_tokens", "n_predict"] {

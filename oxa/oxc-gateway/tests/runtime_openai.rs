@@ -420,3 +420,50 @@ fn provider_session_hint_survives_restart_without_linking_providers_or_private_r
     .unwrap();
     assert_ne!(first, hint(&api, "synthetic-conversation"));
 }
+
+#[test]
+fn authenticated_guest_context_refuses_every_cloud_provider_before_credentials() {
+    for provider in [
+        Provider::Anthropic,
+        Provider::OpenAi,
+        Provider::ChatGpt,
+        Provider::OpenCode,
+    ] {
+        let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+        fs::write(&fixture.key_path, "invalid synthetic key JSON").unwrap();
+        let billing = if matches!(provider, Provider::ChatGpt | Provider::OpenCode) {
+            Billing::Subscription
+        } else {
+            Billing::Metered(price(&fixture))
+        };
+        let runtime = Runtime::new(
+            [(route(provider, "synthetic-upstream"), Some(billing))],
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: Some(1.0),
+                subscription_limits: Some(SubscriptionLimits::new(10, 20000).unwrap()),
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        let error = runtime
+            .begin(
+                &payload(),
+                Context {
+                    origin: oxc_gateway::ledger::Origin::Api,
+                    guest_key_name: Some("synthetic-guest"),
+                    ..Context::default()
+                },
+            )
+            .err()
+            .unwrap();
+        assert_eq!((error.status, error.code), (403, "cloud_not_shared"));
+        let row = rows(&fixture).pop().unwrap();
+        assert_eq!(row["status"], 403);
+        assert_eq!(row["error"], "cloud_not_shared");
+        assert_eq!(row["cost_usd"], 0.0);
+        assert!(!row.to_string().contains("synthetic-guest"));
+    }
+}
