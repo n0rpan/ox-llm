@@ -42,7 +42,7 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
     for retired in ('oxc', 'oxc-diagnostics', 'oxe'):
         assert not Path('/usr/bin', retired).exists(), f'retired command installed: {retired}'
     result = subprocess.run(['oxa', '--version'], env=env, text=True, capture_output=True, check=True)
-    assert '0.2.0' in result.stdout, result.stdout  # component version; release-version decision pending
+    assert result.stdout.strip() == 'oxa 0.2.1', result.stdout
     print(result.stdout.strip())
     for binary in ('oxa', 'oxe-server'):
         subprocess.run([binary, '--help'], env=env, stdout=subprocess.DEVNULL, check=True)
@@ -69,6 +69,9 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
                         raise
                     time.sleep(0.1)
             assert isinstance(models['data'], list) and models['data'], models
+            with opener.open(f'http://127.0.0.1:{port}/props', timeout=1) as response:
+                properties = json.load(response)
+            assert properties.get('build_info') == 'oxe-0.2.1', properties.get('build_info')
             request = urllib.request.Request(f'http://127.0.0.1:{port}/v1/chat/completions',
                 data=json.dumps({'model': models['data'][0]['id'],
                     'messages': [{'role': 'user', 'content': 'hello'}], 'max_tokens': 4}).encode(),

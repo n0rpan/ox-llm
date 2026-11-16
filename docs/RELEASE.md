@@ -1,7 +1,9 @@
 # v0.2.1 Rust-only release qualification
 
 The owner checklist is [#763](https://github.com/oxstack/ox-llm/issues/763).
-v0.2.1 installs `oxa` and `oxe-server` only. v0.2.0 remains the legacy install.
+v0.2.1 installs `oxa` and `oxe-server` only. Both Rust workspaces must report
+component version 0.2.1; the native engine identity contract stays strict.
+v0.2.0 remains the legacy install.
 The new runtime has no Python controller payload/dependency, `oxc` wrapper,
 controller systemd unit, panel, LAN share or Studio. Python is still used for
 source builds, licence inventory and tests; those tools are not installed runtime

@@ -3,7 +3,8 @@
 v0.2.1 installs two native commands: `oxa` and `oxe-server`. It ships no Python
 runtime/controller payload, `oxc` wrapper, panel, LAN share, Studio or controller
 systemd unit. Python remains a build/test tool for source packages, not a runtime
-dependency. v0.2.0 remains the legacy installation.
+dependency. Both `oxa` and the engine must report component version 0.2.1; mixed
+component versions are refused. v0.2.0 remains the legacy installation.
 
 Inspect the selected build's package, provenance and checksums before installation:
 
