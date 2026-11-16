@@ -1,4 +1,7 @@
 //! Package listing must explain the project trust gate without bypassing it.
+#[cfg(target_os = "linux")]
+#[path = "common/strace.rs"]
+mod strace;
 use oxa_cli::run_pkg;
 use oxa_config::{Dirs, Settings};
 use oxa_fake::TestEnv;
@@ -150,15 +153,9 @@ fn package_list_does_not_open_untrusted_special_or_oversized_settings() {
         // A hard subprocess deadline makes a regressed FIFO open fail rather than hang CI.
         // strace is mandatory: output alone cannot prove that a symlink was never followed.
         let output = Command::new("timeout")
-            .args([
-                "--kill-after=1s",
-                "5s",
-                "strace",
-                "-f",
-                "-e",
-                "trace=open,openat,openat2",
-                "-o",
-            ])
+            .args(["--kill-after=1s", "5s"])
+            .arg(strace::executable())
+            .args(["-f", "-e", "trace=open,openat,openat2", "-o"])
             .arg(&trace)
             .arg(std::env::current_exe().unwrap())
             .args(["--exact", "package_list_untrusted_settings_worker", "--nocapture"])
