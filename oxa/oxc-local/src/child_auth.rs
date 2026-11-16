@@ -1,6 +1,6 @@
 //! Fresh, short-lived child authentication. Never reads a credential file.
-use nix::fcntl::{open, openat, OFlag};
-use nix::sys::stat::{mkdirat, Mode};
+use nix::fcntl::{open, openat, AtFlags, OFlag};
+use nix::sys::stat::{fstatat, mkdirat, Mode};
 use nix::unistd::{geteuid, unlinkat, UnlinkatFlags};
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -25,6 +25,7 @@ impl ChildAuth {
             match component {
                 Component::RootDir => (),
                 Component::Normal(name) => {
+                    refuse_repository(&directory)?;
                     match mkdirat(&directory, name, Mode::S_IRWXU) {
                         Ok(()) | Err(nix::errno::Errno::EEXIST) => (),
                         Err(e) => return Err(e.into()),
@@ -34,6 +35,7 @@ impl ChildAuth {
                 _ => return Err(invalid()),
             }
         }
+        refuse_repository(&directory)?;
         let file = File::from(directory);
         let metadata = file.metadata()?;
         if metadata.uid() != geteuid().as_raw() || metadata.mode() & 0o077 != 0 {
@@ -94,6 +96,17 @@ impl Drop for ChildAuth {
 fn invalid() -> io::Error {
     io::Error::other("child authentication requires a private owner-only directory")
 }
+fn refuse_repository(directory: &OwnedFd) -> io::Result<()> {
+    let exists = |name: &str| match fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(_) => Ok(true),
+        Err(nix::errno::Errno::ENOENT) => Ok(false),
+        Err(error) => Err(io::Error::from(error)),
+    };
+    if exists(".git")? || (exists("HEAD")? && exists("objects")?) {
+        return Err(invalid());
+    }
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
@@ -121,5 +134,13 @@ mod tests {
         assert!(ChildAuth::create(&env.work().join("link/private")).is_err());
         std::fs::set_permissions(env.work(), std::fs::Permissions::from_mode(0o755)).unwrap();
         assert!(ChildAuth::create(&env.work()).is_err());
+    }
+
+    #[test]
+    fn private_authentication_is_never_created_under_repository_metadata() {
+        let env = TestEnv::new();
+        std::fs::create_dir(env.work().join(".git")).unwrap();
+        assert!(ChildAuth::create(&env.work().join("private")).is_err());
+        assert!(!env.work().join("private").exists());
     }
 }

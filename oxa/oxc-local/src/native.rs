@@ -355,7 +355,9 @@ impl Engine for LocalEngine {
         if let Err(error) = loading {
             if state.lifecycle.status().state != State::Backoff {
                 state.target = None;
-                if state.lifecycle.status().state != State::Ready { let _ = state.lifecycle.unload(Instant::now()); }
+                if state.lifecycle.status().state != State::Ready {
+                    let _ = state.lifecycle.unload(Instant::now());
+                }
                 let _ = advance(&self.inner, &mut state);
                 return Err(error);
             }
