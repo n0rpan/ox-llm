@@ -17,6 +17,7 @@
 //! * Paths: relative paths resolve against `ToolCtx::cwd`; `~` expands to nothing special
 //!   (the sandbox hides home). `Tool::access` reports absolute, lexically normalised paths.
 
+mod ask;
 mod bash;
 mod checked;
 pub mod descriptions;
@@ -30,6 +31,7 @@ mod read;
 mod shape;
 mod write;
 
+pub use ask::AskTool;
 pub use bash::{net_for as bash_net_for, BashTool, ShellConfig};
 pub use diff::{apply_edits, detect_line_ending, strip_bom, unified_diff, Edit, EditOutcome};
 pub use edit::EditTool;

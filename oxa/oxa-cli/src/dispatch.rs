@@ -410,18 +410,26 @@ impl Built {
         let jobs = Arc::new(oxa_tools::JobRegistry::new());
         let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
         jobs.set_sandbox(bash_sandbox.clone());
+        // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
+        let mut tools = oxa_tools::builtin_tools_with_bash_sandbox(
+            oxa_tools::ShellConfig {
+                shell_path: self.settings.shell_path(&self.dirs.home),
+                command_prefix: self.settings.shell_command_prefix(),
+            },
+            jobs.clone(),
+            bash_sandbox,
+        );
+        // Owner questions belong to lead sessions (including unattended leads). Keep worker
+        // declarations and their small frozen prefixes unchanged.
+        if !self.supervised_child {
+            tools.push(Arc::new(oxa_tools::AskTool::new(
+                self.dirs.agent_dir.join("asks.jsonl"),
+            )));
+        }
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
-            // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_bash_sandbox(
-                oxa_tools::ShellConfig {
-                    shell_path: self.settings.shell_path(&self.dirs.home),
-                    command_prefix: self.settings.shell_command_prefix(),
-                },
-                jobs.clone(),
-                bash_sandbox,
-            ),
+            tools,
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
