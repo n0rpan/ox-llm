@@ -268,13 +268,13 @@ fn explicit_literal_mtp_flags_remain_the_callers_choice() {
         alias.into(),
         InstalledModel {
             model: "/models/synthetic.gguf".into(),
-            arguments: vec!["--mtp-max-ctx=8192".into(), "--mtp-sampled".into()],
+            arguments: vec!["--mtp-max-ctx".into(), "8192".into(), "--mtp-sampled".into()],
         },
     );
     let profile = from_user_settings(&json!({}), &installed, alias, 8080).unwrap();
     assert_eq!(
         &profile.arguments[8..],
-        ["--mtp-max-ctx=8192", "--mtp-sampled"].map(OsString::from)
+        ["--mtp-max-ctx", "8192", "--mtp-sampled"].map(OsString::from)
     );
 }
 
@@ -292,5 +292,16 @@ fn malformed_or_ambiguous_mtp_settings_are_refused() {
     ] {
         let user = json!({"oxa":{"local":{"models":{"local-model":settings}}}});
         assert!(from_user_settings(&user, &layout(), "local-model", 8080).is_err());
+    }
+}
+
+#[test]
+fn equals_form_mtp_flags_are_rejected_before_launch() {
+    for arguments in [vec!["--mtp-max-ctx=8192"], vec!["--mtp-sampled=true"]] {
+        let user = json!({"oxa":{"local":{"models":{"local-model":{"arguments":arguments}}}}});
+        assert_eq!(
+            from_user_settings(&user, &layout(), "local-model", 8080),
+            Err(Error::Arguments)
+        );
     }
 }
