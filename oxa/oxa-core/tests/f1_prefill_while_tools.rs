@@ -277,6 +277,20 @@ fn shape(r: &Recorded) -> (&str, bool) {
     (r.kind.as_str(), r.max_tokens == 0)
 }
 
+/// Independent sessions compared below must see the same date/minute, even across midnight.
+fn fixed_time<R>(run: impl FnOnce() -> R) -> R {
+    oxa_core::envnote::with_time_for_tests(
+        oxa_session::LocalTime {
+            date: "2026-01-02".into(),
+            weekday: "Friday",
+            hm: "03:04".into(),
+            zone: "UTC".into(),
+            offset_min: 0,
+        },
+        run,
+    )
+}
+
 /// Runs the 3-call scenario; the slow call returns once a prefill was recorded (feature on) or
 /// after a while (off). Returns the requests and the events.
 fn scenario(env: &TestEnv, on: bool, host: bool) -> (Vec<Recorded>, VecSink) {
@@ -289,8 +303,10 @@ fn scenario(env: &TestEnv, on: bool, host: bool) -> (Vec<Recorded>, VecSink) {
     };
     let mut s = open(env, eng.clone(), tools(1500, until), tools_on(on), host);
     let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
-    s.prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
-        .expect("prompt");
+    fixed_time(|| {
+        s.prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
+            .expect("prompt");
+    });
     assert_eq!(s.stats().cache_misses, 0);
     (eng.requests(), sink)
 }
@@ -337,6 +353,22 @@ fn prefill_while_slow_tool_runs_golden() {
         );
         assert_eq!(misses(&sink), 0, "more cached than expected is silent");
     }
+}
+
+/// The scenario really uses the pinned clock, not wall time. Keep notes enabled so the
+/// byte-identity test below still compares the full environment block.
+#[test]
+fn scenario_env_note_uses_fixed_clock() {
+    let _g = serial(SHORT);
+    let (reqs, _) = scenario(&TestEnv::new(), true, false);
+    let user = reqs[0].messages.iter().find(|m| m.role == Role::User).unwrap();
+    assert!(
+        user.content
+            .as_deref()
+            .unwrap()
+            .contains("<env>\nDate: Friday 2026-01-02, local time 03:04 UTC (UTC)"),
+        "scenario must use the fixed environment-note clock: {user:?}"
+    );
 }
 
 /// The follow-up request is byte-identical with the feature on and off; off sends today's
@@ -605,8 +637,10 @@ fn tool_prefill_records_nothing() {
         };
         let mut s = open(&env, eng.clone(), tools(1500, until), tools_on(on), false);
         let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
-        s.prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
-            .expect("prompt");
+        fixed_time(|| {
+            s.prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
+                .expect("prompt");
+        });
         assert_eq!(has_prefill(&eng), on);
         let kinds: Vec<String> = s
             .inner()
