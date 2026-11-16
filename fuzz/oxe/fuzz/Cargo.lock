@@ -40,7 +40,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "chat"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "minijinja",
@@ -85,7 +85,7 @@ dependencies = [
 
 [[package]]
 name = "gguf"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "memmap2",
 ]
@@ -189,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "kernels-sys"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cc",
 ]
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "model"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gguf",
  "kernels-sys",
@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "oxn"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "cc",
  "sched",
@@ -324,7 +324,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "sched"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
 ]
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "chat",
@@ -425,7 +425,7 @@ dependencies = [
 
 [[package]]
 name = "tokenizer"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "tokio"

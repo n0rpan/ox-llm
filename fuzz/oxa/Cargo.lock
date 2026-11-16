@@ -395,7 +395,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "oxa-compact"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-proto",
  "oxa-session",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-config"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "globset",
  "oxa-proto",
@@ -414,7 +414,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-compact",
  "oxa-config",
@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-engine"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-proto",
  "serde_json",
@@ -439,7 +439,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-export"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-proto",
  "oxa-session",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-mcp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -477,7 +477,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-perm"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-proto",
  "serde_json",
@@ -486,14 +486,14 @@ dependencies = [
 
 [[package]]
 name = "oxa-proto"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "oxa-resources"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-config",
  "oxa-proto",
@@ -503,7 +503,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-rpc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "oxa-config",
  "oxa-core",
@@ -515,7 +515,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-sandbox"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-proto",
@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-session"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "oxa-proto",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-tools"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "globset",
  "ignore",
@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "oxa-tui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "base64 0.22.1",
  "crossterm",
