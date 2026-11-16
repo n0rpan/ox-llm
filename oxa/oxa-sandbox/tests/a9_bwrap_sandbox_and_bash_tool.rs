@@ -606,6 +606,7 @@ fn bash_tool_refuses_without_sandbox() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let marker = home.join("ran");
     let cmd = format!("touch {}", marker.display());
@@ -635,6 +636,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let tool = oxa_tools::BashTool::new();
     let run = |args: serde_json::Value| tool.run(&args, &cx, &mut |_| {});
