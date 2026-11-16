@@ -133,20 +133,21 @@ impl Shared {
     }
     pub fn save(&mut self) -> io::Result<()> {
         let bytes = serde_json::to_vec(&json!({"failed":self.failed,"holds":self.holds}))?;
+        if self.fresh {
+            // Ledger::open may have created several directory components.
+            // Persist their names before writing a valid initial snapshot: a
+            // failed sync must leave the empty file untrusted by other processes.
+            for directory in self.directory.ancestors() {
+                File::open(directory)?.sync_all()?;
+            }
+            self.fresh = false;
+        }
         // Rewrite under the daily lock. An interrupted rewrite is invalid JSON,
         // so the next process fails closed instead of losing holds.
         self.file.set_len(0)?;
         self.file.seek(SeekFrom::Start(0))?;
         self.file.write_all(&bytes)?;
         self.file.sync_data()?;
-        if self.fresh {
-            // Ledger::open may have created several directory components.
-            // Persist their names too before any reservation can be forwarded.
-            for directory in self.directory.ancestors() {
-                File::open(directory)?.sync_all()?;
-            }
-            self.fresh = false;
-        }
         Ok(())
     }
 }
