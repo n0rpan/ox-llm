@@ -4,6 +4,8 @@
 pub mod catalog;
 #[cfg(feature = "ledger")]
 pub mod ledger;
+#[cfg(feature = "upstream-openai")]
+pub mod openai;
 #[cfg(feature = "policy")]
 pub mod policy;
 #[cfg(feature = "pricing")]
