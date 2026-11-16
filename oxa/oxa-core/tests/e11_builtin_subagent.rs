@@ -90,6 +90,13 @@ impl Host for MockHost {
         self.calls.lock().unwrap().push(action.clone());
         match action {
             HostAction::EngineLimits => Ok(self.limits.lock().unwrap().clone()),
+            HostAction::AccountRunTokens(tokens) => {
+                let mut limits = self.limits.lock().unwrap();
+                if let Some(left) = limits["remainingTokens"].as_u64() {
+                    limits["remainingTokens"] = json!(left.saturating_sub(tokens));
+                }
+                Ok(Value::Null)
+            }
             HostAction::ModelInfo(m) => {
                 let remote = self.remote.lock().unwrap().contains(&m);
                 Ok(json!({"model": m, "remote": remote}))
@@ -262,16 +269,40 @@ fn env_of(env: &TestEnv, hint: &str, name: &str) -> Option<String> {
 
 fn wait_for(path: &Path) {
     let end = Instant::now() + Duration::from_secs(10);
-    while !path.exists() {
-        assert!(Instant::now() < end, "{} never appeared", path.display());
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if text.ends_with('\n') && text.trim().parse::<u32>().is_ok_and(|pid| pid > 0) {
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < end,
+            "{} never contained a complete PID line",
+            path.display()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
-    // The writer may not have finished the line yet.
-    std::thread::sleep(Duration::from_millis(20));
 }
 
 fn pid_in(path: &Path) -> u32 {
     std::fs::read_to_string(path).unwrap().trim().parse().unwrap()
+}
+
+/// File creation and even a PID prefix are not a completed readiness record.
+#[test]
+fn readiness_waits_for_the_complete_pid_line() {
+    let env = TestEnv::new();
+    let path = env.root().join("partial-pid");
+    std::fs::write(&path, "12").unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // Deliberately slow publication, not a delay used to infer readiness.
+            std::thread::sleep(Duration::from_millis(100));
+            append(&path, "345");
+        });
+        wait_for(&path);
+        assert_eq!(pid_in(&path), 12345, "wait for the newline, not file creation");
+    });
 }
 
 /// `true` while `pid` exists and is not a zombie.
@@ -1231,4 +1262,68 @@ fn cap_counts_running_and_queued_children_across_calls() {
         "the budget is released when calls end: {}",
         o.out.text
     );
+}
+
+#[test]
+fn run_token_budget_is_passed_at_spawn_and_child_usage_is_charged() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    let body = r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":10,"cacheRead":70,"output":5}}}'
+"#;
+    let h = hooks(&env, body, &host);
+    let outcome = run(
+        &env,
+        &h,
+        json!({"chain":[
+            {"agent":"scout","task":"first"}, {"agent":"worker","task":"second"}
+        ]}),
+    );
+    assert!(!outcome.out.is_error, "{}", outcome.out.text);
+    for (hint, remaining) in [("sess.s1", "100"), ("sess.s2", "85")] {
+        let args = argv(&env, hint);
+        let at = args
+            .iter()
+            .position(|a| a == "--max-tokens")
+            .expect("child run budget");
+        assert_eq!(args[at + 1], remaining);
+    }
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(70));
+}
+
+#[test]
+fn child_run_usage_includes_non_chat_requests_without_double_charging() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    // 15 chat tokens plus 45 from compaction / tool prefill. The cumulative
+    // record includes the chat already reported and may exceed the child budget.
+    let body = r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":10,"cacheRead":70,"output":5}}}' '{"type":"run_usage","tokens":60}'
+"#;
+    let h = hooks(&env, body, &host);
+    let _ = run(
+        &env,
+        &h,
+        json!({"tasks":[
+            {"agent":"scout","task":"first"},
+            {"agent":"worker","task":"second"},
+            {"agent":"scout","task":"third"}
+        ]}),
+    );
+    let args = argv(&env, "sess.s2");
+    let at = args.iter().position(|a| a == "--max-tokens").unwrap();
+    assert_eq!(args[at + 1], "40", "charge total usage exactly once");
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(0));
+    assert_eq!(log(&env).iter().filter(|s| s.starts_with("start ")).count(), 2);
+}
+
+#[test]
+fn depleted_run_token_budget_starts_no_child() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(0);
+    let h = hooks(&env, OK_BODY, &host);
+    let outcome = run(&env, &h, json!({"agent":"scout","task":"go"}));
+    assert!(outcome.out.is_error);
+    assert!(!log(&env).iter().any(|s| s.starts_with("start ")));
 }

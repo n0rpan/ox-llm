@@ -307,6 +307,7 @@ fn cache_model_matches_scripted_engine() {
     ];
     for (msgs, max_tokens) in requests {
         let cr = ChatRequest {
+            output_schema: None,
             prefix: &p,
             messages: &msgs,
             model: "fake-model",

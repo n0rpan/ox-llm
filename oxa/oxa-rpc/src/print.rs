@@ -4,6 +4,7 @@ use crate::events::{session_header_record, write_record, JsonSink};
 use oxa_core::{RunOutcome, Session};
 use oxa_proto::{
     names, shown_why, AgentEvent, EntryBody, EventMessage, EventSink, HeadlessUi, OxaError, Part, Role,
+    StopReason,
 };
 use oxa_session::SessionHeader;
 use std::collections::HashMap;
@@ -24,6 +25,12 @@ struct PrintSink<'a> {
     /// Text of a message without tool calls that may still turn out to be the final reply: a
     /// `done` check or a steering message can start another turn after it.
     pending: Option<String>,
+    /// A local length recovery continues this same answer, byte for byte. Cloud retries
+    /// regenerate a complete answer instead; tool work starts a different final reply.
+    /// With an output schema, only the last message is validated: never prepend chunks.
+    local_model: bool,
+    pending_length: bool,
+    continued: Option<String>,
     /// The final reply of the last prompt, set at `AgentEnd`; written to `out` by `run_print`
     /// once it knows the run did not fail or abort.
     final_text: Option<String>,
@@ -43,8 +50,24 @@ impl PrintSink<'_> {
 
     /// Another turn follows: the buffered text was not the final reply, so it is progress.
     fn flush_pending(&mut self) {
+        self.pending_length = false;
         if let Some(t) = self.pending.take() {
             self.progress(&t);
+        }
+    }
+
+    fn next_turn(&mut self) {
+        if self.local_model && self.pending_length {
+            self.pending_length = false;
+            if let Some(text) = self.pending.take() {
+                self.progress(&text);
+                match &mut self.continued {
+                    Some(prefix) => prefix.push_str(&text),
+                    None => self.continued = Some(text),
+                }
+            }
+        } else {
+            self.flush_pending();
         }
     }
 
@@ -97,14 +120,23 @@ impl EventSink for PrintSink<'_> {
                 self.last = Some(message.clone());
                 let text = message.msg.content.as_deref().filter(|t| !t.is_empty());
                 if !message.msg.tool_calls.is_empty() {
+                    self.continued = None;
                     if let Some(t) = text {
                         self.progress(t);
                     }
+                } else if self.local_model && message.stop == Some(StopReason::Stop) {
+                    if let Some(mut prefix) = self.continued.take() {
+                        prefix.push_str(text.unwrap_or_default());
+                        self.pending = Some(prefix);
+                    } else {
+                        self.pending = text.map(str::to_string);
+                    }
                 } else if let Some(t) = text {
                     self.pending = Some(t.to_string());
+                    self.pending_length = self.local_model && message.stop == Some(StopReason::Length);
                 }
             }
-            AgentEvent::TurnStart => self.flush_pending(),
+            AgentEvent::TurnStart => self.next_turn(),
             AgentEvent::AgentEnd { .. } => {
                 if self.is_last_prompt
                     || self
@@ -122,6 +154,7 @@ impl EventSink for PrintSink<'_> {
                 tool_name,
                 args,
             } => {
+                self.continued = None;
                 self.flush_pending();
                 self.started.insert(tool_call_id.clone(), Instant::now());
                 self.progress(&tool_start_line(tool_name, args));
@@ -179,6 +212,9 @@ pub fn run_print_outcome(
         last: None,
         is_last_prompt: false,
         pending: None,
+        local_model: !session.inner().info.caps.remote && session.inner().output_schema.is_none(),
+        pending_length: false,
+        continued: None,
         final_text: None,
         notes: Vec::new(),
         started: HashMap::new(),
@@ -191,6 +227,9 @@ pub fn run_print_outcome(
     for (i, (text, parts)) in prompts.into_iter().enumerate() {
         sink.last = None;
         sink.pending = None;
+        sink.pending_length = false;
+        sink.continued = None;
+        sink.local_model = !session.inner().info.caps.remote && session.inner().output_schema.is_none();
         sink.final_text = None;
         sink.is_last_prompt = i + 1 == n;
         let _ = session.take_outcome();
@@ -284,7 +323,13 @@ pub fn run_json_outcome(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
-    write_record(out, &session_header_record(&session_header(session)))?;
+    let mut header = session_header_record(&session_header(session));
+    header["statusFile"] = session
+        .state()
+        .status_file
+        .map(|p| p.to_string_lossy().into_owned())
+        .into();
+    write_record(out, &header)?;
     let mut ui = HeadlessUi::default();
     let mut sink = JsonSink {
         out: &mut *out,
@@ -509,6 +554,9 @@ mod tests {
             last: None,
             is_last_prompt: true,
             pending: None,
+            local_model: true,
+            pending_length: false,
+            continued: None,
             final_text: None,
             notes: Vec::new(),
             started: HashMap::new(),
@@ -558,6 +606,9 @@ mod tests {
             last: None,
             is_last_prompt: true,
             pending: None,
+            local_model: true,
+            pending_length: false,
+            continued: None,
             final_text: None,
             notes: Vec::new(),
             started: HashMap::new(),

@@ -426,6 +426,45 @@ pub(crate) fn repair_turn(
     Ok(true)
 }
 
+/// Audit a final-answer repair, independent of malformed-tool repair settings/counters.
+/// The loop sends feedback transiently; the audit message is excluded from transcript projection.
+/// The budget belongs to the whole run, so tools or steering cannot reset it.
+pub(crate) fn schema_repair_turn(
+    st: &mut SessionState,
+    turn: &AssistantTurn,
+    repaired: &mut bool,
+    sink: &mut dyn EventSink,
+) -> Result<bool, OxaError> {
+    let Some(schema) = &st.output_schema else {
+        return Ok(false);
+    };
+    if schema.matches(turn.msg.content.as_deref().unwrap_or_default()) {
+        return Ok(false);
+    }
+    if *repaired {
+        return Err(OxaError::new(
+            oxa_proto::codes::SCHEMA_MISMATCH,
+            "Final answer did not match the output schema after one repair turn",
+        ));
+    }
+    let content = format!(
+        "Your final answer did not match the output schema. Return only valid JSON matching this schema:\n{}",
+        schema.value()
+    );
+    persist(
+        st,
+        EntryBody::CustomMessage {
+            custom_type: "oxa.schema_repair".into(),
+            content,
+            display: false,
+            details: serde_json::json!({"cause":"schema_mismatch", "attempt":1}),
+        },
+        sink,
+    )?;
+    *repaired = true;
+    Ok(true)
+}
+
 /// The notice of one repair (R6 shape).
 pub fn notice_text(cause: &Cause, attempt: u32) -> String {
     problem_text(
