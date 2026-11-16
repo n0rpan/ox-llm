@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
-share = ["dep:serde_json", "dep:nix", "dep:getrandom", "dep:hmac", "dep:sha2"]
+share = ["dep:serde_json", "dep:nix", "dep:getrandom", "dep:hmac", "dep:sha2", "dep:tokio", "tokio/net", "tokio/io-util"]
 upstream-openai = ["dep:serde_json"]
 upstream-anthropic-request = ["dep:serde_json"]
 upstream-anthropic-stream = ["dep:serde_json"]
