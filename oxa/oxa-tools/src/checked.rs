@@ -58,11 +58,11 @@ fn c_name(name: impl AsRef<OsStr>) -> io::Result<CString> {
 }
 
 /// Create `name` in the directory `dir` (never following a link there), write-only, new.
-pub(crate) fn create_new_in(dir: &File, name: &str) -> io::Result<File> {
+pub(crate) fn create_new_in(dir: &File, name: &str, mode: u32) -> io::Result<File> {
     let c = c_name(name)?;
     let flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC;
     // SAFETY: `dir` is an open directory, `c` a valid C string; the fd returned is owned below.
-    let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, 0o666 as libc::c_uint) };
+    let fd = unsafe { libc::openat(dir.as_raw_fd(), c.as_ptr(), flags, mode as libc::c_uint) };
     if fd < 0 {
         return Err(io::Error::last_os_error());
     }

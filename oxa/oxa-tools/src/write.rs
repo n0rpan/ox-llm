@@ -102,16 +102,26 @@ fn write_file(args: &Value, cx: &ToolCtx) -> Result<(usize, bool), String> {
         checked::verify_at(&parent, &dir).map_err(|e| write_io_error(path, &e))?;
     }
 
-    // The rename keeps the target's raw name; only the temp file's name is made readable.
     let name = target.file_name().unwrap_or_default();
-    let (tmp, file) = create_temp(&dir, &name.to_string_lossy()).map_err(|e| write_io_error(path, &e))?;
-    match commit(file, &dir, &tmp, name, content, existing.as_ref()) {
-        Ok(()) => Ok((content.len(), created)),
-        Err(e) => {
-            checked::remove_in(&dir, &tmp);
-            Err(write_io_error(path, &e))
-        }
+    replace_file(&dir, name, content.as_bytes(), existing.as_ref())
+        .map_err(|e| write_io_error(path, &e))?;
+    Ok((content.len(), created))
+}
+
+/// Replace `name` atomically in an already opened and checked directory. The destination keeps
+/// its raw bytes. Nothing is left behind on error; an existing file's mode is kept.
+pub(crate) fn replace_file(
+    dir: &File,
+    name: &OsStr,
+    content: &[u8],
+    existing: Option<&fs::Metadata>,
+) -> io::Result<()> {
+    let (tmp, file) = create_temp(dir, existing)?;
+    let res = commit(file, dir, &tmp, name, content, existing);
+    if res.is_err() {
+        checked::remove_in(dir, &tmp);
     }
+    res
 }
 
 /// The one I/O failure text of `write`.
@@ -126,10 +136,10 @@ fn commit(
     dir: &File,
     tmp: &str,
     name: &OsStr,
-    content: &str,
+    content: &[u8],
     existing: Option<&fs::Metadata>,
 ) -> io::Result<()> {
-    file.write_all(content.as_bytes())?;
+    file.write_all(content)?;
     if let Some(meta) = existing {
         keep_mode(&file, meta)?;
     }
@@ -140,13 +150,16 @@ fn commit(
     Ok(())
 }
 
-/// A new file in `dir`, named after `name`, that does not exist yet; returns its name.
-fn create_temp(dir: &File, name: &str) -> io::Result<(String, File)> {
+/// A new file in `dir` with a bounded name, independent of the target's basename.
+fn create_temp(dir: &File, existing: Option<&fs::Metadata>) -> io::Result<(String, File)> {
     let pid = std::process::id();
     for _ in 0..100 {
         let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
-        let tmp = format!(".{name}.oxa-tmp-{pid}-{seq}");
-        match checked::create_new_in(dir, &tmp) {
+        let tmp = format!(".oxa-tmp-{pid}-{seq}");
+        // Replacements may contain private data: restrict access before writing any bytes.
+        // Brand-new files retain the usual 0666 & umask default.
+        let mode = if existing.is_some() { 0o600 } else { 0o666 };
+        match checked::create_new_in(dir, &tmp, mode) {
             Ok(file) => return Ok((tmp, file)),
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
@@ -168,4 +181,35 @@ fn keep_mode(tmp: &File, existing: &fs::Metadata) -> io::Result<()> {
 /// Best effort: make the rename durable.
 fn sync_dir(dir: &File) {
     let _ = dir.sync_all();
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn replacement_temp_is_private_before_any_content_is_written() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.write("work/private", "old content");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let meta = fs::metadata(path).unwrap();
+        let dir = File::open(env.work()).unwrap();
+        let (tmp, mut file) = create_temp(&dir, Some(&meta)).unwrap();
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o077, 0);
+        file.write_all(b"private edited content").unwrap();
+        assert_eq!(fs::read(env.work().join(&tmp)).unwrap(), b"private edited content");
+    }
+
+    #[test]
+    fn new_file_temp_keeps_normal_creation_permissions() {
+        let env = oxa_fake::TestEnv::new();
+        let normal = env.write("work/normal", "new content");
+        let dir = File::open(env.work()).unwrap();
+        let (_, temp) = create_temp(&dir, None).unwrap();
+        assert_eq!(
+            temp.metadata().unwrap().permissions().mode(),
+            fs::metadata(normal).unwrap().permissions().mode()
+        );
+    }
 }
