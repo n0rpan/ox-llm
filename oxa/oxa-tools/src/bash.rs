@@ -427,10 +427,11 @@ impl BashTool {
         }
 
         let mut output = String::from_utf8_lossy(&res.output).into_owned();
-        let persistence_relevant = raw_command.contains("/tmp")
-            || raw_command.contains("TMPDIR")
-            || (res.exit != Some(0)
-                && [
+        // #525: only a failing command gets the notice (a success that merely mentions /tmp is noise).
+        let persistence_relevant = res.exit != Some(0)
+            && (raw_command.contains("/tmp")
+                || raw_command.contains("TMPDIR")
+                || [
                     "read-only file system",
                     "permission denied",
                     "operation not permitted",
@@ -601,6 +602,7 @@ echo '\''a'\'''"#
             cancel,
             env: &env,
             tune: Default::default(),
+            hidden: None,
         };
         let mut streamed = String::new();
         let out = BashTool::new().run(&args, &cx, &mut |t| streamed.push_str(t));
@@ -876,6 +878,7 @@ echo '\''a'\'''"#
             cancel: &cancel,
             env: &[],
             tune: Default::default(),
+            hidden: None,
         };
         let got = BashTool::new().access(&json!({"command": "ls", "timeout": 0}), &cx);
         assert_eq!(got, Err(errors::BASH_BAD_TIMEOUT.to_string()));
@@ -894,6 +897,7 @@ echo '\''a'\'''"#
             cancel: &cancel,
             env: &[],
             tune: Default::default(),
+            hidden: None,
         };
         let got = BashTool::new()
             .access(&json!({"command": "cargo test"}), &cx)
@@ -939,6 +943,7 @@ echo '\''a'\'''"#
             cancel: &cancel,
             env: &env,
             tune,
+            hidden: None,
         };
         BashTool::new().run(&args, &cx, &mut |_| {})
     }
@@ -1054,6 +1059,7 @@ echo '\''a'\'''"#
             cancel: &cancel,
             env: &env,
             tune: Default::default(),
+            hidden: None,
         };
         tool.run(&args, &cx, &mut |_| {})
     }
@@ -1241,6 +1247,7 @@ mod poll_tests {
             cancel: &cancel,
             env: &env,
             tune: Default::default(),
+            hidden: None,
         };
         tool.run(&args, &cx, &mut |_| {})
     }

@@ -34,7 +34,7 @@ mod policy;
 mod trust;
 
 pub use paths::{is_inside, is_read_only_command, normalize};
-pub use policy::{deny_reasons, ModePolicy, PathGuard};
+pub use policy::{deny_reasons, HiddenPaths, ModePolicy, PathGuard};
 pub use trust::{
     approval_files, gated_resources, manifest, resolve_trust, summary, Approval, Changed, DefaultTrust,
     TrustInputs, TrustOutcome, TrustStore, APPROVED_KEY,

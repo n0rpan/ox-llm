@@ -49,6 +49,7 @@ fn run_tool_with_cancel(cwd: &Path, args: &Value, cancel: &CancelToken) -> ToolO
         cancel,
         env: &env,
         tune: Default::default(),
+        hidden: None,
     };
     EditTool::new().run(args, &cx, &mut |_: &str| {})
 }
@@ -550,6 +551,7 @@ fn access_is_write_of_the_normalised_path() {
         cancel: &cancel,
         env: &no_env,
         tune: Default::default(),
+        hidden: None,
     };
     let tool = EditTool::new();
     let accesses = tool

@@ -47,6 +47,7 @@ fn run_tool(tool: &dyn Tool, env: &TestEnv, args: Value) -> ToolOutput {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     tool.run(&args, &cx, &mut |_: &str| {})
 }
@@ -283,6 +284,7 @@ fn access_reports_normalised_paths() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
 
     let read = ReadTool::new()

@@ -397,6 +397,7 @@ fn run_tool(host: &ExtensionHost, name: &str, args: Value, call_id: &str) -> oxa
         cancel: &cancel,
         env: &vars,
         tune: Default::default(),
+        hidden: None,
     };
     tool.run(&args, &cx, &mut |_: &str| {})
 }
