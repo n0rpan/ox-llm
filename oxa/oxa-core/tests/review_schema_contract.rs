@@ -138,10 +138,10 @@ fn review_subset_constraint_semantics_and_paths() {
 }
 
 mod main_contract {
-    
+
     use oxa_core::output_schema::OutputSchema;
     use serde_json::{json, Value};
-    
+
     fn shipped_schema() -> OutputSchema {
         let value = serde_json::from_str(include_str!(
             "../../oxa-resources/builtin-skills/review/findings.schema.json"
@@ -149,7 +149,7 @@ mod main_contract {
         .expect("the shipped review schema must be JSON");
         OutputSchema::new(value).expect("the shipped review schema must use the supported runtime subset")
     }
-    
+
     fn sample_finding() -> Value {
         json!({
             "findings": [{
@@ -164,12 +164,12 @@ mod main_contract {
             "overall_verdict": "incorrect"
         })
     }
-    
+
     #[test]
     fn review_schema_uses_supported_subset() {
         shipped_schema();
     }
-    
+
     #[test]
     fn review_schema_accepts_two_sample_outputs() {
         let schema = shipped_schema();
@@ -180,7 +180,7 @@ mod main_contract {
             assert!(schema.matches(&sample.to_string()), "rejected {sample}");
         }
     }
-    
+
     #[test]
     fn review_schema_enforces_finding_constraints() {
         let schema = shipped_schema();
@@ -207,7 +207,7 @@ mod main_contract {
         extra_root["extra"] = json!(true);
         assert!(!schema.matches(&extra_root.to_string()));
     }
-    
+
     #[test]
     fn review_schema_rejects_three_malformed_outputs() {
         let schema = shipped_schema();
@@ -220,7 +220,7 @@ mod main_contract {
         wrong_line_type["findings"][0]["line_start"] = json!("twelve");
         let mut wrong_verdict = sample_finding();
         wrong_verdict["overall_verdict"] = json!("maybe");
-    
+
         // These pointers identify the intended defects for assertion failures. They
         // are NOT validator diagnostics; testing returned paths needs a new API.
         for (sample, expected_path) in [

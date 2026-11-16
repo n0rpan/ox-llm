@@ -354,5 +354,4 @@ mod tests {
             assert!(!max.matches(above), "{above} must be above {bound}");
         }
     }
-
 }
