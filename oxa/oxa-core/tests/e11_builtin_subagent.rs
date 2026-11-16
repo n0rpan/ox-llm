@@ -90,6 +90,13 @@ impl Host for MockHost {
         self.calls.lock().unwrap().push(action.clone());
         match action {
             HostAction::EngineLimits => Ok(self.limits.lock().unwrap().clone()),
+            HostAction::AccountRunTokens(tokens) => {
+                let mut limits = self.limits.lock().unwrap();
+                if let Some(left) = limits["remainingTokens"].as_u64() {
+                    limits["remainingTokens"] = json!(left.saturating_sub(tokens));
+                }
+                Ok(Value::Null)
+            }
             HostAction::ModelInfo(m) => {
                 let remote = self.remote.lock().unwrap().contains(&m);
                 Ok(json!({"model": m, "remote": remote}))
@@ -1231,4 +1238,68 @@ fn cap_counts_running_and_queued_children_across_calls() {
         "the budget is released when calls end: {}",
         o.out.text
     );
+}
+
+#[test]
+fn run_token_budget_is_passed_at_spawn_and_child_usage_is_charged() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    let body = r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":10,"cacheRead":70,"output":5}}}'
+"#;
+    let h = hooks(&env, body, &host);
+    let outcome = run(
+        &env,
+        &h,
+        json!({"chain":[
+            {"agent":"scout","task":"first"}, {"agent":"worker","task":"second"}
+        ]}),
+    );
+    assert!(!outcome.out.is_error, "{}", outcome.out.text);
+    for (hint, remaining) in [("sess.s1", "100"), ("sess.s2", "85")] {
+        let args = argv(&env, hint);
+        let at = args
+            .iter()
+            .position(|a| a == "--max-tokens")
+            .expect("child run budget");
+        assert_eq!(args[at + 1], remaining);
+    }
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(70));
+}
+
+#[test]
+fn child_run_usage_includes_non_chat_requests_without_double_charging() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    // 15 chat tokens plus 45 from compaction / tool prefill. The cumulative
+    // record includes the chat already reported and may exceed the child budget.
+    let body = r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":10,"cacheRead":70,"output":5}}}' '{"type":"run_usage","tokens":60}'
+"#;
+    let h = hooks(&env, body, &host);
+    let _ = run(
+        &env,
+        &h,
+        json!({"tasks":[
+            {"agent":"scout","task":"first"},
+            {"agent":"worker","task":"second"},
+            {"agent":"scout","task":"third"}
+        ]}),
+    );
+    let args = argv(&env, "sess.s2");
+    let at = args.iter().position(|a| a == "--max-tokens").unwrap();
+    assert_eq!(args[at + 1], "40", "charge total usage exactly once");
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(0));
+    assert_eq!(log(&env).iter().filter(|s| s.starts_with("start ")).count(), 2);
+}
+
+#[test]
+fn depleted_run_token_budget_starts_no_child() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(0);
+    let h = hooks(&env, OK_BODY, &host);
+    let outcome = run(&env, &h, json!({"agent":"scout","task":"go"}));
+    assert!(outcome.out.is_error);
+    assert!(!log(&env).iter().any(|s| s.starts_with("start ")));
 }
