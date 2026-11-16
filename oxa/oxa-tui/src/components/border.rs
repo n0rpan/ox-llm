@@ -1,4 +1,4 @@
-//! B12: Border, a horizontal rule that follows the width. Owner: task B12. Signatures below are frozen; bodies are yours.
+//! B12: Border, a horizontal rule that follows the width.
 // ported from pi packages/coding-agent/src/modes/interactive/components/dynamic-border.ts
 use crate::{pad_to_width, truncate_to_width, visible_width, Component, Theme};
 

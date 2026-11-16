@@ -1,4 +1,4 @@
-//! G9 PARITY tests (keys_settings). Owner: task G9.
+//! G9 PARITY tests (keys_settings).
 //! One test per PARITY.md row of this area, named after the row id (`CLI-012` -> `fn cli_012()`).
 //! The four tests below are the meta-checks of the task; the row tests are added by the task.
 //! Helpers: `oxa_parity::{oxa_bin, fake_bin, run_oxa, fixture}`, `oxa_fake::TestEnv`.
@@ -2247,15 +2247,24 @@ fn set_053() {
         "a cut before the first data byte is replayed"
     );
 
-    // A cut after the first content event (350 bytes): the reply is an error, not replayed.
+    // A cut after the first content event (350 bytes): replayed while the retry policy allows (#456).
     let rig = Rig::new(&[
         json!({ "text": before, "fault": { "kind": "drop_at", "bytes": 350 } }),
         text("ok"),
     ]);
     rig.user_settings(json!({ "retry": { "baseDelayMs": 10 } }));
+    ok(&rig.print(&[]));
+    assert_eq!(rig.bodies().len(), 2, "a cut after data is replayed");
+
+    // With retry disabled the same cut is a final error.
+    let rig = Rig::new(&[
+        json!({ "text": before, "fault": { "kind": "drop_at", "bytes": 350 } }),
+        text("ok"),
+    ]);
+    rig.user_settings(json!({ "retry": { "enabled": false, "baseDelayMs": 10 } }));
     let out = rig.print(&[]);
-    assert!(!out.status.success(), "a stream cut after data is an error");
-    assert_eq!(rig.bodies().len(), 1, "no replay after the first data byte");
+    assert!(!out.status.success(), "retry.enabled false: a cut is an error");
+    assert_eq!(rig.bodies().len(), 1, "no replay when retry is disabled");
 }
 
 /// SET-054: `retry.provider.timeoutMs`, `retry.provider.maxRetries`, `retry.provider.maxRetryDelayMs`.

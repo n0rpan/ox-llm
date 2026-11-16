@@ -1,4 +1,4 @@
-//! C10: the RPC server loop. Owner: task C10. Signatures below are frozen; bodies are yours.
+//! C10: the RPC server loop.
 // ported from pi packages/coding-agent/src/modes/rpc/rpc-mode.ts (docs: rpc.md)
 //
 // Threads: the calling thread reads stdin and answers the commands that must not wait for a
@@ -147,7 +147,7 @@ enum Job {
 /// What the reader and the session thread decide together, under one lock.
 #[derive(Default)]
 struct Gate {
-    /// Jobs sent to the session thread and not yet finished.
+    /// Session commands sent to the worker and not finished (outcome-only jobs claim nothing).
     pending: usize,
     /// A prompt was answered `started` and its run has not settled yet. Set by the reader when
     /// it accepts the prompt (pi: the run is active once `started` is sent), cleared by the
@@ -409,7 +409,22 @@ fn session_loop(
     bash_running: Arc<AtomicBool>,
 ) -> RunOutcome {
     let mut outcome = RunOutcome::NothingToDo;
-    while let Ok(job) = rx.recv() {
+    loop {
+        let job = if cx.handle.wrap_up_requested() && lock(&gate).pending == 0 {
+            match rx.try_recv() {
+                Ok(job) => job,
+                Err(_) => {
+                    outcome.include(RunOutcome::Interrupted);
+                    break;
+                }
+            }
+        } else {
+            match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(job) => job,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        };
         let (cmd, reply, claimed) = match job {
             Job::Command { cmd, reply, claimed } => (cmd, reply, claimed),
             Job::Outcome(next) => {
@@ -446,7 +461,6 @@ fn session_loop(
             Some(Ok(_)) if cmd.kind != "prompt" && settled.is_empty() => RunOutcome::Done,
             _ => *cx.session.outcome(),
         };
-        outcome.include(current);
         for record in &mut settled {
             if let Some(fields) = record.as_object_mut() {
                 fields.insert("result".to_string(), current.record());
@@ -484,6 +498,21 @@ fn session_loop(
                 write_out(&out, &v);
             }
         }
+        if cx.handle.wrap_up_requested() {
+            // A real prompt failure precedes later reader errors. Cooperative
+            // interruption is deferred so it cannot hide an already-reported error.
+            if current != RunOutcome::Interrupted {
+                outcome.include(current);
+            }
+            for pending in rx.try_iter() {
+                if let Job::Outcome(next) = pending {
+                    outcome.include(next);
+                }
+            }
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
+        outcome.include(current);
     }
     let mut ui = RpcUi {
         out: cx.out.clone(),
@@ -562,6 +591,7 @@ pub fn serve_outcome(
             .spawn(move || session_loop(cx, rx, cache, gate, bash_flag))
             .map_err(|e| OxaError::io("cannot start the session thread", &e))?
     };
+    let control = handle.clone();
     let front = Front {
         handle,
         out,
@@ -571,12 +601,34 @@ pub fn serve_outcome(
         bash_running,
         tx,
     };
-    read_commands(input, &front);
-    // Stdin closed: no answer can arrive any more. Dialogs that wait now, and any opened
-    // later, resolve as cancelled; dropping the sender lets the session thread drain its
-    // queue and exit.
+    // A blocking stdin reader must not keep the process alive after soft termination. On
+    // EOF it closes dialogs and the job channel as before. If the caller terminates while
+    // stdin is open, the reader is detached until EOF (the CLI exits immediately afterwards).
+    let input_router = router.clone();
+    let reader = match thread::Builder::new()
+        .name("oxa-rpc-input".to_string())
+        .spawn(move || {
+            read_commands(input, &front);
+            input_router.close();
+            drop(front);
+        }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            router.close();
+            let _ = worker.join();
+            return Err(OxaError::io("cannot start the RPC input thread", &error));
+        }
+    };
+    while !worker.is_finished() {
+        if control.wrap_up_requested() {
+            router.close();
+        }
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
     router.close();
-    drop(front);
+    if reader.is_finished() {
+        let _ = reader.join();
+    }
     Ok(worker.join().unwrap_or(RunOutcome::Failed(codes::INTERNAL)))
 }
 

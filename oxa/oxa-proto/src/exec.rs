@@ -81,6 +81,17 @@ pub trait Sandbox: Send + Sync {
     fn persistence_notice(&self) -> Option<&str> {
         None
     }
+    /// #526: the home directory this sandbox hides (not the process's `$HOME`), so tools
+    /// need not read the process environment. `None` (the default) = unknown.
+    fn home(&self) -> Option<&std::path::Path> {
+        None
+    }
+    /// #457: the sandbox for one new or reopened session: the same machine view, with the
+    /// state that belongs to a single session (its scratch directory at `/tmp`) of its own,
+    /// released when the session drops it. `None` (the default) = share `self` unchanged.
+    fn for_session(&self) -> Option<std::sync::Arc<dyn Sandbox>> {
+        None
+    }
     /// The exact `bwrap` argv (without the leading `bwrap`) for `s`. Pure; golden-tested.
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
     /// Run `s`, streaming output chunks to `live`. Cancel and timeout kill the process group.
@@ -290,6 +301,24 @@ impl YoloSwitch {
 /// The permission policy: a pure table over (mode, access, cwd) plus per-session grants.
 pub trait Policy: Send {
     fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision;
+    /// #518: [`Policy::decide`], plus, for an [`Access::Read`] or [`Access::Write`], the real
+    /// location (symlinks resolved) the decision covers. The caller hands it to the tool
+    /// (`ToolCtx::checked`), which then opens that location and nothing else, so a symlink
+    /// swapped between the check and the open cannot redirect it. The default pins nothing.
+    fn decide_pinned(&self, mode: Mode, a: &Access, cwd: &Path) -> (Decision, Option<PathBuf>) {
+        (self.decide(mode, a, cwd), None)
+    }
     /// Record an [`Answer::Session`] grant for `a`. Grants never outlive the session.
     fn remember(&mut self, a: &Access);
+    /// The spill directory of the session that now runs: the full output of a capped result
+    /// lives there, and a read of it needs no question. Default: nothing special.
+    fn set_spill_dir(&mut self, _dir: &Path) {}
+    /// Read-only spill directories inherited through the session's fork/clone ancestry.
+    /// Replaces the previous list; unrelated sessions must not be included.
+    fn set_inherited_spill_dirs(&mut self, _dirs: &[PathBuf]) {}
+    /// #517: the deny-list for the entries a tool finds by walking an allowed directory
+    /// ([`crate::ToolCtx::hidden`]). `None` (the default) = the policy hides nothing.
+    fn path_filter(&self) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
+        None
+    }
 }

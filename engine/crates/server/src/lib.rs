@@ -35,6 +35,8 @@ mod tests_lan_share;
 #[cfg(test)]
 mod tests_long_append;
 #[cfg(test)]
+mod tests_mtp_sampled;
+#[cfg(test)]
 mod tests_oxe_state;
 #[cfg(test)]
 mod tests_state;
@@ -64,3 +66,8 @@ mod tests_v020_rewrite;
 mod tests_v020_round1;
 #[cfg(test)]
 mod tests_v020_timings;
+
+#[cfg(test)]
+mod tests_thinking_budget;
+
+mod thinking_budget;

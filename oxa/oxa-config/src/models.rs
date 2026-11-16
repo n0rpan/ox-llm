@@ -1,4 +1,4 @@
-//! B6: models.json (engine endpoints) and model pattern resolution. Owner: task B6. Signatures below are frozen; bodies are yours.
+//! B6: models.json (engine endpoints) and model pattern resolution.
 // ported from pi packages/coding-agent/src/core/model-resolver.ts (engine-only subset)
 use crate::env::{ENGINE_URL, MODELS_DEFAULT_KEY};
 use crate::{Diagnostic, Dirs, Env};

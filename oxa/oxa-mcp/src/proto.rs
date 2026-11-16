@@ -1,4 +1,4 @@
-//! E7: JSON-RPC and the MCP client core (initialize, tools, resources, progress). Owner: task E7. Signatures below are frozen; bodies are yours.
+//! E7: JSON-RPC and the MCP client core (initialize, tools, resources, progress).
 // ported from pi packages/mcp/src/{client.ts,protocol/*}
 use crate::{CallToolResult, McpResource, McpTool, ToolAnnotations, Transport, PROTOCOL_VERSION};
 use oxa_proto::{codes, image_placeholder, CancelToken, OxaError, Value};

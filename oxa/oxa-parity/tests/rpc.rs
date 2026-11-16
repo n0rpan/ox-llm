@@ -1,4 +1,4 @@
-//! G7 PARITY tests (rpc). Owner: task G7.
+//! G7 PARITY tests (rpc).
 //! One test per PARITY.md row of this area, named after the row id (`RPC-012` -> `fn rpc_012()`).
 //! Each test drives the real `oxa --mode rpc` binary over its stdin and stdout, against the fake
 //! engine (`oxa_fake::FakeServer`, in process). P rows compare oxa's records with pi's documented

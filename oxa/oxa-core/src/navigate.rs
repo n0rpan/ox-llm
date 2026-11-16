@@ -1,4 +1,4 @@
-//! C4: tree navigation, fork and clone. Owner: task C4. Signatures below are frozen; bodies are yours.
+//! C4: tree navigation, fork and clone.
 // ported from pi packages/coding-agent/src/core/agent-session.ts (navigateTree, fork)
 use crate::agent_loop::persist;
 use crate::compaction::{idle_prefill, Counted};
@@ -408,6 +408,7 @@ fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<()
     }
     st.tree = tree;
     st.sref = dst.clone();
+    crate::session::attach_ids(st);
     Ok(())
 }
 

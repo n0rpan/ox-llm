@@ -1,4 +1,4 @@
-//! B1: cumulative file lists of a branch. Owner: task B1. Signatures below are frozen; bodies are yours.
+//! B1: cumulative file lists of a branch.
 // ported from pi packages/coding-agent/src/core/compaction/utils.ts (file operations)
 use std::collections::BTreeSet;
 

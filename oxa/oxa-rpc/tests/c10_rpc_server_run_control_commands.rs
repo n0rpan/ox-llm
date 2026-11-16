@@ -1,4 +1,4 @@
-//! C10 acceptance tests: RPC server, run-control commands. Owner: task C10.
+//! C10 acceptance tests: RPC server, run-control commands.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -8,13 +8,13 @@
 //! until the run is cancelled), which makes "during a run" deterministic.
 
 use oxa_config::{Dirs, Settings};
-use oxa_core::{Deps, Open, Session, ToolSelection};
+use oxa_core::{Deps, Open, RunOutcome, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_proto::{
     codes, Access, AssistantTurn, CancelToken, ChatRequest, Decision, Engine, EngineInfo, ExecResult,
     ExecSpec, Mode, OxaError, Policy, Sandbox, StreamEvent,
 };
-use oxa_rpc::{parse_command, response_err, response_ok, serve, Out, RpcCommand};
+use oxa_rpc::{parse_command, response_err, response_ok, serve_outcome, Out, RpcCommand};
 use oxa_session::{FsStore, SessionStore};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -55,6 +55,7 @@ struct GatedEngine {
     inner: Arc<ScriptedEngine>,
     open: Arc<AtomicBool>,
     models: Vec<String>,
+    entered: Option<Arc<AtomicBool>>,
 }
 
 impl Engine for GatedEngine {
@@ -76,6 +77,9 @@ impl Engine for GatedEngine {
         cancel: &CancelToken,
         on: &mut dyn FnMut(StreamEvent),
     ) -> Result<AssistantTurn, OxaError> {
+        if let Some(entered) = &self.entered {
+            entered.store(true, Ordering::SeqCst);
+        }
         while !self.open.load(Ordering::SeqCst) {
             if cancel.is_cancelled() {
                 return Err(OxaError::new(
@@ -134,7 +138,7 @@ impl Write for SharedBuf {
 struct Rpc {
     input: Option<std::io::PipeWriter>,
     stdout: Arc<Mutex<Vec<u8>>>,
-    thread: Option<JoinHandle<Result<i32, OxaError>>>,
+    thread: Option<JoinHandle<Result<RunOutcome, OxaError>>>,
     /// `agent_settled` records already consumed by [`Rpc::agent_settled`].
     settled: usize,
 }
@@ -146,7 +150,7 @@ impl Rpc {
         let out: Out = Arc::new(Mutex::new(Box::new(SharedBuf(stdout.clone()))));
         let dirs = Dirs::under(env.root());
         let input: Box<dyn BufRead + Send> = Box::new(BufReader::new(reader));
-        let thread = thread::spawn(move || serve(session, dirs, input, out));
+        let thread = thread::spawn(move || serve_outcome(session, dirs, input, out));
         Rpc {
             input: Some(writer),
             stdout,
@@ -236,7 +240,12 @@ impl Rpc {
 
     /// Close stdin, wait for the server to finish its queued work, and return its exit code and
     /// every record it wrote.
-    fn finish(mut self) -> (i32, Vec<Value>) {
+    fn finish(self) -> (i32, Vec<Value>) {
+        let (outcome, records) = self.finish_outcome();
+        (outcome.exit_code(), records)
+    }
+
+    fn finish_outcome(mut self) -> (RunOutcome, Vec<Value>) {
         drop(self.input.take());
         let code = self
             .thread
@@ -307,6 +316,7 @@ fn steer_and_follow_up_fixtures() {
         ])),
         open: open.clone(),
         models: Vec::new(),
+        entered: None,
     });
     let mut rpc = Rpc::start(open_session(&env, engine), &env);
 
@@ -356,6 +366,7 @@ fn abort_fixture() {
         inner: Arc::new(ScriptedEngine::new(Vec::new())),
         open: Arc::new(AtomicBool::new(false)),
         models: Vec::new(),
+        entered: None,
     });
     let mut rpc = Rpc::start(open_session(&env, engine), &env);
 
@@ -395,6 +406,7 @@ fn clear_queue_fixture() {
         inner: Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("done")])),
         open: open.clone(),
         models: Vec::new(),
+        entered: None,
     });
     let mut rpc = Rpc::start(open_session(&env, engine), &env);
 
@@ -603,6 +615,7 @@ fn model_commands_fixtures() {
         inner: Arc::new(ScriptedEngine::new(Vec::new())),
         open: Arc::new(AtomicBool::new(true)),
         models: vec!["fake-model".to_string(), "second-model".to_string()],
+        entered: None,
     });
     let mut rpc = Rpc::start(open_session(&env, engine), &env);
 
@@ -781,6 +794,7 @@ fn prompt_while_busy_needs_streaming_behavior() {
         ])),
         open: open.clone(),
         models: Vec::new(),
+        entered: None,
     });
     let mut rpc = Rpc::start(open_session(&env, engine), &env);
 
@@ -815,6 +829,74 @@ fn prompt_while_busy_needs_streaming_behavior() {
 }
 
 #[test]
+fn wrap_up_retains_queued_errors_without_running_later_commands() {
+    for reason in [oxa_core::WrapUpReason::TimeLimit, oxa_core::WrapUpReason::Signal] {
+        for fail_prompt in [false, true] {
+            let env = TestEnv::new();
+            let open = Arc::new(AtomicBool::new(false));
+            let entered = Arc::new(AtomicBool::new(false));
+            let first = if fail_prompt {
+                ScriptTurn::fault(oxa_fake::Fault::Refuse)
+            } else {
+                ScriptTurn::text("initial")
+            };
+            let engine = Arc::new(GatedEngine {
+                inner: Arc::new(ScriptedEngine::new(vec![
+                    first,
+                    ScriptTurn::text("final summary"),
+                ])),
+                open: open.clone(),
+                models: Vec::new(),
+                entered: Some(entered.clone()),
+            });
+            let session = open_session(&env, engine);
+            let handle = session.handle();
+            let mut rpc = Rpc::start(session, &env);
+            assert_eq!(
+                rpc.call("retry", json!({"type":"set_auto_retry","enabled":false}))["success"],
+                true
+            );
+            assert_eq!(
+                rpc.call("p", json!({"type":"prompt","message":"go"}))["success"],
+                true
+            );
+            let wait = Instant::now();
+            while !entered.load(Ordering::SeqCst) {
+                assert!(
+                    wait.elapsed() < Duration::from_secs(20),
+                    "the request reaches the held engine"
+                );
+                thread::sleep(Duration::from_millis(2));
+            }
+
+            // A deferred session command sits ahead of the reader-side failure.
+            // Neither a soft stop nor draining its outcomes may execute that command.
+            rpc.send(json!({"id":"late","type":"prompt","message":"/name LATE-COMMAND"}));
+            let rejected = rpc.call("bad", json!({"type":"follow_up"}));
+            assert_eq!(rejected["success"], false);
+            handle.request_wrap_up(reason);
+            let input = rpc.input.take(); // stdin stays open through the terminal result
+            open.store(true, Ordering::SeqCst);
+            let (outcome, records) = rpc.finish_outcome();
+            drop(input);
+
+            let (expected, expected_code) = if fail_prompt {
+                (RunOutcome::Failed(codes::ENGINE_DOWN), 2)
+            } else {
+                (RunOutcome::Failed(codes::INVALID), 1)
+            };
+            assert_eq!(outcome, expected, "{reason:?}/fail_prompt={fail_prompt}");
+            assert_eq!(outcome.exit_code(), expected_code);
+            assert!(!records
+                .iter()
+                .any(|record| record["type"] == "response" && record["id"] == "late"));
+            assert!(records.iter().any(|record| record["type"] == "message_end"
+                && record["message"]["content"][0]["text"] == "final summary"));
+        }
+    }
+}
+
+#[test]
 fn stdin_close_drains_work_and_keeps_the_late_commands_outcome() {
     for (kind, accepted, expected_code) in [("get_state", true, 0), ("get_commands", false, 1)] {
         let env = TestEnv::new();
@@ -825,6 +907,7 @@ fn stdin_close_drains_work_and_keeps_the_late_commands_outcome() {
             )])),
             open: open.clone(),
             models: Vec::new(),
+            entered: None,
         });
         let mut rpc = Rpc::start(open_session(&env, engine), &env);
         let prompt = rpc.call("p", json!({"type": "prompt", "message": "finish this"}));

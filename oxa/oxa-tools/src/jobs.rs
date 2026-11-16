@@ -4,11 +4,13 @@
 //! `bash {command, background: true}`. Each job runs the same sandboxed command as a
 //! normal `bash` call, but on its own thread with a per-job [`CancelToken`]; the call
 //! returns at once with a job id. A later `bash {job: "job-N"}` reads the job's status
-//! and the last 8 KiB of its combined output. [`JobRegistry::kill_all`] cancels every
+//! and the last 8 KiB of its combined output. [`JobRegistry::kill`] stops one job (`bash {job,
+//! kill: true}`) and [`JobRegistry::kill_all`] cancels every
 //! running job, which makes the sandbox's run loop kill the whole process group.
 //!
 //! Limits: at most [`MAX_JOBS`] jobs run at once (a further start is refused); a
-//! finished job keeps at most [`BUFFER_CAP`] bytes of output (a ring buffer).
+//! finished job keeps at most [`BUFFER_CAP`] bytes of output (a ring buffer), and only the
+//! last [`MAX_FINISHED`] finished jobs stay readable.
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, Sandbox};
 use std::collections::HashMap;
@@ -18,8 +20,13 @@ use std::time::{Duration, Instant};
 /// How often a [`JobRegistry::wait`] checks the job and the cancel token.
 const WAIT_TICK: Duration = Duration::from_millis(10);
 
+/// How long [`JobRegistry::kill`] waits for a cancelled job to settle.
+const KILL_SETTLE: Duration = Duration::from_secs(5);
+
 /// How many background jobs may run at once.
 pub const MAX_JOBS: usize = 4;
+/// How many finished jobs stay readable; spawning a job forgets the oldest ones beyond this.
+pub const MAX_FINISHED: usize = 16;
 /// The ring-buffer cap of a job's combined output, in bytes.
 pub const BUFFER_CAP: usize = 64 * 1024;
 /// How much of a job's output a read returns, in bytes.
@@ -72,6 +79,15 @@ pub struct JobRead {
     pub output: String,
     /// Every byte of output the job has written so far (not only the ones kept).
     pub total: u64,
+}
+
+/// The outcome of [`JobRegistry::kill`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobKill {
+    /// The job's status after the kill (still `Running` if it did not settle in time).
+    pub status: JobStatus,
+    /// False when the job had already finished before the call.
+    pub was_running: bool,
 }
 
 #[derive(Default)]
@@ -145,6 +161,21 @@ impl JobRegistry {
             return Err(format!(
                 "At most {MAX_JOBS} background jobs can run at once; wait for one to finish"
             ));
+        }
+        // Forget the oldest finished jobs (ids grow with start order), so a long session does
+        // not keep every job's output tail. Running jobs are never dropped.
+        let mut finished: Vec<(u64, String)> = state
+            .jobs
+            .iter()
+            .filter(|(_, j)| *j.status.lock().unwrap() != JobStatus::Running)
+            .map(|(id, _)| (id.trim_start_matches("job-").parse().unwrap_or(0), id.clone()))
+            .collect();
+        if finished.len() >= MAX_FINISHED {
+            finished.sort();
+            let drop_n = finished.len() + 1 - MAX_FINISHED;
+            for (_, id) in finished.into_iter().take(drop_n) {
+                state.jobs.remove(&id);
+            }
         }
         state.next += 1;
         let id = format!("job-{}", state.next);
@@ -232,6 +263,27 @@ impl JobRegistry {
     pub fn buffered_len(&self, id: &str) -> Option<usize> {
         let state = self.state.lock().unwrap();
         state.jobs.get(id).map(|j| j.output.lock().unwrap().buf.len())
+    }
+
+    /// #519: cancel one job and wait (briefly) for it to settle, so its slot is free when this
+    /// returns. A job that already finished is left as it is (`was_running: false`). `Err` for an
+    /// unknown id.
+    pub fn kill(&self, id: &str) -> Result<JobKill, String> {
+        let (cancel, status) = {
+            let state = self.state.lock().unwrap();
+            let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+            (job.cancel.clone(), job.status.clone())
+        };
+        let was_running = *status.lock().unwrap() == JobStatus::Running;
+        if was_running {
+            cancel.cancel();
+            let deadline = Instant::now() + KILL_SETTLE;
+            while *status.lock().unwrap() == JobStatus::Running && Instant::now() < deadline {
+                std::thread::sleep(WAIT_TICK);
+            }
+        }
+        let status = *status.lock().unwrap();
+        Ok(JobKill { status, was_running })
     }
 
     /// Cancel every running job AND forget them all: ids stop resolving and the slots free
@@ -396,6 +448,47 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn finished_jobs_are_bounded_oldest_first() {
+        struct Quick;
+        impl Sandbox for Quick {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                live(b"ok\n");
+                ExecResult {
+                    output: b"ok\n".to_vec(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let reg = JobRegistry::new();
+        reg.set_sandbox(Arc::new(Quick));
+        let total = MAX_FINISHED + 5;
+        let mut ids = Vec::new();
+        for _ in 0..total {
+            let id = reg.spawn(spec()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while reg.read(&id).unwrap().status == JobStatus::Running {
+                assert!(std::time::Instant::now() < deadline, "job did not finish");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            ids.push(id);
+        }
+        // The registry stays bounded: the oldest finished jobs are forgotten, the newest
+        // MAX_FINISHED stay readable (a poll of a just-finished job must still work).
+        assert_eq!(reg.read(&ids[0]).unwrap_err(), format!("Unknown job: {}", ids[0]));
+        for id in &ids[total - MAX_FINISHED..total - 1] {
+            assert_eq!(reg.read(id).unwrap().status, JobStatus::Exited(0), "{id}");
+        }
+        assert!(reg.read(&ids[total - 1]).is_ok());
     }
 
     #[test]

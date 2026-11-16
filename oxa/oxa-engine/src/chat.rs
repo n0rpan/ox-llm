@@ -1,4 +1,4 @@
-//! A2: request body, reply assembly and the HTTP `Engine`. Owner: task A2. Signatures below are frozen; bodies are yours.
+//! A2: request body, reply assembly and the HTTP `Engine`.
 use crate::hints::{build_headers, new_idem_key};
 use crate::info::{clear_hint, count_tokens, fetch_info_full, http_error_with, send_cancel, stream_error};
 use crate::{post_sse, Flow, SseEvent, StreamOpts, Url};
@@ -24,10 +24,11 @@ const RETRY_STEP_MS: u64 = 100;
 /// WireMsg::write_json>..],"tools":<prefix.tools_json verbatim>,"stream":true,
 /// "stream_options":{"include_usage":true},"temperature":0,"cache_prompt":true,
 /// "max_tokens":N,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":B}}`.
-/// `"tools"` is omitted when `tools_json` is `[]`. Nothing else is ever added: no date, no
-/// user field, no seed. With `r.sampling` set (opt-in, `oxa.sampling.mode = model`) the
+/// `"tools"` is omitted when `tools_json` is `[]`. The builder adds no automatic date or
+/// user field. With `r.sampling` set (opt-in, `oxa.sampling.mode = model`) the
 /// `0` becomes `T,"top_p":P,"top_k":K,"min_p":M,"presence_penalty":X` (+ `,"seed":S` when
-/// one is fixed), in place, before `"cache_prompt"`.
+/// one is fixed), in place, before `"cache_prompt"`. A non-null `thinking_budget` is
+/// added only for local thinking requests with positive output room.
 pub fn build_body(r: &ChatRequest, out: &mut Vec<u8>) {
     build_body_for(r, false, out);
 }
@@ -73,6 +74,12 @@ pub fn build_body_for(r: &ChatRequest, remote: bool, out: &mut Vec<u8>) {
         out.push(b'"');
         out.push(b'}');
         return;
+    }
+    if r.thinking && r.max_tokens > 0 {
+        if let Some(budget) = r.thinking_budget {
+            out.extend_from_slice(b",\"thinking_budget\":");
+            out.extend_from_slice(budget.to_string().as_bytes());
+        }
     }
     out.extend_from_slice(b",\"cache_prompt\":true,\"max_tokens\":");
     out.extend_from_slice(r.max_tokens.to_string().as_bytes());
@@ -618,8 +625,8 @@ impl Engine for HttpEngine {
                                 Err(e) => {
                                     // An error after reply data is a cut reply, never replayed
                                     // (the core retries `stream_broken` only before data).
-                                    failure = Some(if emitted && e.code != codes::STREAM_BROKEN {
-                                        broken(format!("the reply was cut: {}", e.message))
+                                    failure = Some(if emitted {
+                                        broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, e.message))
                                     } else {
                                         e
                                     });

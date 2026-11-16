@@ -10,13 +10,14 @@ if __package__:
     from .ctl_proxy_prep import HOP_HEADERS
     from .ctl_seams import ctl
     from . import cloud, openai_api
-    from . import cloud_anthropic, cloud_openai
+    from . import cloud_anthropic, cloud_chatgpt, cloud_openai
 else:
     from ctl_proxy_prep import HOP_HEADERS
     from ctl_seams import ctl
     import cloud
     import openai_api
     import cloud_anthropic
+    import cloud_chatgpt
     import cloud_openai
 
 MAX_STREAM_BYTES = 64 * 1024 * 1024
@@ -91,6 +92,25 @@ def _error_body(status, data, secret):
     return json.dumps(cloud.redact_value(parsed, secret), ensure_ascii=False).encode()
 
 
+def _completed_response(data):
+    """The final response object of a Responses SSE body, as JSON bytes."""
+    decoder = cloud.SSEDecoder()
+    items = {}
+    for _, raw in decoder.feed(data) + decoder.finish():
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(value, dict):
+            continue
+        if value.get('type') == 'response.output_item.done' and isinstance(value.get('output_index'), int):
+            items[value['output_index']] = value.get('item')
+        if value.get('type') in ('response.completed', 'response.incomplete'):
+            final = cloud_openai.with_streamed_output(value.get('response'), items)
+            return json.dumps(final, ensure_ascii=False).encode()
+    raise cloud.CloudError('The ChatGPT stream ended before completion.', 502, 'cloud_stream_error')
+
+
 def forward(self, st):
     """Route one remote chat request to its upstream and stream the answer back."""
     item = st.cloud_entry
@@ -98,21 +118,36 @@ def forward(self, st):
     if st.led is not None:
         st.led.row.update({'remote': True, 'remote_provider': item['provider']})
     if st.remote:
-        return _reply(self, st, 403, 'Cloud models are not available to LAN-share requests.', 'cloud_not_shared')
+        if st.led is not None:
+            st.led.row['lan_guest'] = True
+        refusal = cloud.guest_refusal(value, item)
+        if refusal:
+            return _reply(self, st, 403, refusal, 'cloud_not_shared')
     if cloud.offline():
         return _reply(self, st, 403, 'Cloud models are unavailable in offline mode.', 'offline')
     try:
         cloud.validate_remote_request(st.payload, item)
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, param=error.param)
+    account = None
     try:
-        key = cloud.secret(item['provider'], value)
+        if item['provider'] == 'chatgpt':
+            try:
+                key, account = cloud_chatgpt.credentials(cloud.secrets_file(value), value)
+            except cloud_chatgpt.LoginError as error:
+                raise cloud.CloudError('ChatGPT sign-in unavailable: %s.' % error, 503,
+                                       'cloud_credentials_unavailable') from None
+        else:
+            key = cloud.secret(item['provider'], value)
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, 'cloud_credentials_unavailable', error.param)
     if item['provider'] == 'anthropic':
         return cloud_anthropic.forward(self, st, item, key)
+    # Continuations of the subscription provider belong to the account, not to one access
+    # token: a refresh between a tool call and its result must not break the loop.
+    scope = 'chatgpt-account:' + account if account else None
     try:
-        body = cloud.upstream_payload(st.payload, item, key)
+        body = cloud.upstream_payload(st.payload, item, key, scope)
         data = json.dumps(body, ensure_ascii=False, allow_nan=False).encode()
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, param=error.param)
@@ -122,23 +157,29 @@ def forward(self, st):
         hold = cloud.reserve(value, item, body)
     except cloud.CloudError as error:
         return _reply(self, st, error.status, str(error), error.code, error.code, param=error.param)
-    responses = (cloud_openai.ResponsesStream(item, st.payload.get('messages'), key)
-                 if item['provider'] == 'openai' and cloud_openai.endpoint(item) == '/responses' else None)
+    responses = (cloud_openai.ResponsesStream(item, st.payload.get('messages'), key, scope)
+                 if item['provider'] in ('openai', 'chatgpt') and cloud_openai.endpoint(item) == '/responses'
+                 else None)
+    # The subscription backend always streams; a client that did not ask for a stream gets
+    # the final response assembled from it.
+    collect = item['provider'] == 'chatgpt' and st.payload.get('stream') is not True
     meter = cloud.Meter()
     connection = None
     started = False
     try:
-        connection, path, headers = cloud.connection(item, key)
+        connection, path, headers = cloud.connection(item, key, account)
         connection.request('POST', path, body=data, headers=headers)
         response = connection.getresponse()
         st.backend_status = response.status
         content_type, full_type = _safe_headers(response)
+        if item['provider'] == 'chatgpt':
+            cloud_chatgpt.observe(response.getheaders())
         if response.status >= 400:
             payload = _error_body(response.status, response.read(cloud.MAX_ERROR_BYTES), key)
             _finish(self, st, item, meter, response.status, 'cloud_upstream_error', hold, key, failed=True,
                     refused=cloud.clean_refusal(response.status))
             return self.reply(response.status, payload, 'application/json')
-        if body.get('stream') is True or 'text/event-stream' in full_type.lower():
+        if not collect and (body.get('stream') is True or 'text/event-stream' in full_type.lower()):
             self.send_response(response.status)
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-store')
@@ -205,13 +246,15 @@ def forward(self, st):
                                                    'type': 'cloud_error', 'code': 'cloud_response_too_large'}})
         if response.length is not None and response.length > 0:
             raise http.client.IncompleteRead(payload, response.length)
+        if collect:
+            payload = _completed_response(payload)
         if responses is not None:
             payload = json.dumps(cloud_openai.response(json.loads(payload), item,
-                                 st.payload.get('messages'), key), ensure_ascii=False).encode()
+                                 st.payload.get('messages'), key, scope), ensure_ascii=False).encode()
         meter.feed(payload)
         try:
             parsed = json.loads(payload)
-            if item['provider'] == 'openai':
+            if item['provider'] in ('openai', 'chatgpt'):
                 parsed = cloud.redact_value(parsed, key)
             payload = cloud.normalize_response(parsed, item['id'])
             payload = json.dumps(payload, ensure_ascii=False).encode()

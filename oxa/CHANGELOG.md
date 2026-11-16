@@ -31,6 +31,7 @@
 - A cache miss is never reported with the cause `unknown`: without a rebase it is `cold_start` on the first request and `engine_evicted` afterwards.
 - `rust-version` is 1.87; the release profile unwinds on panic.
 - Repeated calls: a tool call (any tool) that already returned the same result three times in a row (same arguments, nothing in between, same prompt) gets a short note instead of the result; after two notes the next repeat stops the run (`oxa.toolRepeatGuard`, on by default). See [tools.md](docs/pages/tools.md#repeated-calls).
+- Repeat guard and turn cap (#507): a failed `edit` or `write` no longer ends a run of identical reads, and the new `oxa.maxTurns` (default unset) ends a run after that many model replies with a `turn_limit` error. See [tools.md](docs/pages/tools.md#repeated-calls).
 - Adaptive thinking on tool follow-ups (`oxa.thinking.toolFollowups`, default `auto`, under `oxa.thinking.policy: auto`): routine steps stay off; a failed call, a repeat note or `oxa.thinking.escalation.fruitlessCalls` (6) calls without progress turn thinking on for the next replies, until an edit applies or a test passes. The footer shows `thinking: auto→on` and the transcript a note with the reason. `on` and `off` keep the previous fixed choices. See [tools.md](docs/pages/tools.md#thinking-on-tool-follow-ups).
 - `oxa.sampling.mode: model` (opt-in) sends the model card's sampling for Qwen3.6 and Ornith instead of `temperature: 0`. The default stays greedy: the engine's speculative decoding runs on greedy requests only.
 

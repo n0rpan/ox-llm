@@ -1,4 +1,4 @@
-//! D6: footer, header and title. Owner: task D6. Signatures below are frozen; bodies are yours.
+//! D6: footer, header and title.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{footer.ts,status-indicator.ts,keybinding-hints.ts}
 use crate::{Activity, StatusModel, ViewModel};
 use oxa_config::Keymap;

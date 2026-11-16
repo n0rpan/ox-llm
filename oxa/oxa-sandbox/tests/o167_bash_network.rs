@@ -44,6 +44,7 @@ fn bash_argv(env: &TestEnv, mode: Mode, setting: Option<&str>, offline: bool) ->
     let cwd = env.work();
     let cancel = CancelToken::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &cwd,
         sandbox: &sb,
@@ -51,6 +52,7 @@ fn bash_argv(env: &TestEnv, mode: Mode, setting: Option<&str>, offline: bool) ->
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let out = oxa_tools::BashTool::new().run(&serde_json::json!({ "command": "true" }), &cx, &mut |_| {});
     assert!(!out.is_error, "{:?}", out.text);

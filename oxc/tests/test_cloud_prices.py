@@ -73,7 +73,7 @@ class PriceRefresh(unittest.TestCase):
         self.assertFalse(self.refresh())
         self.assertEqual(self.path.read_bytes(), before)
 
-    def test_fetched_prices_do_not_lower_configured_tiers(self):
+    def test_fetched_prices_replace_configured_rates(self):
         self.assertTrue(self.refresh())
         configured = {'tiers': [{'max_prompt_tokens': 100, 'input_per_million': 1,
                                  'output_per_million': 10},
@@ -82,12 +82,31 @@ class PriceRefresh(unittest.TestCase):
         with patch.object(cloud_prices, 'cache_path', return_value=self.path):
             value = cloud_prices.overlay(configured, UPSTREAM)
             self.assertEqual(value['tiers'][0]['input_per_million'], 3)
-            self.assertEqual(value['tiers'][0]['output_per_million'], 10)
+            self.assertEqual(value['tiers'][0]['output_per_million'], 5)
+            self.assertEqual(value['tiers'][1]['output_per_million'], 20)
             self.assertEqual(value['tiers'][1]['input_per_million'], 7)
+            self.assertEqual(value['tiers'][1]['max_prompt_tokens'], None)
+            self.assertEqual(cloud_prices.overlay({'input_per_million': 99, 'output_per_million': 99},
+                                                  UPSTREAM)['input_per_million'], 3)
             self.assertIsNone(cloud_prices.overlay(None, 'unknown/model'))
             raw = profiles()[REMOTE]
             raw.pop('pricing')
             self.assertEqual(cloud.entry(REMOTE, raw)['pricing']['input_per_million'], 3)
+
+    def test_zero_live_price_keeps_configured_rate_and_tiers_stay_ordered(self):
+        self.assertTrue(self.refresh())
+        with patch.object(cloud_prices, 'price_for',
+                          return_value={'input_per_million': 0, 'output_per_million': 0}):
+            value = cloud_prices.overlay({'input_per_million': 4, 'output_per_million': 8}, UPSTREAM)
+            self.assertEqual((value['input_per_million'], value['output_per_million']), (4, 8))
+        configured = {'tiers': [{'max_prompt_tokens': 100, 'input_per_million': 1,
+                                 'output_per_million': 1},
+                                {'max_prompt_tokens': None, 'input_per_million': 1,
+                                 'output_per_million': 2}]}
+        with patch.object(cloud_prices, 'cache_path', return_value=self.path):
+            tiers = cloud_prices.overlay(configured, UPSTREAM)['tiers']
+            self.assertGreaterEqual(tiers[1]['input_per_million'], tiers[0]['input_per_million'])
+            self.assertGreaterEqual(tiers[1]['output_per_million'], tiers[0]['output_per_million'])
 
     def test_live_metadata_cannot_hide_an_invalid_configured_price_or_tier(self):
         self.assertTrue(self.refresh())

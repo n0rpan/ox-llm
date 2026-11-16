@@ -1,4 +1,4 @@
-//! B11: syntax highlighting of code. Owner: task B11. Signatures below are frozen; bodies are yours.
+//! B11: syntax highlighting of code.
 // ported from pi packages/coding-agent/src/modes/interactive/theme/theme.ts (highlightCode, getLanguageFromPath)
 use crate::Theme;
 use std::sync::OnceLock;

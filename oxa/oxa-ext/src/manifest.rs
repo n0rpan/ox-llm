@@ -1,4 +1,4 @@
-//! E1: extension manifests and the type declarations. Owner: task E1. Signatures below are frozen; bodies are yours.
+//! E1: extension manifests and the type declarations.
 // ported from pi packages/coding-agent/src/core/pi-manifest.ts
 use oxa_proto::{codes, OxaError, Value};
 use oxa_script::strip_types;

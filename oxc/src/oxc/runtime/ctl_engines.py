@@ -251,6 +251,7 @@ class OxeMoeLaunch(EngineLaunch):
         props = read_props(backend_key)
         manager.engine_speculative = speculative_of(props)
         manager.engine_sampling = oxe_runtime.sampling_support(props)
+        manager.engine_thinking_budget = props.get('thinking_budget') if isinstance(props, dict) else None
         super().after_ready(manager, backend_key)
 
 
@@ -344,6 +345,7 @@ class OxeFlashLaunch(OxeMoeLaunch):
         manager.flash_cache_status = oxe_runtime.flash_cache_pref.status_from_props(props)
         manager.engine_speculative = speculative_of(props)
         manager.engine_sampling = oxe_runtime.sampling_support(props)
+        manager.engine_thinking_budget = props.get('thinking_budget') if isinstance(props, dict) else None
         # F127: keep swap-tolerant mode only when the engine itself reports it; else the 1 GiB floor.
         if (manager.classic_memory_guard is not None
                 and manager.classic_memory_guard.mode() == memory_policy.SWAP_TOLERANT_MODE

@@ -115,6 +115,18 @@ class KeyAndCors(unittest.TestCase):
         self.assertIsNone(openai_api.cors_origin(['http://x.test'], star, False))  # "*" needs an API key
         self.assertEqual(openai_api.cors_origin(['http://x.test'], star, True), 'http://x.test')
 
+    def test_cors_never_echoes_a_line_break_into_a_header(self):
+        # A folded request header ("a\r\n b") reaches us with CR/LF in its value; echoing it
+        # would let the client write into our response headers (code scanning alert 5).
+        star = {'openai_api': {'cors_origins': ['*']}}
+        self.assertIsNone(openai_api.cors_origin(['http://x.test\r\n X-Evil: 1'], star, True))
+        headers = dict(openai_api.cors_headers('http://x.test', preflight=True,
+                                               request_headers='authorization\r\n X-Evil: 1'))
+        self.assertEqual(headers['Access-Control-Allow-Headers'], 'authorization, content-type')
+        headers = dict(openai_api.cors_headers('http://x.test', preflight=True,
+                                               request_headers='Authorization, X-Stainless-Os'))
+        self.assertEqual(headers['Access-Control-Allow-Headers'], 'Authorization, X-Stainless-Os')
+
 
 class RequestFixes(unittest.TestCase):
     def test_flash_range(self):
@@ -152,6 +164,55 @@ class RequestFixes(unittest.TestCase):
             self.assertFalse(meta['logprobs'])
         native, meta = openai_api.completion_request({'model': ORNITH, 'prompt': 'Hello', 'logprobs': 2})
         self.assertEqual((native['n_probs'], meta['top_n']), (2, 2))
+
+    def test_completion_logprobs_above_five_is_refused_like_the_engine(self):
+        """The engine answers 400 (invalid_value, param logprobs) for logprobs outside 0..5; the
+        controller must not clamp it to 20 and carry on."""
+        for bad in (6, 20, 21, 1000, -1):
+            with self.assertRaises(openai_api.BadParam) as caught:
+                openai_api.completion_request({'model': ORNITH, 'prompt': 'Hello', 'logprobs': bad})
+            body = caught.exception.body()['error']
+            self.assertEqual((body['code'], body['param']), ('invalid_value', 'logprobs'))
+        native, meta = openai_api.completion_request({'model': ORNITH, 'prompt': 'Hello', 'logprobs': 5})
+        self.assertEqual((native['n_probs'], meta['top_n']), (5, 5))
+
+    def _stream_events(self, request, frames, split=None):
+        _, meta = openai_api.completion_request(dict({'model': ORNITH, 'prompt': 'Say hi', 'stream': True}, **request))
+        stream = openai_api.CompletionStream(meta)
+        raw = b''.join(b'data: ' + json.dumps(f).encode() + b'\n\n' for f in frames)
+        step = split or len(raw)
+        out = b''.join(stream.feed(raw[i:i + step]) for i in range(0, len(raw), step)) + stream.finish()
+        return [e for e in check.sse_events(out.decode()) if e != '[DONE]']
+
+    @staticmethod
+    def _joined(events):
+        joined = {'tokens': [], 'token_logprobs': [], 'top_logprobs': [], 'text_offset': []}
+        for event in events:
+            lp = event['choices'][0]['logprobs'] if event['choices'] else None
+            for key in joined:
+                joined[key] += (lp or {}).get(key, [])
+        return joined
+
+    def test_completion_stream_logprob_rows_equal_the_non_stream_rows(self):
+        """Multi-chunk parity, with and without echo: text_offset keeps running across chunks (and
+        starts after the echoed prompt), and rows that arrive on the final event are kept."""
+        rows = [{'token': t, 'logprob': -0.1 * i, 'top_logprobs': [{'token': t, 'logprob': -0.1 * i}]}
+                for i, t in enumerate([' Hel', 'lo', ' wor', 'ld'])]
+        for echo in (False, True):
+            request = {'logprobs': 1, 'echo': echo}
+            _, meta = openai_api.completion_request(dict({'model': ORNITH, 'prompt': 'Say hi'}, **request))
+            whole = openai_api.completion_response({'content': ' Hello world', 'stop_type': 'eos', 'model': ORNITH,
+                                                    'completion_probabilities': rows}, meta)
+            frames = [{'content': ' Hel', 'stop': False, 'completion_probabilities': rows[:1]},
+                      {'content': 'lo', 'stop': False, 'completion_probabilities': rows[1:2]},
+                      {'content': ' wor', 'stop': False, 'completion_probabilities': rows[2:3]},
+                      {'content': 'ld', 'stop': True, 'stop_type': 'eos', 'completion_probabilities': rows[3:]}]
+            for split in (None, 5):
+                events = self._stream_events(request, frames, split)
+                self.assertEqual(''.join(e['choices'][0]['text'] for e in events), whole['choices'][0]['text'])
+                self.assertEqual(self._joined(events), whole['choices'][0]['logprobs'], (echo, split))
+            expected_first = 6 if echo else 0
+            self.assertEqual(whole['choices'][0]['logprobs']['text_offset'][0], expected_first)
 
     def test_completion_translation(self):
         native, meta = openai_api.completion_request({'model': ORNITH, 'prompt': ['Hello'], 'max_tokens': 5, 'logprobs': 3,

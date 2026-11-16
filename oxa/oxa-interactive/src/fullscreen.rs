@@ -1,4 +1,4 @@
-//! D2: the fullscreen (alternate screen) viewport. Owner: task D2. Signatures below are frozen; bodies are yours.
+//! D2: the fullscreen (alternate screen) viewport.
 // ported from pi packages/coding-agent/src/modes/interactive/chat-viewport.ts and packages/tui/src/{tui-alt-screen.ts,wheel-scroll.ts}
 use oxa_tui::{
     scrollbar_cells, scrollbar_offset_for_row, truncate_to_width, visible_width, Mouse, MouseKind, Theme,

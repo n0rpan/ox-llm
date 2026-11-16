@@ -1,4 +1,4 @@
-//! A8: the `find` tool. Owner: task A8. Signatures below are frozen; bodies are yours.
+//! A8: the `find` tool.
 // ported from pi packages/coding-agent/src/core/tools/find.ts
 use crate::descriptions::{self, errors, limits};
 use crate::grep::{build_glob, cap_output, opt_count, opt_str, rel_path, req_str, strip_dot_slash, walk};
@@ -77,7 +77,7 @@ impl Tool for FindTool {
         }
 
         let mut hits: Vec<String> = Vec::new();
-        for entry in walk(&root) {
+        for entry in walk(&root, cx.hidden.as_ref()) {
             if cx.cancel.is_cancelled() {
                 return ToolOutput::error(errors::ABORTED);
             }

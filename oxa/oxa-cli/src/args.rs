@@ -1,4 +1,4 @@
-//! C12: command-line parsing. Owner: task C12. Signatures below are frozen; bodies are yours.
+//! C12: command-line parsing.
 // ported from pi packages/coding-agent/src/cli/args.ts (docs: cli.md)
 use oxa_proto::{codes, FlagSpec, Mode, OxaError, PermissionMode, ThinkingLevel, Value};
 use std::path::PathBuf;
@@ -48,6 +48,8 @@ pub struct Args {
     pub files: Vec<String>,
     /// `-p`, `--print`.
     pub print: bool,
+    /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
+    pub max_time: Option<std::time::Duration>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -226,6 +228,10 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--continue [id], -c",
         "Continue the named session, or the most recent session when no id is given",
+    ),
+    (
+        "--max-time <seconds>",
+        "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -553,6 +559,18 @@ fn parse_flag(
         "-r" | "--resume" => {
             no_value(inline, flag)?;
             a.resume = true;
+        }
+        "--max-time" => {
+            let text = value(argv, i, inline, flag, "a positive number of seconds")?;
+            let seconds = text
+                .parse::<f64>()
+                .ok()
+                .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+                .ok_or_else(|| usage("--max-time requires a positive, finite number of seconds"))?;
+            a.max_time = Some(
+                std::time::Duration::try_from_secs_f64(seconds)
+                    .map_err(|_| usage("--max-time is too large"))?,
+            );
         }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),
         "--model" => a.model = Some(value(argv, i, inline, flag, "a model pattern")?),

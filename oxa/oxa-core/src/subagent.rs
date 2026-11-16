@@ -1,4 +1,4 @@
-//! E11: `builtin:subagent`. Owner: task E11. Signatures below are frozen; bodies are yours.
+//! E11: `builtin:subagent`.
 // ported from pi packages/coding-agent/examples/extensions/subagent/ (index.ts, agents.ts)
 //!
 //! The subagent policy of OXA-ENGINE-SUPPORT sec. 2 (one inference slot, so "parallel" children

@@ -939,7 +939,7 @@ fn controls_are_rebound_to_the_new_session() {
         // The aborted reply is a Shown block (never sent); the text is in the editor again.
         step(
             "aborted",
-            &["the prompt stays in the conversation", "steer me"],
+            &["partial reply dropped; your prompt stays", "steer me"],
             vec![key("ctrl+c")],
         ),
         step("cleared", &[], vec![key("ctrl+d")]),
@@ -1132,7 +1132,7 @@ fn aborted_stream_is_shown_not_a_reply() {
         step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
         step(
             "aborted",
-            &["aborted: cancelled; the prompt stays"],
+            &["aborted: partial reply dropped; your prompt stays"],
             typed("/session", &["enter"]),
         ),
         // The Shown block is not counted as an assistant message.
@@ -1165,14 +1165,50 @@ fn aborted_stream_is_shown_not_a_reply() {
     );
 }
 
-/// A stream cut by the engine mid-reply: `Shown { why: cut }`, shown with the warning.
+/// After Escape, one Ctrl+C on the empty editor arms the exit and the hint bar says so; a second
+/// Ctrl+C exits. Drives the real loop, so the `armed` wiring into the hint bar is covered.
+#[test]
+fn ctrl_c_after_abort_shows_the_exit_hint() {
+    let world = World::with(
+        vec![ScriptTurn {
+            chunk: 6,
+            ..ScriptTurn::text("PARTIAL words that arrived")
+        }],
+        FakeOpts {
+            done_gap_ms: 20_000,
+            ..FakeOpts::default()
+        },
+    );
+    let steps = vec![
+        step("open", &[], typed("go", &["enter"])),
+        step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
+        step(
+            "aborted",
+            &["partial reply dropped; your prompt stays"],
+            vec![key("ctrl+c")],
+        ),
+        step("armed", &["ctrl+c exit"], vec![key("ctrl+c")]),
+    ];
+    // The hint bar belongs to the oxa skin; the other tests pin the plain one.
+    let mut opts = world.opts(false);
+    opts.env = vec![("OXA_SKIN".to_string(), "oxa".to_string())];
+    let session = Session::open(world.deps(), Open::New).expect("open the session");
+    let (code, _last, _term, _first) = run_with(&world, session, opts, (90, 30), steps);
+    assert_eq!(code, 0);
+}
+
+/// A stream cut by the engine mid-reply: `Shown { why: cut }`, shown with the warning, then
+/// the request is resent and the replayed reply completes the run (#456).
 #[test]
 fn cut_stream_is_shown_not_a_reply() {
-    let world = World::new(vec![ScriptTurn {
-        chunk: 8,
-        fault: Some(Fault::DropAt { bytes: 600 }),
-        ..ScriptTurn::text(&"CUTTEXT words keep coming and coming. ".repeat(40))
-    }]);
+    let world = World::new(vec![
+        ScriptTurn {
+            chunk: 8,
+            fault: Some(Fault::DropAt { bytes: 600 }),
+            ..ScriptTurn::text(&"CUTTEXT words keep coming and coming. ".repeat(40))
+        },
+        ScriptTurn::text("REPLAYED answer"),
+    ]);
     let steps = vec![
         step("open", &["oxa v"], typed("go", &["enter"])),
         step(
@@ -1180,26 +1216,23 @@ fn cut_stream_is_shown_not_a_reply() {
             &[
                 "CUTTEXT",
                 "cut: not sent to the model",
-                "The reply did not finish",
+                "the reply stream broke",
+                "REPLAYED answer",
             ],
             typed("/session", &["enter"]),
         ),
         step(
             "counted",
-            &["Messages: user 1, assistant 0, tool calls 0"],
+            &["Messages: user 1, assistant 1, tool calls 0"],
             vec![key("ctrl+d")],
         ),
     ];
-    let (code, last, _term, _first) = run_app(&world, false, (90, 40), steps);
+    let (code, _last, _term, _first) = run_app(&world, false, (90, 40), steps);
     assert_eq!(code, 0);
-    match last_entry(&world, &last) {
-        oxa_proto::EntryBody::Shown { why, .. } => assert_eq!(why, "cut"),
-        other => panic!("the core stored a Shown entry at the leaf, got {other:?}"),
-    }
     assert_eq!(
         world.requests().iter().filter(|r| r.max_tokens > 0).count(),
-        1,
-        "a cut reply is never resent"
+        2,
+        "the cut reply is resent once"
     );
 }
 

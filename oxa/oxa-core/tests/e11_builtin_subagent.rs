@@ -1,4 +1,4 @@
-//! E11 acceptance tests: builtin:subagent. Owner: task E11.
+//! E11 acceptance tests: builtin:subagent.
 //! One test per acceptance bullet of WAVES.toml (plus the OXA-ENGINE-SUPPORT sec. 4 amendments).
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 //!
@@ -208,6 +208,7 @@ fn run_with(env: &TestEnv, h: &SubagentHooks, args: Value, cancel: &CancelToken)
     let spill = env.tmp().join("spill");
     let work = env.work();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &work,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -215,6 +216,7 @@ fn run_with(env: &TestEnv, h: &SubagentHooks, args: Value, cancel: &CancelToken)
         cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let mut live = Vec::new();
     let mut ui = HeadlessUi::default();
@@ -517,6 +519,7 @@ fn parallel_is_queued() {
                 let work = root.join("work");
                 let cancel = CancelToken::new();
                 let cx = ToolCtx {
+                    checked: &[],
                     cwd: &work,
                     spill_dir: &spill,
                     sandbox: &sandbox,
@@ -524,6 +527,7 @@ fn parallel_is_queued() {
                     cancel: &cancel,
                     env: &[],
                     tune: Default::default(),
+                    hidden: None,
                 };
                 t.run(
                     &json!({"agent": "scout", "task": format!("c{i}")}),
@@ -653,6 +657,7 @@ fn run_in(env: &TestEnvRef, h: &SubagentHooks, args: Value, cancel: &CancelToken
     let spill = env.0.join("tmp");
     let work = env.0.join("work");
     let cx = ToolCtx {
+        checked: &[],
         cwd: &work,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -660,6 +665,7 @@ fn run_in(env: &TestEnvRef, h: &SubagentHooks, args: Value, cancel: &CancelToken
         cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     t.run(&args, &cx, &mut |_| {})
 }
