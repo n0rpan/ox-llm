@@ -143,7 +143,7 @@ pub fn append_private(path: &Path, row: &Value) -> io::Result<()> {
         file.seek(SeekFrom::End(-1))?;
         let mut last = [0];
         file.read_exact(&mut last)?;
-        if last != [b'\n'] {
+        if last != *b"\n" {
             file.write_all(b"\n")?;
         }
     }
