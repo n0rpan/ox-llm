@@ -7,23 +7,66 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn print_preserves_the_complete_local_answer_across_length_cuts() {
-    for remote in [false, true] {
+    for (remote, broken) in [(false, false), (false, true), (true, false), (true, true)] {
         let env = TestEnv::new();
-        env.write("home/.oxa/agent/settings.json", r#"{"retry":{"enabled":true,"maxRetries":2},"cacheWarming":"off","oxa":{"envNote":false}}"#);
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"retry":{"enabled":true,"maxRetries":2},"cacheWarming":"off","oxa":{"envNote":false}}"#,
+        );
         let mut first = ScriptTurn::text("α first ");
         first.finish = Finish::Length;
         let mut second = ScriptTurn::text("middle ");
         second.finish = Finish::Length;
+        let mut turns = vec![first];
+        if broken {
+            let mut partial = ScriptTurn::text("SPOILED_STREAM");
+            partial.chunk = 1;
+            partial.fault = Some(Fault::DropAt { bytes: 500 });
+            turns.push(partial);
+        }
+        turns.extend([second, ScriptTurn::text("tail")]);
         let srv = FakeServer::start(
-            vec![first, second, ScriptTurn::text("tail")],
-            FakeOpts { remote:remote.then_some("openrouter"), ..FakeOpts::default() },
-        ).unwrap();
+            turns,
+            FakeOpts {
+                remote: remote.then_some("openrouter"),
+                ..FakeOpts::default()
+            },
+        )
+        .unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
-            .args(["-p", "--no-session", "--no-tools", "--no-extensions", "--no-mcp", "answer"])
-            .env_clear().envs(env.envs(&srv.url())).current_dir(env.work())
-            .stdin(Stdio::null()).output().unwrap();
-        assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
-        assert_eq!(String::from_utf8(output.stdout).unwrap(), if remote { "tail\n" } else { "α first middle tail\n" });
+            .args([
+                "-p",
+                "--no-session",
+                "--no-tools",
+                "--no-extensions",
+                "--no-mcp",
+                "answer",
+            ])
+            .env_clear()
+            .envs(env.envs(&srv.url()))
+            .current_dir(env.work())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if broken {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("the reply stream broke"));
+            let requests = srv.requests();
+            assert_eq!(requests[1].idem_key, requests[2].idem_key);
+        }
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            if remote {
+                "tail\n"
+            } else {
+                "α first middle tail\n"
+            }
+        );
     }
 }
 
