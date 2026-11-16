@@ -293,3 +293,72 @@ fn credentials_split_across_chat_fields_never_reach_output_or_receipts() {
     assert!(!serde_json::to_string(&rows(&env)).unwrap().contains(CREDENTIAL));
     mock.assert_healthy();
 }
+
+#[test]
+fn encoded_credentials_in_streamed_tool_arguments_never_execute() {
+    for secret in [true, false] {
+        let env = TestEnv::new();
+        let text = if secret {
+            CREDENTIAL
+        } else {
+            "synthetic safe content"
+        };
+        let escaped: String = text.chars().map(|c| format!("\\u{:04x}", u32::from(c))).collect();
+        let args = format!(r#"{{"path":"encoded.txt","content":"{escaped}"}}"#);
+        let split = args.len() / 2;
+        let mock = MockOpenAi::start_with(|base| {
+            let frames = [
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"encoded-write","type":"function","function":{"name":"write","arguments":&args[..split]}}]},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":&args[split..]}}]},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}),
+                json!({"choices":[],"usage":usage()}),
+            ];
+            let mut bytes = Vec::new();
+            for frame in frames {
+                bytes.extend_from_slice(format!("data: {frame}\n\n").as_bytes());
+            }
+            bytes.extend_from_slice(b"data: [DONE]\n\n");
+            vec![
+                Reply::json(discovery(base)),
+                Reply::raw(200, "text/event-stream", bytes, vec![]),
+                stream(json!({"content":"Complete"}), "stop"),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["-p", "--tools", "write", "Write the synthetic fixture"]);
+        let path = env.work().join("encoded.txt");
+        if secret {
+            if path.exists() {
+                assert_ne!(
+                    fs::read_to_string(&path).unwrap(),
+                    CREDENTIAL,
+                    "the actual decoded synthetic credential was written to disk"
+                );
+            }
+            assert!(!path.exists(), "decoded credential reached the real write tool");
+            assert!(!output.status.success());
+            assert_eq!(
+                mock.requests().len(),
+                2,
+                "unsafe tool arguments must stop before tool execution/follow-up"
+            );
+        } else {
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fs::read_to_string(path).unwrap(), text);
+            assert_eq!(mock.requests().len(), 3);
+            assert!(mock.requests()[2].body["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|message| message["role"] == "assistant"
+                    && message["tool_calls"][0]["function"]["arguments"] == args));
+        }
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+        mock.assert_healthy();
+    }
+}
