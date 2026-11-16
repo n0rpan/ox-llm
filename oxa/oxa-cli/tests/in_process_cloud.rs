@@ -64,7 +64,15 @@ fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Outp
     for (key, value) in env.envs(url) {
         cmd.env(key, value);
     }
-    cmd.output().expect("run the real oxa binary")
+    cmd.output().unwrap_or_else(|error| {
+        if trace.is_some() && error.kind() == std::io::ErrorKind::NotFound {
+            panic!(
+                "strace is required for the no-Python process proof; install strace and put it on PATH \
+                 before running this test (see CONTRIBUTING.md): {error}"
+            );
+        }
+        panic!("failed to launch {cmd:?}: {error}");
+    })
 }
 fn rows(env: &TestEnv) -> Vec<Value> {
     fs::read_dir(env.home().join(".oxa/agent/cloud-ledger"))
