@@ -213,9 +213,19 @@ fn with_a_soft_point_of_8000_caps_every_builtin_result_at_6000_bytes() {
         "the spill file holds the raw output"
     );
     assert_eq!(full.lines().count(), 20_000, "the spill file holds every line");
-    // grep: the counts form over the limit; find and ls: their notices name the narrower search.
+    // grep keeps matching lines over the limit; all search tools name how to see more.
     assert!(
-        results[2].starts_with("300 matches in total"),
+        results[2].contains("  3: needle item 00-02 in the component"),
+        "grep: {}",
+        results[2]
+    );
+    assert!(
+        results[2].contains("100 matches limit reached"),
+        "grep: {}",
+        results[2]
+    );
+    assert!(
+        results[2].contains("Narrow the search to see the rest"),
         "grep: {}",
         results[2]
     );

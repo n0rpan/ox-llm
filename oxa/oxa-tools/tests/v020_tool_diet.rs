@@ -1,6 +1,6 @@
 //! V020-OPTIMIZE #2 (TOOL-DIET) and OXA-LOCAL-FIRST T8 for the read-class tools: default-tune
 //! bytes are pi's, the diet grep shrinks the result and keeps every matching line, the first
-//! page of `read` continues without gap or overlap, and the over-limit grep answer counts.
+//! page of `read` continues without gap or overlap, and over-limit grep retains matching lines.
 //! Offline and deterministic: every file is made in a `TestEnv`.
 
 use oxa_fake::TestEnv;
@@ -262,20 +262,33 @@ fn read_first_page_byte_limit_applies_when_first() {
 }
 
 #[test]
-fn grep_over_limit_gives_one_notice_and_counts() {
+fn grep_over_limit_retains_matching_lines_in_both_formats() {
     let env = TestEnv::new();
     write_tree(&env);
-    let args = json!({"pattern": "needle", "context": 2, "path": "project"});
-    let out = ok(&GrepTool::new(), &env, args, ToolTune::default());
-    let (head, rows) = out.split_once("\n\n").expect("notice, blank line, counts");
-    assert_eq!(
-        head,
-        "300 matches in total, the limit was 100. Narrow the pattern, path or glob, or raise limit, to see the lines."
-    );
-    let rows: Vec<&str> = rows.lines().collect();
-    assert_eq!(rows.len(), 30);
-    for (i, row) in rows.iter().enumerate() {
-        assert_eq!(*row, format!("{}: 10 matches", fixture_rel(i)));
+    let args = json!({"pattern": "needle", "path": "project"});
+    for tune in [ToolTune::default(), diet()] {
+        let out = ok(&GrepTool::new(), &env, args.clone(), tune);
+        let (rows, notice) = out.split_once("\n\n").expect("matches, blank line, notice");
+        assert_eq!(
+            notice,
+            "[100 matches limit reached. Use limit=200 for more, or refine pattern]"
+        );
+        let mut expected = Vec::new();
+        for i in 0..10 {
+            let path = fixture_rel(i);
+            if tune.diet {
+                expected.push(path.clone());
+            }
+            for k in (2..40).step_by(4) {
+                let prefix = if tune.diet {
+                    format!("  {}:", k + 1)
+                } else {
+                    format!("{path}:{}:", k + 1)
+                };
+                expected.push(format!("{prefix} needle item {i:02}-{k:02} in the component"));
+            }
+        }
+        assert_eq!(rows, expected.join("\n"));
     }
 }
 

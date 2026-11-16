@@ -776,12 +776,10 @@ fn tools_017() {
     env.write("work/c.rs", "");
     let g = run_one(&env, "grep", r#"{"pattern":"hit","limit":0}"#, &[]);
 
-    // O-167: over the limit (0 is 1), local answers the total, the limit and a count
-    // per file instead of a cut list; no more lines than the limit. A limit that fits
-    // shows every line.
+    // A limit below 1 keeps the first matching line and a truncation notice.
+    // A limit that fits shows every line without a notice.
     assert_eq!(
-        g,
-        "2 matches in total, the limit was 1. Narrow the pattern, path or glob, or raise limit, to see the lines.\n\na.txt: 2 matches",
+        g, "a.txt\n  1: hit\n\n[1 matches limit reached. Use limit=2 for more, or refine pattern]",
         "local: grep limit 0"
     );
     let all = run_one(&env, "grep", r#"{"pattern":"hit","limit":2}"#, &[]);

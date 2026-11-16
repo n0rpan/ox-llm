@@ -186,10 +186,6 @@ impl Tool for GrepTool {
         if acc.matches == 0 {
             return ToolOutput::ok(errors::GREP_NO_MATCHES);
         }
-        if acc.extra {
-            return over_limit(&files, &q, cx);
-        }
-
         let cap = crate::read::output_cap(&cx.tune);
         let (body, byte_cut) = cap_output(&acc.out.join("\n"), crate::read::body_cap(&cx.tune));
         let mut notices = Vec::new();
@@ -207,73 +203,6 @@ impl Tool for GrepTool {
         }
         ToolOutput::ok(format!("{body}{}", errors::notices_suffix(&notices)))
     }
-}
-
-/// T8: the answer when matches exceed the limit. Counts every match of every
-/// file (streamed, one line at a time), then gives the total and one count per file that has
-/// matches, in the order of the normal output.
-fn over_limit(files: &[(PathBuf, String)], q: &Query, cx: &ToolCtx) -> ToolOutput {
-    let mut total = 0usize;
-    let mut counts = Vec::new();
-    for (path, shown) in files {
-        match count_matches(path, &q.re, cx.cancel) {
-            Ok(0) => {}
-            Ok(n) => {
-                total += n;
-                counts.push(diet::grep_file_count(shown, n));
-            }
-            Err(()) => return ToolOutput::error(errors::ABORTED),
-        }
-    }
-    let cap = crate::read::output_cap(&cx.tune);
-    let budgeted = crate::read::budgeted(&cx.tune);
-    let mut text = diet::grep_over_limit_notice(total, q.limit);
-    // L4: under the budget the leading notice counts against the cap too.
-    let head = if budgeted { text.len() + 2 } else { 0 };
-    let body_cap = crate::read::body_cap(&cx.tune).saturating_sub(head);
-    let (body, byte_cut) = cap_output(&counts.join("\n"), body_cap);
-    if !body.is_empty() {
-        text.push_str("\n\n");
-        text.push_str(&body);
-    }
-    if byte_cut {
-        let mut notices = vec![errors::byte_limit_notice(cap)];
-        if budgeted {
-            notices.push(diet::BYTE_CUT_HINT.to_string());
-        }
-        text.push_str(&errors::notices_suffix(&notices));
-    }
-    ToolOutput::ok(text)
-}
-
-/// The number of matching lines of one file, with the same reading and binary rule as `scan`.
-/// `Err` when the run was cancelled.
-fn count_matches(path: &Path, re: &regex::Regex, cancel: &CancelToken) -> Result<usize, ()> {
-    let Some(mut reader) = open_text(path) else {
-        return Ok(0);
-    };
-    let mut n = 0usize;
-    let mut raw: Vec<u8> = Vec::new();
-    loop {
-        if cancel.is_cancelled() {
-            return Err(());
-        }
-        raw.clear();
-        match reader.read_until(b'\n', &mut raw) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
-        if raw.last() == Some(&b'\n') {
-            raw.pop();
-        }
-        if raw.last() == Some(&b'\r') {
-            raw.pop();
-        }
-        if re.is_match(&String::from_utf8_lossy(&raw)) {
-            n += 1;
-        }
-    }
-    Ok(n)
 }
 
 /// Open a file for line reading. `None` when it cannot be opened or is binary (a NUL in its

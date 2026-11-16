@@ -74,6 +74,44 @@ fn results_sorted() {
     assert_eq!(ls, "alpha.txt\nalpha2\nBeta\nsub/\nzeta.txt");
 }
 
+/// Exceeding the match limit keeps the first matches, their line numbers and context.
+#[test]
+fn grep_over_limit_preserves_matches_and_context() {
+    let env = TestEnv::new();
+    env.write(
+        "work/a.txt",
+        "before one\nhit one\nafter one\ngap\nbefore two\nhit two\nafter two\n",
+    );
+    env.write("work/b.txt", "before three\nhit three\nafter three\n");
+    let work = env.work();
+
+    for path in [".", "a.txt"] {
+        let out = call(
+            &GrepTool::new(),
+            &env,
+            &work,
+            json!({"pattern": "hit", "path": path, "context": 1, "limit": 1}),
+        );
+        assert_eq!(
+            out,
+            "a.txt-1- before one\na.txt:2: hit one\na.txt-3- after one\n\n[1 matches limit reached. Use limit=2 for more, or refine pattern]",
+            "path {path}"
+        );
+    }
+
+    // The extra match can be in another file; keep the last match's trailing context.
+    let out = call(
+        &GrepTool::new(),
+        &env,
+        &work,
+        json!({"pattern": "hit", "context": 1, "limit": 2}),
+    );
+    assert_eq!(
+        out,
+        "a.txt-1- before one\na.txt:2: hit one\na.txt-3- after one\na.txt-5- before two\na.txt:6: hit two\na.txt-7- after two\n\n[2 matches limit reached. Use limit=4 for more, or refine pattern]"
+    );
+}
+
 /// ignored files absent from grep and find
 #[test]
 fn gitignore_respected() {
@@ -91,7 +129,7 @@ fn gitignore_respected() {
     assert_eq!(find, ".gitignore\nkept.txt");
 }
 
-/// default limits: grep counts over the limit; find and ls keep pi's notices
+/// Default limits retain the first results and add a truncation notice.
 #[test]
 fn limits_100_1000_500() {
     let env = TestEnv::new();
@@ -103,10 +141,12 @@ fn limits_100_1000_500() {
     let work = env.work();
 
     let grep = call(&GrepTool::new(), &env, &work, json!({"pattern": "hit"}));
-    // Over the limit: one notice and one count per file, not the cut list.
+    let expected: String = (0..100)
+        .map(|i| format!("many.txt:{}: hit {i}\n", i + 1))
+        .collect();
     assert_eq!(
         grep,
-        "150 matches in total, the limit was 100. Narrow the pattern, path or glob, or raise limit, to see the lines.\n\nmany.txt: 150 matches"
+        format!("{expected}\n[100 matches limit reached. Use limit=200 for more, or refine pattern]")
     );
 
     // Exactly the limit is not "reached": the notice needs a match beyond it.
@@ -165,8 +205,7 @@ fn limit_below_one_is_one() {
             json!({"pattern": "hit", "limit": limit.clone()}),
         );
         assert_eq!(
-            grep,
-            "2 matches in total, the limit was 1. Narrow the pattern, path or glob, or raise limit, to see the lines.\n\na.txt: 2 matches",
+            grep, "a.txt:1: hit one\n\n[1 matches limit reached. Use limit=2 for more, or refine pattern]",
             "limit {limit}"
         );
     }

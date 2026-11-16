@@ -512,20 +512,9 @@ pub mod web_search {
 pub mod diet {
     /// Added inside the first-page notice of `read` (T8), before the `]`.
     pub const READ_PAGE_HINT: &str = " Or use grep to find the part you need.";
-    /// The one notice of an over-limit `grep` (T8): the total, the limit,
-    /// and how to narrow the search.
-    pub fn grep_over_limit_notice(total: usize, limit: usize) -> String {
-        format!(
-            "{total} matches in total, the limit was {limit}. Narrow the pattern, path or glob, or raise limit, to see the lines."
-        )
-    }
     /// L4: the second notice of a `grep`, `find` or `ls` answer cut by its byte cap (after
     /// `<cap> limit reached`).
     pub const BYTE_CUT_HINT: &str = "Narrow the search to see the rest";
-    /// One file's line in an over-limit `grep` answer: `<path>: <n> matches`.
-    pub fn grep_file_count(path: &str, n: usize) -> String {
-        format!("{path}: {n} matches")
-    }
 }
 
 /// Texts of `edit`'s failure path and of `bash` (OXA-LOCAL-FIRST T7, F5). Lane `l4-edit` fills

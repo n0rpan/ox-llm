@@ -251,17 +251,18 @@ fn grep_under_the_limit_larger_than_the_cap_is_cut_and_says_how_to_narrow() {
 }
 
 #[test]
-fn grep_over_the_limit_counts_fit_the_cap() {
+fn grep_over_the_limit_keeps_lines_within_the_cap() {
     let env = TestEnv::new();
     write_tree(&env);
     let args = json!({"pattern": "needle", "context": 2, "path": "project"});
     let out = ok(&GrepTool::new(), &env, args, tuned(2_048));
-    eprintln!("grep over limit (counts), cap 2048: returned {} bytes", out.len());
     assert!(out.len() <= 2_048, "got {} bytes", out.len());
     assert!(
-        out.starts_with("300 matches in total, the limit was 100."),
+        out.contains("  3: needle item 00-02 in the component"),
         "got: {out}"
     );
+    assert!(out.contains("100 matches limit reached"), "got: {out}");
+    assert!(out.contains("Narrow the search to see the rest]"), "got: {out}");
 }
 
 #[test]
