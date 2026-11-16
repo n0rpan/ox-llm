@@ -204,6 +204,12 @@ impl Sandbox for NetSandbox {
     fn persistence_notice(&self) -> Option<&str> {
         self.inner.persistence_notice()
     }
+    fn scratch_dir(&self) -> Option<&std::path::Path> {
+        self.inner.scratch_dir()
+    }
+    fn preserves_host_path(&self, path: &std::path::Path) -> bool {
+        self.inner.preserves_host_path(path)
+    }
     fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
         Some(Arc::new(NetSandbox {
             inner: self.inner.for_session()?,

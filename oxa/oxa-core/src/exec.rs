@@ -114,6 +114,12 @@ pub fn request(
         stream.handle(ev, &mut hooks.sink(st, sink, ui), opts.events)
     };
     let turn = engine.chat(&req, &cancel, &mut on)?;
+    crate::Handle {
+        shared: st.shared.clone(),
+    }
+    .account_tokens(
+        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached)) + u64::from(turn.usage.completion),
+    );
     if opts.events {
         // The closing `*_end` records go through the same sink, so `message_update` sees them.
         stream.finish(&turn, &mut hooks.sink(st, sink, ui));
@@ -641,6 +647,9 @@ fn start_tool_prefill(
     // F11: the hint whenever the engine keeps checkpoints, as the idle prefill sends it.
     let snapshot_keep = st.info.caps.snapshot_keep > 0;
     let user_abort = st.shared.cancel.clone();
+    let budget = crate::Handle {
+        shared: st.shared.clone(),
+    };
     let after = tool_prefill_after();
     let spawned = std::thread::Builder::new()
         .name("oxa-tool-prefill".to_string())
@@ -688,7 +697,13 @@ fn start_tool_prefill(
                             std::thread::sleep(Duration::from_millis(5));
                         }
                     });
-                let res = engine.chat(&req, &cancel, &mut |_| {}).map(|_| true);
+                let res = engine.chat(&req, &cancel, &mut |_| {}).map(|turn| {
+                    budget.account_tokens(
+                        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
+                            + u64::from(turn.usage.completion),
+                    );
+                    true
+                });
                 done.store(true, Ordering::SeqCst);
                 res
             })

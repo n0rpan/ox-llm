@@ -613,6 +613,9 @@ pub const REPAIR_FORMAT: &str = "The call does not follow the format <tool_call>
 /// Appended as a user message at the safe boundary of a soft termination request (W1/W3).
 pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one short final turn to commit only changes made during this run if appropriate, or summarize the current state and remaining work. Leave pre-existing changes alone. Do not start new work.";
 
+pub(crate) const LENGTH_CONTINUE_LOCAL: &str = "The reply reached its output limit. Continue from the cutoff and finish the original task. Do not repeat completed work.";
+pub(crate) const LENGTH_RETRY_REMOTE: &str = "The previous reply reached its output limit and was discarded. Complete the original task with a shorter, complete answer.";
+
 #[cfg(test)]
 mod tests {
     #[test]

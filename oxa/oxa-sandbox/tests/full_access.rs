@@ -117,3 +117,53 @@ fn hooks_with_stdin_keep_the_sandbox_under_yolo() {
     assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
     assert!(!target.exists(), "the hook ran outside the wrapped sandbox");
 }
+
+/// #602: changing autonomy changes file identity, not exec-hook/extension confinement.
+#[test]
+fn file_view_tracks_live_yolo_but_keeps_plan_and_execution_sandboxed() {
+    use oxa_proto::Mode;
+    use oxa_sandbox::{Bwrap, Layout, Scratch};
+    let env = TestEnv::new();
+    let scratch = Scratch::create(&env.tmp()).unwrap();
+    let inner: Arc<dyn Sandbox> = Arc::new(Bwrap {
+        bwrap: "/usr/bin/bwrap".into(),
+        home: env.home(),
+        layout: Layout {
+            read: vec![env.root().join("shared")],
+            ..Layout::default()
+        }
+        .with_scratch(scratch),
+    });
+    for offline in [false, true] {
+        let switch = YoloSwitch::new(Autonomy::Auto);
+        let full = FullAccess::new(inner.clone(), switch.clone(), "", env.home(), offline);
+        let files = full.file_view(inner.clone());
+        for level in [Autonomy::Auto, Autonomy::Yolo, Autonomy::Standard] {
+            switch.set_level(level);
+            assert_eq!(files.scratch_dir(), inner.scratch_dir());
+            assert_eq!(files.home(), inner.home());
+            assert!(files.preserves_host_path(&env.root().join("shared/note.txt")));
+            for mode in [Mode::Workspace, Mode::Plan] {
+                let expected = if level == Autonomy::Yolo && mode == Mode::Workspace {
+                    None
+                } else {
+                    inner.scratch_dir()
+                };
+                assert_eq!(files.file_scratch_dir(mode), expected);
+            }
+            let s = spec(&env, "true".into(), true);
+            assert_eq!(files.bwrap_args(&s), inner.bwrap_args(&s));
+        }
+    }
+    // An inner sandbox that refuses execution must keep refusing even under YOLO.
+    let (full, _) = full(Autonomy::Yolo, &env);
+    let files = full.file_view(Arc::new(NoSandbox));
+    let s = spec(&env, "echo must-not-run".into(), true);
+    assert!(files.check().is_err());
+    let r = files.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_ne!(r.exit, Some(0));
+    let r = files.run_streaming(&s, &CancelToken::new(), &mut |_| {});
+    assert_ne!(r.exit, Some(0));
+    let r = files.run_with_stdin(&s, b"test", &CancelToken::new(), &mut |_| {});
+    assert_ne!(r.exit, Some(0));
+}

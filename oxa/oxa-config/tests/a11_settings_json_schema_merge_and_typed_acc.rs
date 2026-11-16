@@ -457,3 +457,19 @@ fn thinking_budgets_is_an_unknown_setting() {
         .iter()
         .any(|d| d.message.contains("unknown setting `thinkingBudgets`")));
 }
+
+#[test]
+fn ui_notify_schema_defaults_and_validation() {
+    let def = schema()
+        .iter()
+        .find(|def| def.key == "ui.notify")
+        .expect("ui.notify schema");
+    assert_eq!(def.default, "\"unfocused\"");
+    for policy in ["off", "unfocused", "always"] {
+        let settings = Settings::from_values(json!({"ui": {"notify": policy}}), json!({}));
+        assert!(settings.diagnostics().is_empty(), "{policy}");
+        assert_eq!(settings.string("ui.notify").as_deref(), Some(policy));
+    }
+    let invalid = Settings::from_values(json!({"ui": {"notify": "sometimes"}}), json!({}));
+    assert!(!invalid.diagnostics().is_empty());
+}

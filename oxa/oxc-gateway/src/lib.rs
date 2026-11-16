@@ -12,6 +12,8 @@ pub mod ledger;
 pub mod policy;
 #[cfg(feature = "pricing")]
 pub mod pricing;
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+pub mod rate_limits;
 #[cfg(feature = "anthropic-gateway")]
 pub mod runtime;
 
@@ -34,3 +36,6 @@ pub mod anthropic_stream;
 
 #[cfg(feature = "anthropic-client")]
 pub mod anthropic_client;
+
+#[cfg(all(feature = "anthropic-client", feature = "pricing"))]
+pub mod openrouter;
