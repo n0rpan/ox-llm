@@ -1052,6 +1052,32 @@ struct Prepared {
     remote: bool,
 }
 
+impl Prepared {
+    /// Check again after taking an execution slot: preparation and queueing may have used
+    /// up the parent's allowance. Only a child about to spawn gets its remaining time.
+    fn ready_to_start(&mut self, inner: &Inner, cancel: &CancelToken) -> bool {
+        if cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst) {
+            return false;
+        }
+        if let Some(at) = *lock(&inner.deadline) {
+            let left = at.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            // Keep the task last; `--max-time` takes a positive number of seconds.
+            let at = self.argv.len() - 1;
+            self.argv.splice(
+                at..at,
+                [
+                    "--max-time".into(),
+                    format!("{:.3}", left.as_secs_f64().max(0.001)),
+                ],
+            );
+        }
+        true
+    }
+}
+
 /// What a concurrently running child reports to the call's thread (which owns the UI).
 enum Event {
     Activity(usize, String),
@@ -1240,11 +1266,6 @@ impl Run<'_, '_> {
             argv.push("--append-system-prompt".into());
             argv.push(agent.system_prompt.clone());
         }
-        if let Some(left) = left {
-            // At least a millisecond: `--max-time` takes a positive number of seconds.
-            argv.push("--max-time".into());
-            argv.push(format!("{:.3}", left.as_secs_f64().max(0.001)));
-        }
         argv.push(T::TASK.replace("{task}", task));
         let env = vec![
             (ENV_SESSION_HINT.to_string(), hint.clone()),
@@ -1289,10 +1310,14 @@ impl Run<'_, '_> {
 
     /// Run task `k` (one child), its cleanup included.
     fn child(&mut self, k: usize, item: &Item, task: &str) -> ChildResult {
-        let p = match self.prepare(k, item, task) {
+        let mut p = match self.prepare(k, item, task) {
             Ok(p) => p,
             Err(r) => return *r,
         };
+        if !p.ready_to_start(self.inner, self.cx.cancel) {
+            let r = ChildResult::unstarted(&p.agent, Status::Aborted, NOT_STARTED.to_string());
+            return self.finish(k, r);
+        }
         self.progress(k, "running");
         let (inner, cancel) = (self.inner, self.cx.cancel);
         let r = wait_child(inner, cancel, &p, &mut |a| self.progress(k, &a));
@@ -1319,11 +1344,11 @@ impl Run<'_, '_> {
             for _ in 0..workers {
                 let (tx, queue, local) = (tx.clone(), &queue, &local);
                 scope.spawn(move || loop {
-                    let Some((k, p)) = lock(queue).pop_front() else {
+                    let Some((k, mut p)) = lock(queue).pop_front() else {
                         break;
                     };
                     let _slot = (!p.remote).then(|| lock(local));
-                    if cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst) {
+                    if !p.ready_to_start(inner, cancel) {
                         let r = ChildResult::unstarted(&p.agent, Status::Aborted, NOT_STARTED.to_string());
                         let _ = tx.send(Event::Skipped(k, r));
                         continue;

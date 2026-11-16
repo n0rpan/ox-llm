@@ -1122,6 +1122,93 @@ fn queued_children_do_not_start_after_the_deadline() {
     assert_eq!(starts, ["start sess.s1"], "the queued task never started");
 }
 
+/// Exercise both kinds of concurrent queue: a remote task waiting for a worker, and a
+/// local task waiting for the single local slot while a remote task runs alongside it.
+fn concurrent_deadline_case(local: bool, remaining: Duration) -> (TestEnv, Outcome, Arc<MockHost>) {
+    let env = TestEnv::new();
+    let mut l = limits("sess", 200_000, None);
+    l["model"] = json!("cloud-lead");
+    l["remote"] = json!(true);
+    let host = MockHost::with(&env, l, json!({"parked": false}), false);
+    host.remote.lock().unwrap().push("cloud-child".to_string());
+    // Both initial remote workers (or whichever local child gets the slot first) hold
+    // their slot long enough to consume a measurable part of the parent's allowance.
+    let body = format!("case \"$last\" in *hold*) sleep 1;; esac\n{OK_BODY}");
+    let h = hooks_with(
+        child_script(&env, &body),
+        vec![
+            agent("scout", Some(if local { "local-child" } else { "cloud-child" })),
+            agent("worker", None),
+        ],
+        json!({"oxa": {"subagent": {"remoteConcurrency": if local { 3 } else { 2 }}}}),
+        &host,
+    )
+    .with_deadline(Instant::now() + remaining);
+    let o = run(
+        &env,
+        &h,
+        json!({"tasks": [
+            {"agent": "scout", "task": "hold one"},
+            {"agent": "scout", "task": "hold two"},
+            {"agent": "worker", "task": "last"},
+        ]}),
+    );
+    (env, o, host)
+}
+
+/// #508 / PR #560: preparation happens before workers run. Recheck the deadline after
+/// acquiring a worker or the local slot, not just in the sequential path.
+#[test]
+fn concurrent_queued_children_do_not_start_after_the_deadline() {
+    for local in [false, true] {
+        let (env, o, host) = concurrent_deadline_case(local, Duration::from_millis(500));
+        assert!(o.out.is_error, "local={local}: {}", o.out.text);
+        assert!(
+            o.out.text.contains("Subagent was aborted before starting"),
+            "local={local}: {}",
+            o.out.text
+        );
+        assert_eq!(starts(&env), 2, "local={local}: only the initial children start");
+        assert_eq!(
+            host.clears().len(),
+            usize::from(local),
+            "only a started local child is cleared"
+        );
+        assert!(
+            o.live.iter().any(|s| s.contains("queued")),
+            "queued children still appear in progress"
+        );
+    }
+}
+
+/// #508 / PR #560: even before the deadline, a queued child's argv must use the time left
+/// when its execution slot becomes available, not the allowance captured in `prepare`.
+#[test]
+fn concurrent_queued_children_get_the_remaining_max_time() {
+    for local in [false, true] {
+        let (env, o, _) = concurrent_deadline_case(local, Duration::from_secs(60));
+        assert!(!o.out.is_error, "local={local}: {}", o.out.text);
+        let hints: Vec<String> = log(&env)
+            .into_iter()
+            .filter_map(|s| s.strip_prefix("start ").map(str::to_string))
+            .collect();
+        assert_eq!(hints.len(), 3);
+        let seconds = |hint: &str| -> f64 {
+            let words = argv(&env, hint);
+            let at = words.iter().position(|w| w == "--max-time").expect("--max-time");
+            assert!(words.last().unwrap().starts_with("Task: "), "the task stays last");
+            words[at + 1].parse().unwrap()
+        };
+        let first = seconds(&hints[0]);
+        let queued = seconds(&hints[2]);
+        assert!(first > 0.0 && first <= 60.0, "{first}");
+        assert!(
+            queued > 0.0 && queued <= first - 0.5,
+            "local={local}: first={first}, queued={queued} (must subtract time waiting for a slot)"
+        );
+    }
+}
+
 // ---- O-146: the eight-children cap over the whole tree of a parent session ----
 
 fn items(n: usize) -> Vec<Value> {
