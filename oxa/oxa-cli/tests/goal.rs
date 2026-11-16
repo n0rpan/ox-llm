@@ -43,15 +43,13 @@ fn goal_file_needs_no_positional_prompt_and_reports_terminal_evidence() {
     for (status, outcome, code) in [("complete", "done", 0), ("blocked", "blocked", 8)] {
         let env = TestEnv::new();
         env.write("work/goal.txt", "Finish synthetic work.");
-        let server = FakeServer::start(
-            vec![ScriptTurn::tool(
-                "done",
-                "goal_done",
-                &format!(r#"{{"status":"{status}","evidence":"Synthetic proof."}}"#),
-            )],
-            FakeOpts::default(),
-        )
-        .unwrap();
+        let mut complete = ScriptTurn::tool(
+            "done",
+            "goal_done",
+            &format!(r#"{{"status":"{status}","evidence":"Synthetic proof."}}"#),
+        );
+        complete.text = Some("Synthetic final answer".into());
+        let server = FakeServer::start(vec![complete], FakeOpts::default()).unwrap();
         let output = run(&env, &server, &["--goal", "goal.txt"]);
         let record = result(&output);
         assert_eq!(
@@ -62,6 +60,15 @@ fn goal_file_needs_no_positional_prompt_and_reports_terminal_evidence() {
         );
         assert_eq!(record["outcome"], outcome);
         assert_eq!(record["goal"]["evidence"], "Synthetic proof.");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            if status == "complete" {
+                "Synthetic final answer\n"
+            } else {
+                ""
+            },
+            "only successful completion exposes the final goal answer"
+        );
         let requests = server.requests();
         assert_eq!(requests.len(), 1);
         assert!(requests[0].system.contains("Finish synthetic work."));
@@ -291,32 +298,38 @@ fn ambiguous_ledger_error_preserves_unknown_usage_across_process_restart() {
 
 #[test]
 fn goal_and_output_schema_require_a_valid_final_answer_after_goal_done() {
-    for (answer, success) in [(r#"{"done":true}"#, true), ("not JSON", false)] {
+    for (initial, answer, success) in [
+        (None, Some(r#"{"done":true}"#), true),
+        (None, Some("not JSON"), false),
+        (Some(r#"{"done":true}"#), None, true),
+    ] {
         let env = TestEnv::new();
         env.write("work/goal.txt", "Finish synthetic work with a structured answer.");
         env.write(
             "work/answer.schema.json",
             r#"{"type":"object","required":["done"],"properties":{"done":{"enum":[true]}}}"#,
         );
-        let server = FakeServer::start(
-            vec![
-                ScriptTurn::tool(
-                    "done",
-                    "goal_done",
-                    r#"{"status":"complete","evidence":"Synthetic proof."}"#,
-                ),
-                ScriptTurn::text(answer),
-            ],
-            FakeOpts::default(),
-        )
-        .unwrap();
+        let mut complete = ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic proof."}"#,
+        );
+        complete.text = initial.map(str::to_owned);
+        let mut script = vec![complete];
+        if let Some(answer) = answer {
+            script.push(ScriptTurn::text(answer));
+        }
+        let server = FakeServer::start(script, FakeOpts::default()).unwrap();
         let output = run(
             &env,
             &server,
             &["--goal", "goal.txt", "--output-schema", "answer.schema.json"],
         );
         let terminal = result(&output);
-        assert_eq!(server.requests().iter().filter(|r| r.max_tokens != 0).count(), 2);
+        assert_eq!(
+            server.requests().iter().filter(|r| r.max_tokens != 0).count(),
+            if answer.is_some() { 2 } else { 1 }
+        );
         if success {
             assert!(
                 output.status.success(),
@@ -333,6 +346,10 @@ fn goal_and_output_schema_require_a_valid_final_answer_after_goal_done() {
             assert!(!output.status.success());
             assert_eq!(terminal["error_class"], "schema_mismatch");
             assert_ne!(terminal["goal"]["status"], "done");
+            assert!(
+                output.stdout.is_empty(),
+                "a rejected answer must remain unpublished"
+            );
         }
     }
 }
