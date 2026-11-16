@@ -48,6 +48,17 @@ jobs:
             RUSTUP_HOME="$RUSTUP_HOME" TMPDIR="$TMPDIR" CARGO_BUILD_JOBS=3 \
             DYLD_LIBRARY_PATH="$RUSTUP_HOME/toolchains/1.99.1-aarch64-apple-darwin/lib" \
             cargo check --release --locked --workspace --tests
+      # Temporary development diagnostic; removed before final release qualification.
+      - name: Temporary runtime portability preflight
+        working-directory: oxa
+        run: |
+          env -i PATH="$PATH" HOME="$HOME" CARGO_HOME="$CARGO_HOME" \
+            RUSTUP_HOME="$RUSTUP_HOME" TMPDIR="$TMPDIR" CARGO_BUILD_JOBS=3 \
+            cargo build --locked --workspace
+          env -i PATH="$PATH" HOME="$HOME" CARGO_HOME="$CARGO_HOME" \
+            RUSTUP_HOME="$RUSTUP_HOME" TMPDIR="$TMPDIR" CARGO_BUILD_JOBS=3 \
+            OXA_BIN="$PWD/target/debug/oxa" OXA_FAKE_BIN="$PWD/target/debug/oxa-fake" \
+            cargo test --locked --workspace --no-fail-fast
       - name: Build release workspace (Linux release default features)
         working-directory: oxa
         run: |
