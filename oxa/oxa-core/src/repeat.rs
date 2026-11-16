@@ -62,13 +62,13 @@ pub enum Verdict {
 }
 
 /// Judge one call `name(args)` that ran and whose shaped result is `text`. `in_batch` = the
-/// earlier calls of the same batch with their final result texts, in call order.
+/// earlier calls of the same batch with their final result texts and error flags, in call order.
 pub(crate) fn judge(
     st: &SessionState,
     name: &str,
     args_raw: &str,
     text: &str,
-    in_batch: &[(&str, &str, &str)],
+    in_batch: &[(&str, &str, &str, bool)],
 ) -> Verdict {
     if !st.settings.bool(SETTING, true) {
         return Verdict::Pass;
@@ -94,11 +94,11 @@ pub(crate) fn judge(
     }
     // The batch first (newest), then the wire, both walked back from the newest.
     let mut found = Found::default();
-    for (n, a, t) in in_batch.iter().rev() {
+    for (n, a, t, failed) in in_batch.iter().rev() {
         if !same_call(n, a, name, &args) {
-            // Another read-only call leaves the earlier copies in context (#463); any other
-            // call may change files and ends the run (the suffix found so far still counts).
-            if READ_ONLY.contains(n) && READ_ONLY.contains(&name) {
+            // Match the wire walk: failed writers only skip over a different call's run;
+            // identical failures and their notices must still count as repeats themselves.
+            if (READ_ONLY.contains(n) && READ_ONLY.contains(&name)) || (WRITERS.contains(n) && *failed) {
                 continue;
             }
             return finish(found, name, args_raw);

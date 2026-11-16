@@ -738,6 +738,79 @@ fn an_edit_between_interleaved_batch_reads_breaks_the_run() {
 }
 
 const BAD_EDIT: &str = r#"{"path":"a.txt","oldText":"no such text\n","newText":"x\n"}"#;
+const BAD_WRITE: &str = r#"{"path":"a.txt/child","content":"draft"}"#;
+
+/// PR #563: failed writers still count as repeats themselves, including their notices,
+/// even though they do not interrupt another call's repeat sequence.
+#[test]
+fn identical_failed_writers_in_one_batch_get_notices_then_stop() {
+    for (name, args) in [("edit", BAD_EDIT), ("write", BAD_WRITE)] {
+        let env = TestEnv::new();
+        let count = LIMIT + NOTICES_BEFORE_STOP + 1;
+        let mut batch = ScriptTurn::tool("w0", name, args);
+        for i in 1..count {
+            batch.tool_calls.push(call(&format!("w{i}"), name, args));
+        }
+        let (mut st, eng) = state(
+            &env,
+            vec![batch, ScriptTurn::text("not reached")],
+            Settings::default(),
+        );
+        assert_eq!(run(&mut st, "fix a.txt").0, RunEnd::Stopped);
+        let res = results(&st);
+        assert_eq!(res.len(), count as usize, "{name}: {res:#?}");
+        assert!(
+            res[..LIMIT as usize].iter().all(|r| !is_notice(r)),
+            "{name}: {res:#?}"
+        );
+        assert!(
+            res[LIMIT as usize..].iter().all(|r| is_notice(r)),
+            "{name}: {res:#?}"
+        );
+        assert_eq!(
+            eng.requests().len(),
+            1,
+            "{name}: no request after the stop notice"
+        );
+        assert_eq!(
+            std::fs::read_to_string(env.work().join("a.txt"))
+                .unwrap()
+                .lines()
+                .count(),
+            40
+        );
+    }
+}
+
+/// A command still breaks the run (it may change files), but must not hide the
+/// identical failed writer suffix inside each batch, including later batches.
+#[test]
+fn identical_failed_writer_suffixes_after_commands_get_notices_in_each_batch() {
+    for (name, args) in [("edit", BAD_EDIT), ("write", BAD_WRITE)] {
+        let env = TestEnv::new();
+        let mut turns = Vec::new();
+        for i in 0..2 {
+            let mut batch = bash(&format!("b{i}"), "echo other");
+            for j in 0..=LIMIT {
+                batch.tool_calls.push(call(&format!("w{i}-{j}"), name, args));
+            }
+            turns.push(batch);
+        }
+        turns.push(ScriptTurn::text("done"));
+        let (mut st, eng) = state(&env, turns, Settings::default());
+        assert_eq!(run(&mut st, "fix a.txt").0, RunEnd::Stopped);
+        let res = results(&st);
+        for batch in res.chunks_exact(LIMIT as usize + 2) {
+            assert!(
+                batch[..=LIMIT as usize].iter().all(|r| !is_notice(r)),
+                "{name}: {batch:#?}"
+            );
+            assert!(is_notice(&batch[LIMIT as usize + 1]), "{name}: {batch:#?}");
+        }
+        assert_eq!(res.len(), 2 * (LIMIT as usize + 2), "{name}: {res:#?}");
+        assert_eq!(eng.requests().len(), 3, "a command still resets the notice count");
+    }
+}
 
 /// #507: an `edit` that failed changed nothing, so it does not end a run of identical reads:
 /// `read, edit (fails), read, edit (fails), ...` is a loop and gets the notice. A successful

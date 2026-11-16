@@ -307,7 +307,7 @@ pub(crate) fn run_calls(
     // Phase 3, in call order: the ToolResult hook, shape, end events.
     let mut out = Vec::with_capacity(n);
     // The repeat guard (`repeat.rs`): this batch's earlier calls and final result texts, in order.
-    let mut batch: Vec<(String, String, String)> = Vec::with_capacity(n);
+    let mut batch: Vec<(String, String, String, bool)> = Vec::with_capacity(n);
     for (((p, res), ahead), call) in prepared.iter().zip(outputs).zip(early).zip(calls) {
         let (mut output, dur) = res.unwrap_or((ToolOutput::error(tool_errors::ABORTED), Duration::ZERO));
         output = apply_result_hook(st, p, output, sink, ui);
@@ -322,9 +322,9 @@ pub(crate) fn run_calls(
         let mut stop = false;
         let ran = matches!(p.plan, Plan::Run { .. });
         if ran {
-            let earlier: Vec<(&str, &str, &str)> = batch
+            let earlier: Vec<(&str, &str, &str, bool)> = batch
                 .iter()
-                .map(|(n, a, t)| (n.as_str(), a.as_str(), t.as_str()))
+                .map(|(n, a, t, failed)| (n.as_str(), a.as_str(), t.as_str(), *failed))
                 .collect();
             match crate::repeat::judge(st, &p.name, &call.args_raw, &output.text, &earlier) {
                 crate::repeat::Verdict::Pass => {}
@@ -344,10 +344,13 @@ pub(crate) fn run_calls(
                 }
             }
         }
-        // A failed edit or write changed nothing: it does not end a run of identical calls (#507).
-        if !(output.is_error && crate::repeat::WRITERS.contains(&p.name.as_str())) {
-            batch.push((p.name.clone(), call.args_raw.clone(), output.text.clone()));
-        }
+        // Retain failed writers too: they still count when the repeated call is that writer.
+        batch.push((
+            p.name.clone(),
+            call.args_raw.clone(),
+            output.text.clone(),
+            output.is_error,
+        ));
         let ms = Some(dur.as_millis() as u64);
         crate::fire::tool_end(st, &p.id, &p.name, &output, ms, sink, ui);
         out.push(CallResult {

@@ -324,13 +324,16 @@ fn a_limit_during_done_checks_still_gets_the_final_turn() {
     );
     env.write(
         "work/.oxa/settings.json",
-        r#"{"done":["sleep 0.5; printf finished > tool-finished"]}"#,
+        r#"{"done":["printf started > started; sleep 0.5; printf finished > tool-finished"]}"#,
     );
     env.write("work/.git/info/exclude", "started\n.oxa/\n");
+    // Startup or a slow reply must not let the limit fire before the done phase starts.
+    let mut completed = ScriptTurn::text("completed");
+    completed.fault = Some(oxa_fake::Fault::HoldHeaders { ms: 250 });
     let server = FakeServer::start(
         vec![
             ScriptTurn::tool("edit", "write", r#"{"path":"change.txt","content":"draft"}"#),
-            ScriptTurn::text("completed"),
+            completed,
             ScriptTurn::tool(
                 "save",
                 "bash",
@@ -340,7 +343,28 @@ fn a_limit_during_done_checks_still_gets_the_final_turn() {
         FakeOpts::default(),
     )
     .unwrap();
-    let output = start(&env, &server, "print", true).wait_with_output().unwrap();
+    // Exercise the same cooperative limit path, but signal it only after the check has
+    // started. A wall-clock deadline could expire during the earlier reply on a busy runner,
+    // making the final save fail because tool-finished did not exist yet.
+    let mut child = start(&env, &server, "print", false);
+    let started = Instant::now();
+    while !env.work().join("started").exists() {
+        if child.try_wait().unwrap().is_some() || started.elapsed() > Duration::from_secs(10) {
+            let _ = child.kill();
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "done check did not start: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(Command::new("kill")
+        .args(["-TERM", &child.id().to_string()])
+        .status()
+        .unwrap()
+        .success());
+    let output = child.wait_with_output().unwrap();
     assert_eq!(
         output.status.code(),
         Some(130),
@@ -352,9 +376,16 @@ fn a_limit_during_done_checks_still_gets_the_final_turn() {
         3,
         "the final request follows the completed check"
     );
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("tool-finished")).unwrap(),
+        "finished"
+    );
     assert!(
         String::from_utf8_lossy(&git(&env, &["log", "-1", "--format=%s"]).stdout)
-            .contains("Save interrupted work")
+            .contains("Save interrupted work"),
+        "stdout:{}\nstderr:{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
