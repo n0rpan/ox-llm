@@ -16,10 +16,21 @@ Issue lookup also requires source-project trust. Git and GitHub CLI host calls u
 validated executables outside the repository. Worker and check-supervisor PATHs
 exclude project directories, relative entries and unsafe aliases; project tools
 can still run by explicit path inside the sandbox.
+Branches must be literal names; checkout-history aliases such as `@{-1}` are refused.
+Every base and acceptance command list is resolved before any task in the batch
+starts. All bases must therefore exist at batch startup. Host metadata commands
+ignore replacement objects and inherited `GIT_*` overrides, disable filesystem
+monitors, and never lazily fetch missing objects. Fetch the needed objects before
+starting the batch. Checkout and checks also ignore replacement objects.
 
 Each task runs a child `oxa --mode=json` with its model and a saved session. The installed offline policy,
 including a parent `--offline` flag, is passed to every child. Normal agent permission, trust and
 sandbox rules apply. Configure project trust before unattended use. The runner
+passes `-na` on every child start, including repair, and removes `OXA_TRUST_PROJECT`.
+Worker project settings, MCP servers and extensions are therefore ignored even
+when a parent directory or the user's default would trust the new worktree.
+User-level resources keep their normal behavior; external acceptance uses the
+approved source project and the batch's frozen command list. The runner
 creates detached Git metadata with callbacks suppressed on the host, then creates
 the task branch and populates the fresh worktree inside the normal sandbox.
 Reference hooks, checkout hooks and smudge filters stay inside it; a reference hook
@@ -44,7 +55,7 @@ The runner reads the child's exit code, terminal `oxa_result` and session header
 without retaining its event stream. A blocked, failed or interrupted worker remains
 blocked and does not consume a repair attempt. Failed acceptance after a successful
 worker continues that same saved session once, then acceptance runs once more.
-JSON lines include the worker result and session ID and report `done`, `nothing_to_do` (no
+JSON lines include the worker result, session ID and captured `base_sha` and report `done`, `nothing_to_do` (no
 commits or file changes), `red` (checks still fail), or `blocked` (setup or agent
 execution failed). Exit codes are 0 for success, 1 if any task is red or blocked,
 and 2 for invalid input or output errors. A task setup failure produces a blocked
@@ -56,8 +67,13 @@ after process death does not permanently block a task.
 Worktrees and uncommitted changes remain in `.oxa-worktrees/<repository>/<id>`
 beside the repository (or the separate git directory). Private result receipts and
 locks live under `~/.oxa/agent/work/<repository-hash>/` (or the configured agent
-directory), outside the worker's writable Git bind. Worktrees stay outside that git
+directory), outside the worker's writable Git bind. Receipts are published atomically
+without overwriting an existing receipt. Worktrees stay outside that git
 directory so the normal sandbox can bind git objects and refs for commits. No automatic
 cleanup, commit, push, PR creation or continuation is implemented yet. Inspect
 retained work before removing it with `git worktree remove`. Review task prompts
 and bases before running them.
+
+`done` here describes accepted local work, which may be uncommitted. This slice
+does not publish it. The saving/publication slices must bind acceptance to a clean
+committed tree and verify its recorded commit before pushing.

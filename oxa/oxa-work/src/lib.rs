@@ -43,6 +43,41 @@ pub struct Record {
     pub detail: String,
     pub worker: Option<WorkerResult>,
     pub session_id: Option<String>,
+    pub base_sha: Option<String>,
+}
+
+/// An immutable task/base/check snapshot, built before any task in its batch runs.
+pub struct PlannedTask {
+    task: Task,
+    base_sha: String,
+    commands: Vec<String>,
+}
+impl PlannedTask {
+    pub fn task(&self) -> &Task {
+        &self.task
+    }
+    pub fn base_sha(&self) -> &str {
+        &self.base_sha
+    }
+}
+
+pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedTask> {
+    validate(&task)?;
+    let branch = checked(git(policy, repo, &["check-ref-format", "--branch", &task.branch]))?;
+    if branch != task.branch {
+        return Err("branch aliases are not allowed; provide a literal branch name".into());
+    }
+    let base_sha = checked(git(
+        policy,
+        repo,
+        &["rev-parse", "--verify", &format!("{}^{{commit}}", task.base)],
+    ))?;
+    let commands = done_commands(policy, repo, &base_sha)?;
+    Ok(PlannedTask {
+        task,
+        base_sha,
+        commands,
+    })
 }
 
 fn output(mut command: Command) -> Result<Output> {
@@ -56,8 +91,37 @@ fn checked(command: Command) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().into())
 }
 fn git(policy: &RunPolicy, repo: &Path, args: &[&str]) -> Command {
-    let mut c = Command::new(&policy.git_binary);
-    c.env("PATH", &policy.host_path).current_dir(repo).args(args);
+    metadata_git(&policy.git_binary, &policy.host_path, repo, args)
+}
+
+fn isolate_git_environment(command: &mut Command) {
+    for (key, _) in std::env::vars_os() {
+        if key.as_encoded_bytes().starts_with(b"GIT_") {
+            command.env_remove(key);
+        }
+    }
+    command.env("GIT_NO_REPLACE_OBJECTS", "1");
+}
+
+/// Host metadata and bootstrap commands never consult replace refs, invoke a
+/// filesystem monitor, or fetch missing objects through a repository's helpers.
+pub fn metadata_git(binary: &Path, path: &std::ffi::OsStr, repo: &Path, args: &[&str]) -> Command {
+    let mut c = Command::new(binary);
+    isolate_git_environment(&mut c);
+    c.env("PATH", path)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_ALLOW_PROTOCOL", "")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .current_dir(repo)
+        .args([
+            "--no-replace-objects",
+            "--no-optional-locks",
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "protocol.allow=never",
+        ])
+        .args(args);
     c
 }
 
@@ -109,6 +173,7 @@ pub fn issue_task(
         return Err("issue number must be positive".into());
     }
     let mut c = Command::new(gh);
+    isolate_git_environment(&mut c);
     c.env("PATH", host_path).current_dir(repo).args([
         "issue",
         "view",
@@ -175,6 +240,7 @@ fn supervise(
     lock: &fs::File,
 ) -> Result<Output> {
     let mut command = Command::new(binary);
+    isolate_git_environment(&mut command);
     if policy.offline {
         command.arg("--offline");
     }
@@ -259,17 +325,19 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         detail,
         worker: None,
         session_id: None,
+        base_sha: None,
     }
 }
-pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &RunPolicy) -> Result<Record> {
+pub fn run_task_with_policy(
+    repo: &Path,
+    binary: &Path,
+    planned: &PlannedTask,
+    policy: &RunPolicy,
+) -> Result<Record> {
+    let task = &planned.task;
     validate(task)?;
     let root = checked(git(policy, repo, &["rev-parse", "--show-toplevel"]))?;
     let root = PathBuf::from(root);
-    checked(git(
-        policy,
-        &root,
-        &["check-ref-format", "--branch", &task.branch],
-    ))?;
     let common = checked(git(
         policy,
         &root,
@@ -322,17 +390,14 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
         detail: String::new(),
         worker: None,
         session_id: None,
+        base_sha: Some(planned.base_sha.clone()),
     };
     let result = (|| -> Result<Outcome> {
         if tree.exists() {
             return Err("task worktree already exists; retained for inspection".into());
         }
-        let base = checked(git(
-            policy,
-            &root,
-            &["rev-parse", "--verify", &format!("{}^{{commit}}", task.base)],
-        ))?;
-        let commands = done_commands(policy, &root, &base)?;
+        let base = &planned.base_sha;
+        let commands = &planned.commands;
         let branch = format!("refs/heads/{}", task.branch);
         let exists = output(git(policy, &root, &["show-ref", "--verify", "--quiet", &branch]))?;
         match exists.status.code() {
@@ -355,7 +420,7 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
                 "--no-checkout",
                 "--detach",
                 tree_arg,
-                &base,
+                base,
             ],
         ))?;
         let tree = tree.canonicalize().map_err(|e| e.to_string())?;
@@ -381,7 +446,7 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
         let first = worker::run(binary, &tree, task, &task.prompt, policy, &lock_file, None)?;
         record.worker = Some(first.result.clone());
         record.session_id = first.session.clone();
-        let failures = acceptance(binary, &tree, &root, &commands, policy, &lock_file)?;
+        let failures = acceptance(binary, &tree, &root, commands, policy, &lock_file)?;
         if let Some(error) = first.failure() {
             return Err(format!("{error}\nAcceptance checks:\n{failures}"));
         }
@@ -397,7 +462,7 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
             )?;
             record.worker = Some(repair.result.clone());
             record.session_id = repair.session.clone();
-            let failures = acceptance(binary, &tree, &root, &commands, policy, &lock_file)?;
+            let failures = acceptance(binary, &tree, &root, commands, policy, &lock_file)?;
             if let Some(error) = repair.failure() {
                 return Err(format!("{error}\nAcceptance checks:\n{failures}"));
             }
@@ -418,14 +483,36 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
         Ok(outcome) => record.outcome = outcome,
         Err(e) => record.detail = e,
     }
-    // Separate receipts avoid overwriting another task's result. Never remove its worktree.
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(receipt)
-        .map_err(|e| e.to_string())?;
-    file.write_all(&serde_json::to_vec_pretty(&record).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    save_receipt(&receipt, &record)?;
     Ok(record)
+}
+
+fn save_receipt(path: &Path, record: &Record) -> Result<()> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    let result = (|| -> Result<()> {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temporary)
+            .map_err(|e| e.to_string())?;
+        file.write_all(&serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+        // Atomic publication with create-only semantics: an existing receipt
+        // is never overwritten, even if one appears while the task runs.
+        fs::hard_link(&temporary, path).map_err(|e| e.to_string())?;
+        fs::remove_file(&temporary).map_err(|e| e.to_string())?;
+        fs::File::open(path.parent().ok_or("receipt has no parent")?)
+            .and_then(|parent| parent.sync_all())
+            .map_err(|e| e.to_string())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(temporary);
+    }
+    result
 }

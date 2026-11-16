@@ -31,14 +31,14 @@ pub(crate) fn run(
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
             let spec = ExecSpec {
                 command: format!(
-                    "git checkout HEAD -- . && git checkout -b '{}' HEAD",
+                    "git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b '{}' HEAD",
                     branch.replace('\'', "'\\''")
                 ),
                 cwd: root,
                 writable: true,
                 net: sandbox.network(),
                 timeout_s: Some(600),
-                env: vec![("AI_AGENT".into(), "oxa".into())],
+                env: git_environment(),
             };
             let mut tail = Vec::new();
             let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
@@ -97,7 +97,7 @@ pub(crate) fn run(
             writable: true,
             net: sandbox.network(),
             timeout_s: Some(600),
-            env: vec![("AI_AGENT".into(), "oxa".into())],
+            env: git_environment(),
         };
         let mut tail = Vec::new();
         let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
@@ -120,7 +120,7 @@ pub(crate) fn run(
 // verdict by printing JSON or diagnostics. Git failures remain distinct from dirty.
 fn inspect(sandbox: &Bwrap, root: &Path) -> Result<i32, String> {
     let spec = ExecSpec {
-        command: r#"git --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -z | {
+        command: r#"git --no-replace-objects --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -z | {
     work_dirty=0
     while IFS= read -r -d '' work_entry; do work_dirty=1; done
     exit "$work_dirty"
@@ -134,7 +134,7 @@ exit "${work_probe_status[1]}"
         writable: false,
         net: false,
         timeout_s: Some(600),
-        env: Vec::new(),
+        env: git_environment(),
     };
     let mut tail = Vec::new();
     let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
@@ -147,6 +147,13 @@ exit "${work_probe_status[1]}"
             String::from_utf8_lossy(&tail)
         )),
     }
+}
+
+fn git_environment() -> Vec<(String, String)> {
+    vec![
+        ("AI_AGENT".into(), "oxa".into()),
+        ("GIT_NO_REPLACE_OBJECTS".into(), "1".into()),
+    ]
 }
 
 fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {

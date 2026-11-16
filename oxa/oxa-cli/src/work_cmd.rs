@@ -56,10 +56,7 @@ pub(crate) fn run(
             Some(&dirs.home),
         )
         .ok_or("no trusted Git executable outside the source project")?;
-        let output = std::process::Command::new(&git_binary)
-            .env("PATH", &host_path)
-            .current_dir(cwd)
-            .args(["rev-parse", "--show-toplevel"])
+        let output = oxa_work::metadata_git(&git_binary, &host_path, cwd, &["rev-parse", "--show-toplevel"])
             .output()
             .map_err(|e| e.to_string())?;
         if !output.status.success() {
@@ -98,12 +95,14 @@ pub(crate) fn run(
             }
             _ => return Err("usage: oxa work <taskfile> | --issue N --model MODEL".into()),
         };
-        let common = std::process::Command::new(&git_binary)
-            .env("PATH", &host_path)
-            .current_dir(&root)
-            .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-            .output()
-            .map_err(|e| e.to_string())?;
+        let common = oxa_work::metadata_git(
+            &git_binary,
+            &host_path,
+            &root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )
+        .output()
+        .map_err(|e| e.to_string())?;
         if !common.status.success() {
             return Err("cannot resolve runner repository".into());
         }
@@ -120,16 +119,32 @@ pub(crate) fn run(
             offline: oxa_proto::offline(),
             storage: dirs.agent_dir.join("work").join(key),
         };
+        // Freeze every task before checkout hooks or a first worker can change
+        // shared refs. A bad plan remains a per-task error, not a batch abort.
+        let planned: Vec<_> = tasks
+            .into_iter()
+            .map(|task| {
+                if is_trusted {
+                    oxa_work::plan_task(&root, task.clone(), &policy)
+                        .map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail)))
+                } else {
+                    Err(Box::new(oxa_work::blocked_record(
+                        &task,
+                        "source project is not trusted; approve it before unattended work".into(),
+                    )))
+                }
+            })
+            .collect();
         let mut code = 0;
-        for task in tasks {
-            let record = if is_trusted {
-                oxa_work::run_task_with_policy(&root, &binary, &task, &policy)
-                    .unwrap_or_else(|detail| oxa_work::blocked_record(&task, detail))
-            } else {
-                oxa_work::blocked_record(
-                    &task,
-                    "source project is not trusted; approve it before unattended work".into(),
-                )
+        for task in planned {
+            let record = match task {
+                Ok(plan) => {
+                    let mut record = oxa_work::run_task_with_policy(&root, &binary, &plan, &policy)
+                        .unwrap_or_else(|detail| oxa_work::blocked_record(plan.task(), detail));
+                    record.base_sha = Some(plan.base_sha().to_owned());
+                    record
+                }
+                Err(record) => *record,
             };
             if matches!(
                 record.outcome,

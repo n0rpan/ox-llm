@@ -65,10 +65,12 @@ pub(crate) fn run(
     session: Option<&str>,
 ) -> Result<Worker> {
     let mut command = Command::new(binary);
+    crate::isolate_git_environment(&mut command);
     command
         .env("PATH", &policy.host_path)
+        .env_remove("OXA_TRUST_PROJECT")
         .current_dir(root)
-        .args(["--mode=json", "--model", &task.model]);
+        .args(["-na", "--mode=json", "--model", &task.model]);
     if policy.offline {
         command.arg("--offline");
     }

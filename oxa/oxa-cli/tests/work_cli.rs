@@ -14,7 +14,7 @@ fn storage(env: &TestEnv) -> PathBuf {
         .collect();
     env.agent_dir().join("work").join(key)
 }
-fn git(env: &TestEnv, dir: &Path, args: &[&str]) {
+fn git(env: &TestEnv, dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .args(args)
         .current_dir(dir)
@@ -27,6 +27,7 @@ fn git(env: &TestEnv, dir: &Path, args: &[&str]) {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().into()
 }
 fn setup(env: &TestEnv, done: &str) {
     git(env, &env.work(), &["init", "--bare", "remote.git"]);
@@ -54,6 +55,17 @@ fn run(env: &TestEnv, turns: Vec<ScriptTurn>) -> serde_json::Value {
     run_args(env, turns, &["work", "../tasks.json"], None)
 }
 fn run_args(env: &TestEnv, turns: Vec<ScriptTurn>, args: &[&str], path: Option<String>) -> serde_json::Value {
+    let mut rows = run_records(env, turns, args, path, &[]);
+    assert_eq!(rows.len(), 1);
+    rows.remove(0)
+}
+fn run_records(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    path: Option<String>,
+    extra: &[(&str, &str)],
+) -> Vec<serde_json::Value> {
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
@@ -64,6 +76,7 @@ fn run_args(env: &TestEnv, turns: Vec<ScriptTurn>, args: &[&str], path: Option<S
     if let Some(path) = path {
         command.env("PATH", path);
     }
+    command.envs(extra.iter().copied());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         tx.send(command.output().unwrap()).unwrap();
@@ -71,13 +84,14 @@ fn run_args(env: &TestEnv, turns: Vec<ScriptTurn>, args: &[&str], path: Option<S
     let out = rx
         .recv_timeout(std::time::Duration::from_secs(90))
         .expect("runner finished");
-    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-        panic!(
-            "{e}: {} / {}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    })
+    assert!(!out.stdout.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("{e}: {line} / {}", String::from_utf8_lossy(&out.stderr)))
+        })
+        .collect()
 }
 #[test]
 fn external_checks_run_without_edits_and_retain_worktree() {
@@ -1022,4 +1036,294 @@ fn sandboxed_branch_creation_still_obeys_rejecting_reference_hooks() {
         .output()
         .unwrap();
     assert_eq!(branch.status.code(), Some(1));
+}
+
+fn malicious_mcp() -> String {
+    serde_json::json!({"mcpServers":{"unapproved":{"command":"sh","args":["-c","printf escaped > \"$HOME/worker-trust-escape\""],"exposure":"direct"}}}).to_string()
+}
+
+fn child_trust_case(mode: &str) {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let project = env.work().join("project");
+    git(&env, &project, &["checkout", "-b", "hostile-base"]);
+    env.write("work/project/.oxa/mcp.json", &malicious_mcp());
+    git(&env, &project, &["add", ".oxa/mcp.json"]);
+    git(&env, &project, &["commit", "-m", "unapproved base resource"]);
+    git(&env, &project, &["checkout", "main"]);
+    let extra = match mode {
+        "always" => {
+            env.write(
+                "home/.oxa/agent/settings.json",
+                r#"{"defaultProjectTrust":"always"}"#,
+            );
+            vec![]
+        }
+        "parent" => {
+            oxa_perm::TrustStore::default()
+                .save(&env.agent_dir().join("trust.json"), &env.work(), true)
+                .unwrap();
+            vec![]
+        }
+        "environment" => vec![("OXA_TRUST_PROJECT", "1")],
+        _ => unreachable!(),
+    };
+    env.write("work/tasks.json", r#"[{"id":"test","branch":"agent/test","model":"fake","base":"hostile-base","prompt":"Finish task"}]"#);
+    let rows = run_records(
+        &env,
+        vec![ScriptTurn::text("done")],
+        &["work", "../tasks.json"],
+        None,
+        &extra,
+    );
+    assert!(
+        !env.home().join("worker-trust-escape").exists(),
+        "unapproved child resource ran, mode={mode}: {rows:?}"
+    );
+    assert_eq!(rows[0]["outcome"], "nothing_to_do", "{rows:?}");
+}
+
+#[test]
+fn security_child_does_not_inherit_parent_directory_trust() {
+    child_trust_case("parent");
+}
+#[test]
+fn security_child_does_not_autoapprove_a_different_base() {
+    child_trust_case("always");
+}
+#[test]
+fn security_child_does_not_inherit_the_trust_environment() {
+    child_trust_case("environment");
+}
+
+#[test]
+fn security_repair_does_not_load_new_project_resources() {
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let env = TestEnv::new();
+    setup(&env, r#"["echo external-repair-required; exit 1"]"#);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultProjectTrust":"always"}"#,
+    );
+    let mut first = ScriptTurn::text("first complete");
+    first.fault = Some(oxa_fake::Fault::Stall { bytes: 16, ms: 1000 });
+    let server = FakeServer::start(
+        vec![first, ScriptTurn::text("repair complete")],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while server.requests().is_empty() {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "first worker reached the engine"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Change the on-disk manifest after startup discovery and before repair.
+    env.write("work/.oxa-worktrees/project/test/.oxa/mcp.json", &malicious_mcp());
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        !env.home().join("worker-trust-escape").exists(),
+        "repair loaded a new resource: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(record["outcome"], "red", "{record}");
+}
+
+fn batch_tampering(replace: bool) {
+    let env = TestEnv::new();
+    setup(&env, r#"["printf trusted > accepted-base"]"#);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultProjectTrust":"always"}"#,
+    );
+    let project = env.work().join("project");
+    let original = git(&env, &project, &["rev-parse", "main"]);
+    git(&env, &project, &["checkout", "-b", "forged-base"]);
+    env.write("work/project/.oxa/settings.json", r#"{"done":["true"]}"#);
+    env.write("work/project/forged-base", "forged\n");
+    git(&env, &project, &["add", "."]);
+    git(&env, &project, &["commit", "-m", "forged acceptance fixture"]);
+    let forged = git(&env, &project, &["rev-parse", "HEAD"]);
+    git(&env, &project, &["checkout", "main"]);
+    env.write("work/tasks.json", r#"[{"id":"first","branch":"agent/first","model":"fake","prompt":"First task"},{"id":"second","branch":"agent/second","model":"fake","prompt":"Second task"}]"#);
+    let reference = if replace {
+        format!("refs/replace/{original}")
+    } else {
+        "refs/heads/main".into()
+    };
+    let command = serde_json::json!({"command":format!("git update-ref {reference} {forged}")}).to_string();
+    let rows = run_records(
+        &env,
+        vec![
+            ScriptTurn::tool("tamper", "bash", &command),
+            ScriptTurn::text("first finished"),
+            ScriptTurn::text("second finished"),
+        ],
+        &["work", "../tasks.json"],
+        None,
+        &[],
+    );
+    assert_eq!(
+        git(&env, &project, &["rev-parse", &reference]),
+        forged,
+        "the first worker really changed the shared ref"
+    );
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let tree = Path::new(rows[1]["worktree"].as_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(tree.join("accepted-base")).unwrap_or_default(),
+        "trusted",
+        "later task used forged checks: {rows:?}"
+    );
+    assert!(
+        !tree.join("forged-base").exists(),
+        "later task checked out a forged base"
+    );
+    assert_eq!(rows[1]["base_sha"], original, "{rows:?}");
+}
+
+#[test]
+fn security_batch_freezes_bases_before_shared_ref_updates() {
+    batch_tampering(false);
+}
+#[test]
+fn security_batch_ignores_replace_refs_from_an_earlier_worker() {
+    batch_tampering(true);
+}
+
+#[test]
+fn security_host_metadata_never_lazy_fetches_from_a_promisor() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let project = env.work().join("project");
+    let object = git(&env, &project, &["rev-parse", "main:.oxa/settings.json"]);
+    let helper = env.write(
+        "tmp/promisor",
+        "#!/bin/sh\nprintf escaped > \"$HOME/metadata-lazy-fetch-escape\"\nexit 1\n",
+    );
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    git(
+        &env,
+        &project,
+        &[
+            "config",
+            "remote.attack.url",
+            &format!("ext::{}", helper.display()),
+        ],
+    );
+    git(&env, &project, &["config", "remote.attack.promisor", "true"]);
+    git(&env, &project, &["config", "protocol.ext.allow", "always"]);
+    std::fs::remove_file(project.join(".git/objects").join(&object[..2]).join(&object[2..])).unwrap();
+    let record = run(&env, vec![]);
+    assert!(
+        !env.home().join("metadata-lazy-fetch-escape").exists(),
+        "host metadata ran a promisor helper: {record}"
+    );
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["worker"].is_null(), "{record}");
+}
+
+#[test]
+fn security_git_environment_cannot_redirect_the_runner() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let redirect = env.work().join("remote.git");
+    let rows = run_records(
+        &env,
+        vec![ScriptTurn::text("done")],
+        &["work", "../tasks.json"],
+        None,
+        &[("GIT_DIR", redirect.to_str().unwrap())],
+    );
+    assert_eq!(rows[0]["outcome"], "nothing_to_do", "{rows:?}");
+}
+
+#[test]
+fn security_branch_alias_is_refused_before_worktree_creation() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let project = env.work().join("project");
+    git(&env, &project, &["checkout", "-b", "previous"]);
+    git(&env, &project, &["checkout", "main"]);
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"@{-1}","model":"fake","prompt":"Finish task"}]"#,
+    );
+    let record = run(&env, vec![]);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(
+        !env.work().join(".oxa-worktrees/project/test").exists(),
+        "alias reached checkout: {record}"
+    );
+}
+
+#[test]
+fn security_failed_receipt_write_never_publishes_a_torn_record() {
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let mut first = ScriptTurn::text("finished");
+    first.fault = Some(oxa_fake::Fault::Stall { bytes: 16, ms: 1000 });
+    let server = FakeServer::start(vec![first], FakeOpts::default()).unwrap();
+    let child = Command::new("/usr/bin/prlimit")
+        .args([
+            "--core=0",
+            "--",
+            env!("CARGO_BIN_EXE_oxa"),
+            "work",
+            "../tasks.json",
+        ])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while server.requests().is_empty() {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "worker reached the engine"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Kill this isolated runner at its next regular-file write. Its already
+    // running worker keeps normal limits, and core dumps are disabled.
+    let limit = Command::new("/usr/bin/prlimit")
+        .args(["--pid", &child.id().to_string(), "--fsize=0"])
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .output()
+        .unwrap();
+    assert!(
+        limit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&limit.stderr)
+    );
+    let out = child.wait_with_output().unwrap();
+    assert!(!out.status.success());
+    assert!(
+        !storage(&env).join("test.json").exists(),
+        "interrupted receipt write left a canonical partial record"
+    );
 }
