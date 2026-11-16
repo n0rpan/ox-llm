@@ -400,6 +400,27 @@ class Subscription(Base):
         self.assertEqual(json.loads(body)['error']['code'], 'cloud_not_shared')
         self.assertEqual(self.backend.requests, [])
 
+    def test_lan_guest_is_refused_the_subscription_even_with_the_share_opt_in(self):
+        self.sign_in()
+        self.start()
+        value = json.loads(self.stack.config_path.read_text())
+        value['cloud']['share_with_lan'] = True
+        self.stack.config_path.write_text(json.dumps(value))
+
+        def handle(handler, inner):
+            handler.share_client = 'guest'
+            return inner()
+        self.stack.server.share_listener = SimpleNamespace(
+            controller=SimpleNamespace(opts={'max_tokens': 100}, handle=handle))
+        self.assertNotIn(MODEL, [row['id'] for row in self.rows()])
+        status, body = self.chat(model=MODEL)
+        self.assertEqual(status, 403)
+        error = json.loads(body)['error']
+        self.assertEqual(error['code'], 'cloud_not_shared')
+        self.assertIn('subscription', error['message'])
+        self.assertEqual(self.backend.requests, [])
+        self.assertFalse(self.auth.calls)  # the account's tokens are never even refreshed for a guest
+
     def test_offline_refuses(self):
         self.sign_in()
         self.start(offline=True)

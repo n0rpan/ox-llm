@@ -78,6 +78,27 @@ def enabled(value):
     return settings(value).get('enabled') is True
 
 
+def share_with_lan(value):
+    """The owner's explicit opt-in (default off) to let LAN-share guests use API-key cloud models."""
+    return enabled(value) and settings(value).get('share_with_lan') is True
+
+
+def guest_refusal(value, item):
+    """None when a LAN-share guest may use this cloud model, else the 403 message.  The ChatGPT
+    subscription belongs to one person's account and is never shared, opt-in or not."""
+    if item['provider'] == 'chatgpt':
+        return 'The ChatGPT subscription is never available to LAN-share requests.'
+    if not share_with_lan(value):
+        return ('Cloud models are not available to LAN-share requests. The owner can allow them '
+                'with cloud.share_with_lan.')
+    return None
+
+
+def guest_models(value):
+    """The cloud catalog a LAN-share guest may see and use."""
+    return [item for item in models(value) if guest_refusal(value, item) is None]
+
+
 def provider_of(raw):
     """The provider for a valid catalog entry kind, else None."""
     if not isinstance(raw, dict):
