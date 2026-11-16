@@ -39,6 +39,7 @@ fn run(tool: &dyn Tool, env: &TestEnv, cwd: &Path, args: Value, tune: ToolTune) 
         cancel: &cancel,
         env: &[],
         tune,
+        hidden: None,
     };
     tool.run(&args, &cx, &mut |_: &str| {})
 }

@@ -77,7 +77,7 @@ impl Tool for FindTool {
         }
 
         let mut hits: Vec<String> = Vec::new();
-        for entry in walk(&root) {
+        for entry in walk(&root, cx.hidden.as_ref()) {
             if cx.cancel.is_cancelled() {
                 return ToolOutput::error(errors::ABORTED);
             }
