@@ -52,7 +52,15 @@ fn run(env: &TestEnv, args: &[&str], trace: Option<&Path>) -> Output {
 }
 fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Output {
     let mut cmd = if let Some(path) = trace {
-        let mut cmd = Command::new("strace");
+        // Use the documented checkout-local installation when host packages are unavailable.
+        // This must still run the real tracer: missing/broken tracing remains a hard failure.
+        let local_tracer =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local-checks/strace/bin/strace");
+        let mut cmd = Command::new(if local_tracer.is_file() {
+            local_tracer.as_os_str()
+        } else {
+            std::ffi::OsStr::new("strace")
+        });
         cmd.args(["-f", "-e", "trace=execve", "-o"])
             .arg(path)
             .arg(env!("CARGO_BIN_EXE_oxa"));
@@ -67,8 +75,8 @@ fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Outp
     cmd.output().unwrap_or_else(|error| {
         if trace.is_some() && error.kind() == std::io::ErrorKind::NotFound {
             panic!(
-                "strace is required for the no-Python process proof; install strace and put it on PATH \
-                 before running this test (see CONTRIBUTING.md): {error}"
+                "strace is required for the no-Python process proof; install strace on PATH or at \
+                 .local-checks/strace/bin/strace (see CONTRIBUTING.md): {error}"
             );
         }
         panic!("failed to launch {cmd:?}: {error}");
