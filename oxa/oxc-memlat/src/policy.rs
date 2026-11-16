@@ -106,7 +106,7 @@ pub trait Host {
 }
 pub fn apply(p: &Value, action: &str, host: &impl Host) -> Result<Value> {
     let config = path(p, "config")?;
-    let before = fs::read_to_string(&config)?;
+    let before = crate::read_text(&config)?;
     let menu = menu::entries(&before)?;
     let current = menu::selected(&before, &menu)?;
     let own = string(p, "memlat_entry")?;
@@ -219,7 +219,7 @@ pub fn rebuild(policy_path: &Path, p: &Value, dry_run: bool, force: bool, host: 
             return Ok(result);
         }
         let config = path(p, "config")?;
-        let before = fs::read_to_string(&config)?;
+        let before = crate::read_text(&config)?;
         let menu = menu::entries(&before)?;
         if menu::selected(&before, &menu)? != string(p, "stock_entry")? {
             return err("default changed during rebuild; refusing promotion");
@@ -285,8 +285,8 @@ pub fn rebuild(policy_path: &Path, p: &Value, dry_run: bool, force: bool, host: 
         updated["memlat_entry"] = json!(name);
         updated["memlat_image"] = json!(destination);
         updated["automatic_entry_block"] = json!(entry);
-        let record = python_pretty(&updated)? + "\n";
-        replace(policy_path, &fs::read_to_string(policy_path)?, &record)?;
+        let record = json_text(&updated, true)? + "\n";
+        replace(policy_path, &crate::read_text(policy_path)?, &record)?;
         replace(&config, &before, &after)?;
         let mut result = apply(&updated, "enable", host)?;
         match fs::remove_file(&pending) {
@@ -300,7 +300,7 @@ pub fn rebuild(policy_path: &Path, p: &Value, dry_run: bool, force: bool, host: 
     })();
     if let Err(error) = &result {
         if !dry_run {
-            let latest: Value = serde_json::from_str(&fs::read_to_string(policy_path)?)?;
+            let latest: Value = serde_json::from_str(&crate::read_text(policy_path)?)?;
             let fallback = apply(&latest, "fallback", host);
             host.notify(&latest, &error.to_string());
             fallback?;
@@ -315,9 +315,15 @@ fn merge(destination: &mut Value, source: &Value) -> Result<()> {
     Ok(())
 }
 // Python json.dumps(indent=2) escapes non-ASCII; preserve policy bytes too.
-fn python_pretty(value: &Value) -> Result<String> {
-    let raw = serde_json::to_string_pretty(value)?;
+pub fn json_text(value: &Value, pretty: bool) -> Result<String> {
+    let raw = if pretty {
+        serde_json::to_string_pretty(value)?
+    } else {
+        serde_json::to_string(value)?
+    };
     let mut out = String::new();
+    let mut quoted = false;
+    let mut escaped = false;
     for c in raw.chars() {
         if c.is_ascii() {
             out.push(c);
@@ -326,6 +332,20 @@ fn python_pretty(value: &Value) -> Result<String> {
             for u in c.encode_utf16(&mut buf) {
                 out += &format!("\\u{u:04x}");
             }
+        }
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quoted && c == '\\' {
+            escaped = true;
+            continue;
+        }
+        if c == '"' {
+            quoted = !quoted;
+        }
+        if !pretty && !quoted && (c == ':' || c == ',') {
+            out.push(' ');
         }
     }
     Ok(out)

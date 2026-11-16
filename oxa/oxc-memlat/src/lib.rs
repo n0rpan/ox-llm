@@ -12,6 +12,12 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + S
 pub fn err<T>(s: &str) -> Result<T> {
     Err(s.into())
 }
+/// Match Python Path.read_text's universal-newline decoding.
+pub fn read_text(path: &Path) -> Result<String> {
+    Ok(fs::read_to_string(path)?
+        .replace("\r\n", "\n")
+        .replace('\r', "\n"))
+}
 pub fn sha256(path: &Path) -> Result<String> {
     let mut file = fs::File::open(path)?;
     let mut hash = Sha256::new();
@@ -79,7 +85,7 @@ pub fn replace(path: &Path, before: &str, after: &str) -> Result<()> {
             }
         }
         file.sync_all()?;
-        if fs::read_to_string(path)? != before {
+        if read_text(path)? != before {
             return err("boot configuration changed concurrently");
         }
         fs::rename(&tmp, path)?;

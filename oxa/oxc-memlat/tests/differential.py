@@ -122,6 +122,7 @@ def fixture(root, case):
     if case == 'remember': text += '\nremember_last_entry: yes\n'
     if case == 'include': text += '\ninclude: elsewhere\n'
     if case == 'empty-cmdline': text = text.replace('cmdline: root=fixture quiet extra=outer', 'cmdline:')
+    if case == 'crlf': text=text.replace('\n','\r\n')
     (root/'esp/limine.conf').write_text(text)
     (root/'esp/policy.json').write_text(json.dumps(policy))
 
@@ -151,6 +152,7 @@ SCENARIOS = [
     ('nested-lookalike', [['prepare-update'], ['check']]),
     ('duplicate-cmdline', [['check']]),
     ('numeric', [['prepare-update'], ['rebuild']]),
+    ('crlf', [['prepare-update'], ['rebuild']]),
 ]
 with tempfile.TemporaryDirectory(prefix='memlat-differential-') as directory:
     root=Path(directory)
@@ -172,6 +174,8 @@ with tempfile.TemporaryDirectory(prefix='memlat-differential-') as directory:
             expected_code = 1 if case in ('duplicate','remember','include','duplicate-cmdline') or (case in ('modules','hash','bad-image') and args[0]=='enable') or (case in ('build-failure','secure-boot','signed','missing-driver','overflow-dtb') and args[0]=='rebuild') or (args[0]=='enable' and '--force' in args) else 0
             assert py.returncode == expected_code, (case,args,expected_code,py.returncode,py.stdout,py.stderr)
             assert py.returncode==rust.returncode, (case,args,py.returncode,rust.returncode,py.stderr,rust.stderr)
+            if py.returncode == 0:
+                assert py.stdout.splitlines()[-1] == rust.stdout.splitlines()[-1], (case,args,py.stdout,rust.stdout)
             assert actual==expected, (case,args, {k for k in actual.keys()|expected.keys() if actual.get(k)!=expected.get(k)},py.stdout,rust.stdout,py.stderr,rust.stderr)
             count+=1
     print(f'{count} actual-command differential steps passed')

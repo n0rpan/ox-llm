@@ -147,7 +147,10 @@ fn main() {
     }
     let action = action.unwrap_or_else(|| usage_error("the following arguments are required: action"));
     match execute(&action, Path::new(&path), no_lock, dry, force) {
-        Ok(value) => println!("{value}"),
+        Ok(value) => println!(
+            "{}",
+            policy::json_text(&value, false).expect("JSON serialization")
+        ),
         Err(error) => {
             eprintln!("memlat-boot: {error}");
             std::process::exit(1);
