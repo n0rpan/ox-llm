@@ -170,6 +170,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
@@ -371,6 +372,9 @@ fn open_named(
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
+    if let Some(status) = &built.status {
+        status.attach(&mut session)?;
+    }
     Ok(session)
 }
 
@@ -378,6 +382,7 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    status: Option<Arc<crate::status::StatusWriter>>,
     engine: Arc<dyn Engine>,
     store: Arc<dyn SessionStore>,
     sandbox: Arc<dyn Sandbox>,
@@ -802,6 +807,7 @@ fn prepare(
         default_edits: settings.default_tools_edits(),
     };
     let built = Built {
+        status: (!a.no_session).then(|| Arc::new(crate::status::StatusWriter::new(a.stall_timeout))),
         engine,
         store,
         sandbox,
@@ -1045,6 +1051,10 @@ fn run_headless(
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
     write_notices(stderr, ui.notes);
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
     finish_outcome(result, stderr)
 }
 
@@ -1078,7 +1088,12 @@ fn run_rpc(
     };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
-    finish_outcome(serve_outcome(session, dirs, input, out), stderr)
+    let result = serve_outcome(session, dirs, input, out);
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
+    finish_outcome(result, stderr)
 }
 
 /// The interactive terminal: the first prompt and the further messages come from the command
@@ -1147,7 +1162,11 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
         };
-        Session::open(deps, how)
+        let mut session = Session::open(deps, how)?;
+        if let Some(status) = &base.status {
+            status.attach(&mut session)?;
+        }
+        Ok(session)
     });
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
@@ -1857,6 +1876,7 @@ mod session_scratch_tests {
         };
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
         let built = Built {
+            status: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             store: Arc::new(MemStore::new()),
             sandbox: base.clone(),

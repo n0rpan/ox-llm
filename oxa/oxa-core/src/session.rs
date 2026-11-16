@@ -57,6 +57,8 @@ pub enum Open {
 pub struct State {
     pub session_id: String,
     pub session_file: Option<PathBuf>,
+    /// Optional live status sidecar installed by the front end.
+    pub status_file: Option<PathBuf>,
     pub session_name: Option<String>,
     pub model: String,
     /// Wave D D4b: the model runs at a cloud provider through the controller; `None` = local.
@@ -354,6 +356,18 @@ impl Session {
         Handle {
             shared: self.st.shared.clone(),
         }
+    }
+
+    /// Install a progress observer for this session and subsequent in-process switches.
+    pub fn set_progress_observer(&mut self, observer: Arc<dyn crate::ProgressObserver>) {
+        *self
+            .st
+            .shared
+            .gate
+            .progress
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(observer);
+        crate::progress::session(&self.st);
     }
 
     /// S1 / ENG-002: run the steering and follow-up messages that are queued, as one run, when
@@ -682,6 +696,9 @@ impl Session {
         };
         State {
             session_id: st.sref.id.clone(),
+            status_file: crate::progress::observer(st)
+                .and_then(|_| crate::progress::session_file(st))
+                .map(|p| p.with_extension("status.json")),
             session_file,
             session_name: session_name(st),
             model: st.model.clone(),
@@ -720,6 +737,7 @@ impl Session {
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
+        crate::progress::notify(&self.st, crate::Progress::Finished(self.st.stats.outcome));
         let mut sink = VecSink::default();
         observe_hooks(
             &mut self.st,
@@ -888,6 +906,7 @@ impl Session {
     /// New prompt/extension work gets fresh run-local flags; prefill-only claims do not.
     fn begin_run(&mut self) -> Result<BusyGuard, OxaError> {
         let guard = self.begin()?;
+        crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
         self.st.stats.output_truncated = false;
         Ok(guard)

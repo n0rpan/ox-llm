@@ -425,6 +425,7 @@ pub(crate) fn tool_start(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) {
+    crate::progress::notify(st, crate::Progress::ToolStart(name));
     sink.emit(&AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_string(),
         tool_name: name.to_string(),
@@ -450,6 +451,7 @@ pub(crate) fn tool_end(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) {
+    crate::progress::notify(st, crate::Progress::ToolEnd);
     sink.emit(&AgentEvent::ToolExecutionEnd {
         tool_call_id: id.to_string(),
         tool_name: name.to_string(),
@@ -879,6 +881,7 @@ pub(crate) fn session_start(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) {
+    crate::progress::session(st);
     observe(st, HookPoint::SessionStart, sink, ui, |_| {
         let mut v = json!({ "reason": start.reason });
         if let Some(p) = &start.previous {
@@ -933,6 +936,7 @@ pub(crate) fn thinking_level_select(
 /// `AgentSettled` record afterwards, once the claim is released (the busy-race rule: the record
 /// is the last thing an operation does).
 pub(crate) fn agent_settled(st: &mut SessionState, aborted: bool, sink: &mut dyn EventSink, ui: &mut dyn Ui) {
+    crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
     observe(
         st,
         HookPoint::AgentSettled,

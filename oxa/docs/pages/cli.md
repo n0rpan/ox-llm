@@ -25,6 +25,12 @@ Print, JSON and RPC runs write exactly one terminal JSON result on standard erro
 
 The `outcome` is `done`, `nothing_to_do`, `blocked`, `failed` or `interrupted`. `error_class` is a stable error code (for example `engine_http`, `stream_broken`, `done_checks_failed` or `output_limit`), or `null` for successful and no-op runs. Diagnostics remain human-readable; callers should use the result and exit code instead of matching their wording.
 
+Every saved CLI session has a small atomic `<session>.status.json` sibling, private like the session file. `oxa status <session-id|session-file> [--session-dir <dir>]` reads it without contacting an engine. JSON mode's session header and RPC `get_state` expose its `statusFile` path. `--no-session` creates no status file.
+
+The version-1 `oxa_status` object reports `session_id`, `pid`, `started_ms`, a monotonically increasing request `step`, `phase`, `last_tool`, `tokens`, `cost_usd`, `last_progress_ms`, `stall_timeout_ms`, `stall_deadline_ms` and the final `outcome` (`oxa_result`). Phases are `idle`, `working`, `model`, `prefill`, `compaction`, `tool` and `finished`. Times are Unix milliseconds. Counters cover this process's work on this session, including discarded replies, summaries and prefills. Failed requests with no usage make `tokens.complete` false and increment `unreported_requests`; unreported cached usage is `null`. Local provider cost is zero; cloud cost is `null` because the engine wire does not report settled USD charges. This file contains no prompts, replies, tool arguments/results or diagnostic text.
+
+`--stall-timeout <seconds>` opts into stall signalling (minimum 0.001 seconds). Status readers compare the recorded deadline to the current time; `oxa status` adds `stalled`. It is a progress signal and never cancels a task. Only advancing model/prefill/tool output and real phase boundaries update progress; repeated queue comments do not. Stream writes coalesce for at most one second or one quarter of the timeout, whichever is shorter; the deadline includes that grace so a coalesced delta cannot cause an early stall. Idle and finished sessions have no deadline. There is no polling thread or daemon, and reading status never changes it. A killed process can leave an active snapshot; its expired deadline remains visible. The terminal record preserves earlier prompt failures, and a status-write failure cannot report a successful process result.
+
 | Exit code | Outcome | Meaning |
 |---|---|---|
 | 0 | `done` | The requested run completed |

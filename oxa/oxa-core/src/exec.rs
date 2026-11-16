@@ -109,11 +109,46 @@ pub fn request(
     };
     let mut stream = StreamState::default();
     let mut hooks = crate::fire::StreamHooks::new(st, opts.events);
+    let progress = crate::progress::observer(st);
+    if let Some(progress) = &progress {
+        progress.notify(
+            &session,
+            crate::Progress::RequestStart {
+                kind: opts.kind,
+                remote: st.info.caps.remote,
+            },
+        );
+    }
+    let mut prefilled = 0;
     let mut on = |ev: StreamEvent| {
+        if let Some(progress) = &progress {
+            let advanced = match &ev {
+                StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
+                StreamEvent::ToolArgs { name, delta, .. } => name.is_some() || !delta.is_empty(),
+                StreamEvent::Prefill { done, .. } if *done > prefilled => {
+                    prefilled = *done;
+                    true
+                }
+                _ => false,
+            };
+            if advanced {
+                progress.notify(&session, crate::Progress::Advanced);
+            }
+        }
         hooks.raw(st, &ev, sink, ui);
         stream.handle(ev, &mut hooks.sink(st, sink, ui), opts.events)
     };
-    let turn = engine.chat(&req, &cancel, &mut on)?;
+    let turn = engine.chat(&req, &cancel, &mut on);
+    if let Some(progress) = &progress {
+        progress.notify(
+            &session,
+            crate::Progress::RequestEnd {
+                usage: turn.as_ref().ok().map(|turn| turn.usage),
+                remote: st.info.caps.remote,
+            },
+        );
+    }
+    let turn = turn?;
     if opts.events {
         // The closing `*_end` records go through the same sink, so `message_update` sees them.
         stream.finish(&turn, &mut hooks.sink(st, sink, ui));
@@ -640,6 +675,7 @@ fn start_tool_prefill(
     let preserve_thinking = st.info.caps.preserve_thinking != Some(false);
     // F11: the hint whenever the engine keeps checkpoints, as the idle prefill sends it.
     let snapshot_keep = st.info.caps.snapshot_keep > 0;
+    let progress = crate::progress::observer(st);
     let user_abort = st.shared.cancel.clone();
     let after = tool_prefill_after();
     let spawned = std::thread::Builder::new()
@@ -688,9 +724,27 @@ fn start_tool_prefill(
                             std::thread::sleep(Duration::from_millis(5));
                         }
                     });
-                let res = engine.chat(&req, &cancel, &mut |_| {}).map(|_| true);
+                if let Some(progress) = &progress {
+                    progress.notify(
+                        &session,
+                        crate::Progress::RequestStart {
+                            kind: TurnKind::Prefill,
+                            remote: false,
+                        },
+                    );
+                }
+                let res = engine.chat(&req, &cancel, &mut |_| {});
+                if let Some(progress) = &progress {
+                    progress.notify(
+                        &session,
+                        crate::Progress::RequestEnd {
+                            usage: res.as_ref().ok().map(|turn| turn.usage),
+                            remote: false,
+                        },
+                    );
+                }
                 done.store(true, Ordering::SeqCst);
-                res
+                res.map(|_| true)
             })
         });
     let Ok(handle) = spawned else {
@@ -945,7 +999,14 @@ fn run_one(
     }
     let started = Instant::now();
     let hook_updates = crate::fire::wants(st, HookPoint::ToolExecutionUpdate);
+    let progress = crate::progress::observer(st);
+    let session = st.sref.id.clone();
     let mut live = |sink: &mut dyn EventSink, partial: &str| {
+        if !partial.is_empty() {
+            if let Some(progress) = &progress {
+                progress.notify(&session, crate::Progress::Advanced);
+            }
+        }
         sink.emit(&AgentEvent::ToolExecutionUpdate {
             tool_call_id: p.id.clone(),
             tool_name: p.name.clone(),
@@ -974,6 +1035,8 @@ fn run_parallel(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Vec<(ToolOutput, Duration)> {
+    let progress = crate::progress::observer(st);
+    let session = st.sref.id.clone();
     for p in batch {
         crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
     }
@@ -991,12 +1054,20 @@ fn run_parallel(
                     unreachable!("a parallel batch holds runnable calls only")
                 };
                 let tool = Arc::clone(tool);
+                let progress = progress.clone();
+                let session = &session;
                 scope.spawn(move || {
                     if cancelled {
                         return (ToolOutput::error(tool_errors::ABORTED), Duration::ZERO);
                     }
                     let started = Instant::now();
-                    let mut none = |_: &str| {};
+                    let mut none = |partial: &str| {
+                        if !partial.is_empty() {
+                            if let Some(progress) = &progress {
+                                progress.notify(session, crate::Progress::Advanced);
+                            }
+                        }
+                    };
                     let out = contained_tool(&tool, || tool.run(&p.args, &owned.cx(), &mut none));
                     (out, started.elapsed())
                 })
