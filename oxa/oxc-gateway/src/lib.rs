@@ -13,8 +13,6 @@ pub mod share;
 
 #[cfg(feature = "cloud-only")]
 pub mod catalog;
-#[cfg(feature = "pricing")]
-pub mod catalog_overlay;
 #[cfg(feature = "ledger")]
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]

@@ -71,10 +71,73 @@ connections accept one request and treat client EOF/pipelining as cancellation.
 Cancel and await `serve` for orderly shutdown; do not detach it or its backend.
 
 Real gateway routing, owner-priority local leases, native request-ledger rows,
-CLI key commands, actual tailnet detection/LocalAPI, and a status adapter are
-subsequent wiring. The counters here are quota authority, not a second copy of
+CLI key commands and owner status-surface wiring are
+subsequent work. The counters here are quota authority, not a second copy of
 cloud billing or a complete request ledger. TLS can terminate at `tailscale
 serve`; direct certificate support is not implemented in this slice.
 
 Tests use only generated synthetic bearers and private throwaway directories,
 including concurrent child processes. No real credential store is consulted.
+
+## Owner live activity
+
+Clone `Server::status()` before consuming the server with `serve`. The handle's
+`snapshot()` reads only bounded in-memory counters: accepted connection tasks,
+and key id/name plus active request count after authentication and the optional
+peer check. Requests with one key are grouped; distinct keys remain distinct.
+No prompts, responses, bearer/digest, peer addresses or owner session data enter
+this view. `Status` Debug stays opaque. No guest HTTP route exposes the handle
+or its snapshot.
+
+An activity guard lives until the connection task and backend cleanup finish.
+A disconnected client whose generation is still cleaning up remains visible;
+shutdown joins that cleanup before the counts return to zero. Pending peer
+checks have an unnamed connection count only, and refused requests do not
+leave key rows behind. State is capped at the same 64-connection ceiling already
+used by the listener. There is no event queue, journal, timer, worker or refresh
+loop, and no state is created until an explicitly enabled server binds.
+
+These are live activity counts, not daily usage. `Store::guest_usage` remains
+the durable per-key quota authority. Joining those counters into the existing
+owner status surface, and adding guest rows through the gateway's shared ledger,
+remain part of coordinated native host wiring; this handle starts neither.
+
+## Linux tailnet identity adapter
+
+`tailnet::LocalApi::new(socket, deadline)` accepts an owner-selected absolute
+Unix socket path, normally `/var/run/tailscale/tailscaled.sock`. Construction
+performs no I/O and starts no task. It does not inspect installed credentials,
+invoke `tailscale`, use a TCP fallback, or read socket paths from guest requests
+or project settings. The caller must choose a trusted local daemon socket.
+
+`addresses()` obtains assigned addresses from a fresh `status?peers=false`
+response. Only Running state with a real TUN interface is usable; missing,
+malformed, wildcard, broadcast, multicast, loopback or IPv4-mapped addresses
+fail closed. The adapter
+returns assigned addresses, never another interface as a fallback. Listener
+address selection remains the separate listener's responsibility.
+
+`same_owner(peer)` takes the actual transport IP, queries fresh status and
+whois, and checks positive matching owner/profile ids plus an exact host prefix
+for that peer. Tagged or shared nodes are refused. Unknown/malformed identity
+and daemon errors never authorize access. This is an optional second factor;
+it does not replace the listener's API-key authentication. Userspace networking
+without a TUN interface is deliberately unsupported for direct binding.
+
+All work uses the caller's Tokio runtime. At most eight checks are active;
+excess calls fail immediately. One explicit deadline (positive, at most 30s)
+covers connect/write/read and both requests in a peer check. Cancellation or
+timeout drops the Unix stream and releases its slot; no worker remains. HTTP/1.0
+with connection close avoids pooling/chunk decoding, while enforcing 8-KiB/64
+header and 64-KiB JSON-body bounds. Redirects, transfer encodings and ambiguous
+lengths are refused. Daemon bodies and socket paths are absent from diagnostics.
+No listener, native gateway or CLI serve command is activated by this module.
+
+Contract references: Tailscale's [LocalAPI client](https://github.com/tailscale/tailscale/blob/main/client/local/local.go),
+[status fields](https://github.com/tailscale/tailscale/blob/main/ipn/ipnstate/ipnstate.go),
+[whois response](https://github.com/tailscale/tailscale/blob/main/client/tailscale/apitype/apitype.go),
+and [node ownership/address fields](https://github.com/tailscale/tailscale/blob/main/tailcfg/tailcfg.go).
+Tests use synthetic Unix-socket servers only; they never contact the installed
+daemon. The adapter implements the listener's Tailnet trait directly. Its errors refuse
+startup or optional peer authorization; they never trigger another interface.
+
