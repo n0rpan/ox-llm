@@ -362,7 +362,7 @@ pi page(s): compaction.md. Tests: `oxa-parity/tests/compaction.rs`.
 | CMP-008 | `CompactionEntry` shape (`summary`, `firstKeptEntryId`, `tokensBefore`, `details`) | P |  | `compaction.rs::cmp_008` |
 | CMP-009 | `/compact [instructions]` adds `Additional focus:` | P |  | `compaction.rs::cmp_009` |
 | CMP-010 | Overflow recovery: compact once and retry the prompt | A | a failed reply is not on the wire (W2); one recovery retry | `compaction.rs::cmp_010` |
-| CMP-011 | Length-stop recovery ordering | P | as pi (`agent-loop.ts`), orchestrator decision O-143: no automatic continue. A `length` reply without tool calls ends the run with stop reason `length`, shown as truncated; tool calls inside a cut reply are never run and get pi's "was not executed ... Re-issue" error result, then the loop goes on. The earlier one-continue sent a generating request ending in an assistant message, which oxe refuses (400; only an H6 prefill may end in one) | `compaction.rs::cmp_011` |
+| CMP-011 | Length-stop recovery ordering | A | A plain length cut gets a bounded continuation ending in a user instruction; local history retains the cut reply and may use advertised H6 prefill. Tool calls inside a cut reply are never run and get the "was not executed ... Re-issue" error result before the loop continues. Generating requests never end in an assistant message | `compaction.rs::cmp_011` |
 | CMP-012 | `compaction_start` / `compaction_end` events with `reason` manual\|threshold\|overflow | P |  | `compaction.rs::cmp_012` |
 | CMP-013 | `session_before_compact` can cancel or supply a custom summary | P | a custom summary still lands as the W5 head | `compaction.rs::cmp_013` |
 | CMP-014 | `session_compact`, `session_compact_failed` | P |  | `compaction.rs::cmp_014` |

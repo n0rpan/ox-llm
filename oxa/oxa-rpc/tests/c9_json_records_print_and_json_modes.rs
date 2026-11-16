@@ -619,6 +619,7 @@ fn print_reports_truncation_of_an_earlier_prompt() {
     cut.finish = oxa_proto::Finish::Length;
     let engine = Arc::new(ScriptedEngine::new(vec![cut, ScriptTurn::text("fine")]));
     let mut session = open(&env, &engine);
+    session.set_auto_retry(false);
     let prompts = vec![("one".to_string(), Vec::new()), ("two".to_string(), Vec::new())];
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let code = run_print(&mut session, prompts, &mut out, &mut err).unwrap();
@@ -629,6 +630,27 @@ fn print_reports_truncation_of_an_earlier_prompt() {
     );
     assert_eq!(code, 1, "{err}");
     assert_eq!(err.matches(TRUNCATED).count(), 1, "{err}");
+}
+
+/// A recovered earlier prompt succeeds and print mode still emits only the final answer.
+#[test]
+fn print_recovers_an_earlier_length_cut_before_the_next_prompt() {
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text("partial");
+    cut.finish = oxa_proto::Finish::Length;
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        cut,
+        ScriptTurn::text("recovered first answer"),
+        ScriptTurn::text("final answer"),
+    ]));
+    let mut session = open(&env, &engine);
+    let prompts = vec![("one".to_string(), Vec::new()), ("two".to_string(), Vec::new())];
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = run_print(&mut session, prompts, &mut out, &mut err).unwrap();
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&err));
+    assert_eq!(String::from_utf8(out).unwrap(), "final answer\n");
+    assert!(!String::from_utf8(err).unwrap().contains("Response was truncated"));
+    assert_eq!(engine.requests().len(), 4, "three generations and one prefill");
 }
 
 /// No tools declared and the final text is tool-call markup: one stderr warning, exit code 0.
