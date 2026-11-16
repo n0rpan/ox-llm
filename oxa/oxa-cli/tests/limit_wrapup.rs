@@ -43,6 +43,10 @@ fn start(env: &TestEnv, server: &FakeServer, mode: &str, limit: bool) -> Child {
 }
 
 fn start_with_max_time(env: &TestEnv, server: &FakeServer, mode: &str, max_time: Option<&str>) -> Child {
+    start_with_limits(env, server, mode, max_time.map(|n| ("--max-time", n)))
+}
+
+fn start_with_limits(env: &TestEnv, server: &FakeServer, mode: &str, limit: Option<(&str, &str)>) -> Child {
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
         .current_dir(env.work())
@@ -56,8 +60,8 @@ fn start_with_max_time(env: &TestEnv, server: &FakeServer, mode: &str, max_time:
     } else {
         command.args(["--mode", "rpc"]);
     }
-    if let Some(seconds) = max_time {
-        command.args(["--max-time", seconds]);
+    if let Some((flag, value)) = limit {
+        command.args([flag, value]);
     }
     let mut child = command
         .stdin(Stdio::piped())
@@ -197,6 +201,17 @@ fn supervised_children_exit_on_the_first_sigterm() {
             assert_eq!(status.signal(), Some(15), "{mode}/{identity}");
             assert_eq!(server.requests().len(), 1, "no child final turn");
         }
+    }
+}
+
+#[test]
+fn max_tokens_finishes_the_active_tool_then_allows_one_final_commit() {
+    for mode in ["print", "json", "rpc"] {
+        let env = fixture();
+        let server = server();
+        let mut child = start_with_limits(&env, &server, mode, Some(("--max-tokens", "1")));
+        let _input = child.stdin.take();
+        check(&env, &server, child.wait_with_output().unwrap());
     }
 }
 
@@ -453,4 +468,61 @@ fn sigterm_during_wrap_up_restores_default_termination() {
         };
         assert_eq!(status.signal(), Some(15));
     }
+}
+
+#[test]
+fn max_tokens_counts_output_but_not_cached_prompt_tokens() {
+    let env = fixture();
+    let script = || {
+        vec![
+            ScriptTurn::tool("read", "read", r#"{"path":".git/info/exclude"}"#),
+            ScriptTurn::text("finished"),
+            ScriptTurn::text("unexpected wrap-up"),
+        ]
+    };
+    let baseline = FakeServer::start(script(), FakeOpts::default()).unwrap();
+    let output = start_with_limits(&env, &baseline, "print", None)
+        .wait_with_output()
+        .unwrap();
+    assert!(output.status.success());
+    let requests = baseline.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].usage.unwrap().cached > 0);
+    let spent: u64 = requests
+        .iter()
+        .map(|r| {
+            let u = r.usage.unwrap();
+            u64::from(u.prompt.saturating_sub(u.cached)) + u64::from(u.completion)
+        })
+        .sum();
+
+    // One token above actual usage must complete, even though the full prompt
+    // (most of it cached) would exceed the budget on the second reply.
+    let budget = (spent + 1).to_string();
+    let server = FakeServer::start(script(), FakeOpts::default()).unwrap();
+    let output = start_with_limits(&env, &server, "print", Some(("--max-tokens", &budget)))
+        .wait_with_output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.requests().len(), 2);
+
+    // At the exact boundary the output tokens must count too: wrap up once.
+    let budget = spent.to_string();
+    let server = FakeServer::start(script(), FakeOpts::default()).unwrap();
+    let output = start_with_limits(&env, &server, "print", Some(("--max-tokens", &budget)))
+        .wait_with_output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(130),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].max_tokens <= 1024);
 }

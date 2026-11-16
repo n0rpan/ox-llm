@@ -2286,12 +2286,21 @@ impl<'a> Loop<'a> {
         if session.id == self.session.id {
             return (true, "Cannot delete the currently active session".to_string());
         }
-        let removed = match self.opts.store.remove(session) {
+        let removed = match oxa_session::remove_session_preserving_spills(
+            self.opts.store.as_ref(),
+            &self.opts.dirs.tmp_dir,
+            session,
+        ) {
             Ok(removed) => removed,
             Err(e) => return (true, format!("Failed to delete: {}", e.message)),
         };
-        // P6: the session's spill files go with it (`<tmp_dir>/<id>`), so they do not outlive it.
-        if let Err(e) = oxa_session::remove_spill_dir(&self.opts.dirs.tmp_dir, &session.id) {
+        // P6: the session's spill files go with it (`<tmp_dir>/<id>`), so they do not outlive it,
+        // unless a fork or clone of it still names them (#576).
+        if let Err(e) = oxa_session::remove_spill_dir_unless_forked(
+            self.opts.store.as_ref(),
+            &self.opts.dirs.tmp_dir,
+            session,
+        ) {
             return (
                 true,
                 format!("Session removed, but its spill files were not: {}", e.message),

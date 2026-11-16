@@ -345,15 +345,16 @@ fn quoted_calls_after_real_calls_and_in_code_are_not_repaired() {
 }
 
 #[test]
-fn length_cut_and_setting_off_keep_the_old_stop() {
+fn length_cut_recovers_without_tool_repair_and_setting_off_still_stops() {
     let env = TestEnv::new();
     let mut cut = ScriptTurn::text(UNCLOSED);
     cut.finish = Finish::Length;
-    let (mut st, eng) = state(&env, vec![cut], Settings::default());
+    let (mut st, eng) = state(&env, vec![cut, ScriptTurn::text("done")], Settings::default());
     let (end, events) = run(&mut st, "go");
     assert_eq!(end, RunEnd::Stopped);
-    assert_eq!(eng.requests().len(), 1);
+    assert_eq!(eng.requests().len(), 3, "chat, prefill, length continuation");
     assert!(repairs(&events).is_empty());
+    assert_eq!(st.stats.tool_repairs, 0);
 
     let off = Settings::from_values(serde_json::json!({"oxa": {"toolRepair": false}}), Value::Null);
     let (mut st, eng) = state(&env, vec![ScriptTurn::text(UNKNOWN_PARAMETER)], off);

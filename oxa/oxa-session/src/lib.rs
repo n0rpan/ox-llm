@@ -20,19 +20,23 @@
 mod clock;
 mod durable;
 mod inbox;
+mod lifecycle;
 mod lock;
 
 pub use inbox::{send_inbox, valid_inbox_id, Inbox};
 mod meta;
 mod ops;
+mod spill;
 mod store;
 mod transcript;
 mod tree;
 
 pub use clock::{local_time, LocalTime};
+pub use lifecycle::SpillLifecycleLock;
 pub use lock::{lock_path_of, SessionLock, LOCKED};
 pub use meta::{search_sessions, sort_sessions, SessionSort};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
+pub use spill::{inherited_spill_dirs, remove_session_preserving_spills, remove_spill_dir_unless_forked};
 pub use store::{
     count_files, decode_entry, decode_header, encode_entry, encode_header, new_entry_id, purge_session_file,
     remove_all_spill, remove_spill_dir, session_dir_name, session_files_under, FsStore, MemStore,
@@ -98,6 +102,42 @@ pub trait SessionStore: Send + Sync {
     fn header(&self, s: &SessionRef) -> Result<SessionHeader, OxaError>;
     /// Sessions of `cwd`, or of every directory when `None`; unreadable files are skipped.
     fn list(&self, cwd: Option<&Path>) -> Vec<SessionMeta>;
+    /// Whether `list(None)` covers a session path, even after that session was deleted.
+    /// Resolving an explicit path need not imply coverage: file stores can open sessions
+    /// outside their root. Cleanup must retain spills whose live references it cannot check.
+    /// Unknown store implementations conservatively opt out of spill reclamation.
+    fn lists_path(&self, _path: &Path) -> bool {
+        false
+    }
+    /// Exhaustive live references for spill reclamation. Unlike picker listings, this must
+    /// fail on unreadable directories, files or headers, not silently omit live sessions.
+    fn spill_cleanup_sessions(&self) -> Result<Vec<SessionRef>, OxaError> {
+        Err(OxaError::new(
+            oxa_proto::codes::INVALID,
+            "store cannot enumerate spill references",
+        ))
+    }
+    /// Whether all cross-store children of this session are guaranteed to publish store links.
+    /// Legacy sessions cannot establish this retroactively and must retain their spills.
+    fn spill_stores_tracked(&self, _session: &SessionRef) -> Result<bool, OxaError> {
+        Ok(false)
+    }
+    /// Serialize source loading through child publication with source deletion. This is
+    /// independent of the writer lock, so an open session can still be forked normally.
+    /// File-backed stores must coordinate across processes and lock both store endpoints.
+    fn spill_lifecycle_lock(&self, _session: &SessionRef) -> Result<SpillLifecycleLock, OxaError> {
+        Ok(SpillLifecycleLock::memory())
+    }
+    /// Hold all stores whose references reclamation will enumerate. The connected component
+    /// must be rechecked after locking, in case a concurrent fork published another link.
+    fn spill_cleanup_lock(&self) -> Result<SpillLifecycleLock, OxaError> {
+        Ok(SpillLifecycleLock::memory())
+    }
+    /// File-store roots linked by cross-store forks. Cleanup must check all of these stores
+    /// before reclaiming spills; errors leave the spills intact. Other store types need no roots.
+    fn spill_cleanup_roots(&self) -> Result<Vec<PathBuf>, OxaError> {
+        Ok(Vec::new())
+    }
     /// Resolve a path, a full id or a unique id prefix (`--session`, `--fork`).
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError>;
     /// Delete through the `trash` command when available, else unlink (pi's behaviour).
