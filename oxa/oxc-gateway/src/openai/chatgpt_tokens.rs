@@ -549,7 +549,7 @@ fn install_sync(
 }
 
 // Test-only access to the real locked install path, with only fsync injected.
-#[cfg(test)]
+#[cfg(all(test, feature = "anthropic-client", feature = "ledger"))]
 pub(super) fn try_install_sync(
     path: &Path,
     record: &TokenRecord,
