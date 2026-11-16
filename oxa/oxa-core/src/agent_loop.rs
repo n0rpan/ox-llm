@@ -120,6 +120,7 @@ fn run_inner(
             let reason = match st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
                 1 => Some(crate::WrapUpReason::TimeLimit),
                 2 => Some(crate::WrapUpReason::Signal),
+                3 => Some(crate::WrapUpReason::TokenLimit),
                 _ => None,
             };
             if let Some(reason) = reason {

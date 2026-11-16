@@ -50,6 +50,8 @@ pub struct Args {
     pub print: bool,
     /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
+    /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
+    pub max_tokens: Option<u64>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -232,6 +234,10 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--max-time <seconds>",
         "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
+    ),
+    (
+        "--max-tokens <N>",
+        "Gracefully wrap up a headless run after N new prompt + output tokens (cached tokens are free)",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -570,6 +576,15 @@ fn parse_flag(
             a.max_time = Some(
                 std::time::Duration::try_from_secs_f64(seconds)
                     .map_err(|_| usage("--max-time is too large"))?,
+            );
+        }
+        "--max-tokens" => {
+            let text = value(argv, i, inline, flag, "a positive integer")?;
+            a.max_tokens = Some(
+                text.parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| usage("--max-tokens requires a positive integer"))?,
             );
         }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),

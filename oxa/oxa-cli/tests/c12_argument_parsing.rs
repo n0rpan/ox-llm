@@ -459,3 +459,15 @@ fn max_time_accepts_fractional_seconds_and_rejects_invalid_durations() {
         assert_eq!(parse_err(&["--max-time", value]).code, codes::USAGE, "{value}");
     }
 }
+
+#[test]
+fn max_tokens_requires_a_positive_integer() {
+    assert_eq!(parse(&["--max-tokens", "42", "-p", "go"]).max_tokens, Some(42));
+    assert_eq!(
+        parse(&["--max-tokens=18446744073709551615"]).max_tokens,
+        Some(u64::MAX)
+    );
+    for value in ["0", "-1", "NaN", "inf", "1.5", "18446744073709551616", "invalid"] {
+        assert_eq!(parse_err(&["--max-tokens", value]).code, codes::USAGE, "{value}");
+    }
+}

@@ -234,10 +234,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     let mode = choose_mode(&a, stdin_is_tty, stdout_is_tty);
-    if a.max_time.is_some() && mode == RunMode::Interactive {
+    if (a.max_time.is_some() || a.max_tokens.is_some()) && mode == RunMode::Interactive {
+        let flag = if a.max_tokens.is_some() {
+            "--max-tokens"
+        } else {
+            "--max-time"
+        };
         return report(
             &mut *stderr,
-            &OxaError::new(codes::USAGE, "--max-time requires print, JSON or RPC mode"),
+            &OxaError::new(codes::USAGE, format!("{flag} requires print, JSON or RPC mode")),
         );
     }
     if mode == RunMode::Rpc && !a.files.is_empty() {
@@ -320,7 +325,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         }
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, a.max_time, dirs, stdin, stdout, &mut *stderr)
+            run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -336,7 +341,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     .with_hint(USAGE_HINT);
                 return report(&mut *stderr, &e);
             }
-            run_headless(mode, a.max_time, prep, prompts, &mut *stdout, &mut *stderr)
+            run_headless(
+                mode,
+                a.max_time,
+                a.max_tokens,
+                prep,
+                prompts,
+                &mut *stdout,
+                &mut *stderr,
+            )
         }
     }
 }
@@ -1034,6 +1047,7 @@ fn choose_open(
 fn run_headless(
     mode: RunMode,
     max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     prep: Prep,
     prompts: Vec<(String, Vec<Part>)>,
     stdout: &mut dyn Write,
@@ -1064,8 +1078,12 @@ fn run_headless(
             );
         }
     }
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
-    {
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
         Ok(limit) => limit,
         Err(error) => return finish_outcome(Err(error), stderr),
     };
@@ -1084,6 +1102,7 @@ fn run_headless(
 fn run_rpc(
     prep: Prep,
     max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     dirs: Dirs,
     stdin: Box<dyn Read + Send>,
     stdout: Box<dyn Write + Send>,
@@ -1103,8 +1122,12 @@ fn run_rpc(
     };
     notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
-    {
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
         Ok(limit) => limit,
         Err(error) => return finish_outcome(Err(error), stderr),
     };

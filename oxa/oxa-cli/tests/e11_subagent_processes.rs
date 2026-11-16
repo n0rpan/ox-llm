@@ -176,3 +176,55 @@ fn two_tasks_run_one_after_another() {
     );
     assert_eq!(last.usage.unwrap().cached, reqs[1].usage.unwrap().prompt);
 }
+
+#[test]
+fn max_tokens_wraps_up_child_and_parent_without_starting_queued_child() {
+    let env = TestEnv::new();
+    setup(&env);
+    env.write("work/notes.txt", "synthetic notes\n");
+    let mut expensive = ScriptTurn::tool("read", "read", r#"{"path":"notes.txt"}"#);
+    expensive.completion_tokens = Some(10_000);
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool(
+                "delegate",
+                "subagent",
+                r#"{"tasks":[{"agent":"scout","task":"first"},{"agent":"scout","task":"second"}]}"#,
+            ),
+            expensive,
+            ScriptTurn::text("child wrap-up"),
+            ScriptTurn::text("parent wrap-up"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let out = oxa(
+        &env,
+        &server.url(),
+        &["--max-tokens", "20000", "-p", "delegate twice"],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(130),
+        "{}\nstdout:{}\nrequests:{:?}",
+        String::from_utf8_lossy(&out.stderr),
+        String::from_utf8_lossy(&out.stdout),
+        requests(&server)
+            .iter()
+            .map(|r| (&r.session, r.max_tokens, r.usage))
+            .collect::<Vec<_>>()
+    );
+    let reqs = requests(&server);
+    assert_eq!(reqs.len(), 5);
+    let parent = &reqs[0].session;
+    let child = format!("{parent}.s1");
+    assert_eq!(reqs[1].max_tokens, 0, "park");
+    assert_eq!(reqs[2].session, child);
+    assert_eq!(reqs[3].session, child);
+    assert_eq!(reqs[4].session, *parent);
+    for r in &reqs[3..] {
+        assert!(r.max_tokens <= 1024, "bounded final turn");
+        assert!(!r.thinking);
+    }
+    assert!(String::from_utf8_lossy(&out.stdout).contains("parent wrap-up"));
+}
