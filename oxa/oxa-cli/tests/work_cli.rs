@@ -243,13 +243,31 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
 }
 #[test]
-fn setup_failure_records_blocked_and_keeps_existing_branch() {
+fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    git(&env, &env.work().join("project"), &["branch", "agent/test"]);
+    let project = env.work().join("project");
+    git(&env, &project, &["branch", "agent/test"]);
+    let original = git(&env, &project, &["rev-parse", "agent/test"]);
+    let occupied = env.work().join("occupied");
+    git(
+        &env,
+        &project,
+        &["worktree", "add", occupied.to_str().unwrap(), "agent/test"],
+    );
     let record = run(&env, vec![]);
     assert_eq!(record["outcome"], "blocked", "{record}");
-    assert!(record["detail"].as_str().unwrap().contains("already exists"));
+    assert!(
+        record["detail"]
+            .as_str()
+            .unwrap()
+            .contains(occupied.to_str().unwrap()),
+        "{record}"
+    );
+    assert!(record["worker"].is_null());
+    assert!(!env.work().join(".oxa-worktrees/project/test").exists());
+    assert_eq!(git(&env, &occupied, &["rev-parse", "HEAD"]), original);
+    assert_eq!(git(&env, &project, &["symbolic-ref", "--short", "HEAD"]), "main");
 }
 
 #[test]

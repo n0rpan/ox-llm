@@ -6,6 +6,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+mod tree;
 mod worker;
 pub use worker::{WorkerOutcome, WorkerResult};
 
@@ -25,7 +26,7 @@ fn default_base() -> String {
     "main".into()
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Done,
@@ -34,7 +35,7 @@ pub enum Outcome {
     Blocked,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Record {
     pub id: String,
     pub branch: String,
@@ -227,7 +228,8 @@ pub struct SupervisorRequest {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SupervisorOperation {
-    Checkout { branch: String },
+    Checkout { branch: String, create: bool },
+    Merge { base: String },
     Checks { commands: Vec<String> },
     Inspect,
 }
@@ -316,6 +318,35 @@ fn dirty_worktree(
     }
 }
 
+fn worker_and_checks(
+    worker: &Result<worker::Worker>,
+    merge: Result<()>,
+    checks: Result<String>,
+) -> Result<String> {
+    let mut errors = Vec::new();
+    match worker {
+        Ok(worker) => errors.extend(worker.failure()),
+        Err(error) => errors.push(format!("worker: {error}")),
+    }
+    if let Err(error) = merge {
+        errors.push(format!("merge verification: {error}"));
+    }
+    let failures = match checks {
+        Ok(failures) => failures,
+        Err(error) => {
+            errors.push(error);
+            String::new()
+        }
+    };
+    if errors.is_empty() {
+        return Ok(failures);
+    }
+    if !failures.is_empty() {
+        errors.push(format!("Acceptance checks:\n{failures}"));
+    }
+    Err(errors.join("\n"))
+}
+
 pub fn blocked_record(task: &Task, detail: String) -> Record {
     Record {
         id: task.id.clone(),
@@ -365,9 +396,7 @@ pub fn run_task_with_policy(
     // Keep the inode so a crashed runner leaves no stale ownership and concurrent
     // runners cannot acquire locks on two different files with the same name.
     let receipt = storage.join(format!("{}.json", task.id));
-    if receipt.exists() {
-        return Err("task already has a receipt; retained for inspection".into());
-    }
+    let replacing = receipt.exists();
     // The common git directory must not be an ancestor of the child cwd: the sandbox
     // deliberately refuses writable git binds with that layout.
     let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
@@ -382,6 +411,7 @@ pub fn run_task_with_policy(
     let trees = parent.join(".oxa-worktrees").join(name);
     fs::create_dir_all(&trees).map_err(|e| e.to_string())?;
     let tree = trees.join(&task.id);
+    tree::check_receipt(&receipt, &tree, task)?;
     let mut record = Record {
         id: task.id.clone(),
         branch: task.branch.clone(),
@@ -393,63 +423,21 @@ pub fn run_task_with_policy(
         base_sha: Some(planned.base_sha.clone()),
     };
     let result = (|| -> Result<Outcome> {
-        if tree.exists() {
-            return Err("task worktree already exists; retained for inspection".into());
-        }
         let base = &planned.base_sha;
         let commands = &planned.commands;
-        let branch = format!("refs/heads/{}", task.branch);
-        let exists = output(git(policy, &root, &["show-ref", "--verify", "--quiet", &branch]))?;
-        match exists.status.code() {
-            Some(1) => {}
-            Some(0) => return Err("task branch already exists; retained for inspection".into()),
-            _ => return Err(String::from_utf8_lossy(&exists.stderr).into_owned()),
-        }
-        let tree_arg = tree.to_str().ok_or("non-UTF8 worktree path")?;
-        // Bootstrap detached metadata without repository callbacks. Even
-        // --no-checkout runs reference hooks unless they are suppressed here.
-        // The real task branch and its reference hooks are created in bwrap.
-        checked(git(
-            policy,
-            &root,
-            &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "worktree",
-                "add",
-                "--no-checkout",
-                "--detach",
-                tree_arg,
-                base,
-            ],
-        ))?;
+        let prepared = tree::prepare(&root, &tree, task, base, binary, policy, &lock_file)?;
         let tree = tree.canonicalize().map_err(|e| e.to_string())?;
-        let checkout = supervise(
-            binary,
-            &tree,
-            SupervisorRequest {
-                source: root.clone(),
-                operation: SupervisorOperation::Checkout {
-                    branch: task.branch.clone(),
-                },
-            },
-            policy,
-            &lock_file,
+        let first = worker::run(binary, &tree, task, &prepared.prompt, policy, &lock_file, None);
+        if let Ok(worker) = &first {
+            record.worker = Some(worker.result.clone());
+            record.session_id = worker.session.clone();
+        }
+        let failures = worker_and_checks(
+            &first,
+            tree::ensure_merged(policy, &tree, base, &task.branch),
+            acceptance(binary, &tree, &root, commands, policy, &lock_file),
         )?;
-        if !checkout.status.success() {
-            return Err(format!(
-                "sandboxed worktree checkout failed: {}",
-                String::from_utf8_lossy(&checkout.stderr)
-            ));
-        }
-        let initial = checked(git(policy, &tree, &["rev-parse", "HEAD"]))?;
-        let first = worker::run(binary, &tree, task, &task.prompt, policy, &lock_file, None)?;
-        record.worker = Some(first.result.clone());
-        record.session_id = first.session.clone();
-        let failures = acceptance(binary, &tree, &root, commands, policy, &lock_file)?;
-        if let Some(error) = first.failure() {
-            return Err(format!("{error}\nAcceptance checks:\n{failures}"));
-        }
+        let first = first?;
         if !failures.is_empty() {
             let repair = worker::run(
                 binary,
@@ -459,13 +447,16 @@ pub fn run_task_with_policy(
                 policy,
                 &lock_file,
                 first.session.as_deref(),
-            )?;
-            record.worker = Some(repair.result.clone());
-            record.session_id = repair.session.clone();
-            let failures = acceptance(binary, &tree, &root, commands, policy, &lock_file)?;
-            if let Some(error) = repair.failure() {
-                return Err(format!("{error}\nAcceptance checks:\n{failures}"));
+            );
+            if let Ok(worker) = &repair {
+                record.worker = Some(worker.result.clone());
+                record.session_id = worker.session.clone();
             }
+            let failures = worker_and_checks(
+                &repair,
+                tree::ensure_merged(policy, &tree, base, &task.branch),
+                acceptance(binary, &tree, &root, commands, policy, &lock_file),
+            )?;
             if !failures.is_empty() {
                 record.detail = failures;
                 return Ok(Outcome::Red);
@@ -473,7 +464,7 @@ pub fn run_task_with_policy(
         }
         let head = checked(git(policy, &tree, &["rev-parse", "HEAD"]))?;
         let dirty = dirty_worktree(binary, &tree, &root, policy, &lock_file)?;
-        Ok(if head == initial && !dirty {
+        Ok(if head == prepared.initial && !dirty {
             Outcome::NothingToDo
         } else {
             Outcome::Done
@@ -483,11 +474,11 @@ pub fn run_task_with_policy(
         Ok(outcome) => record.outcome = outcome,
         Err(e) => record.detail = e,
     }
-    save_receipt(&receipt, &record)?;
+    save_receipt(&receipt, &record, replacing)?;
     Ok(record)
 }
 
-fn save_receipt(path: &Path, record: &Record) -> Result<()> {
+fn save_receipt(path: &Path, record: &Record, replacing: bool) -> Result<()> {
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -503,10 +494,13 @@ fn save_receipt(path: &Path, record: &Record) -> Result<()> {
         file.write_all(&serde_json::to_vec_pretty(record).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
-        // Atomic publication with create-only semantics: an existing receipt
-        // is never overwritten, even if one appears while the task runs.
-        fs::hard_link(&temporary, path).map_err(|e| e.to_string())?;
-        fs::remove_file(&temporary).map_err(|e| e.to_string())?;
+        if replacing {
+            // Only the task's already validated receipt is replaced under its lock.
+            fs::rename(&temporary, path).map_err(|e| e.to_string())?;
+        } else {
+            fs::hard_link(&temporary, path).map_err(|e| e.to_string())?;
+            fs::remove_file(&temporary).map_err(|e| e.to_string())?;
+        }
         fs::File::open(path.parent().ok_or("receipt has no parent")?)
             .and_then(|parent| parent.sync_all())
             .map_err(|e| e.to_string())
