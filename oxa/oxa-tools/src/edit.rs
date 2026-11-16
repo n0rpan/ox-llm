@@ -5,7 +5,7 @@ use crate::diff::{apply_edits_tolerant, Edit};
 use oxa_proto::{tool_errors, Access, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
 use std::fs::OpenOptions;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom, Write};
 
 /// Fixed for `path` missing or not a string (not in the frozen text table; see notes).
 const INVALID_PATH: &str = "Edit tool input is invalid. path must be a string.";
@@ -89,6 +89,13 @@ fn parse_args(args: &Value) -> Result<(String, Vec<Edit>), String> {
     Ok((path.to_string(), edits))
 }
 
+/// Replace the whole content of the open `file` (what `fs::write` does to a name).
+fn rewrite(file: &mut std::fs::File, content: &[u8]) -> std::io::Result<()> {
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(content)
+}
+
 /// pi's error cause for an I/O failure: `Error code: X` for the codes pi names, else the message.
 fn io_cause(e: &std::io::Error) -> String {
     match e.kind() {
@@ -105,22 +112,34 @@ fn io_cause(e: &std::io::Error) -> String {
 /// Save atomically (temp + fsync + rename, mode kept) when replacing the inode is safe.
 /// Symlinks are written through. Preserve the original inode for shared ownership, hard links or
 /// extended metadata, and when the directory disallows replacement; these edits remain in-place.
-fn save(abs: &std::path::Path, content: &[u8]) -> std::io::Result<()> {
-    save_with(abs, content, crate::write::replace_file)
+fn save(target: &std::path::Path, file: &mut std::fs::File, content: &[u8]) -> std::io::Result<()> {
+    save_with(target, file, content, crate::write::replace_file)
 }
 
 fn save_with(
-    abs: &std::path::Path,
+    target: &std::path::Path,
+    file: &mut std::fs::File,
     content: &[u8],
-    replace: impl FnOnce(&std::path::Path, &[u8], Option<&std::fs::Metadata>) -> std::io::Result<()>,
+    replace: impl FnOnce(
+        &std::fs::File,
+        &std::ffi::OsStr,
+        &[u8],
+        Option<&std::fs::Metadata>,
+    ) -> std::io::Result<()>,
 ) -> std::io::Result<()> {
-    let target = std::fs::canonicalize(abs).unwrap_or_else(|_| abs.to_path_buf());
-    let meta = std::fs::metadata(&target)?;
-    if requires_in_place(&target, &meta) {
-        return std::fs::write(abs, content);
+    let meta = file.metadata()?;
+    if requires_in_place(file, &meta) {
+        return rewrite(file, content);
     }
-    match replace(&target, content, Some(&meta)) {
-        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => std::fs::write(abs, content),
+    let parent = target.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let result = (|| {
+        let dir = std::fs::File::open(parent)?;
+        crate::checked::verify_at(parent, &dir)?;
+        let name = target.file_name().unwrap_or_default();
+        replace(&dir, name, content, Some(&meta))
+    })();
+    match result {
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => rewrite(file, content),
         other => other,
     }
 }
@@ -132,14 +151,14 @@ fn must_keep_inode(meta: &std::fs::Metadata, uid: u32, gid: u32) -> bool {
 }
 
 #[cfg(unix)]
-fn requires_in_place(target: &std::path::Path, meta: &std::fs::Metadata) -> bool {
+fn requires_in_place(file: &std::fs::File, meta: &std::fs::Metadata) -> bool {
     // SAFETY: these calls have no arguments or memory side effects.
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
-    must_keep_inode(meta, uid, gid) || has_extended_metadata(target)
+    must_keep_inode(meta, uid, gid) || has_extended_metadata(file)
 }
 
 #[cfg(not(unix))]
-fn requires_in_place(_target: &std::path::Path, _meta: &std::fs::Metadata) -> bool {
+fn requires_in_place(_file: &std::fs::File, _meta: &std::fs::Metadata) -> bool {
     true
 }
 
@@ -149,11 +168,8 @@ fn requires_in_place(_target: &std::path::Path, _meta: &std::fs::Metadata) -> bo
     target_os = "macos",
     target_os = "ios"
 ))]
-fn has_extended_metadata(target: &std::path::Path) -> bool {
+fn has_extended_metadata(file: &std::fs::File) -> bool {
     use std::os::fd::AsRawFd;
-    let Ok(file) = std::fs::File::open(target) else {
-        return true;
-    };
     // A size-only query catches ACLs, security labels and user attributes without reading them.
     // SAFETY: fd is open; a null buffer with length zero requests only the list's size.
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -178,7 +194,7 @@ fn has_extended_metadata(target: &std::path::Path) -> bool {
     target_os = "ios"
 )))]
 #[cfg(unix)]
-fn has_extended_metadata(_target: &std::path::Path) -> bool {
+fn has_extended_metadata(_file: &std::fs::File) -> bool {
     // Without a metadata query, do not risk dropping attributes on a fresh inode.
     true
 }
@@ -202,9 +218,19 @@ impl Tool for EditTool {
         }
         let abs = crate::resolve_path(cx.cwd, &path);
 
-        // Opening for read and write checks both, as pi's access(R_OK | W_OK) does, and does
-        // not truncate.
-        let mut file = match OpenOptions::new().read(true).write(true).open(&abs) {
+        // Resolve once, using the permission check's pin when present. Opening for read and
+        // write checks both without truncating. All in-place writes use this verified handle;
+        // atomic replacement uses an opened and verified parent directory instead.
+        let target = cx
+            .checked_real(&abs)
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::fs::canonicalize(&abs).unwrap_or_else(|_| abs.clone()));
+        let opened = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&abs)
+            .and_then(|f| crate::checked::verify_at(&target, &f).map(|()| f));
+        let mut file = match opened {
             Ok(f) => f,
             Err(e) => return ToolOutput::error(errors::edit_could_not(&path, &io_cause(&e))),
         };
@@ -212,7 +238,6 @@ impl Tool for EditTool {
         if let Err(e) = file.read_to_end(&mut bytes) {
             return ToolOutput::error(errors::edit_could_not(&path, &io_cause(&e)));
         }
-        drop(file);
         if cx.cancel.is_cancelled() {
             return ToolOutput::error(errors::ABORTED);
         }
@@ -223,7 +248,7 @@ impl Tool for EditTool {
             Ok(outcome) => outcome,
             Err(text) => return ToolOutput::error(text),
         };
-        if let Err(e) = save(&abs, outcome.content.as_bytes()) {
+        if let Err(e) = save(&target, &mut file, outcome.content.as_bytes()) {
             return ToolOutput::error(errors::edit_could_not(&path, &io_cause(&e)));
         }
 
@@ -241,12 +266,50 @@ mod save_tests {
     use std::os::unix::fs::MetadataExt;
 
     #[test]
+    fn atomic_save_refuses_a_parent_swapped_after_the_file_was_opened() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.write("work/dir/file", "before");
+        let outside = env.write("outside/file", "unrelated");
+        let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        std::fs::rename(env.work().join("dir"), env.work().join("saved")).unwrap();
+        std::os::unix::fs::symlink(outside.parent().unwrap(), env.work().join("dir")).unwrap();
+        let error = save(&path, &mut file, b"after").unwrap_err();
+        assert!(error.to_string().contains("changed after the permission check"));
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "unrelated");
+        assert_eq!(
+            std::fs::read_to_string(env.work().join("saved/file")).unwrap(),
+            "before"
+        );
+    }
+
+    #[test]
+    fn replacement_fallback_writes_the_open_file_not_a_swapped_leaf() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.write("work/file", "before");
+        let outside = env.write("outside/file", "unrelated");
+        let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let original = env.work().join("original");
+        std::fs::rename(&path, &original).unwrap();
+        std::os::unix::fs::symlink(&outside, &path).unwrap();
+        let mut attempted = false;
+        save_with(&path, &mut file, b"after", |_, _, _, _| {
+            attempted = true;
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .unwrap();
+        assert!(attempted);
+        assert_eq!(std::fs::read_to_string(original).unwrap(), "after");
+        assert_eq!(std::fs::read_to_string(outside).unwrap(), "unrelated");
+    }
+
+    #[test]
     fn replacement_permission_denied_falls_back_even_as_root() {
         let env = oxa_fake::TestEnv::new();
         let path = env.write("work/file", "before");
         let before = std::fs::metadata(&path).unwrap();
         let mut attempted = false;
-        save_with(&path, b"after", |_, _, _| {
+        let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        save_with(&path, &mut file, b"after", |_, _, _, _| {
             attempted = true;
             Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
         })
@@ -260,7 +323,8 @@ mod save_tests {
     fn replacement_enospc_does_not_fall_back_or_truncate() {
         let env = oxa_fake::TestEnv::new();
         let path = env.write("work/file", "before");
-        let error = save_with(&path, b"after", |_, _, _| {
+        let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let error = save_with(&path, &mut file, b"after", |_, _, _, _| {
             Err(std::io::Error::from_raw_os_error(libc::ENOSPC))
         })
         .unwrap_err();

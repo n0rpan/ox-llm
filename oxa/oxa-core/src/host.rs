@@ -968,14 +968,24 @@ fn clear_engine_hint(st: &mut SessionState, hint: &str) -> Result<Value, OxaErro
 
 /// Policy verdict for `a`; an `Ask` goes to the user, `Session` grants are remembered.
 fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaError> {
-    match st.policy.decide(st.mode, a, &st.cwd) {
-        Decision::Allow => Ok(()),
+    gate_pinned(st, a, ui).map(|_| ())
+}
+
+/// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
+fn gate_pinned(
+    st: &mut SessionState,
+    a: &Access,
+    ui: &mut dyn Ui,
+) -> Result<Option<std::path::PathBuf>, OxaError> {
+    let (decision, pin) = st.policy.decide_pinned(st.mode, a, &st.cwd);
+    match decision {
+        Decision::Allow => Ok(pin),
         Decision::Deny(reason) => Err(OxaError::new(codes::DENIED, reason)),
         Decision::Ask => match ui.ask_access(a) {
-            Answer::Once => Ok(()),
+            Answer::Once => Ok(pin),
             Answer::Session => {
                 st.policy.remember(a);
-                Ok(())
+                Ok(pin)
             }
             Answer::Deny if !ui.interactive() => Err(OxaError::new(
                 codes::DENIED,
@@ -1098,6 +1108,7 @@ fn call_tool(
     let accesses = {
         let cancel = st.shared.cancel.clone();
         let cx = ToolCtx {
+            checked: &[],
             cwd: &st.cwd,
             spill_dir: &st.spill_dir,
             sandbox: st.sandbox.as_ref(),
@@ -1110,10 +1121,13 @@ fn call_tool(
         tool.access(args, &cx)
             .map_err(|m| OxaError::new(codes::INVALID, m))?
     };
+    let mut checked = Vec::new();
     for a in &accesses {
-        gate(st, a, ui)?;
+        if let (Access::Read(p) | Access::Write(p), Some(real)) = (a, gate_pinned(st, a, ui)?) {
+            checked.push((p.clone(), real));
+        }
     }
-    let out = crate::exec::run_tool(st, &tool, args, "", sink, ui, &mut |_, _| {});
+    let out = crate::exec::run_tool(st, &tool, args, "", &checked, sink, ui, &mut |_, _| {});
     let text = oxa_tools::shape(
         out.text.as_bytes(),
         crate::tune::output_cap(st),

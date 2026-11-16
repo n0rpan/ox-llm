@@ -641,6 +641,7 @@ echo '\''a'\'''"#
         let cwd = Path::new("/work");
         let env = vec![("OXA_SESSION_ID".to_string(), "s".to_string())];
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: sb,
@@ -941,6 +942,7 @@ echo '\''a'\'''"#
         let cwd = Path::new("/work");
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: &sb,
@@ -960,6 +962,7 @@ echo '\''a'\'''"#
         let cwd = Path::new("/work");
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: &sb,
@@ -1006,6 +1009,7 @@ echo '\''a'\'''"#
         let env: Vec<(String, String)> = Vec::new();
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: sb,
@@ -1122,6 +1126,7 @@ echo '\''a'\'''"#
         let env: Vec<(String, String)> = Vec::new();
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: sb,
@@ -1375,6 +1380,7 @@ mod poll_tests {
         let env: Vec<(String, String)> = Vec::new();
         let cancel = CancelToken::new();
         let cx = ToolCtx {
+            checked: &[],
             cwd,
             spill_dir: cwd,
             sandbox: sb,
