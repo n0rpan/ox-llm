@@ -2307,6 +2307,67 @@ fn store_unit_deferred_maintenance_preserves_newer_writes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Clearing an evicted session must wait for a writer that already passed epoch validation.
+/// Otherwise that writer can recreate the file after clear has reported success.
+#[test]
+fn store_unit_clear_evicted_session_waits_for_inflight_writer() {
+    let g = Regen::new();
+    let dir = tmp_dir("clear-evicted-writer");
+    let mut es = reopen(&dir);
+    let pending = g.deferred(&mut es, "old");
+    let path = dir.join(format!("{}.jsonl", crate::state_store::hint_hash("s")));
+    let (validated, ready) = std::sync::mpsc::channel();
+    let (release, resume) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        pending.write_after_epoch(|| {
+            validated.send(()).unwrap();
+            let _ = resume.recv_timeout(std::time::Duration::from_secs(5));
+        })
+    });
+    ready.recv().unwrap();
+    es.cfg.max_tokens = es.n_tokens();
+    let (_, newer) = es.record_deferred(
+        &g.p,
+        &g.asst,
+        g.im_end,
+        &unit_msg("Done", "new"),
+        &g.gen("new"),
+        crate::echo::TurnEnd::Eog,
+        Some("other"),
+    );
+    assert_eq!(es.n_session_records("s"), 0, "evicted while writing");
+    let (started, starting) = std::sync::mpsc::channel();
+    let (finished, done) = std::sync::mpsc::channel();
+    let clearer = std::thread::spawn(move || {
+        started.send(()).unwrap();
+        assert_eq!(es.drop_hint_hash(&crate::state_store::hint_hash("s")), 0);
+        finished.send(()).unwrap();
+        es
+    });
+    starting.recv().unwrap();
+    let early = done.recv_timeout(std::time::Duration::from_millis(200));
+    release.send(()).unwrap();
+    assert!(
+        writer.join().unwrap(),
+        "validated writer completes its append"
+    );
+    let _es = clearer.join().unwrap();
+    let resurrected = path.exists();
+    // No later append may be needed to drain the evicted group's queued deletion.
+    drop(newer);
+    let reloaded = reopen(&dir);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        early.is_err(),
+        "clear returned while its writer was still running"
+    );
+    assert!(
+        !resurrected,
+        "clear must remove the in-flight writer's file"
+    );
+    assert_eq!(reloaded.n_session_records("s"), 0);
+}
+
 /// Recording must stay RAM-only even when it evicts a session or schedules compaction.
 #[test]
 fn store_unit_deferred_maintenance_never_waits_for_disk() {

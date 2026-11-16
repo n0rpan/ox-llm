@@ -582,6 +582,11 @@ impl PendingAppend {
 
     /// Append and sync the line (under the file-write lock only). Returns whether it was written.
     pub fn write(self) -> bool {
+        self.write_after_epoch(|| {})
+    }
+
+    // The callback lets tests stall a real writer after validation but before disk I/O.
+    pub(super) fn write_after_epoch(self, after_epoch: impl FnOnce()) -> bool {
         // Only writers hold file_write over I/O. Eviction updates io and queues a deletion
         // without this lock; draining deletions before appending preserves generation order.
         // Never hold the epoch mutex over disk I/O.
@@ -596,6 +601,7 @@ impl PendingAppend {
         {
             return false;
         }
+        after_epoch();
         append_line(&self.path, &self.line);
         let newest = self.stats.newest_seq.fetch_max(self.seq, Ordering::Relaxed);
         if let Some(body) = self.compact {
@@ -1276,12 +1282,15 @@ impl EchoStore {
         for g in groups {
             self.drop_group(&g);
         }
+        // Eviction can remove the RAM group while a validated writer still owns the disk
+        // lock. Wait for that writer even when no group was found, then drain its queued
+        // deletion before removing any disk-only file. No append may outlive this clear.
+        let _write = self.file_write.lock().unwrap_or_else(|p| p.into_inner());
+        flush_deletes(&self.io);
         if let Some(d) = &self.dir {
-            if h.len() == 32
-                && h.bytes().all(|b| b.is_ascii_hexdigit())
-                && std::fs::remove_file(d.join(format!("{h}.jsonl"))).is_ok()
-            {
-                // the removal is durable before the clear answers (no resurrection after a crash)
+            if h.len() == 32 && h.bytes().all(|b| b.is_ascii_hexdigit()) {
+                let _ = std::fs::remove_file(d.join(format!("{h}.jsonl")));
+                // Sync even when flush_deletes already removed the file.
                 crate::state_store::fsync_dir(d);
             }
         }
