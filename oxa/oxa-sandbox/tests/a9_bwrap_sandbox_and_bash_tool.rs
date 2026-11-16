@@ -652,10 +652,26 @@ fn bash_tool_exit_code_and_timeout_lines() {
     assert_eq!(out.text, "(no output)");
 
     let notice = sb.persistence_notice().unwrap();
-    for command in ["echo TMPDIR", "echo /tmp"] {
+    // A successful command that only reads or mentions /tmp gets no notice (#532) ...
+    for command in [
+        "echo TMPDIR",
+        "echo /tmp",
+        "grep -n '\"/tmp\"' /dev/null || true",
+        "ls /tmp >/dev/null 2>&1; echo $TMPDIR",
+    ] {
         let out = run(serde_json::json!({ "command": command }));
         assert!(!out.is_error, "{}", out.text);
-        assert!(out.text.ends_with(notice), "{}", out.text);
+        assert!(!out.text.contains(notice), "{command}: {}", out.text);
+    }
+    // ... one that writes there does.
+    for command in [
+        "echo x > /tmp/oxa-532",
+        "mktemp -p /tmp oxa-532.XXXXXX",
+        "touch /tmp/oxa-532",
+    ] {
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.ends_with(notice), "{command}: {}", out.text);
     }
     for error in [
         "Read-only file system",

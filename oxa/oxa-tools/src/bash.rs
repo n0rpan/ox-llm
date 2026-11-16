@@ -427,8 +427,7 @@ impl BashTool {
         }
 
         let mut output = String::from_utf8_lossy(&res.output).into_owned();
-        let persistence_relevant = raw_command.contains("/tmp")
-            || raw_command.contains("TMPDIR")
+        let persistence_relevant = scratch_write_likely(raw_command)
             || (res.exit != Some(0)
                 && [
                     "read-only file system",
@@ -505,9 +504,61 @@ impl BashTool {
     }
 }
 
+/// True when `command` names `/tmp` or `$TMPDIR` and looks like it writes: a redirect to a
+/// real file or a command that creates files. A read (`grep -n /tmp file`, `ls /tmp`) gets no
+/// persistence notice on success; a failure is handled by the error-text check.
+fn scratch_write_likely(command: &str) -> bool {
+    if !(command.contains("/tmp") || command.contains("TMPDIR")) {
+        return false;
+    }
+    // Redirects that write nothing to a file.
+    let cleaned = command
+        .replace(">&", " ")
+        .replace("&>", ">")
+        .replace(">>", ">")
+        .replace(">/dev/null", " ")
+        .replace("> /dev/null", " ")
+        .replace(">/dev/null", " ");
+    if cleaned.contains('>') {
+        return true;
+    }
+    const WRITERS: &[&str] = &[
+        "tee", "mktemp", "touch", "mkdir", "cp", "mv", "install", "ln", "dd", "curl", "wget", "tar", "unzip",
+        "rsync", "git", "-o", "--output", "--out", "-O", "sponge",
+    ];
+    cleaned
+        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '"' | '\''))
+        .any(|w| WRITERS.contains(&w))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #532: a successful read that merely mentions /tmp gets no persistence notice.
+    #[test]
+    fn scratch_notice_only_for_writes() {
+        for c in [
+            "grep -n '\"/tmp\"' src/lib.rs",
+            "ls /tmp 2>&1",
+            "cat /tmp/x >/dev/null",
+            "echo $TMPDIR",
+            "ls src",
+        ] {
+            assert!(!scratch_write_likely(c), "{c}");
+        }
+        for c in [
+            "echo x > /tmp/f",
+            "echo x >>/tmp/f",
+            "cmd &> /tmp/log",
+            "mktemp -p /tmp",
+            "cp a /tmp/a",
+            "ls | tee /tmp/l",
+            "touch $TMPDIR/x",
+        ] {
+            assert!(scratch_write_likely(c), "{c}");
+        }
+    }
 
     /// H (SET-055, SET-056): pi's `${prefix}\n${command}`, the custom shell through `exec`, and
     /// pi's error for a missing shell.
