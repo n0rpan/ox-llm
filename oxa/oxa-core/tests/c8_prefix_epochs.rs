@@ -78,6 +78,7 @@ fn fixture(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>) -
         gate: Default::default(),
     });
     SessionState {
+        output_schema: None,
         engine,
         store,
         hooks,

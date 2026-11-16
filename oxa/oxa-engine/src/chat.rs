@@ -79,6 +79,13 @@ pub fn build_body_for(r: &ChatRequest, remote: bool, out: &mut Vec<u8>) {
         }
     }
     if remote {
+        if let Some(schema) = r.output_schema {
+            out.extend_from_slice(b",\"response_format\":");
+            let format = serde_json::json!({"type":"json_schema", "json_schema":{
+                "name":"oxa_output", "schema":schema
+            }});
+            out.extend_from_slice(format.to_string().as_bytes());
+        }
         out.extend_from_slice(b",\"max_tokens\":");
         out.extend_from_slice(r.max_tokens.to_string().as_bytes());
         out.extend_from_slice(b",\"reasoning_effort\":\"");

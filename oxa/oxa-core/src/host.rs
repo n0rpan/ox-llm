@@ -1321,6 +1321,7 @@ mod tests {
         let (host, rx) = CoreHost::new(shared.clone());
         let compact = crate::session::policy_for(&info, &settings);
         let st = SessionState {
+            output_schema: None,
             engine: Arc::new(engine),
             store,
             hooks: Vec::new(),

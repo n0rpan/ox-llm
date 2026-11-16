@@ -42,6 +42,7 @@ mod host;
 pub mod loopguard;
 mod navigate;
 mod outcome;
+pub mod output_schema;
 mod prefix;
 mod progress;
 pub mod prompt;
