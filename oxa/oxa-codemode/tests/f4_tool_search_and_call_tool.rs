@@ -177,6 +177,7 @@ fn run(tool: &dyn Tool, args: Value) -> ToolOutput {
         cancel: &cancel,
         env: &envs,
         tune: Default::default(),
+        hidden: None,
     };
     tool.run(&args, &cx, &mut |_| {})
 }

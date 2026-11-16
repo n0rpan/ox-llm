@@ -1568,6 +1568,37 @@ mod tests {
         assert!(!binds_src(&off, &gh), "{off:?}");
     }
 
+    /// #523: every deny-list entry that exists is masked (itself or a masked parent) when the
+    /// cwd is the home directory or a directory in it that holds entries.
+    #[test]
+    fn every_deny_list_entry_is_masked() {
+        let env = TestEnv::new();
+        let home = env.home();
+        let entries = oxa_proto::guard::SENSITIVE_HOME;
+        for rel in entries {
+            // A directory when another entry lies inside it, a file otherwise.
+            let p = home.join(rel);
+            // (The test env already made the agent directory.)
+            if p.is_dir() || entries.iter().any(|o| o != rel && home.join(o).starts_with(&p)) {
+                std::fs::create_dir_all(&p).unwrap();
+            } else {
+                env.write(&format!("home/{rel}"), "SYNTH-SECRET");
+            }
+        }
+        std::fs::create_dir_all(home.join(".m2")).unwrap();
+        for cwd in [home.clone(), home.join(".config"), home.join(".m2")] {
+            let a = bwrap_args_homes(&spec(&cwd, false), &home, &Layout::default(), None);
+            for rel in entries {
+                let p = home.join(rel);
+                if !p.starts_with(&cwd) {
+                    continue;
+                }
+                let hidden = p.ancestors().take_while(|x| *x != home).any(|x| masked(&a, x));
+                assert!(hidden, "{rel} is not masked with cwd {cwd:?}: {a:?}");
+            }
+        }
+    }
+
     /// #122: starting in the home directory keeps the credential masks.
     #[test]
     fn credential_masks_hold_with_cwd_home() {
