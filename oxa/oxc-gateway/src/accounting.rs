@@ -278,7 +278,8 @@ impl Hold {
         row
     }
     /// The writer merges these fixed remote fields with its private request
-    /// metadata and appends one complete row. Never put prompts/replies in it.
+    /// metadata and durably appends one complete row to this daily ledger
+    /// (for example with spend::append_private). Never put prompts/replies in it.
     pub fn finish(
         mut self,
         usage: &Usage,

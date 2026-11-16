@@ -139,5 +139,8 @@ pub fn append_private(path: &Path, row: &Value) -> io::Result<()> {
     let mut bytes = serde_json::to_vec(row)?;
     bytes.push(b'\n');
     file.write_all(&bytes)?;
-    file.sync_data()
+    file.sync_data()?;
+    // The first row's name must survive as well as its contents before the
+    // accounting transaction can durably remove the corresponding hold.
+    fs::File::open(parent)?.sync_all()
 }

@@ -140,7 +140,11 @@ impl Shared {
         self.file.write_all(&bytes)?;
         self.file.sync_data()?;
         if self.fresh {
-            File::open(&self.directory)?.sync_all()?;
+            // Ledger::open may have created several directory components.
+            // Persist their names too before any reservation can be forwarded.
+            for directory in self.directory.ancestors() {
+                File::open(directory)?.sync_all()?;
+            }
             self.fresh = false;
         }
         Ok(())
