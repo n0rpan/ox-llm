@@ -187,7 +187,11 @@ fn identical_read_loop_gets_notices_then_stops() {
     let turns: Vec<ScriptTurn> = (0..20).map(|i| read(&format!("c{i}"), RANGE)).collect();
     let (mut st, eng) = state(&env, turns, Settings::default());
     let (end, events) = run(&mut st, "find the bug in a.txt");
-    assert_eq!(end, RunEnd::Stopped);
+    // Giving up is not a finished task: the run ends as failed with its own error class.
+    assert!(
+        matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
+        "{end:?}"
+    );
     let res = results(&st);
     let n_notices = NOTICES_BEFORE_STOP as usize + 1;
     assert_eq!(res.len(), LIMIT as usize + n_notices, "{res:#?}");
@@ -425,7 +429,10 @@ fn identical_bash_loop_gets_notices_then_stops() {
         .collect();
     let (mut st, eng) = state(&env, turns, Settings::default());
     let (end, _) = run(&mut st, "fix the failing test");
-    assert_eq!(end, RunEnd::Stopped);
+    assert!(
+        matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
+        "{end:?}"
+    );
     let res = results(&st);
     assert_eq!(res.len(), (LIMIT + NOTICES_BEFORE_STOP + 1) as usize, "{res:#?}");
     for r in &res[..LIMIT as usize] {
@@ -586,7 +593,10 @@ fn identical_job_polls_trip_the_guard() {
     let (mut st, _eng) = state_with(&env, turns, Settings::default(), "fake-model", t);
     let (end, _) = run(&mut st, "run it in the background and poll it");
     jobs.kill_all();
-    assert_eq!(end, RunEnd::Stopped);
+    assert!(
+        matches!(&end, RunEnd::Failed(e) if e.code == "repeat_guard"),
+        "{end:?}"
+    );
     let res = results(&st);
     let polls = &res[1..];
     assert_eq!(

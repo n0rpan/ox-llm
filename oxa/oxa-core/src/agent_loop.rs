@@ -506,9 +506,13 @@ fn run_inner(
                 )?;
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Error,
-                    text,
+                    text: text.clone(),
                 });
-                return Ok(RunEnd::Stopped);
+                // The files edited so far are still checked and the result shown; the run is
+                // over, so a failure is not sent back to the model.
+                let _ = crate::done::check(st, &mut done, sink, ui);
+                // Giving up is not a finished task: a caller must not read it as success.
+                return Ok(RunEnd::Failed(OxaError::new(crate::repeat::ERROR_CODE, text)));
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
