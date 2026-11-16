@@ -824,6 +824,7 @@ fn scripted_engine_answers_trailing_assistant_like_the_real_engine() {
             max_tokens,
             thinking: false,
             thinking_budget: None,
+            thinking_level: None,
             preserve_thinking: true,
             sampling: None,
             hints,
@@ -903,7 +904,11 @@ fn length_stop_over_http_sends_no_unsupported_request() {
     let mut cut = ScriptTurn::text("part one");
     cut.finish = Finish::Length;
     let server = oxa_fake::FakeServer::start(
-        vec![cut, ScriptTurn::text("completed task")],
+        vec![
+            cut,
+            ScriptTurn::text("completed task"),
+            ScriptTurn::text("a new turn"),
+        ],
         oxa_fake::FakeOpts::default(),
     )
     .unwrap();
@@ -929,6 +934,38 @@ fn length_stop_over_http_sends_no_unsupported_request() {
         requests[2].reply.as_ref().unwrap().content.as_deref(),
         Some("completed task")
     );
+
+    // F9 remains supported: trailing assistant history starts a new turn, not an implicit prefill.
+    let wire = st.transcript.wire().to_vec();
+    assert_eq!(wire.last().unwrap().role, oxa_proto::Role::Assistant);
+    let hints = oxa_proto::Hints {
+        session: "s",
+        idem_key: "",
+        kind: oxa_proto::TurnKind::Chat,
+        background: false,
+        snapshot_keep: false,
+    };
+    let req = |max_tokens| ChatRequest {
+        prefix: &st.prefix,
+        messages: &wire,
+        model: "fake-model",
+        max_tokens,
+        thinking: false,
+        thinking_budget: None,
+        thinking_level: None,
+        preserve_thinking: true,
+        sampling: None,
+        hints,
+    };
+    // F9: the engine answers it as a NEW turn (history + reply), not a continuation, not a 400.
+    let t = engine
+        .chat(&req(st.info.max_output), &CancelToken::new(), &mut |_| {})
+        .expect("a trailing assistant message is history");
+    assert_eq!(t.msg.content.as_deref(), Some("a new turn"));
+    // The same history as an H6 prefill is fine.
+    engine
+        .chat(&req(0), &CancelToken::new(), &mut |_| {})
+        .expect("H6 prefill after a reply");
 }
 
 /// tool_errors texts

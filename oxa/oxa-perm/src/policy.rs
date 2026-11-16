@@ -35,6 +35,9 @@ pub struct PathGuard {
     inherited_spills: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
+    /// Exact Cargo configuration files already exposed read-only in the bash sandbox (#611).
+    /// These bypass approval only, never the deny-list.
+    cargo_configs: Vec<PathBuf>,
     /// Clipboard images use generated names directly under tmp, not a session directory.
     paste_dir: Option<PathBuf>,
     /// A pasted-image name cannot override a credential path that resolves to that image.
@@ -89,6 +92,10 @@ impl PathGuard {
             spill: None,
             inherited_spills: Vec::new(),
             read_allow: vec![agent_dir.join("builtin-skills")],
+            cargo_configs: std::iter::once(home)
+                .chain(real_home)
+                .flat_map(|h| [h.join(".cargo/config.toml"), h.join(".cargo/config")])
+                .collect(),
             paste_dir: Some(tmp_dir.to_path_buf()),
             paste_deny,
             home: home.to_path_buf(),
@@ -149,6 +156,16 @@ impl PathGuard {
     /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
     pub fn is_builtin_skill(&self, p: &Path) -> bool {
         self.read_allow.iter().any(|a| is_inside(p, a))
+    }
+
+    /// An exact Cargo config, not its directory or siblings. Resolve both sides so symlinked
+    /// homes/configs work; the caller must check the deny-list first, including the real path.
+    fn is_cargo_config(&self, p: &Path) -> bool {
+        resolve_real(p).is_some_and(|real| {
+            self.cargo_configs
+                .iter()
+                .any(|config| resolve_real(config).as_ref() == Some(&real))
+        })
     }
 
     /// #517: [`PathGuard::denies_read`] for the entries of a directory walk, with every list
@@ -446,10 +463,13 @@ impl ModePolicy {
             if denied {
                 return Verdict::Is(Decision::Deny(deny_reasons::SENSITIVE));
             }
-            // #492, #522, #531: advertised built-in skills and this session's output
-            // (including fork/clone ancestry) are read without asking, wherever the cwd is.
+            // #492, #522, #531, #611: advertised built-in skills, this session's output
+            // (including fork/clone ancestry), and Cargo configs read without asking.
+            // Cargo configs are not exceptions to the deny-list checked above.
             if matches!(a, Access::Read(_))
-                && (self.guard.is_builtin_skill(&abs) || self.guard.is_readable_spill(&abs))
+                && (self.guard.is_builtin_skill(&abs)
+                    || self.guard.is_readable_spill(&abs)
+                    || self.guard.is_cargo_config(&abs))
             {
                 return Verdict::Is(Decision::Allow);
             }

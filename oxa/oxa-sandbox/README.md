@@ -10,7 +10,7 @@ bwrap sandbox behind `oxa_proto::Sandbox`. Depends on `oxa-proto`, `libc`. Used 
 Contracts: see the crate docs. Tests that need a real bwrap skip when `Bwrap::detect` fails and print why (a failure under `OXA_REQUIRE_BWRAP=1`, see below); argv goldens always run.
 
 Captured `gh issue view --comments` output follows gh's redirected-output contract:
-comments only, so an issue with no comments produces no output. To get the issue
+comments only, so an issue with no comments produces no output (the bash tool then appends a note saying so, #253). To get the issue
 body **and** comments reliably, use the machine-readable form (without `--comments`):
 
 ```sh

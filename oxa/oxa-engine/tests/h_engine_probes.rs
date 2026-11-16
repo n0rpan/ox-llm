@@ -75,6 +75,7 @@ fn count_prompt_equals_the_reported_prompt_tokens() {
         max_tokens: 64,
         thinking: false,
         thinking_budget: None,
+        thinking_level: None,
         preserve_thinking: true,
         sampling: None,
         hints: Hints {
@@ -128,6 +129,7 @@ fn count_prompt_without_the_endpoint_is_none_once() {
         max_tokens: 8,
         thinking: false,
         thinking_budget: None,
+        thinking_level: None,
         preserve_thinking: true,
         sampling: None,
         hints: Hints {

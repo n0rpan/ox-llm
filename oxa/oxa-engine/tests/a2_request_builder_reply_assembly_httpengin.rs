@@ -46,6 +46,7 @@ fn request<'a>(p: &'a FrozenPrefix, msgs: &'a [WireMsg], max_tokens: u32, h: Hin
         max_tokens,
         thinking: false,
         thinking_budget: None,
+        thinking_level: None,
         preserve_thinking: true,
         sampling: None,
         hints: h,
@@ -235,6 +236,7 @@ fn body_bytes_golden() {
     let r = ChatRequest {
         thinking: true,
         thinking_budget: None,
+        thinking_level: None,
         ..request(&p, &msgs, 128, hints("", ""))
     };
     let expected = r#"{"model":"fake-model","messages":[{"role":"system","content":"SYS"},{"role":"user","content":"hi"},{"role":"assistant","content":"ok"}],"tools":[{"type":"function","function":{"name":"read"}}],"stream":true,"stream_options":{"include_usage":true},"temperature":0,"cache_prompt":true,"max_tokens":128,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":true}}"#;

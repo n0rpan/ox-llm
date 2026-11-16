@@ -25,23 +25,28 @@ fn spill_read_exception_is_session_scoped_and_resolves_symlinks() {
     let env = TestEnv::new();
     let tmp = env.agent_dir().join("tmp");
     let spill = tmp.join("s1");
-    std::fs::create_dir_all(&spill).unwrap();
+    env.write("home/.oxa/agent/tmp/s1/out.txt", "own output");
+    env.write("home/.oxa/agent/tmp/s2/out.txt", "other output");
     std::os::unix::fs::symlink(tmp.join("s2"), spill.join("other-session")).unwrap();
     std::os::unix::fs::symlink(env.home().join(".ssh"), spill.join("keys")).unwrap();
     let mut p = ModePolicy::new().with_guard(PathGuard::new(&env.home(), &env.agent_dir(), &tmp));
     let own = Access::Read(spill.join("out.txt"));
-    assert_eq!(
-        p.decide(Mode::Ask, &own, &env.work()),
-        SENSITIVE,
-        "no spill scope until the runtime attaches a session"
-    );
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &own, &env.work()),
+            SENSITIVE,
+            "no spill scope until the runtime attaches a session ({mode:?})"
+        );
+    }
     p.set_spill_dir(&spill);
     for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
         assert_eq!(p.decide(mode, &own, &env.work()), Decision::Allow);
         for path in [
             tmp.join("s2/out.txt"),
+            tmp.join("s10/out.txt"),
             tmp.join("s1-other/out.txt"),
             tmp.join("codemode/out.txt"),
+            tmp.join("loose.txt"),
             spill.join("../s2/out.txt"),
             spill.join("other-session/out.txt"),
         ] {
@@ -70,15 +75,17 @@ fn spill_read_exception_is_session_scoped_and_resolves_symlinks() {
         );
     }
     p.set_spill_dir(&tmp.join("s2"));
-    assert_eq!(
-        p.decide(Mode::Ask, &own, &env.work()),
-        SENSITIVE,
-        "switching replaces, rather than accumulates, the spill scope"
-    );
-    assert_eq!(
-        p.decide(Mode::Ask, &Access::Read(tmp.join("s2/out.txt")), &env.work()),
-        Decision::Allow
-    );
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &own, &env.work()),
+            SENSITIVE,
+            "switching replaces, rather than accumulates, the spill scope ({mode:?})"
+        );
+        assert_eq!(
+            p.decide(mode, &Access::Read(tmp.join("s2/out.txt")), &env.work()),
+            Decision::Allow
+        );
+    }
 }
 
 #[test]
@@ -623,6 +630,142 @@ fn git_worktree_pointer_cannot_be_rewritten_and_fifo_dotgit_does_not_hang() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("hung on FIFO .git");
     assert_eq!(d, Decision::Allow);
+}
+
+/// #611: Cargo already reads these configurations in the bash sandbox. File reads must
+/// also work unattended, without granting access to the rest of Cargo's home.
+#[test]
+fn cargo_configuration_reads_without_approval_but_other_access_is_unchanged() {
+    let env = TestEnv::new();
+    env.write("home/.cargo/config.toml", "[build]\ntarget-dir = 'build-cache'\n");
+    env.write("home/.cargo/config", "[build]\njobs = 2\n");
+    let p = guarded(&env);
+    for mode in Mode::ALL {
+        for name in ["config.toml", "config"] {
+            let path = env.home().join(".cargo").join(name);
+            assert_eq!(
+                p.decide(mode, &Access::Read(path.clone()), &env.work()),
+                Decision::Allow,
+                "Cargo configuration must not need unavailable approval: {mode:?} {name}"
+            );
+            assert_eq!(
+                p.decide(mode, &Access::Write(path), &env.work()),
+                if mode == Mode::Plan {
+                    Decision::Deny(deny_reasons::PLAN_WRITE)
+                } else {
+                    Decision::Ask
+                }
+            );
+        }
+        for rel in [
+            ".cargo",
+            ".cargo/other.toml",
+            ".cargo/config.toml.bak",
+            "other.toml",
+        ] {
+            assert_eq!(
+                p.decide(mode, &Access::Read(env.home().join(rel)), &env.work()),
+                Decision::Ask,
+                "the exception is not a directory grant: {rel}"
+            );
+        }
+        for name in ["credentials", "credentials.toml"] {
+            assert_eq!(
+                p.decide(
+                    mode,
+                    &Access::Read(env.home().join(".cargo").join(name)),
+                    &env.work()
+                ),
+                SENSITIVE
+            );
+        }
+    }
+    assert!(p.grants().is_empty());
+}
+
+#[test]
+fn cargo_configuration_reads_resolve_symlinks_without_overriding_the_deny_list() {
+    let env = TestEnv::new();
+    env.write("home/.cargo/config.toml", "[build]\njobs = 2\n");
+    env.write("home/.cargo/credentials.toml", "synthetic credential fixture");
+    env.write("home/private.toml", "private configuration");
+    let config = env.home().join(".cargo/config.toml");
+    let credentials = env.home().join(".cargo/credentials.toml");
+    let alias = env.work().join("cargo-config");
+    std::os::unix::fs::symlink(&config, &alias).unwrap();
+    let p = guarded(&env);
+    for mode in Mode::ALL {
+        assert_eq!(
+            p.decide_pinned(mode, &Access::Read(alias.clone()), &env.work()),
+            (Decision::Allow, Some(config.clone()))
+        );
+        assert_eq!(
+            p.decide(
+                mode,
+                &Access::Read(config.join("../credentials.toml")),
+                &env.work()
+            ),
+            SENSITIVE
+        );
+        assert_eq!(
+            p.decide(
+                mode,
+                &Access::Read(config.join("../../private.toml")),
+                &env.work()
+            ),
+            Decision::Ask
+        );
+    }
+    // A configuration symlink must not turn a denied credential into a readable config.
+    std::fs::remove_file(&config).unwrap();
+    std::os::unix::fs::symlink(&credentials, &config).unwrap();
+    for mode in Mode::ALL {
+        for path in [&config, &alias, &credentials] {
+            assert_eq!(
+                p.decide(mode, &Access::Read(path.clone()), &env.work()),
+                SENSITIVE
+            );
+        }
+    }
+}
+
+#[test]
+fn cargo_configuration_reads_cover_both_homes_but_not_arbitrary_cargo_directories() {
+    let env = TestEnv::new();
+    let real_home = env.root().join("account-home");
+    std::fs::create_dir_all(real_home.join(".cargo")).unwrap();
+    let p = ModePolicy::new().with_guard(PathGuard::with_real_home(
+        &env.home(),
+        Some(&real_home),
+        &env.agent_dir(),
+        &env.agent_dir().join("tmp"),
+    ));
+    for mode in Mode::ALL {
+        for home in [env.home(), real_home.clone()] {
+            for name in ["config", "config.toml"] {
+                assert_eq!(
+                    p.decide(mode, &Access::Read(home.join(".cargo").join(name)), &env.work()),
+                    Decision::Allow
+                );
+            }
+            assert_eq!(
+                p.decide(
+                    mode,
+                    &Access::Read(home.join(".cargo/credentials.toml")),
+                    &env.work()
+                ),
+                SENSITIVE
+            );
+        }
+        assert_eq!(
+            p.decide(
+                mode,
+                &Access::Read(env.root().join("other-home/.cargo/config.toml")),
+                &env.work()
+            ),
+            Decision::Ask
+        );
+    }
 }
 
 #[test]
