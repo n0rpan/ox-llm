@@ -262,6 +262,12 @@ impl Layout {
         if !i.exe_in_workspace {
             read.extend(i.exe.iter().cloned());
         }
+        // A fresh machine has no `~/.cache/sccache` yet: create it, or it would never be bound
+        // (and sccache could not write its cache) in this session.
+        let wrapper = i.env.iter().find(|(k, _)| k == "RUSTC_WRAPPER");
+        if wrapper.is_some_and(|(_, w)| Path::new(w).file_name().is_some_and(|n| n == "sccache")) {
+            let _ = std::fs::create_dir_all(i.home.join(".cache/sccache"));
+        }
         let mut write: Vec<PathBuf> = CACHE_WRITE.iter().map(|w| i.home.join(w)).collect();
         write.extend(i.write_extra.iter().cloned());
         // A user-chosen sccache directory is the same cache as `~/.cache/sccache`.
@@ -269,11 +275,17 @@ impl Layout {
             // Judge the resolved path: `..` or a symlink must not lead out of the cache.
             let home = i.home.canonicalize().unwrap_or_else(|_| i.home.clone());
             let d = Path::new(d).canonicalize().unwrap_or_default();
-            // Only under `~/.cache`, or entirely outside the home and not a system directory.
+            // Only under `~/.cache`, or entirely outside the home, not a system directory, and
+            // cache-shaped (named like sccache, or still empty): an arbitrary tree such as
+            // `/data/work` would expose the `.git/hooks` of every checkout in it.
             // Anything else in the home (e.g. `~/.config/sccache`, sccache's own config) is never
             // made writable, whatever its name.
             let in_cache = d.starts_with(home.join(".cache")) && d != home.join(".cache");
-            let outside = !d.starts_with(&home) && !home.starts_with(&d) && !system_dir(&d);
+            let cache_shaped = d
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().to_lowercase().contains("sccache"))
+                || d.read_dir().is_ok_and(|mut e| e.next().is_none());
+            let outside = !d.starts_with(&home) && !home.starts_with(&d) && !system_dir(&d) && cache_shaped;
             if d.is_absolute() && (in_cache || outside) {
                 write.push(d);
             }
@@ -461,7 +473,7 @@ mod tests {
         // A directory entirely outside the home (and not a system directory) is accepted.
         let root = std::env::temp_dir().join(format!("oxa-sccache2-{}", std::process::id()));
         let home = root.join("home/u");
-        let dir = root.join("outside/build-cache");
+        let dir = root.join("outside/my-sccache");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         let dir = dir.canonicalize().unwrap();
@@ -484,6 +496,88 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
         assert!(bound, "SCCACHE_DIR must be bound read-write");
         assert!(passed, "SCCACHE_DIR must be passed through");
+    }
+
+    #[test]
+    fn unrelated_outside_sccache_dir_is_not_bound() {
+        // #530: a work tree (or /var/tmp) must not become writable just by being outside the home.
+        let root = std::env::temp_dir().join(format!("oxa-sccache5-{}", std::process::id()));
+        let home = root.join("home/u");
+        let work = root.join("data/work");
+        std::fs::create_dir_all(work.join("checkout/.git/hooks")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let work = work.canonicalize().unwrap();
+        let mut bad = vec![work.clone(), work.join("checkout")];
+        bad.push(PathBuf::from("/var/tmp"));
+        for b in bad {
+            let l = Layout::build(&LayoutInputs {
+                home: home.clone(),
+                agent_dir: None,
+                path_var: String::new(),
+                env: vec![("SCCACHE_DIR".into(), b.display().to_string())],
+                read_extra: vec![],
+                write_extra: vec![],
+                allow_home_write: false,
+                exe: None,
+                exe_in_workspace: false,
+            });
+            assert!(!l.write.contains(&b), "{} must not be writable", b.display());
+        }
+        // A fresh, empty directory is a cache to be: accepted.
+        let fresh = root.join("data/fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let fresh = fresh.canonicalize().unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            agent_dir: None,
+            path_var: String::new(),
+            env: vec![("SCCACHE_DIR".into(), fresh.display().to_string())],
+            read_extra: vec![],
+            write_extra: vec![],
+            allow_home_write: false,
+            exe: None,
+            exe_in_workspace: false,
+        });
+        std::fs::remove_dir_all(&root).ok();
+        assert!(l.write.contains(&fresh), "an empty directory must be accepted");
+    }
+
+    #[test]
+    fn missing_home_sccache_dir_is_created_when_wrapper_is_sccache() {
+        let root = std::env::temp_dir().join(format!("oxa-sccache6-{}", std::process::id()));
+        let home = root.join("home/u");
+        std::fs::create_dir_all(&home).unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            agent_dir: None,
+            path_var: String::new(),
+            env: vec![("RUSTC_WRAPPER".into(), "/usr/bin/sccache".into())],
+            read_extra: vec![],
+            write_extra: vec![],
+            allow_home_write: false,
+            exe: None,
+            exe_in_workspace: false,
+        });
+        let dir = home.join(".cache/sccache");
+        let ok = dir.is_dir() && l.write.contains(&dir);
+        // Without the wrapper nothing is created.
+        let home2 = root.join("home/v");
+        std::fs::create_dir_all(&home2).unwrap();
+        Layout::build(&LayoutInputs {
+            home: home2.clone(),
+            agent_dir: None,
+            path_var: String::new(),
+            env: vec![],
+            read_extra: vec![],
+            write_extra: vec![],
+            allow_home_write: false,
+            exe: None,
+            exe_in_workspace: false,
+        });
+        let untouched = !home2.join(".cache").exists();
+        std::fs::remove_dir_all(&root).ok();
+        assert!(ok, "~/.cache/sccache must be created and bound");
+        assert!(untouched, "no sccache wrapper: no directory created");
     }
 
     #[test]
