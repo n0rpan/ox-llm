@@ -570,3 +570,66 @@ fn abort_at_each_point_before_the_first_byte_settles_aborted() {
         assert!(at_settled < at_abort, "point {point}: {lines:?}");
     }
 }
+
+#[test]
+fn inbox_wakes_an_idle_rpc_session_without_stdin_input() {
+    let env = TestEnv::new();
+    let session = open_session(&env, vec![ScriptTurn::text("received")], Vec::new());
+    let id = session.state().session_id;
+    let inbox = Dirs::under(env.root()).agent_dir.join("inbox").join(id);
+    std::fs::create_dir_all(&inbox).unwrap();
+    // Ready before the watcher starts: startup must scan as well as subscribe.
+    std::fs::write(inbox.join("001.msg"), "task finished, red").unwrap();
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    let start = Instant::now();
+    while !served.lines().iter().any(|v| v["type"] == "agent_settled")
+        && start.elapsed() < Duration::from_secs(3)
+    {
+        thread::sleep(Duration::from_millis(5));
+    }
+    let lines = served.close(3, 0);
+    assert!(
+        lines.iter().any(|v| v["type"] == "agent_settled"),
+        "inbox did not wake RPC: {lines:?}"
+    );
+    assert!(
+        !inbox.join("001.msg").exists(),
+        "delivered message must be consumed"
+    );
+}
+
+#[test]
+fn inbox_tracks_rpc_session_switches_and_leaves_the_old_inbox_alone() {
+    let env = TestEnv::new();
+    let session = open_session(&env, vec![ScriptTurn::text("new session received")], Vec::new());
+    let old_id = session.state().session_id;
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    served.send(json!({"type": "new_session", "id": "new"}));
+    served.wait("new session", |lines| response(lines, "new").is_some());
+    served.send(json!({"type": "get_state", "id": "state"}));
+    served.wait("new state", |lines| response(lines, "state").is_some());
+    let lines = served.lines();
+    let new_id = response(&lines, "state").unwrap()["data"]["sessionId"]
+        .as_str()
+        .unwrap();
+    assert_ne!(old_id, new_id);
+    let agent = Dirs::under(env.root()).agent_dir;
+    oxa_session::send_inbox(&agent, &old_id, "for the previous session").unwrap();
+    oxa_session::send_inbox(&agent, new_id, "for the active session").unwrap();
+    served.wait("new session inbox run", |lines| {
+        lines.iter().any(|v| v["type"] == "agent_settled")
+    });
+    served.close(3, 0);
+    assert_eq!(
+        std::fs::read_dir(agent.join("inbox").join(old_id))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_eq!(
+        std::fs::read_dir(agent.join("inbox").join(new_id))
+            .unwrap()
+            .count(),
+        0
+    );
+}

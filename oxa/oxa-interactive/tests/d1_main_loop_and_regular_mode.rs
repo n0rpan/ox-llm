@@ -1103,3 +1103,75 @@ fn terminal_notifications_only_on_new_edges_not_focus_out_or_done() {
     // The OSC terminator alone is not a bell on terminals which ignore OSC 9.
     assert!(out.contains("\x1b]9;oxa: Run finished\x07\x07"));
 }
+
+/// No keyboard input until both the startup backlog and a live file notification ran.
+struct InboxTerminal {
+    term: TestTerminal,
+    agent: std::path::PathBuf,
+    id: String,
+    sent_live: bool,
+    start: std::time::Instant,
+}
+
+impl oxa_tui::Terminal for InboxTerminal {
+    fn write(&mut self, bytes: &[u8]) {
+        self.term.out.extend_from_slice(bytes);
+    }
+    fn flush(&mut self) {}
+    fn size(&self) -> (u16, u16) {
+        (100, 30)
+    }
+    fn caps(&self) -> TermCaps {
+        TermCaps::BASIC
+    }
+    fn set_mode(&mut self, mode: oxa_tui::TermMode, on: bool) {
+        self.term.modes.push((mode, on));
+    }
+    fn suspend(&mut self) {}
+    fn resume(&mut self) {}
+    fn poll(&mut self, _: u64) -> Vec<InputEvent> {
+        let out = String::from_utf8_lossy(&self.term.out);
+        if out.contains("inbox-second-reply") || self.start.elapsed() > std::time::Duration::from_secs(3) {
+            return vec![key("ctrl+d")];
+        }
+        if !self.sent_live && out.contains("inbox-first-reply") {
+            self.sent_live = true;
+            oxa_session::send_inbox(&self.agent, &self.id, "live follow-up").unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        Vec::new()
+    }
+}
+
+#[test]
+fn inbox_wakes_the_real_tui_worker_when_idle() {
+    let env = TestEnv::new();
+    let s = session_with(
+        &env,
+        vec![
+            oxa_fake::ScriptTurn::text("inbox-first-reply"),
+            oxa_fake::ScriptTurn::text("inbox-second-reply"),
+        ],
+    );
+    let id = s.state().session_id;
+    let mut opts = interactive_opts(&env);
+    oxa_session::send_inbox(&opts.dirs.agent_dir, &id, "startup follow-up").unwrap();
+    let mut term = InboxTerminal {
+        term: TestTerminal::new(100, 30),
+        agent: opts.dirs.agent_dir.clone(),
+        id,
+        sent_live: false,
+        start: std::time::Instant::now(),
+    };
+    let (code, _) = oxa_interactive::run_session(&mut term, s, &mut opts);
+    assert_eq!(code, 0);
+    let out = String::from_utf8_lossy(&term.term.out);
+    assert!(
+        out.contains("inbox-first-reply"),
+        "startup inbox was not delivered: {out}"
+    );
+    assert!(
+        out.contains("inbox-second-reply"),
+        "live inbox did not wake idle TUI: {out}"
+    );
+}

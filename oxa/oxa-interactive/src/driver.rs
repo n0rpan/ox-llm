@@ -259,6 +259,7 @@ pub(crate) struct Loop<'a> {
     /// The worker has answered a command since `model_pending` was set (its Status settles it).
     model_answered: bool,
     session: SessionInfo,
+    inbox: Option<oxa_session::Inbox>,
     files: Option<FileIndex>,
     /// Images pasted for the next prompt.
     pending_parts: Vec<Part>,
@@ -406,6 +407,7 @@ impl<'a> Loop<'a> {
             model_pending: None,
             model_answered: false,
             session: SessionInfo::default(),
+            inbox: None,
             files: None,
             pending_parts: Vec::new(),
             printer: RegularPrinter::new(),
@@ -791,6 +793,8 @@ impl<'a> Loop<'a> {
     /// and its tree, selectors and attachments are closed. Abort, steer and follow-up target
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
+        // Join the old callback before draining its queue back into the editor.
+        self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
         old.abort_retry();
         let queued = old.dequeue();
@@ -814,6 +818,23 @@ impl<'a> Loop<'a> {
     }
 
     fn set_session(&mut self, info: SessionInfo) {
+        if self.session.id != info.id || self.inbox.is_none() {
+            // Stop the old callback before installing one bound to the current handle.
+            self.inbox = None;
+            let handle = self.handle.clone();
+            let cmds = self.cmds.clone();
+            let session_id = info.id.clone();
+            match oxa_session::Inbox::watch(&self.opts.dirs.agent_dir, &info.id, move |text| {
+                handle.follow_up(text);
+                cmds.send(SessionCmd::Inbox {
+                    session_id: session_id.clone(),
+                })
+                .is_ok()
+            }) {
+                Ok(inbox) => self.inbox = Some(inbox),
+                Err(e) => self.push_notice(Level::Warning, format!("Session inbox unavailable: {e}")),
+            }
+        }
         // pi interactive-mode.ts: the autocomplete offers `/skill:name` only with
         // `enableSkillCommands` (a typed one still expands either way).
         let skill_commands = self.opts.settings.bool("enableSkillCommands", true);

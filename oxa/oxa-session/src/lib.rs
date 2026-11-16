@@ -19,7 +19,10 @@
 
 mod clock;
 mod durable;
+mod inbox;
 mod lock;
+
+pub use inbox::{send_inbox, valid_inbox_id, Inbox};
 mod meta;
 mod ops;
 mod store;
