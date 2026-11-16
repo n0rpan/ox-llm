@@ -119,7 +119,11 @@ impl Gateway {
             .enable_all()
             .build()
             .map_err(|_| Error::OpenCode(crate::opencode::client::Error::Transport))?;
-        let result = driver.block_on(self.runtime.discover_go(&self.client.shared_transport(), base, timeout));
+        let result = driver.block_on(self.runtime.discover_go(
+            &self.client.shared_transport(),
+            base,
+            timeout,
+        ));
         driver.shutdown_timeout(Duration::from_secs(1));
         result.map_err(Error::OpenCode)
     }
