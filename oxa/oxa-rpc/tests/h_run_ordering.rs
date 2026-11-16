@@ -720,3 +720,87 @@ fn inbox_rebinding_rearms_admitted_messages_without_files() {
     served.close(3, 0);
     assert!(!handle.has_inbox_input());
 }
+
+#[test]
+fn inbox_backpressure_retains_excess_files_while_model_is_held_then_drains() {
+    struct HeldFirst {
+        inner: ScriptedEngine,
+        hold: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    }
+    impl Engine for HeldFirst {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            self.inner.info(target)
+        }
+        fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+            self.inner.count_tokens(text)
+        }
+        fn chat(
+            &self,
+            request: &ChatRequest,
+            cancel: &CancelToken,
+            on: &mut dyn FnMut(StreamEvent),
+        ) -> Result<AssistantTurn, OxaError> {
+            if let Some((entered, release)) = self.hold.lock().unwrap().take() {
+                entered.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            self.inner.chat(request, cancel, on)
+        }
+    }
+    let env = TestEnv::new();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let engine = Arc::new(HeldFirst {
+        inner: ScriptedEngine::new((0..100).map(|_| ScriptTurn::text("reply")).collect()),
+        hold: Mutex::new(Some((entered_tx, release_rx))),
+    });
+    let session = open_with(&env, engine, Vec::new());
+    let id = session.state().session_id;
+    let handle = session.handle();
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    served.send(json!({"type": "prompt", "id": "held", "message": "hold model"}));
+    entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let dir = agent.join("inbox").join(&id);
+    // An external writer can bypass send's size validation: still never read it all.
+    std::fs::write(dir.join("oversized.msg"), vec![b'x'; 256 * 1024 + 1]).unwrap();
+    for n in 0..70 {
+        oxa_session::send_inbox(&agent, &id, &format!("backlog {n}")).unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while handle.queued().1.len() < 64 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(handle.queued().1.len(), 64);
+    // A barrier file after the excess backlog confirms that a scan encountered pressure.
+    oxa_session::send_inbox(&agent, &id, "barrier").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        handle.queued().1.len(),
+        64,
+        "no unbounded admissions during a held model"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 8);
+    release_tx.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::fs::read_dir(&dir).unwrap().count() != 1 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        1,
+        "capacity release must retry disk backlog"
+    );
+    served.wait("backlog drained", |_| {
+        !handle.has_inbox_input() && !handle.is_busy()
+    });
+    served.send(json!({"type": "get_messages", "id": "messages"}));
+    served.wait("messages", |lines| response(lines, "messages").is_some());
+    let lines = served.close(3, 0);
+    let messages = response(&lines, "messages").unwrap().to_string();
+    for n in 0..70 {
+        assert!(messages.contains(&format!("backlog {n}")), "missing backlog {n}");
+    }
+    assert!(messages.contains("barrier"));
+    assert!(dir.join("oversized.msg").exists());
+}

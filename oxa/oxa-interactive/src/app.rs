@@ -1498,7 +1498,10 @@ fn execute(
 ) -> (Result<(), OxaError>, bool) {
     match cmd {
         SessionCmd::Inbox { session_id } => {
-            let result = if s.inner().sref.id == session_id {
+            s.handle().clear_inbox_wake();
+            // A coalesced wake may carry an older destination. Only run the
+            // current session's bound input, never that destination's queue.
+            let result = if s.inner().sref.id == session_id || s.handle().has_inbox_input() {
                 s.run_queued(sink, ui).map(|_| ())
             } else {
                 Ok(())

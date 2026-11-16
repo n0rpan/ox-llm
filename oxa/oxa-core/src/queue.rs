@@ -100,6 +100,8 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
+    pub inbox_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
     /// Sticky soft termination request: zero, or a `WrapUpReason` discriminant.
@@ -265,6 +267,17 @@ impl Handle {
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
     }
+    /// Claim the single pending frontend wake. Queue consumption during a long model
+    /// run must not turn every admitted message into another unbounded channel job.
+    pub fn request_inbox_wake(&self) -> bool {
+        !self.shared.gate.inbox_wake_pending.swap(true, Ordering::SeqCst)
+    }
+
+    /// The frontend has taken its wake job, before running the queued input.
+    pub fn clear_inbox_wake(&self) {
+        self.shared.gate.inbox_wake_pending.store(false, Ordering::SeqCst);
+    }
+
     /// Whether the active session has admitted inbox input (including after switching back).
     pub fn has_inbox_input(&self) -> bool {
         let q = lock(&self.shared.queue);
@@ -275,8 +288,17 @@ impl Handle {
 
     /// Queue an inbox follow-up bound to its destination, not to whichever session is
     /// active when the watcher runs. Inactive messages remain available on switching back.
-    pub fn follow_up_for(&self, session_id: &str, text: String) {
+    /// Returns false under backpressure; the watcher must retain the file and retry.
+    pub fn follow_up_for(&self, session_id: &str, text: String) -> bool {
         let mut q = lock(&self.shared.queue);
+        let messages = q.session_follow_up.values().flatten();
+        let (count, bytes) = messages.fold((0, 0), |(count, bytes), text| (count + 1, bytes + text.len()));
+        if text.len() > oxa_session::INBOX_MESSAGE_BYTES
+            || count >= 64
+            || text.len() > (1024 * 1024usize).saturating_sub(bytes)
+        {
+            return false;
+        }
         q.session_follow_up
             .entry(session_id.to_string())
             .or_default()
@@ -285,6 +307,7 @@ impl Handle {
             self.shared.dirty.store(true, Ordering::SeqCst);
             self.shared.gate.bg_cancel.cancel();
         }
+        true
     }
 
     /// Move all destination-bound inbox messages to a replacement session's handle.
@@ -295,11 +318,16 @@ impl Handle {
             return;
         }
         let pending = std::mem::take(&mut lock(&self.shared.queue).session_follow_up);
-        for (id, messages) in pending {
-            for text in messages {
-                target.follow_up_for(&id, text);
+        // These were already admitted. Never discard them if the replacement has
+        // input too; new admissions remain blocked until the combined backlog drains.
+        {
+            let mut q = lock(&target.shared.queue);
+            for (id, messages) in pending {
+                q.session_follow_up.entry(id).or_default().extend(messages);
             }
         }
+        target.shared.dirty.store(true, Ordering::SeqCst);
+        target.shared.gate.bg_cancel.cancel();
         self.shared.dirty.store(true, Ordering::SeqCst);
     }
 
@@ -456,6 +484,44 @@ mod tests {
         assert_eq!(h.queued().1, vec!["retained instruction"]);
         h.request_wrap_up(WrapUpReason::Signal);
         assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TimeLimit));
+    }
+
+    #[test]
+    fn inbox_wakes_coalesce_even_when_model_drains_input_between_admissions() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("active");
+        assert!(h.request_inbox_wake());
+        for _ in 0..1000 {
+            assert!(h.follow_up_for("active", "message".into()));
+            assert_eq!(h.dequeue(), ["message"]);
+            assert!(
+                !h.request_inbox_wake(),
+                "one pending wake, not one per model turn"
+            );
+        }
+        h.clear_inbox_wake();
+        assert!(h.request_inbox_wake());
+        assert!(!h.request_inbox_wake());
+    }
+
+    #[test]
+    fn inbox_admission_bounds_count_and_bytes_across_destinations() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("active");
+        for _ in 0..65 {
+            h.follow_up_for("inactive", "message".into());
+        }
+        h.shared.bind_session("inactive");
+        assert_eq!(h.dequeue().len(), 64, "excess admissions must remain on disk");
+        for _ in 0..5 {
+            h.follow_up_for("active", "x".repeat(256 * 1024));
+        }
+        h.shared.bind_session("active");
+        assert_eq!(h.dequeue().len(), 4, "admitted text is limited to one MiB");
+        h.follow_up_for("active", "x".repeat(256 * 1024 + 1));
+        assert!(h.dequeue().is_empty(), "individual messages are bounded too");
+        h.follow_up_for("active", "capacity recovered".into());
+        assert_eq!(h.dequeue(), ["capacity recovered"]);
     }
 
     #[test]

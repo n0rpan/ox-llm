@@ -735,6 +735,9 @@ impl<'a> Loop<'a> {
             WorkerMsg::Event(e) => {
                 // AgentEnd can occur between tool/follow-up turns; only settled ends a run.
                 if matches!(e, AgentEvent::AgentSettled { .. }) {
+                    if let Some(inbox) = &self.inbox {
+                        inbox.retry();
+                    }
                     self.run_finished = true;
                 }
                 apply_event(&mut self.vm, &e);
@@ -824,7 +827,7 @@ impl<'a> Loop<'a> {
         if self.session.id != info.id || self.inbox.is_none() {
             // A Reopen may have recovered an already-admitted message without a file
             // left to trigger the new watcher. Wake only the recovered destination.
-            if self.handle.has_inbox_input() {
+            if self.handle.has_inbox_input() && self.handle.request_inbox_wake() {
                 let _ = self.cmds.send(SessionCmd::Inbox {
                     session_id: info.id.clone(),
                 });
@@ -837,7 +840,12 @@ impl<'a> Loop<'a> {
             match oxa_session::Inbox::watch(&self.opts.dirs.agent_dir, &info.id, move |text| {
                 // A clone/fork can change the worker's identity before the UI receives
                 // its Session notification. Keep even late admissions at their destination.
-                handle.follow_up_for(&session_id, text);
+                if !handle.follow_up_for(&session_id, text) {
+                    return false;
+                }
+                if !handle.request_inbox_wake() {
+                    return true;
+                }
                 cmds.send(SessionCmd::Inbox {
                     session_id: session_id.clone(),
                 })
@@ -1703,6 +1711,9 @@ impl<'a> Loop<'a> {
 
     fn restore_queue(&mut self) {
         let queued = self.handle.dequeue();
+        if let Some(inbox) = &self.inbox {
+            inbox.retry();
+        }
         self.vm.status.steering.clear();
         self.vm.status.follow_up.clear();
         if queued.is_empty() {

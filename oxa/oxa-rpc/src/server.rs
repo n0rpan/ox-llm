@@ -426,7 +426,7 @@ fn session_loop(
             // Re-arm it on return even when its admitted files are already gone.
             if cx.handle.has_inbox_input() && !cx.handle.wrap_up_requested() {
                 let mut g = lock(&gate);
-                if !g.closed {
+                if !g.closed && cx.handle.request_inbox_wake() {
                     g.pending += 1;
                     if tx.send(Job::Inbox(id.clone())).is_err() {
                         g.pending -= 1;
@@ -441,7 +441,12 @@ fn session_loop(
                 if gate.closed || handle.wrap_up_requested() {
                     return false;
                 }
-                handle.follow_up_for(&id, text);
+                if !handle.follow_up_for(&id, text) {
+                    return false;
+                }
+                if !handle.request_inbox_wake() {
+                    return true;
+                }
                 gate.pending += 1;
                 if sender.send(Job::Inbox(id.clone())).is_err() {
                     gate.pending -= 1;
@@ -481,15 +486,18 @@ fn session_loop(
                 outcome.include(next);
                 continue;
             }
-            Job::Inbox(id) => (
-                RpcCommand {
-                    id: None,
-                    kind: "inbox".into(),
-                    body: json!({"session_id": id}),
-                },
-                false,
-                false,
-            ),
+            Job::Inbox(id) => {
+                cx.handle.clear_inbox_wake();
+                (
+                    RpcCommand {
+                        id: None,
+                        kind: "inbox".into(),
+                        body: json!({"session_id": id}),
+                    },
+                    false,
+                    false,
+                )
+            }
             Job::Shutdown => break,
         };
         // Join the old watcher before any explicit session transition. Already admitted
@@ -508,7 +516,9 @@ fn session_loop(
         // and the session go on (a run's busy flag is released by its guard).
         let result = oxa_proto::panic::contain(|| {
             if inbox_wake {
-                if cmd.body["session_id"].as_str() == Some(&cx.session.inner().sref.id) {
+                if cmd.body["session_id"].as_str() == Some(&cx.session.inner().sref.id)
+                    || cx.handle.has_inbox_input()
+                {
                     let mut sink = cmd_run::OutSink(cx.out.clone());
                     let mut ui = RpcUi {
                         out: cx.out.clone(),
@@ -532,6 +542,9 @@ fn session_loop(
             )))
         });
         let mut settled = release_settled();
+        if let Some(inbox) = &inbox {
+            inbox.retry();
+        }
         bash_running.store(false, Ordering::SeqCst);
         if claimed && settled.is_empty() {
             // The client was told `started`: it is owed the closing record even when the

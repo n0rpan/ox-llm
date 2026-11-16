@@ -146,3 +146,70 @@ fn inbox_wipe_covers_orphans_temporary_files_and_rejects_symlink_parents() {
         "untouched"
     );
 }
+
+#[test]
+fn inbox_oversized_files_stay_on_disk_without_delivery() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    send_inbox(&agent, "bounded", "normal").unwrap();
+    let oversized = agent.join("inbox/bounded/oversized.msg");
+    assert_eq!(
+        send_inbox(&agent, "bounded", &"x".repeat(256 * 1024 + 1))
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::InvalidInput
+    );
+    fs::write(&oversized, vec![b'x'; 256 * 1024 + 1]).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "bounded", move |s| tx.send(s).is_ok()).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), "normal");
+    drop(watch);
+    assert!(
+        rx.try_recv().is_err(),
+        "oversized text must not enter memory queues"
+    );
+    assert!(oversized.exists());
+}
+
+#[test]
+fn inbox_retries_backpressure_without_another_writer_event() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    send_inbox(&agent, "bounded", "retained").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let mut attempts = 0;
+    let watch = Inbox::watch(&agent, "bounded", move |_| {
+        attempts += 1;
+        tx.send(attempts).unwrap();
+        attempts > 1
+    })
+    .unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), 1);
+    watch.retry(); // The owner has released capacity; no producer event is needed.
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), 2);
+    drop(watch);
+    assert_eq!(fs::read_dir(agent.join("inbox/bounded")).unwrap().count(), 0);
+}
+
+#[test]
+fn inbox_bounded_scan_advances_past_invalid_batches() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    send_inbox(&agent, "bounded", "valid after invalid batch").unwrap();
+    let dir = agent.join("inbox/bounded");
+    for n in 0..70 {
+        fs::write(dir.join(format!("000-{n:03}.msg")), [0xff]).unwrap();
+    }
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "bounded", move |s| tx.send(s).is_ok()).unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        "valid after invalid batch"
+    );
+    drop(watch);
+    assert_eq!(
+        fs::read_dir(dir).unwrap().count(),
+        70,
+        "invalid files are retained, not repeatedly scanned"
+    );
+}
