@@ -1,4 +1,4 @@
-use oxa_cli::lead::cards::{unavailable, Cards, Unavailable};
+use oxa_cli::lead::cards::{command, unavailable, Cards, Unavailable};
 use oxa_proto::work::{Ask, Blocked, Running, Snapshot, Subject};
 
 fn snapshot() -> Snapshot {
@@ -50,13 +50,40 @@ fn crowded_card_keeps_source_and_counts_within_twelve_lines() {
     assert!(card.contains("holds / external validation: unavailable"));
     assert!(!card.contains("held: 1"));
     let asks = cards.asks();
-    assert_eq!(cards.command("/status"), Some(card));
-    assert_eq!(cards.command("/asks"), Some(asks.clone()));
-    assert_eq!(cards.command("/hold 7"), None);
-    assert_eq!(cards.command("/status extra"), None);
     assert!(asks.contains("Ask A1 · PR #7"));
     assert!(asks.contains("Options / recommendation / meanwhile: unavailable"));
     assert!(asks.contains("decision write disabled"));
+}
+
+#[test]
+fn commands_fetch_current_typed_facts_and_never_route_mutations() {
+    let reads = std::cell::Cell::new(0);
+    let read = || {
+        reads.set(reads.get() + 1);
+        let mut s = snapshot();
+        s.as_of_seq = reads.get();
+        Ok::<_, ()>(s)
+    };
+    assert!(command("/status", 1000, 100, read).unwrap().contains("seq 1 ·"));
+    assert!(command("/asks", 1000, 100, read).unwrap().contains("seq 2 ·"));
+    assert_eq!(reads.get(), 2);
+    for unknown in ["/hold 7", "/status extra", "/approve 7", "/decide A1 yes"] {
+        assert_eq!(command(unknown, 1000, 100, read), None);
+    }
+    assert_eq!(reads.get(), 2);
+    let missing = command("/status", 1000, 100, || Err::<Snapshot, _>("private diagnostic"));
+    assert_eq!(missing.as_deref(), Some(unavailable(Unavailable::Invalid)));
+    assert!(!missing.unwrap().contains("private diagnostic"));
+    assert_eq!(
+        command("/asks", 1101, 100, || Ok::<_, ()>(snapshot())).as_deref(),
+        Some(unavailable(Unavailable::Stale))
+    );
+    let mut invalid = snapshot();
+    invalid.goal = Some("injected\nstatus".into());
+    assert!(matches!(
+        Cards::from_snapshot(invalid, 1000, 100),
+        Err(Unavailable::Invalid)
+    ));
 }
 
 #[test]

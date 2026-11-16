@@ -16,18 +16,19 @@ pub enum Unavailable {
 }
 
 impl Cards {
-    /// Command routing is deterministic and consumes no model turn. Mutations
-    /// are deliberately absent until the standing API is wired.
-    pub fn command(&self, command: &str) -> Option<String> {
-        match command.trim() {
-            "/status" => Some(self.status()),
-            "/asks" => Some(self.asks()),
-            _ => None,
-        }
+    /// Accept the typed result of the runner's public situation read. Validation
+    /// needs no JSON reparse and does not expose the storage location to cards.
+    pub fn from_snapshot(snapshot: Snapshot, now_ms: u64, max_age_ms: u64) -> Result<Self, Unavailable> {
+        snapshot.to_json().map_err(|_| Unavailable::Invalid)?;
+        Self::observed(snapshot, now_ms, max_age_ms)
     }
 
     pub fn decode(bytes: &[u8], now_ms: u64, max_age_ms: u64) -> Result<Self, Unavailable> {
         let snapshot = Snapshot::from_json(bytes).map_err(|_| Unavailable::Invalid)?;
+        Self::observed(snapshot, now_ms, max_age_ms)
+    }
+
+    fn observed(snapshot: Snapshot, now_ms: u64, max_age_ms: u64) -> Result<Self, Unavailable> {
         let age = now_ms.checked_sub(snapshot.at_ms).ok_or(Unavailable::Future)?;
         if age > max_age_ms {
             return Err(Unavailable::Stale);
@@ -116,6 +117,31 @@ impl Cards {
         }
         lines.join("\n")
     }
+}
+
+/// Fetch a fresh typed observation for each supported command. The lead adapter
+/// supplies `|| facts.situation()`; no model, private file or log read is involved.
+/// Unknown commands never invoke the reader. Storage errors stay opaque.
+pub fn command<E>(
+    command: &str,
+    now_ms: u64,
+    max_age_ms: u64,
+    read: impl FnOnce() -> Result<Snapshot, E>,
+) -> Option<String> {
+    let render = match command.trim() {
+        "/status" => Cards::status,
+        "/asks" => Cards::asks,
+        _ => return None,
+    };
+    Some(
+        match read()
+            .map_err(|_| Unavailable::Invalid)
+            .and_then(|s| Cards::from_snapshot(s, now_ms, max_age_ms))
+        {
+            Ok(cards) => render(&cards),
+            Err(reason) => unavailable(reason).to_owned(),
+        },
+    )
 }
 
 /// No raw error or rejected input is reflected into the terminal.
