@@ -15,6 +15,8 @@ fn main() -> io::Result<()> {
             .expect("supply a new absolute scratch directory outside a repository"),
     );
     assert!(root.is_absolute());
+    let mode = std::env::args().nth(2).unwrap_or_else(|| "text".into());
+    assert!(matches!(mode.as_str(), "text" | "tool" | "delayed"));
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
     for dir in [
@@ -27,11 +29,24 @@ fn main() -> io::Result<()> {
     ] {
         fs::create_dir_all(root.join(dir))?;
     }
-    let mock = MockAnthropic::start(
-        (0..128)
-            .map(|_| Reply::text("Synthetic native gateway answer.", 11, 0, 0, 5))
-            .collect(),
-    );
+    let mut replies = Vec::new();
+    if mode == "tool" {
+        replies.push(Reply::events(vec![
+            json!({"type":"message_start","message":{"usage":{"input_tokens":11,"output_tokens":0}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"read-note","name":"read","input":{"path":"note.txt"}}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}),
+            json!({"type":"message_stop"}),
+        ]));
+    }
+    replies.extend((0..128).map(|_| {
+        let mut reply = Reply::text("Synthetic native gateway answer.", 11, 0, 0, 5);
+        if mode == "delayed" {
+            reply.stop_delay = std::time::Duration::from_secs(4);
+        }
+        reply
+    }));
+    let mock = MockAnthropic::start(replies);
     let trap = TcpListener::bind("127.0.0.1:0")?;
     trap.set_nonblocking(true)?;
     let trap_url = format!("http://{}", trap.local_addr()?);
@@ -92,7 +107,7 @@ fn main() -> io::Result<()> {
     fs::write(root.join("run-oxa"), script)?;
     fs::set_permissions(root.join("run-oxa"), fs::Permissions::from_mode(0o700))?;
     println!(
-        "Fixture ready: {} (128 synthetic replies). Keep this process alive; press Enter to stop.",
+        "Fixture ready: {} ({mode} mode). Keep this process alive; press Enter to stop.",
         root.display()
     );
     // Detect bare TCP connects too. The mock and trap are fixture processes, not product daemons.

@@ -9,7 +9,14 @@ cargo build --profile ci -j 2 -p oxa-cli --bin oxa --example rehearsal_mock
 ./target/ci/examples/rehearsal_mock /var/tmp/ox-ux-native
 ```
 
-Choose a new absolute scratch root outside any repository. Keep the fixture process alive. It creates a private synthetic HOME, project, fixed-path synthetic credential file, user-only settings, marker-writing Python shims, an ephemeral TCP controller trap and a launcher. It serves up to 128 static text replies through the shared loopback Anthropic mock. Responses do not interpret the prompt or execute tools; this fixture is for black-box UI behavior, not model quality or overall E2E acceptance.
+Choose a new absolute scratch root outside any repository. Keep the fixture process alive. It creates a private synthetic HOME, project, fixed-path synthetic credential file, user-only settings, marker-writing Python shims, an ephemeral TCP controller trap and a launcher. It uses the shared loopback Anthropic mock. The optional second argument selects a mode: `text` (default) serves 128 static replies; `tool` first requests `read(note.txt)`, then a final text reply, with subsequent turns using static text; `delayed` emits visible text but delays each terminal event by four seconds for active Esc/Ctrl+C checks. Use a fresh fixture root for each mode. Responses do not interpret the prompt; this fixture is for black-box UI behavior, not model quality or overall E2E acceptance.
+
+```sh
+./target/ci/examples/rehearsal_mock /var/tmp/ox-ux-tool tool
+./target/ci/examples/rehearsal_mock /var/tmp/ox-ux-delayed delayed
+```
+
+The tool mode uses the internal read tool, which works with marker-only PATH. External bash/bwrap commands are unavailable under this strict PATH. In delayed mode cancel within four seconds of visible output; the mock deadline remains unchanged.
 
 From another terminal, launch the real binary in the isolated project:
 
