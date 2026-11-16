@@ -1,6 +1,6 @@
-//! O-182: a subagent child runs with `--yolo` while the parent's YOLO switch is on, and with the
-//! argv it always had while it is off. The switch is read when each child's argv is built, so
-//! toggling it between two children changes the second child only.
+//! O-182, #202: a subagent child inherits the parent's autonomy level (`--standard`, `--auto`
+//! or `--yolo`). The switch is read when each child's argv is built, so switching it between
+//! two children changes the second child only.
 //!
 //! The child is a shell script that dumps its argv to `dump-<hint>.txt` (the same shape as the
 //! E11 tests in `e11_builtin_subagent.rs`, which own the rest of the subagent behaviour).
@@ -9,7 +9,8 @@ use oxa_config::Settings;
 use oxa_core::{AgentDef, SubagentHooks};
 use oxa_fake::TestEnv;
 use oxa_proto::{
-    CancelToken, HeadlessUi, Hooks, Host, HostAction, Mode, OxaError, Tool, ToolCtx, Value, YoloSwitch,
+    Autonomy, CancelToken, HeadlessUi, Hooks, Host, HostAction, Mode, OxaError, Tool, ToolCtx, Value,
+    YoloSwitch,
 };
 use serde_json::json;
 use std::path::PathBuf;
@@ -104,60 +105,59 @@ fn child_argv(env: &TestEnv, h: &SubagentHooks, hint: &str) -> Vec<String> {
         .collect()
 }
 
-fn has_yolo(argv: &[String]) -> bool {
-    argv.iter().any(|w| w == "--yolo")
+/// The level flags of a child's argv.
+fn levels(argv: &[String]) -> Vec<&str> {
+    argv.iter()
+        .map(String::as_str)
+        .filter(|w| ["--standard", "--auto", "--yolo"].contains(w))
+        .collect()
 }
 
 #[test]
-fn child_argv_carries_yolo_only_while_the_switch_is_on() {
+fn child_argv_carries_the_parents_level_at_start() {
     let env = TestEnv::new();
-    let switch = YoloSwitch::new(false);
+    let switch = YoloSwitch::new(Autonomy::Standard);
     let h = hooks(&env, Some(&switch));
 
-    // Off: the argv the child always had.
-    let off = child_argv(&env, &h, "sess.s1");
-    assert!(!has_yolo(&off), "{off:?}");
+    // Standard is explicit too: the child must not take a higher default from its settings.
+    let std_argv = child_argv(&env, &h, "sess.s1");
+    assert_eq!(levels(&std_argv), ["--standard"], "{std_argv:?}");
+    let at = std_argv.iter().position(|w| w == "--standard").unwrap();
+    assert_eq!(std_argv[at - 2], "--permission-mode", "{std_argv:?}");
+    assert_eq!(std_argv[at - 1], "workspace", "{std_argv:?}");
+    assert_eq!(std_argv.last().unwrap(), "Task: look around");
 
-    // On: `--yolo` right after the permission mode, before the tools and the task.
-    switch.set(true);
-    let on = child_argv(&env, &h, "sess.s2");
-    assert!(has_yolo(&on), "{on:?}");
-    let at = on.iter().position(|w| w == "--yolo").unwrap();
-    assert_eq!(on[at - 2], "--permission-mode", "{on:?}");
-    assert_eq!(on[at - 1], "workspace", "{on:?}");
-    assert_eq!(on.last().unwrap(), "Task: look around");
-    // Nothing else changed: the argv of the switch-on child is the off argv plus `--yolo`.
-    let mut without = on.clone();
-    without.remove(at);
-    assert_eq!(without, off, "only `--yolo` is added");
+    switch.set_level(Autonomy::Yolo);
+    let yolo = child_argv(&env, &h, "sess.s2");
+    assert_eq!(levels(&yolo), ["--yolo"], "{yolo:?}");
+    // Nothing else changed.
+    let strip = |v: &[String]| -> Vec<String> {
+        v.iter()
+            .filter(|w| levels(std::slice::from_ref(*w)).is_empty())
+            .cloned()
+            .collect()
+    };
+    assert_eq!(strip(&yolo), strip(&std_argv));
 
-    // Off again: a later child sees the new state.
-    switch.set(false);
-    let again = child_argv(&env, &h, "sess.s3");
-    assert!(!has_yolo(&again), "{again:?}");
-    assert_eq!(again, off);
+    // A later child sees the new state.
+    switch.set_level(Autonomy::Auto);
+    assert_eq!(levels(&child_argv(&env, &h, "sess.s3")), ["--auto"]);
 }
 
 #[test]
-fn hooks_without_a_switch_never_add_yolo() {
+fn hooks_without_a_switch_add_no_level() {
     let env = TestEnv::new();
     let plain = child_argv(&env, &hooks(&env, None), "sess.s1");
-    let switch = YoloSwitch::new(false);
-    let off = child_argv(&env, &hooks(&env, Some(&switch)), "sess.s1");
-    assert!(!has_yolo(&plain));
-    assert_eq!(
-        plain, off,
-        "with the switch off the argv is byte-identical to no switch"
-    );
+    assert!(levels(&plain).is_empty(), "{plain:?}");
 }
 
 #[test]
 fn the_switch_is_shared_not_copied() {
     // A clone of the switch the process holds is the one the hooks read (no copy).
     let env = TestEnv::new();
-    let switch = YoloSwitch::new(false);
+    let switch = YoloSwitch::new(Autonomy::Standard);
     let h = hooks(&env, Some(&switch));
     let held = switch.clone();
-    held.set(true);
-    assert!(has_yolo(&child_argv(&env, &h, "sess.s1")));
+    held.set_level(Autonomy::Yolo);
+    assert_eq!(levels(&child_argv(&env, &h, "sess.s1")), ["--yolo"]);
 }

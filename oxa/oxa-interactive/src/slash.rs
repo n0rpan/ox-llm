@@ -2,7 +2,7 @@
 // ported from pi packages/coding-agent/src/modes/interactive/interactive-mode.ts (slash command handling) and docs/slash-commands.md
 use crate::{AppAction, Block, Reopen, SelectorKind, SessionCmd, StatusModel, ViewModel};
 use oxa_config::{resolve_model, Dirs, Env, Keymap, ModelRef, ModelsConfig, Settings};
-use oxa_proto::{CommandSpec, Level, Mode, OxaError, Source, ThinkingLevel};
+use oxa_proto::{CommandSpec, Level, Mode, OxaError, PermissionMode, Source, ThinkingLevel};
 use std::path::{Path, PathBuf};
 
 /// What the dispatcher may read. It changes nothing itself: every effect is an [`AppAction`].
@@ -36,7 +36,7 @@ pub struct SlashCx<'a> {
 /// Kept in oxa: every command of slash-commands.md that plan sec. 1 keeps, plus `engine`,
 /// `mode` and `mcp`. Omitted pi commands (`login`, `logout`, `share`) are handled too: they
 /// answer the fixed `unsupported_in_oxa` notice.
-pub const INTERACTIVE_COMMANDS: [&str; 31] = [
+pub const INTERACTIVE_COMMANDS: [&str; 32] = [
     "settings",
     "model",
     "scoped-models",
@@ -60,6 +60,7 @@ pub const INTERACTIVE_COMMANDS: [&str; 31] = [
     "engine",
     "mode",
     "yolo",
+    "auto",
     "bug",
     "quit",
     "exit",
@@ -73,6 +74,9 @@ pub const INTERACTIVE_COMMANDS: [&str; 31] = [
 /// pi commands oxa omits (verdict O). A hook command, template or skill with the same name
 /// still runs first, as in `oxa_core::expand_input`.
 const OMITTED: [&str; 3] = ["login", "logout", "share"];
+
+/// #202: the usage line of `/mode`.
+const MODE_USAGE: &str = "Usage: /mode [standard|auto|yolo|plan|workspace|ask] [--save]";
 
 /// Names added after pi: a template, skill or extension command with the same name wins.
 const OVERRIDABLE: [&str; 2] = ["help", "usage"];
@@ -163,17 +167,35 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
                 }
             }
         }
+        // #202: no argument opens the picker; `--save` also makes the mode the default.
         "mode" => {
-            if args.is_empty() {
-                let current = cx.vm.status.mode.map(|m| m.as_str()).unwrap_or("unknown");
-                AppAction::ShowLines(vec![format!("Mode: {current}")])
-            } else {
-                match Mode::parse(args) {
-                    Some(mode) => AppAction::Session(SessionCmd::SetMode(mode)),
-                    None => usage("Usage: /mode [plan|workspace|ask]"),
-                }
+            let mut words: Vec<&str> = args.split_whitespace().collect();
+            let save = words.contains(&"--save");
+            words.retain(|w| *w != "--save");
+            match words.as_slice() {
+                [] if !save => AppAction::Open(SelectorKind::Mode),
+                [name] => match (PermissionMode::parse(name), Mode::parse(name)) {
+                    (Some(mode), _) => AppAction::SetPermissionMode { mode, save },
+                    // The table modes `workspace` and `ask` prompt: they come with `standard`.
+                    (None, Some(mode)) if !save => AppAction::Many(vec![
+                        AppAction::SetPermissionMode {
+                            mode: PermissionMode::Standard,
+                            save: false,
+                        },
+                        AppAction::Session(SessionCmd::SetMode(mode)),
+                    ]),
+                    _ => usage(MODE_USAGE),
+                },
+                _ => usage(MODE_USAGE),
             }
         }
+        "auto" => match args.trim() {
+            "" => AppAction::SetPermissionMode {
+                mode: PermissionMode::Auto,
+                save: false,
+            },
+            _ => usage("Usage: /auto"),
+        },
         "theme" => {
             if args.is_empty() {
                 AppAction::Open(SelectorKind::Theme)

@@ -400,6 +400,9 @@ struct Built {
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
     yolo: oxa_proto::YoloSwitch,
+    /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
+    /// bypassed while the switch is at yolo (full access).
+    bash_sandbox: Arc<oxa_sandbox::FullAccess>,
 }
 
 impl Built {
@@ -410,23 +413,25 @@ impl Built {
         // Issue #127 (b): one background-job registry per session, sharing the session's
         // sandbox. The session kills its jobs on close/shutdown.
         let jobs = Arc::new(oxa_tools::JobRegistry::new());
-        jobs.set_sandbox(sandbox.clone());
+        let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
+        jobs.set_sandbox(bash_sandbox.clone());
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
             // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_shell_and_jobs(
+            tools: oxa_tools::builtin_tools_with_bash_sandbox(
                 oxa_tools::ShellConfig {
                     shell_path: self.settings.shell_path(&self.dirs.home),
                     command_prefix: self.settings.shell_command_prefix(),
                 },
                 jobs.clone(),
+                bash_sandbox,
             ),
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
-            // B3: the file tools never touch the sandbox's deny-list.
-            // O-182: YOLO answers the policy's questions; the guard above it is untouched.
+            // B3: the file tools keep the deny-list and protected paths in standard/auto.
+            // #202/#314: only user-selected yolo outside plan mode bypasses that floor.
             policy: Box::new(
                 ModePolicy::new()
                     .with_guard(oxa_perm::PathGuard::with_real_home(
@@ -758,8 +763,34 @@ fn prepare(
         }
     }
 
-    // O-182: one switch for the policy of every session and for the subagent children.
-    let yolo = oxa_proto::YoloSwitch::new(a.yolo);
+    // O-182, #202: one switch for the policy of every session and for the subagent children.
+    // The command line wins; else `permissions.defaultMode` (a project may only lower it).
+    // `--permission-mode workspace|ask` alone keeps its old meaning: the table asks you.
+    let level = a
+        .level
+        .or(match a.permission_mode {
+            Some(Mode::Workspace | Mode::Ask) => Some(oxa_proto::PermissionMode::Standard),
+            _ => None,
+        })
+        .unwrap_or_else(|| settings.default_permission_mode());
+    let yolo = oxa_proto::YoloSwitch::new(level.autonomy());
+    let table_mode = match (a.permission_mode, level) {
+        (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
+        (m, _) => m,
+    };
+    if !matches!(mode, RunMode::Interactive) {
+        notices.push((
+            Level::Info,
+            format!("permission mode {}: {}", level.as_str(), level.describe()),
+        ));
+    }
+    let bash_sandbox = Arc::new(oxa_sandbox::FullAccess::new(
+        sandbox.clone(),
+        yolo.clone(),
+        env.get("PATH").unwrap_or(""),
+        dirs.home.clone(),
+        oxa_proto::offline(),
+    ));
     let hook_sets = build_hooks(
         &HookInputs {
             args: a,
@@ -818,10 +849,11 @@ fn prepare(
         selection,
         model,
         thinking,
-        mode: a.permission_mode,
+        mode: table_mode,
         supervised_child: child.nested(),
         hook_sets,
         yolo,
+        bash_sandbox,
     };
     Ok(Prep {
         built,
@@ -1875,6 +1907,7 @@ mod session_scratch_tests {
             },
         };
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
+        let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
             status: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
@@ -1890,7 +1923,14 @@ mod session_scratch_tests {
             mode: None,
             supervised_child: false,
             hook_sets: HookSets::default(),
-            yolo: oxa_proto::YoloSwitch::new(false),
+            bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
+                base.clone(),
+                yolo.clone(),
+                "",
+                home,
+                false,
+            )),
+            yolo,
         };
         let first = built.deps(None);
         let second = built.deps(None);

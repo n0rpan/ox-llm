@@ -1,6 +1,6 @@
 //! C12: command-line parsing.
 // ported from pi packages/coding-agent/src/cli/args.ts (docs: cli.md)
-use oxa_proto::{codes, FlagSpec, Mode, OxaError, ThinkingLevel, Value};
+use oxa_proto::{codes, FlagSpec, Mode, OxaError, PermissionMode, ThinkingLevel, Value};
 use std::path::PathBuf;
 
 /// `--mode`.
@@ -133,10 +133,12 @@ pub struct Args {
     pub approve: Option<bool>,
     /// `--tui-mode <mode>` (`fullscreen` | `regular`).
     pub tui_mode: Option<String>,
-    /// oxa: `--permission-mode plan|workspace|ask`.
+    /// oxa: `--permission-mode plan|workspace|ask` (the table mode; `standard`, `auto` and
+    /// `yolo` set [`Args::level`]).
     pub permission_mode: Option<oxa_proto::Mode>,
-    /// `--yolo` (O-182): no permission prompts; the sandbox and the deny-list stay on.
-    pub yolo: bool,
+    /// #202: `--standard`, `--auto`, `--yolo` (or `--permission-mode <that>`): the permission
+    /// mode for this run, over `permissions.defaultMode`. The last one given wins.
+    pub level: Option<oxa_proto::PermissionMode>,
     /// `--verbose`.
     pub verbose: bool,
     /// `-h`, `--help`.
@@ -329,12 +331,20 @@ const OPTIONS: &[(&str, &str)] = &[
         "Ignore project-local configuration and resources for this run",
     ),
     (
+        "--standard",
+        "Permission mode standard: prompts before actions outside the workspace",
+    ),
+    (
+        "--auto",
+        "Permission mode auto: no prompts; the bash sandbox and the deny-list stay on",
+    ),
+    (
         "--yolo",
-        "No permission prompts: every question is auto-approved (the sandbox and the deny-list stay on)",
+        "Permission mode yolo, full access: no prompts, bash runs without the sandbox",
     ),
     (
         "--permission-mode <mode>",
-        "Permission mode: plan, workspace (default), or ask",
+        "Permission mode: standard, auto, yolo, plan (or workspace, ask); default: permissions.defaultMode, else auto",
     ),
     ("--verbose", "Show verbose startup information"),
     (
@@ -687,14 +697,28 @@ fn parse_flag(
             a.tui_mode = Some(v);
         }
         "--permission-mode" => {
-            let v = value(argv, i, inline, flag, "plan, workspace, or ask")?;
-            a.permission_mode = Some(Mode::parse(&v).ok_or_else(|| {
-                let valid: Vec<&str> = Mode::ALL.iter().map(|m| m.as_str()).collect();
-                usage(format!(
-                    "Invalid permission mode \"{v}\". Valid values: {}",
-                    valid.join(", ")
-                ))
-            })?);
+            let v = value(
+                argv,
+                i,
+                inline,
+                flag,
+                "standard, auto, yolo, plan, workspace, or ask",
+            )?;
+            if let Some(m) = Mode::parse(&v) {
+                a.permission_mode = Some(m);
+                // The last flag given wins: `workspace` and `ask` prompt, so they end an
+                // earlier `--yolo` / `--auto`.
+                a.level = Some(match m {
+                    Mode::Plan => PermissionMode::Plan,
+                    _ => PermissionMode::Standard,
+                });
+            } else if let Some(level) = PermissionMode::parse(&v) {
+                a.level = Some(level);
+            } else {
+                return Err(usage(format!(
+                    "Invalid permission mode \"{v}\". Valid values: standard, auto, yolo, plan, workspace, ask"
+                )));
+            }
         }
         "--verbose" => {
             no_value(inline, flag)?;
@@ -714,7 +738,15 @@ fn parse_flag(
         }
         "--yolo" => {
             no_value(inline, flag)?;
-            a.yolo = true;
+            a.level = Some(PermissionMode::Yolo);
+        }
+        "--auto" => {
+            no_value(inline, flag)?;
+            a.level = Some(PermissionMode::Auto);
+        }
+        "--standard" => {
+            no_value(inline, flag)?;
+            a.level = Some(PermissionMode::Standard);
         }
         _ => return parse_extension_or_unknown(a, argv, i, flag, inline, ext),
     }

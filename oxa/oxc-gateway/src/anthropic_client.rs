@@ -15,6 +15,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, fmt, time::Duration};
 use tokio::sync::watch;
 
+pub mod models;
+
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
 /// One logical request's cancellation. Cancellation is sticky and wakes reads.

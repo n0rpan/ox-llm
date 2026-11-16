@@ -901,7 +901,7 @@ impl OwnedCtx {
             env,
             tune: st.tune,
             checked: checked.to_vec(),
-            hidden: st.policy.path_filter(),
+            hidden: st.policy.path_filter_for_mode(st.mode),
         }
     }
 
@@ -1136,7 +1136,7 @@ fn tool_ctx(st: &SessionState) -> ToolCtx<'_> {
         cancel: &st.shared.cancel,
         env: &st.tool_env,
         tune: st.tune,
-        hidden: st.policy.path_filter(),
+        hidden: st.policy.path_filter_for_mode(st.mode),
     }
 }
 
