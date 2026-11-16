@@ -1,4 +1,132 @@
 use super::*;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyntheticRefusal {
+    Rejected,
+}
+
+/// Exercise the seam with opaque preparation and non-Go usage/refusal types.
+/// This deliberately supplies no OpenRouter policy or billing implementation.
+#[test]
+fn prepared_chat_reuses_transport_without_go_policy() {
+    use crate::anthropic_client::Control;
+    use crate::opencode::client::{stream_prepared, Error, Event, PreparedChat};
+    use openai::{MockOpenAi, Reply};
+    use oxa_proto::CancelToken;
+    use reqwest::{
+        header::{HeaderMap, HeaderValue},
+        Url,
+    };
+    for case in ["final", "early", "refused", "invalid-endpoint"] {
+        let reply = if case == "refused" {
+            Reply::raw(
+                418,
+                "application/json",
+                br#"{"error":{"synthetic":true}}"#.to_vec(),
+                vec![],
+            )
+        } else {
+            let content =
+                json!({"choices":[{"index":0,"delta":{"content":"Synthetic answer"},"finish_reason":null}]});
+            let finish = json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+            let usage = json!({"choices":[],"usage":{"units":7}});
+            let frames = if case == "early" {
+                vec![usage, content, finish]
+            } else {
+                vec![content, finish, usage]
+            };
+            let mut bytes = Vec::new();
+            for frame in frames {
+                bytes.extend_from_slice(format!("data: {frame}\r\n\r\n").as_bytes());
+            }
+            bytes.extend_from_slice(b"data: [DONE]\r\n\r\n");
+            Reply::raw(200, "text/event-stream", bytes, vec![])
+        };
+        let mock = MockOpenAi::start(if case == "invalid-endpoint" {
+            vec![]
+        } else {
+            vec![reply]
+        });
+        let fixture = skeleton::Fixture::for_endpoint(&mock.base_url());
+        let key = crate::secrets::read(&fixture.key_path, "anthropic").unwrap();
+        let transport = crate::anthropic_client::Client::new().unwrap().shared_transport();
+        let payload = json!({"model":"synthetic-model","messages":[{"role":"user","content":"Synthetic task"}],"stream":true,"provider":{"synthetic":"opaque"}});
+        let endpoint = if case == "invalid-endpoint" {
+            "http://example.invalid/v1/chat/completions".into()
+        } else {
+            format!("{}/chat/completions", mock.base_url())
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert("x-synthetic-provider", HeaderValue::from_static("prepared"));
+        let mut usage = None;
+        let mut sent = 0;
+        let mut chunks = Vec::new();
+        let result = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(stream_prepared(
+                &transport,
+                PreparedChat {
+                    endpoint: Url::parse(&endpoint).unwrap(),
+                    alias: "synthetic-alias",
+                    payload: &payload,
+                    key: &key,
+                    headers,
+                    parse_usage: |value| value["units"].as_u64(),
+                    refusal: |status, body| {
+                        assert_eq!(status, 418);
+                        assert_eq!(body["error"]["synthetic"], true);
+                        SyntheticRefusal::Rejected
+                    },
+                },
+                &CancelToken::new(),
+                &mut |event| {
+                    match event {
+                        Event::Sending => sent += 1,
+                        Event::Chunk(chunk) => chunks.push(chunk),
+                    }
+                    Control::Continue
+                },
+                &mut usage,
+            ));
+        match case {
+            "final" => {
+                assert_eq!(result.unwrap().assistant["content"], "Synthetic answer");
+                assert_eq!(usage, Some(7));
+                assert!(chunks.iter().any(|chunk| chunk["model"] == "synthetic-alias"));
+            }
+            "early" => {
+                assert!(matches!(result, Err(Error::Protocol)));
+                assert_eq!(usage, None);
+            }
+            "refused" => {
+                assert!(matches!(result, Err(Error::Refused(SyntheticRefusal::Rejected))));
+                assert_eq!(usage, None);
+            }
+            "invalid-endpoint" => {
+                assert!(matches!(result, Err(Error::Endpoint)));
+                assert_eq!(usage, None);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(sent, usize::from(case != "invalid-endpoint"));
+        let requests = mock.requests();
+        if case != "invalid-endpoint" {
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].target, "/v1/chat/completions");
+            assert_eq!(requests[0].body, payload);
+            assert_eq!(requests[0].header("x-synthetic-provider"), Some("prepared"));
+            assert_eq!(requests[0].header("x-opencode-session"), None);
+            assert_eq!(
+                requests[0].header("authorization"),
+                Some(format!("Bearer {}", anthropic::CREDENTIAL).as_str())
+            );
+        } else {
+            assert!(requests.is_empty());
+        }
+        mock.assert_healthy();
+    }
+}
 #[allow(dead_code)]
 #[path = "anthropic.rs"]
 mod anthropic;

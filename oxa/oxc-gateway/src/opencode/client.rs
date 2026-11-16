@@ -10,8 +10,8 @@ use crate::{
 use futures_util::StreamExt;
 use oxa_proto::CancelToken;
 use reqwest::{
-    header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT},
-    Client,
+    header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, USER_AGENT},
+    Client, Url,
 };
 use serde_json::{json, Value};
 use std::{
@@ -22,21 +22,21 @@ use std::{
 const MAX_BODY: usize = 64 * 1024 * 1024;
 const MAX_DISCOVERY: usize = 4 * 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error {
+pub enum Error<R = Refusal> {
     Endpoint,
     Request,
     Transport,
     Protocol,
     TooLarge,
     Cancelled,
-    Refused(Refusal),
+    Refused(R),
 }
 pub enum Event {
     Sending,
     Chunk(Value),
 }
 
-fn bearer(key: &Key) -> Result<HeaderValue, Error> {
+fn bearer<R>(key: &Key) -> Result<HeaderValue, Error<R>> {
     let mut header =
         HeaderValue::from_str(&format!("Bearer {}", key.expose())).map_err(|_| Error::Request)?;
     header.set_sensitive(true);
@@ -52,11 +52,11 @@ fn echoes_credential(value: &Value, key: &Key) -> bool {
         _ => false,
     }
 }
-async fn bounded(
+async fn bounded<R>(
     mut response: reqwest::Response,
     max: usize,
     cancel: &CancelToken,
-) -> Result<Vec<u8>, Error> {
+) -> Result<Vec<u8>, Error<R>> {
     let mut out = Vec::new();
     loop {
         let next = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), next=response.chunk()=>next.map_err(|_|Error::Transport)?, };
@@ -114,6 +114,19 @@ pub struct Chat<'a> {
     pub key: &'a Key,
     pub hint: &'a SessionHint,
 }
+
+/// Provider-owned preparation for the one shared Chat Completions transport.
+/// The caller retains routing/privacy policy, headers and typed usage/refusals;
+/// this loop retains endpoint hygiene, framing, redaction and terminal ordering.
+pub(crate) struct PreparedChat<'a, U, R> {
+    pub endpoint: Url,
+    pub alias: &'a str,
+    pub payload: &'a Value,
+    pub key: &'a Key,
+    pub headers: HeaderMap,
+    pub parse_usage: fn(&Value) -> Option<U>,
+    pub refusal: fn(u16, &Value) -> R,
+}
 pub async fn stream<F>(
     client: &Client,
     chat: Chat<'_>,
@@ -133,8 +146,47 @@ where
         hint,
     } = chat;
     let endpoint = model.chat_endpoint().map_err(|_| Error::Endpoint)?;
-    let body = serde_json::to_vec(&model.request(payload).map_err(|_| Error::Request)?)
-        .map_err(|_| Error::Request)?;
+    let payload = model.request(payload).map_err(|_| Error::Request)?;
+    stream_prepared(
+        client,
+        PreparedChat {
+            endpoint,
+            alias,
+            payload: &payload,
+            key,
+            headers: hint.headers(),
+            parse_usage: |value| Usage::parse(value).ok(),
+            refusal: super::refusal,
+        },
+        cancel,
+        on,
+        terminal_usage,
+    )
+    .await
+}
+
+pub(crate) async fn stream_prepared<U, R, F>(
+    client: &Client,
+    chat: PreparedChat<'_, U, R>,
+    cancel: &CancelToken,
+    on: &mut F,
+    terminal_usage: &mut Option<U>,
+) -> Result<Completed, Error<R>>
+where
+    F: FnMut(Event) -> Control + ?Sized,
+{
+    *terminal_usage = None;
+    let PreparedChat {
+        endpoint,
+        alias,
+        payload,
+        key,
+        headers,
+        parse_usage,
+        refusal,
+    } = chat;
+    let endpoint = super::endpoint(endpoint.as_str()).map_err(|_| Error::Endpoint)?;
+    let body = serde_json::to_vec(payload).map_err(|_| Error::Request)?;
     if body.len() > MAX_BODY {
         return Err(Error::TooLarge);
     }
@@ -143,7 +195,7 @@ where
     }
     let request = client
         .post(endpoint)
-        .headers(hint.headers())
+        .headers(headers)
         .header(AUTHORIZATION, bearer(key)?)
         .header(CONTENT_TYPE, "application/json")
         .header("accept", "text/event-stream")
@@ -153,7 +205,7 @@ where
     if status != 200 {
         let bytes = bounded(response, 64 * 1024, cancel).await?;
         let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        return Err(Error::Refused(super::refusal(status, &value)));
+        return Err(Error::Refused(refusal(status, &value)));
     }
     if !response
         .headers()
@@ -297,7 +349,7 @@ where
                 if finish.is_none() && ending.is_none() {
                     return Err(Error::Protocol);
                 }
-                *terminal_usage = Some(Usage::parse(value).map_err(|_| Error::Protocol)?);
+                *terminal_usage = Some(parse_usage(value).ok_or(Error::Protocol)?);
             }
             if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                 return Err(Error::Cancelled);
@@ -357,12 +409,12 @@ where
         }
     }
 }
-fn collect(
+fn collect<R>(
     chunk: &Value,
     text: &mut String,
     reasoning: &mut String,
     calls: &mut BTreeMap<usize, Value>,
-) -> Result<(), Error> {
+) -> Result<(), Error<R>> {
     let delta = &chunk["choices"][0]["delta"];
     if let Some(s) = delta["content"].as_str() {
         text.push_str(s);
