@@ -702,6 +702,33 @@ fn abort_persistence_is_deferred_and_preserves_another_live_session() {
 }
 
 #[test]
+fn abort_idle_load_failure_retains_reserved_state_for_retry() {
+    let tok = synthetic_tokenizer();
+    let dir = crate::tests_state::tmp("fair-abort-idle-load-failure");
+    let mut w = abort_worker(&tok, &dir);
+    suspend_abort_session(&mut w, &tok, "A");
+    let reserved = w.cache.reserved;
+    assert!(reserved > 0);
+    assert!(w.states.as_ref().unwrap().manifests.is_empty());
+
+    w.engine.fail_load = true;
+    w.persist_states(None, None);
+    assert!(w.states.as_ref().unwrap().manifests.is_empty());
+    assert_eq!(
+        w.cache.reserved, reserved,
+        "failed load retains its reservation"
+    );
+    assert!(w.cache.tokens.is_empty());
+    assert!(w.live_blocks.is_empty());
+
+    w.persist_states(None, None);
+    assert_eq!(w.cache.reserved, 0);
+    assert_eq!(w.states.as_ref().unwrap().manifests.len(), 1);
+    assert_eq!(w.engine.saved, vec![first(&tok, "A")]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn abort_shutdown_prioritizes_live_state_and_shares_one_deadline() {
     let tok = synthetic_tokenizer();
     let dir = crate::tests_state::tmp("fair-abort-deadline");

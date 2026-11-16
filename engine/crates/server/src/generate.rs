@@ -2658,12 +2658,14 @@ impl<E: Engine> Worker<E> {
                 break;
             }
             let mut s = self.aborted.pop_front().unwrap();
-            self.held_bytes = self.held_bytes.saturating_sub(s.bytes);
-            self.cache.reserved = self.held_bytes;
-            if let Err(e) = self.restore_suspended(s.local, s.persisted_head) {
+            if let Err(e) = self.restore_suspended_retry(&mut s.local, &mut s.persisted_head) {
                 eprintln!("oxe-server: deferred aborted state could not be loaded: {e:?}");
+                // Keep the only unwritten copy and its reservation, for a later idle gap.
+                self.aborted.push_back(s);
                 continue;
             }
+            self.held_bytes = self.held_bytes.saturating_sub(s.bytes);
+            self.cache.reserved = self.held_bytes;
             let hint = self.live_hint.clone();
             files += self.persist(hint.as_deref(), mode, cancel).files();
             if !keep_live {
@@ -2799,23 +2801,39 @@ impl<E: Engine> Worker<E> {
     fn restore_suspended(
         &mut self,
         mut l: HeldLocal<E::Snapshot>,
-        persisted_head: Option<String>,
+        mut persisted_head: Option<String>,
+    ) -> Result<(), GenError> {
+        self.restore_suspended_retry(&mut l, &mut persisted_head)
+    }
+
+    /// A failed engine load leaves the held state and its write bookkeeping with the caller.
+    fn restore_suspended_retry(
+        &mut self,
+        l: &mut HeldLocal<E::Snapshot>,
+        persisted_head: &mut Option<String>,
     ) -> Result<(), GenError> {
         self.reset_live();
-        let h = l.held.take().expect("a suspended run holds its session");
-        let n = h.len();
-        if self.cache.restore_held(&mut self.engine, h)? != n {
+        let n = l
+            .held
+            .as_ref()
+            .expect("a suspended run holds its session")
+            .len();
+        if self
+            .cache
+            .restore_held_retry(&mut self.engine, &mut l.held)?
+            != n
+        {
             return Err(GenError::Engine(EngineError(
                 "a suspended generation could not be loaded back".into(),
             )));
         }
-        self.live_blocks = l.live_blocks;
+        self.live_blocks = std::mem::take(&mut l.live_blocks);
         self.progress_mark = l.progress_mark;
         self.state_dirty = l.state_dirty;
         self.snaps_pending = l.snaps_pending;
         self.last_first_user = l.last_first_user;
-        self.live_hint = l.live_hint;
-        self.persisted_head = persisted_head;
+        self.live_hint = l.live_hint.take();
+        self.persisted_head = persisted_head.take();
         Ok(())
     }
 

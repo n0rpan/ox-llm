@@ -482,11 +482,26 @@ impl<S> PrefixCache<S> {
         eng: &mut E,
         h: Held<S>,
     ) -> Result<usize> {
-        let n = h.p.tokens.len();
-        let got = self.unpark(eng, h.p, n)?;
-        if got == n {
-            self.low_water = h.low_water.min(n);
+        self.restore_held_retry(eng, &mut Some(h))
+    }
+
+    /// Keep ownership of the held copy on a failed load so a deferred writer can retry.
+    pub(crate) fn restore_held_retry<E: Engine<Snapshot = S>>(
+        &mut self,
+        eng: &mut E,
+        held: &mut Option<Held<S>>,
+    ) -> Result<usize> {
+        let h = held.as_ref().expect("a held session");
+        let n = h.len();
+        let t0 = std::time::Instant::now();
+        if let Err(e) = eng.load_state(&mut &h.p.state[..], n) {
+            eprintln!("oxe-server: unpark: {}", e.0);
+            self.reset(eng);
+            return Ok(0);
         }
+        let h = held.take().unwrap();
+        let got = self.unpark_loaded(eng, h.p, n, t0)?;
+        self.low_water = h.low_water.min(n);
         Ok(got)
     }
 
@@ -626,7 +641,7 @@ impl<S> PrefixCache<S> {
     fn unpark<E: Engine<Snapshot = S>>(
         &mut self,
         eng: &mut E,
-        mut p: Parked<S>,
+        p: Parked<S>,
         pos: usize,
     ) -> Result<usize> {
         let t0 = std::time::Instant::now();
@@ -636,6 +651,17 @@ impl<S> PrefixCache<S> {
             self.reset(eng);
             return Ok(0);
         }
+        self.unpark_loaded(eng, p, pos, t0)
+    }
+
+    fn unpark_loaded<E: Engine<Snapshot = S>>(
+        &mut self,
+        eng: &mut E,
+        mut p: Parked<S>,
+        pos: usize,
+        t0: std::time::Instant,
+    ) -> Result<usize> {
+        let n = p.tokens.len();
         self.snaps.clear();
         self.low_water = 0;
         self.epoch += 1;
