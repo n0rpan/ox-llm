@@ -12,6 +12,7 @@ pub mod policy;
 pub mod pricing;
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod rate_limits;
+pub mod refresh;
 
 #[cfg(feature = "accounting")]
 pub mod accounting;
