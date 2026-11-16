@@ -96,7 +96,7 @@ rewrites. All 21 stream regressions pass, including failing-first cases. The
 native incomplete/invalid-usage client case now passes as well.
 
 Full gateway tests pass in the normal parallel mode with private HOME, a private
-`/tmp` mount and network namespace. This includes 102 library tests, 19 actual
+`/tmp` mount and network namespace. This includes 102 library tests, 21 actual
 client integration tests, eight token-file tests and four subscription classifier
 tests, plus the remaining gateway suites. Strict all-target/all-feature Clippy,
 formatting and default-off checks pass. Persisted history is serialized to disk
@@ -111,3 +111,16 @@ mount rather than bypassing that guard. An earlier parallel discovery-fixture
 name collision is tracked with rust-cloud for its separate S7 fix; this passing
 parallel run does not claim to fix it. No scanner or acceptance requirement is
 weakened.
+
+Gatekeeper follow-up: tool IDs and function names are whole identity fields,
+never credential-prefix fragments. Only arguments use cross-fragment withholding.
+The actual `oxa_engine::ReplyAssembler` now checks all three-tool variants and
+both modes with `call_s`/`ss`, whose suffixes overlap the synthetic credential's
+prefix. The regression failed before the fix (delivered ID `s`, expected
+`call_s`). Assembled execution/result IDs match Completed and unchanged private
+replay through continuation. A complete credential in an executable identity
+refuses before any tool delivery, with private terminal usage retained; rewriting
+that identity would invalidate replay. Interrupted mixed-call responses still
+expose all ordered raw items privately, authorize no replay and deliver no calls
+to the real assembler. The consumer is a dev dependency only; its source is
+unchanged.
