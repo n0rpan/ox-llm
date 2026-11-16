@@ -310,7 +310,10 @@ fn malformed_or_unsafe_persisted_state_fails_closed() {
         b"".as_slice(),
         b"{",
         b"{}",
-        b"{\"failed\":false,\"holds\":{\"bad\":-1}}",
+        b"{\"failed\":false,\"holds\":{\"00000000000000000000000000000000\":-1}}",
+        b"{\"failed\":false,\"holds\":{\"00000000000000000000000000000000\":1e400}}",
+        b"{\"failed\":false,\"holds\":{\"bad\":1}}",
+        b"{\"failed\":null,\"holds\":{}}",
     ] {
         let home = Home::new();
         let path = home.0.join("requests.jsonl.holds");
@@ -331,6 +334,15 @@ fn malformed_or_unsafe_persisted_state_fails_closed() {
         let other = home.0.join("other");
         fs::write(&other, "synthetic").unwrap();
         symlink(&other, &path).unwrap();
+        assert!(Budget::new(home.path())
+            .reserve(&json!(1), true, &model(), 100)
+            .is_err());
+        fs::remove_file(&path).unwrap();
+        nix::unistd::mkfifo(
+            &path,
+            nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+        )
+        .unwrap();
         assert!(Budget::new(home.path())
             .reserve(&json!(1), true, &model(), 100)
             .is_err());
