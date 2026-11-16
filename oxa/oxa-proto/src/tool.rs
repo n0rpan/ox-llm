@@ -103,8 +103,9 @@ pub mod tool_errors {
     pub const DENIED_PREFIX: &str = "Permission denied: ";
     pub const DENIED_BY_USER: &str = "Permission denied: the user declined this action";
     /// #554: an action that needs approval in a run with no one to ask (print/json). `{what}` is
-    /// the action ("write /tmp/x"). Nobody declined; the text says so and what still works.
-    pub const DENIED_UNATTENDED: &str = "Permission denied: {what} needs approval, but this run cannot ask (non-interactive), so it was refused; nobody declined it. Writes inside the working directory need no approval, and bash can write to its own /tmp.";
+    /// the action ("write /tmp/x"). Nobody declined; avoid workarounds whose approval depends
+    /// on the active policy and path protections.
+    pub const DENIED_UNATTENDED: &str = "Permission denied: {what} needs approval, but this run cannot ask (non-interactive), so it was refused; nobody declined it.";
     pub const ABORTED: &str = "Tool execution aborted";
     /// A call in a reply cut by the output limit (`Finish::Length`) is never run (pi's
     /// `failToolCallsFromTruncatedMessage`). `{name}` is replaced by the tool name.
