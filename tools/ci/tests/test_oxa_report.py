@@ -48,7 +48,7 @@ class ReportControls(unittest.TestCase):
         with self.assertRaises(OSError):
             REPORT.check([self.root / 'missing.xml'])
 
-    def test_only_documented_ignores_are_allowed(self):
+    def test_only_existing_measurement_ignores_are_allowed(self):
         binary, name = next(iter(REPORT.IGNORED))
         ignored = f'<testcase classname="{binary}" name="{name}"><skipped/></testcase>'
         self.assertEqual(REPORT.check([self.report('allowed.xml', self.case('first') + ignored)]), 1)
@@ -58,18 +58,19 @@ class ReportControls(unittest.TestCase):
         with self.assertRaises(ValueError):
             REPORT.check([self.report('bad.xml', self.case('first') + self.case('second'))], self.inventory)
 
-    def test_pending_s7_proof_has_one_exact_temporary_exemption(self):
+    def test_no_python_proof_is_active_and_cannot_be_skipped(self):
         binary = 'oxa-cli::no_python_in_path'
         name = 'print_uses_native_gateway_without_python_or_controller'
         inventory = json.loads(self.inventory.read_text())
         inventory['rust-suites'][binary] = {
-            'status': 'listed', 'testcases': {name: {'ignored': True}}}
+            'status': 'listed', 'testcases': {name: {'ignored': False}}}
         self.inventory.write_text(json.dumps(inventory))
-        cases = self.case('first') + self.case('second')
-        cases += f'<testcase classname="{binary}" name="{name}"><skipped/></testcase>'
-        self.assertEqual(REPORT.check([self.report('pending.xml', cases)], self.inventory), 2)
-        # Once S7 enables the test, the same skipped report must fail coverage validation.
-        inventory['rust-suites'][binary]['testcases'][name]['ignored'] = False
-        self.inventory.write_text(json.dumps(inventory))
-        with self.assertRaises(ValueError):
-            REPORT.check([self.report('stale-skip.xml', cases)], self.inventory)
+        ordinary = self.case('first') + self.case('second')
+        proof = f'<testcase classname="{binary}" name="{name}"/>'
+        self.assertEqual(REPORT.check([self.report('active.xml', ordinary + proof)], self.inventory), 3)
+        skipped = f'<testcase classname="{binary}" name="{name}"><skipped/></testcase>'
+        for ignored in (False, True):
+            inventory['rust-suites'][binary]['testcases'][name]['ignored'] = ignored
+            self.inventory.write_text(json.dumps(inventory))
+            with self.subTest(ignored=ignored), self.assertRaises(ValueError):
+                REPORT.check([self.report('skipped-proof.xml', ordinary + skipped)], self.inventory)

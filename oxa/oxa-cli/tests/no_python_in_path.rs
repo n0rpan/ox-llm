@@ -1,5 +1,5 @@
-//! Milestone A's real-binary proof. This is deliberately not a passing claim on pre-S7 main.
-//! The ignored case must be enabled and its user-settings fixture checked against landed S7.
+//! Milestone A native-cloud real-binary proof against the merged S7 factory.
+//! Complementary policy/tool-denial controls remain in in_process_cloud.rs.
 #![cfg(target_os = "linux")]
 
 #[allow(dead_code)]
@@ -68,7 +68,6 @@ fn controller_trap_detects_a_connection_without_a_request() {
 }
 
 #[test]
-#[ignore = "S7 production in-process gateway selection is not on main; remove this ignore when S7 #694 lands on main (#331)"]
 fn print_uses_native_gateway_without_python_or_controller() {
     let env = TestEnv::new();
     let mock = MockAnthropic::start(vec![Reply::text("native-gateway-proof", 11, 7, 3, 5)]);
