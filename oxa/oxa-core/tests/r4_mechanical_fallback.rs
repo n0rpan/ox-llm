@@ -54,6 +54,7 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, compact: CompactPolicy, setting
         gate: Default::default(),
     });
     SessionState {
+        output_schema: None,
         engine,
         store,
         hooks: Vec::new(),

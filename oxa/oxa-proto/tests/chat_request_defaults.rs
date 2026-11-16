@@ -16,4 +16,5 @@ fn chat_request_new_fills_defaults_so_struct_update_survives_new_fields() {
         (7, "m", false, true)
     );
     assert_eq!(r.hints, Hints::default());
+    assert!(r.output_schema.is_none());
 }

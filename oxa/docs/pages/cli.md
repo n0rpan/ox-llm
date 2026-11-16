@@ -25,6 +25,12 @@ Print, JSON and RPC runs write exactly one terminal JSON result on standard erro
 
 The `outcome` is `done`, `nothing_to_do`, `blocked`, `failed` or `interrupted`. `error_class` is a stable error code (for example `engine_http`, `stream_broken`, `done_checks_failed` or `output_limit`), or `null` for successful and no-op runs. Diagnostics remain human-readable; callers should use the result and exit code instead of matching their wording.
 
+Every saved CLI session has a small atomic `<session>.status.json` sibling, private like the session file. `oxa status <session-id|session-file> [--session-dir <dir>]` reads it without contacting an engine. JSON mode's session header and RPC `get_state` expose its `statusFile` path. `--no-session` creates no status file.
+
+The version-1 `oxa_status` object reports `session_id`, `pid`, `started_ms`, a monotonically increasing request `step`, `phase`, `last_tool`, `tokens`, `cost_usd`, `last_progress_ms`, `stall_timeout_ms`, `stall_deadline_ms` and the final `outcome` (`oxa_result`). Phases are `idle`, `working`, `model`, `prefill`, `compaction`, `tool`, `closing` and `finished`. Times are Unix milliseconds. Counters cover this process's work on this session, including discarded replies, summaries and prefills. Failed requests with no usage make `tokens.complete` false and increment `unreported_requests`; unreported cached usage is `null`. Local provider cost is zero; cloud cost is `null` because the engine wire does not report settled USD charges. This file contains no prompts, replies, tool arguments/results or diagnostic text.
+
+`--stall-timeout <seconds>` opts into stall signalling (minimum 0.001 seconds). Status readers compare the recorded deadline to the current time; `oxa status` adds `stalled`. It is a progress signal and never cancels a task. Only advancing model/prefill/tool output and real phase boundaries update progress; repeated queue comments do not. Stream writes coalesce for at most one second or one quarter of the timeout, whichever is shorter; the deadline includes that grace so a coalesced delta cannot cause an early stall. Idle and finished sessions have no deadline. There is no polling thread or daemon, and reading status never changes it. A killed process can leave an active snapshot; its expired deadline remains visible. Settlement and shutdown hooks remain active work until they return. An unattended terminal record preserves earlier prompt failures; an interactive terminal record describes the UI exit. A status-write failure cannot report a successful process result.
+
 | Exit code | Outcome | Meaning |
 |---|---|---|
 | 0 | `done` | The requested run completed |
@@ -53,6 +59,14 @@ A plain reply cut at its output limit also continues under the auto-retry policy
 For a top-level run, this is a graceful limit: an active tool or model request finishes before the final turn, so elapsed time can exceed the requested duration. The first SIGTERM does not cancel that tool. A further SIGTERM, or SIGTERM after the time limit has requested wrap-up, takes the default termination action so a stuck tool or final request can be stopped. This forced termination cannot guarantee a final result record or session flush. SIGKILL and process/system crashes cannot run a wrap-up turn. Supervised subagents retain immediate SIGTERM cancellation; the parent controls their cooperative completion.
 
 If a local model spends its output budget on thinking without an answer, oxa retries once with thinking off. If that fallback still reaches the output limit without text or tool calls, the run fails with `error_class: "thinking_overrun"` and exit 1 in print, JSON and RPC modes. No further generation is attempted; the terminal result distinguishes this from a broken transport or an empty successful answer.
+
+## Schema-checked answers
+
+Use `oxa -p --output-schema schema.json "your task"` to require a JSON final answer. The file is read relative to the working directory before the session starts. Supported schema keywords are `type` (`object`, `array`, `string`, `number`), `properties`, `items`, `enum` and `required`, including nested schemas. Unsupported keywords and malformed schemas are rejected rather than silently ignored; external references are never fetched.
+
+The contract is supplied as a turn message, not a system/worker prefix change. Tools work normally. If the final text is not valid JSON matching the schema, oxa appends one repair instruction and tries again. A second mismatch fails with exit 1 and `error_class: "schema_mismatch"`; print mode emits no final answer on failure. JSON mode still streams all attempt events. The repair budget resets for each user prompt. Without the flag, no schema instructions or validation are added.
+
+Validation always happens in oxa. Only cloud models explicitly advertising the `response_format` capability also receive an upstream JSON Schema `response_format`; it is never sent to the local engine. This option is process-local, is not saved as a setting, and is not inherited by workers.
 
 ## Commands
 

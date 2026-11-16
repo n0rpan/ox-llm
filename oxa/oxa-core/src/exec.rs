@@ -75,7 +75,7 @@ pub fn request(
     let thinking = opts
         .thinking
         .unwrap_or_else(|| crate::think::request_thinking(st, opts.kind));
-    let session = st.sref.id.clone();
+    let session = st.sref.clone();
     let engine = st.engine.clone();
     let cancel = if opts.background {
         st.shared.gate.bg_cancel.clone()
@@ -83,7 +83,7 @@ pub fn request(
         st.shared.cancel.clone()
     };
     let hints = Hints {
-        session: &session,
+        session: &session.id,
         idem_key: &idem,
         kind: opts.kind,
         background: opts.background,
@@ -91,7 +91,14 @@ pub fn request(
     };
     // Owned, so that the provider hooks can fire (with the state) while the reply streams.
     let (prefix, model) = (st.prefix.clone(), st.model.clone());
+    let output_schema = (st.info.caps.remote
+        && st.info.caps.response_format
+        && matches!(opts.kind, TurnKind::Chat)
+        && max_tokens > 0)
+        .then(|| st.output_schema.as_ref().map(|s| s.value().clone()))
+        .flatten();
     let req = ChatRequest {
+        output_schema: output_schema.as_ref(),
         prefix: &prefix,
         messages: &msgs,
         model: &model,
@@ -109,11 +116,46 @@ pub fn request(
     };
     let mut stream = StreamState::default();
     let mut hooks = crate::fire::StreamHooks::new(st, opts.events);
+    let progress = crate::progress::observer(st);
+    if let Some(progress) = &progress {
+        progress.notify(
+            &session,
+            crate::Progress::RequestStart {
+                kind: opts.kind,
+                remote: st.info.caps.remote,
+            },
+        );
+    }
+    let mut prefilled = 0;
     let mut on = |ev: StreamEvent| {
+        if let Some(progress) = &progress {
+            let advanced = match &ev {
+                StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
+                StreamEvent::ToolArgs { name, delta, .. } => name.is_some() || !delta.is_empty(),
+                StreamEvent::Prefill { done, .. } if *done > prefilled => {
+                    prefilled = *done;
+                    true
+                }
+                _ => false,
+            };
+            if advanced {
+                progress.notify(&session, crate::Progress::Advanced);
+            }
+        }
         hooks.raw(st, &ev, sink, ui);
         stream.handle(ev, &mut hooks.sink(st, sink, ui), opts.events)
     };
-    let turn = engine.chat(&req, &cancel, &mut on)?;
+    let turn = engine.chat(&req, &cancel, &mut on);
+    if let Some(progress) = &progress {
+        progress.notify(
+            &session,
+            crate::Progress::RequestEnd {
+                usage: turn.as_ref().ok().map(|turn| turn.usage),
+                remote: st.info.caps.remote,
+            },
+        );
+    }
+    let turn = turn?;
     crate::Handle {
         shared: st.shared.clone(),
     }
@@ -640,12 +682,13 @@ fn start_tool_prefill(
     let engine = st.engine.clone();
     let prefix = st.prefix.clone();
     let model = st.model.clone();
-    let session = st.sref.id.clone();
+    let session = st.sref.clone();
     let idem = new_idem_key(st);
     let thinking = crate::think::request_thinking(st, TurnKind::Prefill);
     let preserve_thinking = st.info.caps.preserve_thinking != Some(false);
     // F11: the hint whenever the engine keeps checkpoints, as the idle prefill sends it.
     let snapshot_keep = st.info.caps.snapshot_keep > 0;
+    let progress = crate::progress::observer(st);
     let user_abort = st.shared.cancel.clone();
     let budget = crate::Handle {
         shared: st.shared.clone(),
@@ -666,6 +709,7 @@ fn start_tool_prefill(
                 std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
             }
             let req = ChatRequest {
+                output_schema: None,
                 prefix: &prefix,
                 messages: &msgs,
                 model: &model,
@@ -676,7 +720,7 @@ fn start_tool_prefill(
                 preserve_thinking,
                 sampling: None,
                 hints: Hints {
-                    session: &session,
+                    session: &session.id,
                     idem_key: &idem,
                     kind: TurnKind::Prefill,
                     background: true,
@@ -697,15 +741,41 @@ fn start_tool_prefill(
                             std::thread::sleep(Duration::from_millis(5));
                         }
                     });
-                let res = engine.chat(&req, &cancel, &mut |_| {}).map(|turn| {
+                if let Some(progress) = &progress {
+                    progress.notify(
+                        &session,
+                        crate::Progress::RequestStart {
+                            kind: TurnKind::Prefill,
+                            remote: false,
+                        },
+                    );
+                }
+                let mut prefilled = 0;
+                let res = engine.chat(&req, &cancel, &mut |event| {
+                    if let (Some(progress), StreamEvent::Prefill { done, .. }) = (&progress, event) {
+                        if done > prefilled {
+                            prefilled = done;
+                            progress.notify(&session, crate::Progress::Advanced);
+                        }
+                    }
+                });
+                if let Some(progress) = &progress {
+                    progress.notify(
+                        &session,
+                        crate::Progress::RequestEnd {
+                            usage: res.as_ref().ok().map(|turn| turn.usage),
+                            remote: false,
+                        },
+                    );
+                }
+                if let Ok(turn) = &res {
                     budget.account_tokens(
                         u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
                             + u64::from(turn.usage.completion),
                     );
-                    true
-                });
+                }
                 done.store(true, Ordering::SeqCst);
-                res
+                res.map(|_| true)
             })
         });
     let Ok(handle) = spawned else {
@@ -960,7 +1030,14 @@ fn run_one(
     }
     let started = Instant::now();
     let hook_updates = crate::fire::wants(st, HookPoint::ToolExecutionUpdate);
+    let progress = crate::progress::observer(st);
+    let session = st.sref.clone();
     let mut live = |sink: &mut dyn EventSink, partial: &str| {
+        if !partial.is_empty() {
+            if let Some(progress) = &progress {
+                progress.notify(&session, crate::Progress::Advanced);
+            }
+        }
         sink.emit(&AgentEvent::ToolExecutionUpdate {
             tool_call_id: p.id.clone(),
             tool_name: p.name.clone(),
@@ -989,6 +1066,8 @@ fn run_parallel(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Vec<(ToolOutput, Duration)> {
+    let progress = crate::progress::observer(st);
+    let session = st.sref.clone();
     for p in batch {
         crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
     }
@@ -1006,12 +1085,20 @@ fn run_parallel(
                     unreachable!("a parallel batch holds runnable calls only")
                 };
                 let tool = Arc::clone(tool);
+                let progress = progress.clone();
+                let session = &session;
                 scope.spawn(move || {
                     if cancelled {
                         return (ToolOutput::error(tool_errors::ABORTED), Duration::ZERO);
                     }
                     let started = Instant::now();
-                    let mut none = |_: &str| {};
+                    let mut none = |partial: &str| {
+                        if !partial.is_empty() {
+                            if let Some(progress) = &progress {
+                                progress.notify(session, crate::Progress::Advanced);
+                            }
+                        }
+                    };
                     let out = contained_tool(&tool, || tool.run(&p.args, &owned.cx(), &mut none));
                     (out, started.elapsed())
                 })

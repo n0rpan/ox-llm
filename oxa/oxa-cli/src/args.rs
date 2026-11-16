@@ -14,6 +14,10 @@ pub enum ModeArg {
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    /// Read the live snapshot of a saved session.
+    Status(Vec<String>),
+    /// `oxa work <taskfile> | --issue N --model MODEL`.
+    Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
     Mcp(Vec<String>),
     /// `oxa install|remove|update|list ..`: the verb and the words after it.
@@ -48,8 +52,12 @@ pub struct Args {
     pub files: Vec<String>,
     /// `-p`, `--print`.
     pub print: bool,
+    /// `--output-schema FILE`: validate final text as JSON, with one repair turn.
+    pub output_schema: Option<String>,
     /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
+    /// Flag a saved active session after this long without progress.
+    pub stall_timeout: Option<std::time::Duration>,
     /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
     pub max_tokens: Option<u64>,
     /// `--mode text|json|rpc`.
@@ -161,6 +169,10 @@ const SESSION_ID_ERROR: &str = "Session id must be non-empty, contain only alpha
 /// Subcommands take every following word raw; they are parsed by their own modules.
 const COMMANDS: &[(&str, &str)] = &[
     (
+        "oxa status <session-id|session-file>",
+        "Read a saved session's current progress and stall signal",
+    ),
+    (
         "oxa install <source> [-l]",
         "Install a package source and add it to settings",
     ),
@@ -185,6 +197,10 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "oxa report-issue <draft|submit>",
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
+    ),
+    (
+        "oxa work <taskfile> | --issue N --model MODEL",
+        "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (
         "oxa wipe --session <id> | --all [--yes] [--engine]",
@@ -219,6 +235,7 @@ const OPTIONS: &[(&str, &str)] = &[
         "Thinking level: off, minimal, low, medium, high, xhigh, max",
     ),
     ("--mode <mode>", "Output mode: text (default), json, or rpc"),
+    ("--output-schema <file>", "Check final JSON against a schema; retry once on mismatch"),
     (
         "--print, -p",
         "Non-interactive mode: process the prompts and exit",
@@ -234,6 +251,10 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--max-time <seconds>",
         "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
+    ),
+    (
+        "--stall-timeout <seconds>",
+        "Flag an active session after this long without progress (no automatic cancellation)",
     ),
     (
         "--max-tokens <N>",
@@ -368,6 +389,8 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
+        "status" => Subcommand::Status(rest.to_vec()),
+        "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
         // pi's provider sign-in (`pi login [--api-key] [--no-browser]`, `pi logout`).
         "login" | "logout" => {
@@ -479,19 +502,17 @@ fn positional(a: &mut Args, word: &str) {
 /// `unsupported_in_oxa`.
 pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaError> {
     let mut a = Args::default();
-    if let Some(first) = argv.first() {
-        if !first.starts_with('-') && !first.starts_with('@') {
-            if let Some(sub) = subcommand(first, &argv[1..])? {
-                a.subcommand = Some(sub);
-                return Ok(a);
-            }
-        }
-    }
     let mut i = 0;
     let mut stop = false;
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
+        if !stop && (i == 1 || (arg == "work" && argv[..i - 1].iter().all(|word| word == "--offline"))) {
+            if let Some(sub) = subcommand(arg, &argv[i..])? {
+                a.subcommand = Some(sub);
+                break;
+            }
+        }
         if stop || !arg.starts_with('-') {
             positional(&mut a, arg);
             continue;
@@ -536,6 +557,7 @@ fn parse_flag(
             no_value(inline, flag)?;
             a.print = true;
         }
+        "--output-schema" => a.output_schema = Some(value(argv, i, inline, flag, "a file")?),
         "--mode" => {
             let v = value(argv, i, inline, flag, "text, json, or rpc")?;
             a.mode = Some(match v.as_str() {
@@ -577,6 +599,20 @@ fn parse_flag(
                 std::time::Duration::try_from_secs_f64(seconds)
                     .map_err(|_| usage("--max-time is too large"))?,
             );
+        }
+        "--stall-timeout" => {
+            let text = value(argv, i, inline, flag, "a positive number of seconds")?;
+            let seconds = text
+                .parse::<f64>()
+                .ok()
+                .filter(|s| s.is_finite() && *s >= 0.001)
+                .ok_or_else(|| usage("--stall-timeout requires at least 0.001 finite seconds"))?;
+            let duration = std::time::Duration::try_from_secs_f64(seconds)
+                .map_err(|_| usage("--stall-timeout is too large"))?;
+            if duration.as_millis() > u64::MAX as u128 {
+                return Err(usage("--stall-timeout is too large"));
+            }
+            a.stall_timeout = Some(duration);
         }
         "--max-tokens" => {
             let text = value(argv, i, inline, flag, "a positive integer")?;
@@ -775,6 +811,9 @@ fn parse_extension_or_unknown(
 
 /// The documented conflicts, checked after all words are read.
 fn check_conflicts(a: &Args) -> Result<(), OxaError> {
+    if a.no_session && a.stall_timeout.is_some() {
+        return Err(usage("--stall-timeout requires a saved session"));
+    }
     if a.continue_ && a.resume {
         return Err(usage("--continue cannot be combined with --resume"));
     }

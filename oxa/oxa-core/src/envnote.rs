@@ -184,17 +184,37 @@ pub fn facts(st: &SessionState) -> EnvFacts {
     }
 }
 
+thread_local! {
+    static TEST_TIME: std::cell::RefCell<Option<LocalTime>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Pin the environment-note clock on this thread for a test, restoring it even on panic.
+/// Other threads and normal sessions keep using the real clock.
+#[doc(hidden)]
+pub fn with_time_for_tests<R>(time: LocalTime, run: impl FnOnce() -> R) -> R {
+    struct Restore(Option<LocalTime>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            TEST_TIME.with(|t| *t.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(TEST_TIME.with(|t| t.replace(Some(time))));
+    run()
+}
+
 /// The note a user message added now gets; `None` when the note is off (or the clock is
 /// unknown).
 fn note_now(st: &SessionState) -> Option<String> {
     if !enabled(st) {
         return None;
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let t = oxa_session::local_time(now)?;
+    let t = TEST_TIME.with(|t| t.borrow().clone()).or_else(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        oxa_session::local_time(now)
+    })?;
     Some(note_for(st.transcript.wire(), &t, &facts(st)))
 }
 
@@ -218,6 +238,29 @@ pub fn with_note(st: &SessionState, msg: WireMsg) -> WireMsg {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_clock_is_thread_local_and_restored_after_panic() {
+        assert!(TEST_TIME.with(|v| v.borrow().is_none()));
+        let outer = t("2026-01-02", "03:04");
+        with_time_for_tests(outer.clone(), || {
+            std::thread::spawn(|| assert!(TEST_TIME.with(|v| v.borrow().is_none())))
+                .join()
+                .unwrap();
+            let result = std::panic::catch_unwind(|| {
+                with_time_for_tests(t("2026-01-03", "03:05"), || {
+                    assert_eq!(
+                        TEST_TIME.with(|v| v.borrow().as_ref().unwrap().hm.clone()),
+                        "03:05"
+                    );
+                    panic!("test clock unwinding");
+                });
+            });
+            assert!(result.is_err());
+            assert_eq!(TEST_TIME.with(|v| v.borrow().clone()), Some(outer));
+        });
+        assert!(TEST_TIME.with(|v| v.borrow().is_none()));
+    }
 
     fn t(date: &str, hm: &str) -> LocalTime {
         LocalTime {

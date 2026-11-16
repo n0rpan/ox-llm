@@ -1,7 +1,15 @@
 //! Opt-in, engine-independent cloud gateway building blocks.
 #![forbid(unsafe_code)]
+#[cfg(feature = "anthropic-gateway")]
+mod anthropic_replay;
+#[cfg(feature = "anthropic-gateway")]
+pub mod gateway;
+#[cfg(feature = "anthropic-gateway")]
+pub mod runtime;
+
 #[cfg(feature = "cloud-only")]
 pub mod catalog;
+pub mod discovery_cache;
 #[cfg(feature = "ledger")]
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]
@@ -12,6 +20,7 @@ pub mod policy;
 pub mod pricing;
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod rate_limits;
+pub mod refresh;
 
 #[cfg(feature = "accounting")]
 pub mod accounting;
@@ -35,3 +44,5 @@ pub mod anthropic_client;
 
 #[cfg(all(feature = "anthropic-client", feature = "pricing"))]
 pub mod openrouter;
+#[cfg(all(feature = "anthropic-client", feature = "pricing"))]
+pub mod status;

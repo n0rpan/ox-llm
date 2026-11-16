@@ -140,6 +140,7 @@ fn state_with(
     });
     let tools = tools();
     let st = SessionState {
+        output_schema: None,
         engine,
         store,
         hooks: Vec::new(),
