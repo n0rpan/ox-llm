@@ -83,8 +83,10 @@ fn the_saved_default_mode_applies_and_a_flag_wins() {
     let outside = env.root().join("elsewhere");
     std::fs::create_dir_all(&outside).expect("dir");
     let target = outside.join("out.txt");
+    // Exercise the host write permission, not an absolute /tmp session-scratch path.
+    let tool_path = Path::new("../elsewhere/out.txt");
 
-    let (out, _) = run(&env, write_call(&target), &["-p", "write it"]);
+    let (out, _) = run(&env, write_call(tool_path), &["-p", "write it"]);
     assert!(out.status.success());
     assert!(
         !target.exists(),
@@ -96,7 +98,7 @@ fn the_saved_default_mode_applies_and_a_flag_wins() {
         "the mode is logged on stderr: {err}"
     );
 
-    let (out, _) = run(&env, write_call(&target), &["-p", "--auto", "write it"]);
+    let (out, _) = run(&env, write_call(tool_path), &["-p", "--auto", "write it"]);
     assert!(out.status.success());
     assert!(target.exists(), "--auto wins over the saved default for one run");
     assert!(String::from_utf8_lossy(&out.stderr).contains("permission mode auto"));
