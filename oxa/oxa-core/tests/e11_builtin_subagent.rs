@@ -1256,6 +1256,8 @@ fn access_of(env: &TestEnv, h: &SubagentHooks, args: Value) -> Vec<oxa_proto::Ac
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        checked: &[],
+        hidden: None,
     };
     t.access(&args, &cx).expect("access")
 }
@@ -1273,6 +1275,7 @@ fn a_child_cwd_outside_the_session_is_a_write_access_for_the_permission_layer() 
     let work = env.work();
     std::fs::create_dir_all(work.join("sub")).unwrap();
     let outside = env.root().join("other-repo");
+    std::fs::create_dir_all(&outside).unwrap();
 
     // Normal work: no cwd, or one inside the project: no extra access, no extra prompt.
     for args in [
@@ -1328,6 +1331,54 @@ fn a_child_cwd_symlink_out_of_the_session_is_a_write_access() {
     let a = access_of(&env, &h, json!({"agent": "scout", "task": "x", "cwd": "link"}));
     assert_eq!(a.len(), 2, "{a:?}");
     assert!(matches!(&a[1], Access::Write(_)), "{a:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_preserves_symlink_parent_semantics_for_access_and_spawn() {
+    use oxa_proto::Access;
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let outside = env.root().join("elsewhere");
+    std::fs::create_dir_all(outside.join("tree")).unwrap();
+    std::fs::create_dir_all(outside.join("sibling")).unwrap();
+    std::fs::create_dir_all(env.work().join("sibling")).unwrap();
+    std::os::unix::fs::symlink(outside.join("tree"), env.work().join("link")).unwrap();
+    let args = json!({"agent": "scout", "task": "x", "cwd": "link/../sibling"});
+    assert_eq!(
+        access_of(&env, &h, args.clone()),
+        vec![
+            Access::Exec {
+                command: "subagent".into(),
+                net: false
+            },
+            Access::Write(outside.join("sibling")),
+        ],
+    );
+    let o = run(&env, &h, args);
+    assert!(!o.out.is_error, "{}", o.out.text);
+    assert_eq!(
+        env_of(&env, "sess.s1", "cwd").as_deref(),
+        outside.join("sibling").to_str(),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_missing_component_does_not_spawn_in_lexical_parent() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let o = run(
+        &env,
+        &h,
+        json!({
+            "agent": "scout", "task": "x", "cwd": "missing/.."
+        }),
+    );
+    assert!(o.out.is_error, "{}", o.out.text);
+    assert!(!log(&env).iter().any(|s| s.starts_with("start ")));
 }
 
 #[test]

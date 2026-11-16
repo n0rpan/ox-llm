@@ -696,11 +696,12 @@ fn parse_items(v: Option<&Value>) -> Vec<Item> {
         .unwrap_or_default()
 }
 
-/// The directory a child starts in: the task's `cwd` (relative to the session's, or absolute)
-/// in the same normalised form `access` hands to the permission layer, so what is allowed is
-/// what runs.
+/// Resolve symlinks before `..`, just as the OS does when starting the child. Both access
+/// checking and spawning use this path. If resolution fails, preserve the original path so
+/// spawning fails too, rather than silently running in a lexically normalised directory.
 fn child_cwd(session_cwd: &Path, c: &str) -> PathBuf {
-    oxa_perm::normalize(Path::new(c), session_cwd)
+    let dir = session_cwd.join(c);
+    std::fs::canonicalize(&dir).unwrap_or(dir)
 }
 
 fn available_list(agents: &[AgentDef]) -> String {
