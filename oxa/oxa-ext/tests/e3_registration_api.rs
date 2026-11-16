@@ -169,6 +169,7 @@ fn with_ctx<R>(env: &TestEnv, cancel: &CancelToken, f: impl FnOnce(&ToolCtx) -> 
     let cwd: PathBuf = env.work();
     let spill: PathBuf = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -176,6 +177,7 @@ fn with_ctx<R>(env: &TestEnv, cancel: &CancelToken, f: impl FnOnce(&ToolCtx) -> 
         cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     f(&cx)
 }

@@ -33,6 +33,18 @@ pub fn build_body(r: &ChatRequest, out: &mut Vec<u8>) {
     build_body_for(r, false, out);
 }
 
+/// The `reasoning_effort` of a cloud request: the level itself, `xhigh` and `max` capped at the
+/// highest effort the OpenAI-compatible wire has.
+fn reasoning_effort(level: ThinkingLevel) -> &'static str {
+    match level {
+        ThinkingLevel::Off => "none",
+        ThinkingLevel::Minimal => "minimal",
+        ThinkingLevel::Low => "low",
+        ThinkingLevel::Medium => "medium",
+        ThinkingLevel::High | ThinkingLevel::Xhigh | ThinkingLevel::Max => "high",
+    }
+}
+
 /// [`build_body`] for a local engine (`remote == false`) or a cloud model routed through the
 /// controller (`remote == true`, Wave D D4). A remote body never carries local-only prefix,
 /// cache or template fields; its thinking switch is the standard `reasoning_effort`.
@@ -70,7 +82,7 @@ pub fn build_body_for(r: &ChatRequest, remote: bool, out: &mut Vec<u8>) {
         out.extend_from_slice(b",\"max_tokens\":");
         out.extend_from_slice(r.max_tokens.to_string().as_bytes());
         out.extend_from_slice(b",\"reasoning_effort\":\"");
-        out.extend_from_slice(if r.thinking { b"high" } else { b"none" });
+        out.extend_from_slice(reasoning_effort(r.effective_level()).as_bytes());
         out.push(b'"');
         out.push(b'}');
         return;
@@ -466,6 +478,27 @@ fn retryable(e: &OxaError) -> bool {
     matches!(e.code, codes::ENGINE_DOWN | codes::STREAM_BROKEN | codes::TIMEOUT)
 }
 
+/// Cloud model: a failed or timed-out connect sent no request and may be tried again here.
+/// `post_sse` returns TIMEOUT only from connect; after connecting, even silence is STREAM_BROKEN.
+/// A cut or silent stream may already be a running, billed upstream generation; the core's single
+/// retry layer decides about it, so it is not re-sent from the engine as well (#574).
+fn retryable_remote(e: &OxaError) -> bool {
+    matches!(e.code, codes::ENGINE_DOWN | codes::TIMEOUT)
+}
+
+/// The headers a cloud model gets: the session and the request's `Idempotency-Key`.
+fn remote_headers(h: &Hints) -> Vec<(&'static str, String)> {
+    let mut out = Vec::with_capacity(3);
+    if !h.session.is_empty() {
+        out.push(("X-Oxe-Session", h.session.to_string()));
+        out.push(("X-Session-Id", h.session.to_string()));
+    }
+    if !h.idem_key.is_empty() {
+        out.push(("Idempotency-Key", h.idem_key.to_string()));
+    }
+    out
+}
+
 /// The real engine client.
 #[derive(Debug, Clone)]
 pub struct HttpEngine {
@@ -580,15 +613,17 @@ impl Engine for HttpEngine {
             idem_key: &key,
             ..r.hints
         };
-        let mut headers = if remote { Vec::new() } else { build_headers(&hints) };
+        // A cloud model gets only oxc's own correlation headers (oxc builds the upstream headers
+        // itself and never forwards these); the local-only hint headers stay off (#574).
+        let mut headers = if remote {
+            remote_headers(&hints)
+        } else {
+            build_headers(&hints)
+        };
         if let Some(k) = self.api_key.as_deref().filter(|k| !k.is_empty()) {
             headers.push(("Authorization", format!("Bearer {k}")));
         }
-        let level = if r.thinking {
-            ThinkingLevel::Medium
-        } else {
-            ThinkingLevel::Off
-        };
+        let level = r.effective_level();
         let started = Instant::now();
         let mut attempt = 0u32;
         // Cancelled before anything was sent: nothing reached the engine, nothing to undo.
@@ -667,7 +702,12 @@ impl Engine for HttpEngine {
             match outcome {
                 Ok(turn) => return Ok(turn),
                 Err(e) => {
-                    if !began && retryable(&e) && attempt < self.connect_retries {
+                    let again = if remote {
+                        retryable_remote(&e)
+                    } else {
+                        retryable(&e)
+                    };
+                    if !began && again && attempt < self.connect_retries {
                         attempt += 1;
                         if let Err(p) = pause(cancel, RETRY_STEP_MS * u64::from(attempt)) {
                             return Err(self.abandoned(p, cancel, &key, r.hints.session));
@@ -677,6 +717,26 @@ impl Engine for HttpEngine {
                     return Err(self.abandoned(e, cancel, &key, r.hints.session));
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::retryable_remote;
+    use oxa_proto::{codes, OxaError};
+
+    #[test]
+    fn remote_retries_connect_timeout_but_not_stream_failure() {
+        // post_sse returns TIMEOUT only from connect, before sending the request.
+        for code in [codes::ENGINE_DOWN, codes::TIMEOUT] {
+            assert!(retryable_remote(&OxaError::new(code, "connect failed")), "{code}");
+        }
+        for code in [codes::STREAM_BROKEN, codes::ABORTED, codes::ENGINE_BUSY] {
+            assert!(
+                !retryable_remote(&OxaError::new(code, "request failed")),
+                "{code}"
+            );
         }
     }
 }

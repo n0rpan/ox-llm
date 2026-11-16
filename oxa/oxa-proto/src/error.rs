@@ -104,6 +104,8 @@ pub mod codes {
     /// An MCP server needs an OAuth sign-in (`oxa mcp login <server>`).
     pub const MCP_NEEDS_AUTH: &str = "mcp_needs_auth";
     pub const TIMEOUT: &str = "timeout";
+    /// The run reached `oxa.maxTurns` model replies (#507).
+    pub const TURN_LIMIT: &str = "turn_limit";
     /// The project is not trusted and the resource is trust-gated.
     pub const UNTRUSTED: &str = "untrusted";
     /// A bug: an internal assumption did not hold.

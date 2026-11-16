@@ -155,6 +155,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
+    key("oxa.maxTurns", Kind::Number, "null"),
     key(
         "oxa.mode",
         Kind::Enum(&["plan", "workspace", "ask"]),
@@ -213,6 +215,13 @@ const SCHEMA: &[KeyDef] = &[
         "\"brave\"",
     ),
     key("packages", Kind::Any, "[]"),
+    // #202: the permission mode at start; a project's value may only lower it
+    // (`Settings::default_permission_mode`).
+    key(
+        "permissions.defaultMode",
+        Kind::Enum(&["standard", "auto", "yolo", "plan"]),
+        "\"auto\"",
+    ),
     key("prompts", Kind::StringList, "[]"),
     key("quietStartup", Kind::Any, "false"),
     key("retry.baseDelayMs", Kind::Number, "2000"),
@@ -268,6 +277,11 @@ const SCHEMA: &[KeyDef] = &[
         "ui.animationScene",
         Kind::Enum(&["graphics", "stack", "stars", "charge"]),
         "null",
+    ),
+    key(
+        "ui.notify",
+        Kind::Enum(&["off", "unfocused", "always"]),
+        "\"unfocused\"",
     ),
     key("ui.reducedMotion", Kind::Bool, "false"),
     key("ui.skin", Kind::Enum(&["auto", "pi", "oxa", "ascii"]), "\"auto\""),

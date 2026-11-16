@@ -888,3 +888,51 @@ fn http_prefill_blocked_writing_ends_on_cancel_before_the_follow_up() {
         "the follow-up waited {after_call:?} after the call returned"
     );
 }
+
+#[test]
+fn run_token_budget_counts_new_tokens_from_tool_prefill() {
+    let _g = serial(SHORT);
+    let env = TestEnv::new();
+    let (baseline, _) = scenario(&env, true, true);
+    let spent: u64 = baseline[..2]
+        .iter()
+        .map(|r| {
+            let u = r.usage.unwrap();
+            u64::from(u.prompt.saturating_sub(u.cached)) + u64::from(u.completion)
+        })
+        .sum();
+    let eng = Arc::new(ScriptedEngine::new(script(reads_then_slow())));
+    let e = eng.clone();
+    let mut session = open(
+        &env,
+        eng.clone(),
+        tools(1500, wait_for(move || has_prefill(&e))),
+        tools_on(true),
+        true,
+    );
+    session.handle().set_token_budget(Some(spent - 1));
+    let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
+    session
+        .prompt("look around".into(), Vec::new(), &mut sink, &mut ui)
+        .unwrap();
+    let reqs = eng.requests();
+    assert_eq!(reqs.len(), 3);
+    assert_eq!(reqs[1].max_tokens, 0);
+    assert!(
+        reqs[2].max_tokens <= 1024,
+        "the prefill must consume the run budget before the follow-up"
+    );
+    assert_eq!(
+        session.handle().wrap_up_reason(),
+        Some(oxa_core::WrapUpReason::TokenLimit)
+    );
+    let total: u64 = reqs
+        .iter()
+        .map(|r| {
+            let u = r.usage.unwrap();
+            u64::from(u.prompt.saturating_sub(u.cached)) + u64::from(u.completion)
+        })
+        .sum();
+    assert!(total > spent, "includes final-turn overspend");
+    assert_eq!(session.handle().run_tokens_used(), total);
+}

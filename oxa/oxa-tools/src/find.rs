@@ -2,7 +2,7 @@
 // ported from pi packages/coding-agent/src/core/tools/find.ts
 use crate::descriptions::{self, errors, limits};
 use crate::grep::{build_glob, cap_output, opt_count, opt_str, rel_path, req_str, strip_dot_slash, walk};
-use crate::resolve_path;
+use crate::resolve_tool_path;
 use oxa_proto::{Access, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 
 /// `find {pattern, path?, limit?}`: glob relative to `path`, .gitignore honoured, results sorted, relative to the search root; limit default 1000, below 1 is 1; pi's limit notice.
@@ -64,20 +64,20 @@ impl Tool for FindTool {
     /// `[Access::Read(search root)]`.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
         let q = parse(args)?;
-        Ok(vec![Access::Read(resolve_path(cx.cwd, &q.path))])
+        Ok(vec![Access::Read(resolve_tool_path(cx, &q.path))])
     }
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         let q = match parse(args) {
             Ok(q) => q,
             Err(e) => return ToolOutput::error(e),
         };
-        let root = resolve_path(cx.cwd, &q.path);
+        let root = resolve_tool_path(cx, &q.path);
         if std::fs::metadata(&root).is_err() {
             return ToolOutput::error(errors::path_not_found(&q.path));
         }
 
         let mut hits: Vec<String> = Vec::new();
-        for entry in walk(&root) {
+        for entry in walk(&root, cx.hidden.as_ref()) {
             if cx.cancel.is_cancelled() {
                 return ToolOutput::error(errors::ABORTED);
             }

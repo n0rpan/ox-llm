@@ -1,5 +1,12 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Security-relevant default change (#314): upgrading without a saved mode now selects `auto` instead of the previous prompting default. Select `--standard` or save `permissions.defaultMode: "standard"` to retain prompts. Owner-selected `yolo` deliberately disables the permission floor for file tools (including credentials and git hooks/config) and the bash sandbox; `auto` keeps both and plan remains read-only.
+- Permission modes (#202): `auto` is the old YOLO (no prompts, bash sandbox on) and the default on a fresh install; `yolo` now means full access (no prompts, no sandbox); `standard` still prompts. `permissions.defaultMode` (`standard` | `auto` | `yolo` | `plan`) sets the mode at start and replaces `permissions.yolo: "auto"`; a project's settings may lower it but never raise it to `yolo`. `/mode <name> --save` or "make default" in the `/mode` picker writes it, flags override per run, one key cycles standard → auto → yolo and the status bar always shows the mode.
+
 ## [0.2.0] - 2026-11-13
 
 ### Fixed (first run)
@@ -25,6 +32,7 @@
 - A cache miss is never reported with the cause `unknown`: without a rebase it is `cold_start` on the first request and `engine_evicted` afterwards.
 - `rust-version` is 1.87; the release profile unwinds on panic.
 - Repeated calls: a tool call (any tool) that already returned the same result three times in a row (same arguments, nothing in between, same prompt) gets a short note instead of the result; after two notes the next repeat stops the run (`oxa.toolRepeatGuard`, on by default). See [tools.md](docs/pages/tools.md#repeated-calls).
+- Repeat guard and turn cap (#507): a failed `edit` or `write` no longer ends a run of identical reads, and the new `oxa.maxTurns` (default unset) ends a run after that many model replies with a `turn_limit` error. See [tools.md](docs/pages/tools.md#repeated-calls).
 - Adaptive thinking on tool follow-ups (`oxa.thinking.toolFollowups`, default `auto`, under `oxa.thinking.policy: auto`): routine steps stay off; a failed call, a repeat note or `oxa.thinking.escalation.fruitlessCalls` (6) calls without progress turn thinking on for the next replies, until an edit applies or a test passes. The footer shows `thinking: auto→on` and the transcript a note with the reason. `on` and `off` keep the previous fixed choices. See [tools.md](docs/pages/tools.md#thinking-on-tool-follow-ups).
 - `oxa.sampling.mode: model` (opt-in) sends the model card's sampling for Qwen3.6 and Ornith instead of `temperature: 0`. The default stays greedy: the engine's speculative decoding runs on greedy requests only.
 

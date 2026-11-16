@@ -8,11 +8,13 @@
 //! directory hidden (tmpfs) except the session cwd; a private `/tmp`; no network unless
 //! `ExecSpec::net` (`--share-net`). `ExecSpec::writable == false` binds cwd read-only (plan
 //! mode). No bwrap = [`Bwrap::detect`] fails with `no_sandbox` and bash refuses: there is no
-//! unsandboxed fallback for tools. `!cmd` (the user's own command) uses [`run_unsandboxed`].
+//! unsandboxed fallback for tools, except full access (`yolo`, [`FullAccess`], #202), which the
+//! user turns on explicitly. `!cmd` (the user's own command) uses [`run_unsandboxed`].
 //! Timeout and cancel kill the whole process group; a background writer that keeps the pipe
 //! open must not hang `run` (acceptance: "background writer case").
 
 mod bwrap;
+mod full;
 mod gitdirs;
 mod layout;
 mod net;
@@ -21,6 +23,7 @@ mod run;
 mod scratch;
 
 pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
+pub use full::FullAccess;
 pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
 pub use layout::{
     expand_home, home_protected_paths, is_home_itself, is_home_or_above, is_secret_name, protected_paths,
@@ -93,12 +96,31 @@ impl Bwrap {
 }
 
 impl Sandbox for Bwrap {
+    fn home(&self) -> Option<&Path> {
+        Some(&self.home)
+    }
     fn persistence_notice(&self) -> Option<&str> {
         if self.layout.scratch.is_some() {
             Some(SCRATCH_NOTICE)
         } else {
             Some("Sandbox: /tmp is private scratch discarded after each command; save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.")
         }
+    }
+    fn scratch_dir(&self) -> Option<&Path> {
+        self.layout.scratch.as_ref().map(|s| s.path())
+    }
+    fn preserves_host_path(&self, path: &Path) -> bool {
+        // File tools also name hidden home/agent files on the host (notably spill output).
+        // Preserve their identity so the policy, including its deny-list, sees that path.
+        std::iter::once(&self.home)
+            .chain(self.layout.agent_dir.iter())
+            .chain(self.layout.read.iter())
+            .chain(self.layout.write.iter())
+            .chain(self.layout.git.paths())
+            .chain(self.layout.git.worktree.iter())
+            .any(|root| {
+                path.starts_with(root) || std::fs::canonicalize(root).is_ok_and(|real| path.starts_with(real))
+            })
     }
     fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
         self.layout.scratch_root.as_ref()?;
@@ -119,6 +141,8 @@ impl Sandbox for Bwrap {
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
         if let Some(why) = bwrap::refusal(s, &self.home, &self.layout) {
+            // The job reader sees only what went to `live`: give it the reason too.
+            live(why.as_bytes());
             let mut r = refused(why);
             r.output.clear();
             return r;
@@ -214,7 +238,14 @@ impl Bwrap {
                     insert_args_fd(&mut argv, fd);
                     args_fd = Some(fd);
                 }
-                Err(why) => return refused(why),
+                Err(why) => {
+                    let mut r = refused(why);
+                    if !capture {
+                        live(&r.output);
+                        r.output.clear();
+                    }
+                    return r;
+                }
             }
         }
         let res = run::run_argv_fd(
@@ -286,6 +317,31 @@ mod secret_tests {
         let got = std::fs::read_to_string(&out).unwrap();
         assert!(got.contains("SYNTH_FD_TOKEN"), "{got}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A refused streaming run (a background job) reports why through `live`, so the job's
+    /// output is not empty.
+    #[test]
+    fn refused_streaming_run_reports_the_reason_live() {
+        let sb = Bwrap {
+            bwrap: PathBuf::from("/nonexistent/bwrap"),
+            home: std::env::temp_dir(),
+            layout: Layout::default(),
+        };
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: PathBuf::from("/nonexistent/oxa-refused-cwd"),
+            writable: true,
+            net: false,
+            timeout_s: Some(10),
+            env: Vec::new(),
+        };
+        let mut live = Vec::new();
+        let r = sb.run_streaming(&spec, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+        assert_eq!(r.exit, None);
+        assert!(r.output.is_empty());
+        let live = String::from_utf8_lossy(&live);
+        assert!(live.contains("sandbox refused"), "{live}");
     }
 
     /// A fake `bwrap` that records its argv to a file, so the real launcher is exercised.

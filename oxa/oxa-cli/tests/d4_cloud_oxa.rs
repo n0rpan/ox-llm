@@ -55,18 +55,44 @@ fn a_remote_model_runs_a_tool_loop_without_local_only_wire_features() {
     assert_eq!(tool.role, oxa_proto::Role::Tool);
     assert_eq!(tool.content.as_deref(), Some("NOTE\n"));
 
-    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
-    assert!(!body.as_object().unwrap().contains_key("cache_prompt"), "{body}");
-    assert!(
-        !body.as_object().unwrap().contains_key("chat_template_kwargs"),
-        "{body}"
+    assert_eq!(
+        requests[0].session, requests[1].session,
+        "one session across tool turns"
     );
-    assert!(body.get("reasoning_effort").is_some(), "{body}");
-    let headers = &requests[0].headers;
-    assert!(
-        !headers.iter().any(|(name, _)| name.starts_with("x-oxe-")),
-        "no local hints reach a remote model: {headers:?}"
+    assert_ne!(
+        requests[0].idem_key, requests[1].idem_key,
+        "a key per logical request"
     );
+    for request in &requests {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).expect("request JSON");
+        assert!(!body.as_object().unwrap().contains_key("cache_prompt"), "{body}");
+        assert!(
+            !body.as_object().unwrap().contains_key("chat_template_kwargs"),
+            "{body}"
+        );
+        assert!(body.get("reasoning_effort").is_some(), "{body}");
+        assert!(
+            !request.session.is_empty(),
+            "oxc needs the session for correlation"
+        );
+        assert!(
+            !request.idem_key.is_empty(),
+            "oxc needs the request's idempotency key"
+        );
+        let headers = &request.headers;
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| name == "x-session-id" && value == &request.session),
+            "both session headers reach oxc: {headers:?}"
+        );
+        assert!(
+            !headers
+                .iter()
+                .any(|(name, _)| name.starts_with("x-oxe-") && name != "x-oxe-session"),
+            "only the session correlation header, no local hints, reaches oxc: {headers:?}"
+        );
+    }
 }
 
 #[test]

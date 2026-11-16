@@ -234,10 +234,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     let mode = choose_mode(&a, stdin_is_tty, stdout_is_tty);
-    if a.max_time.is_some() && mode == RunMode::Interactive {
+    if (a.max_time.is_some() || a.max_tokens.is_some()) && mode == RunMode::Interactive {
+        let flag = if a.max_tokens.is_some() {
+            "--max-tokens"
+        } else {
+            "--max-time"
+        };
         return report(
             &mut *stderr,
-            &OxaError::new(codes::USAGE, "--max-time requires print, JSON or RPC mode"),
+            &OxaError::new(codes::USAGE, format!("{flag} requires print, JSON or RPC mode")),
         );
     }
     if mode == RunMode::Rpc && !a.files.is_empty() {
@@ -320,7 +325,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         }
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, a.max_time, dirs, stdin, stdout, &mut *stderr)
+            run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -336,7 +341,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     .with_hint(USAGE_HINT);
                 return report(&mut *stderr, &e);
             }
-            run_headless(mode, a.max_time, prep, prompts, &mut *stdout, &mut *stderr)
+            run_headless(
+                mode,
+                a.max_time,
+                a.max_tokens,
+                prep,
+                prompts,
+                &mut *stdout,
+                &mut *stderr,
+            )
         }
     }
 }
@@ -395,6 +408,18 @@ struct Built {
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
     yolo: oxa_proto::YoloSwitch,
+    /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
+    /// bypassed while the switch is at yolo (full access).
+    bash_sandbox: Arc<oxa_sandbox::FullAccess>,
+}
+
+/// #597: `guard` plus the session's scratch directory (`/tmp` in its sandbox), which the file
+/// tools read without asking.
+fn session_guard(guard: oxa_perm::PathGuard, sandbox: &dyn Sandbox) -> oxa_perm::PathGuard {
+    match sandbox.scratch_dir() {
+        Some(dir) => guard.with_scratch(dir),
+        None => guard,
+    }
 }
 
 impl Built {
@@ -405,34 +430,41 @@ impl Built {
         // Issue #127 (b): one background-job registry per session, sharing the session's
         // sandbox. The session kills its jobs on close/shutdown.
         let jobs = Arc::new(oxa_tools::JobRegistry::new());
-        jobs.set_sandbox(sandbox.clone());
+        let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
+        jobs.set_sandbox(bash_sandbox.clone());
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
             // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_shell_and_jobs(
+            tools: oxa_tools::builtin_tools_with_bash_sandbox(
                 oxa_tools::ShellConfig {
                     shell_path: self.settings.shell_path(&self.dirs.home),
                     command_prefix: self.settings.shell_command_prefix(),
                 },
                 jobs.clone(),
+                bash_sandbox,
             ),
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
-            // B3: the file tools never touch the sandbox's deny-list.
-            // O-182: YOLO answers the policy's questions; the guard above it is untouched.
+            // B3: the file tools keep the deny-list and protected paths in standard/auto.
+            // #202/#314: only user-selected yolo outside plan mode bypasses that floor.
             policy: Box::new(
                 ModePolicy::new()
-                    .with_guard(oxa_perm::PathGuard::with_real_home(
-                        &self.dirs.home,
-                        oxa_sandbox::account_home().as_deref(),
-                        &self.dirs.agent_dir,
-                        &self.dirs.tmp_dir,
+                    .with_guard(session_guard(
+                        oxa_perm::PathGuard::with_real_home(
+                            &self.dirs.home,
+                            oxa_sandbox::account_home().as_deref(),
+                            &self.dirs.agent_dir,
+                            &self.dirs.tmp_dir,
+                        ),
+                        sandbox.as_ref(),
                     ))
                     .with_yolo(self.yolo.clone()),
             ),
-            sandbox,
+            // File names follow bash's current view, without giving hooks/extensions the
+            // bash-only execution bypass. The shared switch also handles live /yolo changes.
+            sandbox: self.bash_sandbox.file_view(sandbox),
             settings: self.settings.clone(),
             dirs: self.dirs.clone(),
             cwd: self.cwd.clone(),
@@ -753,8 +785,34 @@ fn prepare(
         }
     }
 
-    // O-182: one switch for the policy of every session and for the subagent children.
-    let yolo = oxa_proto::YoloSwitch::new(a.yolo);
+    // O-182, #202: one switch for the policy of every session and for the subagent children.
+    // The command line wins; else `permissions.defaultMode` (a project may only lower it).
+    // `--permission-mode workspace|ask` alone keeps its old meaning: the table asks you.
+    let level = a
+        .level
+        .or(match a.permission_mode {
+            Some(Mode::Workspace | Mode::Ask) => Some(oxa_proto::PermissionMode::Standard),
+            _ => None,
+        })
+        .unwrap_or_else(|| settings.default_permission_mode());
+    let yolo = oxa_proto::YoloSwitch::new(level.autonomy());
+    let table_mode = match (a.permission_mode, level) {
+        (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
+        (m, _) => m,
+    };
+    if !matches!(mode, RunMode::Interactive) {
+        notices.push((
+            Level::Info,
+            format!("permission mode {}: {}", level.as_str(), level.describe()),
+        ));
+    }
+    let bash_sandbox = Arc::new(oxa_sandbox::FullAccess::new(
+        sandbox.clone(),
+        yolo.clone(),
+        env.get("PATH").unwrap_or(""),
+        dirs.home.clone(),
+        oxa_proto::offline(),
+    ));
     let hook_sets = build_hooks(
         &HookInputs {
             args: a,
@@ -812,10 +870,11 @@ fn prepare(
         selection,
         model,
         thinking,
-        mode: a.permission_mode,
+        mode: table_mode,
         supervised_child: child.nested(),
         hook_sets,
         yolo,
+        bash_sandbox,
     };
     Ok(Prep {
         built,
@@ -1002,6 +1061,7 @@ fn choose_open(
 fn run_headless(
     mode: RunMode,
     max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     prep: Prep,
     prompts: Vec<(String, Vec<Part>)>,
     stdout: &mut dyn Write,
@@ -1032,8 +1092,12 @@ fn run_headless(
             );
         }
     }
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
-    {
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
         Ok(limit) => limit,
         Err(error) => return finish_outcome(Err(error), stderr),
     };
@@ -1045,6 +1109,15 @@ fn run_headless(
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
     write_notices(stderr, ui.notes);
+    if mode == RunMode::Json && built.supervised_child && max_tokens.is_some() {
+        // Private child/parent accounting: message_end omits summaries and tool
+        // prefill. Report the uncapped total, including the child's final turn.
+        let usage = serde_json::json!({
+            "type": "run_usage",
+            "tokens": session.handle().run_tokens_used(),
+        });
+        let _ = writeln!(stdout, "{usage}");
+    }
     finish_outcome(result, stderr)
 }
 
@@ -1052,6 +1125,7 @@ fn run_headless(
 fn run_rpc(
     prep: Prep,
     max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     dirs: Dirs,
     stdin: Box<dyn Read + Send>,
     stdout: Box<dyn Write + Send>,
@@ -1071,8 +1145,12 @@ fn run_rpc(
     };
     notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
-    {
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
         Ok(limit) => limit,
         Err(error) => return finish_outcome(Err(error), stderr),
     };
@@ -1856,6 +1934,7 @@ mod session_scratch_tests {
             },
         };
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
+        let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             store: Arc::new(MemStore::new()),
@@ -1870,7 +1949,14 @@ mod session_scratch_tests {
             mode: None,
             supervised_child: false,
             hook_sets: HookSets::default(),
-            yolo: oxa_proto::YoloSwitch::new(false),
+            bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
+                base.clone(),
+                yolo.clone(),
+                "",
+                home,
+                false,
+            )),
+            yolo,
         };
         let first = built.deps(None);
         let second = built.deps(None);
@@ -1888,6 +1974,27 @@ mod session_scratch_tests {
             .persistence_notice()
             .unwrap()
             .contains("discarded after each command"));
+        // #597: the model names that directory as `/tmp`; the file tools read it unasked, the
+        // other session's directory still asks.
+        use oxa_proto::{Access, Decision, Mode};
+        let cwd = env.work();
+        assert_eq!(
+            first.sandbox.scratch_dir(),
+            Some(a.as_path()),
+            "the file tools and the sandbox name one directory"
+        );
+        assert_eq!(
+            first
+                .policy
+                .decide(Mode::Workspace, &Access::Read(a.join("left-by-first")), &cwd),
+            Decision::Allow
+        );
+        assert_eq!(
+            first
+                .policy
+                .decide(Mode::Workspace, &Access::Read(b.join("left-by-first")), &cwd),
+            Decision::Ask
+        );
         drop(first);
         assert!(!a.exists(), "the first session's scratch outlived it");
         assert!(b.is_dir(), "ending one session removed another's scratch");

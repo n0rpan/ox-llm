@@ -134,6 +134,12 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "MISE_STATE_DIR",
         "/tmp/mise-state",
         "--setenv",
+        "SCCACHE_DIR",
+        "/tmp/.cache/sccache",
+        "--setenv",
+        "SCCACHE_SERVER_UDS",
+        "/tmp/.sccache.sock",
+        "--setenv",
         "TMPDIR",
         "/tmp",
         "--setenv",
@@ -180,6 +186,8 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
             "CARGO_HOME",
             "MISE_DATA_DIR",
             "MISE_STATE_DIR",
+            "SCCACHE_DIR",
+            "SCCACHE_SERVER_UDS",
             "TMPDIR",
             "XDG_CACHE_HOME"
         ],
@@ -504,6 +512,74 @@ fn real_denied_files_are_neither_readable_nor_writable() {
         "machine example.com password hunter2"
     );
     assert!(!home.join(".oxa/agent/planted").exists());
+}
+
+/// #544: credentials (or their `llm` directory) may be symlinks into an exposed workspace.
+fn symlinked_oxc_credentials(link_directory: bool) -> (TestEnv, Layout) {
+    let env = TestEnv::new();
+    let llm = env.home().join(".config/oxc/llm");
+    let credentials = env.work().join("credentials");
+    let names = ["cloud-secrets.json", "chatgpt-auth.json"];
+    for name in names {
+        env.write(&format!("work/credentials/{name}"), "synthetic credential");
+    }
+    if link_directory {
+        std::fs::create_dir_all(llm.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&credentials, &llm).unwrap();
+    } else {
+        std::fs::create_dir_all(&llm).unwrap();
+        for name in names {
+            std::os::unix::fs::symlink(credentials.join(name), llm.join(name)).unwrap();
+        }
+    }
+    let layout = machine(&env);
+    (env, layout)
+}
+
+#[test]
+fn golden_symlinked_oxc_credentials_targets_are_masked() {
+    for link_directory in [false, true] {
+        let (env, layout) = symlinked_oxc_credentials(link_directory);
+        let args = bwrap_args_with(&spec("true", &env.work(), true), &env.home(), &layout);
+        for name in ["cloud-secrets.json", "chatgpt-auth.json"] {
+            let target = env.work().join("credentials").join(name).display().to_string();
+            assert!(
+                args.windows(3).any(|w| w == ["--ro-bind", "/dev/null", &target]),
+                "directory link={link_directory}: missing mask for {target}"
+            );
+        }
+    }
+}
+
+#[test]
+fn real_symlinked_oxc_credentials_stay_hidden() {
+    for link_directory in [false, true] {
+        let (env, layout) = symlinked_oxc_credentials(link_directory);
+        let Some(b) = real(&env, layout) else { return };
+        let (exit, out) = run(
+            &b,
+            "cat credentials/cloud-secrets.json credentials/chatgpt-auth.json 2>/dev/null; echo done; echo ok > credentials/notes.txt",
+            &env.work(),
+        );
+        assert_eq!(exit, Some(0), "{out}");
+        assert_eq!(out, "done\n", "directory link={link_directory}");
+        let (_, out) = run(
+            &b,
+            "echo changed > credentials/cloud-secrets.json; echo changed > credentials/chatgpt-auth.json; echo done",
+            &env.work(),
+        );
+        assert!(out.contains("done"), "{out}");
+        for name in ["cloud-secrets.json", "chatgpt-auth.json"] {
+            assert_eq!(
+                std::fs::read_to_string(env.work().join("credentials").join(name)).unwrap(),
+                "synthetic credential"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(env.work().join("credentials/notes.txt")).unwrap(),
+            "ok\n"
+        );
+    }
 }
 
 /// O-199: started in `$HOME` and confirmed (or the setting): the home's folders are the

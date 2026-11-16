@@ -436,3 +436,55 @@ fn busy_refuses_only_session_changes() {
         Level::Warning
     );
 }
+
+/// #202: `/mode` without an argument opens the picker; `/mode <name> [--save]` sets the
+/// permission mode (and saves it); `/auto` sets auto; the table modes still work.
+#[test]
+fn mode_and_auto_set_the_permission_mode() {
+    use oxa_proto::{Mode, PermissionMode};
+    let fx = Fx::new();
+    assert!(matches!(
+        fx.run("/mode").unwrap(),
+        AppAction::Open(SelectorKind::Mode)
+    ));
+    for (line, want, saved) in [
+        ("/mode standard", PermissionMode::Standard, false),
+        ("/mode yolo --save", PermissionMode::Yolo, true),
+        ("/mode --save plan", PermissionMode::Plan, true),
+        ("/auto", PermissionMode::Auto, false),
+    ] {
+        match fx.run(line).unwrap() {
+            AppAction::SetPermissionMode { mode, save } => {
+                assert_eq!((mode, save), (want, saved), "{line}");
+            }
+            _ => panic!("{line}: not a permission-mode change"),
+        }
+    }
+    match fx.run("/mode ask").unwrap() {
+        AppAction::Many(actions) => assert!(matches!(
+            actions.as_slice(),
+            [
+                AppAction::SetPermissionMode {
+                    mode: PermissionMode::Standard,
+                    save: false
+                },
+                AppAction::Session(SessionCmd::SetMode(Mode::Ask))
+            ]
+        )),
+        _ => panic!("/mode ask: standard, then the ask table"),
+    }
+    for bad in ["/mode root", "/mode ask --save", "/mode --save", "/auto now"] {
+        assert_eq!(notice(fx.run(bad).unwrap()).0, Level::Error, "{bad}");
+    }
+}
+
+/// #202: the mode key cycles standard -> auto -> yolo -> standard; plan leaves to standard.
+#[test]
+fn the_mode_cycle_is_standard_auto_yolo() {
+    use oxa_proto::PermissionMode as P;
+    assert_eq!(P::Standard.next(), P::Auto);
+    assert_eq!(P::Auto.next(), P::Yolo);
+    assert_eq!(P::Yolo.next(), P::Standard);
+    assert_eq!(P::Plan.next(), P::Standard);
+    assert_eq!(P::DEFAULT, P::Auto);
+}

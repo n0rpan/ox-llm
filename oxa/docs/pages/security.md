@@ -23,26 +23,36 @@ Every tool call has an access class: `Read`, `Write`, `Exec` (a command), `Net` 
 
 In `workspace`, bash runs without asking, in the sandbox described below. Bash has network access in `workspace` and `ask` modes by default (see [Network](#network)). An extension `exec` that asks for network is asked for in `workspace` and `ask`, and refused in `plan`.
 
-- Set the mode with `--permission-mode`, the `oxa.mode` setting, `/mode [plan|workspace|ask]`, or Alt+M, which cycles plan, workspace and ask.
 - When oxa asks, it offers "Allow once", "Allow for this session", and "Deny". A session grant covers the same path directory, command, host or tool for the rest of the run. Grants are kept in memory and never written to disk. A grant never overrides a deny.
 - Plan mode is for reading and planning. It refuses writes, the `subagent` tool, `web_search`, and every command that is not read-only.
 
 Paths are resolved before the check: `..` is followed and a symbolic link that points outside the project counts as outside.
 
-### YOLO: no prompts
+Capped tool results are an exception to the outside-project read question: the file tools can read the running session's full-output spill directory without asking, in every mode, including `ask` and unattended runs. This recovers output the session already received, not a new permission to run the tool or read its original inputs. Forks and clones also read their source sessions' spills without asking, following the saved session ancestry so inherited output paths keep working after a resume. Those inherited directories are read-only to the file tools; unrelated sessions and the rest of the agent state remain denied except in full-access `yolo`. The bash sandbox is unchanged. When another action needs approval in an unattended run, the refusal says nobody is available to approve it, rather than claiming a user declined.
 
-`oxa --yolo`, `/yolo [on|off]` or Ctrl+Alt+O switches the questions off: whatever a mode would have asked is allowed at once and counted. Use it when you want a run to go through without stopping, in a project you can restore.
+Pasted and dropped images saved as `tmp/paste-<hash>.<image extension>` remain readable with the ordinary outside-project approval (or an existing session grant / auto), not the no-prompt spill exception. This read-only exception covers generated image names directly under the temporary directory, not unrelated sessions, arbitrary temporary files or symlinks into denied state.
 
-YOLO removes the prompts and nothing else:
+### standard, auto and yolo
 
-- The bash sandbox stays on, with the same deny-list. There is no option that turns the sandbox off.
-- The deny-list of the file tools stays: `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory are refused as before.
-- `.git/hooks` and `.git/config` are still never written by a tool, and a write to the project's `.oxa` configuration still asks, because that configuration is loaded outside the sandbox later.
-- Plan mode still refuses what it refuses, and project trust is checked as before.
+On top of the table, the permission mode decides who answers the questions:
 
-Subagents started while YOLO is on run with it too; the sandbox, the deny-list and the question for writes to the project's `.oxa` stay.
+| Mode | Prompts | Bash | File tools |
+|---|---|---|---|
+| `standard` | the table above asks you | in the sandbox | deny-list and protected paths enforced |
+| `auto` (default) | table questions allowed and counted; protected configuration still asks | in the sandbox | deny-list and protected paths enforced |
+| `yolo` | none | **without the sandbox**, in your own environment | no deny-list, no protected paths |
+| `plan` | as in the table | read-only commands | no writes |
 
-With the `oxa` skin the status line shows a flame, `YOLO` and the count of auto-approved actions, and the frames turn to the theme's hot colours until it is switched off. With `NO_COLOR` it is the text badge `[YOLO]`. A shell alias makes it quick to start:
+- `auto` is the default of a fresh install. It removes the prompts and nothing else: the bash sandbox and its deny-list stay, the file tools still refuse `~/.ssh`, `~/.gnupg`, cloud and git credentials, `~/.config/oxc`, browser profiles and the agent directory, `.git/hooks` and `.git/config` are never written, and a write to the project's `.oxa` configuration still asks.
+- `yolo` is full access. Bash runs as you, with your files, credentials and network; the file tools no longer refuse the deny-list or git's protected files and do not ask before writing `.oxa` or a startup file. Yolo removes every guard; use `auto` when you want no prompts but still want the sandbox. Use it only in a session you watch, on a machine and project you can restore. With `--offline` bash still has no network.
+- Set the mode at start with `--standard`, `--auto`, `--yolo` or `--permission-mode <mode>` (one run), or with the `permissions.defaultMode` setting (`standard`, `auto`, `yolo` or `plan`). `/mode <mode> --save` and "make default" in the `/mode` picker write that setting. A project's settings can lower the mode (for example to `standard`) but never raise it.
+- In a session: `/mode` opens the picker, `/mode <mode>` switches, `/auto` switches to auto, `/yolo [on|off]` or Ctrl+Alt+O toggles yolo (off returns to the mode before it), and Alt+M cycles standard, auto and yolo. `/mode workspace` and `/mode ask` still set the table mode.
+- The status bar always shows the mode. In yolo it shows a flame, `YOLO full access` and the count of auto-approved actions, the frames turn to the theme's hot colours, and the first switch in a session prints a one-line notice. In print, JSON and RPC mode the mode is written to stderr at start.
+- Subagents inherit the mode the parent has when they start. Running background jobs also keep their launch-time rights: switching modes affects subsequent commands, not processes already started. Stop an existing job with `bash {"job": "job-N", "kill": true}` or close the session.
+- The auto-approved count records questions answered with allow, once each. A denial bypassed by full access is not an approval and does not increment it (#443).
+- Plan mode and project trust work the same in every mode.
+
+A shell alias makes yolo quick to start:
 
 ```console
 $ alias yoxa='oxa --yolo'
@@ -50,7 +60,7 @@ $ alias yoxa='oxa --yolo'
 
 ## The bash sandbox
 
-On Linux, bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled and oxa says so at start-up. oxa does not fall back to running commands unsandboxed.
+On Linux, bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled and oxa says so at start-up. oxa does not fall back to running commands unsandboxed; only the `yolo` mode runs bash without it.
 
 What a command sees:
 
@@ -72,6 +82,8 @@ What a command sees:
 
 Tools that insist on "owned by root or the caller" (stat/ownership checks, some wrappers, sudo-like or ssh strict-mode checks) fail only inside the sandbox because of this uid mapping. That is an artifact of the user namespace, not a repo bug, and no flag maps host root without extra privilege; report such failures as environmental.
 
+The same mapping limits what a command can write as metadata. Setting a POSIX ACL (`setfacl`, or `fsetxattr` on `system.posix_acl_access`) that names a user id or group id other than the mapped ones fails with `EINVAL`, because the kernel cannot represent an unmapped id in the namespace; the same goes for `chown` to another id. Named entries for your own uid and gid, and ACLs with only owner, group, mask and other entries, work. A test or script that needs a foreign named uid in an ACL has to run outside the sandbox.
+
 The environment of a command starts empty. It gets `PATH`, `HOME`, `LANG`, `TERM` and `AI_AGENT`, the toolchain variables that are set (for example `CARGO_HOME`, `RUSTUP_HOME`, `GOPATH`, `NVM_DIR`, `UV_CACHE_DIR`, and the `MISE_*` variables), and the variables oxa sets for the session (`OXA_SESSION_ID`, and `OXA_SESSION_FILE` unless the session is ephemeral). Every other variable is dropped, including your API keys and tokens. A toolchain variable whose name contains `TOKEN`, `SECRET`, `KEY`, `PASSWORD`, `PASSWD`, `CREDENTIAL`, `AUTH`, `COOKIE` or `SESSION` is never passed.
 
 ### Starting in your home directory
@@ -79,7 +91,7 @@ The environment of a command starts empty. It gets `PATH`, `HOME`, `LANG`, `TERM
 If oxa starts in your home directory, in `/`, or in a parent of your home directory (for example `/home`), the project directory is not a project. The whole directory is then the bash working directory, and:
 
 - a start in `/` or a parent of your home directory is read-only for bash, whatever the settings;
-- a start in your home directory itself is read-only for bash, unless you confirm the interactive question below or the user setting `oxa.sandbox.allowHomeWrite: true` is set. Then your home directory is the workspace: bash can write in its folders and files (for example `~/project`), while the home folder itself (so nothing new appears next to your dotfiles), every dotfile and dot-folder (`.bashrc`, `.profile`, `.zshrc`, `.config`, `.local/bin`, `.ssh`, `.oxa`, `.claude`, `.codex`, ...), symlinks and `~/bin` stay read-only, and the deny-list stays masked. One notice at the start says so ("workspace = your home directory"). Create a new top-level folder with the file tools or outside oxa. The file tools ask before writing the shell startup files, `~/.local/bin`, `~/.config/{systemd,autostart,hypr,omarchy,...}`, `~/bin` and the agents' settings, also in YOLO mode. In print, JSON and RPC mode only the setting makes the home writable;
+- a start in your home directory itself is read-only for bash, unless you confirm the interactive question below or the user setting `oxa.sandbox.allowHomeWrite: true` is set. Then your home directory is the workspace: bash can write in its folders and files (for example `~/project`), while the home folder itself (so nothing new appears next to your dotfiles), every dotfile and dot-folder (`.bashrc`, `.profile`, `.zshrc`, `.config`, `.local/bin`, `.ssh`, `.oxa`, `.claude`, `.codex`, ...), symlinks and `~/bin` stay read-only, and the deny-list stays masked. One notice at the start says so ("workspace = your home directory"). Create a new top-level folder with the file tools or outside oxa. The file tools ask before writing the shell startup files, `~/.local/bin`, `~/.config/{systemd,autostart,hypr,omarchy,...}`, `~/bin` and the agents' settings, also in `auto` mode (not in `yolo`). In print, JSON and RPC mode only the setting makes the home writable;
 - your home directory is visible to bash, read-only, with the deny-list below still masked. A command can read your shell history, your dot files and your other files there;
 - bash has network access by default, so a command can send what it reads to a host (see [Network](#network)).
 
@@ -89,10 +101,11 @@ Writable package caches are shared with your own builds. A crate or Go module th
 
 ### The deny-list
 
-These paths are masked inside the sandbox, and the file tools refuse them in every mode, whatever the grants or settings say. The list is fixed. Each entry is a path under your home directory, except oxa's own agent directory, which is masked wherever `OXA_AGENT_DIR` puts it.
+These paths are masked inside the sandbox, and the file tools refuse them in `standard`, `auto` and `plan`, whatever the grants or settings say. The single deliberate exception is user-selected `yolo` outside plan mode: its bash sandbox and file-tool permission floor are off. `grep`, `find` and `ls` on a folder above them (your home directory, `~/.config`) skip them: their names and contents are not shown. The list is fixed. Each entry is a path under your home directory, except oxa's own agent directory, which is masked wherever `OXA_AGENT_DIR` puts it.
 
-- SSH, GPG, and cloud credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`.
-- Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh` (see below), `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`.
+- SSH, GPG, and cloud credentials: `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.kube`, `~/.vault-token`, `~/.terraform.d/credentials.tfrc.json`, `~/.s3cfg`, `~/.config/rclone`, `~/.config/hcloud`, `~/.config/doctl`, `~/.config/sops/age`.
+- Git and package-registry credentials: `~/.git-credentials`, `~/.config/git/credentials`, `~/.config/gh` (see below), `~/.config/hub`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.cargo/credentials`, `~/.cargo/credentials.toml`, `~/.gem/credentials`, `~/.m2/settings.xml`, `~/.gradle/gradle.properties`, `~/.config/github-copilot`.
+- Container registry logins: `~/.config/containers/auth.json`, `~/.local/share/containers/auth.json` (and `~/.docker/config.json`, below).
 - oxa Cloud keys: `~/.config/oxc/llm/cloud-secrets.json`.
 - Password stores and keyrings: `~/.password-store`, `~/.local/share/keyrings`, `~/.config/op`, `~/.config/Bitwarden`, `~/.pki`.
 - Browser profiles: Firefox, Thunderbird, Chrome, Chromium, Brave, Edge, Vivaldi and Opera profile directories.
@@ -116,7 +129,7 @@ A git worktree keeps its history in the main repository, and a clone made with `
 
 In a worktree, a commit only needs the worktree's own git directory and the objects, refs, logs, packed-refs and index parts of the main repository, and those stay writable. Everything git runs or reads outside the sandbox is read-only, as in a normal checkout: the main repository's `hooks`, `config`, `config.worktree` and `info`, and the worktree git directory's `hooks` and `config.worktree`, so a tool call cannot plant a hook or change the configuration.
 
-Because `info` is shared with the main checkout, `.git/info/exclude` cannot be written from bash in a worktree ("Read-only file system"). To keep a directory such as a virtual environment out of `git status`, add it to a `.gitignore` in the worktree, or edit `info/exclude` from a terminal outside oxa.
+Because `info` is shared with the main checkout, `.git/info/exclude` cannot be written from bash in a worktree ("Read-only file system"). Bash explains this failure and suggests a local alternative. To hide an existing, untracked scratch directory without changing tracked files or shared metadata, put an ignore-all file **inside** it: `printf '*\n' > .venv-test/.gitignore`. Git then ignores the directory's contents, including that `.gitignore`; do not overwrite an existing tracked `.gitignore`. This also works for directories of check logs. For individual scratch files, write patterns to a writable local ignore file and use `git -c core.excludesFile=<local-ignore-file> status` (or another Git command). That override applies only to that invocation and replaces the usual `core.excludesFile`, not `.gitignore` or `info/exclude`. Editing shared `info/exclude` still requires a terminal outside oxa.
 
 Git's hooks and config stay as they are even when they do not exist yet. In a git directory that bash can write (the project's own `.git`, or the main repository's `.git` of a worktree), a missing `hooks` directory is covered by an empty read-only directory and a missing `config` file by an empty read-only file, so a command cannot create a hook that git would run later. The same holds for `config.worktree` (in the main repository and in the worktree's own git directory) when the repository's `config` turns on `extensions.worktreeConfig`, and for the directory a repository's `core.hooksPath` names (also when it is set in an included config file; a relative value resolves from the worktree root, not from a nested session directory). To do this, the sandbox has to create the empty directory or file in your repository, and it stays there after the command: an empty `.git/hooks` directory (what `git init` makes anyway, minus the samples), an empty `config` / `config.worktree` file, or an empty `core.hooksPath` directory. Git treats an empty one as no hooks and no settings. Symlinks are never bound over: a `hooks` that is a symlink is left as it is. A `.git` that is itself a symlink, or a `.git` file that names a git directory inside what bash can write, is refused: the sandbox cannot pin a directory it does not own, so no command runs there.
 
@@ -139,7 +152,7 @@ Trust covers the content, not just the directory. Once you trust a project, oxa 
 
 `--approve` trusts the project and records the current content for one run. `--no-approve` ignores the project's configuration and resources for one run. `oxa install -l` and `oxa mcp ... -l` check the same record.
 
-The model cannot write `.oxa/**` or `.agents/skills/**` without asking in `workspace` and `ask` modes, and plan mode denies it. The file tools never write `.git/hooks` or `.git/config`, in any mode.
+In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**` without asking, and the file tools refuse writes to `.git/hooks` or `.git/config`. Plan mode denies these writes too. User-selected `yolo` outside plan mode deliberately lifts all of these guards.
 
 ## Network
 

@@ -205,6 +205,20 @@ fn draft_collects_a_scrubbed_digest_and_posts_nothing() {
     assert!(!calls.iter().any(|(p, _)| p == "gh"));
 }
 
+#[test]
+fn a_draft_without_a_description_is_refused() {
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    let mut runner = |_: &str, _: &[String]| None;
+    // Empty notes, blank notes, and notes that are only transcript records all leave nothing to report.
+    for notes in ["", "  \n ", "{\"role\":\"user\",\"content\":\"x\"}"] {
+        let err = save_draft("Report with no findings", notes, &dirs, &ctx(), &mut runner)
+            .expect_err("an empty report must not be drafted");
+        assert!(err.to_string().contains("no description"), "{err}");
+    }
+    assert!(!dirs.agent_dir.join("issue-drafts").exists());
+}
+
 // ---------------------------------------------------------------------------------------------
 // Submit: never without confirmation
 
