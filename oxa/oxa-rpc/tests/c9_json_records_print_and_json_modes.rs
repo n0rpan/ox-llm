@@ -1,4 +1,4 @@
-//! C9 acceptance tests: JSON records, print and json modes. Owner: task C9.
+//! C9 acceptance tests: JSON records, print and json modes.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -879,6 +879,7 @@ fn entry_json_is_the_stored_object() {
         body: EntryBody::Msg {
             wire: WireMsg::user("hello"),
             parts: Vec::new(),
+            tool: None,
         },
     };
     let mut line = Vec::new();

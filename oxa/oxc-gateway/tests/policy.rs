@@ -37,14 +37,7 @@ fn offline_and_shared_requests_are_refused_before_admission() {
 
 #[test]
 fn requests_cannot_multiply_the_reserved_completion() {
-    for n in [
-        json!(0),
-        json!(2),
-        json!(-1),
-        json!(true),
-        json!(1.0),
-        json!("1"),
-    ] {
+    for n in [json!(0), json!(2), json!(-1), json!(true), json!(1.0), json!("1")] {
         refusal(
             before_credentials(&json!({"n":n}), false, false, true).unwrap_err(),
             400,

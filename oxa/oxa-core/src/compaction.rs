@@ -1,4 +1,4 @@
-//! C3: compaction orchestration (W5). Owner: task C3. Signatures below are frozen; bodies are yours.
+//! C3: compaction orchestration (W5).
 // adapted from pi packages/coding-agent/src/core/agent-session.ts (compact, auto-compaction)
 //
 // Byte rules (W1, W5). The summary request is the whole wire plus one user instruction, sent with
@@ -497,6 +497,7 @@ pub(crate) fn prompt_tokens(st: &SessionState, wire: &[WireMsg]) -> (u32, Counte
         model: &st.model,
         max_tokens: st.info.max_output,
         thinking: st.thinking.enabled(),
+        thinking_budget: None,
         preserve_thinking: st.info.caps.preserve_thinking != Some(false),
         sampling: None,
         hints,

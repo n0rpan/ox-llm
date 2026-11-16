@@ -1,4 +1,4 @@
-//! E5: exec hooks (`settings.json` `hooks: {event: command}`). Owner: task E5. Signatures below are frozen; bodies are yours.
+//! E5: exec hooks (`settings.json` `hooks: {event: command}`).
 use crate::guard;
 use oxa_proto::{
     CancelToken, CommandSpec, ExecSpec, GuardClass, HookPoint, HookReply, Level, OxaError, Sandbox, Tool, Ui,

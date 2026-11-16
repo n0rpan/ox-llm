@@ -31,6 +31,7 @@ pub enum Error {
     WrongOwner,
     Permissions,
     TooLarge,
+    InRepository,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -42,6 +43,7 @@ impl fmt::Display for Error {
             Self::WrongOwner => "the file is owned by another user",
             Self::Permissions => "the file is not mode 0600 (group/other permissions must be off)",
             Self::TooLarge => "the file is larger than 65536 bytes",
+            Self::InRepository => "the key file is inside a repository",
         };
         write!(f, "Cloud credentials are not configured: {reason}.")
     }
@@ -169,13 +171,9 @@ fn parse(bytes: &[u8]) -> Option<Value> {
             quoted = true;
             normalized.push(byte);
             index += 1;
-        } else if let Some(token) = [
-            b"NaN".as_slice(),
-            b"Infinity".as_slice(),
-            b"-Infinity".as_slice(),
-        ]
-        .iter()
-        .find(|token| bytes[index..].starts_with(token))
+        } else if let Some(token) = [b"NaN".as_slice(), b"Infinity".as_slice(), b"-Infinity".as_slice()]
+            .iter()
+            .find(|token| bytes[index..].starts_with(token))
         {
             normalized.extend_from_slice(b"null");
             index += token.len();
@@ -195,10 +193,9 @@ pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
     }
     let resolved = resolve(path, &mut 0).map_err(|_| Error::Unavailable)?;
     if resolved.ancestors().skip(1).any(|parent| {
-        parent.join(".git").exists()
-            || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
+        parent.join(".git").exists() || (parent.join("AGENTS.md").is_file() && parent.join("engine").is_dir())
     }) {
-        return Err(Error::Unavailable);
+        return Err(Error::InRepository);
     }
     let file = OpenOptions::new()
         .read(true)
@@ -237,9 +234,7 @@ pub fn read(path: &Path, provider: &str) -> Result<Key, Error> {
     };
     let key = raw
         .as_str()
-        .filter(|key| {
-            !key.is_empty() && key.len() <= 8192 && key.bytes().all(|b| (33..=126).contains(&b))
-        })
+        .filter(|key| !key.is_empty() && key.len() <= 8192 && key.bytes().all(|b| (33..=126).contains(&b)))
         .ok_or(Error::Unavailable)?;
     Ok(Key(key.into()))
 }

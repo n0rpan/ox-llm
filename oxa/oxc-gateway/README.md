@@ -23,6 +23,11 @@ HOME, cleared environment and an isolated network. No real credentials or cloud
 calls are used. The shared workspace's gateway job also runs formatting and
 strict Clippy; its result is included in `gate`.
 
+CI creates a synthetic file with a different owner before dropping capabilities
+and passes its path as `OXC_SECRET_OWNER_PATH` to the ownership test. Root test
+runs must supply such a fixture too. Unprivileged Linux runs can use the foreign
+owner of public kernel metadata; the guard refuses it before reading contents.
+
 The `oxa-cli` example `gateway_footprint` measures the actual oxa executable with
 the existing owned HTTP fixture in a separate process. Run it inside the test
 sandbox, passing an absolute binary path:
@@ -44,3 +49,6 @@ limits; private upstream IDs and endpoints are excluded from those values and
 Debug output. Disabled/offline catalogs hide and refuse models. An explicit
 unknown model is refused rather than silently selecting another provider.
 Catalog construction reads no credential or ledger and starts no engine.
+
+Native policy tests assert client status, code, type and parameter, with a
+nonempty explanation. They protect error classification without wording parity.

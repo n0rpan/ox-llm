@@ -1,4 +1,4 @@
-//! A6: the `write` tool. Owner: task A6. Signatures below are frozen; bodies are yours.
+//! A6: the `write` tool.
 // ported from pi packages/coding-agent/src/core/tools/write.ts
 use crate::descriptions::errors;
 use crate::read::arg_path;

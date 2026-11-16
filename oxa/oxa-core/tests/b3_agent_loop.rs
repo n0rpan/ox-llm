@@ -1,4 +1,4 @@
-//! B3 acceptance tests: Agent loop. Owner: task B3.
+//! B3 acceptance tests: Agent loop.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -189,6 +189,7 @@ fn say(st: &mut SessionState, text: &str) {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user");
@@ -525,6 +526,38 @@ fn abort_mid_stream_nothing_on_wire() {
         .any(|m| m.role == oxa_proto::Role::Assistant));
 }
 
+/// #456: a stream cut at byte N after output is replayed (partial dropped from the wire, kept
+/// as `Shown { cut }`) and the run completes with the full reply.
+#[test]
+fn stream_cut_mid_output_is_replayed_and_completes() {
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text("a longer reply that is cut");
+    cut.chunk = 1;
+    cut.fault = Some(oxa_fake::Fault::DropAt { bytes: 5 });
+    let eng = Arc::new(ScriptedEngine::new(vec![cut, ScriptTurn::text("full reply")]));
+    let mut st = build(
+        &env,
+        eng.clone(),
+        Arc::new(MemStore::new()),
+        Vec::new(),
+        Mode::Workspace,
+        Vec::new(),
+    );
+    say(&mut st, "hello");
+
+    let (end, _) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    assert_eq!(eng.requests().len(), 2, "replayed once");
+    let wire = st.transcript.wire();
+    assert_eq!(wire.len(), 2);
+    assert_eq!(wire[1].content.as_deref(), Some("full reply"));
+    assert!(st
+        .tree
+        .entries()
+        .iter()
+        .any(|e| matches!(&e.body, EntryBody::Shown { why, .. } if *why == shown_why::CUT)));
+}
+
 /// results pushed in call order
 #[test]
 fn parallel_reads_in_call_order() {
@@ -591,6 +624,26 @@ fn length_continue_once() {
     w1_holds(&eng.requests());
 }
 
+/// A refusal (`content_filter`) keeps the streamed text, shows a one-line notice and does not retry.
+#[test]
+fn content_filter_keeps_text_notices_and_does_not_retry() {
+    let env = TestEnv::new();
+    let mut first = ScriptTurn::text("I can't help with that");
+    first.finish = Finish::ContentFilter;
+    let turns = vec![first, ScriptTurn::text("never requested")];
+    let (mut st, eng) = scripted_state(&env, turns, Vec::new(), Mode::Workspace);
+    say(&mut st, "do the thing");
+    let (end, events) = run(&mut st);
+    assert_eq!(end, RunEnd::Stopped);
+    assert_eq!(eng.requests().len(), 1, "no retry");
+    let wire = st.transcript.wire();
+    assert_eq!(
+        wire.last().unwrap().content.as_deref(),
+        Some("I can't help with that")
+    );
+    assert!(events.iter().any(|e| matches!(e, AgentEvent::Notice { text, .. } if text == "The model declined to answer this request.")));
+}
+
 /// F9 (engine `chat::chat_inputs`): a generating request ending in an assistant message is
 /// history plus a NEW assistant turn, on the stub engine as on the real one; the trailing
 /// message is held like any earlier turn (cached = prompt - 1, the `\n` after the trailing
@@ -624,6 +677,7 @@ fn scripted_engine_answers_trailing_assistant_like_the_real_engine() {
             model: "fake-model",
             max_tokens,
             thinking: false,
+            thinking_budget: None,
             preserve_thinking: true,
             sampling: None,
             hints,
@@ -739,6 +793,7 @@ fn length_stop_over_http_sends_no_unsupported_request() {
         model: "fake-model",
         max_tokens,
         thinking: false,
+        thinking_budget: None,
         preserve_thinking: true,
         sampling: None,
         hints,
@@ -993,6 +1048,7 @@ fn append_entry_failure_leaves_state() {
         EntryBody::Msg {
             wire: WireMsg::user("lost"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect_err("the store refuses the append");
@@ -1018,6 +1074,7 @@ fn append_entry_persists_and_folds() {
         EntryBody::Msg {
             wire: WireMsg::user("one"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .unwrap();
@@ -1026,6 +1083,7 @@ fn append_entry_persists_and_folds() {
         EntryBody::Msg {
             wire: WireMsg::assistant("two"),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .unwrap();
@@ -1264,4 +1322,75 @@ fn write_locks_use_canonical_paths_for_aliases() {
         MutationQueue::key(&cwd.join("dlink/new.txt")),
         real("dir").join("new.txt")
     );
+}
+
+/// Exercise the real run-loop request construction, not just the settings accessor.
+#[test]
+fn optional_thinking_budget_flows_through_the_policy_only_for_supported_local_requests() {
+    struct CaptureBudget {
+        inner: ScriptedEngine,
+        cap: bool,
+        remote: bool,
+        seen: Mutex<Vec<Option<u64>>>,
+    }
+    impl Engine for CaptureBudget {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            let mut info = self.inner.info(target)?;
+            info.caps.thinking_budget = self.cap;
+            info.caps.remote = self.remote;
+            Ok(info)
+        }
+        fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+            self.inner.count_tokens(text)
+        }
+        fn chat(
+            &self,
+            r: &ChatRequest,
+            cancel: &CancelToken,
+            on: &mut dyn FnMut(StreamEvent),
+        ) -> Result<AssistantTurn, OxaError> {
+            self.seen.lock().unwrap().push(r.thinking_budget);
+            self.inner.chat(r, cancel, on)
+        }
+    }
+    for (budget, cap, remote, thinking, want) in [
+        (Value::Null, true, false, true, None),
+        (Value::from(512), true, false, true, Some(512)),
+        (Value::from(0), true, false, true, Some(0)),
+        (Value::from(512), false, false, true, None),
+        (Value::from(512), true, true, true, None),
+        (Value::from(512), true, false, false, None),
+    ] {
+        let env = TestEnv::new();
+        let engine = Arc::new(CaptureBudget {
+            inner: ScriptedEngine::new(vec![ScriptTurn::text("answer")]),
+            cap,
+            remote,
+            seen: Mutex::new(Vec::new()),
+        });
+        let mut st = build(
+            &env,
+            engine.clone(),
+            Arc::new(MemStore::new()),
+            Vec::new(),
+            Mode::Workspace,
+            Vec::new(),
+        );
+        st.settings = Settings::from_values(
+            serde_json::json!({"oxa":{"thinking":{"budget":budget,"policy":"fixed"}}}),
+            serde_json::json!({}),
+        );
+        st.thinking = if thinking {
+            ThinkingLevel::Medium
+        } else {
+            ThinkingLevel::Off
+        };
+        say(&mut st, "Reply with a short answer.");
+        assert_eq!(run(&mut st).0, RunEnd::Stopped);
+        assert_eq!(
+            *engine.seen.lock().unwrap(),
+            vec![want],
+            "cap={cap}, remote={remote}, thinking={thinking}"
+        );
+    }
 }

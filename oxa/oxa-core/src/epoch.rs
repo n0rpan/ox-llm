@@ -1,4 +1,4 @@
-//! C8: prefix epochs (W3). Owner: task C8. Signatures below are frozen; bodies are yours.
+//! C8: prefix epochs (W3).
 // ported from pi packages/coding-agent/src/core/agent-session.ts (reload, system prompt rebuild)
 use crate::agent_loop::persist;
 use crate::prefix::{build_prefix_with, PrefixOpts};

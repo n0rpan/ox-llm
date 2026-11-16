@@ -314,3 +314,48 @@ zero fallback. Unknown prices still refuse. Fetched rates can raise configured p
 explicit configured rates and tiers remain conservative floors. A missing public cache rate
 does not erase a configured one. Public list prices can still differ from the chosen routed
 provider's bill: #47's validated `usage.cost` remains an additional settlement floor.
+
+## Experimental: ChatGPT subscription (`chatgpt/<model>`, opt-in)
+
+> **Experimental, and undocumented by the provider.** By owner decision (#252) this signs in
+> through the Codex sign-in route, the way other open-source harnesses (OpenCode, pi) do. It uses
+> the Codex CLI's public OAuth client identifier, built in, with
+> `cloud.chatgpt.client_id` as an override, and calls the ChatGPT backend's Codex Responses
+> endpoint. OpenAI does not document this route. It is tolerated and **may break without
+> notice**. The official "Sign in with ChatGPT" program (#247) replaces it once it is generally
+> available. The sources of every constant: [CHATGPT-SIGNIN.md](CHATGPT-SIGNIN.md).
+
+It is off by default. It needs `cloud.enabled: true`, catalog entries of kind `remote/chatgpt`
+named `chatgpt/<model>`, and an explicit sign-in. The shipped catalog (`docs/cloud-models.json`)
+has `chatgpt/gpt-6.1-sol`, `chatgpt/gpt-6.1-terra`, `chatgpt/gpt-6-sol` and `chatgpt/gpt-6-luna`.
+They are listed only while a sign-in exists:
+
+```sh
+oxc login chatgpt                 # browser PKCE sign-in, redirect to http://localhost:1455
+oxc login chatgpt --paste         # headless: open the URL anywhere, paste the redirected address
+oxc logout chatgpt                # removes the token file
+```
+
+```json
+"chatgpt/gpt-6-luna": {"kind": "remote/chatgpt", "upstream_model": "gpt-6-luna",
+                       "base_url": "https://chatgpt.com/backend-api/codex",
+                       "context_window": 272000, "max_output": 128000}
+```
+
+- Tokens live in `chatgpt-auth.json` next to `cloud-secrets.json` (mode 0600, never logged or
+  shown, redacted from replies). oxc refreshes them itself, one refresher at a time; `oxc logout
+  chatgpt` waits for a running refresh. `oxc login chatgpt` refuses a relative `secrets_file` or
+  one inside a source checkout. oxa's sandbox denies the file in every mode at the default
+  locations (`~/.config/oxc/llm/` and the legacy `~/.config/local-ai/llm/`); if you move
+  `cloud.secrets_file` elsewhere, the token file moves with it and, like `cloud-secrets.json`, is
+  not covered by the sandbox deny-list.
+- Tokens are not counted against `daily_tokens` for requests that report no usage (failed or
+  cancelled streams), so that cap is a soft limit.
+- Requests are always streamed upstream, never stored (`store: false`); system/developer
+  messages become `instructions`; the output cap is not sent (the backend rejects it).
+- Cost class `subscription`: ledger rows cost 0 USD but keep their token counts. The daily USD
+  budget does not apply; optional caps `cloud.chatgpt.daily_requests` and
+  `cloud.chatgpt.daily_tokens` do.
+- `/_local/status` → `cloud.subscription` shows `signed_in` and the remaining allowance the
+  backend reported (`used_percent`, `resets_at`, `window_minutes`).
+- LAN-share guests never see or reach these models; offline mode refuses them.

@@ -1,4 +1,4 @@
-//! A3 acceptance tests: Session file store and entry codec. Owner: task A3.
+//! A3 acceptance tests: Session file store and entry codec.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -35,6 +35,7 @@ fn user_entry(id: &str, parent: Option<&str>, ts_ms: u64, text: &str) -> Entry {
         body: EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: vec![Part::Text(text.to_string())],
+            tool: None,
         },
     }
 }
@@ -53,6 +54,7 @@ fn assistant_entry(id: &str, parent: Option<&str>, ts_ms: u64, text: &str) -> En
                 tool_call_id: None,
             },
             parts: vec![],
+            tool: None,
         },
     }
 }
@@ -96,6 +98,7 @@ fn every_body() -> Vec<EntryBody> {
                     h: 480,
                 },
             ],
+            tool: None,
         },
         EntryBody::Msg {
             wire: WireMsg {
@@ -110,6 +113,7 @@ fn every_body() -> Vec<EntryBody> {
                 tool_call_id: None,
             },
             parts: vec![],
+            tool: None,
         },
         EntryBody::Msg {
             wire: WireMsg {
@@ -120,6 +124,7 @@ fn every_body() -> Vec<EntryBody> {
                 tool_call_id: None,
             },
             parts: vec![],
+            tool: None,
         },
         EntryBody::Msg {
             wire: WireMsg {
@@ -130,14 +135,17 @@ fn every_body() -> Vec<EntryBody> {
                 tool_call_id: None,
             },
             parts: vec![],
+            tool: None,
         },
         EntryBody::Msg {
             wire: WireMsg::tool_result("call_1", ODD),
             parts: vec![],
+            tool: None,
         },
         EntryBody::Msg {
             wire: WireMsg::system("system text"),
             parts: vec![],
+            tool: None,
         },
         EntryBody::BashExecution {
             command: ODD.into(),
@@ -274,6 +282,7 @@ fn assistant_wire_strings_exact() {
                 tool_call_id: None,
             },
             parts: vec![],
+            tool: None,
         },
     };
     let line = line_of(&entry);
@@ -671,7 +680,8 @@ fn pi_native_message_decodes() {
         e.body,
         EntryBody::Msg {
             wire: WireMsg::user("Hello there"),
-            parts: vec![]
+            parts: vec![],
+            tool: None,
         }
     );
 
@@ -684,4 +694,24 @@ fn pi_native_message_decodes() {
             .code,
         codes::INVALID
     );
+}
+
+#[test]
+fn tool_result_display_meta_round_trips() {
+    use oxa_proto::ToolMeta;
+    let ui = serde_json::json!({ "diff": "-a\n+b", "exit": 1 });
+    let body = EntryBody::Msg {
+        wire: WireMsg::tool_result("call_1", "failed"),
+        parts: vec![],
+        tool: Some(ToolMeta { is_error: true, ui }),
+    };
+    let e = Entry {
+        id: "a1b2c3d4".into(),
+        parent: None,
+        ts_ms: 1_700_000_000_000,
+        body,
+    };
+    let mut line = Vec::new();
+    encode_entry(&e, &mut line);
+    assert_eq!(decode_entry(&line).unwrap().body, e.body);
 }

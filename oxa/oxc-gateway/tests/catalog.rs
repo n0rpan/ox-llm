@@ -36,15 +36,9 @@ fn keyless_discovery_is_sorted_and_uses_each_models_limits() {
             max_output: 32_768,
         }
     );
-    assert_eq!(
-        catalog.resolve(Some("fast")).unwrap().info().max_output,
-        4096
-    );
+    assert_eq!(catalog.resolve(Some("fast")).unwrap().info().max_output, 4096);
     assert_eq!(catalog.resolve(None).unwrap().info().id, "fast");
-    assert_eq!(
-        catalog.resolve(Some("typo")).unwrap_err(),
-        Error::UnknownModel
-    );
+    assert_eq!(catalog.resolve(Some("typo")).unwrap_err(), Error::UnknownModel);
 }
 
 #[test]
@@ -54,8 +48,7 @@ fn cloud_is_off_by_default_and_offline_hides_and_refuses_models() {
         (Access::default(), Error::Disabled),
         (Access::Offline, Error::Offline),
     ] {
-        let catalog =
-            Catalog::new(access, [model("cloud", Provider::Anthropic, 4096, 512)]).unwrap();
+        let catalog = Catalog::new(access, [model("cloud", Provider::Anthropic, 4096, 512)]).unwrap();
         assert_eq!(catalog.models().count(), 0);
         assert_eq!(catalog.resolve(None).unwrap_err(), refusal);
         assert_eq!(catalog.resolve(Some("cloud")).unwrap_err(), refusal);
@@ -114,15 +107,7 @@ fn invalid_endpoints_cannot_embed_credentials_or_url_secrets() {
         "https://example.invalid/?private=synthetic",
         "https://example.invalid/#private",
     ] {
-        let error = Model::new(
-            "cloud",
-            Provider::Anthropic,
-            "upstream",
-            endpoint,
-            4096,
-            512,
-        )
-        .unwrap_err();
+        let error = Model::new("cloud", Provider::Anthropic, "upstream", endpoint, 4096, 512).unwrap_err();
         assert_eq!(error, Error::InvalidEndpoint);
         assert!(!format!("{error:?}").contains(endpoint));
     }
@@ -139,11 +124,7 @@ fn invalid_endpoints_cannot_embed_credentials_or_url_secrets() {
 
 #[test]
 fn public_metadata_and_debug_hide_private_routing_configuration() {
-    let catalog = Catalog::new(
-        Access::Enabled,
-        [model("cloud", Provider::Anthropic, 4096, 512)],
-    )
-    .unwrap();
+    let catalog = Catalog::new(Access::Enabled, [model("cloud", Provider::Anthropic, 4096, 512)]).unwrap();
     let selected = catalog.resolve(None).unwrap();
     assert_eq!(selected.upstream(), "private-upstream");
     assert_eq!(selected.endpoint().path(), "/private-route");

@@ -1,4 +1,4 @@
-//! D13 acceptance tests: Binary and dispatch. Owner: task D13.
+//! D13 acceptance tests: Binary and dispatch.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -141,12 +141,15 @@ fn exit_codes() {
 
 /// message + hint
 #[test]
-fn no_engine_one_line_exit_2() {
+fn no_engine_diagnostic_and_typed_result_exit_2() {
     let env = TestEnv::new();
     let result = go(&env, &closed_url(), &["-p", "hello"]);
     assert_eq!(result.code, 2, "no engine is exit 2");
     let lines: Vec<&str> = result.err.lines().collect();
-    assert_eq!(lines.len(), 1, "one line on stderr, got {:?}", result.err);
+    assert_eq!(lines.len(), 2, "diagnostic and result, got {:?}", result.err);
+    let result_record: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+    assert_eq!(result_record["error_class"], "engine_down");
+    assert_eq!(result_record["exit_code"], 2);
     assert!(
         lines[0].contains("cannot reach the engine"),
         "message: {}",
@@ -346,7 +349,7 @@ fn print_mode_announces_the_session_id_on_stderr() {
     let r = go_with(&envv, &env.work(), &["-p", "hi"], "", false, false);
     assert_eq!(r.code, 0, "stderr: {}", r.err);
     assert!(
-        r.err.contains("oxa: session ") && r.err.contains("--session "),
+        r.err.contains("oxa: session ") && r.err.contains("--continue "),
         "stderr: {}",
         r.err
     );

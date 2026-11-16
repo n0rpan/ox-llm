@@ -1,4 +1,4 @@
-//! B5: keybinding ids, defaults and keybindings.json. Owner: task B5. Signatures below are frozen; bodies are yours.
+//! B5: keybinding ids, defaults and keybindings.json.
 // ported from pi packages/tui/src/keybindings.ts and packages/coding-agent/docs/keybindings.md
 use crate::{Diagnostic, Dirs};
 use oxa_proto::{KeyId, Level, Value};

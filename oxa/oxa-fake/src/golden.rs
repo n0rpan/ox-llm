@@ -1,4 +1,4 @@
-//! B15: golden request hashes. Owner: task B15. Signatures below are frozen; bodies are yours.
+//! B15: golden request hashes.
 use crate::{cache_bytes, Recorded};
 use oxa_proto::{codes, OxaError};
 use sha2::{Digest, Sha256};

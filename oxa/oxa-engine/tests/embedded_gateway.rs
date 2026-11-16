@@ -91,13 +91,9 @@ fn prefix() -> FrozenPrefix {
 }
 fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg]) -> ChatRequest<'a> {
     ChatRequest {
-        prefix,
-        messages,
-        model: "cloud-model",
         max_tokens: 64,
         thinking: true,
         preserve_thinking: true,
-        sampling: None,
         hints: Hints {
             session: "synthetic-session",
             idem_key: "synthetic-request-id",
@@ -105,6 +101,7 @@ fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg]) -> ChatRequest
             background: false,
             snapshot_keep: true,
         },
+        ..ChatRequest::new(prefix, messages, "cloud-model")
     }
 }
 
@@ -349,5 +346,29 @@ fn missing_idempotency_keys_are_generated_once_for_the_gateway_call() {
     assert_eq!(
         engine.count_tokens("text").unwrap_err().code,
         codes::UNSUPPORTED_IN_OXA
+    );
+}
+
+/// A malformed chunk after visible reply data is a cut reply that must not be replayed.
+#[test]
+fn malformed_chunk_after_data_is_marked_cut() {
+    let _policy = POLICY.lock().unwrap();
+    let prefix = prefix();
+    let (engine, _) = engine(
+        vec![
+            data(json!({"choices":[{"delta":{"content":"partial"}}]})),
+            SseEvent::Data("invalid JSON".into()),
+            SseEvent::Done,
+        ],
+        None,
+    );
+    let error = engine
+        .chat(&request(&prefix, &[]), &CancelToken::new(), &mut |_| {})
+        .unwrap_err();
+    assert_eq!(error.code, codes::STREAM_BROKEN);
+    assert!(
+        error.message.starts_with(oxa_proto::CUT_BY_REFUSAL),
+        "{}",
+        error.message
     );
 }

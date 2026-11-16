@@ -1,4 +1,4 @@
-//! C6: `!cmd` and `!!cmd`. Owner: task C6. Signatures below are frozen; bodies are yours.
+//! C6: `!cmd` and `!!cmd`.
 // ported from pi packages/coding-agent/src/core/bash-executor.ts and agent-session.ts (executeBash)
 use crate::{append_entry, SessionState};
 use oxa_proto::{

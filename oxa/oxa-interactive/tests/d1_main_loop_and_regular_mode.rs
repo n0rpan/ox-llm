@@ -1,4 +1,4 @@
-//! D1 acceptance tests: Main loop and regular mode. Owner: task D1.
+//! D1 acceptance tests: Main loop and regular mode.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -465,7 +465,8 @@ fn reduce(events: &[AgentEvent]) -> ViewModel {
 }
 
 /// A stream cut after the first bytes: the core stores `Shown { why: cut }` with the partial
-/// text and sends NO `message_end`. The UI must end with that Shown block, not a normal reply.
+/// text, sends NO `message_end` for it and resends the request (#456). The UI shows the cut
+/// block, then the replayed reply as the one assistant reply.
 #[test]
 fn cut_stream_becomes_shown_block_from_the_real_event_sequence() {
     let env = TestEnv::new();
@@ -474,12 +475,21 @@ fn cut_stream_becomes_shown_block_from_the_real_event_sequence() {
         fault: Some(oxa_fake::Fault::DropAt { bytes: 12 }),
         ..oxa_fake::ScriptTurn::text("half a sentence that never ends")
     };
-    let events = real_run(&env, vec![turn], "go");
-    // The premise: the core's sequence has the Shown entry and no assistant message_end.
-    assert!(
-        !events.iter().any(|e| matches!(e, AgentEvent::MessageEnd { message } if message.msg.role == oxa_proto::Role::Assistant)),
-        "the core sends no message_end for a cut reply"
+    let events = real_run(
+        &env,
+        vec![turn, oxa_fake::ScriptTurn::text("the whole answer")],
+        "go",
     );
+    let ends: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::MessageEnd { message } if message.msg.role == oxa_proto::Role::Assistant => {
+                message.msg.content.as_deref()
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends, vec!["the whole answer"], "only the replay ends as a reply");
     let stored = events.iter().find_map(|e| match e {
         AgentEvent::EntryAppended { entry } => match &entry.body {
             EntryBody::Shown { text, why } => Some((text.clone(), *why)),
@@ -492,26 +502,33 @@ fn cut_stream_becomes_shown_block_from_the_real_event_sequence() {
 
     let vm = reduce(&events);
     assert_eq!(vm.status.activity, Activity::Idle);
-    assert!(
-        !vm.blocks.iter().any(|b| matches!(b, Block::Assistant { .. })),
-        "the cut reply is not shown as an ordinary assistant reply: {:?}",
+    let shown: Vec<_> = vm
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Shown { text, why } => Some((text.clone(), why.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.len(), 1, "{:?}", vm.blocks);
+    assert_eq!(shown[0].0, text, "the block shows what the core stored");
+    assert!(!text.is_empty() && "half a sentence that never ends".starts_with(text.as_str()));
+    assert_eq!(shown[0].1, "cut");
+    let assistants: Vec<_> = vm
+        .blocks
+        .iter()
+        .filter(|b| matches!(b, Block::Assistant { .. }))
+        .collect();
+    assert_eq!(
+        assistants.len(),
+        1,
+        "the cut partial is not an assistant reply: {:?}",
         vm.blocks
     );
-    match vm.blocks.last() {
-        Some(Block::Shown { text: shown, why }) => {
-            assert_eq!(shown, &text, "the block shows what the core stored");
-            assert!(!shown.is_empty() && "half a sentence that never ends".starts_with(shown.as_str()));
-            assert_eq!(why, "cut");
-        }
-        other => panic!("expected a Shown block, got {other:?}"),
-    }
-    // The resumed view (built from the stored entries) is the same as the live one.
-    assert_eq!(
+    assert!(
+        matches!(vm.blocks.last(), Some(Block::Assistant { .. })),
+        "{:?}",
         vm.blocks
-            .iter()
-            .filter(|b| matches!(b, Block::Shown { .. }))
-            .count(),
-        1
     );
 }
 
@@ -702,6 +719,7 @@ fn blocks_from_entries_attach_results_to_calls() {
             body: EntryBody::Msg {
                 wire: WireMsg::user("list files"),
                 parts: vec![Part::Text("list files".into())],
+                tool: None,
             },
         },
         Entry {
@@ -721,6 +739,7 @@ fn blocks_from_entries_attach_results_to_calls() {
                     tool_call_id: None,
                 },
                 parts: Vec::new(),
+                tool: None,
             },
         },
         Entry {
@@ -730,6 +749,7 @@ fn blocks_from_entries_attach_results_to_calls() {
             body: EntryBody::Msg {
                 wire: WireMsg::tool_result("call_1", "a\nb"),
                 parts: Vec::new(),
+                tool: None,
             },
         },
         Entry {
@@ -750,6 +770,59 @@ fn blocks_from_entries_attach_results_to_calls() {
             assert_eq!(t.name, "bash");
             assert_eq!(t.state, ToolState::Done);
             assert_eq!(t.result.as_ref().map(|r| r.text.as_str()), Some("a\nb"));
+        }
+        other => panic!("expected the tool block, got {other:?}"),
+    }
+}
+
+#[test]
+fn blocks_from_entries_keep_error_flag_and_ui_of_results() {
+    let ui = serde_json::json!({ "exit": 2 });
+    let entry = |id: &str, parent: Option<&str>, body| Entry {
+        id: id.into(),
+        parent: parent.map(Into::into),
+        ts_ms: 0,
+        body,
+    };
+    let call = WireMsg {
+        role: oxa_proto::Role::Assistant,
+        content: None,
+        reasoning: None,
+        tool_calls: vec![oxa_proto::ToolCall {
+            id: "call_1".into(),
+            name: "bash".into(),
+            args_raw: "{}".into(),
+        }],
+        tool_call_id: None,
+    };
+    let entries = vec![
+        entry(
+            "00000001",
+            None,
+            EntryBody::Msg {
+                wire: call,
+                parts: Vec::new(),
+                tool: None,
+            },
+        ),
+        entry(
+            "00000002",
+            Some("00000001"),
+            EntryBody::Msg {
+                wire: WireMsg::tool_result("call_1", "boom"),
+                parts: Vec::new(),
+                tool: Some(oxa_proto::ToolMeta {
+                    is_error: true,
+                    ui: ui.clone(),
+                }),
+            },
+        ),
+    ];
+    match &blocks_from_entries(&entries)[1] {
+        Block::Tool(t) => {
+            let r = t.result.as_ref().expect("result");
+            assert!(r.is_error, "a failed call stays failed after resume");
+            assert_eq!(r.ui, ui);
         }
         other => panic!("expected the tool block, got {other:?}"),
     }

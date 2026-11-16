@@ -133,6 +133,15 @@ def prepare(self, st):
                 with gzip.GzipFile(fileobj=io.BytesIO(st.body)) as stream: raw = stream.read(16 * 1024**2 + 1)
                 if len(raw) > 16 * 1024**2: raise ValueError()
             st.payload = json.loads(raw)
+            if (inference and isinstance(st.payload, dict) and st.payload.get('thinking_budget') is not None
+                    and path not in ('/v1/chat/completions', '/chat/completions')):
+                return answered(self.json_reply(400, {'error': {
+                    'message': 'thinking_budget is supported on chat completions only.',
+                    'type': 'invalid_request_error', 'param': 'thinking_budget', 'code': 'unsupported_value'}}))
+            if remote and isinstance(st.payload, dict) and st.payload.get('thinking_budget') is not None:
+                return answered(self.json_reply(400, {'error': {
+                    'message': 'thinking_budget is a local-only chat control.',
+                    'type': 'invalid_request_error', 'param': 'thinking_budget', 'code': 'unsupported_value'}}))
             if remote:
                 # O-102: a shared request carries the OpenAI fields only (no slot, cache or
                 # native engine controls, no URLs to fetch) and a bounded output limit
@@ -153,6 +162,11 @@ def prepare(self, st):
                         return answered(self.json_reply(404, {'error': {
                             'message': 'Cloud models are served on /v1/chat/completions only.',
                             'type': 'invalid_request_error', 'code': 'unsupported_endpoint'}}))
+                    if st.payload.get('thinking_budget') is not None:
+                        return answered(self.json_reply(400, {'error': {
+                            'message': 'thinking_budget is a local oxe chat control, not a cloud-provider budget.',
+                            'type': 'invalid_request_error', 'param': 'thinking_budget', 'code': 'unsupported_value'}}))
+                    st.payload.pop('thinking_budget', None)  # null is disabled, not an upstream field
                     st.cloud_entry = configured
                     st.model_alias = configured['id']
                     st.target = {'model_alias': configured['id'], 'backend_kind': 'remote',
@@ -189,6 +203,11 @@ def prepare(self, st):
     st.completion_meta = None
     text_only = st.target.get('backend_kind') in (oxe_runtime.KIND, bigmoe_runtime.KIND)
     oxe = st.target.get('backend_kind') == oxe_runtime.KIND
+    if (inference and isinstance(st.payload, dict) and st.payload.get('thinking_budget') is not None
+            and (not oxe or not oxe_runtime.engine_has_thinking_budget(st.target.get('server_binary')))):
+        return answered(self.json_reply(400, {'error': {
+            'message': 'thinking_budget requires a local oxe engine advertising thinking-budget-v1.',
+            'type': 'invalid_request_error', 'param': 'thinking_budget', 'code': 'unsupported_value'}}))
     if (text_only and self.command == 'POST' and path in openai_api.UNSUPPORTED) or (
             text_only and path == openai_api.RESPONSES_PATH and not oxe):
         # Answered here: no model is loaded for an endpoint the engine does not have.

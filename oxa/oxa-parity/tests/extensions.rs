@@ -1,4 +1,4 @@
-//! G12 PARITY tests (extensions). Owner: task G12.
+//! G12 PARITY tests (extensions).
 //! One test per PARITY.md row of the EXT area (`EXT-001` -> `fn ext_001()`), plus the four
 //! meta-checks of the task. Every row test drives the real `oxa` binary in print mode against
 //! `oxa-fake` (a fake engine script), with JavaScript extensions written into the test's agent

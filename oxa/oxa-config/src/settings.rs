@@ -1,4 +1,4 @@
-//! A11: settings.json loading, merge and typed access. Owner: task A11. Signatures below are frozen; bodies are yours.
+//! A11: settings.json loading, merge and typed access.
 // ported from pi packages/coding-agent/src/core/settings-manager.ts
 use crate::schema::{check_root, find_key, kind_matches, kind_name, merge_settings, warn, DEFAULT_TOOLS};
 use crate::{Diagnostic, Dirs};

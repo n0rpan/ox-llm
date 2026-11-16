@@ -1,4 +1,4 @@
-//! A11: the settings schema table, validation and merge rules. Owner: task A11. Signatures below are frozen; bodies are yours.
+//! A11: the settings schema table, validation and merge rules.
 // ported from pi packages/coding-agent/docs/settings.md and src/core/settings-manager.ts
 use crate::Diagnostic;
 use oxa_proto::{Level, Value};
@@ -183,9 +183,12 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
+    key("oxa.subagent.remoteConcurrency", Kind::Number, "4"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
+    // Optional local engine cap, capability-gated; null leaves the current policy unchanged.
+    key("oxa.thinking.budget", Kind::Number, "null"),
     // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
     // before thinking turns on; 0 = never on that ground.
     key("oxa.thinking.escalation.fruitlessCalls", Kind::Number, "6"),
@@ -413,7 +416,7 @@ fn check_value(v: &Value, path: &str, source: &str, diags: &mut Vec<Diagnostic>)
             ));
             return Some(v.clone());
         }
-        if kind_matches(def.kind, v) {
+        if kind_matches(def.kind, v) || (path == "oxa.thinking.budget" && v.is_null()) {
             return Some(v.clone());
         }
         diags.push(warn(

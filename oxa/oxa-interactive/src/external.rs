@@ -1,4 +1,4 @@
-//! D12: external editor and process suspend. Owner: task D12. Signatures below are frozen; bodies are yours.
+//! D12: external editor and process suspend.
 // ported from pi packages/coding-agent/src/modes/interactive/external-editor.ts
 use oxa_proto::OxaError;
 use oxa_tui::Terminal;
