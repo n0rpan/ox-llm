@@ -1179,7 +1179,6 @@ impl<'a> Loop<'a> {
                 self.quit = Some(0);
             } else {
                 self.armed = true;
-                self.push_notice(Level::Info, "Press Ctrl+C again to exit".to_string());
             }
             return;
         }
