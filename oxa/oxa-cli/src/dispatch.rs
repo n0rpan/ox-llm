@@ -170,6 +170,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Work(words) => {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
@@ -421,6 +422,9 @@ fn open_named(
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
+    if let Some(status) = &built.status {
+        status.attach(&mut session)?;
+    }
     Ok(session)
 }
 
@@ -428,6 +432,7 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    status: Option<Arc<crate::status::StatusWriter>>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
     engine: Arc<dyn Engine>,
     store: Arc<dyn SessionStore>,
@@ -825,6 +830,7 @@ fn prepare(
         default_edits: settings.default_tools_edits(),
     };
     let built = Built {
+        status: (!a.no_session).then(|| Arc::new(crate::status::StatusWriter::new(a.stall_timeout))),
         output_schema,
         engine,
         store,
@@ -1183,7 +1189,13 @@ fn run_headless(
         built.supervised_child,
     ) {
         Ok(limit) => limit,
-        Err(error) => return finish_outcome(Err(error), stderr),
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome(result, stderr);
+        }
     };
     let result = match mode {
         RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
@@ -1193,6 +1205,10 @@ fn run_headless(
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
     write_notices(stderr, ui.notes);
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
     if mode == RunMode::Json && built.supervised_child && max_tokens.is_some() {
         // Private child/parent accounting: message_end omits summaries and tool
         // prefill. Report the uncapped total, including the child's final turn.
@@ -1236,11 +1252,22 @@ fn run_rpc(
         built.supervised_child,
     ) {
         Ok(limit) => limit,
-        Err(error) => return finish_outcome(Err(error), stderr),
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome(result, stderr);
+        }
     };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
-    finish_outcome(serve_outcome(session, dirs, input, out), stderr)
+    let result = serve_outcome(session, dirs, input, out);
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
+    finish_outcome(result, stderr)
 }
 
 /// The interactive terminal: the first prompt and the further messages come from the command
@@ -1310,6 +1337,9 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Fork(sref) => Open::Fork(sref),
         };
         let mut session = Session::open(deps, how)?;
+        if let Some(status) = &base.status {
+            status.attach(&mut session)?;
+        }
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
     });
@@ -1340,7 +1370,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         gated,
         yolo: Some(yolo),
     };
-    match run_interactive(session, opts) {
+    let result = run_interactive(session, opts);
+    let result = match &built.status {
+        Some(status) => status.finish_interactive(result, stderr),
+        None => result,
+    };
+    match result {
         Ok(code) => code,
         Err(e) => report(stderr, &e),
     }
@@ -2022,6 +2057,7 @@ mod session_scratch_tests {
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
         let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
+            status: None,
             output_schema: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             store: Arc::new(MemStore::new()),

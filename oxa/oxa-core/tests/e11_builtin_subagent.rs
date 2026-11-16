@@ -210,12 +210,22 @@ struct Outcome {
 }
 
 fn run_with(env: &TestEnv, h: &SubagentHooks, args: Value, cancel: &CancelToken) -> Outcome {
+    run_checked(env, h, args, cancel, &[])
+}
+
+fn run_checked(
+    env: &TestEnv,
+    h: &SubagentHooks,
+    args: Value,
+    cancel: &CancelToken,
+    checked: &[(PathBuf, PathBuf)],
+) -> Outcome {
     let t = tool(h);
     let sandbox = oxa_sandbox::NoSandbox;
     let spill = env.tmp().join("spill");
     let work = env.work();
     let cx = ToolCtx {
-        checked: &[],
+        checked,
         cwd: &work,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -1262,6 +1272,219 @@ fn cap_counts_running_and_queued_children_across_calls() {
         "the budget is released when calls end: {}",
         o.out.text
     );
+}
+
+// ---------------------------------------------------------------- #509: the child's cwd
+
+fn access_of(env: &TestEnv, h: &SubagentHooks, args: Value) -> Vec<oxa_proto::Access> {
+    let t = tool(h);
+    let sandbox = oxa_sandbox::NoSandbox;
+    let spill = env.tmp().join("spill");
+    let work = env.work();
+    let cancel = CancelToken::new();
+    let cx = ToolCtx {
+        cwd: &work,
+        spill_dir: &spill,
+        sandbox: &sandbox,
+        mode: Mode::Workspace,
+        cancel: &cancel,
+        env: &[],
+        tune: Default::default(),
+        checked: &[],
+        hidden: None,
+    };
+    t.access(&args, &cx).expect("access")
+}
+
+#[test]
+fn a_child_cwd_outside_the_session_is_a_write_access_for_the_permission_layer() {
+    use oxa_proto::Access;
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let exec = Access::Exec {
+        command: "subagent".to_string(),
+        net: false,
+    };
+    let work = env.work();
+    std::fs::create_dir_all(work.join("sub")).unwrap();
+    let outside = env.root().join("other-repo");
+    std::fs::create_dir_all(&outside).unwrap();
+
+    // Normal work: no extra prompt. Explicit in-project roots are pinned as writes,
+    // which the workspace policy allows without asking.
+    assert_eq!(
+        access_of(&env, &h, json!({"agent": "scout", "task": "x"})),
+        vec![exec.clone()]
+    );
+    for cwd in ["sub", "sub/../sub"] {
+        use oxa_proto::Policy;
+        let accesses = access_of(&env, &h, json!({"agent": "scout", "task": "x", "cwd": cwd}));
+        assert_eq!(accesses, vec![exec.clone(), Access::Write(work.join("sub"))]);
+        assert_eq!(
+            oxa_perm::ModePolicy::new().decide(Mode::Workspace, &accesses[1], &work),
+            oxa_proto::Decision::Allow,
+            "ordinary in-project cwd must not prompt"
+        );
+    }
+
+    // `..` and an absolute path both leave the project: the target is reported as a write.
+    let rel = access_of(
+        &env,
+        &h,
+        json!({"agent": "scout", "task": "x", "cwd": "../other-repo"}),
+    );
+    assert_eq!(rel, vec![exec.clone(), Access::Write(outside.clone())]);
+    let abs = access_of(
+        &env,
+        &h,
+        json!({"agent": "scout", "task": "x", "cwd": outside.to_str().unwrap()}),
+    );
+    assert_eq!(abs, vec![exec.clone(), Access::Write(outside.clone())]);
+
+    // Every task of a parallel call and every step of a chain is checked.
+    let par = access_of(
+        &env,
+        &h,
+        json!({"tasks": [
+            {"agent": "scout", "task": "a", "cwd": "sub"},
+            {"agent": "scout", "task": "b", "cwd": "../other-repo"},
+        ]}),
+    );
+    assert_eq!(
+        par,
+        vec![
+            exec.clone(),
+            Access::Write(work.join("sub")),
+            Access::Write(outside.clone())
+        ]
+    );
+    let chain = access_of(
+        &env,
+        &h,
+        json!({"chain": [{"agent": "scout", "task": "a", "cwd": "../other-repo"}]}),
+    );
+    assert_eq!(chain, vec![exec, Access::Write(outside)]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_child_cwd_symlink_out_of_the_session_is_a_write_access() {
+    use oxa_proto::Access;
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let target = env.root().join("elsewhere");
+    std::fs::create_dir_all(&target).unwrap();
+    std::os::unix::fs::symlink(&target, env.work().join("link")).unwrap();
+    let a = access_of(&env, &h, json!({"agent": "scout", "task": "x", "cwd": "link"}));
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert!(matches!(&a[1], Access::Write(_)), "{a:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_preserves_symlink_parent_semantics_for_access_and_spawn() {
+    use oxa_proto::Access;
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let outside = env.root().join("elsewhere");
+    std::fs::create_dir_all(outside.join("tree")).unwrap();
+    std::fs::create_dir_all(outside.join("sibling")).unwrap();
+    std::fs::create_dir_all(env.work().join("sibling")).unwrap();
+    std::os::unix::fs::symlink(outside.join("tree"), env.work().join("link")).unwrap();
+    let args = json!({"agent": "scout", "task": "x", "cwd": "link/../sibling"});
+    assert_eq!(
+        access_of(&env, &h, args.clone()),
+        vec![
+            Access::Exec {
+                command: "subagent".into(),
+                net: false
+            },
+            Access::Write(outside.join("sibling")),
+        ],
+    );
+    let o = run(&env, &h, args);
+    assert!(!o.out.is_error, "{}", o.out.text);
+    assert_eq!(
+        env_of(&env, "sess.s1", "cwd").as_deref(),
+        outside.join("sibling").to_str(),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_retargeted_by_an_earlier_child_is_refused() {
+    for shape in ["chain", "tasks"] {
+        let env = TestEnv::new();
+        let host = MockHost::new(&env);
+        let body = format!(
+            "if [ \"$hint\" = sess.s1 ]; then rm \"$ROOT/work/link\"; ln -s \"$ROOT/elsewhere\" \"$ROOT/work/link\"; fi\n{OK_BODY}"
+        );
+        let h = hooks(&env, &body, &host);
+        std::fs::create_dir_all(env.work().join("sub")).unwrap();
+        std::fs::create_dir_all(env.root().join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(env.work().join("sub"), env.work().join("link")).unwrap();
+        let args = json!({shape: [
+            {"agent": "scout", "task": "retarget"},
+            {"agent": "worker", "task": "must not start", "cwd": "link"}
+        ]});
+        let o = run(&env, &h, args);
+        assert!(o.out.is_error, "{shape}: {}", o.out.text);
+        assert!(o.out.text.contains("directory changed"), "{}", o.out.text);
+        assert_eq!(log(&env).iter().filter(|s| s.starts_with("start ")).count(), 1);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_retargeted_after_permission_check_is_refused() {
+    use oxa_proto::{Access, Policy};
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let sub = env.work().join("sub");
+    let outside = env.root().join("elsewhere");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let link = env.work().join("link");
+    std::os::unix::fs::symlink(&sub, &link).unwrap();
+    let args = json!({"agent": "scout", "task": "must not start", "cwd": "link"});
+    let policy = oxa_perm::ModePolicy::new();
+    let checked: Vec<_> = access_of(&env, &h, args.clone())
+        .iter()
+        .filter_map(|a| {
+            let (_, pin) = policy.decide_pinned(Mode::Workspace, a, &env.work());
+            match (a, pin) {
+                (Access::Write(p), Some(real)) => Some((p.clone(), real)),
+                _ => None,
+            }
+        })
+        .collect();
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let o = run_checked(&env, &h, args, &CancelToken::new(), &checked);
+    assert!(o.out.is_error, "{}", o.out.text);
+    assert!(o.out.text.contains("directory changed"), "{}", o.out.text);
+    assert!(!log(&env).iter().any(|s| s.starts_with("start ")));
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_missing_component_does_not_spawn_in_lexical_parent() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let o = run(
+        &env,
+        &h,
+        json!({
+            "agent": "scout", "task": "x", "cwd": "missing/.."
+        }),
+    );
+    assert!(o.out.is_error, "{}", o.out.text);
+    assert!(!log(&env).iter().any(|s| s.starts_with("start ")));
 }
 
 #[test]
