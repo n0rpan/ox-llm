@@ -805,6 +805,33 @@ echo '\''a'\'''"#
         assert!(!res.text.contains("sandbox"), "{}", res.text);
     }
 
+    /// #565: even verbatim git diagnostics printed by a successful inspection are just data.
+    #[test]
+    fn git_config_note_requires_failure_for_every_config_path() {
+        for path in [".git/config", "/work/.git/config", "/home/u/.gitconfig"] {
+            let output = format!("error: could not write config file {path}: Device or resource busy\n");
+            for exit in [Some(0), Some(128), None] {
+                let sb = Fake::ok(output.as_bytes(), exit);
+                let (res, _) = run_with(
+                    &sb,
+                    json!({"command": "cat recorded-output"}),
+                    Mode::Workspace,
+                    &CancelToken::new(),
+                );
+                if exit == Some(0) {
+                    assert!(!res.is_error);
+                    assert_eq!(res.text, output, "successful inspection of {path}");
+                } else {
+                    assert!(res.text.contains(&format!("git could not write {path}:")));
+                    assert_eq!(
+                        res.text.contains("branch was renamed"),
+                        path != "/home/u/.gitconfig"
+                    );
+                }
+            }
+        }
+    }
+
     /// #565: the phrase inside quoted data of a successful command is not a git failure.
     #[test]
     fn git_config_note_ignores_quoted_text_in_successful_command() {
