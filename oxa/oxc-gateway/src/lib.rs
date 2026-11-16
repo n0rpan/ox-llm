@@ -25,3 +25,6 @@ pub mod secrets;
 pub mod anthropic_request;
 #[cfg(feature = "upstream-anthropic-stream")]
 pub mod anthropic_stream;
+
+#[cfg(feature = "anthropic-client")]
+pub mod anthropic_client;
