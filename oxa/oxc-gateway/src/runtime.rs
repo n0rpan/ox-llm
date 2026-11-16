@@ -489,13 +489,17 @@ impl<'a> Call<'a> {
     pub fn observe(&mut self, chunk: &Value) {
         if self.model.info().provider == Provider::OpenCode {
             if let Ok(usage) = crate::opencode::Usage::parse(&chunk["usage"]) {
-                self.go_usage = Some(
-                    json!({"allowance":usage.allowance,"list_cost":usage.list_cost,"tokens":usage.tokens}),
-                );
+                self.metered_go(&usage);
             }
         }
         self.usage.observe(chunk);
         self.entry.as_mut().expect("unsettled call").observe();
+    }
+    pub(crate) fn metered_go(&mut self, usage: &crate::opencode::Usage) {
+        self.usage.prompt = Some(usage.prompt);
+        self.usage.output = Some(usage.completion);
+        self.go_usage =
+            Some(json!({"allowance":usage.allowance,"list_cost":usage.list_cost,"tokens":usage.tokens}));
     }
     pub fn metered(&mut self, usage: crate::anthropic_stream::Usage) {
         self.usage.prompt =
