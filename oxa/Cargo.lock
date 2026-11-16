@@ -919,6 +919,7 @@ dependencies = [
  "oxa-tui",
  "oxa-web",
  "oxa-work",
+ "oxc-gateway",
  "regex",
  "serde_json",
  "sha2",
@@ -1232,6 +1233,9 @@ name = "oxc-local"
 version = "0.2.0"
 dependencies = [
  "nix",
+ "oxa-engine",
+ "oxa-fake",
+ "oxa-proto",
  "serde_json",
  "tokio",
  "ureq",

@@ -6,7 +6,7 @@ use std::{
     io::Write,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 pub const MODEL: &str = "synthetic-cloud";
@@ -23,19 +23,12 @@ impl Fixture {
         Self::for_endpoint(&mock.base_url())
     }
     pub fn for_endpoint(endpoint: &str) -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let root = loop {
-            let path = std::env::temp_dir().join(format!(
-                "oxc-skeleton-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match DirBuilder::new().mode(0o700).create(&path) {
-                Ok(()) => break path,
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => panic!("cannot create private synthetic fixture: {error}"),
-            }
-        };
+        let root = std::env::temp_dir().join(format!(
+            "oxc-skeleton-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let root = create_root(root);
         let key_path = root.join("credentials.json");
         let mut key = OpenOptions::new()
             .write(true)
@@ -76,8 +69,43 @@ impl Fixture {
         }
     }
 }
+fn create_root(root: PathBuf) -> PathBuf {
+    let mut candidate = root.clone();
+    let mut suffix = 0u64;
+    loop {
+        match DirBuilder::new().mode(0o700).create(&candidate) {
+            Ok(()) => return candidate,
+            // Clocks can repeat across threads. Never reuse another fixture's directory.
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                suffix += 1;
+                candidate = root.with_extension(suffix.to_string());
+            }
+            Err(error) => panic!("cannot create private fixture directory: {error}"),
+        }
+    }
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn colliding_fixture_roots_remain_private_and_independent() {
+        let first = Fixture::for_endpoint("http://127.0.0.1:1");
+        let marker = first.root.join("existing-marker");
+        fs::write(&marker, b"preserve existing fixture").unwrap();
+        let second = create_root(first.root.clone());
+        assert_ne!(first.root, second);
+        assert_eq!(fs::metadata(&second).unwrap().permissions().mode() & 0o777, 0o700);
+        fs::remove_dir_all(second).unwrap();
+        assert_eq!(fs::read(marker).unwrap(), b"preserve existing fixture");
+        assert!(first.key_path.is_file());
     }
 }
