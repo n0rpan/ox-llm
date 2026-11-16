@@ -188,7 +188,7 @@ with tempfile.TemporaryDirectory(prefix='memlat-differential-') as directory:
 with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:
     root=Path(directory)/'source'
     for name in ('packaging/release', 'engine/target/release', 'oxa/target/release',
-                 'oxc/tools', 'docs', 'engine/tools/ci', 'engine/vendor/ggml-subset'):
+                 'oxc/tools', 'oxc/packaging/memlat', 'docs', 'engine/tools/ci', 'engine/vendor/ggml-subset'):
         (root/name).mkdir(parents=True,exist_ok=True)
     shutil.copy2(REPO/'packaging/release/stage.py',root/'packaging/release/stage.py')
     for product,name in (('engine','oxe'),('engine','oxe-server'),('oxa','oxa')):
@@ -199,10 +199,21 @@ with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:
     (root/'engine/vendor/ggml-subset/LICENSE').write_text('synthetic license fixture\n')
     (root/'LICENSE').write_text('synthetic license fixture\n')
     (root/'docs/NATIVE-INSTALL.md').write_text('synthetic native upgrade guide\n')
+    templates=('05-local-ai-memlat-fallback.hook', '20-local-ai-memlat-fallback',
+               '85-local-ai-memlat-rebuild', '99-z-local-ai-memlat-rebuild.hook')
+    for name in templates:
+        shutil.copy2(REPO/'oxc/packaging/memlat'/name,root/'oxc/packaging/memlat'/name)
     destination=Path(directory)/'payload'
     subprocess.run(['/usr/bin/python3','-I',str(root/'packaging/release/stage.py'),str(destination)],check=True)
     installed=destination/'usr/bin/local-ai-memlat-boot'
     assert installed.read_bytes()==Path(RUST).read_bytes()
     assert installed.stat().st_mode & 0o777 == 0o755
     assert not list(destination.rglob('memlat_boot.py'))
+    data=destination/'usr/share/ox-llm/memlat'
+    assert {p.name for p in data.iterdir()} == set(templates)
+    for name in templates:
+        assert (data/name).read_bytes() == (REPO/'oxc/packaging/memlat'/name).read_bytes()
+        assert (data/name).stat().st_mode & 0o777 == 0o644
+    assert not (destination/'etc').exists()
+    assert not (destination/'boot').exists()
     print('actual release stage preserves native helper bytes/mode and excludes Python tool')

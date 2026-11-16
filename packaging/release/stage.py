@@ -16,6 +16,12 @@ def stage(root, dest, runner=subprocess.run):
     for workspace, names in [('engine', ('oxe-server',)), ('oxa', ('oxa', 'local-ai-memlat-boot'))]:
         for name in names:
             shutil.copy2(root / workspace / 'target/release' / name, dest / 'usr/bin' / name)
+    # Owner-approved templates are inert data, never active hooks or a service.
+    templates = dest / 'usr/share/ox-llm/memlat'
+    templates.mkdir(parents=True)
+    for name in ('05-local-ai-memlat-fallback.hook', '20-local-ai-memlat-fallback',
+                 '85-local-ai-memlat-rebuild', '99-z-local-ai-memlat-rebuild.hook'):
+        shutil.copy2(root / 'oxc/packaging/memlat' / name, templates / name)
     # No controller tree, Python-backed unit, panel plugin or diagnostics wrapper is staged.
     licenses = dest / 'usr/share/licenses/ox-llm'
     licenses.mkdir(parents=True)

@@ -53,6 +53,18 @@ for variant in ox-llm ox-llm-bin; do
   esac
   for binary in oxa oxe-server local-ai-memlat-boot; do cmp "$payload/bin/$binary" "/usr/bin/$binary"; done
   cmp "$payload/share/doc/ox-llm/NATIVE-INSTALL.md" /usr/share/doc/ox-llm/NATIVE-INSTALL.md
+  templates=(05-local-ai-memlat-fallback.hook 20-local-ai-memlat-fallback
+             85-local-ai-memlat-rebuild 99-z-local-ai-memlat-rebuild.hook)
+  data=/usr/share/ox-llm/memlat
+  [[ $(find "$data" -mindepth 1 -maxdepth 1 | wc -l) -eq 4 ]]
+  for template in "${templates[@]}"; do
+    cmp "$payload/share/ox-llm/memlat/$template" "$data/$template"
+    [[ $(stat -c %a "$data/$template") == 644 ]]
+    for active in "/etc/pacman.d/hooks/$template" "/usr/share/libalpm/hooks/$template" "/etc/limine-entry-tool.d/$template"; do
+      [[ ! -e $active && ! -L $active ]]
+    done
+  done
+  sha256sum "$data"/* > "/packages/MEMLAT-DATA-$variant.txt"
   python -B /smoke.py
   # Reuse #682 on each actual installed ELF, including the independently rebuilt source package.
   source_root="/build/ox-llm/src/ox-llm-$OX_SOURCE_COMMIT"
@@ -83,4 +95,4 @@ for variant in ox-llm ox-llm-bin; do
 done
 
 cd /packages
-sha256sum -- *.pkg.tar.zst namcap-*.txt NO-PYTHON-PROOF-*.txt > SHA256SUMS
+sha256sum -- *.pkg.tar.zst namcap-*.txt NO-PYTHON-PROOF-*.txt MEMLAT-DATA-*.txt > SHA256SUMS

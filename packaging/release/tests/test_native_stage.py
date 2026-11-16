@@ -27,6 +27,11 @@ class NativeStage(unittest.TestCase):
         self.write('engine/vendor/ggml-subset/LICENSE', 'synthetic license')
         self.write('LICENSE', 'synthetic license')
         self.write('docs/NATIVE-INSTALL.md', 'synthetic upgrade note')
+        self.templates = ('05-local-ai-memlat-fallback.hook', '20-local-ai-memlat-fallback',
+                          '85-local-ai-memlat-rebuild', '99-z-local-ai-memlat-rebuild.hook')
+        for name in self.templates:
+            self.write('oxc/packaging/memlat/' + name, 'synthetic template ' + name, executable=True)
+        self.write('oxc/packaging/memlat/oxc-memlat-shutdown.service', 'retired unit')
         self.write('packaging/native/oxc', 'retired wrapper fixture')
         # A legacy source tree is present but must not leak into the installed payload.
         self.write('oxc/src/oxc/runtime/controller.py', 'legacy fixture')
@@ -55,6 +60,20 @@ class NativeStage(unittest.TestCase):
         self.assertFalse((self.payload / 'usr/share/ox-llm/oxc').exists())
         self.assertEqual([call[0][0][-2] for call in self.calls], ['server', 'oxa-cli', 'oxc-memlat'], 'licenses collected for each shipped native target')
 
+    def test_memlat_templates_are_exact_inert_data(self):
+        directory = self.payload / 'usr/share/ox-llm/memlat'
+        self.assertTrue(directory.is_dir(), 'qualified MEMLAT data must be shipped')
+        self.assertEqual({p.name for p in directory.iterdir()}, set(self.templates))
+        for name in self.templates:
+            installed = directory / name
+            self.assertEqual(installed.read_bytes(),
+                             (self.source / 'oxc/packaging/memlat' / name).read_bytes())
+            self.assertEqual(installed.stat().st_mode & 0o777, 0o644)
+        self.assertFalse((self.payload / 'etc').exists(), 'templates must not be activated')
+        self.assertFalse((self.payload / 'boot').exists(), 'staging must not populate an ESP')
+        self.assertFalse((self.payload / 'usr/share/libalpm').exists(), 'no active pacman hooks')
+        self.assertFalse((self.payload / 'usr/lib/systemd').exists(), 'no service activation')
+
     def test_native_files_are_unmodified_and_keep_literal_arguments(self):
         for workspace, name in [('oxa', 'oxa'), ('engine', 'oxe-server'), ('oxa', 'local-ai-memlat-boot')]:
             source = self.source / workspace / 'target/release' / name
@@ -69,6 +88,11 @@ class NativeStage(unittest.TestCase):
         subprocess.run(['/bin/bash', str(REPO / 'packaging/release/archive.sh'), str(self.payload), str(archive)],
                        env={'PATH': os.defpath, 'HOME': str(self.home), 'SOURCE_DATE_EPOCH': '1'}, check=True)
         with tarfile.open(archive) as tar:
+            template_entries = {entry.name: entry for entry in tar if entry.isfile() and entry.name.startswith('usr/share/ox-llm/memlat/')}
+            self.assertEqual({name.rsplit('/', 1)[-1] for name in template_entries}, set(self.templates))
+            for name, entry in template_entries.items():
+                self.assertEqual(entry.mode, 0o644)
+                self.assertEqual(tar.extractfile(entry).read(), (self.source / 'oxc/packaging/memlat' / name.rsplit('/', 1)[-1]).read_bytes())
             commands = {entry.name.rsplit('/', 1)[-1] for entry in tar if entry.isfile() and entry.name.startswith('usr/bin/')}
         self.assertEqual(commands, {'oxa', 'oxe-server', 'local-ai-memlat-boot'})
 

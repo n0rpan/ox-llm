@@ -1,6 +1,6 @@
 # Native install (v0.2.1)
 
-v0.2.1 installs two native commands: `oxa` and `oxe-server`. It ships no Python
+v0.2.1 installs `oxa`, `oxe-server` and the native `local-ai-memlat-boot` utility. It ships no Python
 runtime/controller payload, `oxc` wrapper, panel, LAN share, Studio or controller
 systemd unit. Python remains a build/test tool for source packages, not a runtime
 dependency. Both `oxa` and the engine must report component version 0.2.1; mixed
@@ -58,3 +58,10 @@ run. Local/cloud factory and sign-in production prerequisites, release version
 qualification and #682's exact-artifact CI must be composed before release. A
 mock-cloud proof, staging/unit checks or tokenizer-only stub smoke alone does not
 establish real-provider, local-model, hardware or full E2E acceptance.
+
+## MEMLAT templates
+
+The four qualified MEMLAT hook/script templates ship as inert data under
+`/usr/share/ox-llm/memlat/`. Installation does not activate hooks, install a
+service, change boot defaults or write to the ESP. Any activation or laptop
+installation requires the owner’s separate approval.
