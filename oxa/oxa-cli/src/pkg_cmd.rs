@@ -118,7 +118,17 @@ pub fn run_pkg(
         }
         "list" => {
             let decls = declared_packages(dirs, cwd, &settings, trusted);
-            if decls.is_empty() {
+            // Report hidden declarations without resolving their sources or reading package
+            // contents: listing must not bypass the project trust/content-approval gate.
+            let hidden_project = !trusted && !read_declarations(dirs, cwd, Scope::Project).is_empty();
+            if hidden_project {
+                writeln!(
+                    out,
+                    "Project package declarations are hidden: the project is not trusted (run oxa once in it to decide)."
+                )
+                .map_err(|e| OxaError::io("write output", &e))?;
+            }
+            if decls.is_empty() && !hidden_project {
                 writeln!(out, "No packages declared.").map_err(|e| OxaError::io("write output", &e))?;
                 return Ok(0);
             }
