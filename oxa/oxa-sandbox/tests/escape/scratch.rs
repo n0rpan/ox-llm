@@ -17,12 +17,24 @@ fn process(env: &TestEnv, user_env: Vec<(String, String)>, write: Vec<std::path:
     let host = std::env::var("HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_default();
-    let var = |k: &str, d: &str| {
-        std::env::var(k)
-            .map(std::path::PathBuf::from)
-            .unwrap_or(host.join(d))
-    };
-    let (cargo, rustup) = (var("CARGO_HOME", ".cargo"), var("RUSTUP_HOME", ".rustup"));
+    // CI runs the tests with a cleared environment and HOME set to a scratch directory, so
+    // neither the variables nor HOME locate the toolchains. Fall back to the layout the
+    // `cargo` on PATH lives in: `<home>/.cargo/bin/cargo` beside `<home>/.rustup`.
+    let on_path_home = tool_dir("cargo")
+        .filter(|d| d.file_name().is_some_and(|n| n == "bin"))
+        .and_then(|d| d.parent().map(Path::to_path_buf));
+    let cargo = std::env::var("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or(on_path_home.clone())
+        .unwrap_or(host.join(".cargo"));
+    let rustup = std::env::var("RUSTUP_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or(on_path_home
+            .and_then(|c| c.parent().map(|p| p.join(".rustup")))
+            .filter(|r| r.is_dir()))
+        .unwrap_or(host.join(".rustup"));
     let mut read_extra = vec![cargo.join("bin"), rustup.clone()];
     read_extra.extend(
         ["cargo", "gh", "python3"]
