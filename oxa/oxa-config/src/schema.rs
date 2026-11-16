@@ -141,6 +141,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
+    key("oxa.cloud", Kind::Object, "{}"),
     // V020-OPTIMIZE #7: unset = on.
     key("oxa.compaction.idleSummary", Kind::Bool, "null"),
     // L5 mid-run: unset = on.
@@ -154,6 +155,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
+    key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).

@@ -919,6 +919,7 @@ dependencies = [
  "oxa-tui",
  "oxa-web",
  "oxa-work",
+ "oxc-gateway",
  "regex",
  "serde_json",
  "sha2",
