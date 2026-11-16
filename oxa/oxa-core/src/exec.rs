@@ -91,7 +91,14 @@ pub fn request(
     };
     // Owned, so that the provider hooks can fire (with the state) while the reply streams.
     let (prefix, model) = (st.prefix.clone(), st.model.clone());
+    let output_schema = (st.info.caps.remote
+        && st.info.caps.response_format
+        && matches!(opts.kind, TurnKind::Chat)
+        && max_tokens > 0)
+        .then(|| st.output_schema.as_ref().map(|s| s.value().clone()))
+        .flatten();
     let req = ChatRequest {
+        output_schema: output_schema.as_ref(),
         prefix: &prefix,
         messages: &msgs,
         model: &model,
@@ -657,6 +664,7 @@ fn start_tool_prefill(
                 std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
             }
             let req = ChatRequest {
+                output_schema: None,
                 prefix: &prefix,
                 messages: &msgs,
                 model: &model,

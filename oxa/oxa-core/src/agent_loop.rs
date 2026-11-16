@@ -93,6 +93,23 @@ fn run_inner(
     opening: &[EventMessage],
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
+    let mut schema_repaired = false;
+    if let Some(schema) = &st.output_schema {
+        let content = format!(
+            "Your final answer must be JSON matching this schema:\n{}",
+            schema.value()
+        );
+        persist(
+            st,
+            EntryBody::CustomMessage {
+                custom_type: "oxa.output_schema".into(),
+                content,
+                display: false,
+                details: Value::Null,
+            },
+            sink,
+        )?;
+    }
     let mut done = crate::done::DoneState::default();
     done.begin(st);
     let mut wrapping_up = false;
@@ -559,6 +576,9 @@ fn run_inner(
             continue;
         }
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            continue;
+        }
+        if crate::repair::schema_repair_turn(st, &turn, &mut schema_repaired, sink)? {
             continue;
         }
         return Ok(RunEnd::Stopped);

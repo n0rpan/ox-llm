@@ -52,6 +52,7 @@ fn state(env: &TestEnv, turns: Vec<ScriptTurn>, settings: Settings) -> (SessionS
     });
     let tools = tools();
     let st = SessionState {
+        output_schema: None,
         engine,
         store,
         hooks: Vec::new(),
@@ -446,4 +447,132 @@ fn repair_message_is_fixed_text() {
         prompt::repair_message(&prompt::repair_missing_required("read", &["path"])),
         "Your previous reply contains a tool call that could not be parsed, so no tool was run. Tool \"read\" is missing the required parameter(s): path. Write the tool call again, complete and in the tool call format."
     );
+}
+
+#[test]
+fn output_schema_one_repair_budget_across_tools_and_prompts() {
+    use oxa_core::output_schema::OutputSchema;
+    use serde_json::json;
+    let env = TestEnv::new();
+    let good = r#"{"answer":42}"#;
+    for (turns, count, failed) in [
+        (vec![ScriptTurn::text(good)], 1, false),
+        (vec![ScriptTurn::text("bad"), ScriptTurn::text(good)], 2, false),
+        (vec![ScriptTurn::text("bad"), ScriptTurn::text("bad")], 2, true),
+        (
+            vec![call("c1", "read", r#"{"path":"a.txt"}"#), ScriptTurn::text(good)],
+            2,
+            false,
+        ),
+        (
+            vec![
+                ScriptTurn::text("bad"),
+                call("c1", "read", r#"{"path":"a.txt"}"#),
+                ScriptTurn::text("bad"),
+            ],
+            3,
+            true,
+        ),
+    ] {
+        let (mut st, eng) = state(&env, turns, Settings::default());
+        st.output_schema = Some(
+            OutputSchema::new(json!({"type":"object", "required":["answer"],
+            "properties":{"answer":{"type":"number"}}}))
+            .unwrap(),
+        );
+        let prefix = st.prefix.clone();
+        append_entry(
+            &mut st,
+            EntryBody::Msg {
+                wire: WireMsg::user("answer"),
+                parts: vec![],
+                tool: None,
+            },
+        )
+        .unwrap();
+        let result = run_loop(&mut st, &mut VecSink::default(), &mut HeadlessUi::default());
+        if failed {
+            assert_eq!(result.unwrap_err().code, oxa_proto::codes::SCHEMA_MISMATCH);
+        } else {
+            assert_eq!(result.unwrap(), RunEnd::Stopped);
+        }
+        assert_eq!(eng.requests().len(), count);
+        assert_eq!(st.prefix, prefix, "schema must not change the frozen prefix");
+        let repairs = st
+            .tree
+            .branch(st.tree.leaf())
+            .iter()
+            .filter(|e| {
+                matches!(
+                    &e.body, EntryBody::CustomMessage {custom_type, ..} if custom_type == "oxa.schema_repair"
+                )
+            })
+            .count();
+        assert!(repairs <= 1);
+        // A new user prompt gets a fresh repair budget, not a persisted lifetime counter.
+        eng.push(ScriptTurn::text("bad"));
+        eng.push(ScriptTurn::text(good));
+        let (end, _) = run(&mut st, "again");
+        assert_eq!(end, RunEnd::Stopped);
+        assert_eq!(eng.requests().len(), count + 2);
+    }
+    let (mut normal, eng) = state(
+        &env,
+        vec![ScriptTurn::text("ordinary prose")],
+        Settings::default(),
+    );
+    assert_eq!(run(&mut normal, "normal").0, RunEnd::Stopped);
+    assert_eq!(eng.requests().len(), 1);
+    assert_eq!(
+        eng.requests()[0].messages.len(),
+        1,
+        "no schema prompt in normal work"
+    );
+}
+
+#[test]
+fn output_schema_upstream_requires_both_cloud_and_advertised_capability() {
+    struct Probe {
+        inner: Arc<ScriptedEngine>,
+        schemas: Mutex<Vec<Option<Value>>>,
+    }
+    impl Engine for Probe {
+        fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, oxa_proto::OxaError> {
+            self.inner.info(target)
+        }
+        fn count_tokens(&self, text: &str) -> Result<u32, oxa_proto::OxaError> {
+            self.inner.count_tokens(text)
+        }
+        fn chat(
+            &self,
+            r: &oxa_proto::ChatRequest,
+            cancel: &CancelToken,
+            on: &mut dyn FnMut(oxa_proto::StreamEvent),
+        ) -> Result<oxa_proto::AssistantTurn, oxa_proto::OxaError> {
+            self.schemas.lock().unwrap().push(r.output_schema.cloned());
+            self.inner.chat(r, cancel, on)
+        }
+    }
+    let env = TestEnv::new();
+    for (remote, advertised) in [(false, false), (false, true), (true, false), (true, true)] {
+        let (mut st, eng) = state(&env, vec![ScriptTurn::text("42")], Settings::default());
+        let probe = Arc::new(Probe {
+            inner: eng,
+            schemas: Mutex::new(Vec::new()),
+        });
+        st.engine = probe.clone();
+        st.info.caps.remote = remote;
+        st.info.caps.response_format = advertised;
+        st.output_schema =
+            Some(oxa_core::output_schema::OutputSchema::new(serde_json::json!({"type":"number"})).unwrap());
+        assert_eq!(run(&mut st, "answer").0, RunEnd::Stopped);
+        assert_eq!(
+            *probe.schemas.lock().unwrap(),
+            vec![if remote && advertised {
+                Some(serde_json::json!({"type":"number"}))
+            } else {
+                None
+            }]
+        );
+    }
 }
