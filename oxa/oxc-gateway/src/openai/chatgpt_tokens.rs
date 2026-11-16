@@ -105,6 +105,115 @@ impl TokenRecord {
     }
 }
 
+/// Borrowed refresh fields. Debug never exposes the refresh token or client id.
+#[derive(Clone, Copy)]
+pub struct RefreshForm<'a>([(&'static str, &'a str); 3]);
+impl RefreshForm<'_> {
+    pub fn as_fields(&self) -> &[(&'static str, &str); 3] {
+        &self.0
+    }
+}
+impl fmt::Debug for RefreshForm<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("RefreshForm([redacted])")
+    }
+}
+
+/// Pure form construction; encoding and HTTP policy belong to the caller.
+pub fn refresh_form<'a>(refresh_token: &'a str, client_id: &'a str) -> RefreshForm<'a> {
+    RefreshForm([
+        ("grant_type", "refresh_token"),
+        ("refresh_token", refresh_token),
+        ("client_id", client_id),
+    ])
+}
+
+/// Convert a trusted refresh response into a record using an injected Unix time.
+///
+/// Like Python's `_record`, preserve an omitted/empty refresh token and fall back
+/// to the previous account. A positive numeric `expires_in` takes precedence over
+/// the access token's numeric `exp`, then a one-hour default. Claims are decoded,
+/// NOT verified: they are metadata from the caller's authenticated token endpoint,
+/// never proof of identity. This function does not read credentials or do I/O.
+pub fn record(reply: &Value, previous: &TokenRecord, now: f64) -> Result<TokenRecord, Error> {
+    if !now.is_finite() {
+        return Err(Error::InvalidRecord);
+    }
+    let access = reply
+        .get("access_token")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .ok_or(Error::InvalidRecord)?;
+    let refresh = match reply.get("refresh_token") {
+        None | Some(Value::Null) => previous.refresh_token(),
+        Some(Value::String(s)) if s.is_empty() => previous.refresh_token(),
+        Some(Value::String(s)) => s,
+        _ => return Err(Error::InvalidRecord),
+    };
+    let access_claims = claims(access);
+    let id_claims = reply.get("id_token").and_then(Value::as_str).map(claims);
+    let account = |claims: &Value| {
+        claims
+            .get("https://api.openai.com/auth")?
+            .get("chatgpt_account_id")?
+            .as_str()
+            .map(str::to_owned)
+    };
+    let account = id_claims
+        .as_ref()
+        .and_then(account)
+        .or_else(|| account(&access_claims))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| previous.account_id().to_owned());
+    let expires_at = match reply
+        .get("expires_in")
+        .and_then(Value::as_f64)
+        .filter(|n| *n > 0.0)
+    {
+        Some(seconds) => now + seconds,
+        None => access_claims
+            .get("exp")
+            .and_then(Value::as_f64)
+            .unwrap_or(now + 3600.0),
+    };
+    TokenRecord::new(access.to_owned(), refresh.to_owned(), account, expires_at)
+}
+
+// A small bounded base64url decoder avoids adding a dependency for metadata-only
+// JWT inspection. Invalid payloads behave like absent claims, as in Python.
+fn claims(token: &str) -> Value {
+    let decode = || -> Option<Value> {
+        let payload = token.split('.').nth(1)?;
+        if payload.len() > MAX_BYTES as usize {
+            return None;
+        }
+        let mut bytes = Vec::with_capacity(payload.len() * 3 / 4);
+        let mut bits = 0u32;
+        let mut count = 0;
+        for byte in payload.trim_end_matches('=').bytes() {
+            let value = match byte {
+                b'A'..=b'Z' => byte - b'A',
+                b'a'..=b'z' => byte - b'a' + 26,
+                b'0'..=b'9' => byte - b'0' + 52,
+                b'-' => 62,
+                b'_' => 63,
+                _ => return None,
+            };
+            bits = (bits << 6) | u32::from(value);
+            count += 6;
+            if count >= 8 {
+                count -= 8;
+                bytes.push((bits >> count) as u8);
+            }
+        }
+        if count >= 6 {
+            return None;
+        }
+        serde_json::from_slice(&bytes).ok()
+    };
+    decode().unwrap_or(Value::Null)
+}
+
 struct Directory {
     file: File,
     name: OsString,
