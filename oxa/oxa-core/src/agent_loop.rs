@@ -151,6 +151,9 @@ fn run_inner(
         let mut retried = false;
         let mut replays: u32 = 0;
         let turn = loop {
+            if !wrapping_up && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+                continue 'turns;
+            }
             let mut capture = Capture {
                 inner: &mut *sink,
                 text: String::new(),
