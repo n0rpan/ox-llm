@@ -25,23 +25,28 @@ fn spill_read_exception_is_session_scoped_and_resolves_symlinks() {
     let env = TestEnv::new();
     let tmp = env.agent_dir().join("tmp");
     let spill = tmp.join("s1");
-    std::fs::create_dir_all(&spill).unwrap();
+    env.write("home/.oxa/agent/tmp/s1/out.txt", "own output");
+    env.write("home/.oxa/agent/tmp/s2/out.txt", "other output");
     std::os::unix::fs::symlink(tmp.join("s2"), spill.join("other-session")).unwrap();
     std::os::unix::fs::symlink(env.home().join(".ssh"), spill.join("keys")).unwrap();
     let mut p = ModePolicy::new().with_guard(PathGuard::new(&env.home(), &env.agent_dir(), &tmp));
     let own = Access::Read(spill.join("out.txt"));
-    assert_eq!(
-        p.decide(Mode::Ask, &own, &env.work()),
-        Decision::Ask,
-        "no spill scope until the runtime attaches a session"
-    );
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &own, &env.work()),
+            Decision::Ask,
+            "no spill scope until the runtime attaches a session ({mode:?})"
+        );
+    }
     p.set_spill_dir(&spill);
     for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
         assert_eq!(p.decide(mode, &own, &env.work()), Decision::Allow);
         for path in [
             tmp.join("s2/out.txt"),
+            tmp.join("s10/out.txt"),
             tmp.join("s1-other/out.txt"),
             tmp.join("codemode/out.txt"),
+            tmp.join("loose.txt"),
             spill.join("../s2/out.txt"),
             spill.join("other-session/out.txt"),
         ] {
@@ -66,15 +71,17 @@ fn spill_read_exception_is_session_scoped_and_resolves_symlinks() {
         );
     }
     p.set_spill_dir(&tmp.join("s2"));
-    assert_eq!(
-        p.decide(Mode::Ask, &own, &env.work()),
-        Decision::Ask,
-        "switching replaces, rather than accumulates, the spill scope"
-    );
-    assert_eq!(
-        p.decide(Mode::Ask, &Access::Read(tmp.join("s2/out.txt")), &env.work()),
-        Decision::Allow
-    );
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &own, &env.work()),
+            Decision::Ask,
+            "switching replaces, rather than accumulates, the spill scope ({mode:?})"
+        );
+        assert_eq!(
+            p.decide(mode, &Access::Read(tmp.join("s2/out.txt")), &env.work()),
+            Decision::Allow
+        );
+    }
 }
 
 #[test]
@@ -161,86 +168,6 @@ fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
         ),
         Decision::Allow
     );
-}
-
-#[test]
-fn shared_tmp_has_no_automatic_read_exception_before_a_session_is_attached() {
-    let env = TestEnv::new();
-    let p = ModePolicy::new().with_guard(PathGuard::new(
-        &env.home(),
-        &env.agent_dir(),
-        &env.agent_dir().join("tmp"),
-    ));
-    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
-        assert_eq!(
-            p.decide(
-                mode,
-                &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
-                &env.work()
-            ),
-            Decision::Ask
-        );
-    }
-}
-
-/// #567: the automatic read exception must not cover another session or shared scratch.
-#[test]
-fn spill_read_exception_is_scoped_to_the_current_session() {
-    let env = TestEnv::new();
-    let mut p = guarded(&env);
-    env.write("home/.oxa/agent/tmp/s1/out.txt", "own output");
-    env.write("home/.oxa/agent/tmp/s2/out.txt", "other output");
-    std::os::unix::fs::symlink(
-        env.agent_dir().join("tmp/s2"),
-        env.agent_dir().join("tmp/s1/other"),
-    )
-    .unwrap();
-    std::os::unix::fs::symlink(env.home().join(".ssh"), env.agent_dir().join("tmp/s1/keys")).unwrap();
-    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
-        for rel in [
-            "tmp/s2/out.txt",
-            "tmp/s10/out.txt",
-            "tmp/codemode/source.js",
-            "tmp/loose.txt",
-            "tmp/s1/../s2/out.txt",
-            "tmp/s1/other/out.txt",
-        ] {
-            assert_eq!(
-                p.decide(mode, &Access::Read(env.agent_dir().join(rel)), &env.work()),
-                Decision::Ask,
-                "{mode:?} must still ask for {rel}"
-            );
-        }
-        assert_eq!(
-            p.decide(
-                mode,
-                &Access::Read(env.agent_dir().join("tmp/s1/keys/id_test")),
-                &env.work()
-            ),
-            SENSITIVE,
-            "the spill exception must not bypass the sensitive-path deny"
-        );
-    }
-    // Replacing the attachment revokes the old session's automatic read allowance.
-    p.set_spill_dir(&env.agent_dir().join("tmp/s2"));
-    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
-        assert_eq!(
-            p.decide(
-                mode,
-                &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
-                &env.work()
-            ),
-            Decision::Ask
-        );
-        assert_eq!(
-            p.decide(
-                mode,
-                &Access::Read(env.agent_dir().join("tmp/s2/out.txt")),
-                &env.work()
-            ),
-            Decision::Allow
-        );
-    }
 }
 
 /// #544: a denied directory does not cover a child's symlink target in the workspace.
