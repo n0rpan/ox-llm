@@ -1,4 +1,4 @@
-//! A12: the terminal abstraction, the real terminal, raw mode and restore-on-panic. Owner: task A12. Signatures below are frozen; bodies are yours.
+//! A12: the terminal abstraction, the real terminal, raw mode and restore-on-panic.
 // ported from pi packages/tui/src/terminal.ts
 use crate::{flush_pending, parse_input, parse_osc_color, InputEvent, TermCaps, TermMode, TerminalColors};
 use oxa_proto::{codes, OxaError};

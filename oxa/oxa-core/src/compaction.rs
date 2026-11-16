@@ -1,4 +1,4 @@
-//! C3: compaction orchestration (W5). Owner: task C3. Signatures below are frozen; bodies are yours.
+//! C3: compaction orchestration (W5).
 // adapted from pi packages/coding-agent/src/core/agent-session.ts (compact, auto-compaction)
 //
 // Byte rules (W1, W5). The summary request is the whole wire plus one user instruction, sent with

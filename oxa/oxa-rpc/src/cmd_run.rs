@@ -1,4 +1,4 @@
-//! C10: RPC run-control commands. Owner: task C10. Signatures below are frozen; bodies are yours.
+//! C10: RPC run-control commands.
 // ported from pi packages/coding-agent/src/modes/rpc/rpc-mode.ts (docs: rpc-commands.md)
 use crate::events::{event_to_json, message_to_json, state_to_json};
 use crate::{Handled, RpcCommand, RpcCx, RpcUi};

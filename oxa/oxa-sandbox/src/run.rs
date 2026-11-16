@@ -1,4 +1,4 @@
-//! A9: process running with timeout, cancel and process-group kill. Owner: task A9. Signatures below are frozen; bodies are yours.
+//! A9: process running with timeout, cancel and process-group kill.
 use oxa_proto::{CancelToken, ExecResult, ExecSpec};
 use std::io::Read;
 use std::os::unix::process::CommandExt;

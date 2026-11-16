@@ -1,4 +1,4 @@
-//! D7: theme selector with live preview. Owner: task D7. Signatures below are frozen; bodies are yours.
+//! D7: theme selector with live preview.
 // ported from pi packages/coding-agent/src/modes/interactive/components/theme-selector.ts
 use crate::Outcome;
 use oxa_config::Keymap;

@@ -128,6 +128,17 @@ impl NetSandbox {
             .filter(|t| net && !t.is_empty() && !t.chars().any(char::is_whitespace))
     }
 
+    /// The token only for a networked command that mentions `gh` or `git` as a word (#210).
+    /// `git` is included because git over HTTPS authenticates through `gh auth git-credential`,
+    /// which needs the same token: without it push, fetch, pull and clone would lose their
+    /// credentials in the sandbox.
+    fn token_for(&self, s: &ExecSpec) -> Option<&String> {
+        if !s.net || !mentions_gh(&s.command) {
+            return None;
+        }
+        self.token()
+    }
+
     fn token(&self) -> Option<&String> {
         self.gh_token
             .get_or_init(|| {
@@ -140,7 +151,7 @@ impl NetSandbox {
     /// The spec for a real run: the clamp plus the token, when the command has the network.
     fn clamp_run(&self, s: &ExecSpec) -> ExecSpec {
         let mut s = self.clamp(s);
-        if let (true, Some(t)) = (s.net, s.net.then(|| self.token()).flatten()) {
+        if let (true, Some(t)) = (s.net, self.token_for(&s)) {
             s.env.retain(|(k, _)| k != "GH_TOKEN" && k != "GH_HOST");
             s.env.push(("GH_TOKEN".into(), t.clone()));
             s.env.push(("GH_HOST".into(), "github.com".into()));
@@ -155,6 +166,10 @@ impl NetSandbox {
         run: impl FnOnce(&ExecSpec, &mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
         let s = self.clamp_run(spec);
+        // Injection is per command, but redaction covers every networked command once the
+        // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
+        // `self.token()` loads a lazy token here too: the first networked command may be
+        // `cat token.txt` from an earlier session.
         let Some(t) = s.net.then(|| self.token()).flatten() else {
             return run(&s, live);
         };
@@ -210,6 +225,20 @@ impl Sandbox for NetSandbox {
     }
 }
 
+/// True when `gh` or `git` appears as a command word (not inside `ghost` or `a-gh`).
+/// Best-effort exposure limiting, not a security control: `echo gh; printenv GH_TOKEN` still
+/// matches. The real protection is output redaction, which covers every networked command.
+fn mentions_gh(cmd: &str) -> bool {
+    let ok = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
+    ["gh", "git"].iter().any(|w| {
+        cmd.match_indices(w).any(|(i, _)| {
+            let before = cmd[..i].chars().next_back();
+            let after = cmd[i + w.len()..].chars().next();
+            before.is_none_or(|c| !ok(c)) && after.is_none_or(|c| !ok(c))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +260,81 @@ mod tests {
             n.run(&spec(true), &CancelToken::new(), &mut |_| {});
         }
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn git_gets_token_but_lookalikes_do_not_and_output_stays_redacted() {
+        let inner = Arc::new(Echo(Mutex::new(Vec::new())));
+        let sb = NetSandbox::new(inner.clone(), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        let go = |cmd: &str| {
+            let mut sp = spec(true);
+            sp.command = cmd.into();
+            let r = sb.run(&sp, &CancelToken::new(), &mut |_| {});
+            let env = inner.0.lock().unwrap().pop().unwrap();
+            (
+                env.iter().any(|(k, _)| k == "GH_TOKEN"),
+                String::from_utf8(r.output).unwrap(),
+            )
+        };
+        assert!(go("git push origin x").0);
+        assert!(!go("npm install gitignore-parser").0);
+        let (inj, out) = go("curl https://example.invalid");
+        assert!(!inj);
+        assert!(!out.contains("ghp_SECRET123"));
+        // Echo only prints a token it was given; check redaction directly on a leaked value.
+        struct Leak;
+        impl Sandbox for Leak {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                l(b"ghp_SECRET123");
+                ExecResult {
+                    output: b"ghp_SECRET123".to_vec(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let sb = NetSandbox::new(Arc::new(Leak), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        let mut sp = spec(true);
+        sp.command = "cat token.txt".into();
+        let mut live = Vec::new();
+        let r = sb.run(&sp, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+        assert_eq!(String::from_utf8(r.output).unwrap(), "[redacted]");
+        assert_eq!(String::from_utf8(live).unwrap(), "[redacted]");
+    }
+
+    #[test]
+    fn lazy_token_is_redacted_from_a_first_non_gh_networked_command() {
+        struct Leak;
+        impl Sandbox for Leak {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                l(b"ghp_LAZY123");
+                ExecResult {
+                    output: b"ghp_LAZY123".to_vec(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let sb =
+            NetSandbox::new(Arc::new(Leak), true, false).with_gh_token_lazy(|| Some("ghp_LAZY123".into()));
+        let mut sp = spec(true);
+        sp.command = "cat token.txt".into();
+        let mut live = Vec::new();
+        let r = sb.run(&sp, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+        assert_eq!(String::from_utf8(r.output).unwrap(), "[redacted]");
+        assert_eq!(String::from_utf8(live).unwrap(), "[redacted]");
     }
 
     /// Records the env of each run and answers with the token echoed back.
@@ -324,7 +428,7 @@ mod tests {
 
     fn spec(net: bool) -> ExecSpec {
         ExecSpec {
-            command: "x".into(),
+            command: "gh x".into(),
             cwd: "/".into(),
             writable: true,
             net,
@@ -370,6 +474,24 @@ mod tests {
                 "{env:?}"
             );
             assert_eq!(out, "token is none\n");
+        }
+    }
+
+    #[test]
+    fn token_only_goes_to_gh_commands() {
+        let inner = Arc::new(Echo(Mutex::new(Vec::new())));
+        let sb = NetSandbox::new(inner.clone(), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        for (cmd, want) in [
+            ("curl https://example.invalid", false),
+            ("npm install ghost", false),
+            ("gh pr list", true),
+            ("cd x && gh api /user | jq", true),
+        ] {
+            let mut sp = spec(true);
+            sp.command = cmd.into();
+            sb.run(&sp, &CancelToken::new(), &mut |_| {});
+            let env = inner.0.lock().unwrap().pop().unwrap();
+            assert_eq!(env.iter().any(|(k, _)| k == "GH_TOKEN"), want, "{cmd}");
         }
     }
 

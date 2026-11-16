@@ -39,6 +39,10 @@ fn fake_opts(script: &str, opts: FakeOpts) -> FakeServer {
 }
 
 /// A URL where nothing listens.
+///
+/// The port stays reserved for the life of the test process: a socket that is bound but never
+/// listening refuses connections, and the kernel cannot hand the port to another test's fake
+/// engine (a dropped listener could be, which sent one test's requests to another's server).
 fn closed_url() -> String {
     // A bound but never listening socket refuses connections and keeps its port reserved for
     // the life of the test process, so a concurrent test's server cannot be handed the same

@@ -1,4 +1,4 @@
-//! D13: process entry. Owner: task D13. Keep this file a thin shim over `oxa_cli::run`.
+//! D13: process entry. A thin shim over `oxa_cli::run`.
 fn main() {
     // A1/A2: contained panics (extensions, tools, hooks) print nothing and become errors.
     oxa_proto::panic::install_hook();

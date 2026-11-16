@@ -1,4 +1,4 @@
-//! A3: the session file store and the entry codec. Owner: task A3. Signatures below are frozen; bodies are yours.
+//! A3: the session file store and the entry codec.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (file format: docs/session-format.md)
 use crate::{SessionHeader, SessionMeta, SessionRef, SessionStore};
 use oxa_proto::{

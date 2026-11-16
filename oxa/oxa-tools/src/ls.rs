@@ -1,4 +1,4 @@
-//! A8: the `ls` tool. Owner: task A8. Signatures below are frozen; bodies are yours.
+//! A8: the `ls` tool.
 // ported from pi packages/coding-agent/src/core/tools/ls.ts
 use crate::descriptions::{self, errors, limits};
 use crate::grep::{cap_output, opt_count, opt_str};

@@ -1,4 +1,4 @@
-//! F4: `tool_search` and the frozen `call_tool` dispatcher. Owner: task F4. Signatures below are frozen; bodies are yours.
+//! F4: `tool_search` and the frozen `call_tool` dispatcher.
 // ported from pi packages/coding-agent/src/core/tools/tool-search.ts (ranking)
 use crate::{Namespace, Shared};
 use oxa_proto::{

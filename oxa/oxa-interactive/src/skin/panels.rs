@@ -1,5 +1,5 @@
 //! U3: the transcript panels of the OXA skin and the frame of selectors and dialogs.
-//! Owner: task U3. Signatures below are frozen; bodies are yours. Spec: OXA-UI-DESIGN.md sec. 5.
+//! Spec: OXA-UI-DESIGN.md sec. 5.
 //!
 //! Every panel is built from the pi views (`views::*`), so the content is the same; only the
 //! frame, the rails and the headers are the skin's. Widths below [`MIN_WIDTH`] fall back to the
@@ -423,7 +423,7 @@ fn shown_panel(text: &str, why: &str, cx: &ViewCx) -> Vec<String> {
     let head = theme.fg(token, &theme.bold(&format!("{mark} {label}")));
     let mut body = styled_lines(text.trim(), "text", theme);
     let reason = if why == shown_why::ABORTED {
-        "cancelled; the prompt stays in the conversation"
+        "partial reply dropped; your prompt stays"
     } else {
         "not sent to the model; ask again"
     };
