@@ -31,14 +31,19 @@ fn session(env: &TestEnv) -> (Layout, std::path::PathBuf) {
             })
             .filter(|d| !d.starts_with("/usr") && !d.starts_with("/bin")),
     );
+    let mut toolchain_env = vec![
+        ("CARGO_HOME".to_string(), cargo.display().to_string()),
+        ("RUSTUP_HOME".to_string(), rustup.display().to_string()),
+    ];
+    // CI selects the toolchain with RUSTUP_TOOLCHAIN and has no rustup default.
+    if let Ok(t) = std::env::var("RUSTUP_TOOLCHAIN") {
+        toolchain_env.push(("RUSTUP_TOOLCHAIN".to_string(), t));
+    }
     let l = Layout::build(&LayoutInputs {
         home: home.clone(),
         agent_dir: Some(env.agent_dir()),
         path_var: std::env::var("PATH").unwrap_or_default(),
-        env: vec![
-            ("CARGO_HOME".into(), cargo.display().to_string()),
-            ("RUSTUP_HOME".into(), rustup.display().to_string()),
-        ],
+        env: toolchain_env,
         read_extra,
         write_extra: vec![cargo.join("registry")],
         ..LayoutInputs::default()
