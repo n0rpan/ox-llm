@@ -83,6 +83,18 @@ impl ProviderStatus {
         Some(Self::refused(state, checked_at))
     }
 
+    /// Credential acquisition failed: do not display a stale healthy sign-in.
+    /// This is a status conversion, not logout: transient failures must not
+    /// delete the saved refresh token, and a later successful acquisition can
+    /// restore the caller's healthy status. No credential/error text is shown.
+    #[cfg(feature = "upstream-openai")]
+    pub fn from_chatgpt_credentials_error(
+        _error: crate::openai::chatgpt_tokens::Error,
+        checked_at: SystemTime,
+    ) -> Self {
+        Self::refused(State::SignedOut, checked_at)
+    }
+
     fn refused(state: State, checked_at: SystemTime) -> Self {
         Self {
             remaining_usd: None,
@@ -159,6 +171,26 @@ mod tests {
             usage_monthly: Decimal::from(0),
             limit_reset: None,
             account_remaining: account.parse().unwrap(),
+        }
+    }
+
+    #[cfg(feature = "upstream-openai")]
+    #[test]
+    fn chatgpt_credential_failures_show_signed_out_without_provider_text() {
+        use crate::openai::chatgpt_tokens::Error;
+        for error in [
+            Error::Refresh,
+            Error::InvalidRecord,
+            Error::Unavailable,
+            Error::UnsafeFile,
+            Error::TooLarge,
+        ] {
+            let status = ProviderStatus::from_chatgpt_credentials_error(error, checked_at());
+            assert_eq!(status.state, State::SignedOut);
+            assert_eq!(status.source, Source::NotReported);
+            assert_eq!(status.remaining_usd, None);
+            assert_eq!(status.checked_at, checked_at());
+            assert!(status.render_card().contains("State: signed out\n"));
         }
     }
 

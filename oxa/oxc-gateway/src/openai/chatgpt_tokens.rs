@@ -209,6 +209,20 @@ pub fn read(path: &Path) -> Result<TokenRecord, Error> {
     Directory::open(path)?.read()
 }
 
+/// Recover from a 401 `token_expired`, even if the stored expiry looks fresh.
+/// Pass the credentials used by the rejected attempt, not a newly read record.
+/// A concurrent refresher's fresh replacement is reused; another account is
+/// never substituted. The caller must retry the upstream request at most once.
+/// As with `credentials`, refresh and persistence failures are returned, not
+/// hidden by falling back to the rejected access token.
+pub fn credentials_after_rejection<E>(
+    path: &Path,
+    rejected: &TokenRecord,
+    refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
+) -> Result<TokenRecord, Error> {
+    credentials_inner(path, Some(rejected), refresh)
+}
+
 /// Re-read under an exclusive flock before calling the injected refresher.
 /// The closure owns all transport policy; its error is deliberately discarded.
 /// A refresh must return a record fresh for at least the 120-second margin.
@@ -216,20 +230,34 @@ pub fn credentials<E>(
     path: &Path,
     refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
 ) -> Result<TokenRecord, Error> {
+    credentials_inner(path, None, refresh)
+}
+
+fn credentials_inner<E>(
+    path: &Path,
+    rejected: Option<&TokenRecord>,
+    refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
+) -> Result<TokenRecord, Error> {
+    let needs_refresh = |record: &TokenRecord| -> Result<bool, Error> {
+        if rejected.is_some_and(|old| old.account_id != record.account_id) {
+            return Err(Error::InvalidRecord);
+        }
+        Ok(!record.fresh()? || rejected.is_some_and(|old| old.access_token == record.access_token))
+    };
     let dir = Directory::open(path)?;
     let record = dir.read()?;
-    if record.fresh()? {
+    if !needs_refresh(&record)? {
         return Ok(record);
     }
     let lock = dir.open_file(OsStr::new(LOCK), OFlag::O_RDWR | OFlag::O_CREAT)?;
     check_file(&lock.metadata().map_err(|_| Error::Unavailable)?)?;
     let _lock = Flock::lock(lock, FlockArg::LockExclusive).map_err(|_| Error::Unavailable)?;
     let record = dir.read()?;
-    if record.fresh()? {
+    if !needs_refresh(&record)? {
         return Ok(record);
     }
     let updated = refresh(&record).map_err(|_| Error::Refresh)?;
-    if !updated.fresh()? {
+    if !updated.fresh()? || rejected.is_some_and(|old| old.account_id != updated.account_id) {
         return Err(Error::InvalidRecord);
     }
     dir.replace(&updated)?;
