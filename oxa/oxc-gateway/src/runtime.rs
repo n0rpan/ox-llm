@@ -238,11 +238,12 @@ impl Runtime {
                     model.context_window,
                     model.max_output,
                 )
-                .map_err(|_| Error::Protocol)?,
+                .map_err(|_| Error::Discovery(crate::opencode::DiscoveryError::CatalogConflict))?,
             );
             additions.insert(alias, model);
         }
-        let catalog = Catalog::new(Access::Enabled, models).map_err(|_| Error::Protocol)?;
+        let catalog = Catalog::new(Access::Enabled, models)
+            .map_err(|_| Error::Discovery(crate::opencode::DiscoveryError::CatalogConflict))?;
         for alias in additions.keys() {
             self.billings.insert(alias.clone(), Billing::Subscription);
         }

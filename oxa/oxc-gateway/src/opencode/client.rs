@@ -27,6 +27,7 @@ pub enum Error {
     Request,
     Transport,
     Protocol,
+    Discovery(super::DiscoveryError),
     TooLarge,
     Cancelled,
     Refused(Refusal),
@@ -74,9 +75,10 @@ pub async fn models(
     timeout: Duration,
     cancel: &CancelToken,
 ) -> Result<Vec<Model>, Error> {
-    let mut url = super::endpoint(base).map_err(|_| Error::Endpoint)?;
+    use super::DiscoveryError as D;
+    let mut url = super::endpoint(base).map_err(|_| Error::Discovery(D::Endpoint))?;
     url.path_segments_mut()
-        .map_err(|_| Error::Endpoint)?
+        .map_err(|_| Error::Discovery(D::Endpoint))?
         .pop_if_empty()
         .push("v1")
         .push("models");
@@ -87,18 +89,30 @@ pub async fn models(
             .header(AUTHORIZATION, bearer(key)?);
         let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|Error::Transport)?, };
         let status = response.status().as_u16();
-        let bytes = bounded(response, MAX_DISCOVERY, cancel).await?;
-        let value: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+        let bytes = bounded(response, MAX_DISCOVERY, cancel).await.map_err(|error| {
+            if error == Error::TooLarge {
+                Error::Discovery(D::TooLarge)
+            } else {
+                error
+            }
+        })?;
+        // HTTP refusal classification must not depend on an error page being
+        // JSON. Only the existing region classifier inspects decoded fields.
+        let value = serde_json::from_slice::<Value>(&bytes);
         if status != 200 {
-            return Err(Error::Refused(super::refusal(status, &value)));
+            return Err(Error::Refused(super::refusal(
+                status,
+                &value.unwrap_or(Value::Null),
+            )));
         }
+        let value = value.map_err(|_| Error::Discovery(D::InvalidJson))?;
         // Discovery becomes public catalog metadata. Reject an echoed secret
         // anywhere in decoded fields, including names and nested hints; never
         // redact/rewrite an upstream routing identifier into another model.
         if echoes_credential(&value, key) {
-            return Err(Error::Protocol);
+            return Err(Error::Discovery(D::CredentialEcho));
         }
-        super::models(&value, base).map_err(|_| Error::Protocol)
+        super::checked_models(&value, base).map_err(Error::Discovery)
     };
     tokio::time::timeout(timeout, operation)
         .await

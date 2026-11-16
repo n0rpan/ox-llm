@@ -113,11 +113,14 @@ impl Reply {
             stop_delay: Duration::ZERO,
         }
     }
+    pub fn with_status(mut self, status: u16) -> Self {
+        self.status = status;
+        self
+    }
     pub fn redirect(location: &str) -> Self {
         Self {
-            status: 307,
             headers: vec![("Location", location.to_owned())],
-            ..Self::wire("text/event-stream", b"")
+            ..Self::wire("text/event-stream", b"").with_status(307)
         }
     }
     /// The request is captured before this gate is awaited, so admission tests can

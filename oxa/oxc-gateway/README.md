@@ -164,6 +164,12 @@ fetches bounded live discovery and admits chat-completions shapes only, using th
 advertised endpoint and limits. IDs are `opencode/<discovered id>`; no model table
 is maintained. Messages/Responses/unknown shape records are not chat routes.
 Discovery never opens the ledger, and offline refusal precedes key reads.
+Discovery failures use fixed `cloud_discovery_*` categories for invalid JSON,
+credential echo, catalog shape, identifiers, limits, API hints, endpoints,
+duplicates, catalog conflicts and size limits. They never include response
+fields, model identifiers, URLs or credentials. HTTP refusals retain the existing
+authentication/region/allowance classification even for empty or non-JSON error
+pages; `cloud_upstream_stream_broken` is reserved for inference protocol failures.
 
 Go uses the one gateway HTTP pool, shared raw SSE Framer and field redactor.
 The existing provider-bound private session hint supplies `x-opencode-session`;

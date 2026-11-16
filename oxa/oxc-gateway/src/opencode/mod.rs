@@ -10,6 +10,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, str::FromStr};
 
 pub mod client;
+#[cfg(test)]
+mod discovery_tests;
 
 pub const GO_BASE: &str = "https://opencode.ai/inference/go";
 const MAX_MODELS: usize = 1024;
@@ -75,14 +77,64 @@ fn endpoint(base: &str) -> Result<Url, Error> {
     }
     Ok(url)
 }
+/// Finite discovery diagnostics: never carry upstream fields, URLs or credentials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiscoveryError {
+    InvalidJson,
+    CredentialEcho,
+    CatalogShape,
+    ModelIdentifier,
+    ModelLimits,
+    ApiShape,
+    Endpoint,
+    DuplicateModel,
+    CatalogConflict,
+    TooLarge,
+}
+impl DiscoveryError {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::InvalidJson => "cloud_discovery_invalid_json",
+            Self::CredentialEcho => "cloud_discovery_credential_echo",
+            Self::CatalogShape => "cloud_discovery_catalog_shape",
+            Self::ModelIdentifier => "cloud_discovery_model_identifier",
+            Self::ModelLimits => "cloud_discovery_model_limits",
+            Self::ApiShape => "cloud_discovery_api_shape",
+            Self::Endpoint => "cloud_discovery_endpoint",
+            Self::DuplicateModel => "cloud_discovery_duplicate_model",
+            Self::CatalogConflict => "cloud_discovery_catalog_conflict",
+            Self::TooLarge => "cloud_discovery_too_large",
+        }
+    }
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::InvalidJson => "Go discovery failed: response is not valid JSON.",
+            Self::CredentialEcho => "Go discovery failed: credential echo rejected.",
+            Self::CatalogShape => "Go discovery failed: invalid catalog shape or model count.",
+            Self::ModelIdentifier => "Go discovery failed: invalid model identifier.",
+            Self::ModelLimits => "Go discovery failed: invalid context or output limits.",
+            Self::ApiShape => "Go discovery failed: invalid API shape or hints.",
+            Self::Endpoint => "Go discovery failed: invalid or untrusted endpoint.",
+            Self::DuplicateModel => "Go discovery failed: duplicate model identifier.",
+            Self::CatalogConflict => "Go discovery failed: model conflicts with the native catalog.",
+            Self::TooLarge => "Go discovery failed: response exceeds the discovery size limit.",
+        }
+    }
+}
 /// The trusted Go origin constrains every discovered API URL before any key
 /// can be sent. A malformed record never yields a partial catalog.
 pub fn models(value: &Value, trusted_base: &str) -> Result<Vec<Model>, Error> {
-    let base = endpoint(trusted_base)?;
+    checked_models(value, trusted_base).map_err(|error| match error {
+        DiscoveryError::Endpoint => Error::Endpoint,
+        _ => Error::Discovery,
+    })
+}
+pub(crate) fn checked_models(value: &Value, trusted_base: &str) -> Result<Vec<Model>, DiscoveryError> {
+    let base = endpoint(trusted_base).map_err(|_| DiscoveryError::Endpoint)?;
     let data = value["data"]
         .as_array()
         .filter(|v| v.len() <= MAX_MODELS)
-        .ok_or(Error::Discovery)?;
+        .ok_or(DiscoveryError::CatalogShape)?;
     let mut out = BTreeMap::new();
     for item in data {
         let text = |key| {
@@ -95,36 +147,36 @@ pub fn models(value: &Value, trusted_base: &str) -> Result<Vec<Model>, Error> {
                             .all(|b| b.is_ascii_alphanumeric() || b"._:/-".contains(&b))
                 })
                 .map(str::to_owned)
-                .ok_or(Error::Discovery)
+                .ok_or(DiscoveryError::ModelIdentifier)
         };
         let limit = |key| {
             item["limit"][key]
                 .as_u64()
                 .and_then(|n| u32::try_from(n).ok())
                 .filter(|n| *n > 0)
-                .ok_or(Error::Discovery)
+                .ok_or(DiscoveryError::ModelLimits)
         };
         let context_window = limit("context")?;
         let max_output = limit("output")?;
         if max_output > context_window {
-            return Err(Error::Discovery);
+            return Err(DiscoveryError::ModelLimits);
         }
         let mut api = BTreeMap::new();
         for (shape, hints) in item["api"]
             .as_object()
             .filter(|v| !v.is_empty() && v.len() <= 32)
-            .ok_or(Error::Discovery)?
+            .ok_or(DiscoveryError::ApiShape)?
         {
             if shape.is_empty() || shape.len() > 64 || shape.chars().any(char::is_control) {
-                return Err(Error::Discovery);
+                return Err(DiscoveryError::ApiShape);
             }
-            let raw = hints["base_url"].as_str().ok_or(Error::Discovery)?;
-            let url = endpoint(raw)?;
+            let raw = hints["base_url"].as_str().ok_or(DiscoveryError::ApiShape)?;
+            let url = endpoint(raw).map_err(|_| DiscoveryError::Endpoint)?;
             let prefix = base.path().trim_end_matches('/');
             if url.origin() != base.origin()
                 || !(url.path() == prefix || url.path().starts_with(&format!("{prefix}/")))
             {
-                return Err(Error::Endpoint);
+                return Err(DiscoveryError::Endpoint);
             }
             api.insert(
                 shape.clone(),
@@ -145,7 +197,7 @@ pub fn models(value: &Value, trusted_base: &str) -> Result<Vec<Model>, Error> {
             modalities: item["modalities"].clone(),
         };
         if out.insert(model.id.clone(), model).is_some() {
-            return Err(Error::Discovery);
+            return Err(DiscoveryError::DuplicateModel);
         }
     }
     Ok(out.into_values().collect())

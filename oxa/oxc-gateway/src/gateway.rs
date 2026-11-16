@@ -444,6 +444,7 @@ fn go_refusal(error: crate::opencode::client::Error) -> Refusal {
             "cloud_provider_unavailable",
             "This Go model has no supported chat route.",
         ),
+        E::Discovery(category) => (502, category.code(), category.message()),
         E::Protocol | E::TooLarge => (
             502,
             "cloud_upstream_stream_broken",
