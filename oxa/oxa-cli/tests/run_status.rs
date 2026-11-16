@@ -231,26 +231,52 @@ fn rpc_compact_with_an_empty_queue_leaves_status_idle() {
         r#"{"cacheWarming":"off","compaction":{"keepRecentTokens":1},"oxa":{"envNote":false,"bootPreload":false}}"#,
     );
     let srv = FakeServer::start(
-        vec![ScriptTurn::text("parser ready"), ScriptTurn::text("lexer ready"), ScriptTurn::text("session summary")],
+        vec![
+            ScriptTurn::text("parser ready"),
+            ScriptTurn::text("lexer ready"),
+            ScriptTurn::text("session summary"),
+        ],
         FakeOpts::default(),
-    ).unwrap();
+    )
+    .unwrap();
     let mut child = command(&env, &srv.url())
-        .args(["--mode", "rpc", "--no-tools", "--no-mcp", "--no-extensions", "--stall-timeout", "0.01"])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
-        .spawn().unwrap();
+        .args([
+            "--mode",
+            "rpc",
+            "--no-tools",
+            "--no-mcp",
+            "--no-extensions",
+            "--stall-timeout",
+            "0.01",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
     let mut stdin = child.stdin.take().unwrap();
     let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
     for id in ["first", "second"] {
-        writeln!(stdin, "{}", json!({"id":id, "type":"prompt", "message":"explain"})).unwrap();
+        writeln!(
+            stdin,
+            "{}",
+            json!({"id":id, "type":"prompt", "message":"explain"})
+        )
+        .unwrap();
         loop {
             let value: Value = serde_json::from_str(&lines.next().expect("RPC output").unwrap()).unwrap();
-            if value["type"] == "agent_settled" { break; }
+            if value["type"] == "agent_settled" {
+                break;
+            }
         }
     }
     writeln!(stdin, "{}", json!({"id":"compact", "type":"compact"})).unwrap();
     loop {
         let value: Value = serde_json::from_str(&lines.next().expect("RPC output").unwrap()).unwrap();
-        assert_ne!(value["type"], "agent_settled", "compaction without input must not invent an agent turn");
+        assert_ne!(
+            value["type"], "agent_settled",
+            "compaction without input must not invent an agent turn"
+        );
         if value["id"] == "compact" {
             assert_eq!(value["success"], true, "{value}");
             break;
@@ -258,13 +284,24 @@ fn rpc_compact_with_an_empty_queue_leaves_status_idle() {
     }
     let value = status(&env, &session(&env).id);
     drop(stdin);
-    for line in lines { serde_json::from_str::<Value>(&line.unwrap()).unwrap(); }
+    for line in lines {
+        serde_json::from_str::<Value>(&line.unwrap()).unwrap();
+    }
     let output = child.wait_with_output().unwrap();
-    assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(value["phase"], "idle");
     assert!(value["stall_deadline_ms"].is_null());
     assert_eq!(value["stalled"], false);
-    assert_eq!(srv.requests().len(), 3, "only two prompts and compaction use the engine");
+    assert_eq!(
+        srv.requests().len(),
+        3,
+        "only two prompts and compaction use the engine"
+    );
 }
 
 #[test]

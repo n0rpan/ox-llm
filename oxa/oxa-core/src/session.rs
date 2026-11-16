@@ -410,6 +410,8 @@ impl Session {
         };
         if let Some(aborted) = ran {
             crate::fire::agent_settled(&mut self.st, aborted, sink, ui);
+        } else {
+            crate::progress::notify(&self.st, crate::Progress::Settled(self.st.stats.outcome));
         }
         drop(guard);
         emit_settled(sink, ran);
@@ -1089,6 +1091,8 @@ fn settle_and_report(
         if let Some(aborted) = ran {
             crate::fire::agent_settled(st, aborted, sink, ui);
         }
+    } else {
+        crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
     }
     (triggered.map(|_| ()), ran)
 }

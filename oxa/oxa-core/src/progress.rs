@@ -22,6 +22,8 @@ pub enum Progress<'a> {
     Advanced,
     ToolStart(&'a str),
     ToolEnd,
+    /// An operation returned, including an empty queue or a command without an agent turn.
+    /// This observation does not imply an AgentSettled event or hook was emitted.
     Settled(RunOutcome),
     Closing,
     /// The front end has its aggregate result and has finished shutdown.

@@ -259,7 +259,7 @@ impl oxa_core::ProgressObserver for OperationProgress {
         match progress {
             oxa_core::Progress::RunStart => self.0.lock().unwrap().push("working"),
             oxa_core::Progress::Settled(_) => self.0.lock().unwrap().push("idle"),
-            _ => {},
+            _ => {}
         }
     }
 }
@@ -271,8 +271,14 @@ fn empty_queue_returns_progress_to_idle_without_an_agent_settled_event() {
     let trace = Arc::new(OperationProgress::default());
     session.set_progress_observer(trace.clone());
     let mut sink = oxa_proto::VecSink::default();
-    assert_eq!(session.run_queued(&mut sink, &mut HeadlessUi::default()).unwrap(), None);
-    assert!(!sink.0.iter().any(|event| matches!(event, AgentEvent::AgentSettled { .. })));
+    assert_eq!(
+        session.run_queued(&mut sink, &mut HeadlessUi::default()).unwrap(),
+        None
+    );
+    assert!(!sink
+        .0
+        .iter()
+        .any(|event| matches!(event, AgentEvent::AgentSettled { .. })));
     assert_eq!(*trace.0.lock().unwrap(), ["working", "idle"]);
 }
 
@@ -286,11 +292,16 @@ fn quiet_extension_operations_return_progress_to_idle_without_an_agent_settled_e
         let mut sink = oxa_proto::VecSink::default();
         let mut ui = HeadlessUi::default();
         if shortcut {
-            session.run_shortcut(&oxa_proto::KeyId::parse("ctrl+y").unwrap(), &mut sink, &mut ui).unwrap();
+            session
+                .run_shortcut(&oxa_proto::KeyId::parse("ctrl+y").unwrap(), &mut sink, &mut ui)
+                .unwrap();
         } else {
             session.run_command("go", "quiet", &mut sink, &mut ui).unwrap();
         }
-        assert!(!sink.0.iter().any(|event| matches!(event, AgentEvent::AgentSettled { .. })));
+        assert!(!sink
+            .0
+            .iter()
+            .any(|event| matches!(event, AgentEvent::AgentSettled { .. })));
         assert_eq!(*trace.0.lock().unwrap(), ["working", "idle"]);
     }
 }
