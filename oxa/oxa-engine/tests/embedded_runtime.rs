@@ -43,6 +43,7 @@ fn engine(fixture: &skeleton::Fixture, cap: f64) -> EmbeddedEngine {
             daily_budget_usd: Some(cap),
             ledger_enabled: true,
             subscription: None,
+            subscription_limits: None,
         },
     )
     .unwrap();

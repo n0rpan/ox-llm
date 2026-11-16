@@ -1,6 +1,6 @@
 #[cfg(feature = "upstream-openai")]
 use crate::openai::chatgpt_tokens::TokenRecord;
-use crate::{billing::SubscriptionLimits, policy::Refusal, redaction, secrets::Key};
+use crate::{policy::Refusal, redaction, secrets::Key};
 use serde_json::Value;
 use std::{fmt, path::PathBuf, sync::Arc, time::Duration};
 
@@ -8,7 +8,6 @@ use std::{fmt, path::PathBuf, sync::Arc, time::Duration};
 /// the existing key file; configuration never supplies a bearer token.
 #[derive(Clone)]
 pub struct Subscription {
-    pub limits: SubscriptionLimits,
     pub refresh_endpoint: String,
     pub client_id: String,
     pub timeout: Duration,
@@ -34,6 +33,30 @@ pub enum OpenAiAuthHandle {
 impl fmt::Debug for OpenAiAuthHandle {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("OpenAiAuthHandle([redacted])")
+    }
+}
+#[cfg(feature = "upstream-openai")]
+impl OpenAiAuthHandle {
+    pub fn as_auth(&self) -> crate::openai::client::Auth<'_> {
+        use crate::openai::client::{Auth, Refresh};
+        match self {
+            Self::ApiKey(key) => Auth::ApiKey(key),
+            Self::Subscription {
+                token_path,
+                expected_account_id,
+                refresh_endpoint,
+                client_id,
+                timeout,
+            } => Auth::Subscription {
+                token_path,
+                expected_account_id,
+                refresh: Refresh {
+                    endpoint: refresh_endpoint,
+                    client_id,
+                    timeout: *timeout,
+                },
+            },
+        }
     }
 }
 

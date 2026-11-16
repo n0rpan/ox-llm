@@ -55,9 +55,8 @@ fn tokens(fixture: &skeleton::Fixture, access: &str) {
     )
     .unwrap();
 }
-fn subscription(requests: u64, tokens: u64) -> Subscription {
+fn subscription() -> Subscription {
     Subscription {
-        limits: SubscriptionLimits::new(requests, tokens).unwrap(),
         refresh_endpoint: "https://example.invalid/token".into(),
         client_id: "synthetic-client-id".into(),
         timeout: Duration::from_secs(15),
@@ -173,7 +172,8 @@ fn subscription_owns_an_account_bound_handle_and_zero_usd_settlement_enforces_re
         fixture.ledger_dir.clone(),
         Options {
             access: Access::Enabled,
-            subscription: Some(subscription(1, 2000)),
+            subscription: Some(subscription()),
+            subscription_limits: Some(SubscriptionLimits::new(1, 2000).unwrap()),
             ..Options::default()
         },
     )
@@ -226,7 +226,8 @@ fn refreshing_a_bearer_does_not_change_the_stable_account_scope() {
         fixture.ledger_dir.clone(),
         Options {
             access: Access::Enabled,
-            subscription: Some(subscription(10, 10000)),
+            subscription: Some(subscription()),
+            subscription_limits: Some(SubscriptionLimits::new(10, 10000).unwrap()),
             ..Options::default()
         },
     )
@@ -256,4 +257,166 @@ fn subscription_billing_cannot_be_selected_for_an_api_provider() {
     .unwrap();
     assert_eq!((error.status, error.code), (400, "invalid_billing"));
     assert_eq!(fs::read_dir(&fixture.ledger_dir).unwrap().count(), 0);
+}
+
+fn go_runtime(fixture: &skeleton::Fixture, limits: Option<SubscriptionLimits>) -> Runtime {
+    Runtime::new(
+        [(
+            route(Provider::OpenCode, "synthetic-go"),
+            Some(Billing::Subscription),
+        )],
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        Options {
+            access: Access::Enabled,
+            subscription_limits: limits,
+            ..Options::default()
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn go_uses_only_its_api_key_and_persists_zero_usd_with_shared_subscription_caps() {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    fs::write(
+        &fixture.key_path,
+        json!({"opencode":{"api_key":anthropic::CREDENTIAL}}).to_string(),
+    )
+    .unwrap();
+    fs::write(
+        fixture.key_path.parent().unwrap().join("chatgpt-auth.json"),
+        "invalid synthetic JSON",
+    )
+    .unwrap();
+    let limits = Some(SubscriptionLimits::new(1, 2000).unwrap());
+    let runtime = go_runtime(&fixture, limits);
+    assert_eq!(runtime.discovery().next().unwrap().provider, Provider::OpenCode);
+    let mut call = runtime.begin(&payload(), Context::default()).unwrap();
+    assert_eq!(call.key_handle().unwrap().expose(), anthropic::CREDENTIAL);
+    assert!(call.openai_auth_handle().is_err());
+    call.mark_forwarded();
+    call.metered_usage(Usage {
+        prompt: Some(10),
+        output: Some(5),
+        ..Usage::default()
+    });
+    let row = call.finish(Outcome::Complete, 200, None).unwrap();
+    assert_eq!(row["remote_provider"], "opencode");
+    assert_eq!(row["billing"], "subscription");
+    assert_eq!(row["cost_usd"], 0.0);
+    assert_eq!(row["subscription_requests"], 1);
+    assert_eq!(row["subscription_tokens"], 15);
+    drop(runtime);
+    let error = go_runtime(&fixture, limits)
+        .begin(&payload(), Context::default())
+        .err()
+        .unwrap();
+    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+}
+
+#[test]
+fn go_requires_explicit_limits_before_reading_a_malformed_key() {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    fs::write(&fixture.key_path, "invalid synthetic JSON").unwrap();
+    let error = go_runtime(&fixture, None)
+        .begin(&payload(), Context::default())
+        .err()
+        .unwrap();
+    assert_eq!(
+        (error.status, error.code),
+        (403, "subscription_limits_not_configured")
+    );
+    let row = rows(&fixture).pop().unwrap();
+    assert_eq!(row["status"], 403);
+    assert_eq!(row["error"], "subscription_limits_not_configured");
+    assert_eq!(row["subscription_requests"], 0);
+    assert_eq!(row["subscription_tokens"], 0);
+}
+
+#[test]
+fn go_is_refused_to_api_and_guest_origins_before_credentials() {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    fs::write(&fixture.key_path, "invalid synthetic JSON").unwrap();
+    let runtime = go_runtime(&fixture, Some(SubscriptionLimits::new(10, 20000).unwrap()));
+    let error = runtime
+        .begin(
+            &payload(),
+            Context {
+                origin: oxc_gateway::ledger::Origin::Api,
+                ..Context::default()
+            },
+        )
+        .err()
+        .unwrap();
+    assert_eq!((error.status, error.code), (403, "cloud_provider_forbidden"));
+    let row = rows(&fixture).pop().unwrap();
+    assert_eq!(row["origin"], "api");
+    assert_eq!(row["status"], 403);
+    assert_eq!(row["error"], "cloud_provider_forbidden");
+    assert_eq!(row["subscription_requests"], 0);
+    assert_eq!(row["subscription_tokens"], 0);
+}
+
+#[test]
+fn provider_session_hint_survives_restart_without_linking_providers_or_private_rows() {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    fs::write(
+        &fixture.key_path,
+        json!({"opencode":anthropic::CREDENTIAL,"openai":anthropic::CREDENTIAL}).to_string(),
+    )
+    .unwrap();
+    let limits = Some(SubscriptionLimits::new(10, 20000).unwrap());
+    let hint = |runtime: &Runtime, session: &str| {
+        let call = runtime
+            .begin(
+                &payload(),
+                Context {
+                    session: Some(session),
+                    ..Context::default()
+                },
+            )
+            .unwrap();
+        let hint = call.provider_session_hint().unwrap();
+        let row = call.finish(Outcome::Complete, 200, None).unwrap();
+        assert_ne!(hint, row["session"].as_str().unwrap());
+        assert!(!hint.contains(session));
+        assert_eq!(hint.len(), 32);
+        assert!(hint.bytes().all(|b| b.is_ascii_hexdigit()));
+        hint
+    };
+    let runtime = go_runtime(&fixture, limits);
+    let first = hint(&runtime, "synthetic-conversation");
+    assert_ne!(first, hint(&runtime, "another-conversation"));
+    let call = runtime.begin(&payload(), Context::default()).unwrap();
+    let error = call.provider_session_hint().unwrap_err();
+    assert_eq!((error.status, error.code), (400, "invalid_value"));
+    call.finish(Outcome::Complete, 200, None).unwrap();
+    drop(runtime);
+    assert_eq!(
+        first,
+        hint(&go_runtime(&fixture, limits), "synthetic-conversation")
+    );
+    let other = skeleton::Fixture::for_endpoint("https://example.invalid");
+    fs::write(
+        &other.key_path,
+        json!({"opencode":anthropic::CREDENTIAL}).to_string(),
+    )
+    .unwrap();
+    assert_ne!(first, hint(&go_runtime(&other, limits), "synthetic-conversation"));
+    let api = Runtime::new(
+        [(
+            route(Provider::OpenAi, "synthetic-openai"),
+            Some(Billing::Metered(price(&fixture))),
+        )],
+        fixture.key_path.clone(),
+        fixture.ledger_dir.clone(),
+        Options {
+            access: Access::Enabled,
+            daily_budget_usd: Some(1.0),
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    assert_ne!(first, hint(&api, "synthetic-conversation"));
 }

@@ -106,7 +106,7 @@ impl SpendReader {
                 .ok_or(io::ErrorKind::InvalidData)?;
             match row.get("billing") {
                 None => {
-                    if row["remote_provider"] == "chatgpt"
+                    if matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
                         || row.get("subscription_requests").is_some()
                         || row.get("subscription_tokens").is_some()
                     {
@@ -114,7 +114,7 @@ impl SpendReader {
                     }
                 }
                 Some(value) if value == "metered" => {
-                    if row["remote_provider"] == "chatgpt"
+                    if matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
                         || row.get("subscription_requests").is_some()
                         || row.get("subscription_tokens").is_some()
                     {
@@ -122,7 +122,8 @@ impl SpendReader {
                     }
                 }
                 Some(value) if value == "subscription" => {
-                    if cost != 0.0 || row["remote_provider"] != "chatgpt" {
+                    if cost != 0.0 || !matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                    {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
                     let requests = row["subscription_requests"]
