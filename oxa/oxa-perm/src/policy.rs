@@ -3,8 +3,9 @@ use crate::paths::{is_inside, is_read_only_command, resolve_real};
 use oxa_proto::guard::{
     home_protected_paths, is_home_or_above, sensitive_paths, GIT_PROTECTED_IN_CWD, PROTECTED_IN_CWD,
 };
-use oxa_proto::{Access, Decision, Mode, Policy, ToolClass, YoloSwitch};
+use oxa_proto::{Access, Decision, Mode, PathFilter, Policy, ToolClass, YoloSwitch};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The fixed `Decision::Deny` reasons (they become tool error text; W4).
 pub mod deny_reasons {
@@ -94,6 +95,42 @@ impl PathGuard {
     pub fn is_builtin_skill(&self, p: &Path) -> bool {
         self.read_allow.iter().any(|a| is_inside(p, a))
     }
+
+    /// #517: [`PathGuard::denies_read`] for the entries of a directory walk, with every list
+    /// resolved once here instead of once per entry.
+    pub fn hidden_paths(&self) -> HiddenPaths {
+        // Both forms: the written one and the real one (a symlinked home, a link to a key dir).
+        let both = |list: &[PathBuf]| -> Vec<PathBuf> {
+            let mut out: Vec<PathBuf> = list
+                .iter()
+                .flat_map(|p| [Some(p.clone()), resolve_real(p)])
+                .flatten()
+                .collect();
+            out.sort();
+            out.dedup();
+            out
+        };
+        let mut allow = both(&self.allow);
+        allow.extend(both(&self.read_allow));
+        HiddenPaths {
+            deny: both(&self.deny),
+            allow,
+        }
+    }
+}
+
+/// #517: the deny-list of a [`PathGuard`] as a [`PathFilter`] for walked entries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HiddenPaths {
+    deny: Vec<PathBuf>,
+    /// The readable exceptions inside a denied path (spill files, built-in skills).
+    allow: Vec<PathBuf>,
+}
+
+impl PathFilter for HiddenPaths {
+    fn hides(&self, real: &Path) -> bool {
+        self.deny.iter().any(|d| real.starts_with(d)) && !self.allow.iter().any(|a| real.starts_with(a))
+    }
 }
 
 /// B4: how a write to `p` inside `cwd` is protected: `Some(true)` = never by a tool (git),
@@ -173,6 +210,8 @@ pub struct ModePolicy {
     guard: PathGuard,
     /// Only the active session's output is readable without asking, not all of agent/tmp.
     spill_dir: Option<PathBuf>,
+    /// #517: `guard` for the file tools' directory walks (`None` without a guard).
+    hidden: Option<Arc<HiddenPaths>>,
     /// O-182: while on, a question of the table is answered with "allow" (see
     /// [`ModePolicy::with_yolo`]).
     yolo: Option<YoloSwitch>,
@@ -200,6 +239,7 @@ impl ModePolicy {
     }
     /// B3: deny the paths of `guard` to the file tools, in every mode, whatever the grants.
     pub fn with_guard(mut self, guard: PathGuard) -> ModePolicy {
+        self.hidden = Some(Arc::new(guard.hidden_paths()));
         self.guard = guard;
         self
     }
@@ -376,5 +416,9 @@ impl Policy for ModePolicy {
         if !self.grants.contains(&grant) {
             self.grants.push(grant);
         }
+    }
+
+    fn path_filter(&self) -> Option<Arc<dyn PathFilter>> {
+        self.hidden.clone().map(|h| h as Arc<dyn PathFilter>)
     }
 }

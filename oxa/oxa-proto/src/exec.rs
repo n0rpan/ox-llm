@@ -81,6 +81,11 @@ pub trait Sandbox: Send + Sync {
     fn persistence_notice(&self) -> Option<&str> {
         None
     }
+    /// #526: the home directory this sandbox hides (not the process's `$HOME`), so tools
+    /// need not read the process environment. `None` (the default) = unknown.
+    fn home(&self) -> Option<&std::path::Path> {
+        None
+    }
     /// #457: the sandbox for one new or reopened session: the same machine view, with the
     /// state that belongs to a single session (its scratch directory at `/tmp`) of its own,
     /// released when the session drops it. `None` (the default) = share `self` unchanged.
@@ -170,4 +175,9 @@ pub trait Policy: Send {
     /// Update the active session's spill directory after opening or switching sessions.
     /// Policies may allow reads of that session's output without granting the whole tmp tree.
     fn set_spill_dir(&mut self, _dir: &Path) {}
+    /// #517: the deny-list for the entries a tool finds by walking an allowed directory
+    /// ([`crate::ToolCtx::hidden`]). `None` (the default) = the policy hides nothing.
+    fn path_filter(&self) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
+        None
+    }
 }

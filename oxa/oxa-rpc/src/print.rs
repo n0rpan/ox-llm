@@ -4,7 +4,6 @@ use crate::events::{session_header_record, write_record, JsonSink};
 use oxa_core::{RunOutcome, Session};
 use oxa_proto::{
     names, shown_why, AgentEvent, EntryBody, EventMessage, EventSink, HeadlessUi, OxaError, Part, Role,
-    StopReason,
 };
 use oxa_session::SessionHeader;
 use std::collections::HashMap;
@@ -226,7 +225,10 @@ pub fn run_print_outcome(
             }
         }
         failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err);
-        outcome.include(*session.outcome());
+        // The session already settled this prompt's outcome (done checks, output limit
+        // included); print only says why on stderr.
+        let settled = session.take_outcome();
+        outcome.include(settled);
         // A failed or aborted run prints no reply (only known after the run).
         if !failed {
             if let Some(t) = sink.final_text.clone() {
@@ -236,32 +238,20 @@ pub fn run_print_outcome(
                 }
             }
         }
+        explain_outcome(settled, &mut *sink.err);
         if session.handle().wrap_up_requested() {
             outcome.include(RunOutcome::Interrupted);
             break;
         }
     }
 
-    if done_failed(session, &mut *sink.err) {
-        outcome.include(RunOutcome::Failed("done_checks_failed"));
-    }
     if !failed {
-        // The reply is already printed; a length stop still needs a failed result.
-        if let Some(m) = sink.last.clone() {
-            if let Some(text) = sink.final_text.take() {
-                if session.inner().active.direct.is_empty() && has_tool_markup(&text) {
-                    let _ = writeln!(
+        if let Some(text) = sink.final_text.take() {
+            if session.inner().active.direct.is_empty() && has_tool_markup(&text) {
+                let _ = writeln!(
                     sink.err,
                     "warning: the model answered with tool-call markup but no tools are available (--no-tools); the answer may be unusable"
                 );
-                }
-            }
-            if m.stop == Some(StopReason::Length) {
-                let _ = writeln!(
-                    sink.err,
-                    "Response was truncated: the model reached its output token limit."
-                );
-                outcome.include(RunOutcome::Failed("output_limit"));
             }
         }
     }
@@ -325,31 +315,38 @@ pub fn run_json_outcome(
         }
         // Event writes cannot interrupt the request: retain its completed result
         // before classifying a concurrent output failure.
-        outcome.include(*session.outcome());
+        let settled = session.take_outcome();
+        outcome.include(settled);
         if let Some(e) = sink.error.take() {
             let _ = writeln!(err, "{e}");
             outcome.include(RunOutcome::from_error(&e));
             return Ok(outcome);
         }
         after_run(session, &before, &mut ui, &mut Vec::new(), err);
+        explain_outcome(settled, err);
         if session.handle().wrap_up_requested() {
             outcome.include(RunOutcome::Interrupted);
             break;
         }
     }
-    if done_failed(session, err) {
-        outcome.include(RunOutcome::Failed("done_checks_failed"));
-    }
     Ok(outcome)
 }
 
-/// Whether the `done` checks still failed after the repair rounds; says so on `err` once.
-fn done_failed(session: &Session, err: &mut dyn Write) -> bool {
-    let failed = session.inner().stats.done_failed;
-    if failed {
-        let _ = writeln!(err, "done checks failed: the project's done commands still fail");
+/// The stderr line for a settled outcome the session classified from the run's state; the
+/// outcome itself is the session's, never worked out again here.
+fn explain_outcome(settled: RunOutcome, err: &mut dyn Write) {
+    match settled {
+        RunOutcome::Failed("done_checks_failed") => {
+            let _ = writeln!(err, "done checks failed: the project's done commands still fail");
+        }
+        RunOutcome::Failed("output_limit") => {
+            let _ = writeln!(
+                err,
+                "Response was truncated: the model reached its output token limit."
+            );
+        }
+        _ => {}
     }
-    failed
 }
 
 /// The header of the session in use: the stored one, or one built from the session state when
@@ -499,6 +496,7 @@ pub fn run_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_proto::StopReason;
 
     /// #483: a failed call says why on the progress line.
     #[test]

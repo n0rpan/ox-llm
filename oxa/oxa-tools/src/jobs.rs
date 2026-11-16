@@ -8,7 +8,8 @@
 //! running job, which makes the sandbox's run loop kill the whole process group.
 //!
 //! Limits: at most [`MAX_JOBS`] jobs run at once (a further start is refused); a
-//! finished job keeps at most [`BUFFER_CAP`] bytes of output (a ring buffer).
+//! finished job keeps at most [`BUFFER_CAP`] bytes of output (a ring buffer), and only the
+//! last [`MAX_FINISHED`] finished jobs stay readable.
 
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, Sandbox};
 use std::collections::HashMap;
@@ -20,6 +21,8 @@ const WAIT_TICK: Duration = Duration::from_millis(10);
 
 /// How many background jobs may run at once.
 pub const MAX_JOBS: usize = 4;
+/// How many finished jobs stay readable; spawning a job forgets the oldest ones beyond this.
+pub const MAX_FINISHED: usize = 16;
 /// The ring-buffer cap of a job's combined output, in bytes.
 pub const BUFFER_CAP: usize = 64 * 1024;
 /// How much of a job's output a read returns, in bytes.
@@ -145,6 +148,21 @@ impl JobRegistry {
             return Err(format!(
                 "At most {MAX_JOBS} background jobs can run at once; wait for one to finish"
             ));
+        }
+        // Forget the oldest finished jobs (ids grow with start order), so a long session does
+        // not keep every job's output tail. Running jobs are never dropped.
+        let mut finished: Vec<(u64, String)> = state
+            .jobs
+            .iter()
+            .filter(|(_, j)| *j.status.lock().unwrap() != JobStatus::Running)
+            .map(|(id, _)| (id.trim_start_matches("job-").parse().unwrap_or(0), id.clone()))
+            .collect();
+        if finished.len() >= MAX_FINISHED {
+            finished.sort();
+            let drop_n = finished.len() + 1 - MAX_FINISHED;
+            for (_, id) in finished.into_iter().take(drop_n) {
+                state.jobs.remove(&id);
+            }
         }
         state.next += 1;
         let id = format!("job-{}", state.next);
@@ -396,6 +414,47 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn finished_jobs_are_bounded_oldest_first() {
+        struct Quick;
+        impl Sandbox for Quick {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                live(b"ok\n");
+                ExecResult {
+                    output: b"ok\n".to_vec(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let reg = JobRegistry::new();
+        reg.set_sandbox(Arc::new(Quick));
+        let total = MAX_FINISHED + 5;
+        let mut ids = Vec::new();
+        for _ in 0..total {
+            let id = reg.spawn(spec()).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while reg.read(&id).unwrap().status == JobStatus::Running {
+                assert!(std::time::Instant::now() < deadline, "job did not finish");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            ids.push(id);
+        }
+        // The registry stays bounded: the oldest finished jobs are forgotten, the newest
+        // MAX_FINISHED stay readable (a poll of a just-finished job must still work).
+        assert_eq!(reg.read(&ids[0]).unwrap_err(), format!("Unknown job: {}", ids[0]));
+        for id in &ids[total - MAX_FINISHED..total - 1] {
+            assert_eq!(reg.read(id).unwrap().status, JobStatus::Exited(0), "{id}");
+        }
+        assert!(reg.read(&ids[total - 1]).is_ok());
     }
 
     #[test]

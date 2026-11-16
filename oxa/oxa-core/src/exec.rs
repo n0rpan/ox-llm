@@ -794,6 +794,7 @@ struct OwnedCtx {
     cancel: oxa_proto::CancelToken,
     env: Vec<(String, String)>,
     tune: oxa_proto::ToolTune,
+    hidden: Option<Arc<dyn oxa_proto::PathFilter>>,
 }
 
 impl OwnedCtx {
@@ -810,6 +811,7 @@ impl OwnedCtx {
             cancel: st.shared.cancel.clone(),
             env,
             tune: st.tune,
+            hidden: st.policy.path_filter(),
         }
     }
 
@@ -822,6 +824,7 @@ impl OwnedCtx {
             cancel: &self.cancel,
             env: &self.env,
             tune: self.tune,
+            hidden: self.hidden.clone(),
         }
     }
 }
@@ -1019,6 +1022,7 @@ fn tool_ctx(st: &SessionState) -> ToolCtx<'_> {
         cancel: &st.shared.cancel,
         env: &st.tool_env,
         tune: st.tune,
+        hidden: st.policy.path_filter(),
     }
 }
 
