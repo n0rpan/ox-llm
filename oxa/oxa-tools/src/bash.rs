@@ -273,11 +273,24 @@ pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Optio
 
 /// #494: git keeps `.git/config` read-only in the sandbox (a writable config could run code
 /// outside it), so a command that must rewrite it fails with "Device or resource busy" after
-/// it has done the rest, e.g. `git branch -m` renames the ref first. Say so.
-pub(crate) fn git_config_note(output: &str) -> Option<&'static str> {
-    output
-        .contains("could not write config file")
-        .then_some("git could not write .git/config: it is read-only in the sandbox, so anything git did before that step (for example the branch was renamed) stays done, and only the config update (branch upstream settings, remotes) is missing. Check the result with `git branch`; the config can be edited outside the sandbox")
+/// it has done the rest, e.g. `git branch -m` renames the ref first. Say so. Only git's own
+/// error line counts (it starts with `error: could not write config file`); the same words
+/// quoted in an issue body or a log do not. The note names the file from that line: the
+/// repository config gets the "branch was renamed" wording, any other config (for example the
+/// global `~/.gitconfig`) a plain one.
+pub(crate) fn git_config_note(output: &str) -> Option<String> {
+    const PREFIX: &str = "error: could not write config file ";
+    let rest = output.lines().find_map(|l| l.trim_end().strip_prefix(PREFIX))?;
+    // `<path>: <strerror>`; the path may itself contain ": " only in odd cases, so split at the last one.
+    let path = rest.rsplit_once(": ").map_or(rest, |(p, _)| p).trim();
+    if path.is_empty() {
+        return None;
+    }
+    if path == ".git/config" || path.ends_with("/.git/config") || path.contains("/.git/") {
+        Some(format!("git could not write {path}: it is read-only in the sandbox, so anything git did before that step (for example the branch was renamed) stays done, and only the config update (branch upstream settings, remotes) is missing. Check the result with `git branch`; the config can be edited outside the sandbox"))
+    } else {
+        Some(format!("git could not write {path}: it is not writable in the sandbox, so that config was not changed. Edit it outside the sandbox"))
+    }
 }
 
 /// O-167(b): the network of a bash command. `sandbox_net` is the sandbox's answer
@@ -463,7 +476,7 @@ impl BashTool {
             .sandbox
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
-        let note = note.or_else(|| git_config_note(&output).map(str::to_string));
+        let note = note.or_else(|| git_config_note(&output));
         let shown = if output.is_empty() {
             errors::BASH_NO_OUTPUT.to_string()
         } else if let Some(n) = note {
@@ -669,6 +682,30 @@ echo '\''a'\'''"#
         // A real error line, also with a program prefix and trailing whitespace, still gets the note.
         let real = "bash: /home/u/.venv/bin/python: No such file or directory  \n";
         assert!(unmounted_home_note(real, "/home/u", cwd).is_some());
+    }
+
+    #[test]
+    fn git_config_note_needs_git_error_line_and_names_the_file() {
+        // Quoted text (an issue body, a log) is not a failed git command.
+        assert!(
+            git_config_note("the log says error: could not write config file .git/config: x\n").is_none()
+        );
+        assert!(git_config_note(
+            r#"{"body":"error: could not write config file .git/config: Device or resource busy"}"#
+        )
+        .is_none());
+        assert!(git_config_note("a: could not write config file x\n").is_none());
+        // The global config is named as such, without the repository wording.
+        let g = git_config_note(
+            "error: could not write config file /home/u/.gitconfig: Device or resource busy\n",
+        )
+        .expect("note");
+        assert!(g.contains("/home/u/.gitconfig"), "{g}");
+        assert!(!g.contains(".git/config"), "{g}");
+        assert!(!g.contains("renamed"), "{g}");
+        let r = git_config_note("error: could not write config file .git/config: Device or resource busy\n")
+            .expect("note");
+        assert!(r.contains(".git/config") && r.contains("renamed"), "{r}");
     }
 
     #[test]
