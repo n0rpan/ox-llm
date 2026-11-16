@@ -230,11 +230,14 @@ impl<'a> Stream<'a> {
         }
         let choice = &choices[0];
         let delta = choice["delta"].as_object().ok_or(Error::Protocol)?;
-        for (name, field) in [
-            ("content", Field::Content),
-            ("reasoning_content", Field::Thinking),
-            ("reasoning", Field::Thinking),
-        ] {
+        // Match legacy normalization: the alias is used only when the
+        // canonical field is absent, even if it is present but empty/null.
+        let reasoning = if delta.contains_key("reasoning_content") {
+            "reasoning_content"
+        } else {
+            "reasoning"
+        };
+        for (name, field) in [("content", Field::Content), (reasoning, Field::Thinking)] {
             if let Some(value) = delta.get(name).filter(|v| !v.is_null()) {
                 let text = value.as_str().ok_or(Error::Protocol)?;
                 let safe = self.redactor.feed(field, text);
