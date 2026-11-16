@@ -54,6 +54,8 @@ pub struct Args {
     pub max_time: Option<std::time::Duration>,
     /// Flag a saved active session after this long without progress.
     pub stall_timeout: Option<std::time::Duration>,
+    /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
+    pub max_tokens: Option<u64>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -244,6 +246,10 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--stall-timeout <seconds>",
         "Flag an active session after this long without progress (no automatic cancellation)",
+    ),
+    (
+        "--max-tokens <N>",
+        "Gracefully wrap up a headless run after N new prompt + output tokens (cached tokens are free)",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -598,6 +604,15 @@ fn parse_flag(
                 return Err(usage("--stall-timeout is too large"));
             }
             a.stall_timeout = Some(duration);
+        }
+        "--max-tokens" => {
+            let text = value(argv, i, inline, flag, "a positive integer")?;
+            a.max_tokens = Some(
+                text.parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| usage("--max-tokens requires a positive integer"))?,
+            );
         }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),
         "--model" => a.model = Some(value(argv, i, inline, flag, "a model pattern")?),

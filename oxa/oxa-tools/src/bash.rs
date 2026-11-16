@@ -335,6 +335,18 @@ pub(crate) fn git_config_note(output: &str, exit: Option<i32>) -> Option<String>
     }
 }
 
+/// #290: keep shared git metadata protected, but offer an exclusion route that needs no
+/// tracked-file edits. Only a failed shell redirection diagnostic counts, not quoted issue text.
+pub(crate) fn git_exclude_note(output: &str, exit: Option<i32>) -> Option<String> {
+    if !exit.is_some_and(|code| code != 0) {
+        return None;
+    }
+    output.lines().find(|line| {
+        line.starts_with("bash: ") && line.trim_end().ends_with("/info/exclude: Read-only file system")
+    })?;
+    Some("Git's info/exclude is shared git metadata and stays read-only in a worktree sandbox. To ignore a local scratch directory without changing tracked files, put a .gitignore inside that directory, for example `printf '*\\n' > .venv-test/.gitignore` (the directory must already exist). This ignores its contents, including that .gitignore; do not overwrite an existing tracked .gitignore. For individual files, use `git -c core.excludesFile=<local-ignore-file> status` with patterns in a writable local file; that override applies only to that git invocation".to_string())
+}
+
 /// #253: when stdout is not a terminal, `gh issue view --comments` (also `gh pr view`) prints the
 /// comments only, so an issue without comments gives an empty, successful result that reads as a
 /// failure of the sandbox. Say what happened and how to get the text. Only for a successful
@@ -569,6 +581,7 @@ impl BashTool {
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
         let note = note.or_else(|| git_config_note(&output, res.exit));
+        let note = note.or_else(|| git_exclude_note(&output, res.exit));
         let note = note.or_else(|| gh_comments_note(raw_command, &output, res.exit).map(str::to_string));
         let shown = if output.is_empty() {
             match note {
@@ -864,6 +877,48 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert!(!res.text.contains("sandbox"), "{}", res.text);
+    }
+
+    #[test]
+    fn git_exclude_write_failure_explains_local_directory_ignore() {
+        let output = b"bash: line 1: /repo/.git/info/exclude: Read-only file system\n";
+        let sb = Fake::ok(output, Some(1));
+        let (res, _) = run_with(
+            &sb,
+            json!({"command": "printf '.venv-test/\\n' >> \"$(git rev-parse --git-path info/exclude)\""}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(res.is_error);
+        assert!(res.text.contains("shared git metadata"), "{}", res.text);
+        assert!(
+            res.text.contains("printf '*\\n' > .venv-test/.gitignore"),
+            "{}",
+            res.text
+        );
+        assert!(
+            res.text.contains("without changing tracked files"),
+            "{}",
+            res.text
+        );
+
+        for (out, exit) in [
+            (output.as_slice(), Some(0)),
+            (b"bash: /repo/log: Read-only file system\n".as_slice(), Some(1)),
+            (
+                b"quoted: /repo/.git/info/exclude: Permission denied\n".as_slice(),
+                Some(1),
+            ),
+        ] {
+            let sb = Fake::ok(out, exit);
+            let (res, _) = run_with(
+                &sb,
+                json!({"command": "cat log"}),
+                Mode::Workspace,
+                &CancelToken::new(),
+            );
+            assert!(!res.text.contains("shared git metadata"), "{}", res.text);
+        }
     }
 
     /// #253: an issue without comments prints nothing under `--comments` when piped; the result

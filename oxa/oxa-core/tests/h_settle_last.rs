@@ -620,6 +620,33 @@ fn wrap_up_yields_overflow_recovery_before_compaction_or_resending() {
 }
 
 #[test]
+fn a_pending_wrap_up_skips_length_recovery_and_prefill() {
+    for reason in [oxa_core::WrapUpReason::TimeLimit, oxa_core::WrapUpReason::Signal] {
+        for remote in [false, true] {
+            let env = TestEnv::new();
+            let hook = Arc::new(Trigger::default());
+            let mut cut = ScriptTurn::text("part one");
+            cut.finish = oxa_proto::Finish::Length;
+            let scripted = ScriptedEngine::new(vec![cut, ScriptTurn::text("final summary")]);
+            let engine = Arc::new(if remote { scripted.with_remote() } else { scripted });
+            let mut s = Session::open(deps(&env, engine.clone(), vec![hook.clone()]), Open::New).unwrap();
+            *hook.wrap.lock().unwrap() = Some((s.handle(), reason, HookPoint::BeforeProviderRequest));
+            let mut probe = Probe::new(s.handle());
+            s.prompt("go".into(), vec![], &mut probe, &mut HeadlessUi::default())
+                .unwrap();
+            let requests = engine.requests();
+            assert_eq!(requests.len(), 2);
+            assert!(requests.iter().all(|r| r.max_tokens > 0));
+            assert!(requests[1].max_tokens <= 1024);
+            assert!(!requests[1].thinking);
+            assert_eq!(*s.outcome(), oxa_core::RunOutcome::Interrupted);
+            probe.assert_balanced();
+            probe.assert_settled_idle(1);
+        }
+    }
+}
+
+#[test]
 fn a_pending_wrap_up_stops_stream_replays_before_and_during_the_final_turn() {
     use oxa_core::{RunOutcome, WrapUpReason};
     for reason in [WrapUpReason::TimeLimit, WrapUpReason::Signal] {

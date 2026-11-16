@@ -153,6 +153,9 @@ impl SessionStore for FsStore {
         let dir = self.root.join(session_dir_name(cwd));
         ensure_dir(&self.root)?;
         ensure_dir(&dir)?;
+        if let Some(parent) = parent {
+            crate::spill::link_spill_stores(&self.root, parent)?;
+        }
         let ts_ms = now_ms();
         let path = dir.join(session_file_name(ts_ms, &id));
         let header = SessionHeader {
@@ -164,6 +167,12 @@ impl SessionStore for FsStore {
         };
         let mut line = Vec::new();
         encode_header(&header, &mut line);
+        // Only sessions born with store-link publication can prove that there are no
+        // undiscoverable pre-upgrade cross-store children. Never backfill this flag.
+        let mut value: Value = serde_json::from_slice(&line).expect("encoded header");
+        value["spillStoresTracked"] = Value::Bool(true);
+        line.clear();
+        write_json(&value, &mut line);
         line.push(b'\n');
         let mut f = OpenOptions::new()
             .write(true)
@@ -284,6 +293,63 @@ impl SessionStore for FsStore {
             }
         }
         out
+    }
+
+    fn lists_path(&self, path: &Path) -> bool {
+        // Match session_files' two-level layout, not a prefix (roots may be nested).
+        path.parent().and_then(Path::parent) == Some(self.root.as_path())
+            && path.extension() == Some(std::ffi::OsStr::new("jsonl"))
+    }
+
+    fn spill_cleanup_sessions(&self) -> Result<Vec<SessionRef>, OxaError> {
+        let mut sessions = Vec::new();
+        check_safe(&self.root)?;
+        let entries =
+            fs::read_dir(&self.root).map_err(|e| OxaError::io("cannot enumerate session store", &e))?;
+        for entry in entries {
+            let dir = entry
+                .map_err(|e| OxaError::io("cannot enumerate session directory", &e))?
+                .path();
+            check_safe(&dir)?;
+            let meta =
+                fs::symlink_metadata(&dir).map_err(|e| OxaError::io("cannot stat session directory", &e))?;
+            if !meta.is_dir() {
+                continue;
+            }
+            let files = fs::read_dir(&dir).map_err(|e| OxaError::io("cannot enumerate session files", &e))?;
+            for file in files {
+                let path = file
+                    .map_err(|e| OxaError::io("cannot enumerate session file", &e))?
+                    .path();
+                if path.extension() != Some(std::ffi::OsStr::new("jsonl")) {
+                    continue;
+                }
+                check_safe(&path)?;
+                let header = read_header(&path)?;
+                validate_session_id(&header.id)?;
+                sessions.push(SessionRef { path, id: header.id });
+            }
+        }
+        Ok(sessions)
+    }
+
+    fn spill_stores_tracked(&self, session: &SessionRef) -> Result<bool, OxaError> {
+        check_safe(&session.path)?;
+        let value: Value = serde_json::from_slice(&read_first_line(&session.path)?)
+            .map_err(|e| invalid(format!("malformed session header: {e}")))?;
+        Ok(value["spillStoresTracked"] == Value::Bool(true))
+    }
+
+    fn spill_lifecycle_lock(&self, session: &SessionRef) -> Result<crate::SpillLifecycleLock, OxaError> {
+        crate::SpillLifecycleLock::publication(&self.root, &session.path)
+    }
+
+    fn spill_cleanup_lock(&self) -> Result<crate::SpillLifecycleLock, OxaError> {
+        crate::SpillLifecycleLock::cleanup(&self.root)
+    }
+
+    fn spill_cleanup_roots(&self) -> Result<Vec<PathBuf>, OxaError> {
+        crate::spill::linked_spill_stores(&self.root)
     }
 
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError> {
@@ -415,6 +481,21 @@ impl SessionStore for MemStore {
                 meta_of_parts(sref, h, entries)
             })
             .collect()
+    }
+
+    fn spill_cleanup_sessions(&self) -> Result<Vec<SessionRef>, OxaError> {
+        Ok(self.list(None).into_iter().map(|meta| meta.sref).collect())
+    }
+
+    fn spill_stores_tracked(&self, _session: &SessionRef) -> Result<bool, OxaError> {
+        // In-memory sessions cannot have persisted pre-upgrade descendants.
+        Ok(true)
+    }
+
+    fn lists_path(&self, path: &Path) -> bool {
+        path.to_str()
+            .and_then(|s| s.strip_prefix("mem:"))
+            .is_some_and(|id| validate_session_id(id).is_ok())
     }
 
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError> {
@@ -1134,7 +1215,7 @@ fn uuid_v4() -> String {
 
 /// Session ids become file names and are matched by prefix: no separators, no control or
 /// whitespace characters, no leading dot.
-fn validate_session_id(id: &str) -> Result<(), OxaError> {
+pub(crate) fn validate_session_id(id: &str) -> Result<(), OxaError> {
     let bad = id.is_empty()
         || id.len() > 128
         || id.starts_with('.')
@@ -1176,7 +1257,7 @@ fn unsafe_path(path: &Path) -> OxaError {
 }
 
 /// Refuse a session file that is a symlink, or whose directory is one.
-fn check_safe(path: &Path) -> Result<(), OxaError> {
+pub(crate) fn check_safe(path: &Path) -> Result<(), OxaError> {
     if path.parent().is_some_and(is_symlink) || is_symlink(path) {
         return Err(unsafe_path(path));
     }
@@ -1184,7 +1265,7 @@ fn check_safe(path: &Path) -> Result<(), OxaError> {
 }
 
 /// Create a directory (recursively) with mode 0700. A symlink is refused.
-fn ensure_dir(p: &Path) -> Result<(), OxaError> {
+pub(crate) fn ensure_dir(p: &Path) -> Result<(), OxaError> {
     if is_symlink(p) {
         return Err(unsafe_path(p));
     }
@@ -1208,7 +1289,7 @@ fn open_err(path: &Path, e: &io::Error) -> OxaError {
     OxaError::io(&format!("cannot open session file {}", path.display()), e)
 }
 
-fn read_file(path: &Path) -> Result<Vec<u8>, OxaError> {
+pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, OxaError> {
     let mut f = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)

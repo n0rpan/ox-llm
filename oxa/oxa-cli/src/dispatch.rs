@@ -235,10 +235,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     let mode = choose_mode(&a, stdin_is_tty, stdout_is_tty);
-    if a.max_time.is_some() && mode == RunMode::Interactive {
+    if (a.max_time.is_some() || a.max_tokens.is_some()) && mode == RunMode::Interactive {
+        let flag = if a.max_tokens.is_some() {
+            "--max-tokens"
+        } else {
+            "--max-time"
+        };
         return report(
             &mut *stderr,
-            &OxaError::new(codes::USAGE, "--max-time requires print, JSON or RPC mode"),
+            &OxaError::new(codes::USAGE, format!("{flag} requires print, JSON or RPC mode")),
         );
     }
     if mode == RunMode::Rpc && !a.files.is_empty() {
@@ -321,7 +326,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         }
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, a.max_time, dirs, stdin, stdout, &mut *stderr)
+            run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -337,7 +342,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     .with_hint(USAGE_HINT);
                 return report(&mut *stderr, &e);
             }
-            run_headless(mode, a.max_time, prep, prompts, &mut *stdout, &mut *stderr)
+            run_headless(
+                mode,
+                a.max_time,
+                a.max_tokens,
+                prep,
+                prompts,
+                &mut *stdout,
+                &mut *stderr,
+            )
         }
     }
 }
@@ -355,10 +368,43 @@ struct Prep {
     name: Option<String>,
 }
 
-/// The one-line handshake warning of the engine (read by the `info` call of the session open;
-/// no request of its own).
-fn handshake_notice(built: &Built) -> Option<(Level, String)> {
-    built.engine.handshake_warning().map(|w| (Level::Warning, w))
+/// Startup warnings after opening the session, so restored/selected model limits are final.
+/// No extra engine requests: context tokens are a cheap estimate (four UTF-8 bytes per token).
+fn startup_notices(built: &Built, session: &Session) -> Vec<(Level, String)> {
+    const CONTEXT_WARNING_PERCENT: u64 = 5;
+    let mut notices: Vec<_> = built
+        .engine
+        .handshake_warning()
+        .map(|w| (Level::Warning, w))
+        .into_iter()
+        .collect();
+    let state = session.state();
+    let mut total = 0_u64;
+    let mut largest = None;
+    for file in &session.inner().resources.context_files {
+        let tokens = file.content.len().div_ceil(4) as u64;
+        total = total.saturating_add(tokens);
+        if largest.is_none_or(|(_, size)| tokens > size) {
+            largest = Some((file.path.as_path(), tokens));
+        }
+    }
+    let window = u64::from(state.n_ctx);
+    if window > 0 && total.saturating_mul(100) > window * CONTEXT_WARNING_PERCENT {
+        if let Some((path, tokens)) = largest {
+            let shown = if let Ok(rel) = path.strip_prefix(&built.cwd) {
+                rel.display().to_string()
+            } else if let Ok(rel) = path.strip_prefix(&built.dirs.home) {
+                format!("~/{}", rel.display())
+            } else {
+                path.display().to_string()
+            };
+            notices.push((Level::Warning, format!(
+                "context files use ~{total} tokens ({:.1}% of {}'s {window}-token window); largest: {shown} (~{tokens} tokens)",
+                total as f64 * 100.0 / window as f64, state.model,
+            )));
+        }
+    }
+    notices
 }
 
 /// `Session::open`, then pi's `--name` (`appendSessionInfo`).
@@ -396,6 +442,8 @@ struct Built {
     mode: Option<Mode>,
     /// A supervised subagent keeps SIGTERM as immediate supervisor cancellation.
     supervised_child: bool,
+    /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
+    ask_owner_present: bool,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -403,6 +451,15 @@ struct Built {
     /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
     /// bypassed while the switch is at yolo (full access).
     bash_sandbox: Arc<oxa_sandbox::FullAccess>,
+}
+
+/// #597: `guard` plus the session's scratch directory (`/tmp` in its sandbox), which the file
+/// tools read without asking.
+fn session_guard(guard: oxa_perm::PathGuard, sandbox: &dyn Sandbox) -> oxa_perm::PathGuard {
+    match sandbox.scratch_dir() {
+        Some(dir) => guard.with_scratch(dir),
+        None => guard,
+    }
 }
 
 impl Built {
@@ -415,18 +472,27 @@ impl Built {
         let jobs = Arc::new(oxa_tools::JobRegistry::new());
         let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
         jobs.set_sandbox(bash_sandbox.clone());
+        // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
+        let mut tools = oxa_tools::builtin_tools_with_bash_sandbox(
+            oxa_tools::ShellConfig {
+                shell_path: self.settings.shell_path(&self.dirs.home),
+                command_prefix: self.settings.shell_command_prefix(),
+            },
+            jobs.clone(),
+            bash_sandbox,
+        );
+        // Owner questions belong to lead sessions (including unattended leads). Keep worker
+        // declarations and their small frozen prefixes unchanged.
+        if !self.supervised_child {
+            tools.push(Arc::new(
+                oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
+                    .with_owner_present(self.ask_owner_present),
+            ));
+        }
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
-            // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_bash_sandbox(
-                oxa_tools::ShellConfig {
-                    shell_path: self.settings.shell_path(&self.dirs.home),
-                    command_prefix: self.settings.shell_command_prefix(),
-                },
-                jobs.clone(),
-                bash_sandbox,
-            ),
+            tools,
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
@@ -434,15 +500,20 @@ impl Built {
             // #202/#314: only user-selected yolo outside plan mode bypasses that floor.
             policy: Box::new(
                 ModePolicy::new()
-                    .with_guard(oxa_perm::PathGuard::with_real_home(
-                        &self.dirs.home,
-                        oxa_sandbox::account_home().as_deref(),
-                        &self.dirs.agent_dir,
-                        &self.dirs.tmp_dir,
+                    .with_guard(session_guard(
+                        oxa_perm::PathGuard::with_real_home(
+                            &self.dirs.home,
+                            oxa_sandbox::account_home().as_deref(),
+                            &self.dirs.agent_dir,
+                            &self.dirs.tmp_dir,
+                        ),
+                        sandbox.as_ref(),
                     ))
                     .with_yolo(self.yolo.clone()),
             ),
-            sandbox,
+            // File names follow bash's current view, without giving hooks/extensions the
+            // bash-only execution bypass. The shared switch also handles live /yolo changes.
+            sandbox: self.bash_sandbox.file_view(sandbox),
             settings: self.settings.clone(),
             dirs: self.dirs.clone(),
             cwd: self.cwd.clone(),
@@ -851,6 +922,7 @@ fn prepare(
         thinking,
         mode: table_mode,
         supervised_child: child.nested(),
+        ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
         hook_sets,
         yolo,
         bash_sandbox,
@@ -1040,6 +1112,7 @@ fn choose_open(
 fn run_headless(
     mode: RunMode,
     max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     prep: Prep,
     prompts: Vec<(String, Vec<Part>)>,
     stdout: &mut dyn Write,
@@ -1057,7 +1130,7 @@ fn run_headless(
         Ok(s) => s,
         Err(e) => return finish_outcome(Err(e), stderr),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     if mode == RunMode::Print {
         // Printed before the run so a driver that kills a long task still knows what to resume.
@@ -1070,8 +1143,12 @@ fn run_headless(
             );
         }
     }
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
-    {
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
         Ok(limit) => limit,
         Err(error) => {
             let result = match &built.status {
@@ -1093,6 +1170,15 @@ fn run_headless(
         Some(status) => status.finish(result, stderr),
         None => result,
     };
+    if mode == RunMode::Json && built.supervised_child && max_tokens.is_some() {
+        // Private child/parent accounting: message_end omits summaries and tool
+        // prefill. Report the uncapped total, including the child's final turn.
+        let usage = serde_json::json!({
+            "type": "run_usage",
+            "tokens": session.handle().run_tokens_used(),
+        });
+        let _ = writeln!(stdout, "{usage}");
+    }
     finish_outcome(result, stderr)
 }
 
@@ -1100,6 +1186,7 @@ fn run_headless(
 fn run_rpc(
     prep: Prep,
     max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     dirs: Dirs,
     stdin: Box<dyn Read + Send>,
     stdout: Box<dyn Write + Send>,
@@ -1117,10 +1204,14 @@ fn run_rpc(
         Ok(s) => s,
         Err(e) => return finish_outcome(Err(e), stderr),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
-    {
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
         Ok(limit) => limit,
         Err(error) => {
             let result = match &built.status {
@@ -1166,7 +1257,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
@@ -1939,6 +2030,7 @@ mod session_scratch_tests {
             thinking: None,
             mode: None,
             supervised_child: false,
+            ask_owner_present: true,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),
@@ -1965,6 +2057,27 @@ mod session_scratch_tests {
             .persistence_notice()
             .unwrap()
             .contains("discarded after each command"));
+        // #597: the model names that directory as `/tmp`; the file tools read it unasked, the
+        // other session's directory still asks.
+        use oxa_proto::{Access, Decision, Mode};
+        let cwd = env.work();
+        assert_eq!(
+            first.sandbox.scratch_dir(),
+            Some(a.as_path()),
+            "the file tools and the sandbox name one directory"
+        );
+        assert_eq!(
+            first
+                .policy
+                .decide(Mode::Workspace, &Access::Read(a.join("left-by-first")), &cwd),
+            Decision::Allow
+        );
+        assert_eq!(
+            first
+                .policy
+                .decide(Mode::Workspace, &Access::Read(b.join("left-by-first")), &cwd),
+            Decision::Ask
+        );
         drop(first);
         assert!(!a.exists(), "the first session's scratch outlived it");
         assert!(b.is_dir(), "ending one session removed another's scratch");

@@ -1277,7 +1277,7 @@ impl Run<'_, '_> {
         };
         self.progress(k, "running");
         let (inner, cancel) = (self.inner, self.cx.cancel);
-        let r = wait_child(inner, cancel, &p, &mut |a| self.progress(k, &a));
+        let r = wait_child(inner, cancel, self.host, &p, &mut |a| self.progress(k, &a));
         self.cleanup(k, &p, r)
     }
 
@@ -1296,6 +1296,7 @@ impl Run<'_, '_> {
         let queue = Mutex::new(ready);
         let local = Mutex::new(());
         let (inner, cancel) = (self.inner, self.cx.cancel);
+        let host = self.host;
         let (tx, rx) = mpsc::channel::<Event>();
         std::thread::scope(|scope| {
             for _ in 0..workers {
@@ -1311,7 +1312,7 @@ impl Run<'_, '_> {
                         continue;
                     }
                     let _ = tx.send(Event::Activity(k, "running".to_string()));
-                    let r = wait_child(inner, cancel, &p, &mut |a| {
+                    let r = wait_child(inner, cancel, host, &p, &mut |a| {
                         let _ = tx.send(Event::Activity(k, a));
                     });
                     let _ = tx.send(Event::Done(k, r, p));
@@ -1335,16 +1336,60 @@ impl Run<'_, '_> {
 
 /// Spawn one child and wait for it; `on` gets its activity. An abort (the cancel token,
 /// [`Hooks::shutdown`]) kills its process group.
-fn wait_child(inner: &Inner, cancel: &CancelToken, p: &Prepared, on: &mut dyn FnMut(String)) -> ChildResult {
+fn wait_child(
+    inner: &Inner,
+    cancel: &CancelToken,
+    host: &dyn Host,
+    p: &Prepared,
+    on: &mut dyn FnMut(String),
+) -> ChildResult {
     let stopped = || cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst);
+    // Read at spawn, not when tasks are queued: earlier children and the park may
+    // have consumed tokens. Parallel children, like active tools, may finish in flight.
+    let mut argv = p.argv.clone();
+    let remaining = match host.call(HostAction::EngineLimits) {
+        Ok(v) => v.get("remainingTokens").and_then(Value::as_u64),
+        Err(e) => return ChildResult::unstarted(&p.agent, Status::Failed, e.message),
+    };
+    if let Some(left) = remaining {
+        if left == 0 {
+            return ChildResult::unstarted(&p.agent, Status::Aborted, NOT_STARTED.to_string());
+        }
+        // Insert before the task, leaving the worker's prompt prefix unchanged.
+        let at = argv.len() - 1;
+        argv.splice(at..at, ["--max-tokens".to_string(), left.to_string()]);
+    }
+    let mut charged = 0u64;
     let mut rec = |line: &[u8], result: &mut ChildResult| {
         if let Some(a) = record(line, result) {
             on(a);
         }
+        if remaining.is_some() {
+            if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                if v["type"] == "message_end" && v["message"]["role"] == "assistant" {
+                    let u = &v["message"]["usage"];
+                    // JSON-mode input already excludes cacheRead (oxa-rpc/events.rs).
+                    let tokens = u["input"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        .saturating_add(u["output"].as_u64().unwrap_or(0));
+                    let _ = host.call(HostAction::AccountRunTokens(tokens));
+                    charged = charged.saturating_add(tokens);
+                } else if v["type"] == "run_usage" {
+                    if let Some(total) = v["tokens"].as_u64() {
+                        // Chat is charged as it arrives (also if the child crashes).
+                        // Reconcile the final total without charging chat twice.
+                        let extra = total.saturating_sub(charged);
+                        let _ = host.call(HostAction::AccountRunTokens(extra));
+                        charged = charged.saturating_add(extra);
+                    }
+                }
+            }
+        }
     };
     let mut result = ChildResult::unstarted(&p.agent, Status::Failed, String::new());
     result.error_message = None;
-    let mut child = match spawn(&inner.oxa_bin, &p.argv, &p.env, &p.cwd) {
+    let mut child = match spawn(&inner.oxa_bin, &argv, &p.env, &p.cwd) {
         Ok(c) => c,
         Err(e) => {
             result.error_message = Some(T::SPAWN_FAILED.replace("{error}", &e.to_string()));

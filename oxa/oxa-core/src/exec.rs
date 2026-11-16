@@ -149,6 +149,12 @@ pub fn request(
         );
     }
     let turn = turn?;
+    crate::Handle {
+        shared: st.shared.clone(),
+    }
+    .account_tokens(
+        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached)) + u64::from(turn.usage.completion),
+    );
     if opts.events {
         // The closing `*_end` records go through the same sink, so `message_update` sees them.
         stream.finish(&turn, &mut hooks.sink(st, sink, ui));
@@ -677,6 +683,9 @@ fn start_tool_prefill(
     let snapshot_keep = st.info.caps.snapshot_keep > 0;
     let progress = crate::progress::observer(st);
     let user_abort = st.shared.cancel.clone();
+    let budget = crate::Handle {
+        shared: st.shared.clone(),
+    };
     let after = tool_prefill_after();
     let spawned = std::thread::Builder::new()
         .name("oxa-tool-prefill".to_string())
@@ -741,6 +750,12 @@ fn start_tool_prefill(
                             usage: res.as_ref().ok().map(|turn| turn.usage),
                             remote: false,
                         },
+                    );
+                }
+                if let Ok(turn) = &res {
+                    budget.account_tokens(
+                        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
+                            + u64::from(turn.usage.completion),
                     );
                 }
                 done.store(true, Ordering::SeqCst);
