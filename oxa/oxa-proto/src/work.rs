@@ -412,7 +412,7 @@ record!(
         }
 );
 record!(AskClosed { id: String } | s | { atom(&s.id, 128) });
-record!(Incident { id: String, subject: Subject, kind: IncidentKind, evidence: Option<Evidence> } |s| { atom(&s.id, 128) });
+record!(Incident { id: String, subject: Subject, kind: IncidentKind, evidence: Option<Evidence> } |s| { atom(&s.id, 256) });
 record!(
     Mechanical {
         subject: Subject,
@@ -433,6 +433,7 @@ tagged!(
         Enqueued(PullRequest) => "enqueued",
         PrMerged(Landed) => "pr_merged",
         Blocked(Blocked) => "blocked",
+        Unblocked(Subject) => "unblocked",
         AskOpened(Ask) => "ask_opened",
         AskClosed(AskClosed) => "ask_closed",
         Incident(Incident) => "incident",

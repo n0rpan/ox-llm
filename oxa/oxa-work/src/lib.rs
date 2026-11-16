@@ -11,6 +11,12 @@ pub use worker::{WorkerOutcome, WorkerResult};
 
 pub type Result<T> = std::result::Result<T, String>;
 
+// Lead facts consume public observations and never open runner task-state files.
+pub mod events;
+mod facts_io;
+pub mod incidents;
+pub mod situation;
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Task {
