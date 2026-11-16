@@ -426,7 +426,8 @@ pub(crate) fn repair_turn(
     Ok(true)
 }
 
-/// Append-only final-answer repair, independent of malformed-tool repair settings/counters.
+/// Audit a final-answer repair, independent of malformed-tool repair settings/counters.
+/// The loop sends feedback transiently; the audit message is excluded from transcript projection.
 /// The budget belongs to the whole run, so tools or steering cannot reset it.
 pub(crate) fn schema_repair_turn(
     st: &mut SessionState,

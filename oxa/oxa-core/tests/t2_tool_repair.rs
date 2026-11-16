@@ -532,6 +532,58 @@ fn output_schema_one_repair_budget_across_tools_and_prompts() {
 }
 
 #[test]
+fn output_schema_instructions_do_not_survive_resume_without_flag() {
+    let env = TestEnv::new();
+    let (mut st, eng) = state(
+        &env,
+        vec![ScriptTurn::text("bad"), ScriptTurn::text("42")],
+        Settings::default(),
+    );
+    st.output_schema =
+        Some(oxa_core::output_schema::OutputSchema::new(serde_json::json!({"type":"number"})).unwrap());
+    assert_eq!(run(&mut st, "answer").0, RunEnd::Stopped);
+    let requests = eng.requests();
+    assert!(requests[0].messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("JSON matching this schema"))));
+    assert!(requests[1].messages.iter().any(|m| m
+        .content
+        .as_deref()
+        .is_some_and(|s| s.contains("did not match the output schema"))));
+
+    // Also cover contracts written by earlier versions, not just new sessions.
+    for custom_type in ["oxa.output_schema", "oxa.schema_repair", "extension.note"] {
+        append_entry(
+            &mut st,
+            EntryBody::CustomMessage {
+                custom_type: custom_type.into(),
+                content: custom_type.into(),
+                display: false,
+                details: Value::Null,
+            },
+        )
+        .unwrap();
+    }
+    let branch: Vec<_> = st.tree.branch(st.tree.leaf()).into_iter().cloned().collect();
+    st.transcript = Transcript::project(&branch);
+    st.output_schema = None;
+    eng.push(ScriptTurn::text("ordinary prose"));
+    assert_eq!(run(&mut st, "resume normally").0, RunEnd::Stopped);
+    let requests = eng.requests();
+    let resumed = &requests.last().unwrap().messages;
+    assert!(resumed
+        .iter()
+        .any(|m| m.content.as_deref() == Some("extension.note")));
+    assert!(
+        !resumed
+            .iter()
+            .any(|m| m.content.as_deref().is_some_and(|s| { s.contains("schema") })),
+        "process-local schema instructions must not be restored"
+    );
+}
+
+#[test]
 fn output_schema_upstream_requires_both_cloud_and_advertised_capability() {
     struct Probe {
         inner: Arc<ScriptedEngine>,
