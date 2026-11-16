@@ -30,6 +30,7 @@
 //!
 //! The argv is deterministic: binds sorted by path, masks sorted by path.
 use crate::gitdirs::GitBinds;
+use crate::scratch::Scratch;
 pub use oxa_proto::guard::{
     home_protected_paths, is_home_itself, is_home_or_above, protected_paths, sensitive_paths,
 };
@@ -123,7 +124,6 @@ pub const TOOLCHAIN_ENV: &[&str] = &[
     "npm_config_cache",
     "NPM_CONFIG_CACHE",
     "JAVA_HOME",
-    "XDG_CACHE_HOME",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
 ];
@@ -174,6 +174,15 @@ pub struct Layout {
     /// systemd-resolved) in the argv. Set by the front end ([`Bwrap::detect`] and the CLI's
     /// layout); off in the pure-argv tests, whose `Layout::default()` is not a sandbox.
     pub mask_runtime_ipc: bool,
+    /// #457: the session directory, mounted at `/tmp` (`scratch.rs`). `None` = a fresh tmpfs
+    /// per command.
+    pub scratch: Option<std::sync::Arc<Scratch>>,
+    /// #457: where each session's directory is created ([`crate::scratch_root`]; set by the
+    /// front end). `None` = no session directories.
+    pub scratch_root: Option<PathBuf>,
+    /// #457: the user's cache home ([`crate::user_cache_home`]), whose read-write bound caches
+    /// are linked from `/tmp/.cache`. Empty = none.
+    pub cache_home: PathBuf,
 }
 
 /// The inputs of [`Layout::build`].
@@ -334,19 +343,18 @@ impl Layout {
             })
             .cloned()
             .collect();
-        // Version-manager shims (mise) write cache/state under the read-only home and warn on
-        // every call; point them at the sandbox /tmp unless the caller set them.
-        for (k, v) in [
-            ("MISE_CACHE_DIR", "/tmp/mise-cache"),
-            ("MISE_STATE_DIR", "/tmp/mise-state"),
-            // #362: `gh run view` creates its cache under the read-only home. Throwaway /tmp,
-            // so nothing persists in the real home for an unsandboxed `gh` to read back.
-            ("GH_CACHE_DIR", "/tmp/gh-cache"),
-        ] {
-            if !env.iter().any(|(n, _)| n == k) {
-                env.push((k.to_string(), v.to_string()));
-            }
+        // Version-manager shims (mise) write state under the read-only home and warn on
+        // every call; point it at the sandbox /tmp unless the caller set it.
+        if !env.iter().any(|(n, _)| n == "MISE_STATE_DIR") {
+            env.push(("MISE_STATE_DIR".to_string(), "/tmp/mise-state".to_string()));
         }
+        // #457: one writable temp and cache home for every tool (gh, pip, sccache, mise, ...):
+        // the session directory at `/tmp`. Never a host cache path, which is read-only here;
+        // the user's own `XDG_CACHE_HOME` keeps its read-write bound caches through the links
+        // `with_scratch` makes (`cache_home`).
+        env.retain(|(n, _)| n != "TMPDIR" && n != "XDG_CACHE_HOME");
+        env.push(("TMPDIR".to_string(), "/tmp".to_string()));
+        env.push(("XDG_CACHE_HOME".to_string(), "/tmp/.cache".to_string()));
         if let Some(exe) = i
             .exe
             .as_ref()
@@ -367,7 +375,19 @@ impl Layout {
             allow_home_write: i.allow_home_write,
             git: GitBinds::default(),
             mask_runtime_ipc: false,
+            scratch: None,
+            scratch_root: None,
+            cache_home: crate::scratch::user_cache_home(&i.home, &i.env),
         }
+    }
+
+    /// #457: mount `scratch` at `/tmp` for every command, and link the read-write bound
+    /// caches of the user's cache home ([`Layout::cache_home`]) from its `.cache` (see
+    /// `scratch.rs`).
+    pub fn with_scratch(mut self, scratch: Scratch) -> Layout {
+        scratch.link_caches(&self.cache_home, &self.write);
+        self.scratch = Some(std::sync::Arc::new(scratch));
+        self
     }
 
     /// The `PATH` value inside.
