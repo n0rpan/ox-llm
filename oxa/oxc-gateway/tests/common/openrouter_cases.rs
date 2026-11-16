@@ -565,3 +565,55 @@ async fn openrouter_length_discards_tools_and_preserves_terminal_metering() {
         }
     }
 }
+
+#[tokio::test]
+async fn openrouter_reasoning_content_takes_precedence_over_alias() {
+    for (delta, expected) in [
+        (json!({"reasoning_content":"Think", "reasoning":"Think"}), "Think"),
+        (
+            json!({"reasoning_content":"Canonical", "reasoning":"Ignored"}),
+            "Canonical",
+        ),
+        (json!({"reasoning":"Fallback"}), "Fallback"),
+        (json!({"reasoning_content":"Canonical"}), "Canonical"),
+        (json!({"reasoning_content":"", "reasoning":"Ignored"}), ""),
+        (json!({"reasoning_content":null, "reasoning":"Ignored"}), ""),
+    ] {
+        let mut events = chunks();
+        events.insert(
+            0,
+            json!({"choices":[{"index":0,"delta":delta,"finish_reason":null}]}),
+        );
+        let mock = MockAnthropic::start(vec![wire(events, true)]);
+        let (gateway, fixture) = gateway(&mock);
+        let mut reasoning = String::new();
+        let completed = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    if let Event::Chunk(chunk) = event {
+                        assert!(chunk.pointer("/choices/0/delta/reasoning").is_none());
+                        if let Some(text) = chunk
+                            .pointer("/choices/0/delta/reasoning_content")
+                            .and_then(Value::as_str)
+                        {
+                            reasoning.push_str(text);
+                        }
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(reasoning, expected, "{delta}");
+        assert_eq!(
+            completed.assistant["reasoning_content"].as_str().unwrap_or(""),
+            expected,
+            "{delta}"
+        );
+        assert_eq!(rows(&fixture)[0]["settled"], "usage");
+        mock.finish();
+    }
+}
