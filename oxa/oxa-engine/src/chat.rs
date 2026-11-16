@@ -33,6 +33,18 @@ pub fn build_body(r: &ChatRequest, out: &mut Vec<u8>) {
     build_body_for(r, false, out);
 }
 
+/// The `reasoning_effort` of a cloud request: the level itself, `xhigh` and `max` capped at the
+/// highest effort the OpenAI-compatible wire has.
+fn reasoning_effort(level: ThinkingLevel) -> &'static str {
+    match level {
+        ThinkingLevel::Off => "none",
+        ThinkingLevel::Minimal => "minimal",
+        ThinkingLevel::Low => "low",
+        ThinkingLevel::Medium => "medium",
+        ThinkingLevel::High | ThinkingLevel::Xhigh | ThinkingLevel::Max => "high",
+    }
+}
+
 /// [`build_body`] for a local engine (`remote == false`) or a cloud model routed through the
 /// controller (`remote == true`, Wave D D4). A remote body never carries local-only prefix,
 /// cache or template fields; its thinking switch is the standard `reasoning_effort`.
@@ -70,7 +82,7 @@ pub fn build_body_for(r: &ChatRequest, remote: bool, out: &mut Vec<u8>) {
         out.extend_from_slice(b",\"max_tokens\":");
         out.extend_from_slice(r.max_tokens.to_string().as_bytes());
         out.extend_from_slice(b",\"reasoning_effort\":\"");
-        out.extend_from_slice(if r.thinking { b"high" } else { b"none" });
+        out.extend_from_slice(reasoning_effort(r.effective_level()).as_bytes());
         out.push(b'"');
         out.push(b'}');
         return;
@@ -584,11 +596,7 @@ impl Engine for HttpEngine {
         if let Some(k) = self.api_key.as_deref().filter(|k| !k.is_empty()) {
             headers.push(("Authorization", format!("Bearer {k}")));
         }
-        let level = if r.thinking {
-            ThinkingLevel::Medium
-        } else {
-            ThinkingLevel::Off
-        };
+        let level = r.effective_level();
         let started = Instant::now();
         let mut attempt = 0u32;
         // Cancelled before anything was sent: nothing reached the engine, nothing to undo.
