@@ -1,0 +1,3 @@
+post_install() {
+  printf '%s\n' 'Rust-only install: panel, LAN share and Studio are disabled; start with oxa.'
+}

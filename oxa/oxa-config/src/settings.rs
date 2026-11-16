@@ -396,6 +396,13 @@ fn defaults_layer() -> Value {
         .collect();
     let mut m = Map::new();
     m.insert("defaultTools".to_string(), Value::Array(tools));
+    // Rust-only install activation; keep the retirement PR draft until native E2E acceptance.
+    m.insert(
+        "oxa".to_string(),
+        serde_json::json!({"engine": {
+            "inProcessCloud": true, "inProcessLocal": true
+        }}),
+    );
     Value::Object(m)
 }
 

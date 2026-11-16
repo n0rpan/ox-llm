@@ -37,17 +37,17 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
            'XDG_STATE_HOME': sandbox + '/state', 'XDG_CACHE_HOME': sandbox + '/cache',
            'XDG_DATA_HOME': sandbox + '/data', 'XDG_RUNTIME_DIR': sandbox + '/runtime',
            'PYTHONDONTWRITEBYTECODE': '1'}
-    subprocess.run(['/usr/bin/python3', '-B', '-c',
-        "import sys; sys.path.insert(0, '/usr/share/ox-llm/oxc/src'); "
-        "from oxc import bootstrap; "
-        "from oxc.runtime import controller; "
-        "assert bootstrap.asset_plan(bootstrap.project_root()); assert controller.Manager"],
-        env=env, check=True)
+    assert not Path('/usr/share/ox-llm/oxc').exists(), 'Python controller payload installed'
+    assert not Path('/usr/bin/oxc-diagnostics').exists(), 'Python diagnostics wrapper installed'
+    for feature in ('panel', 'share', 'studio'):
+        disabled = subprocess.run(['oxc', feature], env=env, capture_output=True, text=True)
+        assert disabled.returncode == 2 and len(disabled.stderr.splitlines()) == 1
+        assert 'disabled' in disabled.stderr
     for binary in ('oxc', 'oxa', 'oxe'):
         result = subprocess.run([binary, '--version'], env=env, text=True, capture_output=True, check=True)
         assert '0.2.0' in result.stdout, (binary, result.stdout)
         print(result.stdout.strip())
-    for binary in ('oxc', 'oxa', 'oxe-server', 'oxc-diagnostics'):
+    for binary in ('oxc', 'oxa', 'oxe-server'):
         subprocess.run([binary, '--help'], env=env, stdout=subprocess.DEVNULL, check=True)
     # This validates argument parsing without loading model weights.
     subprocess.run(['oxe', 'gen', '--model', 'absent.gguf', '--tokens', '1', '--check-args'],

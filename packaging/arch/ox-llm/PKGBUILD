@@ -3,12 +3,13 @@
 pkgname=ox-llm
 pkgver=0.2.0
 pkgrel=1
-pkgdesc='oxe engine, oxc controller and oxa coding agent (CPU build)'
+pkgdesc='oxe engine and oxa coding agent (CPU build)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/oxstack/ox-llm'
 license=('MIT')
-depends=('glibc' 'gcc-libs' 'python' 'bubblewrap')
-makedepends=('cargo' 'cmake' 'ninja' 'git')
+install=native.install
+depends=('glibc' 'gcc-libs' 'bubblewrap')
+makedepends=('cargo' 'cmake' 'ninja' 'git' 'python')
 options=('!lto' '!debug' '!strip')
 _commit=${OX_SOURCE_COMMIT:-0000000000000000000000000000000000000000}
 [[ $_commit =~ ^[0-9a-f]{40}$ ]] || return 1

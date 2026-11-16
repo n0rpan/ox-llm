@@ -17,7 +17,7 @@ export OX_BINARY_SHA256=$(sha256sum "ox-llm-0.2.0-linux-$(uname -m).tar.gz" | cu
 # Verify the binary package and then a real source rebuild (including check()).
 for variant in ox-llm-bin ox-llm; do
   install -d -o builder -g builder "/build/$variant"
-  cp "/recipes/$variant/PKGBUILD" "/build/$variant/"
+  cp "/recipes/$variant/PKGBUILD" "/recipes/$variant/native.install" "/build/$variant/"
   cp /build/*.tar.gz "/build/$variant/"
   chown -R builder:builder "/build/$variant"
   cd "/build/$variant"

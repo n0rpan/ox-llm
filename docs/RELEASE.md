@@ -22,25 +22,21 @@ kernel flags `armv8.6-a+dotprod+i8mm+fp16+bf16+nosve+nosme`. x86_64 uses the bas
 No model weights, NPU device features, Flash external libraries or vendor SDK
 are included. These builds make no inference speed or hardware qualification claim.
 
-Main currently has no Rust controller workspace. Python remains authoritative.
-If `oxc/Cargo.toml` or `oxc-rs/Cargo.toml` exists, the builder also builds and ships
-its binaries with locked dependencies. The Python source payload remains present.
-The `oxc` packaging entry point invokes `oxc/src/oxc/runtime/oxc` from the
-source payload under `/usr/share/ox-llm/oxc`;
-module names and product defaults are preserved. Runtime Rust dependency license
-texts and the vendored ggml license are collected using the existing repository
-license collector, alongside product and Python payload notices.
-`oxc-diagnostics` invokes the separate `python -m oxc` diagnostics CLI. Bootstrap
-data, patches, Python modules and notices retain the layout expected by
-`oxc.bootstrap`. Nothing configures a
-user account, starts a service or downloads a model during package installation.
+The native-default payload ships `oxa`, `oxe` and `oxe-server`, with `oxc` as a
+small compatibility launcher for oxa. It does not ship the Python controller,
+Python-backed units, panel payload, diagnostics launcher or experimental controller
+parser binaries. See [native installation](NATIVE-INSTALL.md) and its activation gate.
+The v0.2.0 release remains the legacy install; the Python source is retained in the
+repository for a separate retirement-deletion review. Runtime Rust dependency
+license texts and the vendored ggml license are still collected by the existing
+license collector. Package installation starts no service, configures no user
+account, reads no credential and downloads no model.
 
 Each architecture produces a tarball containing a standard `usr/` tree, its exact
 source archive, `SHA256SUMS`, `SBOM.cdx.json`, `TOOLCHAIN.txt`, and
 `REPRODUCIBILITY.txt`, retained as workflow artifacts for seven days.
 The CycloneDX 1.6 SBOM inventories Cargo's locked workspace resolution (including
-build/test dependencies and registry source checksums), the stdlib-only Python
-controller, and every shipped file's SHA-256. It is an inventory, not a claim of
+build/test dependencies and registry source checksums), and every shipped file's SHA-256. It is an inventory, not a claim of
 vulnerability clearance or a minimal runtime dependency graph.
 
 Two fresh builds use different source and target directories. Their complete
@@ -55,17 +51,15 @@ toolchain versions are essential and reproducibility across dates is not promise
 
 The fresh x86_64 `archlinux:latest` job builds both the binary package and the
 source package, runs the source package's model-free test subset, invokes namcap,
-installs each package, checks the installed Python modules/bootstrap data, runs all three `--version`
+installs each package, checks that Python payload/units are absent and legacy features return their disabled notice, runs native `--version`
 commands and CLI help, validates
 `oxe --check-args`, and sends a real loopback completion through `oxe-server`'s
 stub engine. It checks package integrity, uninstalls and verifies every package
 file and package-specific directory is gone. The two Arch packages, their
 checksums and namcap logs are retained as a separate seven-day workflow artifact.
-Namcap warnings about private Python source modules and optional QML panel imports
-are expected: these are bootstrap payload sources outside system site-packages,
-and panel activation is optional. The required Python interpreter and all sibling
-runtime modules are shipped or declared. Bubblewrap is invoked dynamically, so
-namcap may also report its declared runtime dependency as unused. Errors fail CI. Tests use a fresh HOME and an
+Python is a source-package build dependency, not a runtime dependency. Panel and
+Python controller modules are absent from the default payload. Bubblewrap is
+invoked dynamically, so namcap may report its declared runtime dependency as unused. Errors fail CI. Tests use a fresh HOME and an
 allowlisted environment with no cloud credentials. The official Arch Linux Docker
 image currently has no ARM64 variant. ARM binaries are natively built and their
 model-free source tests run on ARM; a clean ARM Arch install remains unavailable

@@ -32,9 +32,9 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
 
 ## Quick start
 
-- **Start here:** [oxc/README.md](oxc/README.md#quick-start) covers engine downloads and verification.
-  The controller bootstrap installs source into an explicit sandbox HOME; see its
-  [installation status and limits](oxc/docs/BOOTSTRAP-INSTALL.md).
+- **Start here:** [native installation](docs/NATIVE-INSTALL.md) describes the Rust-only
+  default (`oxa` plus the native engine), package verification and the activation gate.
+  The Python bootstrap belongs to the legacy v0.2.0 installation.
 - **Prebuilt, any Linux:** each release attaches `ox-llm-<version>-linux-aarch64.tar.gz` and
   `ox-llm-<version>-linux-x86_64.tar.gz` (oxc, oxa, oxe, licences) with SBOMs, `SHA256SUMS` and build provenance.
 - **Cloud only, no local engine:** [oxc/docs/CLOUD-ONLY-QUICKSTART.md](oxc/docs/CLOUD-ONLY-QUICKSTART.md)

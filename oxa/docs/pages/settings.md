@@ -206,3 +206,13 @@ A project file that sets a retry count and an exec hook for one repository:
 ```
 
 The project's `hooks` entry runs a program. oxa loads it only after you approve the project's content, and asks again when that content changes.
+
+### Native engine selection
+
+The Rust-only default install enables `oxa.engine.inProcessCloud` and
+`oxa.engine.inProcessLocal` (both `true`). Their factories use trusted user
+configuration; project configuration must not choose executable or credential
+paths. Explicit user `false` values remain effective. Local operation needs no
+cloud catalog, key or sign-in. The retirement draft cannot activate until the
+native factories and their end-to-end acceptance are complete; see
+[native installation](../../../docs/NATIVE-INSTALL.md).
