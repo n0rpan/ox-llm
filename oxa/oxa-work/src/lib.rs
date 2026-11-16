@@ -129,15 +129,14 @@ pub fn issue_task(
     })
 }
 
-/// Acceptance commands are frozen from the base before the agent can edit settings.
-fn done_commands(root: &Path) -> Result<Vec<String>> {
-    let path = root.join(".oxa/settings.json");
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(e) => return Err(e.to_string()),
-    };
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+/// Freeze acceptance before checkout filters or hooks can edit project settings.
+fn done_commands(policy: &RunPolicy, root: &Path, base: &str) -> Result<Vec<String>> {
+    let path = ".oxa/settings.json";
+    if checked(git(policy, root, &["ls-tree", "--name-only", base, "--", path]))?.is_empty() {
+        return Ok(vec![]);
+    }
+    let text = checked(git(policy, root, &["show", &format!("{base}:{path}")]))?;
+    let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     match value.get("done") {
         None => Ok(vec![]),
         Some(value) => serde_json::from_value(value.clone()).map_err(|e| format!("done commands: {e}")),
@@ -163,6 +162,7 @@ pub struct SupervisorRequest {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SupervisorOperation {
+    Checkout { branch: String },
     Checks { commands: Vec<String> },
     Inspect,
 }
@@ -327,15 +327,57 @@ pub fn run_task_with_policy(repo: &Path, binary: &Path, task: &Task, policy: &Ru
         if tree.exists() {
             return Err("task worktree already exists; retained for inspection".into());
         }
+        let base = checked(git(
+            policy,
+            &root,
+            &["rev-parse", "--verify", &format!("{}^{{commit}}", task.base)],
+        ))?;
+        let commands = done_commands(policy, &root, &base)?;
+        let branch = format!("refs/heads/{}", task.branch);
+        let exists = output(git(policy, &root, &["show-ref", "--verify", "--quiet", &branch]))?;
+        match exists.status.code() {
+            Some(1) => {}
+            Some(0) => return Err("task branch already exists; retained for inspection".into()),
+            _ => return Err(String::from_utf8_lossy(&exists.stderr).into_owned()),
+        }
         let tree_arg = tree.to_str().ok_or("non-UTF8 worktree path")?;
+        // Bootstrap detached metadata without repository callbacks. Even
+        // --no-checkout runs reference hooks unless they are suppressed here.
+        // The real task branch and its reference hooks are created in bwrap.
         checked(git(
             policy,
             &root,
-            &["worktree", "add", "-b", &task.branch, tree_arg, &task.base],
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "worktree",
+                "add",
+                "--no-checkout",
+                "--detach",
+                tree_arg,
+                &base,
+            ],
         ))?;
         let tree = tree.canonicalize().map_err(|e| e.to_string())?;
+        let checkout = supervise(
+            binary,
+            &tree,
+            SupervisorRequest {
+                source: root.clone(),
+                operation: SupervisorOperation::Checkout {
+                    branch: task.branch.clone(),
+                },
+            },
+            policy,
+            &lock_file,
+        )?;
+        if !checkout.status.success() {
+            return Err(format!(
+                "sandboxed worktree checkout failed: {}",
+                String::from_utf8_lossy(&checkout.stderr)
+            ));
+        }
         let initial = checked(git(policy, &tree, &["rev-parse", "HEAD"]))?;
-        let commands = done_commands(&tree)?;
         let first = worker::run(binary, &tree, task, &task.prompt, policy, &lock_file, None)?;
         record.worker = Some(first.result.clone());
         record.session_id = first.session.clone();

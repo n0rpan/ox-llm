@@ -24,11 +24,38 @@ pub(crate) fn run(
     b.layout = crate::sandbox_layout::layout(env, dirs, &root, false, &mut vec![]);
     let b = b.with_git_dirs(&root);
     b.check().map_err(|e| e.to_string())?;
+    let settings = Settings::load(dirs, &source, true);
     let commands = match request.operation {
         SupervisorOperation::Inspect => return inspect(&b, &root),
+        SupervisorOperation::Checkout { branch } => {
+            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            let spec = ExecSpec {
+                command: format!(
+                    "git checkout HEAD -- . && git checkout -b '{}' HEAD",
+                    branch.replace('\'', "'\\''")
+                ),
+                cwd: root,
+                writable: true,
+                net: sandbox.network(),
+                timeout_s: Some(600),
+                env: vec![("AI_AGENT".into(), "oxa".into())],
+            };
+            let mut tail = Vec::new();
+            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+                keep_tail(&mut tail, bytes, 8192);
+            });
+            if result.exit != Some(0) || result.timed_out {
+                return Err(format!(
+                    "checkout exit {:?}, timeout {}: {}",
+                    result.exit,
+                    result.timed_out,
+                    String::from_utf8_lossy(&tail)
+                ));
+            }
+            return Ok(0);
+        }
         SupervisorOperation::Checks { commands } => commands,
     };
-    let settings = Settings::load(dirs, &source, true);
     let shell = oxa_tools::ShellConfig {
         shell_path: settings.shell_path(&dirs.home),
         command_prefix: settings.shell_command_prefix(),

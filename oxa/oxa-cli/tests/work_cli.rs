@@ -832,3 +832,194 @@ fn failed_git_inspection_is_blocked_instead_of_clean_or_dirty() {
         .unwrap()
         .contains("synthetic-filter-failure"));
 }
+
+fn checkout_hook_fixture(env: &TestEnv) {
+    use std::os::unix::fs::PermissionsExt;
+    setup(env, "[]");
+    let hook = env.write(
+        "work/project/.githooks/post-checkout",
+        "#!/bin/sh\nprintf escaped > \"$HOME/worktree-checkout-escape\"\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let project = env.work().join("project");
+    git(env, &project, &["add", ".githooks"]);
+    git(env, &project, &["commit", "-m", "checkout hook fixture"]);
+    git(env, &project, &["config", "core.hooksPath", ".githooks"]);
+}
+
+#[test]
+fn worktree_checkout_never_runs_tracked_hooks_on_the_host() {
+    let env = TestEnv::new();
+    checkout_hook_fixture(&env);
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert!(
+        !env.home().join("worktree-checkout-escape").exists(),
+        "worktree creation ran a host hook: {record}"
+    );
+    // The normal sandbox pins configured hook directories read-only, including
+    // this missing directory. Checkout must block rather than unmask it.
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["worker"].is_null(), "{record}");
+}
+
+#[test]
+fn checkout_keeps_git_hooks_active_inside_the_sandbox() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let hook = env.write(
+        "work/project/.git/hooks/post-checkout",
+        "#!/bin/sh\nprintf escaped > \"$HOME/worktree-checkout-escape\" 2>/dev/null || true\nprintf ran > checkout-hook-ran\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert!(
+        !env.home().join("worktree-checkout-escape").exists(),
+        "checkout hook escaped: {record}"
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("checkout-hook-ran"))
+            .unwrap(),
+        "ran"
+    );
+    assert!(!env.work().join("project/checkout-hook-ran").exists());
+}
+
+#[test]
+fn unavailable_sandbox_blocks_checkout_before_any_hook() {
+    use std::os::unix::fs::symlink;
+    let env = TestEnv::new();
+    checkout_hook_fixture(&env);
+    let tools = env.tmp().join("tools");
+    std::fs::create_dir(&tools).unwrap();
+    for name in ["git", "sh"] {
+        symlink(Path::new("/usr/bin").join(name), tools.join(name)).unwrap();
+    }
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("finished")],
+        &["work", "../tasks.json"],
+        Some(tools.to_string_lossy().into_owned()),
+    );
+    assert!(
+        !env.home().join("worktree-checkout-escape").exists(),
+        "checkout ran a host hook before missing bwrap blocked the task: {record}"
+    );
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["detail"].as_str().unwrap().contains("bwrap"), "{record}");
+}
+
+#[test]
+fn worktree_checkout_keeps_smudge_filters_in_the_sandbox() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write("work/project/.gitattributes", "*.data filter=probe\n");
+    env.write("work/project/fixture.data", "synthetic data\n");
+    let project = env.work().join("project");
+    git(&env, &project, &["add", "."]);
+    git(&env, &project, &["commit", "-m", "smudge filter fixture"]);
+    git(
+        &env,
+        &project,
+        &[
+            "config",
+            "filter.probe.smudge",
+            "printf escaped > \"$HOME/worktree-smudge-escape\" 2>/dev/null || true; cat",
+        ],
+    );
+    git(&env, &project, &["config", "filter.probe.clean", "cat"]);
+    git(&env, &project, &["config", "filter.probe.required", "true"]);
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert!(
+        !env.home().join("worktree-smudge-escape").exists(),
+        "worktree creation ran a host filter: {record}"
+    );
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+}
+
+#[test]
+fn checkout_callbacks_cannot_replace_the_frozen_acceptance_commands() {
+    let env = TestEnv::new();
+    setup(&env, r#"["echo frozen-checkout-acceptance; exit 1"]"#);
+    env.write("work/project/.gitattributes", "*.data filter=probe\n");
+    env.write("work/project/fixture.data", "synthetic data\n");
+    let project = env.work().join("project");
+    git(&env, &project, &["add", "."]);
+    git(&env, &project, &["commit", "-m", "checkout settings fixture"]);
+    git(
+        &env,
+        &project,
+        &[
+            "config",
+            "filter.probe.smudge",
+            "printf '%s' '{\"done\":[]}' > .oxa/settings.json; cat",
+        ],
+    );
+    git(&env, &project, &["config", "filter.probe.clean", "cat"]);
+    git(&env, &project, &["config", "filter.probe.required", "true"]);
+    let record = run(
+        &env,
+        vec![ScriptTurn::text("finished"), ScriptTurn::text("cannot repair")],
+    );
+    assert_eq!(record["outcome"], "red", "{record}");
+    assert!(
+        record["detail"]
+            .as_str()
+            .unwrap()
+            .contains("frozen-checkout-acceptance"),
+        "{record}"
+    );
+}
+
+#[test]
+fn worktree_reference_hooks_run_only_inside_the_sandbox() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let hook = env.write(
+        "work/project/.git/hooks/reference-transaction",
+        "#!/bin/sh\nprintf escaped > \"$HOME/worktree-reference-escape\" 2>/dev/null || true\nprintf ran >> reference-hook-ran\ncat >/dev/null\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert!(
+        !env.home().join("worktree-reference-escape").exists(),
+        "worktree metadata ran a host reference hook: {record}"
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert!(Path::new(record["worktree"].as_str().unwrap())
+        .join("reference-hook-ran")
+        .exists());
+    assert!(!env.work().join("project/reference-hook-ran").exists());
+}
+
+#[test]
+fn sandboxed_branch_creation_still_obeys_rejecting_reference_hooks() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let hook = env.write(
+        "work/project/.git/hooks/reference-transaction",
+        "#!/bin/sh\ncat >/dev/null\necho required-reference-policy >&2\nexit 1\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let record = run(&env, vec![]);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(record["worker"].is_null(), "{record}");
+    assert!(
+        record["detail"]
+            .as_str()
+            .unwrap()
+            .contains("required-reference-policy"),
+        "{record}"
+    );
+    let branch = Command::new("git")
+        .args(["show-ref", "--verify", "--quiet", "refs/heads/agent/test"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    assert_eq!(branch.status.code(), Some(1));
+}

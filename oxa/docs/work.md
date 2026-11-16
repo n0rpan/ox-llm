@@ -20,11 +20,19 @@ can still run by explicit path inside the sandbox.
 Each task runs a child `oxa --mode=json` with its model and a saved session. The installed offline policy,
 including a parent `--offline` flag, is passed to every child. Normal agent permission, trust and
 sandbox rules apply. Configure project trust before unattended use. The runner
-executes the base version of `.oxa/settings.json`'s `done` commands outside the
+creates detached Git metadata with callbacks suppressed on the host, then creates
+the task branch and populates the fresh worktree inside the normal sandbox.
+Reference hooks, checkout hooks and smudge filters stay inside it; a reference hook
+that rejects the task branch still blocks the task.
+missing bwrap blocks before checkout or a worker starts. Configured hook directories
+keep their normal read-only protection: a checkout that needs to populate a tracked
+protected hook directory blocks with the worktree retained.
+Acceptance commands are frozen from the captured base commit before checkout
+callbacks can change settings. The runner executes those `done` commands outside the
 agent after it exits, even without edits. The source project must pass the existing
 trust and executable-content approval before a task starts. Invoking `work` does
 not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
-missing or unusable bwrap blocks the task. Each check has the same ten-minute limit
+missing or unusable bwrap blocks the task. Checkout and each check have the same ten-minute limit
 as agent-internal done checks. `in subdirectory: command` selects a folder inside
 that sandbox; escaping the worktree is rejected.
 The final Git inspection is also sandboxed, with a read-only workspace, no network
