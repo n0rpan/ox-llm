@@ -74,10 +74,30 @@ pub struct Completed {
     pub usage: Option<Usage>,
     pub finish_reason: &'static str,
 }
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Refusal {
     Api(rate_limits::Refusal),
     Subscription(rate_limits::chatgpt::Refusal),
+}
+impl fmt::Debug for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Api(refusal) => f.debug_tuple("Api").field(refusal).finish(),
+            Self::Subscription(rate_limits::chatgpt::Refusal::UsageNotIncluded) => {
+                f.write_str("Subscription(UsageNotIncluded)")
+            }
+            Self::Subscription(rate_limits::chatgpt::Refusal::UsageLimitReached {
+                resets_at,
+                retry_after,
+                ..
+            }) => f
+                .debug_struct("SubscriptionUsageLimitReached")
+                .field("plan_type", &"[redacted]")
+                .field("resets_at", resets_at)
+                .field("retry_after", retry_after)
+                .finish(),
+        }
+    }
 }
 // Keep all diagnostic fields typed/fixed; never retain upstream text or URLs.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -334,34 +354,59 @@ impl Client {
         // a waiter from starting one after it eventually acquires the lock.
         let _refresh_guard = CancelOnDrop(cancel_task.clone());
         let handle = tokio::runtime::Handle::current();
-        let job = tokio::task::spawn_blocking(move || {
-            let mut retired = Vec::new();
-            let record = chatgpt_tokens::credentials(&path, |old| {
-                retired.extend([
-                    old.access_token().to_owned(),
-                    old.refresh_token().to_owned(),
-                    old.account_id().to_owned(),
-                ]);
-                if cancel_task.is_cancelled() {
-                    return Err(Error::Cancelled);
+        let deadline = tokio::time::Instant::now() + timeout;
+        let acquire = async {
+            loop {
+                let (path, client_id, client, cancel_task, handle, endpoint) = (
+                    path.clone(),
+                    client_id.clone(),
+                    client.clone(),
+                    cancel_task.clone(),
+                    handle.clone(),
+                    endpoint.clone(),
+                );
+                let attempt = tokio::task::spawn_blocking(move || {
+                    let mut retired = Vec::new();
+                    let record = chatgpt_tokens::try_credentials(&path, |old| {
+                        retired.extend([
+                            old.access_token().to_owned(),
+                            old.refresh_token().to_owned(),
+                            old.account_id().to_owned(),
+                        ]);
+                        if cancel_task.is_cancelled() {
+                            return Err(Error::Cancelled);
+                        }
+                        // Both lock acquisition and the complete exchange share
+                        // one firm deadline; the HTTP timer runs under the lock.
+                        handle.block_on(async {
+                            tokio::select! {
+                                biased;
+                                _ = cancel_task.cancelled() => Err(Error::Cancelled),
+                                result = tokio::time::timeout_at(deadline, client.refresh(endpoint, &client_id, old, &cancel_task)) => result.map_err(|_|Error::Refresh)?,
+                            }
+                        })
+                    })?;
+                    Ok::<_, chatgpt_tokens::Error>(record.map(|record| (record, retired)))
+                });
+                let result = attempt
+                    .await
+                    .map_err(|_| Error::Credentials)?
+                    .map_err(|_| Error::Credentials)?;
+                if let Some(result) = result {
+                    return Ok(result);
                 }
-                // The timeout runs inside credentials' flock scope, including body reads.
-                handle.block_on(async {
-                tokio::select! {
-                    biased;
-                    _ = cancel_task.cancelled() => Err(Error::Cancelled),
-                    result = tokio::time::timeout(timeout,client.refresh(endpoint,&client_id,old,&cancel_task)) => result.map_err(|_|Error::Refresh)?,
-                }
-            })
-            })?;
-            Ok::<_, chatgpt_tokens::Error>((record, retired))
-        });
+                // Retry only the helper's explicit WouldBlock result, never an
+                // invalid file/record, refresh error or upstream refusal.
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(Error::Cancelled),
-            result = job => result.map_err(|_|Error::Credentials)?.map_err(|_|Error::Credentials),
+            result = tokio::time::timeout_at(deadline, acquire) => result.map_err(|_|Error::Credentials)?,
         }
     }
+
     async fn refresh(
         &self,
         endpoint: Url,
@@ -680,6 +725,22 @@ impl fmt::Debug for Completed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn http_error_debug_hides_provider_plan_text_even_if_it_is_not_a_known_key() {
+        let error = Error::Http {
+            status: 429,
+            refusal: Some(Refusal::Subscription(
+                rate_limits::chatgpt::Refusal::UsageLimitReached {
+                    plan_type: Some("synthetic-provider-private-plan-text".into()),
+                    resets_at: Some(123),
+                    retry_after: None,
+                },
+            )),
+        };
+        let debug = format!("{error:?} {error}");
+        assert!(!debug.contains("synthetic-provider-private-plan-text"));
+        assert!(debug.contains("123"));
+    }
     #[test]
     fn endpoints_refuse_plain_remote_credentials_queries_and_fragments() {
         assert_eq!(

@@ -796,3 +796,147 @@ async fn dropping_refresh_future_releases_owned_http_work_and_lock() {
     );
     let _ = release.send(());
 }
+
+#[test]
+fn lock_waiters_exit_new_process_on_cancel_and_deadline_before_unlock() {
+    use nix::fcntl::{Flock, FlockArg};
+    for deadline_only in [false, true] {
+        let fixture = Fixture::new();
+        let tokens = fixture.token_path(false);
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(fixture.root.join("chatgpt-auth.lock"))
+            .unwrap();
+        let held = Flock::lock(lock, FlockArg::LockExclusive).unwrap();
+        let mock = MockOpenAi::start(vec![]);
+        let record = fixture.root.join("lock-wait.json");
+        fs::write(
+            &record,
+            json!({"tokens":tokens,"base":mock.base_url(),"deadline_only":deadline_only}).to_string(),
+        )
+        .unwrap();
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "cancel_lock_wait_child"])
+            .env_clear()
+            .env("HOME", &fixture.root)
+            .env("PATH", "/usr/bin:/bin")
+            .env("OPENAI_LOCK_FIXTURE", &record)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut exited = false;
+        while std::time::Instant::now() < deadline {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success());
+                exited = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        drop(held);
+        assert!(child.wait().unwrap().success());
+        assert!(mock.requests().is_empty());
+        assert!(
+            exited,
+            "cancelled or expired client runtime waited for an external token-file lock at shutdown"
+        );
+    }
+}
+#[test]
+fn cancel_lock_wait_child() {
+    let Some(path) = std::env::var_os("OPENAI_LOCK_FIXTURE") else {
+        return;
+    };
+    let saved: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let tokens = PathBuf::from(saved["tokens"].as_str().unwrap());
+    let base = saved["base"].as_str().unwrap();
+    let deadline_only = saved["deadline_only"] == true;
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let cancel = Cancellation::default();
+            let other = cancel.clone();
+            if !deadline_only {
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    other.cancel();
+                });
+            }
+            let timeout = if deadline_only {
+                std::time::Duration::from_millis(50)
+            } else {
+                std::time::Duration::from_secs(30)
+            };
+            let result = Client::new()
+                .unwrap()
+                .stream(
+                    chat(base, &payload(), &[]),
+                    Auth::Subscription {
+                        token_path: &tokens,
+                        refresh: client::Refresh {
+                            endpoint: base,
+                            client_id: "synthetic-client",
+                            timeout,
+                        },
+                    },
+                    &cancel,
+                    &mut |_| Control::Continue,
+                )
+                .await;
+            if deadline_only {
+                assert!(matches!(result, Err(client::Error::Credentials)))
+            } else {
+                assert!(matches!(result, Err(client::Error::Cancelled)))
+            }
+        });
+}
+
+#[tokio::test]
+async fn incomplete_finish_keeps_length_and_invalid_usage_stays_unknown() {
+    for usage in [
+        Value::Null,
+        json!({"input_tokens":10,"output_tokens":"invalid"}),
+        json!({"input_tokens":10,"output_tokens":4,"input_tokens_details":{"cached_tokens":3},"output_tokens_details":{"reasoning_tokens":2}}),
+    ] {
+        let known = usage["output_tokens"].as_u64().is_some();
+        let mock = MockOpenAi::start(vec![Reply::events(vec![
+            json!({"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[],"usage":usage}}),
+        ])]);
+        let fixture = Fixture::new();
+        let base = mock.base_url();
+        let mut chunks = vec![];
+        let complete = Client::new()
+            .unwrap()
+            .stream(
+                chat(&base, &payload(), &[]),
+                Auth::ApiKey(&fixture.key),
+                &Cancellation::default(),
+                &mut |event| {
+                    if let Event::Chunk(c) = event {
+                        chunks.push(c)
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(complete.finish_reason, "length");
+        assert!(chunks
+            .iter()
+            .any(|v| v.pointer("/choices/0/finish_reason") == Some(&json!("length"))));
+        assert_eq!(complete.usage.is_some(), known);
+        if let Some(usage) = complete.usage {
+            assert_eq!(usage.output, Some(4));
+            assert_eq!(usage.prompt, Some(10));
+            assert_eq!(usage.cache_read, Some(3));
+            assert_eq!(usage.cache_write, Some(0));
+        }
+    }
+}
