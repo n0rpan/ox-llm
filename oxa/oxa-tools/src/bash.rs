@@ -254,7 +254,12 @@ pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Optio
         return None;
     }
     let prefix = format!("{home}/");
-    for line in output.lines().filter(|l| l.contains("No such file or directory")) {
+    // A command's own error line ends with the message; the same words in the middle of a line
+    // are quoted text (an issue body, a log) and must not trigger the note.
+    for line in output
+        .lines()
+        .filter(|l| l.trim_end().ends_with("No such file or directory"))
+    {
         for tok in line.split(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ':')) {
             if tok.starts_with(&prefix) && !Path::new(tok).starts_with(cwd) {
                 return Some(format!(
@@ -615,6 +620,19 @@ echo '\''a'\'''"#
         let other = "cat: /etc/x: No such file or directory\n";
         assert!(unmounted_home_note(other, "/home/u", cwd).is_none());
         assert!(unmounted_home_note("/home/u/oxc/p: Permission denied", "/home/u", cwd).is_none());
+    }
+
+    #[test]
+    fn no_note_for_quoted_text_that_is_not_a_failed_command() {
+        let cwd = Path::new("/home/u/proj");
+        // GitHub issue JSON that quotes an old error: the message is mid-line, not a command's own line.
+        let json = r#"{"body":"it failed: /home/u/.venv/bin/python: No such file or directory\nthen we retried","comments":[]}"#;
+        assert!(unmounted_home_note(json, "/home/u", cwd).is_none());
+        let prose = "The old error was /home/u/.venv/bin/python: No such file or directory when run.\n";
+        assert!(unmounted_home_note(prose, "/home/u", cwd).is_none());
+        // A real error line, also with a program prefix and trailing whitespace, still gets the note.
+        let real = "bash: /home/u/.venv/bin/python: No such file or directory  \n";
+        assert!(unmounted_home_note(real, "/home/u", cwd).is_some());
     }
 
     #[test]
