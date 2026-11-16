@@ -373,6 +373,7 @@ impl Client {
                     continue;
                 };
                 let event: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
+                drop(data);
                 let terminal = matches!(
                     event["type"].as_str(),
                     Some("response.completed" | "response.incomplete" | "response.failed" | "error")
