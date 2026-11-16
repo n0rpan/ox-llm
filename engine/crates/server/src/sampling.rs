@@ -91,12 +91,37 @@ pub fn token_prob(logits: &[f32], tok: u32) -> f32 {
     (((logits[tok as usize] - max) as f64).exp() / sum) as f32
 }
 
+/// Size of the first sorted prefix when the whole vocabulary is a candidate and top_p cuts it.
+const FIRST_CANDIDATES: usize = 256;
+
+/// Put the `m` best logits (ties: lowest id) first in `idx` and sort them, in place. `idx` stays a
+/// permutation of `0..logits.len()`, so it is only refilled when the vocabulary size changes.
+fn select_top(idx: &mut Vec<u32>, logits: &[f32], m: usize) {
+    if idx.len() != logits.len() {
+        idx.clear();
+        idx.extend(0..logits.len() as u32);
+    }
+    let cmp = |&a: &u32, &b: &u32| {
+        logits[b as usize]
+            .total_cmp(&logits[a as usize])
+            .then(a.cmp(&b))
+    };
+    if m < idx.len() {
+        idx.select_nth_unstable_by(m - 1, cmp);
+    }
+    idx[..m].sort_unstable_by(cmp);
+}
+
 pub struct Sampler {
     pub p: SamplingParams,
     rng: u64,
     /// occurrences of each generated token (penalties only)
     counts: std::collections::HashMap<u32, u32>,
     adjusted: Vec<f32>,
+    /// Scratch permutation of the vocabulary ids, reused across tokens (select/sort work in place).
+    idx: Vec<u32>,
+    /// How many candidates the last stochastic draw had to order (the work done per token).
+    sorted: usize,
 }
 
 impl Sampler {
@@ -114,7 +139,14 @@ impl Sampler {
             rng: seed ^ 0x9E37_79B9_7F4A_7C15,
             counts: Default::default(),
             adjusted: Vec::new(),
+            idx: Vec::new(),
+            sorted: 0,
         }
+    }
+
+    /// Candidates the last stochastic draw ordered (0 before the first draw or when greedy).
+    pub fn last_sorted(&self) -> usize {
+        self.sorted
     }
 
     fn next_f64(&mut self) -> f64 {
@@ -171,18 +203,55 @@ impl Sampler {
         if self.p.temperature <= 0.0 {
             return argmax(logits);
         }
-        let k = if self.p.top_k <= 0 {
-            logits.len()
-        } else {
-            (self.p.top_k as usize).min(logits.len())
-        };
-        let mut cand = top_probs(logits, k); // sorted, softmax over all (renormalized below)
-        if cand.is_empty() {
+        let n = logits.len();
+        if n == 0 {
             return argmax(logits);
         }
-        let s: f32 = cand.iter().map(|c| c.1).sum();
-        for c in cand.iter_mut() {
-            c.1 /= s;
+        let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let ex = |l: f32| (l - max).exp() as f64;
+        let top_p = self.p.top_p;
+        // Order only what the cuts need. The candidates are the same list, in the same order, as
+        // a full softmax + sort would give (REVIEW dogfood #587: that cost a sort of the whole
+        // vocabulary per token when top_k <= 0).
+        let mut cand: Vec<(u32, f32)>;
+        if self.p.top_k > 0 && (self.p.top_k as usize) < n {
+            // top_k: the softmax is renormalised over the k best, so only those need an exp
+            let k = self.p.top_k as usize;
+            select_top(&mut self.idx, logits, k);
+            self.sorted = k;
+            let s: f64 = self.idx[..k].iter().map(|&i| ex(logits[i as usize])).sum();
+            cand = self.idx[..k]
+                .iter()
+                .map(|&i| (i, (ex(logits[i as usize]) / s) as f32))
+                .collect();
+        } else {
+            // whole vocabulary in play: one pass for the normaliser, then grow a sorted prefix
+            // until it holds top_p of the mass
+            let total: f64 = logits.iter().map(|&l| ex(l)).sum();
+            let mut m = if top_p < 1.0 {
+                FIRST_CANDIDATES.min(n)
+            } else {
+                n
+            };
+            loop {
+                select_top(&mut self.idx, logits, m);
+                self.sorted = m;
+                cand = self.idx[..m]
+                    .iter()
+                    .map(|&i| (i, (ex(logits[i as usize]) / total) as f32))
+                    .collect();
+                if m >= n {
+                    break;
+                }
+                let mut acc = 0.0f32;
+                if cand.iter().any(|c| {
+                    acc += c.1;
+                    acc >= top_p
+                }) {
+                    break;
+                }
+                m = (m * 4).min(n);
+            }
         }
         if self.p.top_p < 1.0 {
             let mut acc = 0.0;
@@ -376,5 +445,132 @@ mod tests {
             std::ptr::eq(s.effective_row(&l).as_ptr(), l.as_ptr()),
             "no adjustment: the engine row itself"
         );
+    }
+
+    /// Dogfood #587: the stochastic path orders only a bounded candidate set. With `top_k` 0 and a
+    /// `top_p` cut it used to sort the whole vocabulary on every token.
+    #[test]
+    fn top_p_without_top_k_orders_a_bounded_set() {
+        let n = 100_000usize;
+        let mut l: Vec<f32> = (0..n).map(|i| ((i * 7919) % 1000) as f32 * 0.001).collect();
+        l[1234] = 30.0;
+        l[77] = 29.0;
+        let mut s = Sampler::new(SamplingParams {
+            temperature: 0.8,
+            top_k: 0,
+            top_p: 0.9,
+            min_p: 0.0,
+            seed: 5,
+            ..Default::default()
+        });
+        let t = s.sample(&l);
+        assert!(t == 1234 || t == 77);
+        assert!(
+            s.last_sorted() > 0 && s.last_sorted() <= 256,
+            "{}",
+            s.last_sorted()
+        );
+        let mut s = Sampler::new(SamplingParams {
+            seed: 5,
+            ..Default::default()
+        });
+        s.sample(&l);
+        assert_eq!(s.last_sorted(), 40);
+    }
+
+    /// The bounded selection draws the same token as the full-softmax reference for a fixed seed,
+    /// for the default chain, `top_k` 0 with `top_p`, a wide flat row (the set must grow), and
+    /// `top_p` 1 with `min_p`.
+    #[test]
+    fn bounded_selection_matches_full_softmax_reference() {
+        fn reference(p: &SamplingParams, rng: &mut u64, logits: &[f32]) -> u32 {
+            let k = if p.top_k <= 0 {
+                logits.len()
+            } else {
+                (p.top_k as usize).min(logits.len())
+            };
+            let mut cand = top_probs(logits, k);
+            let s: f32 = cand.iter().map(|c| c.1).sum();
+            for c in cand.iter_mut() {
+                c.1 /= s;
+            }
+            if p.top_p < 1.0 {
+                let (mut acc, mut keep) = (0.0, cand.len());
+                for (i, c) in cand.iter().enumerate() {
+                    acc += c.1;
+                    if acc >= p.top_p {
+                        keep = i + 1;
+                        break;
+                    }
+                }
+                cand.truncate(keep.max(1));
+            }
+            if p.min_p > 0.0 {
+                let thr = cand[0].1 * p.min_p;
+                cand.retain(|c| c.1 >= thr);
+            }
+            let lg: Vec<f64> = cand
+                .iter()
+                .map(|c| (logits[c.0 as usize] / p.temperature) as f64)
+                .collect();
+            let m = lg.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let w: Vec<f64> = lg.iter().map(|l| (l - m).exp()).collect();
+            let tot: f64 = w.iter().sum();
+            *rng = rng.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = *rng;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^= z >> 31;
+            let mut r = ((z >> 11) as f64 / (1u64 << 53) as f64) * tot;
+            for (i, x) in w.iter().enumerate() {
+                r -= x;
+                if r <= 0.0 {
+                    return cand[i].0;
+                }
+            }
+            cand[cand.len() - 1].0
+        }
+        let n = 5000usize;
+        let mut x = 99u64;
+        let mut rows: Vec<Vec<f32>> = Vec::new();
+        for scale in [8.0f32, 0.05] {
+            // 0.05: almost flat, top_p 0.95 needs thousands of candidates
+            rows.push(
+                (0..n)
+                    .map(|_| {
+                        x = x
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        ((x >> 40) as f32 / (1u64 << 24) as f32) * scale
+                    })
+                    .collect(),
+            );
+        }
+        for (top_k, top_p, min_p) in [
+            (40, 0.95, 0.05),
+            (0, 0.9, 0.0),
+            (0, 0.95, 0.05),
+            (0, 1.0, 0.1),
+        ] {
+            for (ri, row) in rows.iter().enumerate() {
+                for seed in 1..30u64 {
+                    let p = SamplingParams {
+                        temperature: 0.8,
+                        top_k,
+                        top_p,
+                        min_p,
+                        seed,
+                        ..Default::default()
+                    };
+                    let mut s = Sampler::new(p.clone());
+                    let mut rng = s.rng;
+                    assert_eq!(
+                        s.sample(row),
+                        reference(&p, &mut rng, row),
+                        "top_k {top_k} top_p {top_p} min_p {min_p} row {ri} seed {seed}"
+                    );
+                }
+            }
+        }
     }
 }
