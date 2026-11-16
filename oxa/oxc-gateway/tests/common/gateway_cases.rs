@@ -324,7 +324,8 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
             // Transport already parsed this terminal record, but cancellation
             // (or protocol rejection) prevented its public Chunk callback.
             let usage = known.then(|| opencode::Usage::parse(&json!({
-                "prompt_tokens":100,"completion_tokens":5,"cost":0,
+                    "prompt_tokens":100,"completion_tokens":5,"cost":0,
+                    "prompt_tokens_details":{"cached_tokens":80,"cache_write_tokens":0},
                 "opencode":{"billing_source":"go","allowance":0.0008,"list_cost":0.001,
                 "tokens":{"input":20,"output":5,"reasoning":1,"cache_read":80,"cache_write_5m":0,"cache_write_1h":0}}
             })).unwrap());
@@ -347,6 +348,8 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
             if known {
                 assert_eq!(saved[0]["opencode"]["allowance"], 0.0008);
                 assert_eq!(saved[0]["opencode"]["tokens"]["cache_read"], 80);
+                assert_eq!(saved[0]["cached_tokens"], 80);
+                assert_eq!(saved[0]["cache_write_tokens"], 0);
                 let next = gateway
                     .runtime
                     .begin(&payload, Context::default())
@@ -364,5 +367,151 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
                 );
             }
         }
+    }
+}
+
+#[allow(dead_code)]
+#[path = "openai.rs"]
+mod openai;
+
+#[test]
+fn go_stream_usage_must_follow_a_validated_terminal_transition() {
+    use crate::billing::SubscriptionLimits;
+    let usage = |prompt, completion| {
+        json!({"prompt_tokens":prompt,"completion_tokens":completion,"cost":0,
+        "opencode":{"billing_source":"go","allowance":0.0008,"list_cost":0.001,
+        "tokens":{"input":prompt,"output":completion,"reasoning":0,"cache_read":0,"cache_write_5m":0,"cache_write_1h":0}}})
+    };
+    let finish = json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+    let final_usage = json!({"choices":[],"usage":usage(100,5)});
+    let early_usage = json!({"choices":[],"usage":usage(0,0)});
+    let content = json!({"choices":[{"index":0,"delta":{"content":"synthetic paid content ".repeat(16)},"finish_reason":null}]});
+    for (name, frames, known) in [
+        (
+            "early zero usage then generation",
+            vec![early_usage.clone(), content],
+            false,
+        ),
+        (
+            "usage with nonterminal choice",
+            vec![
+                json!({"choices":[{"index":0,"delta":{"content":"synthetic"},"finish_reason":null}],"usage":usage(0,0)}),
+            ],
+            false,
+        ),
+        (
+            "invalid final choice",
+            vec![json!({"choices":[{"index":7,"delta":{},"finish_reason":"stop"}],"usage":usage(0,0)})],
+            false,
+        ),
+        (
+            "conflicting final usage",
+            vec![finish.clone(), final_usage.clone(), early_usage],
+            false,
+        ),
+        (
+            "ordered terminal usage then broken stream",
+            vec![finish, final_usage],
+            true,
+        ),
+        (
+            "combined terminal usage then broken stream",
+            vec![json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":usage(100,5)})],
+            true,
+        ),
+    ] {
+        let mock = openai::MockOpenAi::start_with(|base| {
+            let catalog = json!({"data":[{"id":"synthetic-go","canonical_id":"synthetic-go","limit":{"context":1024,"output":100},"api":{"chat-completions":{"base_url":format!("{base}/inference/go/openai/v1")}}}]});
+            let mut bytes = Vec::new();
+            for frame in frames {
+                bytes.extend_from_slice(format!("data: {frame}\n\n").as_bytes());
+            }
+            if !known {
+                bytes.extend_from_slice(b"data: {malformed\n\n");
+            }
+            // Known controls end after valid final usage but before [DONE].
+            vec![
+                openai::Reply::json(catalog),
+                openai::Reply::raw(200, "text/event-stream", bytes, vec![]),
+            ]
+        });
+        let base = format!("http://{}/inference/go", mock.address());
+        let fixture = skeleton::Fixture::for_endpoint(&base);
+        std::fs::write(
+            &fixture.key_path,
+            json!({"opencode":"synthetic-go-credential"}).to_string(),
+        )
+        .unwrap();
+        let runtime = Runtime::new(
+            [],
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: None,
+                ledger_enabled: true,
+                subscription: None,
+                subscription_limits: Some(SubscriptionLimits::new(10, 1500).unwrap()),
+            },
+        )
+        .unwrap();
+        let mut gateway = Gateway::new(runtime).unwrap();
+        gateway
+            .discover_opencode(&base, std::time::Duration::from_secs(2))
+            .unwrap();
+        let payload = json!({"model":"opencode/synthetic-go","max_tokens":100,"messages":[]});
+        let context = || Context {
+            session: Some("synthetic-go-session"),
+            ..Context::default()
+        };
+        let mut done = false;
+        let driver = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = driver
+            .block_on(
+                gateway.chat_payload(&payload, context(), &Cancellation::default(), &mut |event| {
+                    done |= matches!(event, Event::Done);
+                    Control::Continue
+                }),
+            )
+            .err()
+            .expect("broken stream must not complete");
+        assert_eq!(error.refusal().code, "cloud_upstream_stream_broken", "{name}");
+        assert!(!done, "{name}");
+        let saved = rows(&fixture);
+        assert_eq!(saved.len(), 1, "{name}");
+        assert_eq!(
+            saved[0]["subscription_tokens"],
+            if known { 105 } else { 1124 },
+            "{name}"
+        );
+        assert_eq!(
+            saved[0]["settled"],
+            if known { "usage" } else { "reserved" },
+            "{name}"
+        );
+        if known {
+            assert_eq!(saved[0]["opencode"]["allowance"], 0.0008, "{name}");
+            let next = gateway
+                .runtime
+                .begin(&payload, context())
+                .expect("actual terminal usage leaves room");
+            next.finish(Outcome::Complete, 200, None).unwrap();
+        } else {
+            assert_eq!(saved[0]["usage_missing"], true, "{name}");
+            assert!(
+                saved[0]["opencode"].is_null(),
+                "invalidated allowance must not be reported as final: {name}"
+            );
+            assert_eq!(
+                gateway.runtime.begin(&payload, context()).err().unwrap().code,
+                "subscription_limit_exceeded",
+                "{name}"
+            );
+        }
+        assert_eq!(mock.requests().len(), 2, "discovery plus one generation only");
+        mock.assert_healthy();
     }
 }

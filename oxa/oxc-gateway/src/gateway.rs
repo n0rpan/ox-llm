@@ -388,9 +388,7 @@ impl Gateway {
         use crate::opencode::client::Error as GoError;
         // Parsed terminal usage survives cancellation before public delivery.
         // Meter it privately before consuming the hold, just as for Anthropic.
-        if let Some(usage) = &usage {
-            call.metered_go(usage);
-        }
+        call.metered_go(usage.as_ref());
         let result = result.map(completion::anthropic).map_err(|error| {
             if error == GoError::Cancelled {
                 Error::Upstream(anthropic_client::Error::Cancelled)
