@@ -1,4 +1,4 @@
-//! # oxa-proto v2 (FROZEN)
+//! # oxa-proto v3 (FROZEN)
 //!
 //! The shared vocabulary of every `oxa` crate: wire messages, session entries, agent events,
 //! the tool / hook / UI / engine / sandbox / policy traits, and the error type.
@@ -42,6 +42,7 @@ mod exec;
 mod hook;
 mod key;
 mod local;
+mod provider_history;
 mod tool;
 mod ui;
 mod wire;
@@ -59,6 +60,7 @@ pub use exec::*;
 pub use hook::*;
 pub use key::*;
 pub use local::*;
+pub use provider_history::*;
 pub use tool::*;
 pub use ui::*;
 pub use wire::*;
@@ -67,7 +69,7 @@ pub use wire::*;
 pub use serde_json::Value;
 
 /// Version of this frozen interface. Bumped only by the architect.
-pub const PROTO_VERSION: u32 = 2;
+pub const PROTO_VERSION: u32 = 3;
 
 /// Product names (plan sec. 0). Never spell these literally elsewhere.
 pub mod names {
