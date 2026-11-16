@@ -170,6 +170,19 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            #[cfg(feature = "share")]
+            Subcommand::Share(words) => {
+                oxc_gateway::share::command::run(&words, &dirs.home.join(".oxa/share"), &mut *stdout)
+                    .map(|()| 0)
+                    .map_err(|error| {
+                        let code = if matches!(error, oxc_gateway::share::command::Error::Usage) {
+                            codes::USAGE
+                        } else {
+                            codes::INVALID
+                        };
+                        OxaError::new(code, error.to_string())
+                    })
+            }
             Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Work(words) => {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)

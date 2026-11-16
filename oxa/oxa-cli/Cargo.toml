@@ -16,7 +16,12 @@ path = "src/lib.rs"
 name = "oxa"
 path = "src/main.rs"
 
+[features]
+default = []
+share = ["dep:oxc-gateway"]
+
 [dependencies]
+oxc-gateway = { path = "../oxc-gateway", optional = true, features = ["share"] }
 oxa-work.workspace = true
 oxa-proto.workspace = true
 oxa-engine.workspace = true

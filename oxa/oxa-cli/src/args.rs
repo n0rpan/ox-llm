@@ -14,6 +14,8 @@ pub enum ModeArg {
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    #[cfg(feature = "share")]
+    Share(Vec<String>),
     /// Read the live snapshot of a saved session.
     Status(Vec<String>),
     /// `oxa work <taskfile> | --issue N --model MODEL`.
@@ -168,6 +170,11 @@ const SESSION_ID_ERROR: &str = "Session id must be non-empty, contain only alpha
 
 /// Subcommands take every following word raw; they are parsed by their own modules.
 const COMMANDS: &[(&str, &str)] = &[
+    #[cfg(feature = "share")]
+    (
+        "oxa share key <add|list|revoke>",
+        "Manage private guest keys and daily limits",
+    ),
     (
         "oxa status <session-id|session-file>",
         "Read a saved session's current progress and stall signal",
@@ -385,6 +392,10 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
         }
+        #[cfg(feature = "share")]
+        "share" => Subcommand::Share(rest.to_vec()),
+        #[cfg(not(feature = "share"))]
+        "share" => return Err(usage("this build does not include sharing")),
         "config" => Subcommand::Config(rest.to_vec()),
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),

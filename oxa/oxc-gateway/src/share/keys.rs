@@ -104,6 +104,16 @@ impl Store {
     /// The caller creates this absolute directory with mode 0700 outside repositories.
     /// Refuse parent links too: a trusted spelling must name the actual directory.
     pub fn open(directory: &Path) -> Result<Self, Error> {
+        Self::directory(directory, false)
+    }
+
+    /// Create missing private directories for an explicit owner key command.
+    /// Existing unsafe directories are refused, never chmodded or repaired.
+    pub fn initialize(directory: &Path) -> Result<Self, Error> {
+        Self::directory(directory, true)
+    }
+
+    fn directory(directory: &Path, create: bool) -> Result<Self, Error> {
         if !directory.is_absolute() {
             return Err(Error::Invalid);
         }
@@ -119,6 +129,15 @@ impl Store {
             match component {
                 Component::RootDir => continue,
                 Component::Normal(name) => {
+                    if create {
+                        match nix::sys::stat::mkdirat(&parent, name, Mode::S_IRWXU) {
+                            Ok(()) | Err(Errno::EEXIST) => (),
+                            Err(_) => return Err(Error::Unavailable),
+                        }
+                        // Also sync on retry: a prior mkdir may be visible even
+                        // though its parent sync failed before acknowledgement.
+                        parent.sync_all().map_err(|_| Error::Unavailable)?;
+                    }
                     parent = openat(
                         &parent,
                         name,
