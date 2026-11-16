@@ -216,22 +216,49 @@ pub fn credentials<E>(
     path: &Path,
     refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
 ) -> Result<TokenRecord, Error> {
+    credentials_locked(path, refresh, true)?.ok_or(Error::Unavailable)
+}
+
+/// Nonblocking refresh-lock admission. `None` means only WouldBlock: no refresh
+/// was attempted. Retry under the caller's cancellation/deadline; all file and
+/// record checks are identical to `credentials`. A fresh record needs no lock.
+pub fn try_credentials<E>(
+    path: &Path,
+    refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
+) -> Result<Option<TokenRecord>, Error> {
+    credentials_locked(path, refresh, false)
+}
+
+fn credentials_locked<E>(
+    path: &Path,
+    refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
+    blocking: bool,
+) -> Result<Option<TokenRecord>, Error> {
     let dir = Directory::open(path)?;
     let record = dir.read()?;
     if record.fresh()? {
-        return Ok(record);
+        return Ok(Some(record));
     }
     let lock = dir.open_file(OsStr::new(LOCK), OFlag::O_RDWR | OFlag::O_CREAT)?;
     check_file(&lock.metadata().map_err(|_| Error::Unavailable)?)?;
-    let _lock = Flock::lock(lock, FlockArg::LockExclusive).map_err(|_| Error::Unavailable)?;
+    let mode = if blocking {
+        FlockArg::LockExclusive
+    } else {
+        FlockArg::LockExclusiveNonblock
+    };
+    let _lock = match Flock::lock(lock, mode) {
+        Ok(lock) => lock,
+        Err((_, error)) if !blocking && error == nix::errno::Errno::EWOULDBLOCK => return Ok(None),
+        Err(_) => return Err(Error::Unavailable),
+    };
     let record = dir.read()?;
     if record.fresh()? {
-        return Ok(record);
+        return Ok(Some(record));
     }
     let updated = refresh(&record).map_err(|_| Error::Refresh)?;
     if !updated.fresh()? {
         return Err(Error::InvalidRecord);
     }
     dir.replace(&updated)?;
-    Ok(updated)
+    Ok(Some(updated))
 }
