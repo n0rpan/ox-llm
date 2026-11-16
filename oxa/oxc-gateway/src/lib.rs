@@ -2,10 +2,13 @@
 #![forbid(unsafe_code)]
 #[cfg(feature = "anthropic-gateway")]
 mod anthropic_replay;
-#[cfg(feature = "cloud-only")]
-pub mod catalog;
 #[cfg(feature = "anthropic-gateway")]
 pub mod gateway;
+#[cfg(feature = "anthropic-gateway")]
+pub mod runtime;
+
+#[cfg(feature = "cloud-only")]
+pub mod catalog;
 #[cfg(feature = "ledger")]
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]
@@ -16,8 +19,7 @@ pub mod policy;
 pub mod pricing;
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod rate_limits;
-#[cfg(feature = "anthropic-gateway")]
-pub mod runtime;
+pub mod refresh;
 
 #[cfg(feature = "accounting")]
 pub mod accounting;
