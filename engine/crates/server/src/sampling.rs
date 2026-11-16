@@ -91,9 +91,6 @@ pub fn token_prob(logits: &[f32], tok: u32) -> f32 {
     (((logits[tok as usize] - max) as f64).exp() / sum) as f32
 }
 
-/// Size of the first sorted prefix when the whole vocabulary is a candidate and top_p cuts it.
-const FIRST_CANDIDATES: usize = 256;
-
 /// Put the `m` best logits (ties: lowest id) first in `idx` and sort them, in place. `idx` stays a
 /// permutation of `0..logits.len()`, so it is only refilled when the vocabulary size changes.
 fn select_top(idx: &mut Vec<u32>, logits: &[f32], m: usize) {
@@ -208,50 +205,26 @@ impl Sampler {
             return argmax(logits);
         }
         let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let ex = |l: f32| (l - max).exp() as f64;
-        let top_p = self.p.top_p;
-        // Order only what the cuts need. The candidates are the same list, in the same order, as
-        // a full softmax + sort would give (REVIEW dogfood #587: that cost a sort of the whole
-        // vocabulary per token when top_k <= 0).
-        let mut cand: Vec<(u32, f32)>;
-        if self.p.top_k > 0 && (self.p.top_k as usize) < n {
-            // top_k: the softmax is renormalised over the k best, so only those need an exp
-            let k = self.p.top_k as usize;
-            select_top(&mut self.idx, logits, k);
-            self.sorted = k;
-            let s: f64 = self.idx[..k].iter().map(|&i| ex(logits[i as usize])).sum();
-            cand = self.idx[..k]
-                .iter()
-                .map(|&i| (i, (ex(logits[i as usize]) / s) as f32))
-                .collect();
+        let ex = |l: f32| ((l - max) as f64).exp();
+        let total: f64 = logits.iter().map(|&l| ex(l)).sum();
+        let k = if self.p.top_k <= 0 {
+            n
         } else {
-            // whole vocabulary in play: one pass for the normaliser, then grow a sorted prefix
-            // until it holds top_p of the mass
-            let total: f64 = logits.iter().map(|&l| ex(l)).sum();
-            let mut m = if top_p < 1.0 {
-                FIRST_CANDIDATES.min(n)
-            } else {
-                n
-            };
-            loop {
-                select_top(&mut self.idx, logits, m);
-                self.sorted = m;
-                cand = self.idx[..m]
-                    .iter()
-                    .map(|&i| (i, (ex(logits[i as usize]) / total) as f32))
-                    .collect();
-                if m >= n {
-                    break;
-                }
-                let mut acc = 0.0f32;
-                if cand.iter().any(|c| {
-                    acc += c.1;
-                    acc >= top_p
-                }) {
-                    break;
-                }
-                m = (m * 4).min(n);
-            }
+            (self.p.top_k as usize).min(n)
+        };
+        select_top(&mut self.idx, logits, k);
+        self.sorted = k;
+        // Reuse the vocabulary permutation, but preserve top_probs' full f64 softmax followed by
+        // the sorted f32 candidate sum and division. Cancelling the normalisers, using f32 exp,
+        // or summing only a top_p prefix changes rounding at the top_p/min_p cutoffs (PR #601).
+        // Without top_k we must still sort all ids to reproduce that f32 sum in the same order.
+        let mut cand: Vec<(u32, f32)> = self.idx[..k]
+            .iter()
+            .map(|&i| (i, (ex(logits[i as usize]) / total) as f32))
+            .collect();
+        let s: f32 = cand.iter().map(|c| c.1).sum();
+        for c in cand.iter_mut() {
+            c.1 /= s;
         }
         if self.p.top_p < 1.0 {
             let mut acc = 0.0;
@@ -447,39 +420,68 @@ mod tests {
         );
     }
 
-    /// Dogfood #587: the stochastic path orders only a bounded candidate set. With `top_k` 0 and a
-    /// `top_p` cut it used to sort the whole vocabulary on every token.
+    /// PR #601: equal top logits put top_p exactly on a rounding-sensitive boundary. The legacy
+    /// full-softmax -> f32 candidate sum -> f32 division retains 38 tokens, not 39.
     #[test]
-    fn top_p_without_top_k_orders_a_bounded_set() {
-        let n = 100_000usize;
-        let mut l: Vec<f32> = (0..n).map(|i| ((i * 7919) % 1000) as f32 * 0.001).collect();
-        l[1234] = 30.0;
-        l[77] = 29.0;
+    fn tied_top_k_preserves_cutoff_rounding() {
+        let mut logits = vec![-100.0; 150_000];
+        logits[..1000].fill(0.0);
         let mut s = Sampler::new(SamplingParams {
-            temperature: 0.8,
-            top_k: 0,
-            top_p: 0.9,
-            min_p: 0.0,
-            seed: 5,
+            seed: 1,
             ..Default::default()
         });
-        let t = s.sample(&l);
-        assert!(t == 1234 || t == 77);
-        assert!(
-            s.last_sorted() > 0 && s.last_sorted() <= 256,
-            "{}",
-            s.last_sorted()
-        );
-        let mut s = Sampler::new(SamplingParams {
-            seed: 5,
-            ..Default::default()
-        });
-        s.sample(&l);
-        assert_eq!(s.last_sorted(), 40);
+        assert_eq!(s.sample(&logits), 34);
     }
 
-    /// The bounded selection draws the same token as the full-softmax reference for a fixed seed,
-    /// for the default chain, `top_k` 0 with `top_p`, a wide flat row (the set must grow), and
+    /// The whole-vocabulary path also needs the second, sorted f32 normalisation. At top_p 0.9
+    /// the legacy path keeps 900 of the tied tokens; skipping that division keeps 901.
+    #[test]
+    fn tied_whole_vocab_preserves_cutoff_rounding() {
+        let mut logits = vec![-100.0; 150_000];
+        logits[..1000].fill(0.0);
+        for top_k in [0, -1, logits.len() as i32, logits.len() as i32 + 1] {
+            let mut s = Sampler::new(SamplingParams {
+                top_k,
+                top_p: 0.9,
+                seed: 1,
+                ..Default::default()
+            });
+            assert_eq!(s.sample(&logits), 821, "top_k {top_k}");
+        }
+    }
+
+    /// Dogfood #587: keep partial selection for top_k and reuse its vocabulary-sized allocation
+    /// across tokens, even as the winning ids and vocabulary size change.
+    #[test]
+    fn top_k_reuses_selection_scratch() {
+        let n = 100_000usize;
+        let mut l = vec![0.0; n];
+        l[1234] = 30.0;
+        let mut s = Sampler::new(SamplingParams {
+            seed: 5,
+            ..Default::default()
+        });
+        assert_eq!(s.sample(&l), 1234);
+        assert_eq!(s.last_sorted(), 40);
+        assert_eq!(s.idx.len(), n);
+        let allocation = s.idx.as_ptr();
+        let capacity = s.idx.capacity();
+        l[5678] = 100.0;
+        assert_eq!(s.sample(&l), 5678);
+        assert_eq!(s.last_sorted(), 40);
+        assert_eq!(s.idx.as_ptr(), allocation);
+        assert_eq!(s.idx.capacity(), capacity);
+        assert_eq!(s.sample(&[0.0, 1.0, 20.0]), 2);
+        assert_eq!(s.idx.len(), 3);
+        assert_eq!(s.last_sorted(), 3);
+        l[9876] = 200.0;
+        assert_eq!(s.sample(&l), 9876);
+        assert_eq!(s.idx.len(), n);
+        assert_eq!(s.idx.as_ptr(), allocation);
+    }
+
+    /// Scratch selection draws the same token as the full-softmax reference for a fixed seed,
+    /// for the default chain, `top_k` 0 with `top_p`, a wide flat row, tied cutoffs, and
     /// `top_p` 1 with `min_p`.
     #[test]
     fn bounded_selection_matches_full_softmax_reference() {
@@ -546,6 +548,9 @@ mod tests {
                     .collect(),
             );
         }
+        let mut tied = vec![-100.0; n];
+        tied[..1000].fill(0.0);
+        rows.push(tied);
         for (top_k, top_p, min_p) in [
             (40, 0.95, 0.05),
             (0, 0.9, 0.0),
