@@ -940,3 +940,86 @@ async fn incomplete_finish_keeps_length_and_invalid_usage_stays_unknown() {
         }
     }
 }
+
+#[tokio::test]
+async fn incomplete_unexecuted_call_does_not_poison_a_new_user_turn() {
+    let mut failures = Vec::new();
+    for subscription in [false, true] {
+        for mixed in [false, true] {
+            let mut items = vec![
+                json!({"type":"reasoning","id":"rs_partial","encrypted_content":"opaque-synthetic-partial","summary":[]}),
+            ];
+            if mixed {
+                items.push(json!({"type":"function_call","id":"fc_valid","call_id":"call_valid","name":"read","arguments":"{}","status":"completed"}));
+            }
+            items.push(json!({"type":"function_call","id":"fc_partial","call_id":"call_partial","name":"read","arguments":"{","status":"incomplete"}));
+            let mock = MockOpenAi::start(vec![
+                Reply::events(vec![
+                    json!({"type":"response.incomplete","response":{"status":"incomplete","output":items,"usage":{"input_tokens":10,"output_tokens":4}}}),
+                ]),
+                answer(),
+            ]);
+            let fixture = Fixture::new();
+            let base = mock.base_url();
+            let client = Client::new().unwrap();
+            let path = fixture.token_path(true);
+            let auth = || {
+                if subscription {
+                    Auth::Subscription {
+                        token_path: &path,
+                        refresh: client::Refresh {
+                            endpoint: &base,
+                            client_id: "synthetic-client",
+                            timeout: std::time::Duration::from_secs(1),
+                        },
+                    }
+                } else {
+                    Auth::ApiKey(&fixture.key)
+                }
+            };
+            let complete = client
+                .stream(
+                    chat(&base, &payload(), &[]),
+                    auth(),
+                    &Cancellation::default(),
+                    &mut |_| Control::Continue,
+                )
+                .await
+                .unwrap();
+            assert_eq!(complete.finish_reason, "length");
+            assert_eq!(complete.usage.as_ref().unwrap().output, Some(4));
+            let calls = complete.assistant["tool_calls"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            let mut next = payload();
+            let messages = next["messages"].as_array_mut().unwrap();
+            messages.push(complete.assistant);
+            for call in calls {
+                messages.push(json!({"role":"tool","tool_call_id":call["id"],"content":"synthetic result for a public executable call"}));
+            }
+            messages.push(json!({"role":"user","content":"Start a new turn after the interrupted response"}));
+            let replay = [if complete.replay_items.is_empty() {
+                None
+            } else {
+                Some(request::ReplayItems::new(complete.replay_items))
+            }];
+            match client
+                .stream(
+                    chat(&base, &next, &replay),
+                    auth(),
+                    &Cancellation::default(),
+                    &mut |_| Control::Continue,
+                )
+                .await
+            {
+                Ok(continued) => assert_eq!(continued.assistant["content"], "Synthetic answer"),
+                Err(error) => failures.push((subscription, mixed, error)),
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "interrupted continuation failures: {failures:?}"
+    );
+}
