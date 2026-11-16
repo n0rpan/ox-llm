@@ -251,6 +251,55 @@ fn an_appended_pending_fact_and_a_lagging_snapshot_recover_without_another_line(
 }
 
 #[test]
+fn pending_recovery_cannot_commit_without_opening_the_journal_for_sync() {
+    // Root bypasses the real journal permission failure; run this case as an ordinary user.
+    // SAFETY: geteuid has no arguments, pointers or failure mode.
+    if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::process::CommandExt;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .env_clear()
+            .args([
+                "--exact",
+                "events::tests::pending_recovery_cannot_commit_without_opening_the_journal_for_sync",
+            ])
+            .uid(65534)
+            .gid(65534)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let env = Fixture::new();
+    let facts = env.facts();
+    let pending = reserve(&facts, mechanical());
+    let mut bytes = pending.to_json().unwrap();
+    bytes.push(b'\n');
+    // The complete line is visible without having been synced by its writer.
+    fs::OpenOptions::new()
+        .append(true)
+        .open(env.root().join(CURRENT))
+        .unwrap()
+        .write_all(&bytes)
+        .unwrap();
+    let before = facts.root.read(STATE, STATE_BYTES).unwrap();
+    let snapshot = facts.root.read(SITUATION, MAX_SNAPSHOT_BYTES).unwrap();
+    fs::set_permissions(env.root().join(CURRENT), fs::Permissions::from_mode(0o400)).unwrap();
+    let recovered = Facts::open(&env.root());
+    fs::set_permissions(env.root().join(CURRENT), fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(recovered.is_err(), "unsynced pending line was acknowledged");
+    assert_eq!(facts.root.read(STATE, STATE_BYTES).unwrap(), before);
+    assert_eq!(facts.root.read(SITUATION, MAX_SNAPSHOT_BYTES).unwrap(), snapshot);
+    let recovered = Facts::open(&env.root()).unwrap();
+    assert_eq!(recovered.situation().unwrap().as_of_seq, pending.seq);
+    assert_eq!(recovered.events_after(0, 64).unwrap().events, [pending]);
+}
+
+#[test]
 fn interruption_between_rotation_and_new_current_file_recovers_the_reserved_event() {
     let env = Fixture::new();
     let facts = env.facts();
