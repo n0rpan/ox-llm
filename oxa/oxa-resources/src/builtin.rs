@@ -14,7 +14,6 @@ use std::path::{Path, PathBuf};
 
 /// `(name, SKILL.md content)` of every built-in skill, sorted by name.
 pub const BUILTIN_SKILLS: &[(&str, &str)] = &[
-    ("lead", include_str!("../builtin-skills/lead/SKILL.md")),
     ("ox-llm", include_str!("../builtin-skills/ox-llm/SKILL.md")),
     (
         "oxa-extend",
@@ -29,6 +28,10 @@ pub const BUILTIN_SKILLS: &[(&str, &str)] = &[
         include_str!("../builtin-skills/report-issue/SKILL.md"),
     ),
 ];
+
+/// Lead-only instructions, loaded explicitly by the lead preset. Not installed or
+/// discovered for ordinary sessions, so worker prefixes stay unchanged.
+pub const LEAD_SKILL: &str = include_str!("../builtin-skills/lead/SKILL.md");
 
 /// The identity file inside the agent directory.
 pub const IDENTITY_FILE: &str = "identity.md";
