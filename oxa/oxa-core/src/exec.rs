@@ -75,7 +75,7 @@ pub fn request(
     let thinking = opts
         .thinking
         .unwrap_or_else(|| crate::think::request_thinking(st, opts.kind));
-    let session = st.sref.id.clone();
+    let session = st.sref.clone();
     let engine = st.engine.clone();
     let cancel = if opts.background {
         st.shared.gate.bg_cancel.clone()
@@ -83,7 +83,7 @@ pub fn request(
         st.shared.cancel.clone()
     };
     let hints = Hints {
-        session: &session,
+        session: &session.id,
         idem_key: &idem,
         kind: opts.kind,
         background: opts.background,
@@ -669,7 +669,7 @@ fn start_tool_prefill(
     let engine = st.engine.clone();
     let prefix = st.prefix.clone();
     let model = st.model.clone();
-    let session = st.sref.id.clone();
+    let session = st.sref.clone();
     let idem = new_idem_key(st);
     let thinking = crate::think::request_thinking(st, TurnKind::Prefill);
     let preserve_thinking = st.info.caps.preserve_thinking != Some(false);
@@ -703,7 +703,7 @@ fn start_tool_prefill(
                 preserve_thinking,
                 sampling: None,
                 hints: Hints {
-                    session: &session,
+                    session: &session.id,
                     idem_key: &idem,
                     kind: TurnKind::Prefill,
                     background: true,
@@ -1000,7 +1000,7 @@ fn run_one(
     let started = Instant::now();
     let hook_updates = crate::fire::wants(st, HookPoint::ToolExecutionUpdate);
     let progress = crate::progress::observer(st);
-    let session = st.sref.id.clone();
+    let session = st.sref.clone();
     let mut live = |sink: &mut dyn EventSink, partial: &str| {
         if !partial.is_empty() {
             if let Some(progress) = &progress {
@@ -1036,7 +1036,7 @@ fn run_parallel(
     ui: &mut dyn Ui,
 ) -> Vec<(ToolOutput, Duration)> {
     let progress = crate::progress::observer(st);
-    let session = st.sref.id.clone();
+    let session = st.sref.clone();
     for p in batch {
         crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
     }

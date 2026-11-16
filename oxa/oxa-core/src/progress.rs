@@ -1,6 +1,7 @@
 //! Optional, typed progress observation. No message copies, serialization or worker thread.
 use crate::{RunOutcome, SessionState};
 use oxa_proto::{TurnKind, Usage};
+use oxa_session::SessionRef;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -19,8 +20,9 @@ pub enum Progress<'a> {
 
 /// Observers must be cheap and must not panic or call back into the session. Front ends own
 /// any I/O errors and surface them when the driver returns. Stream observations carry no text.
+/// The full session reference distinguishes equal custom IDs in different directories.
 pub trait ProgressObserver: std::fmt::Debug + Send + Sync {
-    fn notify(&self, session_id: &str, progress: Progress<'_>);
+    fn notify(&self, session: &SessionRef, progress: Progress<'_>);
 }
 
 pub(crate) fn observer(st: &SessionState) -> Option<Arc<dyn ProgressObserver>> {
@@ -34,7 +36,7 @@ pub(crate) fn observer(st: &SessionState) -> Option<Arc<dyn ProgressObserver>> {
 
 pub(crate) fn notify(st: &SessionState, progress: Progress<'_>) {
     if let Some(observer) = observer(st) {
-        observer.notify(&st.sref.id, progress);
+        observer.notify(&st.sref, progress);
     }
 }
 

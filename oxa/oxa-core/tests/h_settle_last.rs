@@ -19,6 +19,45 @@ use oxa_sandbox::NoSandbox;
 use oxa_session::MemStore;
 use std::sync::{Arc, Mutex};
 
+#[test]
+fn progress_does_not_report_idle_or_finished_before_lifecycle_hooks_return() {
+    #[derive(Debug, Default)]
+    struct Trace(Mutex<Vec<&'static str>>);
+    impl oxa_core::ProgressObserver for Trace {
+        fn notify(&self, _: &oxa_session::SessionRef, progress: oxa_core::Progress<'_>) {
+            match progress {
+                oxa_core::Progress::Settled(_) => self.0.lock().unwrap().push("idle"),
+                oxa_core::Progress::Finished(_) => self.0.lock().unwrap().push("finished"),
+                _ => {},
+            }
+        }
+    }
+    impl Hooks for Trace {
+        fn tools(&self) -> Vec<Arc<dyn Tool>> { vec![] }
+        fn commands(&self) -> Vec<CommandSpec> { vec![] }
+        fn run_command(&self, _: &str, _: &str, _: &mut dyn Ui) -> Result<(), OxaError> { Ok(()) }
+        fn prompt_sections(&self) -> Vec<(String, String)> { vec![] }
+        fn fire(&self, point: HookPoint, _: &Value, _: &mut dyn Ui) -> HookReply {
+            match point {
+                HookPoint::AgentSettled => self.0.lock().unwrap().push("settled_hook"),
+                HookPoint::SessionShutdown => self.0.lock().unwrap().push("shutdown_hook"),
+                _ => {},
+            }
+            HookReply::Continue
+        }
+        fn shutdown(&self) { self.0.lock().unwrap().push("shutdown_return"); }
+    }
+    let env = TestEnv::new();
+    let trace = Arc::new(Trace::default());
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("done")]));
+    let mut session = Session::open(deps(&env, engine, vec![trace.clone()]), Open::New).unwrap();
+    session.set_progress_observer(trace.clone());
+    session.prompt("go".into(), vec![], &mut oxa_proto::VecSink::default(), &mut HeadlessUi::default()).unwrap();
+    session.shutdown(&mut HeadlessUi::default());
+    assert_eq!(*trace.0.lock().unwrap(), vec!["settled_hook", "idle", "shutdown_hook", "shutdown_return"],
+        "the front end owns the final result after shutdown; hooks remain active work");
+}
+
 fn deps(env: &TestEnv, engine: Arc<dyn oxa_proto::Engine>, hooks: Vec<Arc<dyn Hooks>>) -> Deps {
     Deps {
         engine,

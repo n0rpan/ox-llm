@@ -2,7 +2,7 @@
 use oxa_config::{dirs_from_env, Dirs, Env, Settings};
 use oxa_core::{Progress, ProgressObserver, RunOutcome, Session};
 use oxa_proto::{codes, OxaError, TurnKind};
-use oxa_session::{FsStore, SessionStore};
+use oxa_session::{FsStore, SessionRef, SessionStore};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
@@ -26,7 +26,7 @@ fn now_ms() -> u64 {
 #[derive(Debug)]
 struct Snapshot {
     file: PathBuf,
-    id: String,
+    session: SessionRef,
     started: u64,
     phase: &'static str,
     step: u64,
@@ -50,7 +50,7 @@ impl Snapshot {
     fn record(&self, timeout: Option<u64>, coalesce_ms: u64) -> Value {
         let active = self.running || self.requests > 0 || self.tools > 0;
         json!({
-            "type":"oxa_status", "version":1, "session_id":self.id,
+            "type":"oxa_status", "version":1, "session_id":self.session.id,
             "pid":std::process::id(), "started_ms":self.started,
             "phase":self.phase, "step":self.step, "last_tool":self.last_tool,
             "tokens":{"prompt":self.prompt, "completion":self.completion,
@@ -130,7 +130,7 @@ impl StatusWriter {
             .unwrap_or_else(|p| p.into_inner())
             .active
             .as_ref()
-            .map(|s| s.id.clone());
+            .map(|s| s.session.clone());
         if let Some(id) = id {
             self.notify(&id, Progress::Finished(reported));
         }
@@ -144,7 +144,7 @@ impl StatusWriter {
                     .unwrap_or_else(|p| p.into_inner())
                     .active
                     .as_ref()
-                    .map(|s| s.id.clone());
+                    .map(|s| s.session.clone());
                 if let Some(id) = id {
                     self.notify(&id, Progress::Finished(RunOutcome::from_error(&error)));
                 }
@@ -171,11 +171,11 @@ impl StatusWriter {
 }
 
 impl ProgressObserver for StatusWriter {
-    fn notify(&self, id: &str, progress: Progress<'_>) {
+    fn notify(&self, session: &SessionRef, progress: Progress<'_>) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let now = now_ms();
         if let Progress::Session { file } = progress {
-            if state.active.as_ref().is_some_and(|s| s.id == id) {
+            if state.active.as_ref().is_some_and(|s| s.session == *session) {
                 return;
             }
             if let Some(snapshot) = &mut state.active {
@@ -191,7 +191,7 @@ impl ProgressObserver for StatusWriter {
             }
             state.active = file.map(|file| Snapshot {
                 file: file.with_extension("status.json"),
-                id: id.to_string(),
+                session: session.clone(),
                 started: now,
                 phase: "idle",
                 step: 0,
@@ -214,7 +214,7 @@ impl ProgressObserver for StatusWriter {
         let Some(snapshot) = &mut state.active else {
             return;
         };
-        if snapshot.id != id {
+        if snapshot.session != *session {
             return;
         } // A cancelled helper of a session left behind.
         let force = match progress {
@@ -417,13 +417,21 @@ mod tests {
     #[test]
     fn stream_updates_coalesce_and_the_final_snapshot_includes_all_usage() {
         let env = TestEnv::new();
-        let session = env.work().join("session.jsonl");
-        let path = session.with_extension("status.json");
+        let session = SessionRef {
+            id: "one".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let path = session.path.with_extension("status.json");
         let mut writer = StatusWriter::new(None);
         writer.interval = Duration::MAX; // An explicit clock-independent coalescing window.
-        writer.notify("one", Progress::Session { file: Some(&session) });
         writer.notify(
-            "one",
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        writer.notify(
+            &session,
             Progress::RequestStart {
                 kind: TurnKind::Chat,
                 remote: true,
@@ -431,13 +439,13 @@ mod tests {
         );
         let initial = fs::read(&path).unwrap();
         for _ in 0..1000 {
-            writer.notify("one", Progress::Advanced);
+            writer.notify(&session, Progress::Advanced);
         }
         assert_eq!(fs::read(&path).unwrap(), initial);
         assert_eq!(read_snapshot(&path).unwrap()["cost_usd"], Value::Null);
         assert_eq!(read_snapshot(&path).unwrap()["tokens"]["complete"], false);
         writer.notify(
-            "one",
+            &session,
             Progress::RequestEnd {
                 usage: Some(Usage {
                     prompt: 100,
@@ -460,13 +468,21 @@ mod tests {
     #[test]
     fn transient_write_failure_cannot_leave_a_successful_terminal_record() {
         let env = TestEnv::new();
-        let session = env.work().join("session.jsonl");
-        let path = session.with_extension("status.json");
+        let session = SessionRef {
+            id: "one".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let path = session.path.with_extension("status.json");
         let writer = StatusWriter::new(None);
-        writer.notify("one", Progress::Session { file: Some(&session) });
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
         fs::remove_file(&path).unwrap();
         fs::create_dir(&path).unwrap();
-        writer.notify("one", Progress::RunStart);
+        writer.notify(&session, Progress::RunStart);
         fs::remove_dir(&path).unwrap();
         let error = writer.finish(Ok(RunOutcome::Done), &mut Vec::new()).unwrap_err();
         assert_eq!(error.code, WRITE_FAILED);
@@ -478,21 +494,37 @@ mod tests {
     #[test]
     fn stale_helper_progress_cannot_change_the_session_switched_into() {
         let env = TestEnv::new();
-        let one = env.work().join("one.jsonl");
-        let two = env.work().join("two.jsonl");
+        let one = SessionRef {
+            id: "one".into(),
+            path: env.work().join("one.jsonl"),
+        };
+        let two = SessionRef {
+            id: "two".into(),
+            path: env.work().join("two.jsonl"),
+        };
         let writer = StatusWriter::new(None);
-        writer.notify("one", Progress::Session { file: Some(&one) });
         writer.notify(
-            "one",
+            &one,
+            Progress::Session {
+                file: Some(&one.path),
+            },
+        );
+        writer.notify(
+            &one,
             Progress::RequestStart {
                 kind: TurnKind::Prefill,
                 remote: false,
             },
         );
-        writer.notify("two", Progress::Session { file: Some(&two) });
-        let before = fs::read(two.with_extension("status.json")).unwrap();
         writer.notify(
-            "one",
+            &two,
+            Progress::Session {
+                file: Some(&two.path),
+            },
+        );
+        let before = fs::read(two.path.with_extension("status.json")).unwrap();
+        writer.notify(
+            &one,
             Progress::RequestEnd {
                 usage: Some(Usage {
                     prompt: 9000,
@@ -501,8 +533,8 @@ mod tests {
                 remote: false,
             },
         );
-        assert_eq!(fs::read(two.with_extension("status.json")).unwrap(), before);
-        let old = read_snapshot(&one.with_extension("status.json")).unwrap();
+        assert_eq!(fs::read(two.path.with_extension("status.json")).unwrap(), before);
+        let old = read_snapshot(&one.path.with_extension("status.json")).unwrap();
         assert_eq!(old["tokens"]["complete"], false);
         assert_eq!(old["tokens"]["unreported_requests"], 1);
     }
@@ -510,13 +542,51 @@ mod tests {
     #[test]
     fn a_reused_id_does_not_alias_a_different_session_file() {
         let env = TestEnv::new();
-        let one = env.work().join("one.jsonl");
-        let two = env.work().join("two.jsonl");
+        let one = SessionRef {
+            id: "same".into(),
+            path: env.work().join("one.jsonl"),
+        };
+        let two = SessionRef {
+            id: "same".into(),
+            path: env.work().join("two.jsonl"),
+        };
         let writer = StatusWriter::new(None);
-        writer.notify("same", Progress::Session { file:Some(&one) });
-        writer.notify("same", Progress::Session { file:Some(&two) });
-        assert_eq!(read_snapshot(&two.with_extension("status.json")).unwrap()["session_id"], "same");
-        assert_eq!(read_snapshot(&one.with_extension("status.json")).unwrap()["phase"], "finished");
+        writer.notify(
+            &one,
+            Progress::Session {
+                file: Some(&one.path),
+            },
+        );
+        writer.notify(
+            &one,
+            Progress::RequestStart {
+                kind: TurnKind::Prefill,
+                remote: false,
+            },
+        );
+        writer.notify(
+            &two,
+            Progress::Session {
+                file: Some(&two.path),
+            },
+        );
+        let before = fs::read(two.path.with_extension("status.json")).unwrap();
+        writer.notify(
+            &one,
+            Progress::RequestEnd {
+                usage: Some(Usage::default()),
+                remote: false,
+            },
+        );
+        assert_eq!(fs::read(two.path.with_extension("status.json")).unwrap(), before);
+        assert_eq!(
+            read_snapshot(&two.path.with_extension("status.json")).unwrap()["session_id"],
+            "same"
+        );
+        assert_eq!(
+            read_snapshot(&one.path.with_extension("status.json")).unwrap()["phase"],
+            "finished"
+        );
     }
 
     #[test]
