@@ -1345,6 +1345,27 @@ pub fn remove_spill_dir(tmp_dir: &Path, id: &str) -> Result<usize, OxaError> {
     remove_tree(&tmp_dir.join(id))
 }
 
+/// #576: [`remove_spill_dir`] for a session that was just removed from `store`, unless another
+/// session was forked or cloned from it (`parentSession`). Fork/clone copy the history byte for
+/// byte, so the copy's tool results still name `<tmp_dir>/<id>/...`; those files stay readable
+/// (see `attach_ids`) for as long as a child exists. Returns the number of files removed.
+pub fn remove_spill_dir_unless_forked(
+    store: &dyn crate::SessionStore,
+    tmp_dir: &Path,
+    removed: &crate::SessionRef,
+) -> Result<usize, OxaError> {
+    validate_session_id(&removed.id)?;
+    let path = removed.path.to_string_lossy();
+    let forked = store
+        .list(None)
+        .iter()
+        .any(|m| m.sref.id != removed.id && m.parent_session.as_deref() == Some(path.as_ref()));
+    if forked {
+        return Ok(0);
+    }
+    remove_spill_dir(tmp_dir, &removed.id)
+}
+
 /// P6: the whole spill directory `tmp_dir` (every session's spill files and the codemode
 /// scratch files). Returns the number of files removed; missing = `Ok(0)`; a symlink is refused.
 pub fn remove_all_spill(tmp_dir: &Path) -> Result<usize, OxaError> {

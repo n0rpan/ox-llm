@@ -32,7 +32,8 @@ pub use meta::{meta_of, search_sessions, sort_sessions, SessionSort};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
 pub use store::{
     count_files, decode_entry, decode_header, encode_entry, encode_header, new_entry_id, purge_session_file,
-    remove_all_spill, remove_spill_dir, session_dir_name, session_files_under, FsStore, MemStore,
+    remove_all_spill, remove_spill_dir, remove_spill_dir_unless_forked, session_dir_name,
+    session_files_under, FsStore, MemStore,
 };
 pub use transcript::{bash_text, RebaseLog, Transcript};
 pub use tree::Tree;

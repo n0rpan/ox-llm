@@ -56,3 +56,39 @@ fn all_spill_is_counted_and_removed_and_purge_is_idempotent() {
     assert!(!file.exists());
     purge_session_file(&file).unwrap();
 }
+
+/// #576: deleting a session keeps its spill directory while a fork or clone still names it
+/// (`parentSession`); a session nobody forked loses it as before.
+#[test]
+fn deleting_a_forked_session_keeps_its_spill_dir_until_the_last_child_is_gone() {
+    use oxa_session::{remove_spill_dir_unless_forked, FsStore, SessionStore};
+    let tmp = tmp_root("forked");
+    let store = FsStore::new(tmp.join("sessions"));
+    let tmp_dir = tmp.join("tmp");
+    let cwd = std::path::Path::new("/work/project");
+    let src = store.create(cwd, None, None).unwrap();
+    let child = store.create(cwd, None, Some(src.path.as_path())).unwrap();
+    let other = store.create(cwd, None, None).unwrap();
+    for s in [&src, &other] {
+        fs::create_dir_all(tmp_dir.join(&s.id)).unwrap();
+        fs::write(tmp_dir.join(&s.id).join("bash.log"), "x").unwrap();
+    }
+    // A session without children: its spill files go with it.
+    store.remove(&other).unwrap();
+    assert_eq!(
+        remove_spill_dir_unless_forked(&store, &tmp_dir, &other).unwrap(),
+        1
+    );
+    assert!(!tmp_dir.join(&other.id).exists());
+    // The source has a child: the child's wire still names the source's spill files.
+    store.remove(&src).unwrap();
+    assert_eq!(remove_spill_dir_unless_forked(&store, &tmp_dir, &src).unwrap(), 0);
+    assert!(tmp_dir.join(&src.id).join("bash.log").is_file());
+    // A child without children of its own has nothing to keep and nothing to remove.
+    store.remove(&child).unwrap();
+    assert_eq!(
+        remove_spill_dir_unless_forked(&store, &tmp_dir, &child).unwrap(),
+        0
+    );
+    let _ = fs::remove_dir_all(&tmp);
+}
