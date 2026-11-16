@@ -41,3 +41,14 @@ It emits five samples of idle/streaming RSS and threads, startup/request time to
 the first text, and the overhead against a direct request with the same body.
 Results contain numbers only. This initial slice does not link the gateway into
 the production binary; consumer slices must measure their own footprint.
+
+The `cloud-only` feature provides a typed, immutable catalog. Construct validated
+`catalog::Model` values from trusted user settings, then create a `Catalog` with
+explicit `Access`. Discovery borrows `ModelInfo` values with each model's token
+limits; private upstream IDs and endpoints are excluded from those values and
+Debug output. Disabled/offline catalogs hide and refuse models. An explicit
+unknown model is refused rather than silently selecting another provider.
+Catalog construction reads no credential or ledger and starts no engine.
+
+Native policy tests assert client status, code, type and parameter, with a
+nonempty explanation. They protect error classification without wording parity.
