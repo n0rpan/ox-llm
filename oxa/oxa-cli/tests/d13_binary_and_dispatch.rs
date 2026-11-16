@@ -507,6 +507,16 @@ fn send_writes_an_inbox_message_without_contacting_the_engine() {
     for words in [
         vec!["send", "session-638", "task finished, red"],
         vec!["--offline", "send", "session-638", "task finished, red"],
+        vec![
+            "--offline",
+            "--offline",
+            "send",
+            "session-638",
+            "@literal --offline",
+        ],
+        vec!["--offline", "send", "session-638", "--offline"],
+        vec!["send", "session-638", "--offline"],
+        vec!["send", "session-638", "@literal"],
     ] {
         let env = TestEnv::new();
         let r = go(&env, &closed_url(), &words);
@@ -518,7 +528,14 @@ fn send_writes_an_inbox_message_without_contacting_the_engine() {
             .map(|e| e.unwrap().path())
             .collect();
         assert_eq!(files.len(), 1);
-        assert_eq!(std::fs::read_to_string(&files[0]).unwrap(), "task finished, red");
+        assert_eq!(
+            std::fs::read_to_string(&files[0]).unwrap(),
+            *words.last().unwrap()
+        );
+        assert!(
+            !dirs.agent_dir.join("sessions").exists(),
+            "send must not start inference"
+        );
     }
 }
 
@@ -530,6 +547,10 @@ fn send_rejects_missing_arguments_and_path_ids_without_an_engine() {
         vec!["send", "session-638"],
         vec!["send", "../outside", "text"],
         vec!["send", "id", "text", "extra"],
+        vec!["--offline", "send"],
+        vec!["--offline", "send", "session-638"],
+        vec!["--offline", "--offline", "send", "../outside", "text"],
+        vec!["--offline", "send", "id", "text", "extra"],
     ] {
         let r = go(&env, &closed_url(), &words);
         assert_eq!(r.code, 2, "{words:?}: {}", r.err);

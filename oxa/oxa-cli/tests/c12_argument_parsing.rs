@@ -60,11 +60,23 @@ fn send_status_and_work_preserve_subcommand_arguments() {
 fn offline_send_preserves_subcommand_arguments() {
     for words in [
         vec!["--offline", "send", "session-733", "follow up"],
-        vec!["--offline", "--offline", "send", "session-733", "@literal --offline"],
+        vec![
+            "--offline",
+            "--offline",
+            "send",
+            "session-733",
+            "@literal --offline",
+        ],
+        vec!["--offline", "send", "session-733", "--offline"],
+        vec!["send", "session-733", "--offline"],
+        vec!["send", "session-733", "@literal"],
     ] {
         let args = parse(&words);
-        assert!(args.offline);
-        assert_eq!(args.subcommand, Some(Subcommand::Send(argv(&words[words.len() - 2..]))));
+        assert_eq!(args.offline, words[0] == "--offline", "{words:?}");
+        assert_eq!(
+            args.subcommand,
+            Some(Subcommand::Send(argv(&words[words.len() - 2..])))
+        );
         assert!(args.messages.is_empty());
         assert!(args.files.is_empty());
     }
