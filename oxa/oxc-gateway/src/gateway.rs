@@ -119,7 +119,7 @@ impl Gateway {
             .enable_all()
             .build()
             .map_err(|_| Error::OpenCode(crate::opencode::client::Error::Transport))?;
-        let result = driver.block_on(self.runtime.discover_go(self.client.transport(), base, timeout));
+        let result = driver.block_on(self.runtime.discover_go(&self.client.shared_transport(), base, timeout));
         driver.shutdown_timeout(Duration::from_secs(1));
         result.map_err(Error::OpenCode)
     }
@@ -344,7 +344,7 @@ impl Gateway {
         payload["max_tokens"] = call.max_output().into();
         let mut usage = None;
         let result = client::stream(
-            self.client.transport(),
+            &self.client.shared_transport(),
             client::Chat {
                 model,
                 alias,
