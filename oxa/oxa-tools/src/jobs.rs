@@ -4,7 +4,8 @@
 //! `bash {command, background: true}`. Each job runs the same sandboxed command as a
 //! normal `bash` call, but on its own thread with a per-job [`CancelToken`]; the call
 //! returns at once with a job id. A later `bash {job: "job-N"}` reads the job's status
-//! and the last 8 KiB of its combined output. [`JobRegistry::kill_all`] cancels every
+//! and the last 8 KiB of its combined output. [`JobRegistry::kill`] stops one job (`bash {job,
+//! kill: true}`) and [`JobRegistry::kill_all`] cancels every
 //! running job, which makes the sandbox's run loop kill the whole process group.
 //!
 //! Limits: at most [`MAX_JOBS`] jobs run at once (a further start is refused); a
@@ -18,6 +19,9 @@ use std::time::{Duration, Instant};
 
 /// How often a [`JobRegistry::wait`] checks the job and the cancel token.
 const WAIT_TICK: Duration = Duration::from_millis(10);
+
+/// How long [`JobRegistry::kill`] waits for a cancelled job to settle.
+const KILL_SETTLE: Duration = Duration::from_secs(5);
 
 /// How many background jobs may run at once.
 pub const MAX_JOBS: usize = 4;
@@ -75,6 +79,15 @@ pub struct JobRead {
     pub output: String,
     /// Every byte of output the job has written so far (not only the ones kept).
     pub total: u64,
+}
+
+/// The outcome of [`JobRegistry::kill`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JobKill {
+    /// The job's status after the kill (still `Running` if it did not settle in time).
+    pub status: JobStatus,
+    /// False when the job had already finished before the call.
+    pub was_running: bool,
 }
 
 #[derive(Default)]
@@ -250,6 +263,27 @@ impl JobRegistry {
     pub fn buffered_len(&self, id: &str) -> Option<usize> {
         let state = self.state.lock().unwrap();
         state.jobs.get(id).map(|j| j.output.lock().unwrap().buf.len())
+    }
+
+    /// #519: cancel one job and wait (briefly) for it to settle, so its slot is free when this
+    /// returns. A job that already finished is left as it is (`was_running: false`). `Err` for an
+    /// unknown id.
+    pub fn kill(&self, id: &str) -> Result<JobKill, String> {
+        let (cancel, status) = {
+            let state = self.state.lock().unwrap();
+            let job = state.jobs.get(id).ok_or_else(|| format!("Unknown job: {id}"))?;
+            (job.cancel.clone(), job.status.clone())
+        };
+        let was_running = *status.lock().unwrap() == JobStatus::Running;
+        if was_running {
+            cancel.cancel();
+            let deadline = Instant::now() + KILL_SETTLE;
+            while *status.lock().unwrap() == JobStatus::Running && Instant::now() < deadline {
+                std::thread::sleep(WAIT_TICK);
+            }
+        }
+        let status = *status.lock().unwrap();
+        Ok(JobKill { status, was_running })
     }
 
     /// Cancel every running job AND forget them all: ids stop resolving and the slots free
