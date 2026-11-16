@@ -22,8 +22,8 @@ pub mod deny_reasons {
 
 /// B3 (wave H lane `harden`): the deny-list of the file tools, the same paths the bash sandbox
 /// masks. `allow` holds the exceptions inside a denied path (codemode's shared spill directory,
-/// `<tmp>/codemode`); `spill` is the current session's spill directory (`<tmp>/<session id>`),
-/// the only other part of `tmp` the file tools reach: other sessions' spill files stay denied.
+/// `<tmp>/codemode`); `spill` is the current session's spill directory (`<tmp>/<session id>`).
+/// Fork/clone ancestors' spills are read-only exceptions; unrelated sessions stay denied.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathGuard {
     deny: Vec<PathBuf>,
@@ -31,6 +31,8 @@ pub struct PathGuard {
     /// The current session's spill directory: the full output of a capped result is read from
     /// here without asking (#522).
     spill: Option<PathBuf>,
+    /// Source sessions of a fork/clone: copied history still points at these outputs.
+    inherited_spills: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
     /// The home directory and its startup files, keys and agent settings
@@ -70,6 +72,7 @@ impl PathGuard {
             deny,
             allow: vec![tmp_dir.join("codemode")],
             spill: None,
+            inherited_spills: Vec::new(),
             read_allow: vec![agent_dir.join("builtin-skills")],
             home: home.to_path_buf(),
             home_protected,
@@ -87,14 +90,21 @@ impl PathGuard {
                 || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
     }
 
-    /// Point the exception at the spill directory of the session now running.
+    /// Point the exception at the spill directory of the session now running. Switching
+    /// sessions revokes inherited exceptions until its ancestry is supplied again.
     pub fn set_spill_dir(&mut self, dir: &Path) {
         self.spill = Some(dir.to_path_buf());
+        self.inherited_spills.clear();
     }
 
     /// `p` (absolute) is inside the current session's spill directory.
     pub fn is_spill(&self, p: &Path) -> bool {
         self.spill.as_ref().is_some_and(|s| is_inside(p, s))
+    }
+
+    /// `p` is output of this session or a fork/clone ancestor, not an unrelated session.
+    fn is_readable_spill(&self, p: &Path) -> bool {
+        self.is_spill(p) || self.inherited_spills.iter().any(|s| is_inside(p, s))
     }
 
     /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
@@ -104,9 +114,9 @@ impl PathGuard {
             && !self.is_spill(p)
     }
 
-    /// Like [`PathGuard::denies`] for a read: the built-in skills are readable.
+    /// Like [`PathGuard::denies`] for a read: built-in skills and inherited spills are readable.
     pub fn denies_read(&self, p: &Path) -> bool {
-        self.denies(p) && !self.is_builtin_skill(p)
+        self.denies(p) && !self.is_builtin_skill(p) && !self.is_readable_spill(p)
     }
 
     /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
@@ -130,6 +140,8 @@ impl PathGuard {
         };
         let mut allow = both(&self.allow);
         allow.extend(both(&self.read_allow));
+        allow.extend(both(&self.spill.iter().cloned().collect::<Vec<_>>()));
+        allow.extend(both(&self.inherited_spills));
         HiddenPaths {
             deny: both(&self.deny),
             allow,
@@ -374,8 +386,8 @@ impl Policy for ModePolicy {
                 return Decision::Allow;
             }
             // #522: the full output of a capped result is read without asking, so an
-            // unattended run can recover it.
-            if matches!(a, Access::Read(_)) && self.guard.is_spill(&abs) {
+            // unattended run can recover it, including output inherited by a fork/clone.
+            if matches!(a, Access::Read(_)) && self.guard.is_readable_spill(&abs) {
                 return Decision::Allow;
             }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.
@@ -406,6 +418,12 @@ impl Policy for ModePolicy {
 
     fn set_spill_dir(&mut self, dir: &Path) {
         self.guard.set_spill_dir(dir);
+        self.hidden = Some(Arc::new(self.guard.hidden_paths()));
+    }
+
+    fn set_inherited_spill_dirs(&mut self, dirs: &[PathBuf]) {
+        self.guard.inherited_spills = dirs.to_vec();
+        self.hidden = Some(Arc::new(self.guard.hidden_paths()));
     }
 
     fn remember(&mut self, a: &Access) {

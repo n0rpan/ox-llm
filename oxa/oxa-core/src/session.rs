@@ -1471,10 +1471,37 @@ fn latest_of(store: &dyn SessionStore, cwd: &std::path::Path) -> Option<SessionR
 }
 
 /// Point the per-session paths at the current session id.
-fn attach_ids(st: &mut SessionState) {
+pub(crate) fn attach_ids(st: &mut SessionState) {
     let id = st.sref.id.clone();
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
+    // Fork/clone copy history verbatim: its spill paths still belong to the source sessions.
+    // Follow store headers, never paths suggested by model/tool text. Only that ancestry is
+    // readable, and only for reads; unrelated sessions remain on the deny-list.
+    let mut inherited = Vec::new();
+    let mut seen = std::collections::HashSet::from([st.sref.path.clone()]);
+    let mut source = st.sref.clone();
+    while let Ok(header) = st.store.header(&source) {
+        let Some(parent) = header.parent_session else {
+            break;
+        };
+        let Ok(parent) = st.store.resolve(&parent) else {
+            break;
+        };
+        if !seen.insert(parent.path.clone()) {
+            break; // A malformed ancestry cycle must not hang opening a session.
+        }
+        // Header ids from old/hand-written files have not necessarily been validated. An
+        // id must be one normal path component, never an escape from the spill root.
+        let mut components = std::path::Path::new(&parent.id).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_))) || components.next().is_some()
+        {
+            break;
+        }
+        inherited.push(st.dirs.tmp_dir.join(&parent.id));
+        source = parent;
+    }
+    st.policy.set_inherited_spill_dirs(&inherited);
     refresh_tool_env(st);
 }
 

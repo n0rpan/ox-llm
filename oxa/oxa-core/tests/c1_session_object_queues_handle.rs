@@ -384,3 +384,141 @@ fn opening_a_session_makes_its_spill_directory_readable() {
         "outside the cwd and not this session's"
     );
 }
+
+fn guarded_deps(env: &TestEnv, store: Arc<dyn SessionStore>) -> Deps {
+    let mut d = deps(env, store);
+    // Production keeps spills under the denied agent directory, unlike Dirs::under.
+    d.dirs.tmp_dir = d.dirs.agent_dir.join("tmp");
+    d.policy = Box::new(ModePolicy::new().with_guard(oxa_perm::PathGuard::new(
+        &d.dirs.home,
+        &d.dirs.agent_dir,
+        &d.dirs.tmp_dir,
+    )));
+    d
+}
+
+fn assert_readable_spill(s: &Session, path: &std::path::Path) {
+    let st = s.inner();
+    for mode in Mode::ALL {
+        assert_eq!(
+            st.policy.decide(mode, &Access::Read(path.to_path_buf()), &st.cwd),
+            Decision::Allow,
+            "{mode:?}: {}",
+            path.display()
+        );
+    }
+    assert!(
+        !st.policy.path_filter().expect("guard").hides(path),
+        "a readable spill must also be visible to directory-walking tools"
+    );
+}
+
+/// #555: --fork copies tool results verbatim, including their original spill paths.
+#[test]
+fn forked_and_resumed_sessions_can_read_inherited_spills_only() {
+    let env = TestEnv::new();
+    let store = Arc::new(MemStore::new());
+    let source = Session::open(guarded_deps(&env, store.clone()), Open::New).expect("source");
+    let full = "synthetic tool output\n".repeat(200);
+    let shaped = oxa_tools::shape(full.as_bytes(), 512, false, &source.inner().spill_dir);
+    let spill = std::fs::read_dir(&source.inner().spill_dir)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert!(shaped.contains(&spill.display().to_string()));
+    let src = source.inner().sref.clone();
+    store
+        .append(
+            &src,
+            &oxa_proto::Entry {
+                id: "deadbeef".into(),
+                parent: Some(source.inner().tree.leaf().to_string()),
+                ts_ms: 0,
+                body: EntryBody::Msg {
+                    wire: oxa_proto::WireMsg::tool_result("call", shaped.clone()),
+                    parts: Vec::new(),
+                    tool: None,
+                },
+            },
+        )
+        .unwrap();
+    let fork = Session::open(guarded_deps(&env, store.clone()), Open::Fork(src)).expect("fork");
+    assert!(fork
+        .inner()
+        .transcript
+        .wire()
+        .iter()
+        .any(|w| w.content.as_deref() == Some(&shaped)));
+    assert_readable_spill(&fork, &spill);
+    assert_eq!(std::fs::read_to_string(&spill).unwrap(), full);
+    // A fork of a fork, including a fresh-process resume, keeps the original output readable.
+    let nested = Session::open(
+        guarded_deps(&env, store.clone()),
+        Open::Fork(fork.inner().sref.clone()),
+    )
+    .expect("nested fork");
+    let mut resumed = Session::open(
+        guarded_deps(&env, store.clone()),
+        Open::Resume(nested.inner().sref.clone()),
+    )
+    .expect("resume");
+    assert_readable_spill(&resumed, &spill);
+    let st = resumed.inner();
+    for mode in Mode::ALL {
+        for access in [
+            Access::Read(st.dirs.tmp_dir.join("unrelated/out.txt")),
+            Access::Write(spill.clone()),
+            Access::Read(st.dirs.agent_dir.join("settings.json")),
+        ] {
+            assert_eq!(
+                st.policy.decide(mode, &access, &st.cwd),
+                Decision::Deny(oxa_perm::deny_reasons::SENSITIVE)
+            );
+        }
+    }
+    // Session switches revoke the inherited exceptions, even in the same process.
+    resumed
+        .switch(Open::New, &mut VecSink::default(), &mut HeadlessUi::default())
+        .unwrap();
+    let st = resumed.inner();
+    assert_eq!(
+        st.policy.decide(Mode::Workspace, &Access::Read(spill), &st.cwd),
+        Decision::Deny(oxa_perm::deny_reasons::SENSITIVE)
+    );
+}
+
+/// /clone and /fork switch without going through Session::open.
+#[test]
+fn live_clone_and_fork_rebind_spill_policy_and_walk_filter() {
+    let env = TestEnv::new();
+    let store = Arc::new(MemStore::new());
+    let mut s = Session::open(guarded_deps(&env, store), Open::New).unwrap();
+    let old = s.inner().spill_dir.clone();
+    s.clone_session().expect("clone");
+    assert_ne!(s.inner().spill_dir, old, "clone writes its own spill files");
+    assert_readable_spill(&s, &s.inner().spill_dir.join("out.txt"));
+    assert_readable_spill(&s, &old.join("inherited.txt"));
+    // The scripted engine has no turn, but prompt still persists a user message to fork before.
+    let _ = s.prompt(
+        "fork here".into(),
+        Vec::new(),
+        &mut VecSink::default(),
+        &mut HeadlessUi::default(),
+    );
+    let user = s
+        .inner()
+        .tree
+        .entries()
+        .iter()
+        .find(|e| matches!(&e.body, EntryBody::Msg { wire, .. } if wire.role == oxa_proto::Role::User))
+        .unwrap()
+        .id
+        .clone();
+    let before = s.inner().spill_dir.clone();
+    s.fork(&user).expect("live fork");
+    assert_ne!(s.inner().spill_dir, before, "fork writes its own spill files");
+    assert_readable_spill(&s, &s.inner().spill_dir.join("out.txt"));
+    assert_readable_spill(&s, &old.join("inherited.txt"));
+}

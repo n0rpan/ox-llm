@@ -581,6 +581,12 @@ fn the_current_spill_directory_reads_without_asking_and_no_other_does() {
             "{mode:?}"
         );
     }
+    assert!(
+        !p.path_filter()
+            .expect("guard")
+            .hides(&env.agent_dir().join("tmp/s1/0123.txt")),
+        "the walking tools must see the current session's spill files too"
+    );
     assert_eq!(
         p.decide(Mode::Workspace, &read("tmp/s2/0123.txt"), &env.work()),
         SENSITIVE,
@@ -615,4 +621,50 @@ fn the_current_spill_directory_reads_without_asking_and_no_other_does() {
         p.decide(Mode::Workspace, &read("tmp/s1/0123.txt"), &env.work()),
         SENSITIVE
     );
+}
+
+#[test]
+fn inherited_spills_are_read_only_and_cannot_escape_or_survive_a_switch() {
+    let env = TestEnv::new();
+    env.write("home/.oxa/agent/tmp/source/out.txt", "synthetic output");
+    env.write("home/.oxa/agent/tmp/unrelated/out.txt", "unrelated output");
+    let source = env.agent_dir().join("tmp/source");
+    let unrelated = env.agent_dir().join("tmp/unrelated/out.txt");
+    let linked = source.join("linked.txt");
+    std::os::unix::fs::symlink(&unrelated, &linked).unwrap();
+    let mut p = guarded(&env).with_yolo(oxa_proto::YoloSwitch::new(true));
+    p.set_spill_dir(&env.agent_dir().join("tmp/current"));
+    p.set_inherited_spill_dirs(std::slice::from_ref(&source));
+    for mode in Mode::ALL {
+        assert_eq!(
+            p.decide(mode, &Access::Read(source.join("out.txt")), &env.work()),
+            Decision::Allow
+        );
+        for access in [
+            Access::Write(source.join("out.txt")),
+            Access::Read(unrelated.clone()),
+            Access::Read(source.join("../unrelated/out.txt")),
+            Access::Read(linked.clone()),
+        ] {
+            p.remember(&access);
+            assert_eq!(
+                p.decide(mode, &access, &env.work()),
+                SENSITIVE,
+                "{mode:?} {access:?}"
+            );
+        }
+    }
+    let filter = p.path_filter().unwrap();
+    assert!(!filter.hides(&source.join("out.txt")));
+    assert!(filter.hides(&unrelated));
+    p.set_spill_dir(&env.agent_dir().join("tmp/new"));
+    assert_eq!(
+        p.decide(
+            Mode::Workspace,
+            &Access::Read(source.join("out.txt")),
+            &env.work()
+        ),
+        SENSITIVE
+    );
+    assert!(p.path_filter().unwrap().hides(&source.join("out.txt")));
 }
