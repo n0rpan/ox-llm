@@ -206,7 +206,7 @@ impl Tool for EditTool {
     /// `[Access::Write(path)]`.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
         let (path, _) = parse_args(args)?;
-        Ok(vec![Access::Write(crate::resolve_path(cx.cwd, &path))])
+        Ok(vec![Access::Write(crate::resolve_tool_path(cx, &path))])
     }
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         let (path, edits) = match parse_args(args) {
@@ -216,7 +216,7 @@ impl Tool for EditTool {
         if cx.cancel.is_cancelled() {
             return ToolOutput::error(errors::ABORTED);
         }
-        let abs = crate::resolve_path(cx.cwd, &path);
+        let abs = crate::resolve_tool_path(cx, &path);
 
         // Resolve once, using the permission check's pin when present. Opening for read and
         // write checks both without truncating. All in-place writes use this verified handle;

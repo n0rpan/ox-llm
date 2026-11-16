@@ -373,7 +373,7 @@ fn started_in_home_the_startup_files_ask_and_the_folders_are_the_workspace() {
     env.write("home/project/keep", "");
     env.write("home/.config/systemd/user/a.service", "");
     let home = env.home();
-    let switch = oxa_proto::YoloSwitch::new(true);
+    let switch = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Auto);
     for p in [guarded(&env), guarded(&env).with_yolo(switch)] {
         for rel in [
             ".bashrc",
@@ -860,7 +860,7 @@ fn inherited_spills_are_read_only_and_cannot_escape_or_survive_a_switch() {
     let unrelated = env.agent_dir().join("tmp/unrelated/out.txt");
     let linked = source.join("linked.txt");
     std::os::unix::fs::symlink(&unrelated, &linked).unwrap();
-    let mut p = guarded(&env).with_yolo(oxa_proto::YoloSwitch::new(true));
+    let mut p = guarded(&env).with_yolo(oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Auto));
     p.set_spill_dir(&env.agent_dir().join("tmp/current"));
     p.set_inherited_spill_dirs(std::slice::from_ref(&source));
     for mode in Mode::ALL {
@@ -895,4 +895,45 @@ fn inherited_spills_are_read_only_and_cannot_escape_or_survive_a_switch() {
         SENSITIVE
     );
     assert!(p.path_filter().unwrap().hides(&source.join("out.txt")));
+}
+
+/// #597: the session's scratch directory (`/tmp` inside the bash sandbox) reads without a
+/// question in every mode, also for an unattended run; a link out of it is judged at its target,
+/// and neither another directory next to it nor a write there is excepted.
+#[test]
+fn the_session_scratch_reads_without_asking_and_links_out_of_it_do_not() {
+    let env = TestEnv::new();
+    let root = env.home().join(".cache/oxa/scratch");
+    let scratch = root.join("1-0");
+    env.write("home/.cache/oxa/scratch/1-0/notes.json", "{}");
+    env.write("home/.cache/oxa/scratch/2-0/notes.json", "{}");
+    env.write("outside/data.txt", "x");
+    let outside = env.root().join("outside/data.txt");
+    std::os::unix::fs::symlink(&outside, scratch.join("to-outside")).unwrap();
+    std::os::unix::fs::symlink(env.home().join(".ssh"), scratch.join("keys")).unwrap();
+    let p = ModePolicy::new().with_guard(
+        PathGuard::new(&env.home(), &env.agent_dir(), &env.agent_dir().join("tmp")).with_scratch(&scratch),
+    );
+    for mode in Mode::ALL {
+        let read = |path: PathBuf| p.decide(mode, &Access::Read(path), &env.work());
+        assert_eq!(read(scratch.join("notes.json")), Decision::Allow, "{mode:?}");
+        assert_eq!(
+            read(scratch.clone()),
+            Decision::Allow,
+            "the directory itself ({mode:?})"
+        );
+        assert_eq!(
+            read(root.join("2-0/notes.json")),
+            Decision::Ask,
+            "another session ({mode:?})"
+        );
+        assert_eq!(read(scratch.join("../2-0/notes.json")), Decision::Ask, "{mode:?}");
+        assert_eq!(read(scratch.join("to-outside")), Decision::Ask, "{mode:?}");
+        assert_eq!(read(scratch.join("keys/id_test")), SENSITIVE, "{mode:?}");
+    }
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Write(scratch.join("x")), &env.work()),
+        Decision::Ask,
+        "the exception is for reads"
+    );
 }

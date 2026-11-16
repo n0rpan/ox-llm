@@ -3338,7 +3338,13 @@ fn key_013() {
     let t = Setup::new()
         .profile(TermProfile::kitty())
         .fake(three_models())
-        .replies("model answer", 3)
+        .script(&[
+            text("model answer"),
+            // The visible answer is not an idle-session witness: hold the stream open after
+            // its content delta, longer than the harness's 250 ms screen-quiet interval.
+            json!({"text": "model answer", "fault": {"kind": "stall", "bytes": 350, "ms": 1500}}),
+            text("model answer"),
+        ])
         .start();
     assert!(footer(&t.screen()).contains("model-a"), "{:?}", t.screen());
     t.key("ctrl+l");
@@ -3364,13 +3370,15 @@ fn key_013() {
     t.type_text("two");
     t.key("enter");
     assert_eq!(t.wait_chats(2)[1].model, "model-a");
-    // The selector needs an idle session: wait until the reply to "two" is on the screen
-    // below its prompt, then for a settled screen.
-    t.wait("the second reply", |s| {
+    // The selector needs an idle session: answer text and even a quiet screen can precede
+    // the stream's end. Wait for the busy indicator to clear, just as Tui::prompt does.
+    t.wait("the second reply and idle session", |s| {
         let rows = s.rows();
-        rows.iter()
-            .position(|r| r.trim() == "two")
-            .is_some_and(|i| rows[i..].iter().any(|r| r.contains("model answer")))
+        !s.contains("Working")
+            && rows
+                .iter()
+                .position(|r| r.trim() == "two")
+                .is_some_and(|i| rows[i..].iter().any(|r| r.contains("model answer")))
     });
     t.settle();
     // ctrl+s in the selector: select and save as the default model.
@@ -3459,39 +3467,51 @@ fn key_014() {
     t.wait("f4 cycles", |s| footer(s).ends_with("• minimal"));
 }
 
-/// KEY-015: `app.mode.cycle` (alt+m): plan -> workspace -> ask.
+/// KEY-015: `app.mode.cycle` (alt+m): standard -> auto -> yolo.
 #[test]
 fn key_015() {
-    // invariant: oxa only; the mode order is plan -> workspace -> ask (the default is alt+m).
-    // The mode is display and permission state, never wire text (W3): the system prompt of
-    // the next request is the same in every mode.
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
-    let t = Setup::new().replies("ok", 2).start();
-    assert!(footer(&t.screen()).contains("workspace"));
-    t.prompt("one", "ok");
-    t.key("alt+m");
-    t.wait("ask mode", |s| footer(s).contains(" ask"));
-    t.key("alt+m");
-    t.wait("plan mode", |s| footer(s).contains(" plan"));
-    t.key("alt+m");
-    t.wait("workspace mode", |s| footer(s).contains("workspace"));
-    t.key("alt+m");
-    t.wait("ask mode", |s| footer(s).contains(" ask"));
-    t.type_text("two");
-    t.key("enter");
-    let chats = t.wait_chats(2);
-    assert_eq!(
-        chats[0].system, chats[1].system,
-        "no mode text in the frozen prefix"
-    );
-    drop(t);
+    // invariant: oxa only; the cycle is auto -> yolo -> standard (the default is alt+m).
+    // The mode is display and permission state, never wire text (W3). Under yolo the badge
+    // row `YOLO full access` sits below the footer, so look at the bottom two rows.
+    let footer = |s: &Screen| {
+        let n = s.size().0;
+        format!("{}\n{}", s.row(n - 2), s.row(n - 1))
+    };
+    let is_mode = |s: &Screen, mode: &str| footer(s).split_whitespace().any(|word| word == mode);
+    // Also keep the auto-compaction marker visible at a wider size: it must not be
+    // mistaken for auto mode. Retain the normal 80-column layout (including its YOLO row).
+    for cols in [80, 120] {
+        let t = Setup::new().size(24, cols).replies("ok", 2).start();
+        assert!(is_mode(&t.screen(), "auto"));
+        t.prompt("one", "ok");
+        // Each transition changes the footer's height under YOLO. Observe a complete, quiet
+        // frame before sending another key, not a matching substring during the repaint.
+        t.key("alt+m");
+        t.wait_steady("yolo mode", |s| is_mode(s, "yolo"));
+        t.key("alt+m");
+        let standard = t.wait_steady("standard mode", |s| is_mode(s, "standard"));
+        assert!(
+            !is_mode(&standard, "auto"),
+            "auto-compaction is not auto permission mode: {standard:?}"
+        );
+        t.key("alt+m");
+        t.wait_steady("auto mode", |s| is_mode(s, "auto"));
+        t.type_text("two");
+        t.key("enter");
+        let chats = t.wait_chats(2);
+        assert_eq!(
+            chats[0].system, chats[1].system,
+            "no mode text in the frozen prefix"
+        );
+        drop(t);
+    }
     // Rebound: f3 cycles; alt+m does not.
     let t = Setup::new().keys(json!({ "app.mode.cycle": "f3" })).start();
     t.key("alt+m");
     let s = t.settle();
-    assert!(footer(&s).contains("workspace"), "{s:?}");
+    assert!(is_mode(&s, "auto"), "{s:?}");
     t.key("f3");
-    t.wait("ask mode", |s| footer(s).contains(" ask"));
+    t.wait_steady("yolo mode", |s| is_mode(s, "yolo"));
 }
 
 /// KEY-016: display and queue: tools expand, message copy, follow-up, dequeue.

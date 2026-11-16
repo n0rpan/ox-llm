@@ -416,6 +416,18 @@ fn prompts_keep_order_and_default_is_empty() {
     assert_eq!(parse(&[]), Args::default());
 }
 
+/// Review of #314: the last permission flag wins, also when it is `workspace` or `ask`.
+#[test]
+fn last_permission_flag_wins_over_an_earlier_yolo() {
+    use oxa_proto::PermissionMode;
+    for m in ["ask", "workspace"] {
+        let a = parse(&["--yolo", "--permission-mode", m]);
+        assert_eq!(a.level, Some(PermissionMode::Standard), "{m}");
+    }
+    let a = parse(&["--permission-mode", "ask", "--yolo"]);
+    assert_eq!(a.level, Some(PermissionMode::Yolo));
+}
+
 #[test]
 fn continue_consumes_an_explicit_id_and_leaves_the_new_instruction() {
     let args = parse(&["--continue=session-123", "next instruction"]);
@@ -445,5 +457,17 @@ fn max_time_accepts_fractional_seconds_and_rejects_invalid_durations() {
     );
     for value in ["0", "-1", "NaN", "inf", "1e100", "invalid"] {
         assert_eq!(parse_err(&["--max-time", value]).code, codes::USAGE, "{value}");
+    }
+}
+
+#[test]
+fn max_tokens_requires_a_positive_integer() {
+    assert_eq!(parse(&["--max-tokens", "42", "-p", "go"]).max_tokens, Some(42));
+    assert_eq!(
+        parse(&["--max-tokens=18446744073709551615"]).max_tokens,
+        Some(u64::MAX)
+    );
+    for value in ["0", "-1", "NaN", "inf", "1.5", "18446744073709551616", "invalid"] {
+        assert_eq!(parse_err(&["--max-tokens", value]).code, codes::USAGE, "{value}");
     }
 }

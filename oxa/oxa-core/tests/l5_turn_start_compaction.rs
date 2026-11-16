@@ -277,7 +277,7 @@ fn runtime_auto_compaction_off_disables_it() {
 #[test]
 fn pending_idle_summary_is_applied_without_a_request() {
     let env = TestEnv::new();
-    let stopped_reply = "y".repeat(4_100);
+    let stopped_reply = "y".repeat(4_000);
     // The context after the stopped run (the idle summary is on by default). The soft limit
     // sits just above it: the idle summary is made, and the aborted read's result (about 1200
     // tokens by the estimate) takes the context over the limit.
