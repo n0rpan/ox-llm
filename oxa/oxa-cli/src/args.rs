@@ -16,6 +16,8 @@ pub enum ModeArg {
 pub enum Subcommand {
     /// Read the live snapshot of a saved session.
     Status(Vec<String>),
+    /// Explicit owner ChatGPT sign-in/sign-out.
+    Login(bool, Vec<String>),
     /// `oxa work <taskfile> | --issue N --model MODEL`.
     Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
@@ -187,6 +189,11 @@ const COMMANDS: &[(&str, &str)] = &[
         "Update packages from their git or local sources (not oxa itself or model catalogs)",
     ),
     ("oxa list", "List installed packages"),
+    (
+        "oxa login chatgpt --experimental [--paste] [--replace]",
+        "Owner-only native experimental ChatGPT sign-in",
+    ),
+    ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
     (
         "oxa send <session-id> \"text\"",
         "Queue a session follow-up, waking its TUI or RPC owner",
@@ -387,6 +394,8 @@ fn usage(message: impl Into<String>) -> OxaError {
 /// The first word of a subcommand. `None` when the word is an ordinary prompt.
 fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaError> {
     Ok(Some(match word {
+        "login" => Subcommand::Login(false, rest.to_vec()),
+        "logout" => Subcommand::Login(true, rest.to_vec()),
         "mcp" => Subcommand::Mcp(rest.to_vec()),
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
@@ -399,12 +408,6 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "status" => Subcommand::Status(rest.to_vec()),
         "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
-        // pi's provider sign-in (`pi login [--api-key] [--no-browser]`, `pi logout`).
-        "login" | "logout" => {
-            return Err(OxaError::unsupported(&format!(
-                "the {word} command (provider sign-in)"
-            )))
-        }
         _ => return Ok(None),
     }))
 }

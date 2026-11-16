@@ -26,6 +26,7 @@ mod hooks;
 mod identity_cmd;
 mod in_process;
 mod limits;
+mod login_cmd;
 mod mcp_cmd;
 mod netguard;
 mod pkg_cmd;

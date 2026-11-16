@@ -431,21 +431,36 @@ pub fn read(path: &Path) -> Result<TokenRecord, Error> {
 /// fixed private directories; refuse links/foreign or writable ancestors and
 /// never relax an existing directory's permissions. Reads no credential bytes.
 pub fn prepare_login_path(home: &Path) -> Result<PathBuf, Error> {
-    let mut directory = OpenOptions::new().read(true)
-        .custom_flags((FLAGS | OFlag::O_DIRECTORY).bits()).open(home).map_err(|_| Error::Unavailable)?;
+    let mut directory = OpenOptions::new()
+        .read(true)
+        .custom_flags((FLAGS | OFlag::O_DIRECTORY).bits())
+        .open(home)
+        .map_err(|_| Error::Unavailable)?;
     let mut path = home.to_owned();
     for component in [".config", "oxc", "llm"] {
         let meta = directory.metadata().map_err(|_| Error::Unavailable)?;
-        if meta.uid() != getuid().as_raw() || meta.mode() & 0o022 != 0 { return Err(Error::UnsafeFile); }
+        if meta.uid() != getuid().as_raw() || meta.mode() & 0o022 != 0 {
+            return Err(Error::UnsafeFile);
+        }
         match mkdirat(&directory, component, Mode::S_IRWXU) {
             Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
             Err(_) => return Err(Error::Unavailable),
         }
-        directory = File::from(openat(&directory, component, FLAGS | OFlag::O_RDONLY | OFlag::O_DIRECTORY, Mode::empty()).map_err(|_| Error::UnsafeFile)?);
+        directory = File::from(
+            openat(
+                &directory,
+                component,
+                FLAGS | OFlag::O_RDONLY | OFlag::O_DIRECTORY,
+                Mode::empty(),
+            )
+            .map_err(|_| Error::UnsafeFile)?,
+        );
         path.push(component);
     }
     let meta = directory.metadata().map_err(|_| Error::Unavailable)?;
-    if meta.uid() != getuid().as_raw() || meta.mode() & 0o022 != 0 { return Err(Error::UnsafeFile); }
+    if meta.uid() != getuid().as_raw() || meta.mode() & 0o022 != 0 {
+        return Err(Error::UnsafeFile);
+    }
     Ok(path.join("chatgpt-auth.json"))
 }
 

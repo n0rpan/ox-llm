@@ -50,6 +50,7 @@ pub struct Login {
     listener: TcpListener,
     pending: Option<(TcpStream, Vec<u8>)>,
     state: String,
+    client_id: String,
     verifier: String,
     issuer: String,
     redirect: String,
@@ -64,10 +65,25 @@ pub struct Code {
 impl Login {
     /// Bind BEFORE presenting the authorization URL. No browser is launched.
     pub fn new() -> Result<Self, Error> {
+        Self::with_client_id(CLIENT_ID)
+    }
+    /// Same public-identity override contract as the production refresh factory.
+    pub fn with_client_id(client_id: &str) -> Result<Self, Error> {
+        if client_id.is_empty()
+            || client_id.len() > 128
+            || !client_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
+        {
+            return Err(Error::Setup);
+        }
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 1455)).map_err(|_| Error::Setup)?;
         let mut random = [0; 96];
         getrandom::fill(&mut random).map_err(|_| Error::Setup)?;
-        Self::start(listener, ISSUER.into(), REDIRECT.into(), &random, DEADLINE)
+        Self::start(listener, ISSUER.into(), REDIRECT.into(), &random, DEADLINE).map(|mut flow| {
+            flow.client_id = client_id.into();
+            flow
+        })
     }
     fn start(
         listener: TcpListener,
@@ -82,6 +98,7 @@ impl Login {
             pending: None,
             verifier: base64(&random[..64]),
             state: base64(&random[64..]),
+            client_id: CLIENT_ID.into(),
             issuer,
             redirect,
             deadline: Instant::now().checked_add(timeout).ok_or(Error::Setup)?,
@@ -92,7 +109,7 @@ impl Login {
         let mut url = url::Url::parse(&format!("{}/oauth/authorize", self.issuer)).expect("fixed issuer");
         url.query_pairs_mut().extend_pairs([
             ("response_type", "code"),
-            ("client_id", CLIENT_ID),
+            ("client_id", self.client_id.as_str()),
             ("redirect_uri", &self.redirect),
             ("scope", "openid profile email offline_access"),
             (
@@ -266,7 +283,7 @@ impl Login {
                 ("grant_type", "authorization_code"),
                 ("code", &code.value),
                 ("redirect_uri", &self.redirect),
-                ("client_id", CLIENT_ID),
+                ("client_id", self.client_id.as_str()),
                 ("code_verifier", &self.verifier),
             ];
             let response = client
@@ -343,4 +360,307 @@ fn base64(bytes: &[u8]) -> String {
         }
     }
     result
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "../../tests/common/openai.rs"]
+mod mock;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use std::{
+        fs,
+        os::unix::fs::{OpenOptionsExt, PermissionsExt},
+        path::PathBuf,
+        sync::{atomic::AtomicU64, Arc},
+    };
+    struct Home(PathBuf);
+    impl Home {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "native-login-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            Self(path)
+        }
+        fn path(&self) -> PathBuf {
+            self.0.join("chatgpt-auth.json")
+        }
+        fn old(&self) -> Vec<u8> {
+            let value = json!({"access_token":"synthetic-old-access","refresh_token":"synthetic-old-refresh","account_id":"synthetic-account","expires_at":2_000_000_000});
+            let mut f = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(self.path())
+                .unwrap();
+            f.write_all(value.to_string().as_bytes()).unwrap();
+            fs::read(self.path()).unwrap()
+        }
+    }
+    impl Drop for Home {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).unwrap();
+        }
+    }
+    fn flow(issuer: &str, timeout: Duration) -> Login {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let redirect = format!(
+            "http://localhost:{}/auth/callback",
+            listener.local_addr().unwrap().port()
+        );
+        Login::start(listener, issuer.into(), redirect, &[7; 96], timeout).unwrap()
+    }
+    fn callback(flow: &Login) -> String {
+        format!(
+            "{}?state={}&code=synthetic-authorization-code",
+            flow.redirect, flow.state
+        )
+    }
+    fn reply() -> Value {
+        let claims = json!({"https://api.openai.com/auth":{"chatgpt_account_id":"synthetic-account"}});
+        json!({"access_token":"synthetic-new-access","refresh_token":"synthetic-new-refresh","id_token":format!("synthetic.{}.unsigned",base64(claims.to_string().as_bytes())),"expires_in":3600})
+    }
+    #[test]
+    fn pkce_vector_randomness_and_public_fixed_contract() {
+        assert_eq!(base64(b"f"), "Zg");
+        assert_eq!(base64(b"fo"), "Zm8");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        assert_eq!(
+            base64(&Sha256::digest(verifier.as_bytes())),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+        let first = Login::new().unwrap();
+        let url = url::Url::parse(&first.authorization_url()).unwrap();
+        let params: BTreeMap<_, _> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert_eq!(url.origin().ascii_serialization(), ISSUER);
+        assert_eq!(params["redirect_uri"], REDIRECT);
+        assert_eq!(params["client_id"], CLIENT_ID);
+        assert_eq!(params["code_challenge_method"], "S256");
+        assert_eq!(
+            params["code_challenge"],
+            base64(&Sha256::digest(first.verifier.as_bytes()))
+        );
+        let state = first.state.clone();
+        let verifier = first.verifier.clone();
+        assert!(
+            matches!(Login::new(), Err(Error::Setup)),
+            "occupied fixed port cannot choose another redirect"
+        );
+        drop(first);
+        let second = Login::new().unwrap();
+        assert_ne!(state, second.state);
+        assert_ne!(verifier, second.verifier);
+        for id in ["", "bad id", "bad/id", "λ", &"x".repeat(129)] {
+            assert!(matches!(Login::with_client_id(id), Err(Error::Setup)));
+        }
+    }
+    #[test]
+    fn complete_fake_pkce_loopback_and_paste_publish_one_existing_record() {
+        for paste in [false, true] {
+            let home = Home::new();
+            let peer = mock::MockOpenAi::start(vec![mock::Reply::json(reply())]);
+            let mut flow = flow(&peer.base_url(), Duration::from_secs(2));
+            let stop = AtomicBool::new(false);
+            let code = if paste {
+                flow.pasted_callback(&callback(&flow), &stop).unwrap()
+            } else {
+                let addr = flow.listener.local_addr().unwrap();
+                let mut socket = TcpStream::connect(addr).unwrap();
+                let request=format!("GET /auth/callback?state={}&code=synthetic-authorization-code HTTP/1.1\r\nHost: localhost:{}\r\n\r\n",flow.state,addr.port());
+                let (first, last) = request.split_at(request.len() / 2);
+                socket.write_all(first.as_bytes()).unwrap();
+                assert!(flow.poll_callback(&stop).unwrap().is_none());
+                socket.write_all(last.as_bytes()).unwrap();
+                let code = loop {
+                    if let Some(code) = flow.poll_callback(&stop).unwrap() {
+                        break code;
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                };
+                let mut answer = String::new();
+                socket.read_to_string(&mut answer).unwrap();
+                assert!(answer.ends_with("Callback received. Return to oxa."));
+                assert!(!answer.contains("synthetic-authorization-code"));
+                code
+            };
+            flow.finish(code, &home.path(), false, &["synthetic-account"], &stop)
+                .unwrap();
+            let record = chatgpt_tokens::read(&home.path()).unwrap();
+            assert_eq!(record.access_token(), "synthetic-new-access");
+            assert_eq!(record.account_id(), "synthetic-account");
+            assert_eq!(
+                fs::metadata(home.path()).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let raw = fs::read_to_string(home.path()).unwrap();
+            assert!(!raw.contains("id_token"));
+            let requests = peer.wait_for_requests(1);
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].body["code_verifier"], flow.verifier);
+            assert_eq!(requests[0].body["grant_type"], "authorization_code");
+            assert_eq!(requests[0].body["redirect_uri"], flow.redirect);
+            assert_eq!(requests[0].body["client_id"], CLIENT_ID);
+            let code = flow.pasted_callback(&callback(&flow), &stop).unwrap();
+            assert_eq!(
+                flow.finish(code, &home.path(), true, &[], &stop),
+                Err(Error::Callback)
+            );
+        }
+    }
+    #[test]
+    fn callbacks_reject_wrong_state_duplicates_paths_hosts_and_provider_errors_without_exchange() {
+        let flow = flow("http://127.0.0.1:9", Duration::from_secs(1));
+        let stop = AtomicBool::new(false);
+        for bad in [
+            format!("{}?code=x", flow.redirect),
+            format!("{}?state=wrong&code=x", flow.redirect),
+            format!(
+                "{}?state={}&state={}&code=x",
+                flow.redirect, flow.state, flow.state
+            ),
+            format!("{}?state={}&code=x&code=y", flow.redirect, flow.state),
+            format!(
+                "{}?state={}&code=x&error=synthetic-error",
+                flow.redirect, flow.state
+            ),
+            format!("{}?state={}&code=x#fragment", flow.redirect, flow.state),
+            callback(&flow).replace("localhost", "127.0.0.1"),
+            callback(&flow).replace("/auth/callback", "/other/../auth/callback"),
+        ] {
+            assert!(matches!(flow.pasted_callback(&bad, &stop), Err(Error::Callback)));
+        }
+        let port = flow.listener.local_addr().unwrap().port();
+        for (method, path, host) in [
+            ("POST", "/auth/callback", "localhost"),
+            ("GET", "/other", "localhost"),
+            ("GET", "/auth/callback", "example.invalid"),
+        ] {
+            let request = format!(
+                "{method} {path}?state={}&code=x HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n",
+                flow.state
+            );
+            assert!(matches!(
+                flow.request_code(request.as_bytes()),
+                Err(Error::Callback)
+            ));
+        }
+        let duplicate=format!("GET /auth/callback?state={}&code=x HTTP/1.1\r\nHost: localhost:{port}\r\nHost: localhost:{port}\r\n\r\n",flow.state);
+        assert!(matches!(
+            flow.request_code(duplicate.as_bytes()),
+            Err(Error::Callback)
+        ));
+        stop.store(true, Ordering::SeqCst);
+        assert!(matches!(
+            flow.pasted_callback(&callback(&flow), &stop),
+            Err(Error::Cancelled)
+        ));
+    }
+    #[test]
+    fn bounded_exchange_errors_and_account_refusal_preserve_previous_bytes() {
+        let oversized = vec![b'x'; MAX_BYTES + 1];
+        for response in [
+            mock::Reply::raw(
+                302,
+                "application/json",
+                b"{}".to_vec(),
+                vec![("Location", "http://127.0.0.1:9/unreachable".into())],
+            ),
+            mock::Reply::raw(200, "application/json", b"not json".to_vec(), vec![]),
+            mock::Reply::raw(200, "application/json", oversized, vec![]),
+            mock::Reply::json(
+                json!({"error":"synthetic-new-access","refresh_token":"synthetic-new-refresh"}),
+            ),
+            mock::Reply::json(
+                json!({"access_token":"synthetic-new-access","refresh_token":"synthetic-new-refresh","expires_in":3600}),
+            ),
+            mock::Reply::raw(401, "application/json", reply().to_string().into_bytes(), vec![]),
+        ] {
+            let home = Home::new();
+            let previous = home.old();
+            let peer = mock::MockOpenAi::start(vec![response]);
+            let mut flow = flow(&peer.base_url(), Duration::from_secs(2));
+            let stop = AtomicBool::new(false);
+            let code = flow.pasted_callback(&callback(&flow), &stop).unwrap();
+            let error = flow.finish(code, &home.path(), true, &[], &stop).unwrap_err();
+            assert_eq!(error, Error::Exchange);
+            for value in [
+                "synthetic-new-access",
+                "synthetic-new-refresh",
+                "synthetic-authorization-code",
+            ] {
+                assert!(!format!("{error:?} {error}").contains(value));
+            }
+            assert_eq!(fs::read(home.path()).unwrap(), previous);
+            assert_eq!(peer.requests().len(), 1);
+        }
+        let home = Home::new();
+        let previous = home.old();
+        let peer = mock::MockOpenAi::start(vec![mock::Reply::json(reply())]);
+        let mut flow = flow(&peer.base_url(), Duration::from_secs(2));
+        let stop = AtomicBool::new(false);
+        let code = flow.pasted_callback(&callback(&flow), &stop).unwrap();
+        assert_eq!(
+            flow.finish(code, &home.path(), true, &["other-synthetic-account"], &stop),
+            Err(Error::Storage)
+        );
+        assert_eq!(fs::read(home.path()).unwrap(), previous);
+    }
+    #[test]
+    fn held_exchange_cancel_deadline_and_store_lock_deadline_never_publish() {
+        for cancel in [false, true] {
+            let home = Home::new();
+            let previous = home.old();
+            let (response, gate) = mock::Reply::json(reply()).gated();
+            let peer = mock::MockOpenAi::start(vec![response]);
+            let mut flow = flow(&peer.base_url(), Duration::from_millis(150));
+            let stop = Arc::new(AtomicBool::new(false));
+            let code = flow.pasted_callback(&callback(&flow), &stop).unwrap();
+            let other = stop.clone();
+            let worker = std::thread::spawn(move || {
+                if cancel {
+                    std::thread::sleep(Duration::from_millis(30));
+                    other.store(true, Ordering::SeqCst);
+                }
+            });
+            let start = Instant::now();
+            let error = flow.finish(code, &home.path(), true, &[], &stop).unwrap_err();
+            worker.join().unwrap();
+            assert_eq!(error, if cancel { Error::Cancelled } else { Error::Expired });
+            assert!(start.elapsed() < Duration::from_secs(1));
+            assert_eq!(fs::read(home.path()).unwrap(), previous);
+            drop(gate);
+        }
+        let home = Home::new();
+        let previous = home.old();
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(home.0.join("chatgpt-auth.lock"))
+            .unwrap();
+        let lock = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive).unwrap();
+        let peer = mock::MockOpenAi::start(vec![mock::Reply::json(reply())]);
+        let mut flow = flow(&peer.base_url(), Duration::from_millis(150));
+        let stop = AtomicBool::new(false);
+        let code = flow.pasted_callback(&callback(&flow), &stop).unwrap();
+        assert_eq!(
+            flow.finish(code, &home.path(), true, &[], &stop),
+            Err(Error::Expired)
+        );
+        assert_eq!(fs::read(home.path()).unwrap(), previous);
+        drop(lock);
+    }
 }
