@@ -93,6 +93,9 @@ impl Bwrap {
 }
 
 impl Sandbox for Bwrap {
+    fn home(&self) -> Option<&Path> {
+        Some(&self.home)
+    }
     fn persistence_notice(&self) -> Option<&str> {
         if self.layout.scratch.is_some() {
             Some(SCRATCH_NOTICE)

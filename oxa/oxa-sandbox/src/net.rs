@@ -198,6 +198,9 @@ impl NetSandbox {
 }
 
 impl Sandbox for NetSandbox {
+    fn home(&self) -> Option<&std::path::Path> {
+        self.inner.home()
+    }
     fn persistence_notice(&self) -> Option<&str> {
         self.inner.persistence_notice()
     }

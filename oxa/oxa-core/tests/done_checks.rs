@@ -6,7 +6,11 @@ use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
-use oxa_proto::{AgentEvent, CancelToken, EventSink, ExecResult, ExecSpec, HeadlessUi, OxaError, Sandbox};
+use oxa_proto::{
+    Access, AgentEvent, CancelToken, CommandSpec, EventSink, ExecResult, ExecSpec, Exposure, HeadlessUi,
+    HookPoint, HookReply, Hooks, OxaError, Sandbox, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec,
+    Ui,
+};
 use oxa_resources::Resources;
 use oxa_session::MemStore;
 use serde_json::json;
@@ -79,12 +83,28 @@ fn run_settings(
     turns: Vec<ScriptTurn>,
     sandbox: Arc<dyn Sandbox>,
 ) -> (Rec, Arc<ScriptedEngine>, bool) {
+    run_tools(env, settings, turns, sandbox, Vec::new())
+}
+
+fn run_tools(
+    env: &TestEnv,
+    settings: Settings,
+    turns: Vec<ScriptTurn>,
+    sandbox: Arc<dyn Sandbox>,
+    extra: Vec<Arc<dyn Tool>>,
+) -> (Rec, Arc<ScriptedEngine>, bool) {
     let engine = Arc::new(ScriptedEngine::new(turns));
+    let tools = oxa_tools::builtin_tools();
+    let hooks: Vec<Arc<dyn Hooks>> = if extra.is_empty() {
+        Vec::new()
+    } else {
+        vec![Arc::new(ExtTools(extra))]
+    };
     let deps = Deps {
         engine: engine.clone(),
         store: Arc::new(MemStore::new()),
-        tools: oxa_tools::builtin_tools(),
-        hooks: Vec::new(),
+        tools,
+        hooks,
         policy: Box::new(ModePolicy::new()),
         sandbox,
         settings,
@@ -752,4 +772,133 @@ fn repeat_guard_stop_is_a_failure_and_still_runs_the_done_checks() {
     assert!(checks[0].contains("CHECKED"), "{checks:?}");
     // The failure is reported; nothing is sent back to the model after the stop.
     assert_eq!(engine.requests().len(), 7);
+}
+
+/// A hook set that offers tools (how extension, MCP and sub-agent tools reach a session).
+struct ExtTools(Vec<Arc<dyn Tool>>);
+
+impl Hooks for ExtTools {
+    fn fire(&self, _p: HookPoint, _payload: &serde_json::Value, _ui: &mut dyn Ui) -> HookReply {
+        HookReply::Continue
+    }
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.0.clone()
+    }
+    fn commands(&self) -> Vec<CommandSpec> {
+        Vec::new()
+    }
+    fn run_command(&self, _name: &str, _args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+}
+
+/// An extension / MCP / sub-agent style tool: not a built-in, writes a file when `write` is set.
+struct Outside {
+    spec: ToolSpec,
+    write: bool,
+}
+
+impl Outside {
+    fn tool(name: &str, write: bool) -> Arc<dyn Tool> {
+        Arc::new(Outside {
+            spec: ToolSpec {
+                name: name.to_string(),
+                description: "test tool".to_string(),
+                schema_json: "{}".to_string(),
+                class: ToolClass::Read,
+                exposure: Exposure::Direct,
+                source: Source::Extension("ext.js".to_string()),
+            },
+            write,
+        })
+    }
+}
+
+impl Tool for Outside {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+    fn default_selected(&self) -> bool {
+        true
+    }
+    fn access(&self, _args: &serde_json::Value, _cx: &ToolCtx) -> Result<Vec<Access>, String> {
+        Ok(Vec::new())
+    }
+    fn run(&self, _args: &serde_json::Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
+        if self.write {
+            std::fs::write(cx.cwd.join("made-by-tool.txt"), "x").unwrap();
+        }
+        ToolOutput::ok("ok")
+    }
+}
+
+fn outside(env: &TestEnv, write: bool) -> Vec<String> {
+    let settings = Settings::from_values(json!({ "done": ["true"] }), json!({}));
+    let (rec, _, _) = run_tools(
+        env,
+        settings,
+        vec![ScriptTurn::tool("t1", "mcp_edit", "{}"), ScriptTurn::text("done")],
+        Arc::new(Direct),
+        vec![Outside::tool("mcp_edit", write)],
+    );
+    rec.checks()
+}
+
+#[test]
+fn non_builtin_tool_edit_in_a_git_repo_triggers_checks() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    assert_eq!(outside(&env, true), vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn non_builtin_tool_edit_outside_git_triggers_checks() {
+    let env = TestEnv::new();
+    assert_eq!(outside(&env, true), vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn non_builtin_tool_edit_outside_git_with_unreadable_subdirectory_triggers_checks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    let blocked = env.work().join("unreadable");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(std::fs::read_dir(&blocked).is_err(), "fixture must be unreadable");
+    let unchanged = outside(&env, false);
+    let changed = outside(&env, true);
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(unchanged.is_empty(), "{unchanged:?}");
+    assert_eq!(changed, vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn non_builtin_tool_without_changes_runs_no_checks() {
+    let env = TestEnv::new();
+    std::fs::write(env.work().join("a.txt"), "a").unwrap();
+    assert!(outside(&env, false).is_empty());
+    git_in(&env, &["init", "-q"]);
+    assert!(outside(&env, false).is_empty());
+}
+
+#[test]
+fn bash_made_change_outside_git_triggers_checks() {
+    let env = TestEnv::new();
+    let (rec, _) = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool(
+                "b1",
+                "bash",
+                &json!({"command": "echo hi > made-by-bash.txt"}).to_string(),
+            ),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(rec.checks(), vec!["done check: true ok".to_string()]);
 }
