@@ -4,3 +4,4 @@ pub mod command;
 pub mod keys;
 pub mod listener;
 mod protocol;
+pub mod tailnet;
