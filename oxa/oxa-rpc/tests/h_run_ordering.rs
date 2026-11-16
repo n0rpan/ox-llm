@@ -633,3 +633,90 @@ fn inbox_tracks_rpc_session_switches_and_leaves_the_old_inbox_alone() {
         0
     );
 }
+
+#[test]
+fn inbox_arriving_during_session_switch_stays_with_its_destination() {
+    struct DuringSwitch {
+        agent: PathBuf,
+        old_id: Mutex<String>,
+    }
+    impl Hooks for DuringSwitch {
+        fn fire(&self, point: HookPoint, _: &Value, _: &mut dyn Ui) -> HookReply {
+            if point == HookPoint::SessionBeforeSwitch {
+                let old_id = self.old_id.lock().unwrap();
+                oxa_session::send_inbox(&self.agent, &old_id, "old session only").unwrap();
+                // Give the live watcher time to see the file while the switch is in progress.
+                let deadline = Instant::now() + Duration::from_millis(300);
+                while Instant::now() < deadline {
+                    if std::fs::read_dir(self.agent.join("inbox").join(&*old_id))
+                        .unwrap()
+                        .count()
+                        == 0
+                    {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+            HookReply::Continue
+        }
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            Vec::new()
+        }
+        fn commands(&self) -> Vec<CommandSpec> {
+            Vec::new()
+        }
+        fn run_command(&self, _: &str, _: &str, _: &mut dyn Ui) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn prompt_sections(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+    }
+    let env = TestEnv::new();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let hook = Arc::new(DuringSwitch {
+        agent: agent.clone(),
+        old_id: Mutex::new(String::new()),
+    });
+    let session = open_session(&env, vec![ScriptTurn::text("new reply")], vec![hook.clone()]);
+    let old_id = session.state().session_id;
+    *hook.old_id.lock().unwrap() = old_id.clone();
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    served.send(json!({"type": "new_session", "id": "new"}));
+    served.wait("switch response", |lines| response(lines, "new").is_some());
+    served.send(json!({"type": "get_state", "id": "state"}));
+    served.wait("new state", |lines| response(lines, "state").is_some());
+    served.send(json!({"type": "prompt", "id": "prompt", "message": "new session only"}));
+    served.wait("new prompt settles", |lines| {
+        lines.iter().any(|v| v["type"] == "agent_settled")
+    });
+    served.send(json!({"type": "get_messages", "id": "messages"}));
+    served.wait("messages", |lines| response(lines, "messages").is_some());
+    let lines = served.close(3, 0);
+    assert!(!response(&lines, "messages")
+        .unwrap()
+        .to_string()
+        .contains("old session only"));
+    assert_eq!(
+        std::fs::read_dir(agent.join("inbox").join(old_id))
+            .unwrap()
+            .count(),
+        1,
+        "a switch must not consume the old session's pending text"
+    );
+}
+
+#[test]
+fn inbox_rebinding_rearms_admitted_messages_without_files() {
+    let env = TestEnv::new();
+    let session = open_session(&env, vec![ScriptTurn::text("received")], Vec::new());
+    let handle = session.handle();
+    handle.follow_up_for(&session.state().session_id, "already admitted".into());
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    served.wait("admitted inbox run", |lines| {
+        lines.iter().any(|v| v["type"] == "agent_settled")
+    });
+    served.close(3, 0);
+    assert!(!handle.has_inbox_input());
+}

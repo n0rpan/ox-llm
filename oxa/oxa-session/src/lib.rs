@@ -23,7 +23,7 @@ mod inbox;
 mod lifecycle;
 mod lock;
 
-pub use inbox::{send_inbox, valid_inbox_id, Inbox};
+pub use inbox::{remove_inbox, send_inbox, valid_inbox_id, Inbox};
 mod meta;
 mod ops;
 mod spill;

@@ -40,6 +40,13 @@ impl Directory {
         file.set_permissions(fs::Permissions::from_mode(0o700))?;
         Ok(Self(file))
     }
+    fn lock(&self) -> io::Result<()> {
+        // SAFETY: the directory fd is live; flock doesn't access memory.
+        if unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
     fn path(&self) -> PathBuf {
         PathBuf::from(format!("/proc/self/fd/{}", self.0.as_raw_fd()))
     }
@@ -63,6 +70,35 @@ fn directory(agent_dir: &Path, id: &str) -> io::Result<Directory> {
     }
     DirBuilder::new().recursive(true).mode(0o700).create(agent_dir)?;
     Directory::open(agent_dir)?.child("inbox")?.child(id)
+}
+
+/// Privacy wipe: remove one session's queued prompts, or all inbox storage including
+/// orphaned queues and unpublished temporary files. Pin each parent before deleting so a
+/// symlink at `agent_dir` or `inbox` cannot redirect a session-specific wipe.
+pub fn remove_inbox(agent_dir: &Path, id: Option<&str>) -> Result<usize, oxa_proto::OxaError> {
+    let remove = || -> Result<usize, oxa_proto::OxaError> {
+        let agent = match Directory::open(agent_dir) {
+            Ok(dir) => dir,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(oxa_proto::OxaError::io("cannot open inbox parent", &e)),
+        };
+        let root = agent.path().join("inbox");
+        match id {
+            None => crate::remove_all_spill(&root),
+            Some(id) => {
+                let inbox = match Directory::open(&root) {
+                    Ok(dir) => dir,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+                    Err(e) => return Err(oxa_proto::OxaError::io("cannot open inbox", &e)),
+                };
+                crate::remove_spill_dir(&inbox.path(), id)
+            }
+        }
+    };
+    if let Some(id) = id {
+        crate::store::validate_session_id(id)?;
+    }
+    remove()
 }
 
 /// Publish exactly one message without contacting an engine or requiring a running owner.
@@ -108,10 +144,7 @@ impl Inbox {
         mut deliver: impl FnMut(String) -> bool + Send + 'static,
     ) -> io::Result<Self> {
         let dir = directory(agent_dir, id)?;
-        // SAFETY: the live directory fd is held by dir; flock doesn't access memory.
-        if unsafe { libc::flock(dir.0.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
+        dir.lock()?;
         // SAFETY: inotify_init1 has no pointer arguments; the returned fd is owned below.
         let fd = unsafe { libc::inotify_init1(libc::IN_CLOEXEC) };
         if fd < 0 {

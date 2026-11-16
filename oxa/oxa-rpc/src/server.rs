@@ -419,9 +419,20 @@ fn session_loop(
     let mut inbox_id = String::new();
     loop {
         let id = cx.session.inner().sref.id.clone();
-        if inbox_id != id {
+        if inbox_id != id || inbox.is_none() {
             drop(inbox.take());
             inbox_id = id.clone();
+            // A prior wake may have been discarded while this destination was inactive.
+            // Re-arm it on return even when its admitted files are already gone.
+            if cx.handle.has_inbox_input() && !cx.handle.wrap_up_requested() {
+                let mut g = lock(&gate);
+                if !g.closed {
+                    g.pending += 1;
+                    if tx.send(Job::Inbox(id.clone())).is_err() {
+                        g.pending -= 1;
+                    }
+                }
+            }
             let handle = cx.handle.clone();
             let sender = tx.clone();
             let gate = gate.clone();
@@ -430,7 +441,7 @@ fn session_loop(
                 if gate.closed || handle.wrap_up_requested() {
                     return false;
                 }
-                handle.follow_up(text);
+                handle.follow_up_for(&id, text);
                 gate.pending += 1;
                 if sender.send(Job::Inbox(id.clone())).is_err() {
                     gate.pending -= 1;
@@ -481,6 +492,14 @@ fn session_loop(
             ),
             Job::Shutdown => break,
         };
+        // Join the old watcher before any explicit session transition. Already admitted
+        // follow-ups retain their destination in the core queue.
+        if matches!(
+            cmd.kind.as_str(),
+            "new_session" | "switch_session" | "fork" | "clone"
+        ) {
+            drop(inbox.take());
+        }
         let _ = cx.session.take_outcome();
         let is_bash = cmd.kind == "bash";
         bash_running.store(is_bash, Ordering::SeqCst);

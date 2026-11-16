@@ -114,3 +114,35 @@ fn inbox_concurrent_writers_do_not_overwrite_messages() {
     assert_eq!(received.len(), 12);
     drop(watch);
 }
+
+#[test]
+fn inbox_wipe_covers_orphans_temporary_files_and_rejects_symlink_parents() {
+    use oxa_session::remove_inbox;
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    assert_eq!(remove_inbox(&agent, None).unwrap(), 0);
+    send_inbox(&agent, "session-638", "queued").unwrap();
+    send_inbox(&agent, "orphan", "no session file").unwrap();
+    fs::write(agent.join("inbox/session-638/.partial.tmp"), "unfinished").unwrap();
+    assert_eq!(remove_inbox(&agent, Some("session-638")).unwrap(), 2);
+    assert!(!agent.join("inbox/session-638").exists());
+    assert!(agent.join("inbox/orphan").exists());
+    assert_eq!(remove_inbox(&agent, None).unwrap(), 1);
+    assert!(!agent.join("inbox").exists());
+    let outside = env.root().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::create_dir(outside.join("session-638")).unwrap();
+    fs::write(outside.join("session-638/keep.msg"), "untouched").unwrap();
+    symlink(&outside, agent.join("inbox")).unwrap();
+    assert!(remove_inbox(&agent, Some("session-638")).is_err());
+    assert!(remove_inbox(&agent, None).is_err());
+    fs::remove_file(agent.join("inbox")).unwrap();
+    fs::create_dir(agent.join("inbox")).unwrap();
+    symlink(outside.join("session-638"), agent.join("inbox/session-638")).unwrap();
+    assert!(remove_inbox(&agent, Some("session-638")).is_err());
+    assert!(remove_inbox(&agent, Some("../outside")).is_err());
+    assert_eq!(
+        fs::read_to_string(outside.join("session-638/keep.msg")).unwrap(),
+        "untouched"
+    );
+}

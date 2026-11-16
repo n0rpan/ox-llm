@@ -2,6 +2,7 @@
 // ported from pi packages/agent/src/agent.ts (steer, followUp, queue modes)
 use oxa_config::QueueMode;
 use oxa_proto::CancelToken;
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -10,6 +11,27 @@ use std::sync::{Arc, Mutex, MutexGuard};
 pub struct Queue {
     pub steering: Vec<String>,
     pub follow_up: Vec<String>,
+    session_id: String,
+    /// Inbox messages stay with their destination, including across switches and clones.
+    session_follow_up: BTreeMap<String, Vec<String>>,
+}
+
+impl Queue {
+    fn follow_ups(&self) -> impl Iterator<Item = &String> {
+        self.follow_up
+            .iter()
+            .chain(self.session_follow_up.get(&self.session_id).into_iter().flatten())
+    }
+
+    fn take_follow_up(&mut self, mode: QueueMode) -> Vec<String> {
+        let mut taken = take_by_mode(&mut self.follow_up, mode);
+        if mode == QueueMode::All || taken.is_empty() {
+            if let Some(messages) = self.session_follow_up.get_mut(&self.session_id) {
+                taken.extend(take_by_mode(messages, mode));
+            }
+        }
+        taken
+    }
 }
 
 /// State shared between a `Session` and its `Handle`s.
@@ -160,10 +182,22 @@ impl Shared {
         Ok(GateGuard(self.clone()))
     }
 
-    /// Steering or follow-up messages are queued.
+    /// Rebind only the inbox view; ordinary steering and follow-up behavior is unchanged.
+    pub(crate) fn bind_session(&self, id: &str) {
+        let mut q = lock(&self.queue);
+        if q.session_id != id {
+            let had_input = q.follow_ups().next().is_some();
+            q.session_id = id.to_string();
+            if had_input || q.follow_ups().next().is_some() {
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Steering or follow-up messages for the active session are queued.
     pub fn has_input(&self) -> bool {
         let q = lock(&self.queue);
-        !q.steering.is_empty() || !q.follow_up.is_empty()
+        !q.steering.is_empty() || q.follow_ups().next().is_some()
     }
 
     /// ENG-002: arm the background cancel for one background request. Returns `false` (send
@@ -193,7 +227,7 @@ impl Shared {
     /// Take follow-ups when the agent would stop; same mode rule.
     pub fn take_follow_up(&self) -> Vec<String> {
         let mode = lock(&self.modes).1;
-        let taken = take_by_mode(&mut lock(&self.queue).follow_up, mode);
+        let taken = lock(&self.queue).take_follow_up(mode);
         if !taken.is_empty() {
             self.dirty.store(true, Ordering::SeqCst);
         }
@@ -203,7 +237,7 @@ impl Shared {
     /// Both queues, cloned (steering, follow-up).
     pub(crate) fn snapshot(&self) -> (Vec<String>, Vec<String>) {
         let q = lock(&self.queue);
-        (q.steering.clone(), q.follow_up.clone())
+        (q.steering.clone(), q.follow_ups().cloned().collect())
     }
 }
 
@@ -230,11 +264,33 @@ impl Handle {
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
     }
-    /// Remove and return all queued messages, steering first (Alt+Up, `clear_queue`).
+    /// Whether the active session has admitted inbox input (including after switching back).
+    pub fn has_inbox_input(&self) -> bool {
+        let q = lock(&self.shared.queue);
+        q.session_follow_up
+            .get(&q.session_id)
+            .is_some_and(|messages| !messages.is_empty())
+    }
+
+    /// Queue an inbox follow-up bound to its destination, not to whichever session is
+    /// active when the watcher runs. Inactive messages remain available on switching back.
+    pub fn follow_up_for(&self, session_id: &str, text: String) {
+        let mut q = lock(&self.shared.queue);
+        q.session_follow_up
+            .entry(session_id.to_string())
+            .or_default()
+            .push(text);
+        if q.session_id == session_id {
+            self.shared.dirty.store(true, Ordering::SeqCst);
+            self.shared.gate.bg_cancel.cancel();
+        }
+    }
+
+    /// Remove and return active queued messages, steering first (Alt+Up, `clear_queue`).
     pub fn dequeue(&self) -> Vec<String> {
         let (mut steering, follow_up) = {
             let mut q = lock(&self.shared.queue);
-            (std::mem::take(&mut q.steering), std::mem::take(&mut q.follow_up))
+            (std::mem::take(&mut q.steering), q.take_follow_up(QueueMode::All))
         };
         let changed = !steering.is_empty() || !follow_up.is_empty();
         steering.extend(follow_up);
@@ -464,6 +520,33 @@ mod tests {
         assert!(sh.dirty.load(Ordering::SeqCst));
         assert_eq!(sh.take_follow_up(), vec!["b"]);
         assert!(sh.take_follow_up().is_empty());
+    }
+
+    #[test]
+    fn inbox_follow_ups_remain_bound_across_session_changes() {
+        let h = handle(QueueMode::All, QueueMode::OneAtATime);
+        h.shared.bind_session("old");
+        h.follow_up_for("old", "already admitted".into());
+        assert!(h.shared.has_input());
+        assert_eq!(h.queued().1, ["already admitted"]);
+        h.shared.bind_session("new");
+        h.shared.gate.bg_cancel.reset();
+        h.follow_up_for("old", "racing callback".into());
+        assert!(!h.shared.has_input());
+        assert!(!h.shared.gate.bg_cancel.is_cancelled());
+        assert!(h.shared.take_follow_up().is_empty());
+        assert!(
+            h.dequeue().is_empty(),
+            "clearing the new queue must leave the old inbox alone"
+        );
+        h.follow_up("ordinary follow-up".into());
+        h.follow_up_for("new", "new inbox".into());
+        assert_eq!(h.shared.take_follow_up(), ["ordinary follow-up"]);
+        assert_eq!(h.shared.take_follow_up(), ["new inbox"]);
+        h.shared.bind_session("old");
+        assert_eq!(h.shared.take_follow_up(), ["already admitted"]);
+        assert_eq!(h.dequeue(), ["racing callback"]);
+        assert!(!h.shared.has_input());
     }
 
     #[test]
