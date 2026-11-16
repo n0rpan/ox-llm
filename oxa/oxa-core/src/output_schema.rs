@@ -15,19 +15,52 @@ impl OutputSchema {
     }
 
     pub fn matches(&self, text: &str) -> bool {
-        serde_json::from_str::<Value>(text).is_ok_and(|value| matches_value(&self.0, &value))
+        self.validate(text).is_ok()
+    }
+
+    /// Validate a JSON answer, returning the first failure's JSON Pointer and reason.
+    pub fn validate(&self, text: &str) -> Result<(), OutputValidationError> {
+        let value = serde_json::from_str::<Value>(text).map_err(|_| OutputValidationError {
+            instance_path: String::new(),
+            message: "Invalid JSON",
+        })?;
+        validate_value(&self.0, &value, "")
     }
 }
 
+/// An answer validation failure. The empty pointer denotes the document root.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputValidationError {
+    pub instance_path: String,
+    pub message: &'static str,
+}
+
+impl std::fmt::Display for OutputValidationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} at JSON pointer {:?}", self.message, self.instance_path)
+    }
+}
+
+impl std::error::Error for OutputValidationError {}
+
 fn check_schema(schema: &Value, depth: usize) -> Result<(), &'static str> {
-    let bad = "Invalid output schema: supported keywords are type, properties, items, enum and required (object, array, string, number)";
+    let bad = "Invalid output schema: unsupported keyword or malformed value (supported: type, properties, items, enum, required, additionalProperties (boolean), minLength, minimum, maximum, $schema (2020-12), title, description)";
     let object = schema.as_object().ok_or(bad)?;
     if depth > 64 {
         return Err("Output schema is too deeply nested");
     }
     for (key, value) in object {
         match key.as_str() {
-            "type" if matches!(value.as_str(), Some("object" | "array" | "string" | "number")) => {}
+            "type"
+                if matches!(
+                    value.as_str(),
+                    Some("object" | "array" | "string" | "number" | "integer")
+                ) => {}
+            "$schema" if value.as_str() == Some("https://json-schema.org/draft/2020-12/schema") => {}
+            "title" | "description" if value.is_string() => {}
+            "additionalProperties" if value.is_boolean() => {}
+            "minLength" if value.as_u64().is_some() => {}
+            "minimum" | "maximum" if value.is_number() => {}
             "properties" => {
                 for child in value.as_object().ok_or(bad)?.values() {
                     check_schema(child, depth + 1)?;
@@ -75,48 +108,108 @@ fn schema_equal(left: &Value, right: &Value) -> bool {
     }
 }
 
-fn matches_value(schema: &Value, value: &Value) -> bool {
+// Compare mixed integer/float bounds without rounding large JSON integers to f64.
+fn number_cmp(a: &serde_json::Number, b: &serde_json::Number) -> std::cmp::Ordering {
+    let integer = |n: &serde_json::Number| n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
+    match (integer(a), integer(b)) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        (Some(a), None) => {
+            let b = b.as_f64().expect("JSON number");
+            a.cmp(&(b as i128))
+                .then_with(|| 0.0_f64.partial_cmp(&b.fract()).unwrap())
+        }
+        (None, Some(_)) => number_cmp(b, a).reverse(),
+        (None, None) => a.as_f64().partial_cmp(&b.as_f64()).unwrap(),
+    }
+}
+
+fn pointer_child(path: &str, key: &str) -> String {
+    format!("{path}/{}", key.replace('~', "~0").replace('/', "~1"))
+}
+
+fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), OutputValidationError> {
+    let fail = |message| OutputValidationError {
+        instance_path: path.to_owned(),
+        message,
+    };
     if let Some(kind) = schema.get("type").and_then(Value::as_str) {
         let valid = match kind {
             "object" => value.is_object(),
             "array" => value.is_array(),
             "string" => value.is_string(),
             "number" => value.is_number(),
+            "integer" => value
+                .as_number()
+                .is_some_and(|n| n.is_i64() || n.is_u64() || n.as_f64().is_some_and(|n| n.fract() == 0.0)),
             _ => false,
         };
         if !valid {
-            return false;
+            return Err(fail("Wrong value type"));
         }
     }
     if let Some(choices) = schema.get("enum").and_then(Value::as_array) {
         if !choices.iter().any(|choice| schema_equal(choice, value)) {
-            return false;
+            return Err(fail("Value is not in enum"));
+        }
+    }
+    if let Some(text) = value.as_str() {
+        if schema
+            .get("minLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|min| (text.chars().count() as u64) < min)
+        {
+            return Err(fail("String is shorter than minLength"));
+        }
+    }
+    if let Some(number) = value.as_number() {
+        for (keyword, forbidden) in [
+            ("minimum", std::cmp::Ordering::Less),
+            ("maximum", std::cmp::Ordering::Greater),
+        ] {
+            if schema
+                .get(keyword)
+                .and_then(Value::as_number)
+                .is_some_and(|bound| number_cmp(number, bound) == forbidden)
+            {
+                return Err(fail(if keyword == "minimum" {
+                    "Number is below minimum"
+                } else {
+                    "Number is above maximum"
+                }));
+            }
         }
     }
     if let Some(object) = value.as_object() {
         if let Some(required) = schema.get("required").and_then(Value::as_array) {
-            if !required
-                .iter()
-                .all(|key| object.contains_key(key.as_str().unwrap_or_default()))
-            {
-                return false;
+            for key in required {
+                let key = key.as_str().expect("checked required string");
+                if !object.contains_key(key) {
+                    return Err(OutputValidationError {
+                        instance_path: pointer_child(path, key),
+                        message: "Missing required property",
+                    });
+                }
             }
         }
-        if let Some(props) = schema.get("properties").and_then(Value::as_object) {
-            if !props
-                .iter()
-                .all(|(key, child)| object.get(key).is_none_or(|v| matches_value(child, v)))
-            {
-                return false;
+        let props = schema.get("properties").and_then(Value::as_object);
+        for (key, child_value) in object {
+            let child_path = pointer_child(path, key);
+            if let Some(child_schema) = props.and_then(|props| props.get(key)) {
+                validate_value(child_schema, child_value, &child_path)?;
+            } else if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+                return Err(OutputValidationError {
+                    instance_path: child_path,
+                    message: "Unexpected property",
+                });
             }
         }
     }
     if let (Some(items), Some(array)) = (schema.get("items"), value.as_array()) {
-        if !array.iter().all(|item| matches_value(items, item)) {
-            return false;
+        for (index, item) in array.iter().enumerate() {
+            validate_value(items, item, &pointer_child(path, &index.to_string()))?;
         }
     }
-    true
+    Ok(())
 }
 
 #[cfg(test)]
@@ -184,7 +277,7 @@ mod tests {
         ] {
             assert!(!schema.matches(text), "{text}");
         }
-        assert!(OutputSchema::new(json!({"type":"integer"})).is_err());
+        assert!(OutputSchema::new(json!({"type":"boolean"})).is_err());
         assert!(OutputSchema::new(json!({"$ref":"https://example.invalid/schema"})).is_err());
         assert!(OutputSchema::new(json!({"required":[1]})).is_err());
     }
