@@ -356,7 +356,8 @@ impl Client {
         let mut decoder = Decoder::default();
         let mut received = 0usize;
         let mut redactor = Fields::new(sensitive);
-        // No executable call escapes until terminal replay authority is known.
+        // Public text/reasoning streams through the existing field redactor.
+        // Tools and replay authority still wait for whole-turn inspection.
         let mut pending_tools = Vec::new();
         loop {
             let bytes = tokio::select! {
@@ -412,16 +413,26 @@ impl Client {
                         ..Usage::default()
                     });
                     *terminal_usage = usage.clone();
-                    // Identity must agree with the untouched private replay. Never
-                    // execute a renamed/reidentified call to hide a credential.
-                    if !withheld
-                        && native.assistant["tool_calls"]
-                            .as_array()
-                            .into_iter()
-                            .flatten()
-                            .flat_map(|call| [call["id"].as_str(), call["function"]["name"].as_str()])
-                            .flatten()
-                            .any(|identity| redactor.secrets.iter().any(|secret| identity.contains(secret)))
+                    // Done-only public text uses the same masked delivery as
+                    // live deltas. Nothing executable or persistent escapes.
+                    for chunk in &chunks {
+                        if response_data(chunk) {
+                            redactor.deliver(chunk.clone(), cancel, on)?;
+                        }
+                    }
+                    // The exact set is the same one used for this attempt's
+                    // redaction, including retired/current refresh credentials.
+                    // Never rewrite native items to make them safe for authority.
+                    if known_value(&native.assistant, &redactor.secrets)
+                        || native.native_blocks.iter().any(|item| {
+                            known_value(item, &redactor.secrets)
+                                || item["type"] == "function_call"
+                                    && item["arguments"]
+                                        .as_str()
+                                        .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
+                                        .is_some_and(|arguments| known_value(&arguments, &redactor.secrets))
+                        })
+                        || redactor.matched
                     {
                         return Err(Error::Protocol);
                     }
@@ -429,6 +440,9 @@ impl Client {
                         if chunk.pointer("/choices/0/delta/tool_calls").is_some() {
                             pending_tools.push(chunk);
                             continue;
+                        }
+                        if response_data(&chunk) {
+                            continue; // Already delivered through the public redactor.
                         }
                         if chunk
                             .pointer("/choices/0/finish_reason")
@@ -749,12 +763,16 @@ impl Decoder {
 struct Fields<'a> {
     secrets: Vec<&'a str>,
     pending: BTreeMap<String, (Value, String)>,
+    // Sticky observation only, never a second copy of public output. A native
+    // terminal snapshot cannot erase a secret seen in earlier public deltas.
+    matched: bool,
 }
 impl<'a> Fields<'a> {
     fn new(secrets: Vec<&'a str>) -> Self {
         Self {
             secrets,
             pending: BTreeMap::new(),
+            matched: false,
         }
     }
     fn deliver<F: FnMut(Event) -> Control + ?Sized>(
@@ -768,6 +786,7 @@ impl<'a> Fields<'a> {
             return emit(chunk, cancel, on);
         }
         let delta = &chunk["choices"][0]["delta"];
+        self.matched |= known_value(delta, &self.secrets);
         let mut fields = Vec::new();
         if let Some(object) = delta.as_object() {
             for (key, value) in object {
@@ -791,6 +810,7 @@ impl<'a> Fields<'a> {
             let text = chunk.pointer(&path).and_then(Value::as_str).unwrap().to_owned();
             let (_, mut pending) = self.pending.remove(&id).unwrap_or((Value::Null, String::new()));
             pending.push_str(&text);
+            self.matched |= self.secrets.iter().any(|secret| pending.contains(secret));
             let (pending, suffix) = redact_fragment(&pending, &self.secrets, false);
             *chunk.pointer_mut(&path).unwrap() = Value::String(pending);
             if !suffix.is_empty() {
@@ -827,6 +847,29 @@ impl<'a> Fields<'a> {
         Ok(())
     }
 }
+// Public normalized data is distinct from terminal/usage controls and tools.
+fn response_data(chunk: &Value) -> bool {
+    chunk["choices"]
+        .as_array()
+        .is_some_and(|choices| !choices.is_empty())
+        && chunk
+            .pointer("/choices/0/finish_reason")
+            .is_none_or(Value::is_null)
+        && chunk.pointer("/choices/0/delta/tool_calls").is_none()
+}
+// Exact held values only: no patterns, external discovery or replacement.
+fn known_value(value: &Value, secrets: &[&str]) -> bool {
+    let known = |text: &str| secrets.iter().any(|secret| text.contains(secret));
+    match value {
+        Value::String(text) => known(text),
+        Value::Array(items) => items.iter().any(|item| known_value(item, secrets)),
+        Value::Object(object) => object
+            .iter()
+            .any(|(field, value)| known(field) || known_value(value, secrets)),
+        _ => false,
+    }
+}
+
 fn emit<F: FnMut(Event) -> Control + ?Sized>(
     chunk: Value,
     cancel: &Cancellation,
@@ -974,6 +1017,10 @@ mod tests {
             .filter_map(|v| v.pointer("/choices/0/delta/content")?.as_str())
             .collect();
         assert_eq!(text, "Before [redacted] after");
+        assert!(
+            fields.matched,
+            "terminal replay gate retains the live observation"
+        );
     }
     #[test]
     fn decoded_redaction_handles_unicode_and_split_secrets_without_panicking() {
@@ -995,5 +1042,9 @@ mod tests {
             .filter_map(|v| v.pointer("/choices/0/delta/content")?.as_str())
             .collect();
         assert_eq!(text, "Before [redacted] after");
+        assert!(
+            fields.matched,
+            "terminal replay gate retains the live observation"
+        );
     }
 }

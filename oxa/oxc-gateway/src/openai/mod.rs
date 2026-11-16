@@ -11,3 +11,5 @@ pub mod stream;
 
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod login;
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+pub mod subscription_config;
