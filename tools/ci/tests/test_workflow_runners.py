@@ -66,6 +66,9 @@ def problems(name, text):
         value = info['runs_on']
         if value is None:
             continue  # reusable-workflow call: no runner of its own
+        # #795: the dedicated native ARM macOS qualification cannot use a Linux runner.
+        if (name, job, value) == ('macos.yml', 'oxa-macos', 'macos-15'):
+            continue
         if value == ARM_IMAGE or value == RUNNER_EXPRESSION:
             continue
         if value.startswith('${{'):
@@ -110,6 +113,14 @@ class WorkflowRunners(unittest.TestCase):
         self.assertTrue(problems('x.yml', text))
         expr = RUNNER_EXPRESSION.replace("|| 'ubuntu-24.04' }}", "|| 'ubuntu-22.04' }}")
         self.assertTrue(problems('x.yml', f'jobs:\n  a:\n    runs-on: {expr}\n'))
+
+    def test_macos_arm_qualification_is_exact(self):
+        text = 'jobs:\n  oxa-macos:\n    runs-on: macos-15\n'
+        self.assertFalse(problems('macos.yml', text))
+        self.assertTrue(problems('other.yml', text))
+        self.assertTrue(problems('macos.yml', text.replace('oxa-macos:', 'other:')))
+        for image in ('macos-13', 'macos-15-intel', 'ubuntu-latest', 'self-hosted'):
+            self.assertTrue(problems('macos.yml', text.replace('macos-15', image)))
 
     def test_accepts_arm_and_expression(self):
         for value in (ARM_IMAGE, RUNNER_EXPRESSION):
