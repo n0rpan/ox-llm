@@ -271,14 +271,26 @@ impl Lifecycle {
         self.supervisor = Some(supervisor);
         self.guard = Some(Guard::new(sample, now));
         self.stop_reason = None;
-        self.supervisor.as_mut().unwrap().start(now)
+        let supervisor = self.supervisor.as_mut().unwrap();
+        let result = supervisor.start(now);
+        if supervisor.state() == State::Failed {
+            self.control = None;
+        }
+        result
     }
     pub fn unload(&mut self, now: Instant) -> io::Result<()> {
         if self.control.is_none() {
             self.control = Some(self.queue.try_acquire().map_err(io::Error::other)?);
         }
         self.next = None;
-        self.stop(now, StopReason::Explicit)
+        self.stop(now, StopReason::Explicit)?;
+        if self.status().state == State::Stopped {
+            self.supervisor = None;
+            self.model = None;
+            self.guard = None;
+            self.control = None;
+        }
+        Ok(())
     }
     fn stop(&mut self, now: Instant, reason: StopReason) -> io::Result<()> {
         self.ready.store(false, Ordering::Release);
@@ -340,7 +352,11 @@ impl Lifecycle {
             }
         }
         if let Some(s) = &mut self.supervisor {
-            s.poll(now, healthy)?;
+            let result = s.poll(now, healthy);
+            if s.state() == State::Failed {
+                self.control = None;
+            }
+            result?;
         }
         match self.status().state {
             State::Stopped => {

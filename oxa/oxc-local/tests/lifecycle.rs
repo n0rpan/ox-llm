@@ -402,3 +402,42 @@ fn memory_fault_during_switch_cancels_launch_even_if_sampling_recovers() {
         std::fs::remove_file(ready).unwrap();
     }
 }
+
+#[test]
+fn repeated_unload_of_stopped_owner_allows_load_without_an_extra_poll() {
+    let now = Instant::now();
+    let mut owner = Lifecycle::new(0, Policy::default());
+    for _ in 0..2 {
+        owner.unload(now).unwrap();
+        owner.unload(now).unwrap();
+        assert_eq!(owner.status().state, State::Stopped);
+        owner.load(model("one"), now, Ok(memory())).unwrap();
+        poll(&mut owner, now, memory());
+        owner.unload(now).unwrap();
+        stopped(&mut owner, now);
+    }
+}
+
+#[test]
+fn exhausted_spawn_failure_releases_control_before_returning_error() {
+    let now = Instant::now();
+    let mut owner = Lifecycle::new(0, Policy::default());
+    let mut invalid = model("missing");
+    invalid.config.executable = "/nonexistent-local-engine-test".into();
+    assert!(owner.load(invalid.clone(), now, Ok(memory())).is_err());
+    assert_eq!(owner.status().state, State::Failed);
+    owner.load(model("one"), now, Ok(memory())).unwrap();
+    poll(&mut owner, now, memory());
+    owner.unload(now).unwrap();
+    stopped(&mut owner, now);
+    invalid.config.max_restarts = 1;
+    assert!(owner.load(invalid, now, Ok(memory())).is_err());
+    assert_eq!(owner.status().state, State::Backoff);
+    assert!(owner
+        .poll(now + Duration::from_secs(2), Ok(memory()), || panic!("no child"))
+        .is_err());
+    assert_eq!(owner.status().state, State::Failed);
+    owner
+        .load(model("two"), now + Duration::from_secs(2), Ok(memory()))
+        .unwrap();
+}
