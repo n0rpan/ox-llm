@@ -144,7 +144,7 @@ fn restart_at_acceptance_uses_the_durable_base_and_commands() {
     setup(&env, r#"["printf ran >> attempts"]"#);
     let first = run(&env, vec![ScriptTurn::text("done")]);
     let old_base = git(&env, &project(&env), &["rev-parse", "main"]);
-    env.write("work/project/.oxa/settings.json", r#"{"done":["exit 7"]}"#);
+    env.write("work/project/.oxa/settings.json", r#"{"done":false}"#);
     git(&env, &project(&env), &["add", "."]);
     git(&env, &project(&env), &["commit", "-m", "advance base checks"]);
     let new_base = git(&env, &project(&env), &["rev-parse", "main"]);
@@ -164,6 +164,41 @@ fn restart_at_acceptance_uses_the_durable_base_and_commands() {
         fs::read_to_string(tree(&first).join("attempts")).unwrap(),
         "ranran"
     );
+}
+
+#[test]
+fn a_deleted_base_cannot_strand_saving_or_a_cached_success() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let first = run(&env, vec![ScriptTurn::text("done")]);
+    git(&env, &project(&env), &["checkout", "--detach"]);
+    git(&env, &project(&env), &["branch", "-D", "main"]);
+    let (cached, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
+    assert_eq!(cached, first);
+    assert!(requests.is_empty());
+
+    fs::write(tree(&first).join("recovered.txt"), "kept").unwrap();
+    let mut state = load(&env);
+    state["record"]["step"] = "saving".into();
+    state["record"]["outcome"] = "red".into();
+    state["record"]["detail"] = "saved acceptance failed".into();
+    replace(&env, &state);
+    let (recovered, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
+    assert_eq!(recovered["outcome"], "red", "{recovered}");
+    assert!(requests.is_empty());
+    assert_eq!(
+        git(&env, tree(&recovered), &["show", "HEAD:recovered.txt"]),
+        "kept"
+    );
+
+    let before = fs::read(path(&env)).unwrap();
+    let (fresh, requests) = run_observed(&env, vec![], &["work", "../tasks.json", "--rerun"], None);
+    assert_eq!(
+        fresh["outcome"], "blocked",
+        "new attempts still need a valid current base"
+    );
+    assert!(requests.is_empty());
+    assert_eq!(fs::read(path(&env)).unwrap(), before);
 }
 
 #[test]

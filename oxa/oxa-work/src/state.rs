@@ -288,6 +288,56 @@ mod tests {
     }
 
     #[test]
+    fn recovery_planning_does_not_need_current_refs_or_settings() {
+        for step in [Step::Worker, Step::Saving, Step::Finished] {
+            let fixture = Fixture::new();
+            let mut state = state();
+            let base = "1".repeat(40);
+            state.record.base_sha = Some(base.clone());
+            state.record.outcome = if step == Step::Finished {
+                Outcome::Done
+            } else {
+                Outcome::Running
+            };
+            state.execution = Some(Execution {
+                initial: Some(base.clone()),
+                base: base.clone(),
+                prompt: "saved prompt".into(),
+                commands: vec!["saved command".into()],
+                worker_error: None,
+                merge_error: None,
+                failures: String::new(),
+            });
+            Writer::new(fixture.path(), false)
+                .save(&mut state, step, &|_: &Record| Ok(()))
+                .unwrap();
+            let before = fs::read(fixture.path()).unwrap();
+            let policy = crate::RunPolicy {
+                git_binary: fixture.0.join("unavailable-git"),
+                host_path: "/usr/bin:/bin".into(),
+                terminate_binary: None,
+                offline: true,
+                storage: fixture.0.clone(),
+            };
+            for rerun in [false, true] {
+                let planned = crate::plan_task_for_run(&fixture.0, state.task.clone(), &policy, rerun);
+                if step == Step::Finished && rerun {
+                    assert!(planned.is_err(), "explicit new attempts require a fresh plan");
+                } else {
+                    let planned = planned.unwrap();
+                    assert_eq!(planned.base_sha, base);
+                    assert_eq!(planned.commands, ["saved command"]);
+                    assert_eq!(
+                        planned.checkpoint_revision,
+                        Some(state.record.checkpoint_revision)
+                    );
+                }
+            }
+            assert_eq!(fs::read(fixture.path()).unwrap(), before);
+        }
+    }
+
+    #[test]
     fn observer_sees_durable_private_checkpoint_and_monotonic_revisions() {
         let fixture = Fixture::new();
         let revisions = Mutex::new(Vec::new());

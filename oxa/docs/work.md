@@ -99,6 +99,8 @@ ignored files in a retained working directory are not commit-bound evidence.
 
 To recover a task, run the same task file again. An unfinished checkpoint resumes
 its saved step with the original base, commands, session and offline policy.
+Recovery loads those inputs before resolving the current base branch or settings,
+so a deleted base ref or invalid new checks cannot strand an existing attempt.
 Finished successful work is returned without another worker or check run; add
 `--rerun` to the task-file or issue command to start another attempt. A task spec
 change requires a new ID. Unsupported or corrupt checkpoints are preserved and

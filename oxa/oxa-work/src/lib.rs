@@ -72,6 +72,7 @@ pub struct PlannedTask {
     task: Task,
     base_sha: String,
     commands: Vec<String>,
+    checkpoint_revision: Option<u64>,
 }
 impl PlannedTask {
     pub fn task(&self) -> &Task {
@@ -98,7 +99,42 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
         task,
         base_sha,
         commands,
+        checkpoint_revision: None,
     })
+}
+
+/// Recover immutable inputs before consulting today's mutable base/settings.
+/// New attempts still freeze a fresh plan before any worker in the batch runs.
+pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: bool) -> Result<PlannedTask> {
+    validate(&task)?;
+    let path = policy.storage.join(format!("{}.json", task.id));
+    match fs::symlink_metadata(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return plan_task(repo, task, policy);
+        }
+        Err(error) => return Err(format!("task checkpoint: {error}")),
+        Ok(metadata) if !metadata.is_file() => return Err("unsafe task checkpoint".into()),
+        Ok(_) => {}
+    }
+    let saved = state::load(&path)?;
+    if saved.task != task {
+        return Err("task specification changed; use a new task id".into());
+    }
+    if saved.record.step != Step::Finished
+        || (!rerun && matches!(saved.record.outcome, Outcome::Done | Outcome::NothingToDo))
+    {
+        let execution = saved.execution.ok_or("missing task execution checkpoint")?;
+        if saved.record.base_sha.as_deref() != Some(&execution.base) {
+            return Err("saved task base disagrees with execution checkpoint".into());
+        }
+        return Ok(PlannedTask {
+            task,
+            base_sha: execution.base,
+            commands: execution.commands,
+            checkpoint_revision: Some(saved.record.checkpoint_revision),
+        });
+    }
+    plan_task(repo, task, policy)
 }
 
 fn output(mut command: Command) -> Result<Output> {
@@ -470,6 +506,9 @@ pub fn run_task_with_observer(
     // The inherited lock retains its inode; status never tries to acquire it.
     let receipt = policy.storage.join(format!("{}.json", task.id));
     let replacing = receipt.exists();
+    if planned.checkpoint_revision.is_some() && !replacing {
+        return Err("task checkpoint disappeared after planning; retry the task file".into());
+    }
     let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
         common.parent().ok_or("git directory has no parent")?
     } else {
@@ -501,6 +540,12 @@ pub fn run_task_with_observer(
     let mut writer = state::Writer::new(receipt.clone(), replacing);
     let mut state = if replacing {
         let old = state::load(&receipt)?;
+        if planned
+            .checkpoint_revision
+            .is_some_and(|revision| revision != old.record.checkpoint_revision)
+        {
+            return Err("task checkpoint changed after planning; retry the task file".into());
+        }
         if old.task != *task || old.record.worktree != tree {
             return Err("task specification changed; use a new task id".into());
         }
