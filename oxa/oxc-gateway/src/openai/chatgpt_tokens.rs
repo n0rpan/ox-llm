@@ -364,6 +364,14 @@ impl Directory {
         self.publish(record, false)
     }
     fn publish(&self, record: &TokenRecord, create_only: bool) -> Result<(), Error> {
+        self.publish_sync(record, create_only, File::sync_all)
+    }
+    fn publish_sync(
+        &self,
+        record: &TokenRecord,
+        create_only: bool,
+        mut sync: impl FnMut(&File) -> std::io::Result<()>,
+    ) -> Result<(), Error> {
         let bytes = serde_json::to_vec(&json!({
             "access_token": record.access_token, "refresh_token": record.refresh_token,
             "account_id": record.account_id, "expires_at": record.expires_at,
@@ -387,7 +395,7 @@ impl Directory {
             file.set_permissions(Permissions::from_mode(0o600))
                 .map_err(|_| Error::Unavailable)?;
             file.write_all(&bytes).map_err(|_| Error::Unavailable)?;
-            file.sync_all().map_err(|_| Error::Unavailable)?;
+            sync(&file).map_err(|_| Error::Unavailable)?;
             if create_only {
                 renameat2(
                     &self.file,
@@ -407,7 +415,7 @@ impl Directory {
                 renameat(&self.file, name.as_os_str(), &self.file, self.name.as_os_str())
                     .map_err(|_| Error::Unavailable)?;
             }
-            self.file.sync_all().map_err(|_| Error::Unavailable)
+            sync(&self.file).map_err(|_| Error::Unavailable)
         })();
         if result.is_err() {
             let _ = unlinkat(&self.file, name.as_os_str(), UnlinkatFlags::NoRemoveDir);
@@ -431,6 +439,9 @@ pub fn read(path: &Path) -> Result<TokenRecord, Error> {
 /// fixed private directories; refuse links/foreign or writable ancestors and
 /// never relax an existing directory's permissions. Reads no credential bytes.
 pub fn prepare_login_path(home: &Path) -> Result<PathBuf, Error> {
+    if !home.is_absolute() {
+        return Err(Error::Unavailable);
+    }
     let mut directory = OpenOptions::new()
         .read(true)
         .custom_flags((FLAGS | OFlag::O_DIRECTORY).bits())
@@ -443,7 +454,8 @@ pub fn prepare_login_path(home: &Path) -> Result<PathBuf, Error> {
             return Err(Error::UnsafeFile);
         }
         match mkdirat(&directory, component, Mode::S_IRWXU) {
-            Ok(()) | Err(nix::errno::Errno::EEXIST) => {}
+            Ok(()) => directory.sync_all().map_err(|_| Error::Unavailable)?,
+            Err(nix::errno::Errno::EEXIST) => {}
             Err(_) => return Err(Error::Unavailable),
         }
         directory = File::from(
@@ -792,5 +804,45 @@ mod conversion_tests {
         )
         .unwrap();
         assert_eq!(format!("{result:?}"), "TokenRecord([redacted])");
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    use super::*;
+    #[test]
+    fn failed_file_sync_or_noreplace_publication_preserves_original_and_cleans_staging() {
+        let root = std::env::temp_dir().join(format!("login-publication-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("chatgpt-auth.json");
+        let record = TokenRecord::new(
+            "synthetic-access".into(),
+            "synthetic-refresh".into(),
+            "synthetic-account".into(),
+            2_000_000_000.0,
+        )
+        .unwrap();
+        try_install(&path, &record, false, &[]).unwrap();
+        let previous = std::fs::read(&path).unwrap();
+        let directory = Directory::open(&path).unwrap();
+        assert_eq!(
+            directory.publish_sync(&record, false, |_| Err(std::io::ErrorKind::Other.into())),
+            Err(Error::Unavailable)
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        assert_eq!(directory.publish(&record, true), Err(Error::Exists));
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        std::fs::set_permissions(&root, Permissions::from_mode(0o500)).unwrap();
+        assert_eq!(directory.publish(&record, false), Err(Error::Unavailable));
+        std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
+        drop(directory);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

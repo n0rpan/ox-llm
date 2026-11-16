@@ -29,7 +29,7 @@ pub enum Error {
     Expired,
     Cancelled,
     Exchange,
-    Storage,
+    Storage(chatgpt_tokens::Error),
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -39,7 +39,7 @@ impl fmt::Display for Error {
             Self::Expired => "ChatGPT sign-in timed out",
             Self::Cancelled => "ChatGPT sign-in cancelled",
             Self::Exchange => "ChatGPT sign-in exchange failed",
-            Self::Storage => "ChatGPT credential store refused the operation",
+            Self::Storage(error) => return write!(f, "ChatGPT credential store operation failed: {error}"),
         })
     }
 }
@@ -262,7 +262,7 @@ impl Login {
         loop {
             self.check(cancelled)?;
             if chatgpt_tokens::try_install(path, &record, replace, expected)
-                .map_err(|_| Error::Storage)?
+                .map_err(Error::Storage)?
                 .is_some()
             {
                 return Ok(());
@@ -612,7 +612,7 @@ mod tests {
         let code = flow.pasted_callback(&callback(&flow), &stop).unwrap();
         assert_eq!(
             flow.finish(code, &home.path(), true, &["other-synthetic-account"], &stop),
-            Err(Error::Storage)
+            Err(Error::Storage(chatgpt_tokens::Error::Account))
         );
         assert_eq!(fs::read(home.path()).unwrap(), previous);
     }

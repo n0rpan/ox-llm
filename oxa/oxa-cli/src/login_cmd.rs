@@ -146,14 +146,14 @@ pub(crate) fn run(
     let signals = Signals::new()?;
     writeln!(
         out,
-        "{NOTICE}\nOpen this URL in your browser:\n{}",
+        "{NOTICE}\r\nOpen this URL in your browser:\r\n{}\r",
         login.authorization_url()
     )
     .map_err(|_| failed("Cannot write sign-in instructions"))?;
     if plan.paste {
         writeln!(
             out,
-            "Paste the complete callback URL and press Enter (input hidden)."
+            "Paste the complete callback URL and press Enter (input hidden).\r"
         )
         .map_err(|_| failed("Cannot write sign-in instructions"))?;
     }

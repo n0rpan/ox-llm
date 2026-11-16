@@ -172,7 +172,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         let result = match sub {
             Subcommand::Login(logout, words) => crate::login_cmd::run(
                 logout,
-                &words,
+                &words.0,
                 &dirs,
                 &cwd,
                 env,

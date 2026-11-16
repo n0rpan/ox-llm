@@ -17,7 +17,7 @@ pub enum Subcommand {
     /// Read the live snapshot of a saved session.
     Status(Vec<String>),
     /// Explicit owner ChatGPT sign-in/sign-out.
-    Login(bool, Vec<String>),
+    Login(bool, LoginArgs),
     /// `oxa work <taskfile> | --issue N --model MODEL`.
     Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
@@ -34,6 +34,16 @@ pub enum Subcommand {
     Wipe(Vec<String>),
     /// Publish a follow-up to a session's file inbox.
     Send(Vec<String>),
+}
+
+/// Login words can contain a mistakenly pasted callback. Never expose them
+/// through Args/Subcommand Debug; command validation uses fixed diagnostics.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LoginArgs(pub Vec<String>);
+impl std::fmt::Debug for LoginArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoginArgs([redacted])")
+    }
 }
 
 /// A secret given on the command line. `Debug` never shows it.
@@ -394,8 +404,8 @@ fn usage(message: impl Into<String>) -> OxaError {
 /// The first word of a subcommand. `None` when the word is an ordinary prompt.
 fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaError> {
     Ok(Some(match word {
-        "login" => Subcommand::Login(false, rest.to_vec()),
-        "logout" => Subcommand::Login(true, rest.to_vec()),
+        "login" => Subcommand::Login(false, LoginArgs(rest.to_vec())),
+        "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
         "mcp" => Subcommand::Mcp(rest.to_vec()),
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
