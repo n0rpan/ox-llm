@@ -278,6 +278,11 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["graphics", "stack", "stars", "charge"]),
         "null",
     ),
+    key(
+        "ui.notify",
+        Kind::Enum(&["off", "unfocused", "always"]),
+        "\"unfocused\"",
+    ),
     key("ui.reducedMotion", Kind::Bool, "false"),
     key("ui.skin", Kind::Enum(&["auto", "pi", "oxa", "ascii"]), "\"auto\""),
     verdict_o("warnings.anthropicExtraUsage", Kind::Bool, "true"),

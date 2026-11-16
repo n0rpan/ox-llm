@@ -32,6 +32,7 @@ fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg], model: &'a str
             session: "session",
             idem_key: "idem",
             snapshot_keep: true,
+            background: true,
             ..Hints::default()
         },
         ..ChatRequest::new(prefix, messages, model)
@@ -366,5 +367,103 @@ fn output_schema_capability_and_remote_only_serialization() {
                 "local engine rejects response_format"
             );
         }
+    }
+}
+
+/// Issue #574: a cloud model reached through oxc carries the request's own Idempotency-Key and
+/// session header (oxc's headers, never forwarded upstream); the local-only hint headers stay off.
+#[test]
+fn a_remote_request_sends_the_idempotency_key_and_session() {
+    use oxa_engine::HttpEngine;
+    use oxa_fake::{FakeOpts, FakeServer, ScriptTurn};
+    use oxa_proto::{CancelToken, Engine};
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("reply")],
+        FakeOpts {
+            remote: Some("openrouter"),
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let engine = HttpEngine::new(&server.url(), None).unwrap();
+    let info = engine.info(None).unwrap();
+    assert!(info.caps.remote);
+    let p = prefix();
+    let messages = [WireMsg::user("hi")];
+    engine
+        .chat(
+            &request(&p, &messages, &info.model),
+            &CancelToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+    let seen = server.requests();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].idem_key, "idem");
+    assert_eq!(seen[0].session, "session");
+    let has = |name: &str| seen[0].headers.iter().any(|(k, _)| k == name);
+    for header in ["x-oxe-priority", "x-oxe-snapshot", "x-oxe-turn-kind"] {
+        assert!(!has(header), "unexpected {header}: {:?}", seen[0].headers);
+    }
+    assert!(
+        seen[0]
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-session-id" && value == "session"),
+        "{:?}",
+        seen[0].headers
+    );
+}
+
+/// Issue #574: a cut or silent stream before the first data line must not be re-sent by the
+/// engine for a cloud model (each send is a new, billed upstream generation); the core's single
+/// retry layer decides. A refused connection reached nothing and is still retried.
+#[test]
+fn a_remote_cut_or_stall_before_data_is_not_resent_by_the_engine() {
+    use oxa_engine::{HttpEngine, StreamOpts};
+    use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn};
+    use oxa_proto::{CancelToken, Engine};
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    for fault in [Fault::DropAt { bytes: 0 }, Fault::Stall { bytes: 0, ms: 500 }] {
+        let server = FakeServer::start(
+            vec![
+                ScriptTurn {
+                    fault: Some(fault.clone()),
+                    ..ScriptTurn::text("lost")
+                },
+                ScriptTurn::text("second"),
+            ],
+            FakeOpts {
+                remote: Some("openrouter"),
+                ..FakeOpts::default()
+            },
+        )
+        .unwrap();
+        let engine = HttpEngine::new(&server.url(), None).unwrap().with_opts(
+            StreamOpts {
+                silence_limit_ms: 100,
+                ..StreamOpts::default()
+            },
+            2,
+        );
+        let info = engine.info(None).unwrap();
+        let p = prefix();
+        let messages = [WireMsg::user("hi")];
+        let err = engine
+            .chat(
+                &request(&p, &messages, &info.model),
+                &CancelToken::new(),
+                &mut |_| {},
+            )
+            .unwrap_err();
+        assert_eq!(err.code, codes::STREAM_BROKEN, "{fault:?}");
+        let seen = server.requests();
+        assert_eq!(
+            seen.len(),
+            1,
+            "one upstream request, no engine-level resend: {fault:?}"
+        );
+        assert_eq!(seen[0].idem_key, "idem");
     }
 }
