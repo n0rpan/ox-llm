@@ -81,6 +81,12 @@ pub trait Sandbox: Send + Sync {
     fn persistence_notice(&self) -> Option<&str> {
         None
     }
+    /// #457: the sandbox for one new or reopened session: the same machine view, with the
+    /// state that belongs to a single session (its scratch directory at `/tmp`) of its own,
+    /// released when the session drops it. `None` (the default) = share `self` unchanged.
+    fn for_session(&self) -> Option<std::sync::Arc<dyn Sandbox>> {
+        None
+    }
     /// The exact `bwrap` argv (without the leading `bwrap`) for `s`. Pure; golden-tested.
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String>;
     /// Run `s`, streaming output chunks to `live`. Cancel and timeout kill the process group.
