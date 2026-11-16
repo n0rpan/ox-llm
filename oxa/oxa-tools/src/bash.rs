@@ -433,7 +433,7 @@ impl BashTool {
                 let mut text = format!("Job {id}: {status} ({} bytes of output)", read.total);
                 if read.status == JobStatus::Running {
                     text.push_str(&format!(
-                        "\nStill running. Wait with bash {{\"job\": \"{id}\", \"wait_s\": 30}} or poll again later; do not retry at once.\n{JOB_PROCESS_VISIBILITY}"
+                        "\nStill running. Wait with bash {{\"job\": \"{id}\", \"wait_s\": 30}} or poll again later; do not retry at once."
                     ));
                 }
                 if !read.output.is_empty() {
@@ -1443,16 +1443,23 @@ echo '\''a'\'''"#
         let running = run_job_tool(&tool, &*sb, json!({"job": "job-1"}));
         jobs.kill_all();
 
-        for out in [started, running] {
-            assert!(!out.is_error, "{}", out.text);
-            assert!(out.text.contains("separate PID namespace"), "{}", out.text);
-            assert!(
-                out.text.contains("ps in another bash call cannot see this job"),
-                "{}",
-                out.text
-            );
-            assert!(out.text.contains("bash {\"job\": \"job-1\""), "{}", out.text);
-        }
+        assert!(!started.is_error, "{}", started.text);
+        assert!(started.text.contains(JOB_PROCESS_VISIBILITY), "{}", started.text);
+        assert!(
+            started.text.contains("bash {\"job\": \"job-1\"}"),
+            "{}",
+            started.text
+        );
+        assert!(!running.is_error, "{}", running.text);
+        assert!(running.text.contains("Still running"), "{}", running.text);
+        assert!(
+            running.text.contains("bash {\"job\": \"job-1\", \"wait_s\": 30}"),
+            "{}",
+            running.text
+        );
+        assert!(!running.text.contains("separate PID namespace"));
+        assert!(!running.text.contains("ps in another bash call"));
+        assert!(!running.text.contains("Use the job interface"));
     }
 
     #[test]
