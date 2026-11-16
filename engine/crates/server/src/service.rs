@@ -918,6 +918,9 @@ pub async fn handle_hints<E: Engine>(
                     let s = w.states.as_mut().unwrap();
                     let was_off = s.budget == 0;
                     let freed = s.set_budget(bytes);
+                    if bytes == 0 {
+                        w.park_aborted();
+                    }
                     // Codex P2/P3 review 2: budget 0 = no conversation state goes to disk at all: the
                     // segmented store, the echo records' files and the legacy prefix / session stores
                     // (parks fall back to RAM). Raising it again brings all of them back.
@@ -957,10 +960,12 @@ pub async fn handle_hints<E: Engine>(
                     // or shared anchor, the system prompt) stay. Unknown hint: nothing to do (200).
                     let hint = b.get("hint").and_then(Json::as_str).filter(|h| valid_hint(h)).ok_or((400, "hint scope needs a hint of 1-128 characters [A-Za-z0-9._-]".to_string()))?;
                     let h = crate::state_store::hint_hash(hint);
+                    // Include aborted states whose first manifest has not been published yet.
+                    let deferred = w.drop_aborted_where(&|_, owner| owner == Some(hint));
                     // a session another hint also owns (continued or absorbed across hints) is kept:
                     // only this hint's ownership goes (Manifest::owners)
                     let sids = w.states.as_ref().unwrap().sessions_with_hint(&h);
-                    let (mut freed, mut ram, mut legacy, mut purged, mut released) = (0u64, 0usize, 0usize, 0usize, 0usize);
+                    let (mut freed, mut ram, mut legacy, mut purged, mut released) = (0u64, deferred, 0usize, 0usize, 0usize);
                     for sid in &sids {
                         if w.states.as_mut().unwrap().release_owner(sid, &h).map_err(|e| (500, e))? {
                             released += 1;
@@ -995,6 +1000,7 @@ pub async fn handle_hints<E: Engine>(
                     // legacy disk stores' entries of this engine (Codex P2/P3 review 3)
                     w.cache.reset(&mut w.engine);
                     let _ = w.cache.drain_parked();
+                    w.drop_aborted_where(&|_, _| true);
                     w.live_blocks.clear();
                     w.preloaded = None;
                     echo.clear();
@@ -1195,6 +1201,11 @@ where
         if st.fair.quantum().is_some() {
             // fair time-slicing between generations (fair.rs)
             let r = crate::fair::run_sliced(&st, &prompt, &mut gp, queued, &mut on_partial);
+            if matches!(&r, Err(GenError::Cancelled)) {
+                // A disconnect has no success reply to arm the idle writer. Do not persist on
+                // the cancellation path; the job checks the fair queue/shutdown state again.
+                spawn_persist_inner(&st, None, st.reqs.load(Ordering::SeqCst), true);
+            }
             if r.as_ref()
                 .is_ok_and(|r| r.timings.resume_src != "cold" && r.timings.preload_ms.is_some())
             {
@@ -1309,6 +1320,15 @@ fn spawn_idle_reprefill<E: Engine>(st: &Arc<State<E>>, b: &Json, reply: Json, re
 /// path, in the client's idle gap). A newer request preempts it between blocks; what was written
 /// stays valid, the next reply writes the rest.
 fn spawn_persist<E: Engine>(st: &Arc<State<E>>, session: Option<String>, req_no: u64) {
+    spawn_persist_inner(st, session, req_no, false);
+}
+
+fn spawn_persist_inner<E: Engine>(
+    st: &Arc<State<E>>,
+    session: Option<String>,
+    req_no: u64,
+    aborted_only: bool,
+) {
     if !st.state_cache {
         return;
     }
@@ -1317,7 +1337,9 @@ fn spawn_persist<E: Engine>(st: &Arc<State<E>>, session: Option<String>, req_no:
     // were counted while it was suspended (they all ended before it). Identity when slicing is off.
     let req_no = st.fair.post_reply_req(req_no);
     let flag = Arc::new(AtomicBool::new(false));
-    *st.persist.lock().unwrap() = Some(flag.clone());
+    if let Some(previous) = st.persist.lock().unwrap().replace(flag.clone()) {
+        previous.store(true, Ordering::SeqCst);
+    }
     let work = st.begin_work();
     let st2 = st.clone();
     tokio::task::spawn_blocking(move || {
@@ -1326,7 +1348,13 @@ fn spawn_persist<E: Engine>(st: &Arc<State<E>>, session: Option<String>, req_no:
         // v0.1.3 (item 6): phase 1 copies the head snapshot and the new blocks under the lock ...
         let staged = {
             let mut w = st2.lock_worker();
-            if flag.load(Ordering::Relaxed) || st2.reqs.load(Ordering::SeqCst) != req_no {
+            if flag.load(Ordering::Relaxed)
+                || st2.reqs.load(Ordering::SeqCst) != req_no
+                || !st2.fair.idle_writes_allowed()
+            {
+                None
+            } else if aborted_only {
+                w.persist_aborted(crate::generate::PersistMode::Reply, Some(&flag), true);
                 None
             } else {
                 let s = w.stage_persist(session.as_deref());
@@ -1349,6 +1377,9 @@ fn spawn_persist<E: Engine>(st: &Arc<State<E>>, session: Option<String>, req_no:
             let written = s.write();
             let mut w = st2.lock_worker();
             let r = w.commit_staged(s, written, session.as_deref(), Some(&flag));
+            if st2.fair.idle_writes_allowed() {
+                w.persist_aborted(crate::generate::PersistMode::Reply, Some(&flag), true);
+            }
             if r.head.is_some() {
                 eprintln!("oxe-server: state cache: {} files written in {:.0} ms (head off the worker lock)", r.files(), t0.elapsed().as_secs_f64() * 1e3);
             }
@@ -1426,6 +1457,7 @@ fn purge_session<E: Engine>(
         ram += 1;
     }
     ram += w.cache.drop_parked_where(&owns);
+    ram += w.drop_aborted_where(&|tokens, _| owns(tokens));
     let mut legacy = 0;
     for ps in [w.store.as_mut(), w.sessions.as_mut()]
         .into_iter()

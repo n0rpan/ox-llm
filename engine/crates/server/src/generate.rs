@@ -391,6 +391,8 @@ pub struct Worker<E: Engine> {
     /// fair slicing: RAM of the sessions of suspended generations (held outside the parked list);
     /// a generation only yields while this plus its own state fits the park budget
     held_bytes: usize,
+    /// Aborted runs awaiting an idle/shutdown write. Still reserved, not evictable RAM parks.
+    aborted: std::collections::VecDeque<Suspended<E::Snapshot>>,
 }
 
 /// The local live session and its write bookkeeping, held across one ephemeral request.
@@ -851,6 +853,7 @@ impl<E: Engine> Worker<E> {
             opt_write_limit: usize::MAX,
             shutdown_file_grace: std::time::Duration::from_secs(5),
             held_bytes: 0,
+            aborted: Default::default(),
             restore_bps: (0.83e9, 0.64e9),
             restores: 0,
         }
@@ -1192,7 +1195,8 @@ impl<E: Engine> Worker<E> {
         hint: Option<&str>,
         cancel: Option<&std::sync::atomic::AtomicBool>,
     ) -> usize {
-        self.persist(hint, PersistMode::Reply, cancel).files()
+        let n = self.persist(hint, PersistMode::Reply, cancel).files();
+        n + self.persist_aborted(PersistMode::Reply, cancel, true)
     }
 
     /// Write the live state to the state store: the blocks not yet on disk, the head snapshot (the
@@ -1705,6 +1709,12 @@ impl<E: Engine> Worker<E> {
             ));
             if Instant::now() < deadline && self.save_warm(true) {
                 log.push("warm file written".into());
+            }
+            // The true live session has priority. All aborted sessions share the SAME absolute
+            // deadline; none may start an independent reply-mode write while shutdown waits.
+            let n = self.persist_aborted(PersistMode::Shutdown(deadline), None, false);
+            if n > 0 {
+                log.push(format!("state cache: {n} deferred abort files written"));
             }
             if session_cache {
                 log.push("session cache: not written at shutdown (the state cache holds the durable state; the legacy writer is unbounded)".into());
@@ -2520,47 +2530,182 @@ impl<E: Engine> Worker<E> {
         }
     }
 
-    /// A suspended generation that will not continue (its client left, SIGTERM): its session
-    /// joins the parked sessions in RAM (budget permitting) like the consistent prefix a cancel
-    /// leaves live, so the next turn of that conversation can reuse it. With the state store on,
-    /// what of it is not on disk yet is written first (issue #588).
+    /// Cancellation only transfers ownership: never swap the engine or write on this path.
+    /// Dirty states remain reserved until the idle writer (or bounded shutdown writer) makes
+    /// them durable, so a RAM-park eviction cannot lose their unwritten state (#588).
     pub fn generate_abort(&mut self, sr: SlicedRun<E::Snapshot>) {
         if let Some(s) = sr.held {
+            if (s.local.state_dirty || s.local.snaps_pending)
+                && self.park_write
+                && self.engine.kv_row_bytes() > 0
+                && self.states.as_ref().is_some_and(|st| {
+                    st.budget > 0
+                        && s.local
+                            .held
+                            .as_ref()
+                            .is_some_and(|h| h.len() >= st.min_tokens)
+                })
+            {
+                self.aborted.push_back(s);
+            } else {
+                self.held_bytes = self.held_bytes.saturating_sub(s.bytes);
+                self.cache.reserved = self.held_bytes;
+                if let Some(h) = s.local.held {
+                    self.cache.park_held(h);
+                }
+            }
+        }
+    }
+
+    /// Drop deferred copies along with a cache purge, including copies not yet on disk.
+    pub(crate) fn drop_aborted_where(
+        &mut self,
+        owns: &dyn Fn(&[Token], Option<&str>) -> bool,
+    ) -> usize {
+        let before = self.aborted.len();
+        self.aborted.retain(|s| {
+            let drop = s
+                .local
+                .held
+                .as_ref()
+                .is_some_and(|h| owns(h.tokens(), s.local.live_hint.as_deref()));
+            if drop {
+                self.held_bytes = self.held_bytes.saturating_sub(s.bytes);
+            }
+            !drop
+        });
+        self.cache.reserved = self.held_bytes;
+        before - self.aborted.len()
+    }
+
+    /// With disk persistence disabled, deferred copies become ordinary RAM parks.
+    pub(crate) fn park_aborted(&mut self) {
+        while let Some(s) = self.aborted.pop_front() {
             self.held_bytes = self.held_bytes.saturating_sub(s.bytes);
             self.cache.reserved = self.held_bytes;
-            let l = s.local;
-            // its unwritten state goes to the state store first, as a session switch writes the
-            // live session it puts away: a RAM eviction of the parked copy must not lose it
-            if (l.state_dirty || l.snaps_pending) && self.park_write && self.states.is_some() {
-                // a failed load drops that session (the engine says why); nothing else to do
-                if let Err(e) = self.load_suspended(l, s.persisted_head) {
-                    eprintln!("oxe-server: an aborted generation could not be written: {e:?}");
-                    self.cache.reset(&mut self.engine);
-                    return;
-                }
-                let local = GenParams {
-                    cache_prompt: true,
-                    ..Default::default()
-                };
-                self.park_to_states(&[], &local);
-                // the whole session to the RAM park, the engine empty as after a suspension
-                if self.cache.park_whole(&mut self.engine).is_err() {
-                    eprintln!("oxe-server: an aborted generation could not be parked");
-                }
-                self.cache.reset(&mut self.engine);
-                self.live_blocks.clear();
-                self.progress_mark = 0;
-                self.state_dirty = false;
-                self.snaps_pending = false;
-                self.last_first_user = None;
-                self.live_hint = None;
-                self.persisted_head = None;
-                return;
-            }
-            if let Some(h) = l.held {
+            if let Some(h) = s.local.held {
                 self.cache.park_held(h);
             }
         }
+    }
+
+    fn reset_live(&mut self) {
+        self.cache.reset(&mut self.engine);
+        self.live_blocks.clear();
+        self.progress_mark = 0;
+        self.state_dirty = false;
+        self.snaps_pending = false;
+        self.last_first_user = None;
+        self.live_hint = None;
+        self.persisted_head = None;
+        self.preloaded = None;
+    }
+
+    /// Idle writes are preemptible by requests. Shutdown writes share one deadline and do not
+    /// copy the live state (it was written first and the process is exiting). During normal work
+    /// preserve the live session bit for bit, without writing it again as a session switch would.
+    pub(crate) fn persist_aborted(
+        &mut self,
+        mode: PersistMode,
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+        keep_live: bool,
+    ) -> usize {
+        let stop = || {
+            cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
+                || matches!(mode, PersistMode::Shutdown(d) if Instant::now() >= d)
+        };
+        if self.aborted.is_empty() || stop() {
+            return 0;
+        }
+        if !self.park_write || self.states.as_ref().is_none_or(|st| st.budget == 0) {
+            self.park_aborted();
+            return 0;
+        }
+        let local = if keep_live && !self.cache.tokens.is_empty() {
+            // Do not exceed the park budget with the extra copy of the live state. A later idle
+            // gap/session switch can retry; pending copies are still reserved in the meantime.
+            if !self.can_hold() {
+                return 0;
+            }
+            let Some(held) = self.cache.hold_live(&mut self.engine) else {
+                return 0;
+            };
+            Some(HeldLocal {
+                held: Some(held),
+                live_blocks: std::mem::take(&mut self.live_blocks),
+                progress_mark: self.progress_mark,
+                state_dirty: self.state_dirty,
+                snaps_pending: self.snaps_pending,
+                last_first_user: self.last_first_user,
+                live_hint: self.live_hint.take(),
+            })
+        } else {
+            None
+        };
+        let local_bytes = local
+            .as_ref()
+            .and_then(|l| l.held.as_ref())
+            .map_or(0, |h| h.bytes());
+        self.held_bytes += local_bytes;
+        self.cache.reserved = self.held_bytes;
+        self.cache.make_room();
+        let head = self.persisted_head.take();
+        let preloaded = self.preloaded.take();
+        self.reset_live();
+        let mut files = 0;
+        for _ in 0..self.aborted.len() {
+            if stop() {
+                break;
+            }
+            let mut s = self.aborted.pop_front().unwrap();
+            self.held_bytes = self.held_bytes.saturating_sub(s.bytes);
+            self.cache.reserved = self.held_bytes;
+            if let Err(e) = self.restore_suspended(s.local, s.persisted_head) {
+                eprintln!("oxe-server: deferred aborted state could not be loaded: {e:?}");
+                continue;
+            }
+            let hint = self.live_hint.clone();
+            files += self.persist(hint.as_deref(), mode, cancel).files();
+            if !keep_live {
+                // Shutdown exits after this pass: no whole-state copies/re-parks on its path.
+                self.reset_live();
+                continue;
+            }
+            // A stopped/failed write must not release the only dirty copy to an evictable park.
+            if let Some(held) = self.cache.hold_live(&mut self.engine) {
+                if self.state_dirty || self.snaps_pending {
+                    s.bytes = held.bytes();
+                    self.held_bytes += s.bytes;
+                    s.local = HeldLocal {
+                        held: Some(held),
+                        live_blocks: std::mem::take(&mut self.live_blocks),
+                        progress_mark: self.progress_mark,
+                        state_dirty: self.state_dirty,
+                        snaps_pending: self.snaps_pending,
+                        last_first_user: self.last_first_user,
+                        live_hint: self.live_hint.take(),
+                    };
+                    s.persisted_head = self.persisted_head.take();
+                    self.aborted.push_back(s);
+                } else {
+                    self.cache.park_held(held);
+                }
+            }
+            self.cache.reserved = self.held_bytes;
+            self.reset_live();
+        }
+        self.held_bytes = self.held_bytes.saturating_sub(local_bytes);
+        self.cache.reserved = self.held_bytes;
+        if let Some(local) = local {
+            if let Err(e) = self.restore_suspended(local, head) {
+                eprintln!(
+                    "oxe-server: live state could not be restored after deferred writes: {e:?}"
+                );
+            } else {
+                self.preloaded = preloaded;
+            }
+        }
+        files
     }
 
     /// generate()'s exit rule for an error: the cancel flag cleared; an engine error drops the
@@ -2636,7 +2781,7 @@ impl<E: Engine> Worker<E> {
     /// bit for bit, with its worker fields.
     fn load_suspended(
         &mut self,
-        mut l: HeldLocal<E::Snapshot>,
+        l: HeldLocal<E::Snapshot>,
         persisted_head: Option<String>,
     ) -> Result<(), GenError> {
         if !self.cache.tokens.is_empty() {
@@ -2647,8 +2792,16 @@ impl<E: Engine> Worker<E> {
             self.park_to_states(&[], &local);
             self.cache.park_whole(&mut self.engine)?;
         }
-        // nothing a preload put into the engine survives the load below
-        self.preloaded = None;
+        self.restore_suspended(l, persisted_head)
+    }
+
+    /// Reset the previous live bookkeeping BEFORE a fallible restore, not only after success.
+    fn restore_suspended(
+        &mut self,
+        mut l: HeldLocal<E::Snapshot>,
+        persisted_head: Option<String>,
+    ) -> Result<(), GenError> {
+        self.reset_live();
         let h = l.held.take().expect("a suspended run holds its session");
         let n = h.len();
         if self.cache.restore_held(&mut self.engine, h)? != n {

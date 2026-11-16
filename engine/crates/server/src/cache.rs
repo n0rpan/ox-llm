@@ -120,6 +120,10 @@ impl<S> Held<S> {
     pub fn is_empty(&self) -> bool {
         self.p.tokens.is_empty()
     }
+    /// Ownership matching when purging a deferred aborted session.
+    pub(crate) fn tokens(&self) -> &[u32] {
+        &self.p.tokens
+    }
 }
 
 #[derive(Clone, Debug, Default)]

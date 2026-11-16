@@ -19,9 +19,10 @@
 //!   and prefill-only (`max_tokens: 0`) requests. These take a ticket too (FIFO) but never yield.
 //! - A run whose session cannot be held (no park budget, a state larger than it, or other
 //!   suspended runs already hold that RAM) does not yield: it keeps the engine to its end.
-//! - Cancel: a queued request leaves the queue at once; a suspended one is dropped and its session
-//!   joins the RAM parked sessions (`Worker::generate_abort`). SIGTERM raises every ticket's cancel
-//!   flag ([`Fair::cancel_all`]) so the bounded shutdown write gets the worker.
+//! - Cancel: a queued request leaves at once; a suspended one transfers its session to the idle
+//!   writer (`Worker::generate_abort`), retaining its RAM reservation until durable, then parks it.
+//!   SIGTERM raises every ticket's cancel flag ([`Fair::cancel_all`]); the shutdown writer flushes
+//!   the live state first, then deferred aborts under the same absolute deadline.
 //! - Cache endpoints (`/state-cache/clear|budget`, session purges) answer 409 while a generation
 //!   is suspended, as they do while one runs: a clear can never be undone by a later resume. The
 //!   preload route sees the suspended request as work in flight (busy).
@@ -61,6 +62,7 @@ struct Queue {
     next: u64,
     /// every ticket's cancel flag (SIGTERM)
     flags: Vec<(u64, Arc<AtomicBool>)>,
+    stopping: bool,
 }
 
 pub struct Fair {
@@ -191,12 +193,19 @@ impl Fair {
 
     /// SIGTERM: cancel every queued, suspended and running generation.
     pub fn cancel_all(&self) {
-        let q = self.q.lock().unwrap_or_else(|p| p.into_inner());
+        let mut q = self.q.lock().unwrap_or_else(|p| p.into_inner());
+        q.stopping = true;
         for (_, f) in &q.flags {
             f.store(true, Ordering::SeqCst);
         }
         drop(q);
         self.cv.notify_all();
+    }
+
+    /// Abort idle jobs must yield to every queued generation and to the shutdown writer.
+    pub(crate) fn idle_writes_allowed(&self) -> bool {
+        let q = self.q.lock().unwrap_or_else(|p| p.into_inner());
+        !q.stopping && q.order.is_empty()
     }
 
     /// Generations suspended now (read with the worker held for a consistent answer).

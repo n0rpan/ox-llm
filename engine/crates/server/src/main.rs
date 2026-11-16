@@ -1549,11 +1549,18 @@ fn serve<E: Engine>(
                     f.store(true, std::sync::atomic::Ordering::SeqCst);
                 }
             }
-            // fair slicing: the queued and suspended generations too (a suspended one gives its
-            // held session to the RAM park and lets go of the worker at once)
+            // fair slicing: the queued and suspended generations too (a suspended one transfers
+            // its reserved state to the deferred writer and lets go of the worker at once)
             st_term.fair.cancel_all();
             loop {
                 if let Ok(mut w) = st_term.worker.try_lock() {
+                    // Cancelled suspended runs only transfer their reserved copies to the
+                    // worker. Let those O(1) transfers finish before the one bounded write pass.
+                    if st_term.fair.suspended() > 0 && t0.elapsed().as_millis() < 1000 {
+                        drop(w);
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        continue;
+                    }
                     for l in w.shutdown_writes(state_cache, session_cache, t0, deadline, &mut |w| {
                         w.persist_sessions()
                     }) {

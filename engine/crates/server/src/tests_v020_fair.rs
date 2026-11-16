@@ -493,9 +493,8 @@ fn held_and_parked_sessions_share_one_tight_budget() {
     );
 }
 
-/// A suspended run that is aborted (client gone, SIGTERM) parks its held session in RAM; its state
-/// was never written to the state store, so a RAM eviction would lose it. The abort writes it
-/// first, as a session switch does for the live session it puts away (issue #588).
+/// An abort must leave the worker immediately; the idle writer makes the held state durable
+/// before releasing its RAM reservation to the evictable park (issue #588).
 #[test]
 fn abort_of_a_suspended_run_writes_its_unwritten_state_to_the_store() {
     let tok = synthetic_tokenizer();
@@ -518,6 +517,15 @@ fn abort_of_a_suspended_run_writes_its_unwritten_state_to_the_store() {
     assert!(r.is_none(), "the run yielded");
     assert!(w.states.as_ref().unwrap().manifests.is_empty());
     w.generate_abort(sr);
+    assert!(
+        w.states.as_ref().unwrap().manifests.is_empty(),
+        "abort does no disk IO"
+    );
+    assert!(
+        w.cache.reserved > 0,
+        "dirty state remains within the shared RAM budget"
+    );
+    w.persist_states(None, None);
     let held = *w.cache.parked_lengths().last().expect("parked in RAM");
     assert!(held > a.len(), "the parked session has decoded tokens");
     let st = w.states.as_ref().unwrap();
@@ -529,6 +537,241 @@ fn abort_of_a_suspended_run_writes_its_unwritten_state_to_the_store() {
     );
     assert_eq!(w.cache.reserved, 0);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Faults and deterministic slow storage without changing the production stub.
+struct AbortEngine {
+    inner: StubEngine,
+    fail_load: bool,
+    snap_delay: Duration,
+    saved: Vec<u32>,
+}
+
+impl Engine for AbortEngine {
+    type Snapshot = crate::engine::StubSnapshot;
+    fn n_ctx(&self) -> usize {
+        self.inner.n_ctx()
+    }
+    fn n_vocab(&self) -> usize {
+        self.inner.n_vocab()
+    }
+    fn n_past(&self) -> usize {
+        self.inner.n_past()
+    }
+    fn reset(&mut self) {
+        self.inner.reset();
+    }
+    fn prefill(&mut self, t: &[u32]) -> crate::engine::Result<&[f32]> {
+        self.inner.prefill(t)
+    }
+    fn snapshot(&mut self) -> crate::engine::Result<Self::Snapshot> {
+        self.inner.snapshot()
+    }
+    fn restore(&mut self, s: &Self::Snapshot) -> crate::engine::Result<()> {
+        self.inner.restore(s)
+    }
+    fn state_size_hint(&self) -> usize {
+        self.inner.state_size_hint()
+    }
+    fn snapshot_bytes(s: &Self::Snapshot) -> usize {
+        StubEngine::snapshot_bytes(s)
+    }
+    fn state_id(&self) -> Option<String> {
+        self.inner.state_id()
+    }
+    fn save_state(&mut self, w: &mut dyn std::io::Write) -> crate::engine::Result<()> {
+        self.inner.save_state(w)
+    }
+    fn load_state(&mut self, r: &mut dyn std::io::Read, n: usize) -> crate::engine::Result<()> {
+        if std::mem::take(&mut self.fail_load) {
+            return Err(crate::engine::EngineError("synthetic load failure".into()));
+        }
+        self.inner.load_state(r, n)
+    }
+    fn kv_row_bytes(&self) -> usize {
+        self.inner.kv_row_bytes()
+    }
+    fn kv_rows_save(
+        &mut self,
+        a: usize,
+        b: usize,
+        w: &mut dyn std::io::Write,
+    ) -> crate::engine::Result<()> {
+        self.inner.kv_rows_save(a, b, w)
+    }
+    fn snap_save(
+        &mut self,
+        s: &Self::Snapshot,
+        w: &mut dyn std::io::Write,
+    ) -> crate::engine::Result<()> {
+        self.inner.snap_save(s, w)
+    }
+    fn snap_save_live(&mut self, w: &mut dyn std::io::Write) -> crate::engine::Result<()> {
+        self.saved.push(self.inner.tokens[0]);
+        std::thread::sleep(self.snap_delay);
+        self.inner.snap_save_live(w)
+    }
+}
+
+fn abort_worker(tok: &Tokenizer, dir: &std::path::Path) -> Worker<AbortEngine> {
+    let mut w = Worker::new(
+        AbortEngine {
+            inner: stub(tok, 8192),
+            fail_load: false,
+            snap_delay: Duration::ZERO,
+            saved: Vec::new(),
+        },
+        8,
+    );
+    w.ubatch = 16;
+    w.cache.park_budget = 1 << 30;
+    w.states = Some(crate::tests_state::open(
+        dir,
+        crate::tests_state::ident("sha256:m", ""),
+        1 << 40,
+    ));
+    w
+}
+
+fn suspend_abort_session(w: &mut Worker<AbortEngine>, tok: &Tokenizer, c: &str) {
+    let p = prompt(
+        tok,
+        &format!("{c}{}", " the sliced conversation.".repeat(20)),
+    );
+    let gp = greedy(60);
+    let mut sr = w.generate_start(&p, &gp).unwrap();
+    assert!(w
+        .generate_slice(tok, &p, &gp, &mut sr, &mut |_| true, &mut || true)
+        .unwrap()
+        .is_none());
+    w.generate_abort(sr);
+}
+
+#[test]
+fn abort_below_store_minimum_does_not_pin_a_dirty_ram_reservation() {
+    let tok = synthetic_tokenizer();
+    let dir = crate::tests_state::tmp("fair-abort-minimum");
+    let mut w = abort_worker(&tok, &dir);
+    w.states.as_mut().unwrap().min_tokens = 8192;
+    suspend_abort_session(&mut w, &tok, "A");
+    assert_eq!(
+        w.cache.reserved, 0,
+        "an ineligible write must not remain deferred forever"
+    );
+    assert!(!w.cache.parked_lengths().is_empty());
+    assert!(w.states.as_ref().unwrap().manifests.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn abort_persistence_is_deferred_and_preserves_another_live_session() {
+    let tok = synthetic_tokenizer();
+    let dir = crate::tests_state::tmp("fair-abort-live");
+    let mut w = abort_worker(&tok, &dir);
+    // Suspend A, finish B, then disconnect A while B is live.
+    let a = prompt(&tok, &format!("A{}", " conversation A.".repeat(30)));
+    let b = prompt(&tok, &format!("B{}", " conversation B.".repeat(30)));
+    let gp = greedy(60);
+    let mut sr = w.generate_start(&a, &gp).unwrap();
+    assert!(w
+        .generate_slice(&tok, &a, &gp, &mut sr, &mut |_| true, &mut || true)
+        .unwrap()
+        .is_none());
+    w.generate(&tok, &b, &greedy(3), &mut |_| true).unwrap();
+    let live = w.cache.tokens.clone();
+    let calls = w.engine.inner.calls.len();
+    w.generate_abort(sr);
+    assert_eq!(
+        w.engine.inner.calls.len(),
+        calls,
+        "abort never swaps the engine"
+    );
+    assert_eq!(w.cache.tokens, live);
+    assert!(w.states.as_ref().unwrap().manifests.is_empty());
+    // A request preempts the idle writer without losing the deferred state.
+    let cancel = AtomicBool::new(true);
+    w.persist_states(None, Some(&cancel));
+    assert!(w.engine.saved.is_empty());
+    assert!(w.cache.reserved > 0);
+    w.persist_states(None, None);
+    assert_eq!(w.cache.tokens, live);
+    assert_eq!(w.engine.inner.tokens, live);
+    assert_eq!(w.cache.reserved, 0);
+    assert_eq!(w.states.as_ref().unwrap().manifests.len(), 2);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn abort_shutdown_prioritizes_live_state_and_shares_one_deadline() {
+    let tok = synthetic_tokenizer();
+    let dir = crate::tests_state::tmp("fair-abort-deadline");
+    let mut w = abort_worker(&tok, &dir);
+    suspend_abort_session(&mut w, &tok, "A");
+    suspend_abort_session(&mut w, &tok, "B");
+    assert!(w.states.as_ref().unwrap().manifests.is_empty());
+    let c = prompt(&tok, &format!("C{}", " live conversation.".repeat(30)));
+    w.generate(&tok, &c, &greedy(3), &mut |_| true).unwrap();
+    // One snapshot crosses the common deadline. Neither deferred session may start a file.
+    w.engine.snap_delay = Duration::from_millis(1100);
+    let t0 = Instant::now();
+    w.shutdown_writes(true, false, t0, t0 + Duration::from_secs(1), &mut |_| {
+        panic!("legacy writer")
+    });
+    assert_eq!(
+        w.engine.saved,
+        vec![first(&tok, "C")],
+        "live state first, no fresh per-abort budget"
+    );
+    assert_eq!(w.states.as_ref().unwrap().manifests.len(), 1);
+    assert!(
+        w.cache.reserved > 0,
+        "unfinished writes remain accounted for"
+    );
+    w.engine.snap_delay = Duration::ZERO;
+    w.persist_states(None, None);
+    assert_eq!(w.states.as_ref().unwrap().manifests.len(), 3);
+    assert_eq!(w.cache.reserved, 0);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn abort_restore_failure_does_not_leave_stale_live_bookkeeping() {
+    let tok = synthetic_tokenizer();
+    let dir = crate::tests_state::tmp("fair-abort-load-failure");
+    let mut w = abort_worker(&tok, &dir);
+    let a = prompt(&tok, &format!("A{}", " conversation A.".repeat(30)));
+    let b = prompt(&tok, &format!("B{}", " conversation B.".repeat(30)));
+    let gp = greedy(60);
+    let mut sr = w.generate_start(&a, &gp).unwrap();
+    assert!(w
+        .generate_slice(&tok, &a, &gp, &mut sr, &mut |_| true, &mut || true)
+        .unwrap()
+        .is_none());
+    w.generate(&tok, &b, &greedy(3), &mut |_| true).unwrap();
+    w.persist_states(None, None);
+    assert!(!w.live_blocks.is_empty());
+    w.engine.fail_load = true;
+    assert!(w
+        .generate_slice(&tok, &a, &gp, &mut sr, &mut |_| true, &mut || false)
+        .is_err());
+    assert!(w.cache.tokens.is_empty());
+    assert!(
+        w.live_blocks.is_empty(),
+        "a failed restore must clear the previous live session's fields"
+    );
+    assert_eq!(w.cache.reserved, 0);
+    // A fresh generation must publish its own valid head, not the failed session's fields.
+    let b = prompt(&tok, &format!("B{}", " new conversation.".repeat(30)));
+    w.generate(&tok, &b, &greedy(3), &mut |_| true).unwrap();
+    w.persist_states(None, None);
+    assert!(w
+        .states
+        .as_ref()
+        .unwrap()
+        .manifests
+        .values()
+        .any(|m| m.n_tokens == w.cache.tokens.len()));
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 // ---- service level ----
@@ -554,6 +797,157 @@ fn fair_state(quantum_ms: u64, decode_us: u64, park_budget: usize) -> Arc<State<
     st.sse_keepalive = Duration::from_millis(10);
     st.fair.set_quantum_ms(quantum_ms);
     Arc::new(st)
+}
+
+fn fair_store_state(dir: &std::path::Path) -> Arc<State<StubEngine>> {
+    let mut st = fair_state(10, 2000, 1 << 30);
+    Arc::get_mut(&mut st).unwrap().state_cache = true;
+    st.worker.lock().unwrap().states = Some(crate::tests_state::open(
+        dir,
+        crate::tests_state::ident("sha256:m", ""),
+        1 << 40,
+    ));
+    st
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_abort_cache_controls_do_not_resurrect_cleared_state() {
+    for scope in ["all", "model", "hint", "session", "budget"] {
+        let dir = crate::tests_state::tmp(&format!("fair-abort-clear-{scope}"));
+        let st = fair_store_state(&dir);
+        let sid = {
+            let mut w = st.worker.lock().unwrap();
+            w.engine.decode_sleep = Duration::ZERO;
+            let p = prompt(
+                &st.tok,
+                &format!("A{}", " the sliced conversation.".repeat(20)),
+            );
+            let gp = GenParams {
+                session: Some("abort-owner".into()),
+                ..greedy(60)
+            };
+            // Session-id clearing starts with an older durable head; hint/all/model clearing
+            // also cover deferred copies which have never published a manifest.
+            let sid = if scope == "session" {
+                w.generate(
+                    &st.tok,
+                    &p,
+                    &GenParams {
+                        n_predict: 3,
+                        ..gp.clone()
+                    },
+                    &mut |_| true,
+                )
+                .unwrap();
+                w.persist_states(Some("abort-owner"), None);
+                Some(
+                    w.states
+                        .as_ref()
+                        .unwrap()
+                        .manifests
+                        .keys()
+                        .next()
+                        .unwrap()
+                        .clone(),
+                )
+            } else {
+                None
+            };
+            let mut sr = w.generate_start(&p, &gp).unwrap();
+            assert!(w
+                .generate_slice(&st.tok, &p, &gp, &mut sr, &mut |_| true, &mut || true)
+                .unwrap()
+                .is_none());
+            w.generate_abort(sr);
+            assert!(w.cache.reserved > 0);
+            sid
+        };
+        let (path, body) = if scope == "budget" {
+            ("/state-cache/budget", json!({"bytes": 0}))
+        } else {
+            (
+                "/state-cache/clear",
+                json!({"scope": scope, "hint": "abort-owner", "session": sid}),
+            )
+        };
+        let (code, reply) = crate::tests_state::call(&st, "POST", path, body).await;
+        assert_eq!(code, 200, "{scope}: {reply}");
+        let mut w = st.worker.lock().unwrap();
+        assert_eq!(w.cache.reserved, 0, "{scope}");
+        w.persist_states(None, None);
+        assert!(
+            w.states.as_ref().unwrap().manifests.is_empty(),
+            "{scope}: no resurrection"
+        );
+        if scope == "budget" {
+            assert!(
+                !w.cache.parked_lengths().is_empty(),
+                "disk off retains the RAM copy"
+            );
+        }
+        drop(w);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn service_disconnect_writes_deferred_state_in_the_idle_gap() {
+    let dir = crate::tests_state::tmp("fair-abort-idle");
+    let st = fair_store_state(&dir);
+    let a = format!("A{}", " the sliced conversation.".repeat(20));
+    let b = format!("B{}", " the other conversation.".repeat(20));
+    let Reply::Stream(mut ra) = handle(
+        st.clone(),
+        "POST",
+        "/completion",
+        "",
+        &serde_json::to_vec(&body(&a, 300)).unwrap(),
+    )
+    .await
+    else {
+        panic!("A not streaming")
+    };
+    ra.recv().await.unwrap();
+    let flag = st.running.lock().unwrap().as_ref().unwrap().clone();
+    let Reply::Stream(mut rb) = handle(
+        st.clone(),
+        "POST",
+        "/completion",
+        "",
+        &serde_json::to_vec(&body(&b, 40)).unwrap(),
+    )
+    .await
+    else {
+        panic!("B not streaming")
+    };
+    let t0 = Instant::now();
+    while st.fair.suspended() == 0 {
+        assert!(t0.elapsed() < Duration::from_secs(10), "A did not yield");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    flag.store(true, Ordering::SeqCst); // the disconnected client's cancel flag
+    drop(ra);
+    while tokio::time::timeout(Duration::from_secs(10), rb.recv())
+        .await
+        .unwrap()
+        .is_some()
+    {}
+    let t0 = Instant::now();
+    loop {
+        let done = st.persist_done.load(Ordering::SeqCst) > 0 && {
+            let w = st.worker.lock().unwrap();
+            w.cache.reserved == 0 && w.states.as_ref().unwrap().manifests.len() == 2
+        };
+        if done {
+            break;
+        }
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "deferred state was not flushed after disconnect"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 type Log = Arc<Mutex<Vec<(String, Instant)>>>;
@@ -806,22 +1200,26 @@ fn cancel_while_suspended_ends_that_run_only_and_its_session_still_works() {
 
 #[test]
 fn sigterm_cancels_a_suspended_run_and_frees_the_worker() {
-    let st = fair_state(30, 2000, 1 << 30);
+    let dir = crate::tests_state::tmp("fair-abort-sigterm");
+    let st = fair_store_state(&dir);
     let a = job(greedy(300));
     let b = job(greedy(300));
-    let ha = spawn_job(&st, PA, &a);
+    let pa = format!("A{}", " the sliced conversation.".repeat(20));
+    let pb = format!("B{}", " the other conversation.".repeat(20));
+    let ha = spawn_job(&st, &pa, &a);
     wait_for("A's first token", || a.first.load(Ordering::SeqCst));
-    let hb = spawn_job(&st, PB, &b);
+    let hb = spawn_job(&st, &pb, &b);
     wait_for("A suspended", || {
         a.progress.suspended.load(Ordering::SeqCst)
     });
+    wait_for("B's first token", || b.first.load(Ordering::SeqCst));
     // what main.rs's SIGTERM thread does
     let t0 = Instant::now();
     if let Some(f) = st.running.lock().unwrap().take() {
         f.store(true, Ordering::SeqCst);
     }
     st.fair.cancel_all();
-    let w = loop {
+    let mut w = loop {
         if let Ok(w) = st.worker.try_lock() {
             if st.fair.suspended() == 0 {
                 break w;
@@ -833,6 +1231,23 @@ fn sigterm_cancels_a_suspended_run_and_frees_the_worker() {
         );
         std::thread::sleep(Duration::from_millis(5));
     };
+    assert!(
+        !st.fair.idle_writes_allowed(),
+        "shutdown forbids new unbounded idle jobs"
+    );
+    w.shutdown_writes(
+        true,
+        false,
+        t0,
+        t0 + Duration::from_millis(2500),
+        &mut |_| panic!("legacy writer"),
+    );
+    assert_eq!(
+        w.states.as_ref().unwrap().manifests.len(),
+        2,
+        "both live and suspended states made durable"
+    );
+    assert_eq!(w.cache.reserved, 0);
     drop(w);
     assert!(
         matches!(ha.join().unwrap(), Err(GenError::Cancelled)),
@@ -843,6 +1258,7 @@ fn sigterm_cancels_a_suspended_run_and_frees_the_worker() {
         "the running one too"
     );
     assert!(st.fair.order().is_empty());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
