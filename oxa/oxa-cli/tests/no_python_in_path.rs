@@ -1,8 +1,12 @@
 //! Milestone A's real-binary proof. This is deliberately not a passing claim on pre-S7 main.
 //! The ignored case must be enabled and its user-settings fixture checked against landed S7.
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 
-use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+#[allow(dead_code)]
+#[path = "../../oxc-gateway/tests/common/anthropic.rs"]
+mod anthropic;
+use anthropic::{MockAnthropic, Reply, CREDENTIAL};
+use oxa_fake::TestEnv;
 use serde_json::json;
 use std::fs::{self, File};
 use std::io;
@@ -64,14 +68,10 @@ fn controller_trap_detects_a_connection_without_a_request() {
 }
 
 #[test]
-#[ignore = "S7 production in-process gateway selection is not on main; confirm its user-settings fixture and remove this ignore when S7 lands (#331, #431)"]
+#[ignore = "S7 production in-process gateway selection is not on main; remove this ignore when S7 #694 lands on main (#331)"]
 fn print_uses_native_gateway_without_python_or_controller() {
     let env = TestEnv::new();
-    let mock = FakeServer::start(
-        vec![ScriptTurn::text("native-gateway-proof")],
-        FakeOpts::default(),
-    )
-    .expect("loopback upstream mock");
+    let mock = MockAnthropic::start(vec![Reply::text("native-gateway-proof", 11, 7, 3, 5)]);
     let controller = TcpListener::bind("127.0.0.1:0").expect("owned controller trap");
     controller.set_nonblocking(true).unwrap();
     let controller_url = format!("http://{}", controller.local_addr().unwrap());
@@ -80,27 +80,25 @@ fn print_uses_native_gateway_without_python_or_controller() {
 
     // Synthetic, private fixture only. No inherited provider key or sign-in is available.
     let secrets = env.write(
-        "home/.oxa/agent/mock-secrets.json",
-        r#"{"openrouter":"synthetic-mock-only"}"#,
+        "home/.config/oxc/llm/cloud-secrets.json",
+        &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string(),
     );
     fs::set_permissions(&secrets, fs::Permissions::from_mode(0o600)).unwrap();
-    // The engine switch is the S7 handoff contract. Its cloud object must be checked against
-    // S7's final settings parser before enabling this test; do not add fallback selection here.
+    // Actual S7 contract: native Anthropic, fixed protected key and agent-ledger paths.
     let settings = json!({
         "defaultProjectTrust": "always",
+        "defaultThinkingLevel": "off",
         "retry": {"enabled": false},
         "oxa": {
             "engine": {"inProcessCloud": true},
             "cloud": {
-                "enabled": true,
                 "daily_budget_usd": 1.0,
-                "secrets_file": secrets,
-                "ledger_dir": env.tmp().join("ledger"),
                 "models": {"mock-native": {
-                    "kind": "remote", "provider": "openrouter", "base_url": mock.url(),
-                    "upstream_model": "mock-upstream", "context_window": 8192,
-                    "max_output": 128,
-                    "pricing": {"input_per_million": 1.0, "output_per_million": 1.0}
+                    "provider": "anthropic", "base_url": mock.base_url(),
+                    "upstream_model": "synthetic-anthropic", "context_window": 8192,
+                    "max_output": 16,
+                    "pricing": {"input_per_million": 2.0, "output_per_million": 3.0,
+                        "cache_read_per_million": 0.2, "cache_write_per_million": 2.5}
                 }}
             }
         }
@@ -108,12 +106,22 @@ fn print_uses_native_gateway_without_python_or_controller() {
     env.write("home/.oxa/agent/settings.json", &settings.to_string());
     let stdout_path = env.tmp().join("stdout");
     let stderr_path = env.tmp().join("stderr");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+    let trace_path = env.tmp().join("native-process.trace");
+    // Resolve the test tool before replacing the child's PATH with only forbidden shims.
+    let tool_path = std::env::var_os("PATH").expect("test-tool PATH");
+    let tracer = std::env::split_paths(&tool_path)
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join("strace"))
+        .find(|p| p.is_file())
+        .expect("strace is required for the native process/connection proof");
+    let mut child = Command::new(tracer)
+        .args(["-f", "-e", "trace=execve,connect", "-o"])
+        .arg(&trace_path)
+        .arg(env!("CARGO_BIN_EXE_oxa"))
         .args([
             "-p",
             "--no-session",
-            "--tools",
-            "",
+            "--no-tools",
             "--model",
             "mock-native",
             "reply briefly",
@@ -143,14 +151,57 @@ fn print_uses_native_gateway_without_python_or_controller() {
         std::thread::sleep(Duration::from_millis(20));
     };
     no_controller_connection(&controller);
+    let trace = fs::read_to_string(trace_path).expect("read only the synthetic process trace");
+    assert!(trace.contains("execve("), "exec tracing must actually run");
+    assert!(
+        trace.contains(&format!("_port=htons({})", mock.address().port())),
+        "the trace must include the actual upstream connection"
+    );
+    for port in [8092, controller.local_addr().unwrap().port()] {
+        assert!(
+            !trace.contains(&format!("_port=htons({port})")),
+            "connected to controller port {port}"
+        );
+    }
+    for line in trace.lines().filter(|line| line.contains("execve(\"")) {
+        let executable = line.split("execve(\"").nth(1).unwrap().split('"').next().unwrap();
+        let name = Path::new(executable)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_lowercase();
+        assert!(!name.starts_with("python"), "a Python-named executable ran");
+    }
     assert!(!Path::new(&marker).exists(), "a Python interpreter was invoked");
     let stdout = fs::read_to_string(stdout_path).unwrap();
     let stderr = fs::read_to_string(stderr_path).unwrap();
     assert!(status.success(), "stdout: {stdout}\nstderr: {stderr}");
     assert!(stdout.contains("native-gateway-proof"), "{stdout}");
-    assert_eq!(
-        mock.requests().len(),
-        1,
-        "the native upstream must actually answer"
-    );
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1, "the native upstream must actually answer");
+    assert_eq!(requests[0].target, "/v1/messages");
+    assert_eq!(requests[0].header("x-api-key"), Some(CREDENTIAL));
+    assert_eq!(requests[0].body["model"], "synthetic-anthropic");
+    assert!(!stdout.contains(CREDENTIAL));
+    assert!(!stderr.contains(CREDENTIAL));
+    // Read only the synthetic usage ledger, never the credential fixture.
+    let rows: Vec<serde_json::Value> = fs::read_dir(env.agent_dir().join("cloud-ledger"))
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.unwrap().path();
+            (path.extension().is_some_and(|e| e == "jsonl")).then(|| fs::read_to_string(path).unwrap())
+        })
+        .flat_map(|text| {
+            text.lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["remote_provider"], "anthropic");
+    assert_eq!(rows[0]["status"], 200);
+    assert_eq!(rows[0]["settled"], "usage");
+    assert!((rows[0]["cost_usd"].as_f64().unwrap() - 0.0000459).abs() < 1e-12);
+    assert!(!rows[0].to_string().contains(CREDENTIAL));
+    mock.assert_healthy();
 }
