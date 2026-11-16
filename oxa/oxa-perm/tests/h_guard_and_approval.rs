@@ -25,23 +25,28 @@ fn spill_read_exception_is_session_scoped_and_resolves_symlinks() {
     let env = TestEnv::new();
     let tmp = env.agent_dir().join("tmp");
     let spill = tmp.join("s1");
-    std::fs::create_dir_all(&spill).unwrap();
+    env.write("home/.oxa/agent/tmp/s1/out.txt", "own output");
+    env.write("home/.oxa/agent/tmp/s2/out.txt", "other output");
     std::os::unix::fs::symlink(tmp.join("s2"), spill.join("other-session")).unwrap();
     std::os::unix::fs::symlink(env.home().join(".ssh"), spill.join("keys")).unwrap();
     let mut p = ModePolicy::new().with_guard(PathGuard::new(&env.home(), &env.agent_dir(), &tmp));
     let own = Access::Read(spill.join("out.txt"));
-    assert_eq!(
-        p.decide(Mode::Ask, &own, &env.work()),
-        SENSITIVE,
-        "no spill scope until the runtime attaches a session"
-    );
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &own, &env.work()),
+            SENSITIVE,
+            "no spill scope until the runtime attaches a session ({mode:?})"
+        );
+    }
     p.set_spill_dir(&spill);
     for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
         assert_eq!(p.decide(mode, &own, &env.work()), Decision::Allow);
         for path in [
             tmp.join("s2/out.txt"),
+            tmp.join("s10/out.txt"),
             tmp.join("s1-other/out.txt"),
             tmp.join("codemode/out.txt"),
+            tmp.join("loose.txt"),
             spill.join("../s2/out.txt"),
             spill.join("other-session/out.txt"),
         ] {
@@ -70,15 +75,17 @@ fn spill_read_exception_is_session_scoped_and_resolves_symlinks() {
         );
     }
     p.set_spill_dir(&tmp.join("s2"));
-    assert_eq!(
-        p.decide(Mode::Ask, &own, &env.work()),
-        SENSITIVE,
-        "switching replaces, rather than accumulates, the spill scope"
-    );
-    assert_eq!(
-        p.decide(Mode::Ask, &Access::Read(tmp.join("s2/out.txt")), &env.work()),
-        Decision::Allow
-    );
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &own, &env.work()),
+            SENSITIVE,
+            "switching replaces, rather than accumulates, the spill scope ({mode:?})"
+        );
+        assert_eq!(
+            p.decide(mode, &Access::Read(tmp.join("s2/out.txt")), &env.work()),
+            Decision::Allow
+        );
+    }
 }
 
 #[test]

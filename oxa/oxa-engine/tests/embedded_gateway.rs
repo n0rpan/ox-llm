@@ -284,7 +284,7 @@ fn cancellation_stops_delivery_and_cannot_commit_a_partial_reply() {
 }
 
 #[test]
-fn cancellation_during_the_final_buffer_flush_never_returns_a_turn() {
+fn cancellation_during_the_final_buffer_flush_keeps_the_settled_turn() {
     let _policy = POLICY.lock().unwrap();
     let prefix = prefix();
     let events = vec![
@@ -296,12 +296,51 @@ fn cancellation_during_the_final_buffer_flush_never_returns_a_turn() {
     let (engine, _) = engine(events, None);
     let cancel = CancelToken::new();
     let mut delivered = Vec::new();
-    let result = engine.chat(&request(&prefix, &[]), &cancel, &mut |event| {
-        delivered.push(event);
-        cancel.cancel();
-    });
+    let turn = engine
+        .chat(&request(&prefix, &[]), &cancel, &mut |event| {
+            delivered.push(event);
+            cancel.cancel();
+        })
+        .expect("the reply was already settled at [DONE]");
     assert_eq!(delivered, vec![StreamEvent::Text("<thi".into())]);
-    assert_eq!(result.unwrap_err().code, codes::ABORTED);
+    assert_eq!(turn.msg.content.as_deref(), Some("<thi"));
+}
+
+/// A gateway that settles the reply and only then sees the user's cancel.
+struct CancelAfterDone;
+impl EmbeddedGateway for CancelAfterDone {
+    fn discovery(&self) -> Result<GatewayDiscovery, OxaError> {
+        Script {
+            capture: Arc::default(),
+            events: Vec::new(),
+            error: None,
+        }
+        .discovery()
+    }
+    fn chat(
+        &self,
+        _body: &[u8],
+        _context: GatewayContext<'_>,
+        cancel: &CancelToken,
+        on: &mut dyn FnMut(SseEvent) -> Flow,
+    ) -> Result<(), OxaError> {
+        for event in complete() {
+            on(event);
+        }
+        cancel.cancel();
+        Ok(())
+    }
+}
+
+#[test]
+fn cancel_after_done_keeps_the_settled_reply() {
+    let _policy = POLICY.lock().unwrap();
+    let prefix = prefix();
+    let engine = EmbeddedEngine::new(Arc::new(CancelAfterDone));
+    let turn = engine
+        .chat(&request(&prefix, &[]), &CancelToken::new(), &mut |_| {})
+        .expect("a reply finished and settled before the cancel is returned");
+    assert_eq!(turn.msg.content.as_deref(), Some("answer"));
 }
 
 #[test]

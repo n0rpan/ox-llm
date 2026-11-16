@@ -121,6 +121,7 @@ pub struct Entry {
 fn millis(start: Instant, end: Instant) -> f64 {
     end.duration_since(start).as_secs_f64() * 1000.0
 }
+
 impl Ledger {
     /// Explicit opt-in, dedicated directory outside source repositories.
     /// Keep one Ledger for the gateway lifetime; cloning preserves all holds.
@@ -128,6 +129,12 @@ impl Ledger {
         if !directory.is_absolute() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let mut ancestor = directory;
+        while !ancestor.try_exists()? {
+            ancestor = ancestor.parent().ok_or(io::ErrorKind::InvalidInput)?;
+        }
+        KeyFile::prepare(&ancestor.join(".salt"))
+            .map_err(|_| io::Error::from(io::ErrorKind::PermissionDenied))?;
         fs::create_dir_all(directory)?;
         let info = fs::symlink_metadata(directory)?;
         if !info.is_dir() || info.uid() != nix::unistd::Uid::current().as_raw() {
@@ -217,13 +224,15 @@ impl Daily {
 }
 impl Entry {
     pub fn admitted(&mut self) {
-        self.admitted = Some(Instant::now());
-        self.row["admit_ms"] = json!(millis(self.started, self.admitted.unwrap()));
+        let admitted = *self.admitted.get_or_insert_with(Instant::now);
+        self.row["admit_ms"] = json!(millis(self.started, admitted));
     }
     /// Call only for response data (not SSE keepalive comments). No body bytes
     /// are retained here; provider accounting observes usage separately.
     pub fn observe(&mut self) {
-        self.first.get_or_insert_with(Instant::now);
+        if self.admitted.is_some() {
+            self.first.get_or_insert_with(Instant::now);
+        }
     }
     /// Consume exactly once inside Hold::finish's callback. Failure propagates
     /// into the shared budget's fail-closed state before admission is released.
@@ -309,5 +318,36 @@ impl Entry {
         }
         append_private(&self.daily.path, &self.row)?;
         Ok(self.row)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_timing_notifications_preserve_the_first_transition() {
+        // Timing notifications do not perform IO. Use a daily handle without
+        // opening a ledger or creating any salt or request file.
+        let ledger = Ledger(Arc::new(Inner {
+            directory: PathBuf::new(),
+            salt: [0; 32],
+            budgets: Mutex::default(),
+            writer: Mutex::default(),
+        }));
+        let mut entry = ledger
+            .day("20260102")
+            .unwrap()
+            .entry("synthetic", Context::default())
+            .unwrap();
+        entry.admitted();
+        let admitted = entry.admitted;
+        entry.observe();
+        let first = entry.first;
+        entry.admitted();
+        entry.observe();
+        assert_eq!(entry.admitted, admitted);
+        assert_eq!(entry.first, first);
+        assert!(first >= admitted);
     }
 }

@@ -12,6 +12,8 @@ pub mod pricing;
 #[cfg(feature = "accounting")]
 pub mod accounting;
 #[cfg(feature = "accounting")]
+mod reservations;
+#[cfg(feature = "accounting")]
 pub mod spend;
 
 #[cfg(feature = "secrets")]

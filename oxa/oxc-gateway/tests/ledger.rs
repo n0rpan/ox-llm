@@ -290,6 +290,9 @@ fn unsafe_salts_and_repository_locations_are_refused_without_rotation() {
     fs::create_dir(home.0.join(".git")).unwrap();
     assert!(Ledger::open(&home.0).is_err());
     assert!(!home.0.join(".salt").exists());
+    let nested = home.0.join("new/nested");
+    assert!(Ledger::open(&nested).is_err());
+    assert!(!home.0.join("new").exists());
 }
 
 #[test]
@@ -389,4 +392,19 @@ fn shared_writers_append_complete_rows_without_retaining_request_bodies() {
         .iter()
         .all(|row| row["remote"] == true && row["settled"] == "usage"));
     assert_eq!(ledger.day("20260102").unwrap().budget().spend().unwrap(), 0.032);
+}
+
+#[test]
+fn response_data_before_admission_does_not_record_a_first_byte() {
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let mut entry = ledger
+        .day("20260102")
+        .unwrap()
+        .entry("synthetic", Context::default())
+        .unwrap();
+    entry.observe();
+    entry.admitted();
+    let row = entry.append(&fields(), 200, None, None).unwrap();
+    assert!(row.get("ttfb_ms").is_none());
 }
