@@ -6,6 +6,28 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 #[test]
+fn print_preserves_the_complete_local_answer_across_length_cuts() {
+    for remote in [false, true] {
+        let env = TestEnv::new();
+        env.write("home/.oxa/agent/settings.json", r#"{"retry":{"enabled":true,"maxRetries":2},"cacheWarming":"off","oxa":{"envNote":false}}"#);
+        let mut first = ScriptTurn::text("α first ");
+        first.finish = Finish::Length;
+        let mut second = ScriptTurn::text("middle ");
+        second.finish = Finish::Length;
+        let srv = FakeServer::start(
+            vec![first, second, ScriptTurn::text("tail")],
+            FakeOpts { remote:remote.then_some("openrouter"), ..FakeOpts::default() },
+        ).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args(["-p", "--no-session", "--no-tools", "--no-extensions", "--no-mcp", "answer"])
+            .env_clear().envs(env.envs(&srv.url())).current_dir(env.work())
+            .stdin(Stdio::null()).output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{}", String::from_utf8_lossy(&output.stderr));
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), if remote { "tail\n" } else { "α first middle tail\n" });
+    }
+}
+
+#[test]
 fn all_headless_modes_complete_after_byte_and_length_cuts() {
     for mode in ["print", "json", "rpc"] {
         for remote in [false, true] {
