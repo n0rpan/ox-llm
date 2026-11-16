@@ -41,6 +41,8 @@ use oxa_proto::{Role, Value, WireMsg};
 
 /// The setting that turns the guard off (default on).
 pub const SETTING: &str = "oxa.toolRepeatGuard";
+/// The error class of a run this guard stopped (`outcome` / exit code 1, not a finished task).
+pub const ERROR_CODE: &str = "repeat_guard";
 /// Identical results already on the wire before a repeat is answered with the notice.
 pub const LIMIT: u32 = 3;
 /// Notices for the same call before the next repeat stops the run.
