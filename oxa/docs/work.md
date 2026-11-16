@@ -104,7 +104,9 @@ ignored files in a retained working directory are not commit-bound evidence.
 fresh sandboxed checkout with an independent, strictly validated object store.
 It uses the captured base's checks and requires unchanged head/tree identities
 and a clean tracked tree before and after checking. Retained ignored helpers are
-absent. Verification preserves the saved offline restriction and any current
+absent. A separate index built from the verified commit stays outside the checks'
+writable binds; final read-only inspection uses it rather than trusting index
+flags or staged entries left by a check. Verification preserves the saved offline restriction and any current
 offline request. It prints a JSON observation with the task, head, tree, base and
 check time, and retains the task's work unchanged. It starts no worker and does
 not push or create a pull request. The library returns a non-deserializable

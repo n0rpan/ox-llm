@@ -109,6 +109,25 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     if dirty_worktree(binary, &export.tree, repo, policy, &lock)? {
         return Err("clean acceptance checkout is dirty".into());
     }
+    // This fresh index comes from the verified commit and lives outside both
+    // writable sandbox binds (checkout and Git metadata). Checks cannot hide
+    // changes by setting assume-unchanged/skip-worktree or replacing their index.
+    let index = export.root.join(".committed-index");
+    let mut prepare_index = private_git(
+        policy,
+        &export.tree,
+        &[
+            "-c",
+            "core.sparseCheckout=false",
+            "-c",
+            "index.sparse=false",
+            "read-tree",
+            "--reset",
+            head,
+        ],
+    );
+    prepare_index.env("GIT_INDEX_FILE", &index);
+    checked(prepare_index)?;
     let failed = acceptance(binary, &export.tree, repo, &execution.commands, policy, &lock)?;
     if !failed.is_empty() {
         return Err(format!("clean committed acceptance failed: {failed}"));
@@ -116,6 +135,19 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     same_saved_commit(policy, &export.tree, head, tree_id)?;
     if dirty_worktree(binary, &export.tree, repo, policy, &lock)? {
         return Err("acceptance changed committed source files".into());
+    }
+    let inspected = supervise(
+        binary,
+        &export.tree,
+        SupervisorRequest {
+            source: repo.into(),
+            operation: SupervisorOperation::InspectCommitted { index },
+        },
+        policy,
+        &lock,
+    )?;
+    if !inspected.status.success() {
+        return Err("acceptance changed committed source files or could not be inspected".into());
     }
     export.verify(policy, head, base)?;
     same_saved_commit(policy, &record.worktree, head, tree_id)?;

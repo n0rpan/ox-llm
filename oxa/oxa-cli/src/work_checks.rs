@@ -27,6 +27,7 @@ pub(crate) fn run(
     let settings = Settings::load(dirs, &source, true);
     let commands = match request.operation {
         SupervisorOperation::Inspect => return inspect(&b, &root),
+        SupervisorOperation::InspectCommitted { index } => return inspect_committed(&b, &root, &index),
         SupervisorOperation::Checkout { branch, create } => {
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
             let spec = ExecSpec {
@@ -187,6 +188,40 @@ fn inspect(sandbox: &Bwrap, root: &Path) -> Result<i32, String> {
     work_dirty=0
     while IFS= read -r -d '' work_entry; do work_dirty=1; done
     exit "$work_dirty"
+}
+
+// Compare actual tracked contents using the runner's fresh, protected index.
+// The check-writable index and user Git filters supply no authority here.
+fn inspect_committed(sandbox: &Bwrap, root: &Path, index: &Path) -> Result<i32, String> {
+    if index.parent() != root.parent() || index.file_name().is_none_or(|name| name != ".committed-index") {
+        return Err("invalid committed inspection index".into());
+    }
+    let store = root.parent().ok_or("committed checkout has no parent")?.join("objects.git");
+    let mut env = git_environment();
+    env.extend([
+        ("GIT_INDEX_FILE".into(), index.to_string_lossy().into_owned()),
+        ("GIT_DIR".into(), store.to_string_lossy().into_owned()),
+        ("GIT_COMMON_DIR".into(), store.to_string_lossy().into_owned()),
+        ("GIT_WORK_TREE".into(), root.to_string_lossy().into_owned()),
+        ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
+        ("GIT_CONFIG_SYSTEM".into(), "/dev/null".into()),
+    ]);
+    let result = sandbox.run_streaming(
+        &ExecSpec {
+            command: "git --no-replace-objects --no-optional-locks -c core.fsmonitor=false -c core.ignoreStat=false -c core.filemode=true -c core.symlinks=true -c core.sparseCheckout=false -c index.sparse=false diff-files --quiet --no-ext-diff --no-textconv --ignore-submodules=none --".into(),
+            cwd: root.into(),
+            writable: false,
+            net: false,
+            timeout_s: Some(600),
+            env,
+        },
+        &CancelToken::default(),
+        &mut |_| {},
+    );
+    match (result.exit, result.timed_out) {
+        (Some(code @ (0 | 1)), false) => Ok(code),
+        _ => Err("committed source inspection failed".into()),
+    }
 }
 work_probe_status=("${PIPESTATUS[@]}")
 if test "${work_probe_status[0]}" -ne 0; then exit 2; fi

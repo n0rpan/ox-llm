@@ -312,6 +312,7 @@ pub enum SupervisorOperation {
     Save { task_id: String },
     Checks { commands: Vec<String> },
     Inspect,
+    InspectCommitted { index: PathBuf },
 }
 
 fn supervise(

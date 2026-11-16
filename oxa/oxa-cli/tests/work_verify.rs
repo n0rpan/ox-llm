@@ -91,6 +91,66 @@ fn a_later_commit_cannot_reuse_the_saved_verdict() {
 }
 
 #[test]
+fn a_check_cannot_hide_changed_tracked_source_by_changing_its_index() {
+    for conceal in [
+        "git update-index --assume-unchanged payload.txt",
+        "git update-index --skip-worktree payload.txt",
+        "git rm --cached payload.txt",
+    ] {
+        let env = TestEnv::new();
+        setup(&env, r#"["sh check.sh"]"#);
+        let project = env.work().join("project");
+        fs::write(project.join("payload.txt"), "approved\n").unwrap();
+        fs::write(
+            project.join("check.sh"),
+            format!(
+                "#!/bin/sh\nif ! git symbolic-ref -q HEAD >/dev/null; then\n  {conceal} || exit 1\n  printf 'forged\\n' >payload.txt\nfi\n"
+            ),
+        )
+        .unwrap();
+        git(&env, &project, &["add", "."]);
+        git(&env, &project, &["commit", "-m", "Synthetic committed check"]);
+        let record = run(&env, vec![ScriptTurn::text("done")]);
+        assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+        let output = verify(&env);
+        assert_eq!(output.status.code(), Some(2), "bypass: {conceal}");
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("acceptance changed committed source"));
+        assert_eq!(
+            fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("payload.txt")).unwrap(),
+            "approved\n"
+        );
+    }
+}
+
+#[test]
+fn checks_cannot_change_the_runners_committed_inspection_index() {
+    let env = TestEnv::new();
+    setup(&env, r#"["sh check.sh"]"#);
+    let project = env.work().join("project");
+    fs::write(project.join("payload.txt"), "approved\n").unwrap();
+    fs::write(
+        project.join("check.sh"),
+        "#!/bin/sh\nif ! git symbolic-ref -q HEAD >/dev/null; then\n  test -r ../.committed-index || exit 1\n  if GIT_INDEX_FILE=../.committed-index git update-index --assume-unchanged payload.txt; then exit 1; fi\nfi\n",
+    )
+    .unwrap();
+    git(&env, &project, &["add", "."]);
+    git(
+        &env,
+        &project,
+        &["commit", "-m", "Synthetic protected index check"],
+    );
+    let record = run(&env, vec![ScriptTurn::text("done")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    let output = verify(&env);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn later_online_verification_keeps_the_saved_offline_check_policy() {
     let env = TestEnv::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
