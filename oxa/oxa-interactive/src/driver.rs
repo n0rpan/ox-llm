@@ -787,9 +787,9 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// The worker switched to another session object. Nothing of the old session may stay
-    /// live in the UI: its queued steering and follow-up messages come back into the editor
-    /// (with a notice; they were never sent), questions the app asked about it are dropped,
+    /// The worker switched to another session object. Its queued editor steering and
+    /// follow-up messages come back into the editor (with a notice; they were never sent),
+    /// while inbox messages retain their destinations. Questions about the old session are dropped,
     /// and its tree, selectors and attachments are closed. Abort, steer and follow-up target
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
@@ -797,6 +797,9 @@ impl<'a> Loop<'a> {
         self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
         old.abort_retry();
+        // Unlike editor input, admitted inbox text must keep its destination across a
+        // fresh Session/Shared. This includes messages admitted by a stale clone/fork watcher.
+        old.transfer_inbox_to(&self.handle);
         let queued = old.dequeue();
         if !queued.is_empty() {
             let n = queued.len();
@@ -819,6 +822,13 @@ impl<'a> Loop<'a> {
 
     fn set_session(&mut self, info: SessionInfo) {
         if self.session.id != info.id || self.inbox.is_none() {
+            // A Reopen may have recovered an already-admitted message without a file
+            // left to trigger the new watcher. Wake only the recovered destination.
+            if self.handle.has_inbox_input() {
+                let _ = self.cmds.send(SessionCmd::Inbox {
+                    session_id: info.id.clone(),
+                });
+            }
             // Stop the old callback before installing one bound to the current handle.
             self.inbox = None;
             let handle = self.handle.clone();

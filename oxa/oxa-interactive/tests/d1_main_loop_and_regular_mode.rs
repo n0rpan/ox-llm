@@ -61,9 +61,18 @@ fn session(env: &TestEnv) -> Session {
 
 /// A session on the scripted engine with these turns.
 fn session_with(env: &TestEnv, turns: Vec<oxa_fake::ScriptTurn>) -> Session {
+    session_open(env, turns, Arc::new(MemStore::new()), Open::Ephemeral)
+}
+
+fn session_open(
+    env: &TestEnv,
+    turns: Vec<oxa_fake::ScriptTurn>,
+    store: Arc<dyn SessionStore>,
+    open: Open,
+) -> Session {
     let deps = Deps {
         engine: Arc::new(ScriptedEngine::new(turns)) as Arc<dyn Engine>,
-        store: Arc::new(MemStore::new()) as Arc<dyn SessionStore>,
+        store,
         tools: Vec::new(),
         hooks: Vec::new(),
         policy: Box::new(AllowAll),
@@ -79,7 +88,7 @@ fn session_with(env: &TestEnv, turns: Vec<oxa_fake::ScriptTurn>) -> Session {
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     };
-    Session::open(deps, Open::Ephemeral).expect("open the test session")
+    Session::open(deps, open).expect("open the test session")
 }
 
 fn interactive_opts(env: &TestEnv) -> InteractiveOpts {
@@ -1182,6 +1191,7 @@ fn inbox_wakes_the_real_tui_worker_when_idle() {
 struct StaleInboxTerminal {
     cmds: Receiver<SessionCmd>,
     destination: String,
+    reopen: Option<(Sender<WorkerMsg>, oxa_core::Handle)>,
 }
 
 impl oxa_tui::Terminal for StaleInboxTerminal {
@@ -1201,7 +1211,19 @@ impl oxa_tui::Terminal for StaleInboxTerminal {
             self.cmds.recv_timeout(std::time::Duration::from_secs(3)),
             Ok(SessionCmd::Inbox { session_id }) if session_id == self.destination
         ));
-        vec![key("ctrl+d")]
+        if let Some((messages, handle)) = self.reopen.take() {
+            // Reopen creates a fresh Session/Shared, unlike core Session::switch.
+            messages.send(WorkerMsg::Rebind(handle)).unwrap();
+            messages
+                .send(WorkerMsg::Session(oxa_interactive::SessionInfo {
+                    id: self.destination.clone(),
+                    ..Default::default()
+                }))
+                .unwrap();
+            Vec::new()
+        } else {
+            vec![key("ctrl+d")]
+        }
     }
 }
 
@@ -1250,9 +1272,17 @@ fn stale_tui_inbox_callback_keeps_messages_with_original_session_after_clone_or_
                 ..Default::default()
             }))
             .unwrap();
+        let mut resumed = session_open(
+            &env,
+            vec![oxa_fake::ScriptTurn::text("resumed reply")],
+            s.inner().store.clone(),
+            Open::Resume(original.clone()),
+        );
+        let resumed_handle = resumed.handle();
         let mut term = StaleInboxTerminal {
             cmds: cmd_rx,
             destination: original.id.clone(),
+            reopen: Some((msg_tx, resumed_handle.clone())),
         };
         assert_eq!(
             run_loop(
@@ -1271,12 +1301,17 @@ fn stale_tui_inbox_callback_keeps_messages_with_original_session_after_clone_or_
             handle.queued().1.is_empty(),
             "old inbox leaked across session transition"
         );
-        s.switch(
-            Open::Resume(original),
-            &mut oxa_proto::VecSink::default(),
-            &mut oxa_proto::HeadlessUi::default(),
-        )
-        .unwrap();
-        assert_eq!(handle.dequeue(), ["old destination only"]);
+        assert_eq!(resumed_handle.queued().1, ["old destination only"]);
+        resumed
+            .run_queued(
+                &mut oxa_proto::VecSink::default(),
+                &mut oxa_proto::HeadlessUi::default(),
+            )
+            .unwrap();
+        assert!(resumed_handle.queued().1.is_empty());
+        assert!(resumed.inner().tree.entries().iter().any(|entry| {
+            matches!(&entry.body, EntryBody::Msg { wire, .. }
+                if wire.role == oxa_proto::Role::User && wire.content.as_deref() == Some("old destination only"))
+        }));
     }
 }

@@ -287,6 +287,22 @@ impl Handle {
         }
     }
 
+    /// Move all destination-bound inbox messages to a replacement session's handle.
+    /// Frontends must stop the old watcher first. Ordinary editor queues stay behind;
+    /// inactive inbox destinations must survive even when reopening creates a fresh Shared.
+    pub fn transfer_inbox_to(&self, target: &Handle) {
+        if Arc::ptr_eq(&self.shared, &target.shared) {
+            return;
+        }
+        let pending = std::mem::take(&mut lock(&self.shared.queue).session_follow_up);
+        for (id, messages) in pending {
+            for text in messages {
+                target.follow_up_for(&id, text);
+            }
+        }
+        self.shared.dirty.store(true, Ordering::SeqCst);
+    }
+
     /// Remove and return active queued messages, steering first (Alt+Up, `clear_queue`).
     pub fn dequeue(&self) -> Vec<String> {
         let (mut steering, follow_up) = {
@@ -440,6 +456,30 @@ mod tests {
         assert_eq!(h.queued().1, vec!["retained instruction"]);
         h.request_wrap_up(WrapUpReason::Signal);
         assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TimeLimit));
+    }
+
+    #[test]
+    fn inbox_transfer_preserves_destinations_and_leaves_editor_queues_behind() {
+        let old = handle(QueueMode::All, QueueMode::All);
+        old.shared.bind_session("clone");
+        old.steer("editor steering".into());
+        old.follow_up("editor follow-up".into());
+        old.follow_up_for("original", "first".into());
+        old.follow_up_for("original", "second".into());
+        old.follow_up_for("clone", "clone only".into());
+        let reopened = handle(QueueMode::All, QueueMode::All);
+        reopened.shared.bind_session("unrelated");
+        old.transfer_inbox_to(&reopened);
+        assert_eq!(old.dequeue(), ["editor steering", "editor follow-up"]);
+        assert!(reopened.queued().1.is_empty());
+        reopened.shared.bind_session("original");
+        assert_eq!(reopened.dequeue(), ["first", "second"]);
+        reopened.shared.bind_session("clone");
+        // Rebinding a handle to itself must neither deadlock nor discard messages.
+        reopened.transfer_inbox_to(&reopened);
+        assert_eq!(reopened.dequeue(), ["clone only"]);
+        old.shared.bind_session("original");
+        assert!(old.dequeue().is_empty());
     }
 
     #[test]
