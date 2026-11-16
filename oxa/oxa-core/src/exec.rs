@@ -53,16 +53,15 @@ pub fn request(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<AssistantTurn, OxaError> {
+    // Settle any preceding prefill before charging all work at this request boundary.
+    await_tool_prefill(st, opts.background, sink)?;
+    crate::goal::checkpoint(st, false, sink)?;
     if crate::goal::terminal(st) {
         return Err(OxaError::new(
             codes::BUDGET_EXHAUSTED,
             "The stored goal cannot make another request.",
         ));
     }
-    // OXA-LOCAL-FIRST F1: a tool-result prefill still running (a host request served while a
-    // tool runs, e.g. the park before a subagent) ends first: one request in flight at a time.
-    // Nothing is sent while it is still registered (deferred, then `engine_busy`).
-    await_tool_prefill(st, opts.background, sink)?;
     if st.info.caps.remote && oxa_proto::offline() {
         return Err(oxa_proto::offline_error(&format!("the cloud model {}", st.model)));
     }
