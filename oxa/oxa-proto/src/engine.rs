@@ -58,6 +58,8 @@ pub struct EngineCaps {
     /// features (prefix hints, cache warming, engine-side state and the X-Oxe-* headers) are
     /// not sent to it.
     pub remote: bool,
+    /// Cloud endpoint explicitly advertises JSON Schema response formatting.
+    pub response_format: bool,
     /// The provider name of a remote model (`openrouter`, `anthropic`); `None` when local.
     pub remote_provider: Option<&'static str>,
     /// The engine echoes a previous reply (CACHE-PERFECT ECHO); local only.
@@ -112,6 +114,8 @@ pub struct Hints<'a> {
 pub struct ChatRequest<'a> {
     pub prefix: &'a FrozenPrefix,
     pub messages: &'a [WireMsg],
+    /// JSON schema, only populated for a cloud model advertising response_format.
+    pub output_schema: Option<&'a crate::Value>,
     pub model: &'a str,
     /// `0` = prefill + checkpoint only (H6): usage and timings, no decode.
     pub max_tokens: u32,
@@ -165,6 +169,7 @@ impl<'a> ChatRequest<'a> {
             prefix,
             messages,
             model,
+            output_schema: None,
             max_tokens: 1024,
             thinking: false,
             thinking_level: None,

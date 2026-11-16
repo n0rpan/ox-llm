@@ -88,6 +88,10 @@ impl Transcript {
                     self.push_from(WireMsg::user(text), origin);
                 }
             }
+            // Output contracts are process-local. Older versions stored them as
+            // messages; keep their audit entries, but never restore their instructions.
+            EntryBody::CustomMessage { custom_type, .. }
+                if matches!(custom_type.as_str(), "oxa.output_schema" | "oxa.schema_repair") => {}
             EntryBody::CustomMessage { content, .. } => {
                 self.push_from(WireMsg::user(content.clone()), origin);
             }

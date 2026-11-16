@@ -170,6 +170,10 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
+            Subcommand::Work(words) => {
+                return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
+            }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
@@ -234,10 +238,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     let mode = choose_mode(&a, stdin_is_tty, stdout_is_tty);
-    if a.max_time.is_some() && mode == RunMode::Interactive {
+    if (a.max_time.is_some() || a.max_tokens.is_some()) && mode == RunMode::Interactive {
+        let flag = if a.max_tokens.is_some() {
+            "--max-tokens"
+        } else {
+            "--max-time"
+        };
         return report(
             &mut *stderr,
-            &OxaError::new(codes::USAGE, "--max-time requires print, JSON or RPC mode"),
+            &OxaError::new(codes::USAGE, format!("{flag} requires print, JSON or RPC mode")),
         );
     }
     if mode == RunMode::Rpc && !a.files.is_empty() {
@@ -320,7 +329,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         }
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, a.max_time, dirs, stdin, stdout, &mut *stderr)
+            run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -336,7 +345,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     .with_hint(USAGE_HINT);
                 return report(&mut *stderr, &e);
             }
-            run_headless(mode, a.max_time, prep, prompts, &mut *stdout, &mut *stderr)
+            run_headless(
+                mode,
+                a.max_time,
+                a.max_tokens,
+                prep,
+                prompts,
+                &mut *stdout,
+                &mut *stderr,
+            )
         }
     }
 }
@@ -354,10 +371,43 @@ struct Prep {
     name: Option<String>,
 }
 
-/// The one-line handshake warning of the engine (read by the `info` call of the session open;
-/// no request of its own).
-fn handshake_notice(built: &Built) -> Option<(Level, String)> {
-    built.engine.handshake_warning().map(|w| (Level::Warning, w))
+/// Startup warnings after opening the session, so restored/selected model limits are final.
+/// No extra engine requests: context tokens are a cheap estimate (four UTF-8 bytes per token).
+fn startup_notices(built: &Built, session: &Session) -> Vec<(Level, String)> {
+    const CONTEXT_WARNING_PERCENT: u64 = 5;
+    let mut notices: Vec<_> = built
+        .engine
+        .handshake_warning()
+        .map(|w| (Level::Warning, w))
+        .into_iter()
+        .collect();
+    let state = session.state();
+    let mut total = 0_u64;
+    let mut largest = None;
+    for file in &session.inner().resources.context_files {
+        let tokens = file.content.len().div_ceil(4) as u64;
+        total = total.saturating_add(tokens);
+        if largest.is_none_or(|(_, size)| tokens > size) {
+            largest = Some((file.path.as_path(), tokens));
+        }
+    }
+    let window = u64::from(state.n_ctx);
+    if window > 0 && total.saturating_mul(100) > window * CONTEXT_WARNING_PERCENT {
+        if let Some((path, tokens)) = largest {
+            let shown = if let Ok(rel) = path.strip_prefix(&built.cwd) {
+                rel.display().to_string()
+            } else if let Ok(rel) = path.strip_prefix(&built.dirs.home) {
+                format!("~/{}", rel.display())
+            } else {
+                path.display().to_string()
+            };
+            notices.push((Level::Warning, format!(
+                "context files use ~{total} tokens ({:.1}% of {}'s {window}-token window); largest: {shown} (~{tokens} tokens)",
+                total as f64 * 100.0 / window as f64, state.model,
+            )));
+        }
+    }
+    notices
 }
 
 /// `Session::open`, then pi's `--name` (`appendSessionInfo`).
@@ -368,8 +418,12 @@ fn open_named(
     name: Option<&str>,
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
+    session.set_output_schema(built.output_schema.clone());
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
+    }
+    if let Some(status) = &built.status {
+        status.attach(&mut session)?;
     }
     Ok(session)
 }
@@ -378,6 +432,8 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    status: Option<Arc<crate::status::StatusWriter>>,
+    output_schema: Option<oxa_core::output_schema::OutputSchema>,
     engine: Arc<dyn Engine>,
     store: Arc<dyn SessionStore>,
     sandbox: Arc<dyn Sandbox>,
@@ -391,6 +447,8 @@ struct Built {
     mode: Option<Mode>,
     /// A supervised subagent keeps SIGTERM as immediate supervisor cancellation.
     supervised_child: bool,
+    /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
+    ask_owner_present: bool,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -419,18 +477,27 @@ impl Built {
         let jobs = Arc::new(oxa_tools::JobRegistry::new());
         let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
         jobs.set_sandbox(bash_sandbox.clone());
+        // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
+        let mut tools = oxa_tools::builtin_tools_with_bash_sandbox(
+            oxa_tools::ShellConfig {
+                shell_path: self.settings.shell_path(&self.dirs.home),
+                command_prefix: self.settings.shell_command_prefix(),
+            },
+            jobs.clone(),
+            bash_sandbox,
+        );
+        // Owner questions belong to lead sessions (including unattended leads). Keep worker
+        // declarations and their small frozen prefixes unchanged.
+        if !self.supervised_child {
+            tools.push(Arc::new(
+                oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
+                    .with_owner_present(self.ask_owner_present),
+            ));
+        }
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
-            // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_bash_sandbox(
-                oxa_tools::ShellConfig {
-                    shell_path: self.settings.shell_path(&self.dirs.home),
-                    command_prefix: self.settings.shell_command_prefix(),
-                },
-                jobs.clone(),
-                bash_sandbox,
-            ),
+            tools,
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
@@ -479,6 +546,18 @@ fn prepare(
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<Prep, OxaError> {
+    let output_schema = a
+        .output_schema
+        .as_ref()
+        .map(|file| {
+            let path = cwd.join(file);
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
+            let value = serde_json::from_str(&text)
+                .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
+            oxa_core::output_schema::OutputSchema::new(value)
+        })
+        .transpose()?;
     let mut notices: Vec<(Level, String)> = Vec::new();
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
@@ -491,112 +570,16 @@ fn prepare(
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
     notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
 
-    // Trust: the user's own settings decide the default; project settings load only when the
-    // project is trusted.
-    let user_settings = Settings::load(dirs, cwd, false);
-    let default = match user_settings.string("defaultProjectTrust").as_deref() {
-        Some("always") => DefaultTrust::Trust,
-        Some("never") => DefaultTrust::Untrusted,
-        _ => DefaultTrust::Ask,
-    };
     let gated = gated_resources(cwd);
-    // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
-    // an explicit `-na` still wins.
-    let approve = a
-        .approve
-        .or_else(|| matches!(env.get("OXA_TRUST_PROJECT"), Some("1" | "true")).then_some(true));
-    let mut trust_store = TrustStore::load(&dirs.trust_file());
-    // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
-    // saved decision and the default (pi's `resolveProjectTrusted`).
-    let extension = if approve.is_none() && !gated.is_empty() {
-        extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, &mut notices)
-    } else {
-        None
-    };
-    let interactive = mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty;
-    let saved = trust_store.lookup(cwd);
-    let outcome = resolve_trust(&TrustInputs {
-        flag: approve,
-        extension,
-        saved,
-        default,
-        interactive,
-        has_gated: !gated.is_empty(),
-    });
-    // B4: the user answered the trust question in this start (it approves the content too).
-    let mut asked_now = false;
-    let trusted = match outcome {
-        TrustOutcome::Trusted => true,
-        TrustOutcome::Untrusted => false,
-        TrustOutcome::AskUser => {
-            // The trust dialog (D10) on the terminal, before the session exists. A dismissed
-            // question leaves the project untrusted for this run and is asked again next time.
-            let (keymap, _) = Keymap::load(dirs);
-            let choice = ask_trust_interactive(env.pairs(), &keymap, &cwd.display().to_string(), &gated)?;
-            asked_now = true;
-            let file = dirs.trust_file();
-            match choice {
-                Some(TrustChoice::Trust) => {
-                    trust_store.save(&file, cwd, true)?;
-                    true
-                }
-                Some(TrustChoice::TrustParent) => {
-                    trust_store.save(&file, cwd.parent().unwrap_or(cwd), true)?;
-                    true
-                }
-                Some(TrustChoice::NoTrust) => {
-                    trust_store.save(&file, cwd, false)?;
-                    false
-                }
-                Some(TrustChoice::Skip) | None => {
-                    notices.push((
-                        Level::Warning,
-                        "the project is not trusted for this run; /trust saves a decision".to_string(),
-                    ));
-                    false
-                }
-            }
-        }
-    };
-    // B4: what runs outside the sandbox loads only as the user approved it (content hashes).
-    let trusted = if trusted && !gated.is_empty() {
-        crate::approval::check(crate::approval::Check {
-            env,
-            dirs,
-            cwd,
-            store: &mut trust_store,
-            via_flag: approve == Some(true),
-            via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
-            asked_now,
-            interactive,
-            notices: &mut notices,
-        })?
-    } else {
-        trusted
-    };
-    // #201: a project trusted by a saved decision gets its approval baseline now (also with
-    // no project config yet), before any tool runs: `.oxa` / `.agents` content the session
-    // creates is then new at the next start and goes through the normal approval.
-    if trusted && saved == Some(true) {
-        trust_store.record_baseline(&dirs.trust_file(), cwd)?;
-    }
-    if !trusted && !gated.is_empty() {
-        notices.push((
-            Level::Warning,
-            format!(
-                "project resources were skipped (not trusted): {}",
-                gated.join(", ")
-            ),
-        ));
-    }
-    // `done` is a project-only key in practice: an untrusted project's list is never merged,
-    // so say that its checks will not run.
-    if !trusted && Settings::project_declares_done(dirs, cwd) {
-        notices.push((
-            Level::Warning,
-            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
-        ));
-    }
+    let trusted = project_trusted(
+        a,
+        env,
+        dirs,
+        cwd,
+        &gated,
+        mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty,
+        &mut notices,
+    )?;
     let mut settings = child.apply(Settings::load(dirs, cwd, trusted));
     // CLI-045 (pi cli.md): `--verbose` overrides `quietStartup` for this run (in memory only).
     if a.verbose {
@@ -847,6 +830,8 @@ fn prepare(
         default_edits: settings.default_tools_edits(),
     };
     let built = Built {
+        status: (!a.no_session).then(|| Arc::new(crate::status::StatusWriter::new(a.stall_timeout))),
+        output_schema,
         engine,
         store,
         sandbox,
@@ -859,6 +844,7 @@ fn prepare(
         thinking,
         mode: table_mode,
         supervised_child: child.nested(),
+        ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
         hook_sets,
         yolo,
         bash_sandbox,
@@ -874,6 +860,123 @@ fn prepare(
 }
 
 /// The resource discovery options of the flags.
+/// The same project trust and executable-content approval for sessions and workers.
+pub(crate) fn project_trusted(
+    a: &Args,
+    env: &Env,
+    dirs: &Dirs,
+    cwd: &Path,
+    gated: &[String],
+    interactive: bool,
+    notices: &mut Vec<(Level, String)>,
+) -> Result<bool, OxaError> {
+    // Trust: the user's own settings decide the default; project settings load only when the
+    // project is trusted.
+    let user_settings = Settings::load(dirs, cwd, false);
+    let default = match user_settings.string("defaultProjectTrust").as_deref() {
+        Some("always") => DefaultTrust::Trust,
+        Some("never") => DefaultTrust::Untrusted,
+        _ => DefaultTrust::Ask,
+    };
+    // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
+    // an explicit `-na` still wins.
+    let approve = a
+        .approve
+        .or_else(|| matches!(env.get("OXA_TRUST_PROJECT"), Some("1" | "true")).then_some(true));
+    let mut trust_store = TrustStore::load(&dirs.trust_file());
+    // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
+    // saved decision and the default (pi's `resolveProjectTrusted`).
+    let extension = if approve.is_none() && !gated.is_empty() {
+        extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, notices)
+    } else {
+        None
+    };
+    let saved = trust_store.lookup(cwd);
+    let outcome = resolve_trust(&TrustInputs {
+        flag: approve,
+        extension,
+        saved,
+        default,
+        interactive,
+        has_gated: !gated.is_empty(),
+    });
+    // B4: the user answered the trust question in this start (it approves the content too).
+    let mut asked_now = false;
+    let trusted = match outcome {
+        TrustOutcome::Trusted => true,
+        TrustOutcome::Untrusted => false,
+        TrustOutcome::AskUser => {
+            // The trust dialog (D10) on the terminal, before the session exists. A dismissed
+            // question leaves the project untrusted for this run and is asked again next time.
+            let (keymap, _) = Keymap::load(dirs);
+            let choice = ask_trust_interactive(env.pairs(), &keymap, &cwd.display().to_string(), gated)?;
+            asked_now = true;
+            let file = dirs.trust_file();
+            match choice {
+                Some(TrustChoice::Trust) => {
+                    trust_store.save(&file, cwd, true)?;
+                    true
+                }
+                Some(TrustChoice::TrustParent) => {
+                    trust_store.save(&file, cwd.parent().unwrap_or(cwd), true)?;
+                    true
+                }
+                Some(TrustChoice::NoTrust) => {
+                    trust_store.save(&file, cwd, false)?;
+                    false
+                }
+                Some(TrustChoice::Skip) | None => {
+                    notices.push((
+                        Level::Warning,
+                        "the project is not trusted for this run; /trust saves a decision".to_string(),
+                    ));
+                    false
+                }
+            }
+        }
+    };
+    // B4: what runs outside the sandbox loads only as the user approved it (content hashes).
+    let trusted = if trusted && !gated.is_empty() {
+        crate::approval::check(crate::approval::Check {
+            env,
+            dirs,
+            cwd,
+            store: &mut trust_store,
+            via_flag: approve == Some(true),
+            via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
+            asked_now,
+            interactive,
+            notices,
+        })?
+    } else {
+        trusted
+    };
+    // #201: a project trusted by a saved decision gets its approval baseline now (also with
+    // no project config yet), before any tool runs: `.oxa` / `.agents` content the session
+    // creates is then new at the next start and goes through the normal approval.
+    if trusted && saved == Some(true) {
+        trust_store.record_baseline(&dirs.trust_file(), cwd)?;
+    }
+    if !trusted && !gated.is_empty() {
+        notices.push((
+            Level::Warning,
+            format!(
+                "project resources were skipped (not trusted): {}",
+                gated.join(", ")
+            ),
+        ));
+    }
+    // `done` is a project-only key in practice: an untrusted project's list is never merged,
+    // so say that its checks will not run.
+    if !trusted && Settings::project_declares_done(dirs, cwd) {
+        notices.push((
+            Level::Warning,
+            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
+        ));
+    }
+    Ok(trusted)
+}
+
 fn discover_opts(a: &Args, dirs: &Dirs, cwd: &Path, trusted: bool) -> Result<DiscoverOpts, OxaError> {
     Ok(DiscoverOpts {
         trusted,
@@ -1048,6 +1151,7 @@ fn choose_open(
 fn run_headless(
     mode: RunMode,
     max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     prep: Prep,
     prompts: Vec<(String, Vec<Part>)>,
     stdout: &mut dyn Write,
@@ -1065,7 +1169,7 @@ fn run_headless(
         Ok(s) => s,
         Err(e) => return finish_outcome(Err(e), stderr),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     if mode == RunMode::Print {
         // Printed before the run so a driver that kills a long task still knows what to resume.
@@ -1078,10 +1182,20 @@ fn run_headless(
             );
         }
     }
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
-    {
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
         Ok(limit) => limit,
-        Err(error) => return finish_outcome(Err(error), stderr),
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome(result, stderr);
+        }
     };
     let result = match mode {
         RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
@@ -1091,6 +1205,19 @@ fn run_headless(
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
     write_notices(stderr, ui.notes);
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
+    if mode == RunMode::Json && built.supervised_child && max_tokens.is_some() {
+        // Private child/parent accounting: message_end omits summaries and tool
+        // prefill. Report the uncapped total, including the child's final turn.
+        let usage = serde_json::json!({
+            "type": "run_usage",
+            "tokens": session.handle().run_tokens_used(),
+        });
+        let _ = writeln!(stdout, "{usage}");
+    }
     finish_outcome(result, stderr)
 }
 
@@ -1098,6 +1225,7 @@ fn run_headless(
 fn run_rpc(
     prep: Prep,
     max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     dirs: Dirs,
     stdin: Box<dyn Read + Send>,
     stdout: Box<dyn Write + Send>,
@@ -1115,16 +1243,31 @@ fn run_rpc(
         Ok(s) => s,
         Err(e) => return finish_outcome(Err(e), stderr),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
-    {
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
         Ok(limit) => limit,
-        Err(error) => return finish_outcome(Err(error), stderr),
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome(result, stderr);
+        }
     };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
-    finish_outcome(serve_outcome(session, dirs, input, out), stderr)
+    let result = serve_outcome(session, dirs, input, out);
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
+    finish_outcome(result, stderr)
 }
 
 /// The interactive terminal: the first prompt and the further messages come from the command
@@ -1153,7 +1296,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
@@ -1193,7 +1336,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
         };
-        Session::open(deps, how)
+        let mut session = Session::open(deps, how)?;
+        if let Some(status) = &base.status {
+            status.attach(&mut session)?;
+        }
+        session.set_output_schema(base.output_schema.clone());
+        Ok(session)
     });
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
@@ -1222,7 +1370,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         gated,
         yolo: Some(yolo),
     };
-    match run_interactive(session, opts) {
+    let result = run_interactive(session, opts);
+    let result = match &built.status {
+        Some(status) => status.finish_interactive(result, stderr),
+        None => result,
+    };
+    match result {
         Ok(code) => code,
         Err(e) => report(stderr, &e),
     }
@@ -1904,6 +2057,8 @@ mod session_scratch_tests {
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
         let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
+            status: None,
+            output_schema: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             store: Arc::new(MemStore::new()),
             sandbox: base.clone(),
@@ -1916,6 +2071,7 @@ mod session_scratch_tests {
             thinking: None,
             mode: None,
             supervised_child: false,
+            ask_owner_present: true,
             hook_sets: HookSets::default(),
             bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
                 base.clone(),

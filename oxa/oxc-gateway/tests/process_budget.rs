@@ -11,7 +11,10 @@ use std::{
     os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::mpsc::{self, Receiver},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc::{self, Receiver},
+    },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -19,10 +22,15 @@ use std::{
 struct Home(PathBuf);
 impl Home {
     fn new() -> Self {
+        Self::at_timestamp(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos())
+    }
+    fn at_timestamp(nanos: u128) -> Self {
+        static NEXT_HOME: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "oxc-process-budget-{}-{}",
+            "oxc-process-budget-{}-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            nanos,
+            NEXT_HOME.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
@@ -37,6 +45,22 @@ impl Drop for Home {
         fs::remove_dir_all(&self.0).unwrap();
     }
 }
+#[test]
+fn homes_with_the_same_timestamp_are_independent() {
+    // Wall-clock reads may repeat, including across concurrently running tests.
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let first = Home::at_timestamp(nanos);
+    let second = Home::at_timestamp(nanos);
+    assert_ne!(first.0, second.0);
+    for home in [&first, &second] {
+        assert_eq!(fs::metadata(&home.0).unwrap().permissions().mode() & 0o777, 0o700);
+    }
+    fs::write(first.path(), b"first").unwrap();
+    assert!(!second.path().exists());
+    drop(first);
+    assert!(second.0.is_dir());
+}
+
 fn model() -> Model {
     Model {
         provider: "openrouter".into(),

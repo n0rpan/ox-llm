@@ -27,6 +27,7 @@ struct PrintSink<'a> {
     pending: Option<String>,
     /// A local length recovery continues this same answer, byte for byte. Cloud retries
     /// regenerate a complete answer instead; tool work starts a different final reply.
+    /// With an output schema, only the last message is validated: never prepend chunks.
     local_model: bool,
     pending_length: bool,
     continued: Option<String>,
@@ -211,7 +212,7 @@ pub fn run_print_outcome(
         last: None,
         is_last_prompt: false,
         pending: None,
-        local_model: !session.inner().info.caps.remote,
+        local_model: !session.inner().info.caps.remote && session.inner().output_schema.is_none(),
         pending_length: false,
         continued: None,
         final_text: None,
@@ -228,7 +229,7 @@ pub fn run_print_outcome(
         sink.pending = None;
         sink.pending_length = false;
         sink.continued = None;
-        sink.local_model = !session.inner().info.caps.remote;
+        sink.local_model = !session.inner().info.caps.remote && session.inner().output_schema.is_none();
         sink.final_text = None;
         sink.is_last_prompt = i + 1 == n;
         let _ = session.take_outcome();
@@ -322,7 +323,13 @@ pub fn run_json_outcome(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
-    write_record(out, &session_header_record(&session_header(session)))?;
+    let mut header = session_header_record(&session_header(session));
+    header["statusFile"] = session
+        .state()
+        .status_file
+        .map(|p| p.to_string_lossy().into_owned())
+        .into();
+    write_record(out, &header)?;
     let mut ui = HeadlessUi::default();
     let mut sink = JsonSink {
         out: &mut *out,
@@ -575,6 +582,7 @@ mod tests {
                 content: Some(text.to_string()),
                 reasoning: None,
                 tool_calls: Vec::new(),
+                provider_history: None,
                 tool_call_id: None,
             },
             ts_ms: 0,
