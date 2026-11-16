@@ -1,4 +1,4 @@
-//! E10: packages (install / remove / list / update, resolve to resources). Owner: task E10. Signatures below are frozen; bodies are yours.
+//! E10: packages (install / remove / list / update, resolve to resources).
 // ported from pi packages/coding-agent/src/core/package-manager.ts and pi-manifest.ts
 use crate::sources::{apply_filter, glob_match, has_glob, normalize_pattern, parse_source};
 use crate::{Diagnostic, DiscoverOpts, PackageSource, ResourceSource};

@@ -1,4 +1,4 @@
-//! C4: tree navigation, fork and clone. Owner: task C4. Signatures below are frozen; bodies are yours.
+//! C4: tree navigation, fork and clone.
 // ported from pi packages/coding-agent/src/core/agent-session.ts (navigateTree, fork)
 use crate::agent_loop::persist;
 use crate::compaction::{idle_prefill, Counted};
@@ -42,7 +42,7 @@ pub fn navigate(
     }
     let target_entry = st.tree.get(target).cloned().ok_or_else(|| not_found(target))?;
     let (new_leaf, editor) = match &target_entry.body {
-        EntryBody::Msg { wire, parts } if wire.role == Role::User => {
+        EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => {
             (target_entry.parent.clone(), Some(user_text(wire, parts)))
         }
         EntryBody::CustomMessage { content, .. } => (target_entry.parent.clone(), Some(content.clone())),
@@ -260,7 +260,7 @@ pub fn fork_from(
         ForkPosition::At => (entry.to_string(), None),
         ForkPosition::Before => {
             let text = match &chosen.body {
-                EntryBody::Msg { wire, parts } if wire.role == Role::User => user_text(wire, parts),
+                EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => user_text(wire, parts),
                 _ => {
                     return Err(OxaError::new(codes::INVALID, "Invalid entry ID for forking")
                         .with_hint("fork from a user message"))
@@ -408,6 +408,7 @@ fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<()
     }
     st.tree = tree;
     st.sref = dst.clone();
+    crate::session::attach_ids(st);
     Ok(())
 }
 
@@ -459,6 +460,7 @@ mod hook_payload_tests {
             body: EntryBody::Msg {
                 wire: WireMsg::user(id),
                 parts: Vec::new(),
+                tool: None,
             },
         }
     }

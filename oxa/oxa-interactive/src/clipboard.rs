@@ -1,4 +1,4 @@
-//! D12: clipboard copy and paste (text, images, files). Owner: task D12. Signatures below are frozen; bodies are yours.
+//! D12: clipboard copy and paste (text, images, files).
 // ported from pi packages/coding-agent/src/utils/clipboard.ts and clipboard-image.ts
 use oxa_proto::{codes, OxaError, Part};
 use oxa_tui::TermCaps;

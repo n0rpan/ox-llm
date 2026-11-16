@@ -1,4 +1,4 @@
-//! E6 acceptance tests: codemode. Owner: task E6.
+//! E6 acceptance tests: codemode.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -192,6 +192,7 @@ fn run_tool(hooks: &CodemodeHooks, code: &str) -> ToolOutput {
     let cancel = CancelToken::new();
     let envs: Vec<(String, String)> = Vec::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -199,6 +200,7 @@ fn run_tool(hooks: &CodemodeHooks, code: &str) -> ToolOutput {
         cancel: &cancel,
         env: &envs,
         tune: Default::default(),
+        hidden: None,
     };
     tool.run(&json!({ "code": code }), &cx, &mut |_| {})
 }

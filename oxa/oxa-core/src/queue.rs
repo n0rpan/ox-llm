@@ -1,4 +1,4 @@
-//! C1: steering / follow-up queues and the cross-thread handle. Owner: task C1. Signatures below are frozen; bodies are yours.
+//! C1: steering / follow-up queues and the cross-thread handle.
 // ported from pi packages/agent/src/agent.ts (steer, followUp, queue modes)
 use oxa_config::QueueMode;
 use oxa_proto::CancelToken;
@@ -36,6 +36,23 @@ pub enum SwapRequest {
     Switch(String),
 }
 
+/// Why an unattended front end requested a final turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WrapUpReason {
+    TimeLimit = 1,
+    Signal = 2,
+}
+
+impl WrapUpReason {
+    pub(crate) fn notice(self) -> &'static str {
+        match self {
+            Self::TimeLimit => "time limit reached; one final turn to commit or summarize",
+            Self::Signal => "SIGTERM received; one final turn to commit or summarize",
+        }
+    }
+}
+
 /// The engine-use state of one instance (S1, F4, S4). `Default` = idle.
 ///
 /// * `in_flight`: a model request of this instance is running (`exec::request` holds it); a
@@ -60,6 +77,8 @@ pub enum SwapRequest {
 #[derive(Debug, Default)]
 pub struct Gate {
     pub in_flight: std::sync::atomic::AtomicBool,
+    /// Sticky soft termination request: zero, or a `WrapUpReason` discriminant.
+    pub wrap_up: std::sync::atomic::AtomicU8,
     pub bg_cancel: CancelToken,
     pub reread_info: std::sync::atomic::AtomicBool,
     pub info_rechecked: std::sync::atomic::AtomicBool,
@@ -147,6 +166,10 @@ impl Shared {
     /// at any moment either is seen here or cancels the request.
     pub(crate) fn begin_background(&self) -> bool {
         self.gate.bg_cancel.reset();
+        if self.gate.wrap_up.load(Ordering::SeqCst) != 0 {
+            self.gate.bg_cancel.cancel();
+            return false;
+        }
         !(self.has_input() || self.cancel.is_cancelled() || self.gate.bg_abort.load(Ordering::SeqCst))
     }
 
@@ -214,6 +237,29 @@ impl Handle {
         }
         steering
     }
+    /// Finish the active tool batch, then allow one short final turn. Never cancels tools.
+    pub fn request_wrap_up(&self, reason: WrapUpReason) {
+        let _ =
+            self.shared
+                .gate
+                .wrap_up
+                .compare_exchange(0, reason as u8, Ordering::SeqCst, Ordering::SeqCst);
+        self.cancel_background();
+        self.shared.cancel_retry.cancel();
+    }
+
+    pub fn wrap_up_reason(&self) -> Option<WrapUpReason> {
+        match self.shared.gate.wrap_up.load(Ordering::SeqCst) {
+            1 => Some(WrapUpReason::TimeLimit),
+            2 => Some(WrapUpReason::Signal),
+            _ => None,
+        }
+    }
+
+    pub fn wrap_up_requested(&self) -> bool {
+        self.wrap_up_reason().is_some()
+    }
+
     /// Abort the current run. The partial reply is shown, never sent (W2). Queued messages stay
     /// queued; the front end restores them with `dequeue`. A no-op when no run is in progress
     /// (a stale cancel must not abort the next prompt; `Session` also resets the token).
@@ -277,6 +323,25 @@ mod tests {
         Handle {
             shared: Arc::new(Shared::new(steer, follow)),
         }
+    }
+
+    #[test]
+    fn soft_wrap_up_preserves_tools_and_keeps_background_work_cancelled() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        let tool_cancel = h.shared.cancel.clone();
+        let background_cancel = h.shared.gate.bg_cancel.clone();
+        h.follow_up("retained instruction".to_string());
+        h.request_wrap_up(WrapUpReason::TimeLimit);
+        assert!(!tool_cancel.is_cancelled());
+        assert!(background_cancel.is_cancelled());
+        assert!(!h.shared.begin_background());
+        assert!(
+            background_cancel.is_cancelled(),
+            "a new prefill must not revoke the wrap-up cancellation"
+        );
+        assert_eq!(h.queued().1, vec!["retained instruction"]);
+        h.request_wrap_up(WrapUpReason::Signal);
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TimeLimit));
     }
 
     #[test]

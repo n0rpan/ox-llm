@@ -1,14 +1,15 @@
-//! A8: the `grep` tool. Owner: task A8. Signatures below are frozen; bodies are yours.
+//! A8: the `grep` tool.
 // ported from pi packages/coding-agent/src/core/tools/grep.ts
 //!
 //! The helpers at the bottom of this file are shared with `find.rs` and `ls.rs` (same owner).
 use crate::descriptions::{diet, errors, limits};
 use crate::resolve_path;
-use oxa_proto::{Access, CancelToken, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
+use oxa_proto::{Access, CancelToken, PathFilter, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::descriptions;
 
@@ -145,7 +146,7 @@ impl Tool for GrepTool {
         // (file to read, text shown before the colon). Sorted by relative path, so the output is
         // sorted by path, and the lines of one file are read in order, so by line too.
         let mut files: Vec<(PathBuf, String)> = if is_dir {
-            let mut found: Vec<(String, PathBuf)> = walk(&root)
+            let mut found: Vec<(String, PathBuf)> = walk(&root, cx.hidden.as_ref())
                 .filter_map(|r| r.ok())
                 .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
                 .map(|e| (rel_path(&root, e.path()), e.into_path()))
@@ -434,12 +435,33 @@ pub(crate) fn opt_count(args: &Value, key: &str, default: usize, min: usize) -> 
 
 /// Walk `root` with `.gitignore` honoured (also outside a git repository), hidden entries
 /// included, `.git` directories skipped, and no reads of the user's global git configuration.
-pub(crate) fn walk(root: &Path) -> ignore::Walk {
+/// #517: entries `hidden` hides (the deny-list below an allowed root) are skipped, and a hidden
+/// directory is never entered.
+pub(crate) fn walk(root: &Path, hidden: Option<&Arc<dyn PathFilter>>) -> ignore::Walk {
+    let hidden = hidden.cloned();
+    let given = root.to_path_buf();
+    // Resolved once: the walk does not follow links, so the root's real path plus an entry's
+    // relative path is the entry's real path.
+    let real_root = std::fs::canonicalize(root).unwrap_or_else(|_| given.clone());
     ignore::WalkBuilder::new(root)
         .hidden(false)
         .require_git(false)
         .git_global(false)
-        .filter_entry(|e| !(e.depth() > 0 && e.file_name().to_str() == Some(".git")))
+        .filter_entry(move |e| {
+            if e.depth() == 0 {
+                return true;
+            }
+            if e.file_name().to_str() == Some(".git") {
+                return false;
+            }
+            match &hidden {
+                Some(h) => {
+                    let rel = e.path().strip_prefix(&given).unwrap_or(e.path());
+                    !h.hides(&real_root.join(rel))
+                }
+                None => true,
+            }
+        })
         .build()
 }
 

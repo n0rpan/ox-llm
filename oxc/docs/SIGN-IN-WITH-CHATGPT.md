@@ -4,6 +4,10 @@ Status: **design only**. Nothing in this document is implemented, and no client 
 another application is used. Implementation waits until the ox-llm project is registered as a
 participating app by the program's owner.
 
+> Note (owner decision, #252): until this official program is generally available, oxc ships
+> the experimental Codex sign-in route instead, with its public client identifier. The rules
+> below apply to the official route only. See [CHATGPT-SIGNIN.md](CHATGPT-SIGNIN.md).
+
 ## Goal
 
 Let a user choose a ChatGPT-plan-backed model in oxc without copying an API key, through the

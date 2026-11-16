@@ -10,7 +10,7 @@
     "src/oxc/bootstrap_sources.py": "6b891da2bf20c3cbec9ff4d348c259779b17e7625d8fbe6777e4d1daf83bf606",
     "src/oxc/bootstrap_guard.py": "37778922d8bde5af04de2c2ec1c1e4e79f1d5ca9cbc7b0222f3301c949969349",
     "src/oxc/bootstrap_jobs.py": "ff8a9a3b2cb1bc98afef0624226d0f77f647de021130e82834ddb337b9321958",
-    "src/oxc/bootstrap.py": "e5f9b5245a5a8d54586bd74ff02efe8fc5dd12e3f291f1265e2f4e058829c230",
+    "src/oxc/bootstrap.py": "b04b85eec966b753674803d0746eb5576ef08f540529609d07fa72773134d162",
     "src/oxc/power.py": "a453ebd095a2347ccc49bbb1be0086e18cf5bc5fa9773654b179cab72f38d4f5",
     "tests/test_bootstrap_sources.py": "e8406f5ba61109ac6a4b99e408c50a8e268173ebc4c9ab763d65fe9d3872656d",
     "patches/llama-small-batch-pool.patch": "7260e4d78dcda7b213bf7ee4539b4009262d2b3d8284b01582cc77059a3b6102",

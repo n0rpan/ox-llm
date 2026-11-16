@@ -1,4 +1,4 @@
-//! D1: the interactive main loop and the pure event reducer. Owner: task D1. Signatures below are frozen; bodies are yours.
+//! D1: the interactive main loop and the pure event reducer.
 // ported from pi packages/coding-agent/src/modes/interactive/interactive-mode.ts
 use crate::driver::Loop;
 use crate::{
@@ -991,7 +991,7 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                 ..
             }) = vm.blocks.last_mut()
             {
-                output.push_str(delta);
+                append_live_bash(output, delta);
             }
         }
         AgentEvent::ExtensionError {
@@ -1006,6 +1006,8 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             );
         }
         AgentEvent::Prefill { done, total, secs } => {
+            // The prompt size is known: count it in the CTX meter before the reply ends.
+            vm.status.context_tokens = vm.status.context_tokens.max(*total);
             vm.status.activity = Activity::Prefill {
                 done: *done,
                 total: *total,
@@ -1054,7 +1056,7 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
                     shown_reply(vm, text, why);
                 }
             }
-            EntryBody::Msg { wire, parts } if wire.role == Role::User => {
+            EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => {
                 vm.blocks
                     .push(user_block(wire.content.as_deref().unwrap_or_default(), parts));
             }
@@ -1130,7 +1132,7 @@ pub fn blocks_from_entries(branch: &[Entry]) -> Vec<Block> {
     let mut calls: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for e in branch {
         match &e.body {
-            EntryBody::Msg { wire, parts } => match wire.role {
+            EntryBody::Msg { wire, parts, tool } => match wire.role {
                 Role::User => out.push(user_block(wire.content.as_deref().unwrap_or_default(), parts)),
                 Role::Assistant => {
                     let stop = if wire.tool_calls.is_empty() {
@@ -1165,7 +1167,12 @@ pub fn blocks_from_entries(branch: &[Entry]) -> Vec<Block> {
                     if let Some(id) = &wire.tool_call_id {
                         if let Some(&i) = calls.get(id) {
                             if let Block::Tool(t) = &mut out[i] {
-                                t.result = Some(ToolOutput::ok(wire.content.clone().unwrap_or_default()));
+                                let mut out = ToolOutput::ok(wire.content.clone().unwrap_or_default());
+                                if let Some(meta) = tool {
+                                    out.is_error = meta.is_error;
+                                    out.ui = meta.ui.clone();
+                                }
+                                t.result = Some(out);
                             }
                         }
                     }
@@ -1952,7 +1959,12 @@ fn apply_delta(vm: &mut ViewModel, d: &MessageDelta) {
                 .find(|b| matches!(b, Block::Tool(t) if t.state == ToolState::Streaming))
             {
                 t.args_raw.push_str(delta);
-                t.args = parse_args(&t.args_raw);
+                // A partial JSON object never parses: skip the quadratic re-parse until it closes.
+                if t.args_raw.trim_end().ends_with('}') {
+                    t.args = parse_args(&t.args_raw);
+                } else {
+                    t.args = Value::Null;
+                }
             }
         }
         MessageDelta::ToolcallEnd { call, .. } => match tool_index(vm, &call.id) {
@@ -2257,5 +2269,130 @@ mod status_reset_tests {
             },
         );
         assert_eq!(dst.last_cached, Some(97));
+    }
+}
+
+const LIVE_BASH_MAX: usize = 64 * 1024;
+const LIVE_BASH_SNAP: usize = 4096;
+const LIVE_BASH_NOTE: &str = "... earlier output trimmed\n";
+
+/// Append to the live `!cmd` block, keeping only the tail.
+fn append_live_bash(output: &mut String, delta: &str) {
+    output.push_str(delta);
+    if output.len() <= LIVE_BASH_MAX + LIVE_BASH_NOTE.len() {
+        return;
+    }
+    let body = output.strip_prefix(LIVE_BASH_NOTE).unwrap_or(output);
+    let mut cut = body.len() - LIVE_BASH_MAX;
+    while !body.is_char_boundary(cut) {
+        cut += 1;
+    }
+    // Snap to a line start only when a newline is close and text remains;
+    // otherwise keep the partial-line tail instead of dropping everything.
+    if let Some(nl) = body[cut..].find('\n') {
+        if nl < LIVE_BASH_SNAP && cut + nl + 1 < body.len() {
+            cut += nl + 1;
+        }
+    }
+    *output = format!("{LIVE_BASH_NOTE}{}", &body[cut..]);
+}
+
+#[cfg(test)]
+mod live_bash_tests {
+    use super::*;
+
+    #[test]
+    fn live_bash_output_is_bounded_to_tail() {
+        let mut o = String::new();
+        for i in 0..20000 {
+            append_live_bash(&mut o, &format!("line {i}\n"));
+        }
+        assert!(o.len() <= LIVE_BASH_MAX + LIVE_BASH_NOTE.len());
+        assert!(o.starts_with(LIVE_BASH_NOTE));
+        assert!(o.ends_with("line 19999\n"));
+    }
+
+    #[test]
+    fn long_last_line_keeps_tail() {
+        let mut o = String::new();
+        for _ in 0..9 {
+            append_live_bash(&mut o, &"x".repeat(8192));
+        }
+        append_live_bash(&mut o, "\n");
+        assert!(o.len() > LIVE_BASH_NOTE.len() + 60000, "{}", o.len());
+        assert!(o.ends_with("x\n"));
+    }
+
+    #[test]
+    fn newline_free_multibyte_stream_keeps_tail() {
+        let mut o = String::new();
+        for _ in 0..50 {
+            append_live_bash(&mut o, &"é".repeat(2000));
+        }
+        assert!(o.len() <= LIVE_BASH_MAX + LIVE_BASH_NOTE.len());
+        assert!(o.len() > LIVE_BASH_MAX / 2);
+        assert!(o.ends_with('é'));
+    }
+}
+
+#[cfg(test)]
+mod toolcall_stream_tests {
+    use super::*;
+
+    /// Once the streamed arguments stop parsing again, the view must not keep the older value.
+    #[test]
+    fn streamed_args_follow_the_text_between_closing_braces() {
+        let mut vm = ViewModel::default();
+        apply_delta(
+            &mut vm,
+            &MessageDelta::ToolcallStart {
+                index: 0,
+                id: "c1".into(),
+                name: "t".into(),
+            },
+        );
+        let push = |vm: &mut ViewModel, d: &str| {
+            apply_delta(
+                vm,
+                &MessageDelta::ToolcallDelta {
+                    index: 0,
+                    delta: d.into(),
+                },
+            )
+        };
+        let args = |vm: &ViewModel| match vm.blocks.last() {
+            Some(Block::Tool(t)) => t.args.clone(),
+            _ => panic!("no tool block"),
+        };
+        push(&mut vm, "{\"a\":{\"x\":1}");
+        assert_eq!(args(&vm), Value::Null);
+        push(&mut vm, "}");
+        assert_eq!(args(&vm), serde_json::json!({"a": {"x": 1}}));
+    }
+
+    #[test]
+    fn stale_args_are_cleared_when_text_stops_parsing() {
+        let mut vm = ViewModel::default();
+        apply_delta(
+            &mut vm,
+            &MessageDelta::ToolcallStart {
+                index: 0,
+                id: "c1".into(),
+                name: "t".into(),
+            },
+        );
+        for d in ["{\"a\":1}", ",\"b\":2"] {
+            apply_delta(
+                &mut vm,
+                &MessageDelta::ToolcallDelta {
+                    index: 0,
+                    delta: d.into(),
+                },
+            );
+        }
+        match vm.blocks.last() {
+            Some(Block::Tool(t)) => assert_eq!(t.args, Value::Null),
+            _ => panic!(),
+        }
     }
 }

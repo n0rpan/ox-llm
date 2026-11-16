@@ -1,4 +1,4 @@
-//! B14: session metadata, search and sort for the picker. Owner: task B14. Signatures below are frozen; bodies are yours.
+//! B14: session metadata, search and sort for the picker.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (buildSessionInfo) and modes/interactive/components/session-selector-search.ts
 use crate::{SessionHeader, SessionMeta, SessionRef};
 use oxa_proto::{Entry, EntryBody, Role};
@@ -15,13 +15,17 @@ pub enum SessionSort {
     Relevance,
 }
 
-/// Build the metadata of one loaded session. `modified_ms` = timestamp of the last entry.
-pub fn meta_of(sref: &SessionRef, header: &SessionHeader, entries: &[Entry]) -> SessionMeta {
+/// The metadata of a session, built from its header and entries (see [`SessionMeta`]). The one
+/// builder behind both stores' `list`: the last name wins (trimmed; blank clears it) and
+/// `modified_ms` is the newest timestamp of the header and entries.
+pub(crate) fn meta_of_parts(sref: SessionRef, header: &SessionHeader, entries: &[Entry]) -> SessionMeta {
     let mut name = None;
+    let mut modified_ms = header.ts_ms;
     let mut message_count = 0u32;
     let mut first_message: Option<String> = None;
     let mut all_text = String::new();
     for e in entries {
+        modified_ms = modified_ms.max(e.ts_ms);
         match &e.body {
             EntryBody::SessionInfo { name: n } => {
                 name = Some(n.trim().to_string()).filter(|n| !n.is_empty());
@@ -40,9 +44,8 @@ pub fn meta_of(sref: &SessionRef, header: &SessionHeader, entries: &[Entry]) -> 
             _ => {}
         }
     }
-    let modified_ms = entries.last().map_or(header.ts_ms, |e| e.ts_ms);
     SessionMeta {
-        sref: sref.clone(),
+        sref,
         cwd: header.cwd.clone(),
         name,
         created_ms: header.ts_ms,
@@ -54,10 +57,10 @@ pub fn meta_of(sref: &SessionRef, header: &SessionHeader, entries: &[Entry]) -> 
     }
 }
 
-/// Display/search text shared by the standalone metadata builder and both stores' listings.
+/// Display/search text shared by the metadata builder and both stores' listings.
 /// Without provenance, a trailing note-shaped block may be user-authored and is preserved.
 pub(crate) fn message_text(body: &EntryBody) -> &str {
-    let EntryBody::Msg { wire, parts } = body else {
+    let EntryBody::Msg { wire, parts, .. } = body else {
         return "";
     };
     let text = wire.content.as_deref().unwrap_or("");

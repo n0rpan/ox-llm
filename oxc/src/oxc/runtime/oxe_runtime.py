@@ -585,6 +585,14 @@ STATE_PRELOAD_ROUTE = '/state-cache/preload'
 STATE_PRELOAD_MARKER = 'oxe-capability state-preload-v1'
 
 
+THINKING_BUDGET_MARKER = 'oxe-capability thinking-budget-v1'
+
+
+def engine_has_thinking_budget(binary):
+    """Metadata only, cached by immutable file identity; no engine process is started."""
+    return _binary_holds(binary, frozenset({THINKING_BUDGET_MARKER.encode()}))
+
+
 def engine_has_state_preload(binary):
     """CACHE-PERFECT P2b: the engine serves POST /state-cache/preload: its usage text holds the
     capability marker. Same read-only probe as engine_has_state_cache (nothing executed)."""

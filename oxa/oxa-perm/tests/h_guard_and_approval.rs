@@ -9,14 +9,77 @@ use oxa_proto::{Access, Decision, Mode, Policy};
 use std::path::PathBuf;
 
 fn guarded(env: &TestEnv) -> ModePolicy {
-    ModePolicy::new().with_guard(PathGuard::new(
+    let mut policy = ModePolicy::new().with_guard(PathGuard::new(
         &env.home(),
         &env.agent_dir(),
         &env.agent_dir().join("tmp"),
-    ))
+    ));
+    policy.set_spill_dir(&env.agent_dir().join("tmp/s1"));
+    policy
 }
 
 const SENSITIVE: Decision = Decision::Deny(deny_reasons::SENSITIVE);
+
+#[test]
+fn spill_read_exception_is_session_scoped_and_resolves_symlinks() {
+    let env = TestEnv::new();
+    let tmp = env.agent_dir().join("tmp");
+    let spill = tmp.join("s1");
+    std::fs::create_dir_all(&spill).unwrap();
+    std::os::unix::fs::symlink(tmp.join("s2"), spill.join("other-session")).unwrap();
+    std::os::unix::fs::symlink(env.home().join(".ssh"), spill.join("keys")).unwrap();
+    let mut p = ModePolicy::new().with_guard(PathGuard::new(&env.home(), &env.agent_dir(), &tmp));
+    let own = Access::Read(spill.join("out.txt"));
+    assert_eq!(
+        p.decide(Mode::Ask, &own, &env.work()),
+        SENSITIVE,
+        "no spill scope until the runtime attaches a session"
+    );
+    p.set_spill_dir(&spill);
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(p.decide(mode, &own, &env.work()), Decision::Allow);
+        for path in [
+            tmp.join("s2/out.txt"),
+            tmp.join("s1-other/out.txt"),
+            tmp.join("codemode/out.txt"),
+            spill.join("../s2/out.txt"),
+            spill.join("other-session/out.txt"),
+        ] {
+            assert_eq!(
+                p.decide(mode, &Access::Read(path.clone()), &env.work()),
+                if path.starts_with(tmp.join("codemode")) {
+                    Decision::Ask
+                } else {
+                    SENSITIVE
+                },
+                "only this session's spill reads without asking: {path:?} ({mode:?})"
+            );
+        }
+        assert_eq!(
+            p.decide(mode, &Access::Read(spill.join("keys/id_test")), &env.work()),
+            SENSITIVE,
+            "a spill symlink cannot bypass the deny-list"
+        );
+        assert_eq!(
+            p.decide(mode, &Access::Write(spill.join("out.txt")), &env.work()),
+            if mode == Mode::Plan {
+                Decision::Deny(deny_reasons::PLAN_WRITE)
+            } else {
+                Decision::Ask
+            }
+        );
+    }
+    p.set_spill_dir(&tmp.join("s2"));
+    assert_eq!(
+        p.decide(Mode::Ask, &own, &env.work()),
+        SENSITIVE,
+        "switching replaces, rather than accumulates, the spill scope"
+    );
+    assert_eq!(
+        p.decide(Mode::Ask, &Access::Read(tmp.join("s2/out.txt")), &env.work()),
+        Decision::Allow
+    );
+}
 
 #[test]
 fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
@@ -70,14 +133,37 @@ fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
         ),
         SENSITIVE
     );
+    // #531: oxa's own spill file is readable without asking, in every mode (a headless run
+    // answers every ask with "declined", and the truncation notice points the model at it).
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(
+                mode,
+                &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
+                &env.work()
+            ),
+            Decision::Allow,
+            "a spill file reads without asking ({mode:?})"
+        );
+    }
+    // Other sessions remain denied even though the current spill is readable.
     assert_eq!(
         p.decide(
             Mode::Workspace,
-            &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
+            &Access::Read(env.agent_dir().join("tmp/s2/out.txt")),
+            &env.work()
+        ),
+        SENSITIVE
+    );
+    // Writing outside the cwd still asks.
+    assert_eq!(
+        p.decide(
+            Mode::Workspace,
+            &Access::Write(env.agent_dir().join("tmp/s1/out.txt")),
             &env.work()
         ),
         Decision::Ask,
-        "a spill file reads as before (outside the cwd: ask)"
+        "a spill file is not writable without asking"
     );
     // A plain file of the project is unaffected.
     assert_eq!(
@@ -88,6 +174,50 @@ fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
         ),
         Decision::Allow
     );
+}
+
+/// #544: a denied directory does not cover a child's symlink target in the workspace.
+#[test]
+fn symlinked_oxc_credentials_are_denied() {
+    for link_directory in [false, true] {
+        let env = TestEnv::new();
+        let llm = env.home().join(".config/oxc/llm");
+        let credentials = env.work().join("credentials");
+        let names = ["cloud-secrets.json", "chatgpt-auth.json"];
+        for name in names {
+            env.write(&format!("work/credentials/{name}"), "synthetic credential");
+        }
+        if link_directory {
+            std::fs::create_dir_all(llm.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&credentials, &llm).unwrap();
+        } else {
+            std::fs::create_dir_all(&llm).unwrap();
+            for name in names {
+                std::os::unix::fs::symlink(credentials.join(name), llm.join(name)).unwrap();
+            }
+        }
+        let p = guarded(&env);
+        for name in names {
+            for path in [credentials.join(name), llm.join(name)] {
+                for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+                    for access in [Access::Read(path.clone()), Access::Write(path.clone())] {
+                        assert_eq!(
+                            p.decide(mode, &access, &env.work()),
+                            SENSITIVE,
+                            "directory link={link_directory}, {mode:?}, {access:?}"
+                        );
+                    }
+                }
+            }
+        }
+        // Naming a credential target must not restrict unrelated project files.
+        for access in [
+            Access::Read(credentials.join("notes.txt")),
+            Access::Write(credentials.join("notes.txt")),
+        ] {
+            assert_eq!(p.decide(Mode::Workspace, &access, &env.work()), Decision::Allow);
+        }
+    }
 }
 
 #[test]
@@ -493,4 +623,133 @@ fn git_worktree_pointer_cannot_be_rewritten_and_fifo_dotgit_does_not_hang() {
         .recv_timeout(std::time::Duration::from_secs(10))
         .expect("hung on FIFO .git");
     assert_eq!(d, Decision::Allow);
+}
+
+#[test]
+fn builtin_skills_are_readable_but_not_writable_by_tools() {
+    let env = TestEnv::new();
+    env.write("home/.oxa/agent/builtin-skills/pull-request/SKILL.md", "x");
+    let skill = env.agent_dir().join("builtin-skills/pull-request/SKILL.md");
+    let p = guarded(&env);
+    // #492: the skill lives outside the cwd, yet reading it must not ask (a headless run
+    // answers every ask with "declined"), in any mode.
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &Access::Read(skill.clone()), &env.work()),
+            Decision::Allow,
+            "{mode:?}"
+        );
+    }
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Write(skill), &env.work()),
+        SENSITIVE
+    );
+    let auth = env.agent_dir().join("auth.json");
+    assert_eq!(
+        p.decide(Mode::Workspace, &Access::Read(auth), &env.work()),
+        SENSITIVE
+    );
+}
+
+/// #522: the full output of a capped result is read without a question (an unattended run
+/// cannot answer one), and only from the running session's spill directory.
+#[test]
+fn the_current_spill_directory_reads_without_asking_and_no_other_does() {
+    let env = TestEnv::new();
+    let mut p = guarded(&env);
+    p.set_spill_dir(&env.agent_dir().join("tmp/s1"));
+    let read = |rel: &str| Access::Read(env.agent_dir().join(rel));
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &read("tmp/s1/0123.txt"), &env.work()),
+            Decision::Allow,
+            "{mode:?}"
+        );
+    }
+    assert!(
+        !p.path_filter()
+            .expect("guard")
+            .hides(&env.agent_dir().join("tmp/s1/0123.txt")),
+        "the walking tools must see the current session's spill files too"
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("tmp/s2/0123.txt"), &env.work()),
+        SENSITIVE,
+        "another session's spill file"
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("tmp/s1/../s2/0123.txt"), &env.work()),
+        SENSITIVE,
+        "`..` does not leave the spill directory"
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("trust.json"), &env.work()),
+        SENSITIVE,
+        "the rest of the agent directory"
+    );
+    // The exception is a read: a write there still asks outside the cwd.
+    assert_eq!(
+        p.decide(
+            Mode::Workspace,
+            &Access::Write(env.agent_dir().join("tmp/s1/x.txt")),
+            &env.work()
+        ),
+        Decision::Ask
+    );
+    // A new session moves the exception.
+    p.set_spill_dir(&env.agent_dir().join("tmp/s2"));
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("tmp/s2/0123.txt"), &env.work()),
+        Decision::Allow
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("tmp/s1/0123.txt"), &env.work()),
+        SENSITIVE
+    );
+}
+
+#[test]
+fn inherited_spills_are_read_only_and_cannot_escape_or_survive_a_switch() {
+    let env = TestEnv::new();
+    env.write("home/.oxa/agent/tmp/source/out.txt", "synthetic output");
+    env.write("home/.oxa/agent/tmp/unrelated/out.txt", "unrelated output");
+    let source = env.agent_dir().join("tmp/source");
+    let unrelated = env.agent_dir().join("tmp/unrelated/out.txt");
+    let linked = source.join("linked.txt");
+    std::os::unix::fs::symlink(&unrelated, &linked).unwrap();
+    let mut p = guarded(&env).with_yolo(oxa_proto::YoloSwitch::new(true));
+    p.set_spill_dir(&env.agent_dir().join("tmp/current"));
+    p.set_inherited_spill_dirs(std::slice::from_ref(&source));
+    for mode in Mode::ALL {
+        assert_eq!(
+            p.decide(mode, &Access::Read(source.join("out.txt")), &env.work()),
+            Decision::Allow
+        );
+        for access in [
+            Access::Write(source.join("out.txt")),
+            Access::Read(unrelated.clone()),
+            Access::Read(source.join("../unrelated/out.txt")),
+            Access::Read(linked.clone()),
+        ] {
+            p.remember(&access);
+            assert_eq!(
+                p.decide(mode, &access, &env.work()),
+                SENSITIVE,
+                "{mode:?} {access:?}"
+            );
+        }
+    }
+    let filter = p.path_filter().unwrap();
+    assert!(!filter.hides(&source.join("out.txt")));
+    assert!(filter.hides(&unrelated));
+    p.set_spill_dir(&env.agent_dir().join("tmp/new"));
+    assert_eq!(
+        p.decide(
+            Mode::Workspace,
+            &Access::Read(source.join("out.txt")),
+            &env.work()
+        ),
+        SENSITIVE
+    );
+    assert!(p.path_filter().unwrap().hides(&source.join("out.txt")));
 }

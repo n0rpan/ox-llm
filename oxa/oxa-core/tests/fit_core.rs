@@ -461,6 +461,46 @@ fn context_full_length_stop_compacts_and_retries() {
     assert!(starts[0] < at_shown && at_shown < starts[1] && starts[1] < compaction);
 }
 
+/// #512: the context-full reply is not kept, but its request (a full window of prompt tokens
+/// plus the cut reply) still counts in the session's token stats.
+#[test]
+fn context_full_cut_request_is_counted_in_the_stats() {
+    let env = TestEnv::new();
+    let b = band(&env);
+    let cut_text = "x".repeat(8000);
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text("r1"),
+            ScriptTurn::text(&cut_text),
+            ScriptTurn::text("SUM"),
+            ScriptTurn::text("final"),
+        ],
+        FakeOpts {
+            n_ctx: b.n_ctx,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut s = open(
+        &env,
+        http(&server),
+        r#"{"compaction": {"enabled": false, "keepRecentTokens": 1}}"#,
+    );
+    prompt(&mut s, &"h".repeat(b.history));
+    prompt(&mut s, "short");
+    let reqs = server.requests();
+    let chats: Vec<_> = reqs.iter().filter(|r| r.kind == "chat").collect();
+    assert_eq!(chats.len(), 3);
+    let cut = chats[1].usage.expect("usage");
+    let stats = &s.inner().stats;
+    assert_eq!(stats.requests, 3, "r1, the cut request and the retry");
+    let prompt_sum: u64 = chats
+        .iter()
+        .map(|r| u64::from(r.usage.expect("usage").prompt))
+        .sum();
+    assert_eq!(stats.prompt_tokens, prompt_sum, "cut: {cut:?}");
+}
+
 /// F6: a second context-full cut after the compaction is returned like a second overflow.
 #[test]
 fn second_context_full_cut_is_returned() {

@@ -1,4 +1,4 @@
-//! A12: the terminal abstraction, the real terminal, raw mode and restore-on-panic. Owner: task A12. Signatures below are frozen; bodies are yours.
+//! A12: the terminal abstraction, the real terminal, raw mode and restore-on-panic.
 // ported from pi packages/tui/src/terminal.ts
 use crate::{flush_pending, parse_input, parse_osc_color, InputEvent, TermCaps, TermMode, TerminalColors};
 use oxa_proto::{codes, OxaError};
@@ -86,6 +86,7 @@ pub struct ProcessTerminal {
     cursor_hidden: bool,
     /// Input bytes not yet parsed (a partial sequence waiting for its tail).
     pending: Vec<u8>,
+    paste_scan: PasteScan,
     /// Events produced while querying at start, delivered by the first `poll`.
     queued: Vec<InputEvent>,
     last_size: (u16, u16),
@@ -122,6 +123,7 @@ impl ProcessTerminal {
             active: Vec::new(),
             cursor_hidden: false,
             pending: Vec::new(),
+            paste_scan: PasteScan::default(),
             queued: Vec::new(),
             last_size: (0, 0),
             pending_since: None,
@@ -191,9 +193,8 @@ impl ProcessTerminal {
     fn wait(&mut self, timeout_ms: u64, out: &mut Vec<InputEvent>) -> bool {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            if !self.pending.is_empty() {
-                let (events, used) = parse_input(&self.pending);
-                self.pending.drain(..used);
+            let (events, used, paste_open) = drain_ready(&mut self.pending, &mut self.paste_scan);
+            {
                 if used > 0 || self.pending.is_empty() {
                     self.pending_since = None;
                 }
@@ -204,7 +205,6 @@ impl ProcessTerminal {
             }
             let now = Instant::now();
             let remaining = deadline.saturating_duration_since(now);
-            let paste_open = paste_in_progress(&self.pending);
             // A lone ESC (or an unfinished sequence) waits only the ESC timeout, unless a paste
             // is open: that waits for its end marker. The timeout counts from when the tail
             // began waiting, so polls shorter than it (16 ms while animating) still flush it.
@@ -220,13 +220,24 @@ impl ProcessTerminal {
                     return true;
                 }
             }
+            if paste_open && self.paste_scan.stall_left(now).is_some_and(|d| d.is_zero()) {
+                out.extend(flush_pending(&self.pending));
+                self.pending.clear();
+                self.pending_since = None;
+                return true;
+            }
             let esc_left = self.pending_since.map(|since| {
                 (since + Duration::from_millis(crate::ESC_TIMEOUT_MS)).saturating_duration_since(now)
             });
-            let wait = match esc_left {
+            let mut wait = match esc_left {
                 Some(left) if esc_limited && left < remaining => left,
                 _ => remaining,
             };
+            if paste_open {
+                if let Some(left) = self.paste_scan.stall_left(now) {
+                    wait = wait.min(left);
+                }
+            }
             match poll_stdin(wait) {
                 Polled::Ready => match read_stdin() {
                     Some(bytes) => self.pending.extend_from_slice(&bytes),
@@ -623,12 +634,66 @@ fn term_size() -> (u16, u16) {
     (80, 24)
 }
 
-fn paste_in_progress(buf: &[u8]) -> bool {
-    buf.starts_with(PASTE_START) && !contains(buf, PASTE_END)
+/// Parse what `pending` holds unless a paste is open. Returns the events, the bytes consumed
+/// and whether a paste is open in what is left (checked after the drain: a skipped sequence
+/// can leave a paste start at the front).
+fn drain_ready(pending: &mut Vec<u8>, scan: &mut PasteScan) -> (Vec<InputEvent>, usize, bool) {
+    let (events, used) = if !pending.is_empty() && !scan.open(pending) {
+        let r = parse_input(pending);
+        pending.drain(..r.1);
+        r
+    } else {
+        (Vec::new(), 0)
+    };
+    let open = scan.open(pending);
+    (events, used, open)
 }
 
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
-    hay.windows(needle.len()).any(|w| w == needle)
+/// Remembers how much of an open paste was already searched for the end marker, so each new
+/// chunk costs only its own length (a large paste arrives in many small reads).
+#[derive(Default)]
+struct PasteScan {
+    scanned: usize,
+    /// Bytes searched so far (lets tests check the scan stays linear).
+    work: usize,
+    /// When the open paste last grew (None while no paste is open).
+    grew: Option<Instant>,
+}
+
+/// An open paste that receives no byte for this long is flushed as text (lost end marker).
+const PASTE_STALL: Duration = Duration::from_secs(5);
+
+impl PasteScan {
+    /// True while `buf` starts a paste whose end marker has not arrived yet.
+    fn open(&mut self, buf: &[u8]) -> bool {
+        if !buf.starts_with(PASTE_START) {
+            self.scanned = 0;
+            self.grew = None;
+            return false;
+        }
+        let from = self
+            .scanned
+            .saturating_sub(PASTE_END.len() - 1)
+            .max(PASTE_START.len())
+            .min(buf.len());
+        self.work += buf.len() - from;
+        if buf[from..].windows(PASTE_END.len()).any(|w| w == PASTE_END) {
+            self.scanned = 0;
+            self.grew = None;
+            return false;
+        }
+        if buf.len() != self.scanned || self.grew.is_none() {
+            self.grew = Some(Instant::now());
+        }
+        self.scanned = buf.len();
+        true
+    }
+
+    /// Time left before the open paste counts as unterminated.
+    fn stall_left(&self, now: Instant) -> Option<Duration> {
+        self.grew
+            .map(|t| (t + PASTE_STALL).saturating_duration_since(now))
+    }
 }
 
 const PASTE_START: &[u8] = b"\x1b[200~";
@@ -665,5 +730,54 @@ fn read_stdin() -> Option<Vec<u8>> {
         Some(Vec::new())
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod paste_scan_tests {
+    use super::*;
+
+    #[test]
+    fn stalled_paste_runs_out_of_time() {
+        let mut s = PasteScan::default();
+        let buf = b"\x1b[200~abc".to_vec();
+        assert!(s.open(&buf));
+        assert!(s.stall_left(Instant::now()).unwrap() > Duration::from_secs(4));
+        assert!(s.stall_left(Instant::now() + PASTE_STALL).unwrap().is_zero());
+    }
+
+    #[test]
+    fn marker_split_across_chunks_is_found() {
+        let mut s = PasteScan::default();
+        let mut buf = b"\x1b[200~abc\x1b[20".to_vec();
+        assert!(s.open(&buf));
+        buf.extend_from_slice(b"1~");
+        assert!(!s.open(&buf));
+    }
+
+    #[test]
+    fn large_paste_in_small_chunks_is_linear() {
+        let mut s = PasteScan::default();
+        let mut buf = PASTE_START.to_vec();
+        for _ in 0..4096 {
+            buf.extend_from_slice(&[b'x'; 4096]);
+            assert!(s.open(&buf));
+        }
+        assert!(
+            s.work <= buf.len() + 4096 * 8,
+            "scanned {} for {}",
+            s.work,
+            buf.len()
+        );
+    }
+
+    #[test]
+    fn paste_after_skipped_sequence_stays_open() {
+        let mut s = PasteScan::default();
+        // An ignored private sequence, then an unfinished paste.
+        let mut pending = b"\x1b[?1;2c\x1b[200~partial".to_vec();
+        let (_events, _, open) = drain_ready(&mut pending, &mut s);
+        assert!(pending.starts_with(PASTE_START), "{pending:?}");
+        assert!(open);
     }
 }

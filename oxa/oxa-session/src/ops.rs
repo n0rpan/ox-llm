@@ -1,4 +1,4 @@
-//! B14: fork, clone, names and labels. Owner: task B14. Signatures below are frozen; bodies are yours.
+//! B14: fork, clone, names and labels.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (createBranchedSession, fork)
 use crate::{new_entry_id, SessionRef, SessionStore, Tree};
 use oxa_proto::{codes, Entry, EntryBody, OxaError};
@@ -46,11 +46,9 @@ pub fn fork_file(
         ));
     }
     let dst = store.create(cwd, id, Some(src.path.as_path()))?;
-    for e in &entries {
-        if let Err(err) = store.append(&dst, e) {
-            let _ = store.delete(&dst);
-            return Err(err);
-        }
+    if let Err(err) = store.append_many(&dst, &entries) {
+        let _ = store.delete(&dst);
+        return Err(err);
     }
     Ok(dst)
 }
@@ -114,9 +112,7 @@ fn write_branch(
     tree: &Tree,
     branch: &[Entry],
 ) -> Result<(), OxaError> {
-    for e in branch {
-        store.append(dst, e)?;
-    }
+    let mut out: Vec<Entry> = branch.to_vec();
     let mut taken: HashSet<String> = branch.iter().map(|e| e.id.clone()).collect();
     let mut parent = branch.last().map(|e| e.id.clone());
     for e in branch {
@@ -129,18 +125,15 @@ fn write_branch(
             target: e.id.clone(),
             label: Some(label.to_string()),
         };
-        store.append(
-            dst,
-            &Entry {
-                id: id.clone(),
-                parent: parent.clone(),
-                ts_ms: now_ms(),
-                body,
-            },
-        )?;
+        out.push(Entry {
+            id: id.clone(),
+            parent: parent.clone(),
+            ts_ms: now_ms(),
+            body,
+        });
         parent = Some(id);
     }
-    Ok(())
+    store.append_many(dst, &out)
 }
 
 /// Append `body` as a child of `leaf`. `need` is an entry id that must also exist in the session.

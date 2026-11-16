@@ -1,4 +1,4 @@
-//! C9 acceptance tests: JSON records, print and json modes. Owner: task C9.
+//! C9 acceptance tests: JSON records, print and json modes.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -609,6 +609,28 @@ fn print_final_text_only() {
     assert_eq!(String::from_utf8(out).unwrap(), "final answer\n");
 }
 
+/// A truncated reply in an earlier prompt fails the run and says why, even when a later
+/// prompt finishes normally (the message follows the session's per-prompt outcome).
+#[test]
+fn print_reports_truncation_of_an_earlier_prompt() {
+    const TRUNCATED: &str = "Response was truncated: the model reached its output token limit.";
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text("partial");
+    cut.finish = oxa_proto::Finish::Length;
+    let engine = Arc::new(ScriptedEngine::new(vec![cut, ScriptTurn::text("fine")]));
+    let mut session = open(&env, &engine);
+    let prompts = vec![("one".to_string(), Vec::new()), ("two".to_string(), Vec::new())];
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = run_print(&mut session, prompts, &mut out, &mut err).unwrap();
+    let err = format!(
+        "err={:?} out={:?}",
+        String::from_utf8(err).unwrap(),
+        String::from_utf8(out).unwrap()
+    );
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(err.matches(TRUNCATED).count(), 1, "{err}");
+}
+
 /// No tools declared and the final text is tool-call markup: one stderr warning, exit code 0.
 #[test]
 fn print_warns_on_tool_markup_without_tools() {
@@ -879,6 +901,7 @@ fn entry_json_is_the_stored_object() {
         body: EntryBody::Msg {
             wire: WireMsg::user("hello"),
             parts: Vec::new(),
+            tool: None,
         },
     };
     let mut line = Vec::new();

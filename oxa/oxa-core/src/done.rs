@@ -1,6 +1,6 @@
 //! `done` setting (issue #104): shell commands oxa runs itself before it reports completion.
-//! A run that edited files (`edit` / `write` succeeded; `bash` changes are not tracked) and is
-//! about to stop runs them in the session sandbox; a failure goes back to the model as a user
+//! A run that edited files (`edit` / `write` succeeded, or a `bash`, sub-agent, MCP or extension
+//! tool call changed the work folder) and is about to stop runs them in the session sandbox; a failure goes back to the model as a user
 //! message, at most [`MAX_ROUNDS`] times. An entry `in <dir>: <command>` runs in `<dir>`, a folder
 //! of the session folder, instead of in the session folder itself.
 use crate::exec::CallResult;
@@ -21,6 +21,138 @@ pub(crate) struct DoneState {
     /// A file tool succeeded since the last check.
     dirty: bool,
     rounds: u32,
+    /// Fingerprint of the work folder at the last look (`None`: too big to look at).
+    tree: Option<u64>,
+}
+
+/// Seconds a git probe may run before the fingerprint gives up (`None`: checks stay as they were).
+const PROBE_TIMEOUT_S: u64 = 20;
+
+/// Hash of the work folder's git file list (index entries and untracked files) with each file's
+/// size, times, inode and mode. Outside a git repo, without git, or on a timeout it is a bounded
+/// walk of the folder ([`walk_fingerprint`]).
+fn tree_fingerprint(cwd: &Path) -> Option<u64> {
+    git_fingerprint(cwd).or_else(|| walk_fingerprint(cwd))
+}
+
+/// Entries the non-git walk looks at before it gives up (`None`: no checks from tree changes).
+const WALK_CAP: usize = 20_000;
+
+/// Hash of every readable file's relative path, size and modification time under `cwd`, plus
+/// contents for regular files up to 1 MiB. Does not follow symlinks or descend
+/// into `.git`, `node_modules`, `target` or unreadable subdirectories. `None` above [`WALK_CAP`]
+/// entries or when `cwd` cannot be read.
+fn walk_fingerprint(cwd: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    let mut seen = 0usize;
+    let mut stack = vec![cwd.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) if dir == cwd => return None,
+            Err(_) => continue,
+        };
+        let mut entries = walk_entries(entries, &mut seen)?;
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let name = e.file_name();
+            let Ok(m) = std::fs::symlink_metadata(e.path()) else {
+                continue;
+            };
+            name.hash(&mut h);
+            dir.strip_prefix(cwd).ok().hash(&mut h);
+            m.len().hash(&mut h);
+            m.modified().ok().hash(&mut h);
+            if m.is_file() && m.len() <= (1 << 20) {
+                std::fs::read(e.path()).ok().hash(&mut h);
+            }
+            if m.is_dir() && !matches!(name.to_str(), Some(".git" | "node_modules" | "target")) {
+                stack.push(e.path());
+            }
+        }
+    }
+    Some(h.finish())
+}
+
+fn walk_entries<T>(entries: impl Iterator<Item = std::io::Result<T>>, seen: &mut usize) -> Option<Vec<T>> {
+    let mut collected = Vec::new();
+    for entry in entries {
+        *seen += 1;
+        if *seen > WALK_CAP {
+            return None;
+        }
+        if let Ok(entry) = entry {
+            collected.push(entry);
+        }
+    }
+    Some(collected)
+}
+
+/// The git part of [`tree_fingerprint`]; `None` outside a git repo, without git, or on a timeout.
+/// The probes run on the host, so they only list files (`ls-files`): nothing that can start a
+/// repository-configured program (`status` and `diff` run clean filters, textconv, external
+/// diff). Files are stat-ed here instead of diffed by git. A same-size in-place rewrite that
+/// restores mtime within one ctime tick can be missed on coarse-timestamp filesystems; file
+/// tools mark edits directly, independently of this best-effort bash probe.
+fn git_fingerprint(cwd: &Path) -> Option<u64> {
+    use std::hash::{Hash, Hasher};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
+    let git = |args: &[&str]| -> Option<Vec<u8>> {
+        let mut child = std::process::Command::new("git")
+            .args(["-c", "core.fsmonitor=false"])
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .ok()?;
+        let mut out = child.stdout.take()?;
+        let reader = std::thread::spawn(move || {
+            let mut v = Vec::new();
+            let _ = std::io::Read::read_to_end(&mut out, &mut v);
+            v
+        });
+        let t0 = std::time::Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait().ok()? {
+                break s;
+            }
+            if t0.elapsed().as_secs() >= PROBE_TIMEOUT_S {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let v = reader.join().ok()?;
+        status.success().then_some(v)
+    };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    // `-s`: mode, object id and stage of every index entry (staging changes the hash).
+    git(&["ls-files", "-z", "-s"])?.hash(&mut h);
+    let files = git(&["ls-files", "-z", "--cached", "--others", "--exclude-standard"])?;
+    for name in files.split(|b| *b == 0).filter(|n| !n.is_empty()) {
+        let path = cwd.join(std::ffi::OsStr::from_bytes(name));
+        name.hash(&mut h);
+        match std::fs::symlink_metadata(&path) {
+            Ok(m) => {
+                m.len().hash(&mut h);
+                m.modified().ok().hash(&mut h);
+                // Inode, mode and change time catch a rewrite that keeps size and mtime.
+                m.ino().hash(&mut h);
+                m.mode().hash(&mut h);
+                (m.ctime(), m.ctime_nsec()).hash(&mut h);
+                // Do not read file contents: the metadata avoids repository-wide I/O and
+                // stays stable as unchanged files age, unlike a recency-gated content hash.
+            }
+            Err(_) => 0u8.hash(&mut h),
+        }
+    }
+    Some(h.finish())
 }
 
 impl DoneState {
@@ -30,6 +162,30 @@ impl DoneState {
             .any(|r| !r.is_error && (r.tool_name == "edit" || r.tool_name == "write"))
         {
             self.dirty = true;
+        }
+    }
+
+    /// Start of a run: remember the tree, so a later `bash` change can be told apart.
+    pub(crate) fn begin(&mut self, st: &SessionState) {
+        if !st.settings.done_commands().is_empty() {
+            self.tree = tree_fingerprint(&st.cwd);
+        }
+    }
+
+    /// After a batch with any tool that may change files (`bash`, sub-agent, MCP and extension
+    /// tools; not the read-only built-ins): a changed work folder counts as an edit.
+    pub(crate) fn note_bash(&mut self, st: &SessionState, results: &[CallResult]) {
+        const READ_ONLY: [&str; 4] = ["read", "grep", "find", "ls"];
+        if self.dirty
+            || self.tree.is_none()
+            || results.iter().all(|r| READ_ONLY.contains(&r.tool_name.as_str()))
+        {
+            return;
+        }
+        let now = tree_fingerprint(&st.cwd);
+        if now != self.tree {
+            self.dirty = true;
+            self.tree = now;
         }
     }
 }
@@ -78,6 +234,10 @@ pub(crate) fn check(
             failed.push_str(&text);
             failed.push_str("\n\n");
         }
+    }
+    // A check may rewrite files (formatters, generators): that is not a model edit.
+    if state.tree.is_some() {
+        state.tree = tree_fingerprint(&st.cwd);
     }
     // What print mode reads at the end: the last check round failed and nothing fixed it.
     st.stats.done_failed = !failed.is_empty();
@@ -230,4 +390,197 @@ fn tail(s: &str) -> String {
         from += 1;
     }
     format!("[output truncated]\n{}", &s[from..])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn fingerprint_does_not_read_tracked_or_untracked_file_contents() {
+        // Linux counts read(2) bytes even when they hit the page cache. Use this thread's
+        // counter so concurrent tests and the git pipe-reader threads cannot affect it.
+        fn bytes_read() -> u64 {
+            std::fs::read_to_string("/proc/thread-self/io")
+                .unwrap()
+                .lines()
+                .find_map(|line| line.strip_prefix("rchar: "))
+                .unwrap()
+                .parse()
+                .unwrap()
+        }
+
+        let dir = std::env::temp_dir().join(format!("oxa-fp-no-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+        const FILE_SIZE: usize = 64 * 1024;
+        for name in ["tracked.txt", "untracked.txt"] {
+            std::fs::write(dir.join(name), vec![b'x'; FILE_SIZE]).unwrap();
+        }
+        assert!(std::process::Command::new("git")
+            .args(["add", "--", "tracked.txt"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+
+        // Prove that the counter detects a real content read before testing the probe.
+        let before = bytes_read();
+        assert_eq!(std::fs::read(dir.join("tracked.txt")).unwrap().len(), FILE_SIZE);
+        assert!(bytes_read() - before >= FILE_SIZE as u64);
+        for age in [0, 3600] {
+            let mtime = std::time::SystemTime::now() - std::time::Duration::from_secs(age);
+            for name in ["tracked.txt", "untracked.txt"] {
+                std::fs::File::options()
+                    .write(true)
+                    .open(dir.join(name))
+                    .unwrap()
+                    .set_modified(mtime)
+                    .unwrap();
+            }
+            let before = bytes_read();
+            let fingerprint = tree_fingerprint(&dir);
+            let read = bytes_read() - before;
+            assert!(fingerprint.is_some());
+            // Allow the tiny /proc accounting read itself, but not even one fixture file.
+            assert!(read < FILE_SIZE as u64, "probe read {read} bytes at age {age}");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_stays_stable_as_an_unchanged_file_ages() {
+        let dir = std::env::temp_dir().join(format!("oxa-fp-aging-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(dir.join("a.txt"), "unchanged\n").unwrap();
+        let before = tree_fingerprint(&dir).unwrap();
+        // Cross the former two-second content-hashing window without changing the file.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert_eq!(before, tree_fingerprint(&dir).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_sees_a_same_size_rewrite_with_restored_mtime() {
+        let dir = std::env::temp_dir().join(format!("oxa-fp-rewrite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "before\n").unwrap();
+        let file = std::fs::File::options().write(true).open(&f).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        file.set_modified(old).unwrap();
+        let metadata = file.metadata().unwrap();
+        let before = tree_fingerprint(&dir).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&f, "after!\n").unwrap();
+        file.set_modified(old).unwrap();
+        assert_eq!(metadata.len(), file.metadata().unwrap().len());
+        assert_eq!(
+            metadata.modified().unwrap(),
+            file.metadata().unwrap().modified().unwrap()
+        );
+        assert_ne!(before, tree_fingerprint(&dir).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_sees_a_mode_change_of_an_old_untracked_file() {
+        let dir = std::env::temp_dir().join(format!("oxa-fp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let git_ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(git_ok, "git init");
+        let f = dir.join("a.sh");
+        std::fs::write(&f, "echo hi\n").unwrap();
+        // Old mtime: the change below cannot be seen through contents or mtime.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+        let before = tree_fingerprint(&dir).unwrap();
+        assert_eq!(before, tree_fingerprint(&dir).unwrap(), "stable without changes");
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_ne!(before, tree_fingerprint(&dir).unwrap(), "chmod is a change");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn walk_entries_stops_enumerating_at_the_remaining_budget() {
+        let mut seen = WALK_CAP - 2;
+        let mut reads = 0;
+        let entries = (0..10).map(|n| {
+            reads += 1;
+            Ok(n)
+        });
+        assert!(walk_entries(entries, &mut seen).is_none());
+        assert_eq!(reads, 3, "stop before collecting or sorting the whole directory");
+    }
+
+    #[test]
+    fn walk_entries_counts_errors_against_the_budget() {
+        let mut seen = WALK_CAP - 1;
+        let entries = [Ok(1), Err(std::io::Error::other("unreadable entry")), Ok(2)];
+        assert!(walk_entries(entries.into_iter(), &mut seen).is_none());
+        assert_eq!(seen, WALK_CAP + 1);
+    }
+
+    #[test]
+    fn walk_entries_accepts_exactly_the_budget() {
+        let mut seen = WALK_CAP - 2;
+        assert_eq!(
+            walk_entries([Ok(1), Ok(2)].into_iter(), &mut seen),
+            Some(vec![1, 2])
+        );
+        assert_eq!(seen, WALK_CAP);
+        assert_eq!(
+            walk_entries(std::iter::empty::<std::io::Result<()>>(), &mut seen),
+            Some(vec![])
+        );
+    }
+
+    #[test]
+    fn walk_fingerprint_detects_same_size_same_mtime_edits() {
+        let env = oxa_fake::TestEnv::new();
+        let path = env.work().join("existing.txt");
+        std::fs::write(&path, "before").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let before = walk_fingerprint(&env.work()).unwrap();
+        assert_eq!(walk_fingerprint(&env.work()), Some(before));
+        std::fs::write(&path, "after!").unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(modified))
+            .unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), modified);
+        assert_ne!(walk_fingerprint(&env.work()), Some(before));
+    }
 }

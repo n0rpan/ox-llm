@@ -1,4 +1,4 @@
-//! E1: loading extensions into runtimes. Owner: task E1. Signatures below are frozen; bodies are yours.
+//! E1: loading extensions into runtimes.
 // ported from pi packages/coding-agent/src/core/extensions/loader.ts
 use crate::{ExtError, ExtId, ExtManifest, ExtState, LoadedExtension, Registry};
 use oxa_proto::{codes, OxaError, Value};

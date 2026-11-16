@@ -102,12 +102,17 @@ class CloudOnlyInstall(unittest.TestCase):
         self.assertEqual(code, 0)
         models = json.loads((self.root / 'config/runtime.json').read_text())['cloud']['models']
         providers = {m['provider'] for m in models.values()}
-        self.assertEqual(providers, {'anthropic', 'openai', 'openrouter'})
+        self.assertEqual(providers, {'anthropic', 'openai', 'openrouter', 'chatgpt'})
         from oxc.runtime import cloud
-        self.assertEqual(set(cloud.entries({'cloud': {'enabled': True, 'models': models}})), set(models))
-        for item in models.values():
+        # ChatGPT subscription entries stay hidden until `oxc login chatgpt` (none here).
+        subscription = {alias for alias, m in models.items() if m['provider'] == 'chatgpt'}
+        self.assertEqual(subscription, {'chatgpt/gpt-6.1-sol', 'chatgpt/gpt-6.1-terra',
+                                        'chatgpt/gpt-6-sol', 'chatgpt/gpt-6-luna'})
+        self.assertEqual(set(cloud.entries({'cloud': {'enabled': True, 'models': models}})),
+                         set(models) - subscription)
+        for alias, item in models.items():
             self.assertEqual(item['kind'], 'remote/' + item['provider'])
-            self.assertIsNotNone(cloud.entry('x/y', item)['pricing'])
+            self.assertIsNotNone(cloud.entry(alias, item)['pricing'])
         expected = {
             'anthropic/claude-haiku-5-5': ('claude-haiku-5-5', 32000, 0.5, 2.5),
             'anthropic/claude-sonnet-5-5': ('claude-sonnet-5-5', 32000, 2.0, 10.0),
@@ -116,7 +121,7 @@ class CloudOnlyInstall(unittest.TestCase):
             'openrouter/deepseek-v4.1-flash': ('deepseek/deepseek-v4.1-flash', 32768, 0.0507, 0.2028),
             'openai/gpt-6-luna': ('gpt-6-luna', 128000, 0.1, 0.5),
             'openai/gpt-6.1-sol': ('gpt-6.1-sol', 128000, 2.0, 10.0)}
-        self.assertEqual(set(models), set(expected))
+        self.assertEqual(set(models) - subscription, set(expected))
         for alias, (upstream, output, price_in, price_out) in expected.items():
             item = models[alias]
             self.assertEqual((item['upstream_model'], item['context_window'], item['max_output'],

@@ -46,6 +46,7 @@ fn run_tool(cwd: &Path, args: &Value) -> ToolOutput {
     let env: Vec<(String, String)> = Vec::new();
     let cancel = CancelToken::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd,
         spill_dir: cwd,
         sandbox: &sandbox,
@@ -53,6 +54,7 @@ fn run_tool(cwd: &Path, args: &Value) -> ToolOutput {
         cancel: &cancel,
         env: &env,
         tune: Default::default(),
+        hidden: None,
     };
     EditTool::new().run(args, &cx, &mut |_: &str| {})
 }

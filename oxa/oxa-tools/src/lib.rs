@@ -18,6 +18,7 @@
 //!   (the sandbox hides home). `Tool::access` reports absolute, lexically normalised paths.
 
 mod bash;
+mod checked;
 pub mod descriptions;
 mod diff;
 mod edit;

@@ -145,7 +145,13 @@ impl Engine for EmbeddedEngine {
                         }
                     }
                     Err(error) => {
-                        failure = Some(error);
+                        // A malformed chunk or refusal after reply data is a cut reply that
+                        // must never be replayed.
+                        failure = Some(if emitted {
+                            broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, error.message))
+                        } else {
+                            error
+                        });
                         return Flow::Stop;
                     }
                 },
@@ -159,29 +165,32 @@ impl Engine for EmbeddedEngine {
             }
             Flow::Continue
         });
-        if cancel.is_cancelled() {
+        // After a clean `[DONE]` the gateway has settled the reply (billed, ledgered): a cancel
+        // that arrives now must not turn the finished turn into `aborted`, or the model never
+        // sees the reply that was paid for. The core still honors the cancel after the turn.
+        let settled = done && failure.is_none() && outcome.is_ok();
+        if !settled && cancel.is_cancelled() {
             return Err(aborted());
         }
         if let Some(error) = failure.or_else(|| outcome.err()) {
             // As with HTTP, a refusal after visible reply data is a cut stream;
             // it must never invite replay of an already visible tool or answer.
-            return Err(if emitted && error.code != codes::STREAM_BROKEN {
-                broken(format!("the reply was cut: {}", error.message))
-            } else {
-                error
-            });
+            return Err(
+                if emitted
+                    && error.code != codes::STREAM_BROKEN
+                    && !error.message.starts_with(oxa_proto::CUT_BY_REFUSAL)
+                {
+                    broken(format!("{}{}", oxa_proto::CUT_BY_REFUSAL, error.message))
+                } else {
+                    error
+                },
+            );
         }
         if !done {
             return Err(broken("the gateway closed the stream before [DONE]"));
         }
         for event in assembler.flush() {
-            if cancel.is_cancelled() {
-                return Err(aborted());
-            }
             on(event);
-        }
-        if cancel.is_cancelled() {
-            return Err(aborted());
         }
         let level = if request.thinking {
             ThinkingLevel::Medium
@@ -191,9 +200,6 @@ impl Engine for EmbeddedEngine {
         let mut turn = assembler.finish(level)?;
         if turn.model.is_empty() {
             turn.model = request.model.to_string();
-        }
-        if cancel.is_cancelled() {
-            return Err(aborted());
         }
         Ok(turn)
     }

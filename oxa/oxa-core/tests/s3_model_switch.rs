@@ -319,6 +319,7 @@ fn recorder_catches_an_oversized_target_request() {
         model: FLASH,
         max_tokens: 1,
         thinking: false,
+        thinking_budget: None,
         preserve_thinking: false,
         sampling: None,
         hints: oxa_proto::Hints {
