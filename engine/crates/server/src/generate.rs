@@ -663,6 +663,18 @@ fn snap_class(prio: u8) -> Option<&'static str> {
 }
 
 /// Snapshot classes thinning always keeps (with the head): the anchor and the compaction cut.
+/// Tokens of prefill between two progress writes (M1) when the last one was at `mark`: at least
+/// `persist_every`, and a quarter of the position already reached, so every head snapshot (63-68
+/// MiB, and all but the thinned few are swept again) is paid for by proportionally more prefill
+/// and a 128K cold prefill writes about a dozen, not 31. A kill loses at most that interval.
+/// `persist_every` 0 is off.
+pub(crate) fn progress_interval(persist_every: usize, mark: usize) -> usize {
+    if persist_every == 0 {
+        return 0;
+    }
+    persist_every.max(mark / 4)
+}
+
 fn must_keep(class: &str) -> bool {
     class == "anchor" || class == "cut"
 }
@@ -1724,7 +1736,7 @@ impl<E: Engine> Worker<E> {
         log
     }
 
-    /// M1: inside a long prefill, write the progress every `persist_every` new tokens (called
+    /// M1: inside a long prefill, write the progress every [`progress_interval`] new tokens (called
     /// between prefill chunks, where the engine and the cache agree). Never fails the request.
     fn persist_progress(&mut self, p: &GenParams) {
         if p.ephemeral
@@ -1735,7 +1747,7 @@ impl<E: Engine> Worker<E> {
             return;
         }
         let n = self.cache.tokens.len();
-        if n < self.progress_mark + self.persist_every {
+        if n < self.progress_mark + progress_interval(self.persist_every, self.progress_mark) {
             return;
         }
         let t0 = Instant::now();

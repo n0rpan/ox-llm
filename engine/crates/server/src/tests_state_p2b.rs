@@ -124,6 +124,45 @@ fn m1_long_prefill_persists_progress_every_n_tokens() {
     let _ = std::fs::remove_dir_all(&dir2);
 }
 
+/// #585: the progress interval grows with the prefill (a quarter of the position already
+/// reached, never below `persist_every`), so a long cold prefill writes a handful of head
+/// snapshots, not one per `persist_every` tokens; the resume point stays within a fraction of
+/// the work done.
+#[test]
+fn m1_progress_interval_grows_with_the_prefill_position() {
+    use crate::generate::progress_interval;
+    assert_eq!(progress_interval(4096, 0), 4096);
+    assert_eq!(progress_interval(4096, 8192), 4096);
+    assert_eq!(progress_interval(4096, 65536), 16384);
+    assert_eq!(progress_interval(0, 65536), 0, "0 stays off");
+    let dir = tmp("p2b-m1-grow");
+    let mut w = worker(&dir);
+    w.persist_every = 256;
+    let prompt = toks(12000, 3);
+    gen(&mut w, &prompt, &params("g"));
+    let written = w.states.as_ref().unwrap().stats.snaps_written;
+    // a fixed grid would write 12000 / 256 = 46 head snapshots
+    assert!(
+        (3..=22).contains(&written),
+        "head snapshots written during a 12000-token prefill: {written}"
+    );
+    let m = w
+        .states
+        .as_ref()
+        .unwrap()
+        .manifests
+        .values()
+        .next()
+        .unwrap();
+    let head = m.snaps.iter().map(|x| x.pos).max().unwrap();
+    assert!(
+        prompt.len() - head <= prompt.len() / 4 + 256,
+        "the last progress head at {head} of {}",
+        prompt.len()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// M2: the shutdown write is incremental (only blocks not on disk + the head), bounded by a
 /// deadline and a memory floor, and says what it saved; after a complete write it writes nothing.
 #[test]
