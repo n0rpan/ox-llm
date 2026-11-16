@@ -979,7 +979,9 @@ version = "0.2.0"
 dependencies = [
  "oxa-fake",
  "oxa-proto",
+ "oxc-gateway",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1205,6 +1207,7 @@ dependencies = [
  "hmac",
  "nix",
  "num-traits",
+ "oxa-proto",
  "reqwest",
  "serde_json",
  "sha2",

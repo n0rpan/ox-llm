@@ -1,6 +1,7 @@
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, Weak};
+use std::task::{Poll, Waker};
 
 /// The one error type of the workspace.
 ///
@@ -121,20 +122,131 @@ pub mod codes {
 /// Cloning shares the flag. Long operations poll [`CancelToken::is_cancelled`] at least every
 /// 100 ms; blocking reads use a read timeout so they can poll.
 #[derive(Debug, Clone, Default)]
-pub struct CancelToken(Arc<AtomicBool>);
+pub struct CancelToken(Arc<CancelState>);
+
+#[derive(Debug, Default)]
+struct CancelState {
+    flag: AtomicBool,
+    waiters: Mutex<Vec<Weak<Mutex<Option<Waker>>>>>,
+}
 
 impl CancelToken {
     pub fn new() -> Self {
         Self::default()
     }
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        self.0.flag.store(true, Ordering::SeqCst);
+        let waiters = std::mem::take(&mut *self.0.waiters.lock().unwrap_or_else(|e| e.into_inner()));
+        for waiter in waiters.into_iter().filter_map(|waiter| waiter.upgrade()) {
+            let waker = waiter.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(waker) = waker {
+                waker.wake();
+            }
+        }
     }
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.flag.load(Ordering::SeqCst)
     }
     /// Clear the flag for the next run. Only the owner of the run calls this.
     pub fn reset(&self) {
-        self.0.store(false, Ordering::SeqCst);
+        self.0.flag.store(false, Ordering::SeqCst);
+    }
+
+    /// Wake an async operation once cancelled, without a timer or worker thread.
+    /// As with the flag, the run's owner resets only after its operations finish.
+    pub fn cancelled(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let token = self.clone();
+        async move {
+            if token.is_cancelled() {
+                return;
+            }
+            let waiter = Arc::new(Mutex::new(None::<Waker>));
+            {
+                let mut waiters = token.0.waiters.lock().unwrap_or_else(|e| e.into_inner());
+                waiters.retain(|waiter| waiter.strong_count() > 0);
+                waiters.push(Arc::downgrade(&waiter));
+            }
+            std::future::poll_fn(move |context| {
+                let mut registered = waiter.lock().unwrap_or_else(|e| e.into_inner());
+                if !registered
+                    .as_ref()
+                    .is_some_and(|waker| waker.will_wake(context.waker()))
+                {
+                    *registered = Some(context.waker().clone());
+                }
+                // Recheck after registration: cancellation may race the first poll.
+                if token.is_cancelled() {
+                    Poll::Ready(())
+                } else {
+                    Poll::Pending
+                }
+            })
+            .await;
+        }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    use std::{
+        future::Future,
+        sync::atomic::AtomicUsize,
+        task::{Context, Wake},
+    };
+    struct Count(AtomicUsize);
+    impl Wake for Count {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    #[test]
+    fn cancellation_wakes_registered_operations_once_and_reset_starts_a_new_run() {
+        let token = CancelToken::new();
+        let counts = [
+            Arc::new(Count(AtomicUsize::new(0))),
+            Arc::new(Count(AtomicUsize::new(0))),
+        ];
+        let mut futures = [Box::pin(token.cancelled()), Box::pin(token.cancelled())];
+        for (future, count) in futures.iter_mut().zip(&counts) {
+            assert!(future
+                .as_mut()
+                .poll(&mut Context::from_waker(&Waker::from(count.clone())))
+                .is_pending());
+        }
+        let other = token.clone();
+        std::thread::spawn(move || other.cancel()).join().unwrap();
+        token.cancel();
+        for (future, count) in futures.iter_mut().zip(&counts) {
+            assert_eq!(count.0.load(Ordering::SeqCst), 1);
+            assert!(future
+                .as_mut()
+                .poll(&mut Context::from_waker(&Waker::from(count.clone())))
+                .is_ready());
+        }
+        token.reset();
+        let mut next = Box::pin(token.cancelled());
+        let waker = Waker::from(counts[0].clone());
+        assert!(next.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+        token.cancel();
+        assert!(next.as_mut().poll(&mut Context::from_waker(&waker)).is_ready());
+    }
+    #[test]
+    fn pre_cancelled_and_dropped_waiters_need_no_background_work() {
+        let token = CancelToken::new();
+        let count = Arc::new(Count(AtomicUsize::new(0)));
+        let waker = Waker::from(count.clone());
+        let mut dropped = Box::pin(token.cancelled());
+        assert!(dropped
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending());
+        drop(dropped);
+        token.cancel();
+        assert_eq!(count.0.load(Ordering::SeqCst), 0);
+        assert!(Box::pin(token.cancelled())
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_ready());
     }
 }

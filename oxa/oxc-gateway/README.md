@@ -103,3 +103,27 @@ redaction and is only appropriate without sensitive data.
 Trusted usage remains available when public usage is disabled. Native tests
 cover these contracts without Python peers or byte-exact goldens. Transport and
 the production caller that supplies the redactor follow in S5/S6.
+
+`anthropic-gateway` composes typed catalog configuration, private admission,
+native transport and consuming settlement. `Runtime::new` takes validated model
+routes with optional prices and explicit private paths; its default options
+refuse cloud use. Discovery borrows public metadata and reads no key or ledger.
+`Gateway::chat` takes the same borrowed `oxa_proto::ChatRequest` used by the core,
+without a request-byte conversion at the engine boundary. Decoded chunks pass
+straight to reply assembly. Only the frozen tools schema needs decoding.
+
+Known refusals write private zero-spend rows. Paid calls retain process-shared
+reservations until durable settlement; interrupted guards conservatively record
+unknown paid work. Trusted terminal cache usage settles even if public usage is
+omitted or final delivery cancels. Unknown paid cancellations retain the full
+reserved charge. Done follows a successful append; later cancellation cannot
+retract an already settled reply. Failed appends block subsequent admissions.
+Opaque thinking replay is bounded and scoped to history, tools, model, endpoint
+and credential; it never appears in public chunks or ledger diagnostics.
+
+The optional `oxa-engine/in-process-gateway` bridge delivers callbacks on the
+calling thread. Construction/discovery starts no worker. The first chat lazily
+creates one parked I/O worker for pooled connections and concurrent calls.
+Shared `CancelToken` notifications wake network waits directly, with no timer
+or relay token. Async consumers use `Gateway::chat` directly. Production setting
+and factory selection are the subsequent default-off S7 slice.
