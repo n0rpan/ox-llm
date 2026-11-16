@@ -501,10 +501,15 @@ fn builtin_skills_are_readable_but_not_writable_by_tools() {
     env.write("home/.oxa/agent/builtin-skills/pull-request/SKILL.md", "x");
     let skill = env.agent_dir().join("builtin-skills/pull-request/SKILL.md");
     let p = guarded(&env);
-    assert_ne!(
-        p.decide(Mode::Workspace, &Access::Read(skill.clone()), &env.work()),
-        SENSITIVE
-    );
+    // #492: the skill lives outside the cwd, yet reading it must not ask (a headless run
+    // answers every ask with "declined"), in any mode.
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &Access::Read(skill.clone()), &env.work()),
+            Decision::Allow,
+            "{mode:?}"
+        );
+    }
     assert_eq!(
         p.decide(Mode::Workspace, &Access::Write(skill), &env.work()),
         SENSITIVE
