@@ -30,6 +30,9 @@ pub struct Read {
 struct Pending {
     after: Read,
     observation: serde_json::Value,
+    // Keep evidence of a close until its fact commits, even if bounded history drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trimmed_answer: Option<Box<Ask>>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +48,28 @@ impl Document {
             return Err("standing file capacity exceeded".into());
         }
         Ok(bytes)
+    }
+}
+impl Pending {
+    fn difference(&self, before: &Read, incident: Option<Incident>) -> Result<StandingChanged> {
+        let Some(closed) = self.trimmed_answer.as_deref() else {
+            return self.after.difference(before, incident);
+        };
+        closed.validate()?;
+        let answer = closed.answer.as_ref().ok_or("trimmed ask has no owner answer")?;
+        let mut original = closed.clone();
+        original.answer = None;
+        if !self.after.history_truncated
+            || self.after.asks.iter().any(|ask| ask.id == closed.id)
+            || !before.asks.contains(&original)
+            || answer.revision != self.after.revision
+            || answer.at != self.after.at
+        {
+            return Err("trimmed answer disagrees with the standing transition".into());
+        }
+        let mut complete = self.after.clone();
+        complete.asks.push(closed.clone());
+        complete.difference(before, incident)
     }
 }
 impl Read {
@@ -307,11 +332,7 @@ impl Standing {
             let Fact::StandingChanged(change) = &event.fact else {
                 return Err("invalid standing observation kind".into());
             };
-            if change
-                != &pending
-                    .after
-                    .difference(&document.current, change.incident.clone())?
-            {
+            if change != &pending.difference(&document.current, change.incident.clone())? {
                 return Err("pending standing projection disagrees".into());
             }
             // A prior rename may be visible after directory sync failed. Establish the
@@ -332,8 +353,17 @@ impl Standing {
         Ok((document.current, situation))
     }
     fn save(&self, before: Read, mut after: Read, incident: Option<Incident>) -> Result<Read> {
+        let change = after.difference(&before, incident)?;
+        let closed = change
+            .ask_closed
+            .as_ref()
+            .and_then(|closed| after.asks.iter().find(|ask| ask.id == closed.id))
+            .cloned();
         after.bounded()?;
-        let fact = Fact::StandingChanged(after.difference(&before, incident)?);
+        let trimmed_answer = closed
+            .filter(|closed| !after.asks.iter().any(|ask| ask.id == closed.id))
+            .map(Box::new);
+        let fact = Fact::StandingChanged(change);
         let mut prepared = false;
         self.facts.append_prepared(
             Checkpoint {
@@ -352,6 +382,7 @@ impl Standing {
                     pending: Some(Pending {
                         after: after.clone(),
                         observation,
+                        trimmed_answer,
                     }),
                 };
                 self.root.atomic(FILE, &document.bytes()?)?;

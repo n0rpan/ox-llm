@@ -195,7 +195,11 @@ fn pending_revisions_recover_before_or_after_the_fact_without_duplicate_delivery
         let document = Document {
             version: 1,
             current: before,
-            pending: Some(Pending { after, observation }),
+            pending: Some(Pending {
+                after,
+                observation,
+                trimmed_answer: None,
+            }),
         };
         standing.root.atomic(FILE, &document.bytes().unwrap()).unwrap();
         let reopened = Standing::open(&fixture.0.join("standing"), facts.clone()).unwrap();
@@ -450,6 +454,116 @@ fn answering_near_the_byte_limit_closes_the_ask_even_when_its_history_is_trimmed
     assert!(reopened
         .with_guard(Action::Update, subject(), |_| Ok(()))
         .is_err());
+}
+
+#[test]
+fn pending_trimmed_answers_recover_once_and_require_the_exact_prior_question() {
+    for phase in [
+        "prepared",
+        "fact_committed",
+        "missing",
+        "changed",
+        "wrong_revision",
+    ] {
+        let fixture = Fixture::new();
+        let facts = fixture.facts();
+        let standing = fixture.standing(facts.clone());
+        let asks = fill_view_with_open_asks(&standing);
+        let before = standing.read().unwrap();
+        let cursor = facts.situation().unwrap().as_of_seq;
+        let mut after = before.next(42, 43).unwrap();
+        let request = answer(&asks[0]);
+        after.asks[0].answer = Some(Answer {
+            revision: 43,
+            question_revision: request.question_revision,
+            choice: request.choice,
+            at: 43,
+            source: request.source,
+            said: request.said,
+        });
+        let closed = after.asks[0].clone();
+        let fact = Fact::StandingChanged(after.difference(&before, None).unwrap());
+        after.bounded().unwrap();
+        assert!(!after.asks.iter().any(|ask| ask.id == closed.id));
+        // Persist the real reserved/prepared boundary, then interrupt before publication.
+        let interrupted = facts.append_prepared(
+            Checkpoint {
+                source: "standing".into(),
+                revision: 43,
+            },
+            43,
+            fact.clone(),
+            |event| {
+                let pending = Pending {
+                    after: after.clone(),
+                    observation: serde_json::from_slice(&event.to_json().unwrap()).unwrap(),
+                    trimmed_answer: Some(Box::new(closed.clone())),
+                };
+                let document = Document {
+                    version: 1,
+                    current: before.clone(),
+                    pending: Some(pending),
+                };
+                standing.root.atomic(FILE, &document.bytes()?)?;
+                Err("interrupted after preparing the owner answer".into())
+            },
+        );
+        assert!(interrupted.is_err());
+        assert_eq!(facts.situation().unwrap().as_of_seq, cursor);
+        if phase == "fact_committed" {
+            facts
+                .append_prepared(
+                    Checkpoint {
+                        source: "standing".into(),
+                        revision: 43,
+                    },
+                    43,
+                    fact,
+                    |_| Ok(()),
+                )
+                .unwrap();
+        }
+        let valid_pending = standing.root.read(FILE, MAX_FILE).unwrap();
+        if matches!(phase, "missing" | "changed" | "wrong_revision") {
+            let mut document: Document = serde_json::from_slice(&valid_pending).unwrap();
+            let pending = document.pending.as_mut().unwrap();
+            match phase {
+                "missing" => pending.trimmed_answer = None,
+                "changed" => pending.trimmed_answer.as_mut().unwrap().question = "different question".into(),
+                "wrong_revision" => {
+                    pending
+                        .trimmed_answer
+                        .as_mut()
+                        .unwrap()
+                        .answer
+                        .as_mut()
+                        .unwrap()
+                        .revision += 1
+                }
+                _ => unreachable!(),
+            }
+            standing.root.atomic(FILE, &document.bytes().unwrap()).unwrap();
+            assert!(Standing::open(&fixture.0.join("standing"), facts.clone()).is_err());
+            assert!(matches!(
+                standing.with_guard(Action::Update, subject(), |_| Ok(())),
+                Err(GuardError::Storage(_))
+            ));
+            assert_eq!(facts.situation().unwrap().as_of_seq, cursor);
+            standing.root.atomic(FILE, &valid_pending).unwrap();
+        }
+        let reopened = Standing::open(&fixture.0.join("standing"), facts.clone()).unwrap();
+        let (read, situation) = reopened.read_facts().unwrap();
+        assert_eq!((read.revision, situation.standing_revision), (43, 43));
+        assert_eq!((read.open_asks().count(), situation.asks.len()), (39, 39));
+        assert_eq!(facts.events_after(cursor, 64).unwrap().events.len(), 1);
+        assert!(reopened.is_held(480).unwrap().is_some());
+        assert_eq!(reopened.read().unwrap().revision, 43);
+        assert_eq!(facts.events_after(cursor, 64).unwrap().events.len(), 1);
+        reopened
+            .answer(43, Authority::Owner, 44, answer(&asks[1]))
+            .unwrap();
+        assert_eq!(reopened.read().unwrap().open_asks().count(), 38);
+    }
 }
 
 #[test]
@@ -729,6 +843,7 @@ fn recovery_syncs_the_prepared_policy_before_committing_its_fact() {
         pending: Some(Pending {
             after,
             observation: serde_json::from_slice(&event.to_json().unwrap()).unwrap(),
+            trimmed_answer: None,
         }),
     };
     standing.root.atomic(FILE, &document.bytes().unwrap()).unwrap();

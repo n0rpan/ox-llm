@@ -20,6 +20,12 @@ excludes answered questions. Active rules and unanswered asks share a 128-item l
 16 terminal records are retained; they may shrink to fit the 256 KiB read view. Pending
 metadata is capped at 1 MiB. Active data is never dropped to make room.
 
+An owner can close a question even when its answer would exceed the view's byte budget.
+The close observation is captured before answered history is trimmed. If that new answer
+is immediately trimmed, pending metadata retains that one exact answered question until
+the fact commits. Recovery validates its original question and answer revision; absent or
+changed evidence cannot turn a missing unanswered question into a silent close.
+
 Every mutation supplies the document revision it read. A stale revision refuses without
 changing the store. A live collision of kind/scope requires its exact `supersedes` ID.
 IDs are derived from the checked revision, not from model text or time.
