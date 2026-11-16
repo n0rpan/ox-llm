@@ -124,43 +124,39 @@ fn m1_long_prefill_persists_progress_every_n_tokens() {
     let _ = std::fs::remove_dir_all(&dir2);
 }
 
-/// #585: the progress interval grows with the prefill (a quarter of the position already
-/// reached, never below `persist_every`), so a long cold prefill writes a handful of head
-/// snapshots, not one per `persist_every` tokens; the resume point stays within a fraction of
-/// the work done.
+/// #609: reducing progress-write volume must not increase the configured crash-loss window.
+/// Exercise both the default at >64K tokens and a smaller explicit interval, then restart
+/// without a post-reply/shutdown write to check the actual durable resume point.
 #[test]
-fn m1_progress_interval_grows_with_the_prefill_position() {
-    use crate::generate::progress_interval;
-    assert_eq!(progress_interval(4096, 0), 4096);
-    assert_eq!(progress_interval(4096, 8192), 4096);
-    assert_eq!(progress_interval(4096, 65536), 16384);
-    assert_eq!(progress_interval(0, 65536), 0, "0 stays off");
-    let dir = tmp("p2b-m1-grow");
-    let mut w = worker(&dir);
-    w.persist_every = 256;
-    let prompt = toks(12000, 3);
-    gen(&mut w, &prompt, &params("g"));
-    let written = w.states.as_ref().unwrap().stats.snaps_written;
-    // a fixed grid would write 12000 / 256 = 46 head snapshots
-    assert!(
-        (3..=22).contains(&written),
-        "head snapshots written during a 12000-token prefill: {written}"
-    );
-    let m = w
-        .states
-        .as_ref()
-        .unwrap()
-        .manifests
-        .values()
-        .next()
-        .unwrap();
-    let head = m.snaps.iter().map(|x| x.pos).max().unwrap();
-    assert!(
-        prompt.len() - head <= prompt.len() / 4 + 256,
-        "the last progress head at {head} of {}",
-        prompt.len()
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+fn m1_long_prefill_keeps_configured_cadence_and_resume_bound() {
+    for (every, n) in [(4096, 70000), (256, 12000)] {
+        let dir = tmp("p2b-m1-cadence");
+        let mut w = worker(&dir);
+        assert_eq!(w.persist_every, 4096, "the default stays unchanged");
+        w.persist_every = every;
+        w.engine.n_ctx = 1 << 17;
+        let prompt = toks(n, 3);
+        gen(&mut w, &prompt, &params("g"));
+        let s = w.states.as_ref().unwrap();
+        let head = s.manifests.values().next().unwrap().n_tokens;
+        let expected = (prompt.len() - 1) / every * every;
+        assert_eq!(head, expected, "last progress head with interval {every}");
+        assert_eq!(
+            s.stats.snaps_written as usize,
+            expected / every,
+            "one durable head per configured interval"
+        );
+        drop(w);
+        // A fresh worker must actually load this head, not merely report a manifest position.
+        let mut restarted = worker(&dir);
+        restarted.engine.n_ctx = 1 << 17;
+        let r = gen(&mut restarted, &prompt, &params("g"));
+        assert_eq!(r.timings.resume_src, "disk");
+        assert_eq!(r.timings.cache_n, head);
+        assert!(prompt.len() - r.timings.cache_n <= every);
+        assert_eq!(restarted.engine.tokens[..head], prompt[..head]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// M2: the shutdown write is incremental (only blocks not on disk + the head), bounded by a
