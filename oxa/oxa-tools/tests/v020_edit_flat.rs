@@ -53,6 +53,7 @@ fn run_tool(cwd: &Path, args: &Value) -> ToolOutput {
         cancel: &cancel,
         env: &env,
         tune: Default::default(),
+        hidden: None,
     };
     EditTool::new().run(args, &cx, &mut |_: &str| {})
 }

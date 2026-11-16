@@ -172,4 +172,9 @@ pub trait Policy: Send {
     fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision;
     /// Record an [`Answer::Session`] grant for `a`. Grants never outlive the session.
     fn remember(&mut self, a: &Access);
+    /// #517: the deny-list for the entries a tool finds by walking an allowed directory
+    /// ([`crate::ToolCtx::hidden`]). `None` (the default) = the policy hides nothing.
+    fn path_filter(&self) -> Option<std::sync::Arc<dyn crate::PathFilter>> {
+        None
+    }
 }

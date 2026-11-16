@@ -602,6 +602,7 @@ echo '\''a'\'''"#
             cancel,
             env: &env,
             tune: Default::default(),
+            hidden: None,
         };
         let mut streamed = String::new();
         let out = BashTool::new().run(&args, &cx, &mut |t| streamed.push_str(t));
@@ -877,6 +878,7 @@ echo '\''a'\'''"#
             cancel: &cancel,
             env: &[],
             tune: Default::default(),
+            hidden: None,
         };
         let got = BashTool::new().access(&json!({"command": "ls", "timeout": 0}), &cx);
         assert_eq!(got, Err(errors::BASH_BAD_TIMEOUT.to_string()));
@@ -895,6 +897,7 @@ echo '\''a'\'''"#
             cancel: &cancel,
             env: &[],
             tune: Default::default(),
+            hidden: None,
         };
         let got = BashTool::new()
             .access(&json!({"command": "cargo test"}), &cx)
@@ -940,6 +943,7 @@ echo '\''a'\'''"#
             cancel: &cancel,
             env: &env,
             tune,
+            hidden: None,
         };
         BashTool::new().run(&args, &cx, &mut |_| {})
     }
@@ -1055,6 +1059,7 @@ echo '\''a'\'''"#
             cancel: &cancel,
             env: &env,
             tune: Default::default(),
+            hidden: None,
         };
         tool.run(&args, &cx, &mut |_| {})
     }
@@ -1242,6 +1247,7 @@ mod poll_tests {
             cancel: &cancel,
             env: &env,
             tune: Default::default(),
+            hidden: None,
         };
         tool.run(&args, &cx, &mut |_| {})
     }
