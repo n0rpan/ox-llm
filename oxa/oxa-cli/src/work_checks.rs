@@ -250,7 +250,7 @@ fn inspect_committed(sandbox: &Bwrap, root: &Path, index: &Path) -> Result<i32, 
     ]);
     let result = sandbox.run_streaming(
         &ExecSpec {
-            command: "git --no-replace-objects --no-optional-locks -c core.fsmonitor=false -c core.ignoreStat=false -c core.filemode=true -c core.symlinks=true -c core.sparseCheckout=false -c index.sparse=false diff-files --quiet --no-ext-diff --no-textconv --ignore-submodules=none --".into(),
+            command: "test -r \"$GIT_INDEX_FILE\" || exit 2\ngit --no-replace-objects --no-optional-locks -c core.fsmonitor=false -c core.ignoreStat=false -c core.trustctime=true -c core.checkStat=default -c core.filemode=true -c core.symlinks=true -c core.sparseCheckout=false -c index.sparse=false diff --quiet --no-ext-diff --no-textconv --ignore-submodules=none --".into(),
             cwd: root.into(),
             writable: false,
             net: false,

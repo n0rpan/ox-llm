@@ -136,7 +136,7 @@ fn checks_cannot_change_the_runners_committed_inspection_index() {
     fs::write(project.join("payload.txt"), "approved\n").unwrap();
     fs::write(
         project.join("check.sh"),
-        "#!/bin/sh\nif ! git symbolic-ref -q HEAD >/dev/null; then\n  test -r ../.committed-index || exit 1\n  if GIT_INDEX_FILE=../.committed-index git update-index --assume-unchanged payload.txt; then exit 1; fi\nfi\n",
+        "#!/bin/sh\nif ! git symbolic-ref -q HEAD >/dev/null; then\n  test -r ../.committed-index || exit 1\n  if GIT_INDEX_FILE=../.committed-index git update-index --assume-unchanged payload.txt; then exit 1; fi\n  touch payload.txt\nfi\n",
     )
     .unwrap();
     git(&env, &project, &["add", "."]);

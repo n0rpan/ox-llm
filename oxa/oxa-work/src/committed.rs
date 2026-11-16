@@ -128,6 +128,11 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     );
     prepare_index.env("GIT_INDEX_FILE", &index);
     checked(prepare_index)?;
+    // read-tree alone has zeroed stat entries: diff-files would report even
+    // untouched files as changed. Refresh before the index becomes read-only.
+    let mut refresh_index = private_git(policy, &export.tree, &["update-index", "--refresh"]);
+    refresh_index.env("GIT_INDEX_FILE", &index);
+    checked(refresh_index)?;
     let failed = acceptance_result(supervise(
         binary,
         &export.tree,
