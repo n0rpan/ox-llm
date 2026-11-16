@@ -168,7 +168,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
-| `oxa.cloud` | object | `{}` | native cloud models, prices and daily USD cap; user settings only; see below |
+| `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
@@ -182,7 +182,8 @@ gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
-Configure Anthropic routes under `oxa.cloud.models`, keyed by the model name used
+Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes
+under `oxa.cloud.models`, keyed by the model name used
 with `--model`. Supply the upstream model, context/output limits and current
 provider prices. This example uses an illustrative model and prices:
 
@@ -218,6 +219,28 @@ Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing model
 reads neither the key nor the ledger and contacts no provider. A missing price or
 daily budget refuses a request before credentials or provider I/O. Requests retain
 their budget reservation until the private row is durable.
+
+An `openai` route uses the same model/price fields, reads the `openai` key from
+that key file, and defaults to `https://api.openai.com/v1`. Both native providers
+preserve tool argument strings, including arguments supplied only by final
+provider events. Completed native replay is authenticated to the provider,
+model, account and exact visible history. It is stored only in private session
+records, omitted from public output, and dropped when compaction changes context.
+An invalid saved binding refuses the request before provider I/O.
+
+A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
+existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
+other applications' credentials or start a sign-in. Configure the user-only
+`oxa.cloud.subscription` object with positive `daily_requests` and `daily_tokens`
+and the approved public refresh `client_id`. The refresh endpoint defaults to
+`https://auth.openai.com/oauth/token`; `refresh_timeout_ms` defaults to 15000,
+with the client's 30-second maximum. These settings contain no access or refresh
+token. Tests use explicit synthetic identifiers and loopback endpoints.
+
+Subscription calls require their own positive request/token caps, retain actual
+token usage and settle zero USD. Unknown paid work retains its full token bound;
+the cap includes concurrent and crashed-process reservations. It never falls back
+to a paid API balance. Missing metered pricing still refuses metered requests.
 
 ### Other
 

@@ -26,14 +26,37 @@ fn normalize(error: Error) -> OxaError {
     if refusal.status == 499 && refusal.code == "request_cancelled" {
         return OxaError::new(codes::ABORTED, "request cancelled");
     }
+    if matches!(
+        refusal.code,
+        "cloud_upstream_stream_broken" | "cloud_upstream_history_invalid" | "cloud_upstream_too_large"
+    ) {
+        return OxaError::new(
+            codes::STREAM_BROKEN,
+            format!(
+                "{}HTTP {} {}: {}",
+                oxa_proto::CUT_BY_REFUSAL,
+                refusal.status,
+                refusal.code,
+                refusal.message
+            ),
+        );
+    }
     if refusal.code == "subscription_limit_exceeded" {
         return OxaError::new(codes::BUDGET_EXHAUSTED,
             "HTTP 429 subscription_limit_exceeded: the daily subscription request or token cap would be exceeded.")
             .with_hint("adjust the positive subscription caps in oxa user settings, or wait for the next spend day; this is not retried");
     }
-    if matches!(refusal.code,"cloud_out_of_credit" | "subscription_usage_limit_reached" | "subscription_usage_not_included") {
-        return OxaError::new(refusal.code,format!("HTTP {} {}: {}",refusal.status,refusal.code,refusal.message))
-            .with_hint("check the provider allowance; changing provider or using a paid balance requires your choice");
+    if matches!(
+        refusal.code,
+        "cloud_out_of_credit" | "subscription_usage_limit_reached" | "subscription_usage_not_included"
+    ) {
+        return OxaError::new(
+            refusal.code,
+            format!("HTTP {} {}: {}", refusal.status, refusal.code, refusal.message),
+        )
+        .with_hint(
+            "check the provider allowance; changing provider or using a paid balance requires your choice",
+        );
     }
     if refusal.code == "budget_not_configured" {
         refusal.message = "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.";

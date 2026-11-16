@@ -123,7 +123,7 @@ impl Runtime {
     ) -> Result<Self, Refusal> {
         if let Some(config) = &options.subscription {
             if config.client_id.is_empty()
-                || config.client_id.len() > 1024
+                || config.client_id.len() > 128
                 || config.client_id.chars().any(char::is_control)
                 || config.timeout.is_zero()
                 || std::time::Instant::now().checked_add(config.timeout).is_none()

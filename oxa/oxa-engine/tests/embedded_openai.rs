@@ -261,3 +261,51 @@ fn terminal_tool_delivery_cancellation_settles_private_usage_in_both_modes() {
         }
     }
 }
+
+#[test]
+fn unsafe_native_identity_is_permanent_and_settles_known_usage_without_tool_delivery() {
+    for subscription in [false, true] {
+        let secret = if subscription {
+            "synthetic-access"
+        } else {
+            anthropic::CREDENTIAL
+        };
+        let reply = mock::Reply::events(vec![json!({"type":"response.completed","response":{
+            "status":"completed","output":[{"type":"function_call","id":"fc_refused",
+                "call_id":"call_refused","name":format!("read{secret}"),"arguments":"{}","status":"completed"}],
+            "usage":{"input_tokens":12,"output_tokens":9,"total_tokens":21}}})]);
+        let peer = mock::MockOpenAi::start(vec![reply]);
+        let fixture = skeleton::Fixture::for_endpoint(&peer.base_url());
+        install(&fixture, subscription);
+        let engine = engine(&fixture, &peer.base_url(), subscription);
+        let prefix = prefix();
+        let messages = [WireMsg::user("Synthetic task")];
+        let mut tools = 0;
+        let error = engine
+            .chat(
+                &ChatRequest::new(&prefix, &messages, skeleton::MODEL),
+                &CancelToken::new(),
+                &mut |event| {
+                    if matches!(event, StreamEvent::ToolArgs { .. }) {
+                        tools += 1;
+                    }
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error.code, codes::STREAM_BROKEN);
+        assert!(error.message.starts_with(oxa_proto::CUT_BY_REFUSAL));
+        assert!(!error.message.contains(secret));
+        assert_eq!(tools, 0);
+        let row = rows(&fixture).pop().unwrap();
+        assert_eq!(row["status"], 502);
+        assert_eq!(row["error"], "cloud_upstream_stream_broken");
+        assert_eq!(row["settled"], "usage");
+        if subscription {
+            assert_eq!(row["cost_usd"], 0.0);
+            assert_eq!(row["subscription_tokens"], 21);
+        } else {
+            assert_eq!(row["cost_usd"], json!(0.000051));
+        }
+        assert_eq!(peer.requests().len(), 1);
+    }
+}

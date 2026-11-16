@@ -140,12 +140,18 @@ unknown paid work. Trusted terminal cache usage settles even if public usage is
 omitted or final delivery cancels. Unknown paid cancellations retain the full
 reserved charge. Done follows a successful append; later cancellation cannot
 retract an already settled reply. Failed appends block subsequent admissions.
-Opaque thinking replay is bounded and scoped to history, tools, model, endpoint
-and credential; it never appears in public chunks or ledger diagnostics.
+Opaque replay is bounded per assistant turn and authenticated to exact visible
+history, tools, model, endpoint and account. The actual assembled message receives
+its binding after settlement, sharing the provider output allocation. Private
+session records retain it across process restarts; a changed binding is refused
+before forwarding. Authorized context changes drop carriers rather than re-sign
+them. There is no process-global conversation cache. Native items never appear in
+public chunks or ledger diagnostics.
 
 The optional `oxa-engine/in-process-gateway` bridge delivers callbacks on the
 calling thread. Construction/discovery starts no worker. The first chat lazily
 creates one parked I/O worker for pooled connections and concurrent calls.
 Shared `CancelToken` notifications wake network waits directly, with no timer
-or relay token. Async consumers use `Gateway::chat` directly. Production setting
-and factory selection are the subsequent default-off S7 slice.
+or relay token. Async consumers use `Gateway::chat` directly. The user-only
+`oxa.engine.inProcessCloud` selector is default off. Its factory accepts Anthropic,
+OpenAI Responses API and explicit ChatGPT subscription routes.

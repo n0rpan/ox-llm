@@ -97,11 +97,14 @@ impl Gateway {
         Self::with_read_timeout(runtime, Some(Duration::from_secs(1800)))
     }
     pub fn with_read_timeout(runtime: Runtime, timeout: Option<Duration>) -> Result<Self, Error> {
+        let client = Client::with_read_timeout(timeout).map_err(Error::Upstream)?;
+        #[cfg(feature = "upstream-openai")]
+        let openai = crate::openai::client::Client::from_messages_transport(&client);
         Ok(Self {
             runtime,
-            client: Client::with_read_timeout(timeout).map_err(Error::Upstream)?,
+            client,
             #[cfg(feature = "upstream-openai")]
-            openai: crate::openai::client::Client::new().map_err(Error::OpenAi)?,
+            openai,
         })
     }
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
@@ -264,6 +267,11 @@ impl Gateway {
                         usage_final: true,
                         elapsed: Duration::ZERO,
                     }
+                } else if usage_final {
+                    // A locally refused complete reply (for example unsafe
+                    // private replay) still has trusted provider usage. Charge
+                    // those facts without granting reply/replay authority.
+                    Outcome::Complete
                 } else if completion::clean_refusal(error) {
                     Outcome::Refused
                 } else {
