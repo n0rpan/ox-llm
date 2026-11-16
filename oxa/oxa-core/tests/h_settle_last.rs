@@ -47,6 +47,7 @@ struct Probe {
     events: Vec<AgentEvent>,
     busy_at_settle: Vec<bool>,
     abort_on_start: bool,
+    wrap_on_overrun: Option<oxa_core::WrapUpReason>,
 }
 
 impl Probe {
@@ -56,6 +57,7 @@ impl Probe {
             events: Vec::new(),
             busy_at_settle: Vec::new(),
             abort_on_start: false,
+            wrap_on_overrun: None,
         }
     }
 
@@ -82,6 +84,11 @@ impl EventSink for Probe {
         match e {
             AgentEvent::AgentSettled { .. } => self.busy_at_settle.push(self.handle.is_busy()),
             AgentEvent::AgentStart if self.abort_on_start => self.handle.abort(),
+            AgentEvent::Notice { text, .. } if text == oxa_core::OVERRUN_NOTICE => {
+                if let Some(reason) = self.wrap_on_overrun.take() {
+                    self.handle.request_wrap_up(reason);
+                }
+            }
             _ => {}
         }
         self.events.push(e.clone());
@@ -319,15 +326,20 @@ fn wrap_up_requested_inside_before_settle_gets_a_final_turn() {
 
 #[test]
 fn wrap_up_replaces_the_normal_thinking_fallback_with_a_final_attempt() {
-    check_thinking_overrun_wrap_up(1);
+    check_thinking_overrun_wrap_up(1, false);
 }
 
 #[test]
 fn wrap_up_after_an_exhausted_thinking_fallback_gets_a_final_attempt() {
-    check_thinking_overrun_wrap_up(2);
+    check_thinking_overrun_wrap_up(2, false);
 }
 
-fn check_thinking_overrun_wrap_up(stop_request: usize) {
+#[test]
+fn wrap_up_from_the_thinking_fallback_notice_gets_a_final_attempt() {
+    check_thinking_overrun_wrap_up(1, true);
+}
+
+fn check_thinking_overrun_wrap_up(stop_request: usize, from_notice: bool) {
     use oxa_core::{RunOutcome, WrapUpReason};
     for reason in [WrapUpReason::TimeLimit, WrapUpReason::Signal] {
         for final_fails in [false, true] {
@@ -358,9 +370,13 @@ fn check_thinking_overrun_wrap_up(stop_request: usize) {
                 serde_json::json!({}),
             );
             let mut s = Session::open(d, Open::New).unwrap();
-            *hook.wrap.lock().unwrap() = Some((s.handle(), reason, HookPoint::AfterProviderResponse));
-            *hook.wrap_skip.lock().unwrap() = stop_request - 1;
             let mut probe = Probe::new(s.handle());
+            if from_notice {
+                probe.wrap_on_overrun = Some(reason);
+            } else {
+                *hook.wrap.lock().unwrap() = Some((s.handle(), reason, HookPoint::AfterProviderResponse));
+                *hook.wrap_skip.lock().unwrap() = stop_request - 1;
+            }
             s.prompt("go".into(), vec![], &mut probe, &mut HeadlessUi::default())
                 .unwrap();
 
