@@ -697,6 +697,13 @@ fn parse_items(v: Option<&Value>) -> Vec<Item> {
         .unwrap_or_default()
 }
 
+/// The directory a child starts in: the task's `cwd` (relative to the session's, or absolute)
+/// in the same normalised form `access` hands to the permission layer, so what is allowed is
+/// what runs.
+fn child_cwd(session_cwd: &Path, c: &str) -> PathBuf {
+    oxa_perm::normalize(Path::new(c), session_cwd)
+}
+
 fn available_list(agents: &[AgentDef]) -> String {
     let list: Vec<String> = agents
         .iter()
@@ -715,11 +722,31 @@ impl Tool for SubagentTool {
     }
     /// One child process per task, sandboxed like the session itself: `Exec`, so plan mode
     /// refuses it and the loop runs it serially (never in a parallel read batch).
-    fn access(&self, _args: &Value, _cx: &ToolCtx) -> Result<Vec<Access>, String> {
-        Ok(vec![Access::Exec {
+    ///
+    /// #509: the model chooses each child's `cwd`, and the child's sandbox and project trust
+    /// follow it. A `cwd` that leaves the session's directory is also a `Write` of that
+    /// directory, so the permission layer decides (ask, grant, deny-list); one inside it adds
+    /// nothing.
+    fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
+        let mut out = vec![Access::Exec {
             command: TOOL_NAME.to_string(),
             net: false,
-        }])
+        }];
+        let mut cwds: Vec<&str> = Vec::new();
+        for key in ["chain", "tasks"] {
+            if let Some(items) = args.get(key).and_then(Value::as_array) {
+                cwds.extend(items.iter().filter_map(|x| x.get("cwd").and_then(Value::as_str)));
+            }
+        }
+        cwds.extend(args.get("cwd").and_then(Value::as_str));
+        for c in cwds {
+            let dir = child_cwd(cx.cwd, c);
+            let w = Access::Write(dir.clone());
+            if !oxa_perm::is_inside(&dir, cx.cwd) && !out.contains(&w) {
+                out.push(w);
+            }
+        }
+        Ok(out)
     }
     fn run(&self, args: &Value, cx: &ToolCtx, live: &mut dyn FnMut(&str)) -> ToolOutput {
         let mut ui = oxa_proto::HeadlessUi::default();
@@ -1234,7 +1261,7 @@ impl Run<'_, '_> {
             (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
         ];
         let cwd = match &item.cwd {
-            Some(c) => self.cx.cwd.join(c),
+            Some(c) => child_cwd(self.cx.cwd, c),
             None => self.cx.cwd.to_path_buf(),
         };
         Ok(Prepared {

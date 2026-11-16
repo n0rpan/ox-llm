@@ -1226,3 +1226,93 @@ fn cap_counts_running_and_queued_children_across_calls() {
         o.out.text
     );
 }
+
+// ---------------------------------------------------------------- #509: the child's cwd
+
+fn access_of(env: &TestEnv, h: &SubagentHooks, args: Value) -> Vec<oxa_proto::Access> {
+    let t = tool(h);
+    let sandbox = oxa_sandbox::NoSandbox;
+    let spill = env.tmp().join("spill");
+    let work = env.work();
+    let cancel = CancelToken::new();
+    let cx = ToolCtx {
+        cwd: &work,
+        spill_dir: &spill,
+        sandbox: &sandbox,
+        mode: Mode::Workspace,
+        cancel: &cancel,
+        env: &[],
+        tune: Default::default(),
+    };
+    t.access(&args, &cx).expect("access")
+}
+
+#[test]
+fn a_child_cwd_outside_the_session_is_a_write_access_for_the_permission_layer() {
+    use oxa_proto::Access;
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let exec = Access::Exec {
+        command: "subagent".to_string(),
+        net: false,
+    };
+    let work = env.work();
+    std::fs::create_dir_all(work.join("sub")).unwrap();
+    let outside = env.root().join("other-repo");
+
+    // Normal work: no cwd, or one inside the project: no extra access, no extra prompt.
+    for args in [
+        json!({"agent": "scout", "task": "x"}),
+        json!({"agent": "scout", "task": "x", "cwd": "sub"}),
+        json!({"agent": "scout", "task": "x", "cwd": "sub/../sub"}),
+    ] {
+        assert_eq!(access_of(&env, &h, args), vec![exec.clone()]);
+    }
+
+    // `..` and an absolute path both leave the project: the target is reported as a write.
+    let rel = access_of(
+        &env,
+        &h,
+        json!({"agent": "scout", "task": "x", "cwd": "../other-repo"}),
+    );
+    assert_eq!(rel, vec![exec.clone(), Access::Write(outside.clone())]);
+    let abs = access_of(
+        &env,
+        &h,
+        json!({"agent": "scout", "task": "x", "cwd": outside.to_str().unwrap()}),
+    );
+    assert_eq!(abs, vec![exec.clone(), Access::Write(outside.clone())]);
+
+    // Every task of a parallel call and every step of a chain is checked.
+    let par = access_of(
+        &env,
+        &h,
+        json!({"tasks": [
+            {"agent": "scout", "task": "a", "cwd": "sub"},
+            {"agent": "scout", "task": "b", "cwd": "../other-repo"},
+        ]}),
+    );
+    assert_eq!(par, vec![exec.clone(), Access::Write(outside.clone())]);
+    let chain = access_of(
+        &env,
+        &h,
+        json!({"chain": [{"agent": "scout", "task": "a", "cwd": "../other-repo"}]}),
+    );
+    assert_eq!(chain, vec![exec, Access::Write(outside)]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_child_cwd_symlink_out_of_the_session_is_a_write_access() {
+    use oxa_proto::Access;
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let target = env.root().join("elsewhere");
+    std::fs::create_dir_all(&target).unwrap();
+    std::os::unix::fs::symlink(&target, env.work().join("link")).unwrap();
+    let a = access_of(&env, &h, json!({"agent": "scout", "task": "x", "cwd": "link"}));
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert!(matches!(&a[1], Access::Write(_)), "{a:?}");
+}
