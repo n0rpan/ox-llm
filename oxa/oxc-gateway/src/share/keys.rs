@@ -274,10 +274,10 @@ impl Store {
         let Some(record) = records.iter_mut().find(|r| r.info.id == id) else {
             return Ok(false);
         };
-        if !record.info.revoked {
-            record.info.revoked = true;
-            self.write(&records)?;
-        }
+        // A prior rename may be visible despite its directory sync failing.
+        // Retry the durable write even when the visible row is already revoked.
+        record.info.revoked = true;
+        self.write(&records)?;
         Ok(true)
     }
 
@@ -309,10 +309,19 @@ fn check_directory(file: &File) -> Result<(), Error> {
     Ok(())
 }
 fn refuse_repository(directory: &File) -> Result<(), Error> {
-    match fstatat(directory, ".git", AtFlags::AT_SYMLINK_NOFOLLOW) {
-        Err(Errno::ENOENT) => Ok(()),
-        _ => Err(Error::Unsafe),
+    let present = |name: &str| match fstatat(directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(_) => Ok(true),
+        Err(Errno::ENOENT) => Ok(false),
+        Err(_) => Err(Error::Unsafe),
+    };
+    // Separate/bare common directories have no .git child. Linked-worktree
+    // metadata uses HEAD + commondir/gitdir instead of its own objects directory.
+    if present(".git")?
+        || (present("HEAD")? && (present("objects")? || present("commondir")? || present("gitdir")?))
+    {
+        return Err(Error::Unsafe);
     }
+    Ok(())
 }
 fn check_file(file: &File) -> Result<(), Error> {
     let m = file.metadata().map_err(|_| Error::Unavailable)?;
