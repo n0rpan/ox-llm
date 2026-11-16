@@ -24,6 +24,7 @@ mod dispatch;
 mod home_cwd;
 mod hooks;
 mod identity_cmd;
+mod in_process;
 mod limits;
 mod mcp_cmd;
 mod netguard;
