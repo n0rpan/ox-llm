@@ -330,12 +330,6 @@ impl Layout {
             // #362: `gh run view` creates its cache under the read-only home. Throwaway /tmp,
             // so nothing persists in the real home for an unsandboxed `gh` to read back.
             ("GH_CACHE_DIR", "/tmp/gh-cache"),
-            // #298 / #267 / #255: gh deliberately prints only comments when stdout is
-            // redirected, losing the issue body (or all output when there are no comments).
-            // Keep its full view without making stdin interactive or starting a pager.
-            ("GH_FORCE_TTY", "80"),
-            ("GH_PAGER", "cat"),
-            ("NO_COLOR", "1"),
         ] {
             if !env.iter().any(|(n, _)| n == k) {
                 env.push((k.to_string(), v.to_string()));
