@@ -492,6 +492,7 @@ pub(crate) fn prompt_tokens(st: &SessionState, wire: &[WireMsg]) -> (u32, Counte
         snapshot_keep: false,
     };
     let req = oxa_proto::ChatRequest {
+        output_schema: None,
         prefix: &st.prefix,
         messages: wire,
         model: &st.model,

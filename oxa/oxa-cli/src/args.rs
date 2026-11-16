@@ -48,6 +48,8 @@ pub struct Args {
     pub files: Vec<String>,
     /// `-p`, `--print`.
     pub print: bool,
+    /// `--output-schema FILE`: validate final text as JSON, with one repair turn.
+    pub output_schema: Option<String>,
     /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
     /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
@@ -219,6 +221,7 @@ const OPTIONS: &[(&str, &str)] = &[
         "Thinking level: off, minimal, low, medium, high, xhigh, max",
     ),
     ("--mode <mode>", "Output mode: text (default), json, or rpc"),
+    ("--output-schema <file>", "Check final JSON against a schema; retry once on mismatch"),
     (
         "--print, -p",
         "Non-interactive mode: process the prompts and exit",
@@ -536,6 +539,7 @@ fn parse_flag(
             no_value(inline, flag)?;
             a.print = true;
         }
+        "--output-schema" => a.output_schema = Some(value(argv, i, inline, flag, "a file")?),
         "--mode" => {
             let v = value(argv, i, inline, flag, "text, json, or rpc")?;
             a.mode = Some(match v.as_str() {

@@ -54,6 +54,14 @@ For a top-level run, this is a graceful limit: an active tool or model request f
 
 If a local model spends its output budget on thinking without an answer, oxa retries once with thinking off. If that fallback still reaches the output limit without text or tool calls, the run fails with `error_class: "thinking_overrun"` and exit 1 in print, JSON and RPC modes. No further generation is attempted; the terminal result distinguishes this from a broken transport or an empty successful answer.
 
+## Schema-checked answers
+
+Use `oxa -p --output-schema schema.json "your task"` to require a JSON final answer. The file is read relative to the working directory before the session starts. Supported schema keywords are `type` (`object`, `array`, `string`, `number`), `properties`, `items`, `enum` and `required`, including nested schemas. Unsupported keywords and malformed schemas are rejected rather than silently ignored; external references are never fetched.
+
+The contract is supplied as a turn message, not a system/worker prefix change. Tools work normally. If the final text is not valid JSON matching the schema, oxa appends one repair instruction and tries again. A second mismatch fails with exit 1 and `error_class: "schema_mismatch"`; print mode emits no final answer on failure. JSON mode still streams all attempt events. The repair budget resets for each user prompt. Without the flag, no schema instructions or validation are added.
+
+Validation always happens in oxa. Only cloud models explicitly advertising the `response_format` capability also receive an upstream JSON Schema `response_format`; it is never sent to the local engine. This option is process-local, is not saved as a setting, and is not inherited by workers.
+
 ## Commands
 
 Commands take the place of the message. They do not start a session.

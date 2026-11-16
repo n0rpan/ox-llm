@@ -247,6 +247,7 @@ impl Session {
             mode,
         };
         let mut st = SessionState {
+            output_schema: None,
             engine,
             store,
             hooks,
@@ -705,6 +706,11 @@ impl Session {
 
     pub fn stats(&self) -> Stats {
         self.st.stats
+    }
+
+    /// Set an opt-in, process-local final answer contract without changing the prefix.
+    pub fn set_output_schema(&mut self, schema: Option<crate::output_schema::OutputSchema>) {
+        self.st.output_schema = schema;
     }
 
     pub fn commands(&self) -> Vec<CommandSpec> {

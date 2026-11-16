@@ -414,6 +414,7 @@ fn open_named(
     name: Option<&str>,
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
+    session.set_output_schema(built.output_schema.clone());
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
@@ -424,6 +425,7 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    output_schema: Option<oxa_core::output_schema::OutputSchema>,
     engine: Arc<dyn Engine>,
     store: Arc<dyn SessionStore>,
     sandbox: Arc<dyn Sandbox>,
@@ -536,6 +538,18 @@ fn prepare(
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<Prep, OxaError> {
+    let output_schema = a
+        .output_schema
+        .as_ref()
+        .map(|file| {
+            let path = cwd.join(file);
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
+            let value = serde_json::from_str(&text)
+                .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
+            oxa_core::output_schema::OutputSchema::new(value)
+        })
+        .transpose()?;
     let mut notices: Vec<(Level, String)> = Vec::new();
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
@@ -904,6 +918,7 @@ fn prepare(
         default_edits: settings.default_tools_edits(),
     };
     let built = Built {
+        output_schema,
         engine,
         store,
         sandbox,
@@ -1270,7 +1285,9 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
         };
-        Session::open(deps, how)
+        let mut session = Session::open(deps, how)?;
+        session.set_output_schema(base.output_schema.clone());
+        Ok(session)
     });
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
@@ -1981,6 +1998,7 @@ mod session_scratch_tests {
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
         let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
+            output_schema: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             store: Arc::new(MemStore::new()),
             sandbox: base.clone(),

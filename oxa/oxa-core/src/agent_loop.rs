@@ -92,6 +92,7 @@ fn run_inner(
     opening: &[EventMessage],
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
+    let mut schema_repaired = false;
     let mut done = crate::done::DoneState::default();
     done.begin(st);
     let mut wrapping_up = false;
@@ -162,7 +163,20 @@ fn run_inner(
             thinking: wrapping_up.then_some(false),
             background: false,
             snapshot_keep: false,
-            extra: Vec::new(),
+            // The contract (including repair feedback) belongs to this run, not the
+            // persisted conversation. Repeat it for tool/continuation requests too.
+            extra: st
+                .output_schema
+                .as_ref()
+                .map(|schema| {
+                    let instruction = if schema_repaired {
+                        "Your final answer did not match the output schema. Return only valid JSON matching this schema:"
+                    } else {
+                        "Your final answer must be JSON matching this schema:"
+                    };
+                    vec![WireMsg::user(format!("{instruction}\n{}", schema.value()))]
+                })
+                .unwrap_or_default(),
             events: true,
             idem_key: String::new(),
         };
@@ -624,6 +638,9 @@ fn run_inner(
             continue;
         }
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            continue;
+        }
+        if crate::repair::schema_repair_turn(st, &turn, &mut schema_repaired, sink)? {
             continue;
         }
         return Ok(RunEnd::Stopped);
