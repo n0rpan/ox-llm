@@ -266,6 +266,15 @@ pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Optio
     None
 }
 
+/// #494: git keeps `.git/config` read-only in the sandbox (a writable config could run code
+/// outside it), so a command that must rewrite it fails with "Device or resource busy" after
+/// it has done the rest, e.g. `git branch -m` renames the ref first. Say so.
+pub(crate) fn git_config_note(output: &str) -> Option<&'static str> {
+    output
+        .contains("could not write config file")
+        .then_some("git could not write .git/config: it is read-only in the sandbox, so anything git did before that step (for example the branch was renamed) stays done, and only the config update (branch upstream settings, remotes) is missing. Check the result with `git branch`; the config can be edited outside the sandbox")
+}
+
 /// O-167(b): the network of a bash command. `sandbox_net` is the sandbox's answer
 /// (`oxa.sandbox.net`, default on, and never on while offline). Per mode: plan = never (a
 /// read-only mode does not gain the network silently); workspace = `sandbox_net`; ask =
@@ -447,6 +456,7 @@ impl BashTool {
         let note = std::env::var("HOME")
             .ok()
             .and_then(|h| unmounted_home_note(&output, &h, cx.cwd));
+        let note = note.or_else(|| git_config_note(&output).map(str::to_string));
         let shown = if output.is_empty() {
             errors::BASH_NO_OUTPUT.to_string()
         } else if let Some(n) = note {
@@ -630,6 +640,35 @@ echo '\''a'\'''"#
             sb.seen.lock().unwrap().is_none(),
             "nothing runs without a sandbox"
         );
+    }
+
+    /// #494: `git branch -m` renames the ref, then fails to rewrite the read-only `.git/config`
+    /// ("Device or resource busy"). The result says what was done and what was not.
+    #[test]
+    fn git_config_write_failure_is_explained() {
+        let out = b"error: could not write config file .git/config: Device or resource busy\nfatal: branch is renamed, but update of config-file failed\n";
+        let sb = Fake::ok(out, Some(128));
+        let (res, _) = run_with(
+            &sb,
+            json!({"command": "git branch -m new-name"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(res.is_error);
+        assert!(res
+            .text
+            .contains("branch is renamed, but update of config-file failed"));
+        assert!(res.text.contains("read-only in the sandbox"), "{}", res.text);
+        assert!(res.text.contains("branch was renamed"), "{}", res.text);
+        // An unrelated failure gets no note.
+        let sb = Fake::ok(b"fatal: not a git repository\n", Some(128));
+        let (res, _) = run_with(
+            &sb,
+            json!({"command": "git status"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(!res.text.contains("sandbox"), "{}", res.text);
     }
 
     #[test]
