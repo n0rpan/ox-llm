@@ -34,10 +34,7 @@ pub fn status(storage: &Path, binary: &Path) -> Result<Vec<Status>> {
         if path.extension().is_none_or(|suffix| suffix != "json") {
             continue;
         }
-        let mut record = match state::load(&path)? {
-            state::Stored::Current(state) => state.record,
-            state::Stored::Legacy(record) => *record,
-        };
+        let mut record = state::load(&path)?.record;
         let liveness = if record.step == Step::Finished {
             Liveness::Finished
         } else {

@@ -101,8 +101,8 @@ To recover a task, run the same task file again. An unfinished checkpoint resume
 its saved step with the original base, commands, session and offline policy.
 Finished successful work is returned without another worker or check run; add
 `--rerun` to the task-file or issue command to start another attempt. A task spec
-change requires a new ID. A receipt from before durable checkpoints needs an
-explicit `--rerun` before adoption. A matching linked worktree is reused; the
+change requires a new ID. Unsupported or corrupt checkpoints are preserved and
+refused. A matching linked worktree is reused; the
 source checkout is never used as the task worktree. An existing branch checked
 out elsewhere is blocked. Dirty retained work is preserved and saved before
 retrying. A clean retained branch gets an ordinary sandboxed

@@ -212,6 +212,60 @@ printf ran > "$(git rev-parse --git-path save-hook-ran)"
 }
 
 #[test]
+fn a_parent_crash_during_saving_keeps_the_task_locked_until_the_commit_finishes() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write(
+        "work/project/.git/info/exclude",
+        "/.save-hook-started\n/.release-save-hook\n",
+    );
+    let hook = env.write(
+        "work/project/.git/hooks/pre-commit",
+        "#!/bin/sh\nprintf ready > .save-hook-started\nwhile ! test -e .release-save-hook; do sleep 0.05; done\n",
+    );
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
+    let server =
+        FakeServer::start(vec![write_turn(), ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(project(&env))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let retained = env.work().join(".oxa-worktrees/project/test");
+    until(|| retained.join(".save-hook-started").exists());
+    let before = fs::read(path(&env)).unwrap();
+    assert_eq!(load(&env)["record"]["step"], "saving");
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let blocked = run(&env, vec![]);
+    // Always release the orphaned save before checking the competing result.
+    fs::write(retained.join(".release-save-hook"), "release").unwrap();
+    assert_eq!(blocked["outcome"], "blocked", "{blocked}");
+    assert!(blocked["detail"].as_str().unwrap().contains("already running"));
+    assert_eq!(fs::read(path(&env)).unwrap(), before);
+    let lock_path = storage(&env).join("test.lock");
+    until(|| {
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap()
+            .try_lock()
+            .is_ok()
+    });
+    assert_eq!(git(&env, &retained, &["show", "HEAD:answer.txt"]), "retained");
+    let (recovered, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
+    assert!(requests.is_empty());
+    assert_eq!(recovered["outcome"], "done", "{recovered}");
+    assert!(git(&env, &retained, &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
 fn a_parent_crash_retains_session_and_child_lock_then_resumes_the_same_session() {
     let env = TestEnv::new();
     setup(&env, "[]");
@@ -489,7 +543,6 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
     assert_eq!(git(&env, tree(&record), &["show", "HEAD:change.txt"]), "draft");
     assert_eq!(load(&env)["task"]["max_time"], 1);
     assert_eq!(record["step"], "finished");
-    assert_eq!(record["interruption"], "deadline");
     assert_eq!(record["interruption"], "deadline");
 }
 

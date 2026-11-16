@@ -89,19 +89,12 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-pub(crate) enum Stored {
-    Current(Box<State>),
-    Legacy(Box<Record>),
-}
 #[cfg(test)]
 pub(crate) fn read(path: &Path) -> Result<State> {
-    match load(path)? {
-        Stored::Current(state) => Ok(*state),
-        Stored::Legacy(_) => Err("receipt predates durable checkpoints".into()),
-    }
+    load(path)
 }
 
-pub(crate) fn load(path: &Path) -> Result<Stored> {
+pub(crate) fn load(path: &Path) -> Result<State> {
     let file = File::open(path).map_err(|e| format!("task checkpoint: {e}"))?;
     let mut bytes = Vec::new();
     file.take(MAX_STATE_BYTES + 1)
@@ -112,13 +105,6 @@ pub(crate) fn load(path: &Path) -> Result<Stored> {
     }
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| format!("task checkpoint: {e}"))?;
-    if value.get("version").is_none() {
-        let record: Record = serde_json::from_value(value).map_err(|e| format!("retained receipt: {e}"))?;
-        if record.checkpoint_revision != 0 {
-            return Err("unknown task checkpoint format".into());
-        }
-        return Ok(Stored::Legacy(Box::new(record)));
-    }
     let fields = value.as_object().ok_or("invalid task checkpoint")?;
     if fields.len() != 6
         || [
@@ -134,8 +120,8 @@ pub(crate) fn load(path: &Path) -> Result<Stored> {
     {
         return Err("incomplete or unknown task checkpoint fields".into());
     }
-    // Public Record accepts older receipt defaults; a durable checkpoint must
-    // carry every field explicitly and cannot silently become Finished.
+    // Every field is explicit in the current format. Missing metadata cannot
+    // silently turn an unfinished task into Finished.
     let keys = [
         "id",
         "branch",
@@ -167,7 +153,7 @@ pub(crate) fn load(path: &Path) -> Result<Stored> {
     if state.record.id != state.task.id || state.record.branch != state.task.branch {
         return Err("task checkpoint identity disagrees with its task".into());
     }
-    Ok(Stored::Current(Box::new(state)))
+    Ok(state)
 }
 
 /// A writer is constructed only after validating an existing file under its task lock.
@@ -430,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_records_reject_missing_step_revision_and_base_even_with_legacy_defaults() {
+    fn durable_records_require_explicit_metadata_fields() {
         let fixture = Fixture::new();
         let mut state = state();
         let mut writer = Writer::new(fixture.path(), false);

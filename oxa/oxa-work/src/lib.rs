@@ -58,19 +58,12 @@ pub struct Record {
     pub worker: Option<WorkerResult>,
     pub session_id: Option<String>,
     pub base_sha: Option<String>,
-    #[serde(default)]
     pub checkpoint_revision: u64,
-    #[serde(default)]
     pub checkpoint_kind: CheckpointKind,
-    #[serde(default)]
     pub checkpoint_at_ms: u64,
-    #[serde(default)]
     pub step: Step,
-    #[serde(default)]
     pub head_sha: Option<String>,
-    #[serde(default)]
     pub tree_sha: Option<String>,
-    #[serde(default)]
     pub interruption: Option<WorkerInterruption>,
 }
 
@@ -507,32 +500,20 @@ pub fn run_task_with_observer(
     };
     let mut writer = state::Writer::new(receipt.clone(), replacing);
     let mut state = if replacing {
-        match state::load(&receipt)? {
-            state::Stored::Current(old) => {
-                if old.task != *task || old.record.worktree != tree {
-                    return Err("task specification changed; use a new task id".into());
-                }
-                writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
-                if old.record.step == Step::Finished {
-                    if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
-                        return Ok(old.record);
-                    }
-                    let mut new = fresh(old.record.checkpoint_revision);
-                    new.offline |= old.offline;
-                    new
-                } else {
-                    *old
-                }
+        let old = state::load(&receipt)?;
+        if old.task != *task || old.record.worktree != tree {
+            return Err("task specification changed; use a new task id".into());
+        }
+        writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
+        if old.record.step == Step::Finished {
+            if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
+                return Ok(old.record);
             }
-            state::Stored::Legacy(old) => {
-                if old.id != task.id || old.branch != task.branch || old.worktree != tree {
-                    return Err("retained receipt belongs to a different task branch or worktree".into());
-                }
-                if !rerun {
-                    return Err("receipt predates durable checkpoints; use --rerun to continue it".into());
-                }
-                fresh(0)
-            }
+            let mut new = fresh(old.record.checkpoint_revision);
+            new.offline |= old.offline;
+            new
+        } else {
+            old
         }
     } else {
         fresh(0)

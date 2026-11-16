@@ -125,10 +125,7 @@ impl Repository {
             Ok(metadata) if !metadata.is_file() => {
                 return Err("pending checkpoint is not a regular file".into())
             }
-            Ok(_) => match state::load(&path)? {
-                state::Stored::Current(state) => Some(state.record),
-                state::Stored::Legacy(_) => None,
-            },
+            Ok(_) => Some(state::load(&path)?.record),
         };
         if let Some(record) = record {
             if record.id != *id || record.checkpoint_revision > self.cursor.revision {
