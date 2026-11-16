@@ -1475,6 +1475,33 @@ pub(crate) fn attach_ids(st: &mut SessionState) {
     let id = st.sref.id.clone();
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
+    // Fork/clone copy history verbatim: its spill paths still belong to the source sessions.
+    // Follow store headers, never paths suggested by model/tool text. Only that ancestry is
+    // readable, and only for reads; unrelated sessions remain on the deny-list.
+    let mut inherited = Vec::new();
+    let mut seen = std::collections::HashSet::from([st.sref.path.clone()]);
+    let mut source = st.sref.clone();
+    while let Ok(header) = st.store.header(&source) {
+        let Some(parent) = header.parent_session else {
+            break;
+        };
+        let Ok(parent) = st.store.resolve(&parent) else {
+            break;
+        };
+        if !seen.insert(parent.path.clone()) {
+            break; // A malformed ancestry cycle must not hang opening a session.
+        }
+        // Header ids from old/hand-written files have not necessarily been validated. An
+        // id must be one normal path component, never an escape from the spill root.
+        let mut components = std::path::Path::new(&parent.id).components();
+        if !matches!(components.next(), Some(std::path::Component::Normal(_))) || components.next().is_some()
+        {
+            break;
+        }
+        inherited.push(st.dirs.tmp_dir.join(&parent.id));
+        source = parent;
+    }
+    st.policy.set_inherited_spill_dirs(&inherited);
     refresh_tool_env(st);
 }
 
@@ -2028,8 +2055,8 @@ mod tests {
         }
     }
 
-    /// #543: only the active session's spill output reads without a prompt. Session changes
-    /// must replace that scope, including the separate in-process clone/fork path.
+    /// #543, #555: only the active session and its fork/clone ancestors read spill output
+    /// without a prompt. Session changes must replace both scopes; codemode still asks.
     #[test]
     fn spill_reads_follow_the_active_session_only() {
         let env = oxa_fake::TestEnv::new();
@@ -2044,32 +2071,57 @@ mod tests {
             )));
             d
         };
-        let check = |s: &Session, other_id: &str| {
+        let check = |s: &Session, unrelated: &[&str], inherited: &[&str]| {
             let st = s.inner();
             let own = st.dirs.tmp_dir.join(&st.sref.id).join("out.txt");
             assert_eq!(st.spill_dir, own.parent().unwrap());
-            for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+            for mode in Mode::ALL {
                 assert_eq!(
                     st.policy.decide(mode, &Access::Read(own.clone()), &st.cwd),
                     Decision::Allow,
                     "the current session's output must stay readable ({mode:?})"
                 );
-                for rel in [format!("{other_id}/out.txt"), "codemode/out.txt".into()] {
+                for id in inherited {
+                    let path = st.dirs.tmp_dir.join(id).join("out.txt");
                     assert_eq!(
-                        st.policy
-                            .decide(mode, &Access::Read(st.dirs.tmp_dir.join(&rel)), &st.cwd),
-                        Decision::Ask,
-                        "unrelated output must still ask: {rel} ({mode:?})"
+                        st.policy.decide(mode, &Access::Read(path.clone()), &st.cwd),
+                        Decision::Allow,
+                        "inherited output must stay readable: {id} ({mode:?})"
+                    );
+                    assert_eq!(
+                        st.policy.decide(mode, &Access::Write(path), &st.cwd),
+                        Decision::Deny(oxa_perm::deny_reasons::SENSITIVE),
+                        "inherited output must stay read-only: {id} ({mode:?})"
                     );
                 }
+                for id in unrelated {
+                    assert_eq!(
+                        st.policy.decide(
+                            mode,
+                            &Access::Read(st.dirs.tmp_dir.join(id).join("out.txt")),
+                            &st.cwd,
+                        ),
+                        Decision::Deny(oxa_perm::deny_reasons::SENSITIVE),
+                        "unrelated output must stay denied: {id} ({mode:?})"
+                    );
+                }
+                assert_eq!(
+                    st.policy.decide(
+                        mode,
+                        &Access::Read(st.dirs.tmp_dir.join("codemode/out.txt")),
+                        &st.cwd,
+                    ),
+                    Decision::Ask,
+                    "shared codemode output must still ask ({mode:?})"
+                );
             }
         };
         let mut s = Session::open(guarded_deps(), Open::New).expect("open");
-        check(&s, "other-session");
+        check(&s, &["other-session"], &[]);
         let original = s.inner().sref.clone();
         s.switch(Open::New, &mut VecSink::default(), &mut HeadlessUi::default())
             .unwrap();
-        check(&s, &original.id);
+        check(&s, &[&original.id], &[]);
         let second = s.inner().sref.clone();
         s.switch(
             Open::Resume(original.clone()),
@@ -2077,18 +2129,24 @@ mod tests {
             &mut HeadlessUi::default(),
         )
         .unwrap();
-        check(&s, &second.id);
+        check(&s, &[&second.id], &[]);
         s.clone_session().expect("clone");
-        check(&s, &original.id);
+        check(&s, &[&second.id, "other-session"], &[&original.id]);
+        let cloned = s.inner().sref.clone();
+        s.switch(
+            Open::Resume(second.clone()),
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+        check(&s, &[&original.id, &cloned.id], &[]);
         drop(s);
-        for how in [
-            Open::Resume(original.clone()),
-            Open::Fork(original),
-            Open::Ephemeral,
-        ] {
+        for how in [Open::Resume(original.clone()), Open::Ephemeral] {
             let s = Session::open(guarded_deps(), how).expect("reopen");
-            check(&s, "other-session");
+            check(&s, &[&second.id, &cloned.id, "other-session"], &[]);
         }
+        let s = Session::open(guarded_deps(), Open::Fork(original.clone())).expect("fork");
+        check(&s, &[&second.id, &cloned.id, "other-session"], &[&original.id]);
     }
 
     /// The speed belongs to the model that produced it: a switch drops it for every later status.
