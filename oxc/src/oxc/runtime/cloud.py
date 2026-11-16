@@ -1214,7 +1214,10 @@ class Meter:
             out['catalog_cost_usd'] = usd
         if item['provider'] == 'openrouter' and self.reported_cost is not None:
             out['reported_cost_usd'] = self.reported_cost
-            out['cost_usd'] = max(usd or 0, self.reported_cost)
+            # The bill; catalog_cost_usd keeps the estimate.  A zero bill for a request that used
+            # tokens is not believed: the catalog estimate stays the charge then.
+            if self.reported_cost > 0 or not usd:
+                out['cost_usd'] = self.reported_cost
         return out
 
 
