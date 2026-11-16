@@ -517,6 +517,57 @@ fn a_failed_fact_reservation_cannot_strand_policy_at_projection_capacity() {
 }
 
 #[test]
+fn failed_policy_preparation_cancels_only_the_unpublished_reservation() {
+    use std::os::unix::fs::PermissionsExt;
+    // SAFETY: geteuid takes no arguments and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::process::CommandExt;
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .env_clear()
+            .args([
+                "--exact",
+                "standing::store::tests::failed_policy_preparation_cancels_only_the_unpublished_reservation",
+            ])
+            .uid(65534)
+            .gid(65534)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts.clone());
+    let held = standing.rule(0, Authority::Owner, 1, hold(true, None)).unwrap();
+    let root = fixture.0.join("standing");
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = standing.rule(1, Authority::Owner, 2, hold(false, Some(&held.id)));
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(failed.is_err());
+    assert_eq!(
+        facts.situation().unwrap().standing_revision,
+        1,
+        "unprepared policy was published"
+    );
+    let reopened = Standing::open(&root, Facts::open(&fixture.0.join("facts")).unwrap()).unwrap();
+    assert_eq!(reopened.read().unwrap().revision, 1);
+    assert!(matches!(
+        reopened.with_guard(Action::Update, subject(), |_| Ok(())),
+        Err(GuardError::Refused(_))
+    ));
+    reopened
+        .rule(1, Authority::Owner, 3, hold(false, Some(&held.id)))
+        .unwrap();
+    assert!(reopened.is_held(480).unwrap().is_none());
+    assert_eq!(facts.situation().unwrap().standing_revision, 2);
+}
+
+#[test]
 fn recovery_syncs_the_prepared_policy_before_committing_its_fact() {
     use std::os::unix::fs::PermissionsExt;
     // SAFETY: geteuid has no arguments, pointers or failure mode.

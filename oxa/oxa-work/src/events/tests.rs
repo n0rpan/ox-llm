@@ -71,6 +71,97 @@ fn reserve(facts: &Facts, fact: Fact) -> Event {
 }
 
 #[test]
+fn a_crashed_preparation_keeps_its_projection_capacity_and_commits_once() {
+    const CHILD: &str = "OXA_FACTS_PREPARATION_CHILD";
+    let observation = || {
+        Fact::StandingChanged(StandingChanged {
+            revision: 1,
+            goal: None,
+            ask_opened: Some(Ask {
+                id: "prepared-ask".into(),
+                subject: Subject::Repository,
+                question: "Choose an option".into(),
+            }),
+            ask_closed: None,
+            incident: None,
+        })
+    };
+    if let Some(root) = std::env::var_os(CHILD) {
+        let facts = Facts::open(Path::new(&root).join("facts").as_path()).unwrap();
+        let policy = Root::open(Path::new(&root), false).unwrap();
+        facts
+            .append_prepared(checkpoint("standing", 1), 500, observation(), |event| {
+                policy.atomic("prepared.json", &event.to_json().unwrap()).unwrap();
+                std::process::exit(73);
+            })
+            .unwrap();
+        panic!("preparation did not reach its crash boundary");
+    }
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    for revision in 1..=127 {
+        facts
+            .append(
+                checkpoint("runner", revision),
+                revision,
+                Fact::TaskStarted(task(revision as usize)),
+            )
+            .unwrap();
+    }
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .env_clear()
+        .env(CHILD, &fixture.0)
+        .args([
+            "--exact",
+            "events::tests::a_crashed_preparation_keeps_its_projection_capacity_and_commits_once",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        child.status.code(),
+        Some(73),
+        "{}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let recovered = Facts::open(&fixture.root()).unwrap();
+    assert_eq!(recovered.situation().unwrap().as_of_seq, 127);
+    assert!(recovered
+        .append(checkpoint("runner", 128), 600, Fact::TaskStarted(task(128)))
+        .is_err());
+    assert_eq!(recovered.events_after(127, 64).unwrap().events.len(), 0);
+    let committed = recovered
+        .append_prepared(checkpoint("standing", 1), 500, observation(), |event| {
+            assert_eq!(
+                fs::read(fixture.0.join("prepared.json")).unwrap(),
+                event.to_json().unwrap()
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(committed.seq, 128);
+    assert_eq!(recovered.situation().unwrap().asks.len(), 1);
+    let again = recovered
+        .append_prepared(checkpoint("standing", 1), 500, observation(), |_| {
+            panic!("prepared twice")
+        })
+        .unwrap();
+    assert_eq!(again, committed);
+    recovered
+        .append(
+            checkpoint("cleanup", 1),
+            700,
+            Fact::AskClosed(AskClosed {
+                id: "prepared-ask".into(),
+            }),
+        )
+        .unwrap();
+    recovered
+        .append(checkpoint("runner", 128), 800, Fact::TaskStarted(task(128)))
+        .unwrap();
+    assert_eq!(recovered.situation().unwrap().running.len(), 128);
+}
+
+#[test]
 fn lifecycle_facts_do_not_turn_worker_success_into_landed_work() {
     let env = Fixture::new();
     let facts = env.facts();

@@ -317,19 +317,18 @@ impl Standing {
             // A prior rename may be visible after directory sync failed. Establish the
             // prepared policy's durability before committing its separately stored fact.
             self.root.durable(FILE)?;
-            self.facts.append(event.checkpoint, event.at_ms, event.fact)?;
+            self.facts
+                .append_prepared(event.checkpoint, event.at_ms, event.fact, |_| Ok(()))?;
             document.current = pending.after.clone();
             document.pending = None;
             self.root.atomic(FILE, &document.bytes()?)?;
         }
         // Establish durability after a prior post-rename sync failure before authorizing work.
         self.root.durable(FILE)?;
-        let situation = self.facts.situation()?;
-        if situation.standing_revision != document.current.revision
-            || situation.goal != document.current.change(None).goal
-        {
-            return Err("standing file disagrees with facts revision".into());
-        }
+        let situation = self.facts.cancel_unprepared_standing(
+            document.current.revision,
+            document.current.change(None).goal.as_deref(),
+        )?;
         Ok((document.current, situation))
     }
     fn save(&self, before: Read, mut after: Read, incident: Option<Incident>) -> Result<Read> {

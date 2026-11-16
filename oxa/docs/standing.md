@@ -105,13 +105,23 @@ One fixed `standing` emitter uses the document revision. `StandingChanged` proje
 goal, one ask transition and an optional incident. Full rule/option/answer data stays in this
 protected file. It does not emit two different facts under one source/revision.
 
-Under Standing → Facts lock order, the facts module first validates capacity/semantics, then
-the prepare callback durably saves the pending policy, before reserving/appending its fact.
-Only after that fact succeeds is the current policy committed. A rejected projection leaves
-no pending standing revision: the owner can still close an old ask to free capacity. Recovery
-syncs a visible prepared policy before committing its fact, replays its identity once, commits
-the policy and establishes its durability before another action. A failed observation stops
-before an effect. Readers never rewrite runner task state.
+Under Standing → Facts lock order, the facts module validates capacity/semantics and durably
+reserves an unpublished observation **before** the callback saves the pending policy. Other
+appenders cannot consume its projection capacity, even if the process dies in the callback.
+Only after the policy is durable is the reservation made replayable and its fact appended;
+the current policy is committed last. Ordinary facts keep their existing append path.
+
+Recovery syncs a visible prepared policy, completes its reserved fact once, commits the policy
+and establishes durability before another action. If the durable policy has no pending
+mutation, a matching unpublished next-revision reservation has no prepared data: recovery
+discards only that reservation, preserving the current rules, revision and committed facts.
+A rejected initial projection leaves no policy mutation. A failed fact reservation therefore
+cannot strand an ask; the owner can still answer an existing ask to free capacity.
+
+Recover standing before replaying runner callbacks that append facts. A facts-only read reports
+the last committed sequence; it never publishes an unfinished standing preparation. The
+standing read/guard APIs perform this recovery under their stable lock. No background worker
+or task-state writer is added, and a failed observation stops before an effect.
 
 The runner owns `oxa work rule|hold|ask`, actual action guards and local command proofs. The
 lead joins detailed asks by ID from `Read` with the small shared situation. These adapters
