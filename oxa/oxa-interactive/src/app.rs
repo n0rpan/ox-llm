@@ -1498,6 +1498,17 @@ fn execute(
     out: &Sender<WorkerMsg>,
 ) -> (Result<(), OxaError>, bool) {
     match cmd {
+        SessionCmd::Inbox { session_id } => {
+            s.handle().clear_inbox_wake();
+            // A coalesced wake may carry an older destination. Only run the
+            // current session's bound input, never that destination's queue.
+            let result = if s.inner().sref.id == session_id || s.handle().has_inbox_input() {
+                s.run_queued(sink, ui).map(|_| ())
+            } else {
+                Ok(())
+            };
+            (result, false)
+        }
         SessionCmd::Prompt { text, parts } => (run_prompt(s, text, parts, sink, ui), false),
         SessionCmd::Compact { instructions } => {
             let mut watch = StartWatch {

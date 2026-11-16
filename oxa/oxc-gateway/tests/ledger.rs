@@ -106,6 +106,7 @@ fn keyed_identifiers_are_stable_separated_and_no_request_content_is_stored() {
         origin: Origin::Oxa,
         session: Some("synthetic-private-identifier"),
         idempotency_key: Some("synthetic-private-identifier"),
+        guest_key_name: None,
     };
     let mut entry = daily.entry("synthetic-alias", context()).unwrap();
     entry.admitted();
@@ -433,4 +434,114 @@ fn response_data_before_admission_does_not_record_a_first_byte() {
     entry.admitted();
     let row = entry.append(&fields(), 200, None, None).unwrap();
     assert!(row.get("ttfb_ms").is_none());
+}
+
+#[test]
+fn guest_attribution_is_api_scoped_salted_and_separate_from_session_identity() {
+    let home = Home::new();
+    home.private(".salt", &[1; 32]);
+    let ledger = Ledger::open(&home.0).unwrap();
+    let label = "synthetic-private-guest";
+    let context = || Context {
+        origin: Origin::Api,
+        session: Some(label),
+        idempotency_key: Some(label),
+        guest_key_name: Some(label),
+    };
+    let mut injected = fields();
+    injected["guest_key"] = json!(label);
+    injected["guest_key_name"] = json!(label);
+    let row = ledger
+        .day("20260102")
+        .unwrap()
+        .entry("synthetic-alias", context())
+        .unwrap()
+        .append(&injected, 200, None, None)
+        .unwrap();
+    assert_eq!(row["origin"], "api");
+    let guest = row["guest_key"].as_str().unwrap();
+    assert_eq!(guest.len(), 32);
+    assert!(guest
+        .bytes()
+        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    assert_ne!(row["guest_key"], row["session"]);
+    assert_ne!(row["guest_key"], row["idempotency"]);
+    assert!(!row.to_string().contains(label));
+    let reopened = Ledger::open(&home.0)
+        .unwrap()
+        .day("20260102")
+        .unwrap()
+        .entry("synthetic-alias", context())
+        .unwrap()
+        .append(&fields(), 200, None, None)
+        .unwrap();
+    assert_eq!(row["guest_key"], reopened["guest_key"]);
+    let other = Home::new();
+    other.private(".salt", &[2; 32]);
+    let other_row = Ledger::open(&other.0)
+        .unwrap()
+        .day("20260102")
+        .unwrap()
+        .entry("synthetic-alias", context())
+        .unwrap()
+        .append(&fields(), 200, None, None)
+        .unwrap();
+    assert_ne!(row["guest_key"], other_row["guest_key"]);
+    let different = ledger
+        .day("20260102")
+        .unwrap()
+        .entry(
+            "synthetic-alias",
+            Context {
+                origin: Origin::Api,
+                guest_key_name: Some("synthetic-other-guest"),
+                ..Context::default()
+            },
+        )
+        .unwrap()
+        .append(&fields(), 200, None, None)
+        .unwrap();
+    assert_ne!(row["guest_key"], different["guest_key"]);
+    assert_eq!(different["session"], Value::Null);
+    let ordinary = ledger
+        .day("20260102")
+        .unwrap()
+        .entry("synthetic-alias", Context::default())
+        .unwrap()
+        .append(&injected, 200, None, None)
+        .unwrap();
+    assert!(ordinary.get("guest_key").is_none());
+    assert!(ordinary.get("guest_key_name").is_none());
+    assert_eq!(ordinary["session"], Value::Null);
+    assert_eq!(ordinary["origin"], "oxa");
+    assert!(!fs::read_to_string(home.0.join("requests-20260102.jsonl"))
+        .unwrap()
+        .contains(label));
+}
+
+#[test]
+fn guest_context_refuses_non_api_origin_empty_or_unbounded_names_before_persistence() {
+    let home = Home::new();
+    let daily = Ledger::open(&home.0).unwrap().day("20260102").unwrap();
+    let long = "x".repeat(4097);
+    for (origin, name) in [
+        (Origin::Oxa, "synthetic-guest"),
+        (Origin::Api, ""),
+        (Origin::Api, long.as_str()),
+    ] {
+        let error = daily
+            .entry(
+                "synthetic-alias",
+                Context {
+                    origin,
+                    guest_key_name: Some(name),
+                    ..Context::default()
+                },
+            )
+            .err()
+            .expect("invalid guest context must refuse");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(!error.to_string().contains("synthetic-guest"));
+    }
+    assert!(!home.0.join("requests-20260102.jsonl").exists());
 }

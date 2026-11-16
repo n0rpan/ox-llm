@@ -259,6 +259,7 @@ pub(crate) struct Loop<'a> {
     /// The worker has answered a command since `model_pending` was set (its Status settles it).
     model_answered: bool,
     session: SessionInfo,
+    inbox: Option<oxa_session::Inbox>,
     files: Option<FileIndex>,
     /// Images pasted for the next prompt.
     pending_parts: Vec<Part>,
@@ -407,6 +408,7 @@ impl<'a> Loop<'a> {
             model_pending: None,
             model_answered: false,
             session: SessionInfo::default(),
+            inbox: None,
             files: None,
             pending_parts: Vec::new(),
             printer: RegularPrinter::new(),
@@ -735,6 +737,9 @@ impl<'a> Loop<'a> {
             WorkerMsg::Event(e) => {
                 // AgentEnd can occur between tool/follow-up turns; only settled ends a run.
                 if matches!(e, AgentEvent::AgentSettled { .. }) {
+                    if let Some(inbox) = &self.inbox {
+                        inbox.retry();
+                    }
                     self.run_finished = true;
                 }
                 apply_event(&mut self.vm, &e);
@@ -787,14 +792,19 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// The worker switched to another session object. Nothing of the old session may stay
-    /// live in the UI: its queued steering and follow-up messages come back into the editor
-    /// (with a notice; they were never sent), questions the app asked about it are dropped,
+    /// The worker switched to another session object. Its queued editor steering and
+    /// follow-up messages come back into the editor (with a notice; they were never sent),
+    /// while inbox messages retain their destinations. Questions about the old session are dropped,
     /// and its tree, selectors and attachments are closed. Abort, steer and follow-up target
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
+        // Join the old callback before draining its queue back into the editor.
+        self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
         old.abort_retry();
+        // Unlike editor input, admitted inbox text must keep its destination across a
+        // fresh Session/Shared. This includes messages admitted by a stale clone/fork watcher.
+        old.transfer_inbox_to(&self.handle);
         let queued = old.dequeue();
         if !queued.is_empty() {
             let n = queued.len();
@@ -816,6 +826,37 @@ impl<'a> Loop<'a> {
     }
 
     fn set_session(&mut self, info: SessionInfo) {
+        if self.session.id != info.id || self.inbox.is_none() {
+            // A Reopen may have recovered an already-admitted message without a file
+            // left to trigger the new watcher. Wake only the recovered destination.
+            if self.handle.has_inbox_input() && self.handle.request_inbox_wake() {
+                let _ = self.cmds.send(SessionCmd::Inbox {
+                    session_id: info.id.clone(),
+                });
+            }
+            // Stop the old callback before installing one bound to the current handle.
+            self.inbox = None;
+            let handle = self.handle.clone();
+            let cmds = self.cmds.clone();
+            let session_id = info.id.clone();
+            match oxa_session::Inbox::watch(&self.opts.dirs.agent_dir, &info.id, move |text| {
+                // A clone/fork can change the worker's identity before the UI receives
+                // its Session notification. Keep even late admissions at their destination.
+                if !handle.follow_up_for(&session_id, text) {
+                    return false;
+                }
+                if !handle.request_inbox_wake() {
+                    return true;
+                }
+                cmds.send(SessionCmd::Inbox {
+                    session_id: session_id.clone(),
+                })
+                .is_ok()
+            }) {
+                Ok(inbox) => self.inbox = Some(inbox),
+                Err(e) => self.push_notice(Level::Warning, format!("Session inbox unavailable: {e}")),
+            }
+        }
         // pi interactive-mode.ts: the autocomplete offers `/skill:name` only with
         // `enableSkillCommands` (a typed one still expands either way).
         let skill_commands = self.opts.settings.bool("enableSkillCommands", true);
@@ -1697,6 +1738,9 @@ impl<'a> Loop<'a> {
 
     fn restore_queue(&mut self) {
         let queued = self.handle.dequeue();
+        if let Some(inbox) = &self.inbox {
+            inbox.retry();
+        }
         self.vm.status.steering.clear();
         self.vm.status.follow_up.clear();
         if queued.is_empty() {

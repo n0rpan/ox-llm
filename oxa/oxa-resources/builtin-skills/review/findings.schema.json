@@ -24,9 +24,7 @@
             "description": "Explain the triggering conditions, concrete impact, and evidence for the defect."
           },
           "priority": {
-            "type": "integer",
-            "minimum": 0,
-            "maximum": 3,
+            "enum": [0, 1, 2, 3],
             "description": "0: blocking; 1: high; 2: normal; 3: low."
           },
           "confidence": {

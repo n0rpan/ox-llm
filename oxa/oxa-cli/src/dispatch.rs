@@ -177,6 +177,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
+            Subcommand::Send(words) => match words.as_slice() {
+                [id, text] if oxa_session::valid_inbox_id(id) => {
+                    oxa_session::send_inbox(&dirs.agent_dir, id, text)
+                        .map(|_| 0)
+                        .map_err(|e| OxaError::io("cannot send session message", &e))
+                }
+                _ => Err(OxaError::new(
+                    codes::USAGE,
+                    "Usage: oxa send <session-id> \"text\"",
+                )),
+            },
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
             Subcommand::ReportIssue(words) => crate::run_report_issue(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Wipe(words) => crate::run_wipe(
@@ -223,7 +234,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Ok(ep) => with_api_key(ep, &a),
             Err(e) => return report(&mut *stderr, &e),
         };
-        let engine = match engine_for(&endpoint) {
+        let user = Settings::load(&dirs, &cwd, false);
+        let engine = match crate::in_process::select(&user, &user, &dirs, || engine_for(&endpoint)) {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
@@ -558,6 +570,7 @@ fn prepare(
         })
         .transpose()?;
     let mut notices: Vec<(Level, String)> = Vec::new();
+    let user_settings = Settings::load(dirs, cwd, false);
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -567,7 +580,9 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
-    notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    if !user_settings.bool(crate::in_process::SETTING, false) {
+        notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    }
 
     let gated = gated_resources(cwd);
     let trusted = project_trusted(
@@ -618,7 +633,12 @@ fn prepare(
     }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
-    let engine = child.wrap(engine_with_settings(&endpoint, &settings)?);
+    let engine = child.wrap(crate::in_process::select(
+        &user_settings,
+        &settings,
+        dirs,
+        || engine_with_settings(&endpoint, &settings),
+    )?);
 
     let opts = discover_opts(a, dirs, cwd, trusted)?;
     // O-152: the built-in skills' files, so the model can read their bodies (written only
@@ -1414,12 +1434,7 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     const NO_LIMIT_MS: u64 = 365 * 24 * 3600 * 1000;
     // P3: the same remote-engine guard as `engine_for`.
     crate::netguard::check_endpoint(&endpoint.base_url)?;
-    let silence = settings
-        .provider_retry()
-        .timeout_ms
-        .filter(|ms| *ms > 0)
-        .or_else(|| settings.http_idle_timeout_ms())
-        .unwrap_or(NO_LIMIT_MS);
+    let silence = stream_silence_timeout(settings).unwrap_or(NO_LIMIT_MS);
     let opts = oxa_engine::StreamOpts {
         silence_limit_ms: silence,
         ..oxa_engine::StreamOpts::default()
@@ -1427,6 +1442,16 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     // The core owns session retries so every retry uses its backoff and visible notice.
     let engine = HttpEngine::new(&endpoint.base_url, endpoint.api_key.clone())?.with_opts(opts, 0);
     Ok(Arc::new(engine))
+}
+
+/// Shared by HTTP and native engines; project layers affect timeouts, while the
+/// native selector, catalog and credential locations remain user-only.
+pub(crate) fn stream_silence_timeout(settings: &Settings) -> Option<u64> {
+    settings
+        .provider_retry()
+        .timeout_ms
+        .filter(|ms| *ms > 0)
+        .or_else(|| settings.http_idle_timeout_ms())
 }
 
 /// The provider column: the controller's `remote_provider` (else `cloud`) for a cloud model,

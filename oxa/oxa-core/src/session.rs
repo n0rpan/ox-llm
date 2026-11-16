@@ -1504,6 +1504,7 @@ fn latest_of(store: &dyn SessionStore, cwd: &std::path::Path) -> Option<SessionR
 /// Point the per-session paths at the current session id.
 pub(crate) fn attach_ids(st: &mut SessionState) {
     let id = st.sref.id.clone();
+    st.shared.bind_session(&id);
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
     // Fork/clone history still names its ancestors' spills, even after those sessions are
