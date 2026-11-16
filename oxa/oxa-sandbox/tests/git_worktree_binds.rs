@@ -1008,6 +1008,47 @@ fn issue_643_branch_preflight_parses_short_option_values() {
     }
 }
 
+/// Review #643: Git accepts unambiguous abbreviations of value-taking options.
+#[test]
+fn issue_643_branch_preflight_parses_abbreviated_values() {
+    let env = TestEnv::new();
+    let plain = env.work().join("plain");
+    init_repo(&plain, &env);
+    let Some(sb) = sandbox(&env, &plain) else { return };
+    for option in ["--form", "--forma", "--format"] {
+        for value in ["-m", "-M", "-c", "-C"] {
+            let command = format!("git branch {option} '{value}'");
+            let direct = git(&plain, &env, &["branch", option, value]);
+            assert!(direct.status.success());
+            let (exit, out) = run(&sb, &command, &plain, true);
+            assert_eq!(exit, Some(0), "{command}: {out}");
+            assert_eq!(out.as_bytes(), direct.stdout, "{command}");
+        }
+        // Consuming a value must not swallow a subsequent rename/copy flag.
+        for flag in ["-m", "-c"] {
+            let command = format!("git branch {option} '-m' {flag} changed");
+            let (exit, out) = run(&sb, &command, &plain, true);
+            assert_ne!(exit, Some(0), "{command}: {out}");
+            assert!(out.contains("before changing refs"), "{command}: {out}");
+            assert_eq!(git(&plain, &env, &["branch", "--show-current"]).stdout, b"main\n");
+            assert!(
+                !git(&plain, &env, &["show-ref", "--verify", "refs/heads/changed"])
+                    .status
+                    .success()
+            );
+        }
+    }
+    for option in ["--so", "--sor", "--sort"] {
+        // Invalid sort fields are Git errors, not preflight rename refusals.
+        let direct = git(&plain, &env, &["branch", option, "-m"]);
+        assert!(!direct.status.success());
+        let (exit, out) = run(&sb, &format!("git branch {option} '-m'"), &plain, true);
+        assert_eq!(exit, direct.status.code(), "{option}: {out}");
+        assert!(out.contains("unknown field name"), "{option}: {out}");
+        assert!(!out.contains("before changing refs"), "{option}: {out}");
+    }
+}
+
 #[test]
 fn issue_103_plain_clone_keeps_hooks_and_config_read_only() {
     let env = TestEnv::new();

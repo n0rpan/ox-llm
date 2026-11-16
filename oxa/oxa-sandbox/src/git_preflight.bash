@@ -22,7 +22,10 @@ git() {
             case "$arg" in
                 --) break;;
                 --move|--mo|--mov|--copy|--cop) break;;
-                --format|--sort) ((i+=2)); continue;;
+                # Git accepts these unambiguous abbreviations too. Their
+                # required values may themselves look like rename/copy flags.
+                --form|--forma|--format|--so|--sor|--sort)
+                    ((i+=2)); continue;;
                 --*) ((i+=1)); continue;;
                 -*)
                     arg=${arg:1}
