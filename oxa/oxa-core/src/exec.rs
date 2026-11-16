@@ -53,6 +53,12 @@ pub fn request(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<AssistantTurn, OxaError> {
+    if crate::goal::terminal(st) {
+        return Err(OxaError::new(
+            codes::BUDGET_EXHAUSTED,
+            "The stored goal cannot make another request.",
+        ));
+    }
     // OXA-LOCAL-FIRST F1: a tool-result prefill still running (a host request served while a
     // tool runs, e.g. the park before a subagent) ends first: one request in flight at a time.
     // Nothing is sent while it is still registered (deferred, then `engine_busy`).
@@ -127,7 +133,15 @@ pub fn request(
         );
     }
     let mut prefilled = 0;
+    let mut generated = false;
     let mut on = |ev: StreamEvent| {
+        generated |= match &ev {
+            StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
+            StreamEvent::ToolArgs { id, name, delta, .. } => {
+                id.is_some() || name.is_some() || !delta.is_empty()
+            }
+            _ => false,
+        };
         if let Some(progress) = &progress {
             let advanced = match &ev {
                 StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
@@ -145,6 +159,7 @@ pub fn request(
         hooks.raw(st, &ev, sink, ui);
         stream.handle(ev, &mut hooks.sink(st, sink, ui), opts.events)
     };
+    let pre_cancelled = cancel.is_cancelled();
     let turn = engine.chat(&req, &cancel, &mut on);
     if let Some(progress) = &progress {
         progress.notify(
@@ -155,7 +170,18 @@ pub fn request(
             },
         );
     }
-    let turn = turn?;
+    let turn = match turn {
+        Ok(turn) => turn,
+        Err(error) => {
+            if crate::goal::uncertain(&error, generated, pre_cancelled) {
+                if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+                    goal.uncertain_request()?;
+                    crate::goal::checkpoint(st, false, sink)?;
+                }
+            }
+            return Err(error);
+        }
+    };
     crate::Handle {
         shared: st.shared.clone(),
     }
@@ -344,6 +370,15 @@ pub(crate) fn run_calls(
     let mut prefilled = false;
     let mut i = 0;
     while i < n {
+        if crate::goal::terminal(st) {
+            if matches!(prepared[i].plan, Plan::Run { .. }) {
+                let p = &prepared[i];
+                crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
+            }
+            prepared[i].plan = Plan::Done(ToolOutput::error(
+                "Goal is no longer pursuing; call not executed.",
+            ));
+        }
         let mut j = i;
         while j < n && prepared[j].parallel_read() {
             j += 1;
@@ -355,7 +390,9 @@ pub(crate) fn run_calls(
             }
             i = j;
         } else {
-            let warming = !prefilled && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
+            let warming = !prefilled
+                && !(st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
+                && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
             outputs[i] = Some(run_one(st, &prepared[i], sink, ui));
@@ -383,7 +420,10 @@ pub(crate) fn run_calls(
         // answered with a notice (the call ran; only its result text changes).
         let mut stop = false;
         let ran = matches!(p.plan, Plan::Run { .. });
-        if ran {
+        // A successful native goal wait deliberately returns the same result on
+        // every scheduled wake. Other tools and failed waits keep the guard.
+        let completed_goal_wait = st.goal.is_some() && p.name == "wait" && !output.is_error;
+        if ran && !completed_goal_wait {
             let earlier: Vec<(&str, &str, &str, bool)> = batch
                 .iter()
                 .map(|(n, a, t, failed)| (n.as_str(), a.as_str(), t.as_str(), *failed))
@@ -690,6 +730,7 @@ fn start_tool_prefill(
     let snapshot_keep = st.info.caps.snapshot_keep > 0;
     let progress = crate::progress::observer(st);
     let user_abort = st.shared.cancel.clone();
+    let goal = st.goal.clone().filter(|g| g.engaged());
     let budget = crate::Handle {
         shared: st.shared.clone(),
     };
@@ -751,7 +792,8 @@ fn start_tool_prefill(
                     );
                 }
                 let mut prefilled = 0;
-                let res = engine.chat(&req, &cancel, &mut |event| {
+                let pre_cancelled = cancel.is_cancelled();
+                let mut res = engine.chat(&req, &cancel, &mut |event| {
                     if let (Some(progress), StreamEvent::Prefill { done, .. }) = (&progress, event) {
                         if done > prefilled {
                             prefilled = done;
@@ -773,6 +815,15 @@ fn start_tool_prefill(
                         u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
                             + u64::from(turn.usage.completion),
                     );
+                }
+                if let Err(error) = &res {
+                    if crate::goal::uncertain(error, false, pre_cancelled) {
+                        if let Some(goal) = &goal {
+                            if let Err(error) = goal.uncertain_request() {
+                                res = Err(error);
+                            }
+                        }
+                    }
                 }
                 done.store(true, Ordering::SeqCst);
                 res.map(|_| true)
