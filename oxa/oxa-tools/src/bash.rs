@@ -428,6 +428,7 @@ impl BashTool {
 
         let mut output = String::from_utf8_lossy(&res.output).into_owned();
         let persistence_relevant = scratch_write_likely(raw_command)
+            || (res.exit != Some(0) && (raw_command.contains("/tmp") || raw_command.contains("TMPDIR")))
             || (res.exit != Some(0)
                 && [
                     "read-only file system",
@@ -504,31 +505,61 @@ impl BashTool {
     }
 }
 
-/// True when `command` names `/tmp` or `$TMPDIR` and looks like it writes: a redirect to a
-/// real file or a command that creates files. A read (`grep -n /tmp file`, `ls /tmp`) gets no
-/// persistence notice on success; a failure is handled by the error-text check.
+/// Suppress the successful-command hint only for recognizable reads. Enumerating writers
+/// misses interpreters, build tools, attached output flags and custom scripts. This is a
+/// conservative hint heuristic, NOT a shell parser or a permission check; unknown syntax
+/// keeps the hint. Failed commands mentioning scratch always get it, regardless of syntax.
 fn scratch_write_likely(command: &str) -> bool {
     if !(command.contains("/tmp") || command.contains("TMPDIR")) {
         return false;
     }
-    // Redirects that write nothing to a file.
-    let cleaned = command
-        .replace(">&", " ")
-        .replace("&>", ">")
-        .replace(">>", ">")
-        .replace(">/dev/null", " ")
-        .replace("> /dev/null", " ")
-        .replace(">/dev/null", " ");
-    if cleaned.contains('>') {
+    // Substitutions can write even inside a read's arguments.
+    if command.contains("$(") || command.contains('`') {
         return true;
     }
-    const WRITERS: &[&str] = &[
-        "tee", "mktemp", "touch", "mkdir", "cp", "mv", "install", "ln", "dd", "curl", "wget", "tar", "unzip",
-        "rsync", "git", "-o", "--output", "--out", "-O", "sponge",
+    // Keep quoted/escaped shell words together so grep '->' is not a redirect and quoted
+    // separators do not invent commands. Recognize output redirects separately, including
+    // fd duplication (2>&1), which does not create a file.
+    static TOKENS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let tokens = TOKENS.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?s)(?:[0-9]*>>?|&>>?)(?:&[0-9-]+)?|[;&|()<\n]|(?:[^\s'"\\;&|()<>]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+"#,
+        )
+        .expect("shell hint tokens")
+    });
+    const READERS: &[&str] = &[
+        "echo", "printf", "ls", "cat", "grep", "head", "tail", "wc", "stat", "pwd", "test", "[", "true",
+        "false", "readlink", "basename", "dirname",
     ];
-    cleaned
-        .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '"' | '\''))
-        .any(|w| WRITERS.contains(&w))
+    let mut words = tokens.find_iter(command).map(|m| m.as_str());
+    let mut command_start = true;
+    while let Some(word) = words.next() {
+        if matches!(word, ";" | "&" | "|" | "\n") {
+            command_start = true;
+            continue;
+        }
+        let op = word.trim_start_matches(|c: char| c.is_ascii_digit());
+        if op.starts_with(">&") {
+            continue;
+        }
+        if op.starts_with('>') || op.starts_with("&>") {
+            if words.next().map(|w| w.trim_matches(['\'', '"'])) == Some("/dev/null") {
+                continue;
+            }
+            return true;
+        }
+        if matches!(word, "(" | ")" | "<") {
+            return true;
+        }
+        if command_start {
+            let name = word.trim_matches(['\'', '"']).rsplit('/').next().unwrap_or(word);
+            if !READERS.contains(&name) {
+                return true;
+            }
+            command_start = false;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -543,10 +574,20 @@ mod tests {
             "ls /tmp 2>&1",
             "cat /tmp/x >/dev/null",
             "echo $TMPDIR",
+            "grep -o x /tmp/f",
+            "grep '->' /tmp/f",
+            "grep 'cp; ->' /tmp/f",
+            "echo 'tee' /tmp",
+            "ls /tmp >'/dev/null' 2>&1",
+            "printf '%s\\n' '->' /tmp/f",
             "ls src",
         ] {
             assert!(!scratch_write_likely(c), "{c}");
         }
+    }
+
+    #[test]
+    fn scratch_notice_covers_common_writes() {
         for c in [
             "echo x > /tmp/f",
             "echo x >>/tmp/f",
@@ -555,6 +596,16 @@ mod tests {
             "cp a /tmp/a",
             "ls | tee /tmp/l",
             "touch $TMPDIR/x",
+            "cd /tmp && make",
+            "cd $TMPDIR && npm install",
+            "sed -i 's/x/y/' /tmp/f",
+            "python -c \"open('/tmp/x','w').write('x')\"",
+            "gcc -o/tmp/a input.c",
+            "sort -o/tmp/x input.txt",
+            "custom-script /tmp/output",
+            "echo $(touch /tmp/f)",
+            "echo `touch /tmp/f`",
+            "cat /tmp/f\ntouch /tmp/g",
         ] {
             assert!(scratch_write_likely(c), "{c}");
         }

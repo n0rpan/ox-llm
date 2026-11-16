@@ -658,6 +658,8 @@ fn bash_tool_exit_code_and_timeout_lines() {
         "echo /tmp",
         "grep -n '\"/tmp\"' /dev/null || true",
         "ls /tmp >/dev/null 2>&1; echo $TMPDIR",
+        "printf '%s\\n' x | grep -o x; echo /tmp",
+        "printf '%s\\n' '->' | grep -- '->'; echo /tmp",
     ] {
         let out = run(serde_json::json!({ "command": command }));
         assert!(!out.is_error, "{}", out.text);
@@ -668,6 +670,10 @@ fn bash_tool_exit_code_and_timeout_lines() {
         "echo x > /tmp/oxa-532",
         "mktemp -p /tmp oxa-532.XXXXXX",
         "touch /tmp/oxa-532",
+        "cd /tmp && printf '%s\\n' x >oxa-532",
+        "TMPDIR=/tmp; cd $TMPDIR && mkdir oxa-532",
+        "printf x >/tmp/oxa-532; sed -i 's/x/y/' /tmp/oxa-532",
+        "printf x | sort -o/tmp/oxa-532",
     ] {
         let out = run(serde_json::json!({ "command": command }));
         assert!(!out.is_error, "{}", out.text);
@@ -713,6 +719,40 @@ fn bash_tool_exit_code_and_timeout_lines() {
     assert_eq!(a.text, "a\n\n\nCommand timed out after 1 seconds");
     assert_eq!(a.text, b.text);
     assert_eq!(a.ui, serde_json::json!({ "exit": null, "timedOut": true }));
+}
+
+/// Failed reads still need the hint: per-command scratch vanished, not a permission error.
+#[test]
+fn bash_tool_explains_discarded_scratch() {
+    use oxa_proto::Tool;
+    let env = TestEnv::new();
+    let Some(sb) = sandbox_for(&env) else { return };
+    let cwd = env.home().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let cancel = CancelToken::new();
+    let cx = oxa_proto::ToolCtx {
+        cwd: &cwd,
+        spill_dir: &cwd,
+        sandbox: &sb,
+        mode: oxa_proto::Mode::Workspace,
+        cancel: &cancel,
+        env: &[],
+        tune: Default::default(),
+    };
+    let tool = oxa_tools::BashTool::new();
+    let run = |command: &str| tool.run(&serde_json::json!({ "command": command }), &cx, &mut |_| {});
+    assert!(!run("echo scratch > /tmp/oxa-532").is_error);
+    let notice = sb.persistence_notice().unwrap();
+    let out = run("cat /tmp/oxa-532");
+    assert!(out.is_error);
+    assert!(out.text.contains("No such file or directory"));
+    assert!(out.text.contains(notice));
+    // No output at all must work too, for both spellings of the scratch directory.
+    for command in ["test -f /tmp/oxa-532", "test -f $TMPDIR/oxa-532"] {
+        let out = run(command);
+        assert!(out.is_error);
+        assert!(out.text.contains(notice));
+    }
 }
 
 /// writable = false
