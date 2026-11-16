@@ -7,7 +7,9 @@ use oxa_config::{
 };
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_engine::HttpEngine;
-use oxa_export::{default_output_name, export_html, write_export, ExportOpts, ExportTheme};
+use oxa_export::{
+    default_output_name, export_html, format_for, write_export, ExportFormat, ExportOpts, ExportTheme,
+};
 use oxa_interactive::{
     ask_trust_interactive, image_part, run as run_interactive, ClipImage, InteractiveOpts, Reopen, ReopenFn,
     TrustChoice,
@@ -1582,8 +1584,8 @@ fn format_tokens(count: u64) -> String {
     }
 }
 
-/// `--export <input> [output]`: the session file to HTML; the output name is derived when it
-/// is omitted. Prints `Exported to: <path>`.
+/// `--export <input> [output]`: copy JSONL for a `.jsonl` destination, otherwise render HTML.
+/// The output name is derived when omitted. Prints `Exported to: <path>`.
 fn export_session(
     input: &str,
     output: Option<&str>,
@@ -1616,6 +1618,15 @@ fn export_inner(input: &str, output: Option<&str>, home: &Path, cwd: &Path) -> R
     let entries = lines
         .map(|line| decode_entry(line.as_bytes()))
         .collect::<Result<Vec<_>, OxaError>>()?;
+    let dest = match output {
+        Some(o) => resolve_path(home, cwd, o),
+        None => default_output_name(Some(&input_path), &header.id, cwd),
+    };
+    if format_for(&dest) == ExportFormat::Jsonl {
+        std::fs::copy(&input_path, &dest)
+            .map_err(|e| OxaError::io(&format!("cannot write {}", dest.display()), &e))?;
+        return Ok(dest);
+    }
     let opts = ExportOpts {
         theme: ExportTheme::dark(),
         session_name: None,
@@ -1625,10 +1636,6 @@ fn export_inner(input: &str, output: Option<&str>, home: &Path, cwd: &Path) -> R
         leaf: None,
     };
     let html = export_html(&header, &entries, &opts)?;
-    let dest = match output {
-        Some(o) => resolve_path(home, cwd, o),
-        None => default_output_name(Some(&input_path), &header.id, cwd),
-    };
     write_export(&dest, &html)
 }
 

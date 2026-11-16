@@ -260,24 +260,53 @@ fn export_flag() {
     assert!(missing.out.is_empty());
 }
 
-/// --export writes HTML and prints the path. The input is a session file written by a print
-/// run against the fake engine.
+/// --export chooses the format by destination suffix, just like /export (#702).
+/// Both formats use the same session written by a print run against the fake engine.
 #[test]
-fn export_flag_writes_html() {
+fn export_flag_formats() {
     let env = TestEnv::new();
     let server = FakeServer::start(vec![ScriptTurn::text("Export me.")], FakeOpts::default()).expect("fake");
     let first = go(&env, &server.url(), &["-p", "hello"]);
     assert_eq!(first.code, 0, "stderr: {}", first.err);
     let input = first_jsonl(&env.agent_dir().join("sessions")).expect("the print run wrote a session file");
-    let result = go(
-        &env,
-        &closed_url(),
-        &["--export", input.to_str().expect("utf-8 path"), "out.html"],
-    );
-    assert_eq!(result.code, 0, "stderr: {}", result.err);
-    assert!(result.out.starts_with("Exported to: "));
-    let html = std::fs::read_to_string(env.work().join("out.html")).expect("the export file");
-    assert!(html.starts_with("<!DOCTYPE html>") || html.starts_with("<!doctype html>"));
+    let source = std::fs::read(&input).unwrap();
+    let url = closed_url();
+    for output in [
+        Some("out.html"),
+        Some("out.jsonl"),
+        Some("out.JSONL"),
+        Some("out"),
+        None,
+    ] {
+        let mut args = vec!["--export", input.to_str().expect("utf-8 path")];
+        if let Some(output) = output {
+            args.push(output);
+        }
+        let result = go(&env, &url, &args);
+        assert_eq!(result.code, 0, "stderr: {}", result.err);
+        assert!(result.err.is_empty());
+        let dest = result
+            .out
+            .strip_prefix("Exported to: ")
+            .expect("success message")
+            .trim();
+        if let Some(output) = output {
+            assert_eq!(Path::new(dest), env.work().join(output));
+        } else {
+            assert_eq!(Path::new(dest).extension().unwrap(), "html");
+        }
+        let bytes = std::fs::read(dest).expect("the export file");
+        if matches!(output, Some("out.jsonl" | "out.JSONL")) {
+            assert_eq!(bytes, source, "JSONL export must preserve every byte");
+            for line in String::from_utf8(bytes).unwrap().lines() {
+                serde_json::from_str::<serde_json::Value>(line).expect("valid JSONL");
+            }
+        } else {
+            let html = String::from_utf8(bytes).unwrap();
+            assert!(html.starts_with("<!DOCTYPE html>") || html.starts_with("<!doctype html>"));
+        }
+        assert_eq!(std::fs::read(&input).unwrap(), source, "source must not change");
+    }
 }
 
 /// The first `.jsonl` file under `dir` (searched recursively, names sorted).
