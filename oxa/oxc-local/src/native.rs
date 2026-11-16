@@ -265,6 +265,7 @@ impl Engine for LocalEngine {
             caps: EngineCaps {
                 remote: false,
                 cancel: true,
+                hint_clear: true,
                 context_window: Some(model.context_window),
                 ..EngineCaps::default()
             },
@@ -675,6 +676,7 @@ mod tests {
         assert_eq!(info.limits_for, "other-model");
         assert_eq!(info.caps.context_window, Some(1048576));
         assert!(!info.caps.remote);
+        assert!(info.caps.hint_clear, "core cleanup must reach native clear_hint");
         assert!(engine.inner.worker.lock().unwrap().is_none());
         assert!(!env.work().join("private").exists());
         engine.clear_hint("synthetic-child").unwrap();
