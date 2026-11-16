@@ -3,8 +3,10 @@ use crate::{Result, RunPolicy, Task};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read};
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 const LINE_CAP: usize = 64 * 1024;
 const DIAGNOSTIC_CAP: usize = 8192;
@@ -19,11 +21,19 @@ pub enum WorkerOutcome {
     Interrupted,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkerInterruption {
+    Deadline,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkerResult {
     pub outcome: WorkerOutcome,
     pub exit_code: i32,
     pub error_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interruption: Option<WorkerInterruption>,
 }
 
 impl WorkerResult {
@@ -63,14 +73,27 @@ pub(crate) fn run(
     policy: &RunPolicy,
     lock: &File,
     session: Option<&str>,
+    remaining: Duration,
+    on_session: &mut (dyn FnMut(&str) -> Result<()> + Send),
 ) -> Result<Worker> {
+    let terminate = policy
+        .terminate_binary
+        .as_deref()
+        .ok_or("no trusted kill executable outside the source project")?;
     let mut command = Command::new(binary);
     crate::isolate_git_environment(&mut command);
     command
         .env("PATH", &policy.host_path)
         .env_remove("OXA_TRUST_PROJECT")
         .current_dir(root)
-        .args(["-na", "--mode=json", "--model", &task.model]);
+        .args([
+            "-na",
+            "--mode=json",
+            "--model",
+            &task.model,
+            "--max-time",
+            &remaining.as_secs_f64().to_string(),
+        ]);
     if policy.offline {
         command.arg("--offline");
     }
@@ -87,11 +110,61 @@ pub(crate) fn run(
     let stdout = child.stdout.take().ok_or("worker stdout missing")?;
     let stderr = child.stderr.take().ok_or("worker stderr missing")?;
     std::thread::scope(|scope| {
-        let header = scope.spawn(|| read_session(stdout));
-        let terminal = scope.spawn(|| read_result(stderr));
-        let status = child.wait().map_err(|e| format!("wait for worker: {e}"))?;
-        let session = header.join().map_err(|_| "worker header reader failed")??;
-        let (result, diagnostic) = terminal.join().map_err(|_| "worker result reader failed")??;
+        let (notice_tx, notice_rx) = std::sync::mpsc::channel();
+        let header_tx = notice_tx.clone();
+        let header = scope.spawn(move || {
+            read_session(stdout, &mut |id| {
+                let result = on_session(id);
+                if let Err(error) = &result {
+                    let _ = header_tx.send(Some(error.clone()));
+                }
+                result
+            })
+        });
+        let terminal = scope.spawn(move || {
+            let result = read_result(stderr);
+            let _ = notice_tx.send(None);
+            result
+        });
+        let waited = match crate::worker_wait::wait(
+            &mut child,
+            &notice_rx,
+            remaining,
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+            terminate,
+        ) {
+            Ok(waited) => waited,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = header.join();
+                let _ = terminal.join();
+                return Err(error);
+            }
+        };
+        let session = header.join().map_err(|_| "worker header reader failed")?;
+        let terminal = terminal.join().map_err(|_| "worker result reader failed")?;
+        if let Some(error) = waited.failure {
+            return Err(error);
+        }
+        let status = waited.status;
+        if waited.deadline {
+            return Ok(Worker {
+                result: WorkerResult {
+                    outcome: WorkerOutcome::Interrupted,
+                    exit_code: status
+                        .code()
+                        .unwrap_or_else(|| 128 + status.signal().unwrap_or(9)),
+                    error_class: Some("worker_deadline".into()),
+                    interruption: Some(WorkerInterruption::Deadline),
+                },
+                session: session.ok().flatten(),
+                diagnostic: "worker exceeded max_time and its wrap-up grace; worktree retained".into(),
+            });
+        }
+        let session = session?;
+        let (result, diagnostic) = terminal?;
         if status.code() != Some(result.exit_code) {
             return Err("worker exit code disagrees with its oxa_result".into());
         }
@@ -106,7 +179,7 @@ pub(crate) fn run(
     })
 }
 
-fn read_session(pipe: impl Read) -> Result<Option<String>> {
+fn read_session(pipe: impl Read, on_session: &mut dyn FnMut(&str) -> Result<()>) -> Result<Option<String>> {
     let mut reader = BufReader::new(pipe);
     let session = line(&mut reader)?.and_then(|line| {
         let value: serde_json::Value = serde_json::from_slice(&line).ok()?;
@@ -121,7 +194,9 @@ fn read_session(pipe: impl Read) -> Result<Option<String>> {
                         .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
             })
     });
+    let recorded = session.as_deref().map(on_session).transpose();
     std::io::copy(&mut reader, &mut std::io::sink()).map_err(|e| e.to_string())?;
+    recorded?;
     Ok(session)
 }
 
