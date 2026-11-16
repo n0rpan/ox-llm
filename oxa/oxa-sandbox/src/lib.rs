@@ -221,10 +221,7 @@ impl Bwrap {
         live: &mut dyn FnMut(&[u8]),
         capture: bool,
     ) -> ExecResult {
-        let (mut public, secret) = split_secrets(s);
-        // #639: keep Git's ref-first/config-second rename from partially succeeding.
-        // Only bwrap gets this usability guard; full access keeps ordinary host Git.
-        public.command = format!("{}\n{}", include_str!("git_preflight.bash"), public.command);
+        let (public, secret) = split_secrets(s);
         let mut argv = vec![self.bwrap.to_string_lossy().into_owned()];
         argv.extend(bwrap_args_with(&public, &self.home, &self.layout));
         let mut args_fd = None;

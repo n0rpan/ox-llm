@@ -335,6 +335,42 @@ pub(crate) fn git_config_note(output: &str, exit: Option<i32>) -> Option<String>
     }
 }
 
+/// #639: Git changes refs before rewriting the protected config. Explain the partial
+/// success after the fact, without wrapping Git or trying to parse its option grammar.
+/// Names are deliberately taken from the reflog, not guessed from shell command text.
+pub(crate) fn git_branch_note(output: &str, exit: Option<i32>) -> Option<String> {
+    if !exit.is_some_and(|code| code != 0)
+        || !output.lines().any(|line| {
+            line.starts_with("error: could not write config file ")
+                && (line.ends_with(": Device or resource busy") || line.ends_with(": Read-only file system"))
+        })
+    {
+        return None;
+    }
+    let renamed = output
+        .lines()
+        .any(|line| line == "fatal: branch is renamed, but update of config-file failed");
+    let copied = output
+        .lines()
+        .any(|line| line == "fatal: branch is copied, but update of config-file failed");
+    let (action, undo, finish) = if renamed {
+        (
+            "renamed",
+            "git branch -m -- NEW OLD",
+            "git config --rename-section branch.OLD branch.NEW",
+        )
+    } else if copied {
+        (
+            "copied",
+            "git branch -d -- NEW",
+            "git config --copy-section branch.OLD branch.NEW",
+        )
+    } else {
+        return None;
+    };
+    Some(format!("The branch was {action} already; only the config update failed because Git config is read-only in the sandbox. Stop and inspect the result; do not retry the original command. Use `git branch` and `git reflog -1 --format=%gs NEW` to confirm the old and new names (replace NEW with the affected destination branch). To undo the ref change, run `{undo}`, replacing OLD and NEW with those names and shell-quoting them. A rename back inside the sandbox can report the same config error after restoring the ref; verify with `git branch`. Alternatively, keep the ref change and finish the config update outside the sandbox with `{finish}` (substitute the names; only needed if branch.OLD exists)."))
+}
+
 /// #290: keep shared git metadata protected, but offer an exclusion route that needs no
 /// tracked-file edits. Only a failed shell redirection diagnostic counts, not quoted issue text.
 pub(crate) fn git_exclude_note(output: &str, exit: Option<i32>) -> Option<String> {
@@ -580,6 +616,7 @@ impl BashTool {
             .sandbox
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
+        let note = note.or_else(|| git_branch_note(&output, res.exit));
         let note = note.or_else(|| git_config_note(&output, res.exit));
         let note = note.or_else(|| git_exclude_note(&output, res.exit));
         let note = note.or_else(|| gh_comments_note(raw_command, &output, res.exit).map(str::to_string));
@@ -877,6 +914,46 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert!(!res.text.contains("sandbox"), "{}", res.text);
+    }
+
+    #[test]
+    fn git_branch_partial_failure_has_recovery_commands() {
+        for (action, undo) in [
+            ("renamed", "git branch -m -- NEW OLD"),
+            ("copied", "git branch -d -- NEW"),
+        ] {
+            let output = format!("error: could not write config file /repo/.git/config: Device or resource busy\nfatal: branch is {action}, but update of config-file failed\n");
+            let sb = Fake::ok(output.as_bytes(), Some(128));
+            let (res, _) = run_with(
+                &sb,
+                json!({"command": "git branch -m new-name"}),
+                Mode::Workspace,
+                &CancelToken::new(),
+            );
+            assert!(res.is_error);
+            assert!(res.text.contains(undo), "{}", res.text);
+            assert!(res.text.contains("do not retry"), "{}", res.text);
+            assert!(res.text.contains("git reflog -1 --format=%gs"), "{}", res.text);
+            assert!(res.text.contains("outside the sandbox"), "{}", res.text);
+        }
+    }
+
+    #[test]
+    fn git_branch_note_requires_failed_git_read_only_diagnostics() {
+        let output = "error: could not write config file .git/config: Read-only file system\nfatal: branch is renamed, but update of config-file failed\n";
+        assert!(git_branch_note(output, Some(128)).is_some());
+        for exit in [Some(0), None] {
+            assert!(git_branch_note(output, exit).is_none());
+        }
+        for unrelated in [
+            output.replace("Read-only file system", "Permission denied"),
+            output.replace("fatal: branch", "quoted: fatal: branch"),
+            output.replace("error: could not", "quoted: error: could not"),
+            "fatal: branch is renamed, but update of config-file failed\n".into(),
+            "error: could not write config file .git/config: Device or resource busy\n".into(),
+        ] {
+            assert!(git_branch_note(&unrelated, Some(128)).is_none(), "{unrelated}");
+        }
     }
 
     #[test]
