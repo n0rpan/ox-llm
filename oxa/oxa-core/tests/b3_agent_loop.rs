@@ -466,7 +466,7 @@ fn deny_path() {
     assert_eq!(eng.requests().len(), 2);
     assert_eq!(runs.load(Ordering::SeqCst), 0, "a denied tool never runs");
 
-    // Workspace mode asks for writes outside cwd; headless UI answers Deny.
+    // Ask mode asks even for writes inside cwd; headless UI answers Deny.
     let (mut st2, eng2) = scripted_state(
         &env,
         vec![turn_calls(vec![("w2", "writer", "{}")]), ScriptTurn::text("ok")],
@@ -476,7 +476,18 @@ fn deny_path() {
     say(&mut st2, "write again");
     let (end2, _) = run(&mut st2);
     assert_eq!(end2, RunEnd::Stopped);
-    assert_eq!(tool_text(&st2.transcript.wire()[2]), tool_errors::DENIED_BY_USER);
+    // #554: nobody was asked, so the text must not claim that "the user declined"; it names the
+    // action and says why it was refused.
+    let unasked = tool_text(&st2.transcript.wire()[2]);
+    assert_ne!(unasked, tool_errors::DENIED_BY_USER);
+    assert_eq!(
+        unasked,
+        format!(
+            "Permission denied: write {} needs approval, but this run cannot ask (non-interactive), so it was refused; nobody declined it.",
+            st2.cwd.join("out.txt").display()
+        ),
+        "Ask mode must not promise approval-free writes or bash commands"
+    );
     assert_eq!(eng2.requests().len(), 2);
     assert_eq!(runs.load(Ordering::SeqCst), 0);
 }
