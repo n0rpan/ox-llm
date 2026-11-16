@@ -154,8 +154,9 @@ fn request(chat: &Chat<'_>) -> Result<Value, Error> {
         .map(|v| v.as_str().ok_or(Error::Request("reasoning_effort")))
         .transpose()?;
     body["reasoning"] = match effort {
-        Some("none") => json!({"enabled":false}),
-        Some(effort @ ("minimal" | "low" | "medium" | "high" | "xhigh")) => json!({"effort":effort}),
+        Some("none" | "minimal") => json!({"enabled":false}),
+        Some("xhigh") => json!({"effort":"high"}),
+        Some(effort @ ("low" | "medium" | "high")) => json!({"effort":effort}),
         Some(_) => return Err(Error::Request("reasoning_effort")),
         None => match chat
             .payload
@@ -297,6 +298,12 @@ impl<'a> Stream<'a> {
         let mut assistant = json!({"role":"assistant","content":self.text});
         if !self.reasoning.is_empty() {
             assistant["reasoning_content"] = json!(self.reasoning);
+        }
+        // As in Go, a length stop cannot authorize tool execution. Discard
+        // held fragments (even complete JSON) before parsing or publication;
+        // trusted terminal usage still settles the request normally.
+        if reason == "length" {
+            self.tools.clear();
         }
         let mut tools = Vec::new();
         for (slot, tool) in self.tools.values_mut().enumerate() {
