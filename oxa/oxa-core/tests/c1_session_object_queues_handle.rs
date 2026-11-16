@@ -7,7 +7,9 @@ use oxa_config::{Dirs, QueueMode, Settings};
 use oxa_core::{Deps, Open, Queue, Session, Shared, ToolSelection};
 use oxa_fake::{ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
-use oxa_proto::{AgentEvent, EntryBody, HeadlessUi, Mode, Part, ThinkingLevel, VecSink};
+use oxa_proto::{
+    Access, AgentEvent, Decision, EntryBody, HeadlessUi, Mode, Part, Policy, ThinkingLevel, VecSink,
+};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::{MemStore, SessionStore};
@@ -366,4 +368,21 @@ fn queue_struct_starts_empty() {
     assert!(q.steering.is_empty() && q.follow_up.is_empty());
     let sh = Shared::new(QueueMode::All, QueueMode::All);
     assert!(!sh.busy.load(Ordering::SeqCst));
+}
+
+/// #522: a new session points the policy at its spill directory, so the full output of a
+/// capped result reads without a question (an unattended run cannot answer one).
+#[test]
+fn opening_a_session_makes_its_spill_directory_readable() {
+    let env = TestEnv::new();
+    let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
+    let s = Session::open(deps(&env, store), Open::New).expect("open");
+    let st = s.inner();
+    let read = |p: PathBuf| st.policy.decide(Mode::Workspace, &Access::Read(p), &st.cwd);
+    assert_eq!(read(st.spill_dir.join("0123.txt")), Decision::Allow);
+    assert_eq!(
+        read(st.dirs.tmp_dir.join("other-session/0123.txt")),
+        Decision::Ask,
+        "outside the cwd and not this session's"
+    );
 }

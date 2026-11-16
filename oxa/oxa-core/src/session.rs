@@ -1474,6 +1474,7 @@ fn latest_of(store: &dyn SessionStore, cwd: &std::path::Path) -> Option<SessionR
 fn attach_ids(st: &mut SessionState) {
     let id = st.sref.id.clone();
     st.spill_dir = st.dirs.tmp_dir.join(&id);
+    st.policy.set_spill_dir(&st.spill_dir);
     refresh_tool_env(st);
 }
 

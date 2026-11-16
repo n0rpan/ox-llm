@@ -20,12 +20,16 @@ pub mod deny_reasons {
 }
 
 /// B3 (wave H lane `harden`): the deny-list of the file tools, the same paths the bash sandbox
-/// masks. `allow` holds the exceptions inside a denied path (the spill files of the sessions,
-/// under the agent directory's `tmp`, which the read tool must reach as before).
+/// masks. `allow` holds the exceptions inside a denied path (codemode's shared spill directory,
+/// `<tmp>/codemode`); `spill` is the current session's spill directory (`<tmp>/<session id>`),
+/// the only other part of `tmp` the file tools reach: other sessions' spill files stay denied.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathGuard {
     deny: Vec<PathBuf>,
     allow: Vec<PathBuf>,
+    /// The current session's spill directory: the full output of a capped result is read from
+    /// here without asking (#522).
+    spill: Option<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
     /// The home directory and its startup files, keys and agent settings
@@ -37,7 +41,8 @@ pub struct PathGuard {
 
 impl PathGuard {
     /// The deny-list of `home` and `agent_dir` only (use [`PathGuard::with_real_home`] to add the
-    /// account's real home), with `tmp_dir` (the spill files) excepted.
+    /// account's real home), with codemode's spill directory under `tmp_dir` excepted. The
+    /// session's own spill directory is set with [`PathGuard::set_spill_dir`].
     pub fn new(home: &Path, agent_dir: &Path, tmp_dir: &Path) -> PathGuard {
         PathGuard::with_real_home(home, None, agent_dir, tmp_dir)
     }
@@ -62,7 +67,8 @@ impl PathGuard {
         }
         PathGuard {
             deny,
-            allow: vec![tmp_dir.to_path_buf()],
+            allow: vec![tmp_dir.join("codemode")],
+            spill: None,
             read_allow: vec![agent_dir.join("builtin-skills")],
             home: home.to_path_buf(),
             home_protected,
@@ -80,9 +86,21 @@ impl PathGuard {
                 || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
     }
 
+    /// Point the exception at the spill directory of the session now running.
+    pub fn set_spill_dir(&mut self, dir: &Path) {
+        self.spill = Some(dir.to_path_buf());
+    }
+
+    /// `p` (absolute) is inside the current session's spill directory.
+    pub fn is_spill(&self, p: &Path) -> bool {
+        self.spill.as_ref().is_some_and(|s| is_inside(p, s))
+    }
+
     /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
     pub fn denies(&self, p: &Path) -> bool {
-        self.deny.iter().any(|d| is_inside(p, d)) && !self.allow.iter().any(|a| is_inside(p, a))
+        self.deny.iter().any(|d| is_inside(p, d))
+            && !self.allow.iter().any(|a| is_inside(p, a))
+            && !self.is_spill(p)
     }
 
     /// Like [`PathGuard::denies`] for a read: the built-in skills are readable.
@@ -315,6 +333,11 @@ impl Policy for ModePolicy {
             if matches!(a, Access::Read(_)) && self.guard.is_builtin_skill(&abs) {
                 return Decision::Allow;
             }
+            // #522: the full output of a capped result is read without asking, so an
+            // unattended run can recover it.
+            if matches!(a, Access::Read(_)) && self.guard.is_spill(&abs) {
+                return Decision::Allow;
+            }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.
             if let Access::Write(_) = a {
                 let protected = protected_write(&abs, cwd)
@@ -339,6 +362,10 @@ impl Policy for ModePolicy {
             },
             d => d,
         }
+    }
+
+    fn set_spill_dir(&mut self, dir: &Path) {
+        self.guard.set_spill_dir(dir);
     }
 
     fn remember(&mut self, a: &Access) {

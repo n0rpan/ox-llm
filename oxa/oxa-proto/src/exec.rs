@@ -167,4 +167,7 @@ pub trait Policy: Send {
     fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision;
     /// Record an [`Answer::Session`] grant for `a`. Grants never outlive the session.
     fn remember(&mut self, a: &Access);
+    /// The spill directory of the session that now runs: the full output of a capped result
+    /// lives there, and a read of it needs no question. Default: nothing special.
+    fn set_spill_dir(&mut self, _dir: &Path) {}
 }

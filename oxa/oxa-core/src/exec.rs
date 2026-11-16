@@ -760,11 +760,12 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
                 Answer::Once => {}
                 Answer::Session => st.policy.remember(a),
                 Answer::Deny => {
-                    return mk(
-                        args,
-                        exec,
-                        Plan::Done(ToolOutput::error(tool_errors::DENIED_BY_USER)),
-                    );
+                    let text = if ui.interactive() {
+                        tool_errors::DENIED_BY_USER
+                    } else {
+                        tool_errors::DENIED_UNATTENDED
+                    };
+                    return mk(args, exec, Plan::Done(ToolOutput::error(text)));
                 }
             },
         }

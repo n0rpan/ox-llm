@@ -466,7 +466,8 @@ fn deny_path() {
     assert_eq!(eng.requests().len(), 2);
     assert_eq!(runs.load(Ordering::SeqCst), 0, "a denied tool never runs");
 
-    // Workspace mode asks for writes outside cwd; headless UI answers Deny.
+    // Workspace mode asks for writes outside cwd; headless UI answers Deny, and the text says
+    // that nobody could answer (#522), not that a user declined.
     let (mut st2, eng2) = scripted_state(
         &env,
         vec![turn_calls(vec![("w2", "writer", "{}")]), ScriptTurn::text("ok")],
@@ -476,7 +477,10 @@ fn deny_path() {
     say(&mut st2, "write again");
     let (end2, _) = run(&mut st2);
     assert_eq!(end2, RunEnd::Stopped);
-    assert_eq!(tool_text(&st2.transcript.wire()[2]), tool_errors::DENIED_BY_USER);
+    assert_eq!(
+        tool_text(&st2.transcript.wire()[2]),
+        tool_errors::DENIED_UNATTENDED
+    );
     assert_eq!(eng2.requests().len(), 2);
     assert_eq!(runs.load(Ordering::SeqCst), 0);
 }

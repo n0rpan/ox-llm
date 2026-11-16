@@ -977,6 +977,9 @@ fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaErr
                 st.policy.remember(a);
                 Ok(())
             }
+            Answer::Deny if !ui.interactive() => {
+                Err(OxaError::new(codes::DENIED, tool_errors::DENIED_UNATTENDED))
+            }
             Answer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
         },
     }

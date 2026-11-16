@@ -70,14 +70,15 @@ fn denied_paths_are_refused_in_every_mode_and_through_every_door() {
         ),
         SENSITIVE
     );
+    // Another session's spill files stay denied: only the running session's are readable.
     assert_eq!(
         p.decide(
             Mode::Workspace,
             &Access::Read(env.agent_dir().join("tmp/s1/out.txt")),
             &env.work()
         ),
-        Decision::Ask,
-        "a spill file reads as before (outside the cwd: ask)"
+        SENSITIVE,
+        "no spill directory is set: the spill files of sessions are denied"
     );
     // A plain file of the project is unaffected.
     assert_eq!(
@@ -517,6 +518,57 @@ fn builtin_skills_are_readable_but_not_writable_by_tools() {
     let auth = env.agent_dir().join("auth.json");
     assert_eq!(
         p.decide(Mode::Workspace, &Access::Read(auth), &env.work()),
+        SENSITIVE
+    );
+}
+
+/// #522: the full output of a capped result is read without a question (an unattended run
+/// cannot answer one), and only from the running session's spill directory.
+#[test]
+fn the_current_spill_directory_reads_without_asking_and_no_other_does() {
+    let env = TestEnv::new();
+    let mut p = guarded(&env);
+    p.set_spill_dir(&env.agent_dir().join("tmp/s1"));
+    let read = |rel: &str| Access::Read(env.agent_dir().join(rel));
+    for mode in [Mode::Plan, Mode::Workspace, Mode::Ask] {
+        assert_eq!(
+            p.decide(mode, &read("tmp/s1/0123.txt"), &env.work()),
+            Decision::Allow,
+            "{mode:?}"
+        );
+    }
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("tmp/s2/0123.txt"), &env.work()),
+        SENSITIVE,
+        "another session's spill file"
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("tmp/s1/../s2/0123.txt"), &env.work()),
+        SENSITIVE,
+        "`..` does not leave the spill directory"
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("trust.json"), &env.work()),
+        SENSITIVE,
+        "the rest of the agent directory"
+    );
+    // The exception is a read: a write there still asks outside the cwd.
+    assert_eq!(
+        p.decide(
+            Mode::Workspace,
+            &Access::Write(env.agent_dir().join("tmp/s1/x.txt")),
+            &env.work()
+        ),
+        Decision::Ask
+    );
+    // A new session moves the exception.
+    p.set_spill_dir(&env.agent_dir().join("tmp/s2"));
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("tmp/s2/0123.txt"), &env.work()),
+        Decision::Allow
+    );
+    assert_eq!(
+        p.decide(Mode::Workspace, &read("tmp/s1/0123.txt"), &env.work()),
         SENSITIVE
     );
 }
