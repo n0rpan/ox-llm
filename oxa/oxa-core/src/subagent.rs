@@ -300,9 +300,9 @@ struct Inner {
     child_pgid: Mutex<Vec<u32>>,
     /// Set by `shutdown`: the call in progress stops.
     abort: AtomicBool,
-    /// The parent's YOLO switch (O-182), read when a child's argv is built: a child started
-    /// while it is on gets `--yolo`. Not a global: the process hands its own switch in
-    /// (`with_yolo`); `None` = no `--yolo` ever.
+    /// The parent's autonomy switch (O-182, #202), read when a child's argv is built: the child
+    /// gets `--standard`, `--auto` or `--yolo` for its level then. Not a global: the process
+    /// hands its own switch in (`with_yolo`); `None` = no level flag.
     yolo: Mutex<Option<YoloSwitch>>,
 }
 
@@ -312,8 +312,8 @@ struct Inner {
 /// Provides one `Direct` tool `subagent` with pi's three shapes: single `{agent, task}`,
 /// `{tasks: [..]}` (parallel = queued on the one engine) and `{chain: [..]}` (`{previous}`
 /// substitution). Each child is the process `<oxa_bin> --mode json -p --no-session --model
-/// <session model> --permission-mode <mode> [--yolo] [--tools ..] [--append-system-prompt <agent
-/// prompt>] "Task: <task>"` (`--yolo` only while the parent's YOLO switch is on) in its own
+/// <session model> --permission-mode <mode> [--standard|--auto|--yolo] [--tools ..] [--append-system-prompt <agent
+/// prompt>] "Task: <task>"` (the parent's autonomy level, when it handed its switch in) in its own
 /// process group, with the environment of the module docs.
 /// Before the first child starts, the parent parks its state (`HostAction::ParkSession`).
 /// Child JSON records stream to `live` as progress lines; abort kills the child's process
@@ -367,9 +367,8 @@ impl SubagentHooks {
     pub const MAX_PARALLEL_TASKS: usize = MAX_PARALLEL_TASKS;
     pub const MIN_CONTEXT: u32 = MIN_CONTEXT;
 
-    /// O-182: the parent's YOLO switch. A child started while it is on runs with `--yolo` (the
-    /// sandbox, the deny-list and the question for writes to the project's `.oxa` stay as they
-    /// are for the parent); a child started while it is off gets the argv it always had.
+    /// O-182, #202: the parent's autonomy switch. Each child inherits the level the parent has
+    /// when the child starts (`--standard`, `--auto` or `--yolo`).
     pub fn with_yolo(self, switch: YoloSwitch) -> SubagentHooks {
         *lock(&self.inner.yolo) = Some(switch);
         self
@@ -1215,9 +1214,10 @@ impl Run<'_, '_> {
         }
         argv.push("--permission-mode".into());
         argv.push(self.cx.mode.as_str().into());
-        // O-182: the parent's YOLO state at this moment (a later child sees a later state).
-        if lock(&self.inner.yolo).as_ref().is_some_and(YoloSwitch::is_on) {
-            argv.push("--yolo".into());
+        // O-182, #202: the parent's autonomy level at this moment (a later child sees a later
+        // state), always explicit so a child never takes a higher `permissions.defaultMode`.
+        if let Some(level) = lock(&self.inner.yolo).as_ref().map(YoloSwitch::level) {
+            argv.push(format!("--{}", level.as_str()));
         }
         if let Some(tools) = agent.tools.as_ref().filter(|t| !t.is_empty()) {
             argv.push("--tools".into());

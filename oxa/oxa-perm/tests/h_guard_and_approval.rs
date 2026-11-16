@@ -373,7 +373,7 @@ fn started_in_home_the_startup_files_ask_and_the_folders_are_the_workspace() {
     env.write("home/project/keep", "");
     env.write("home/.config/systemd/user/a.service", "");
     let home = env.home();
-    let switch = oxa_proto::YoloSwitch::new(true);
+    let switch = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Auto);
     for p in [guarded(&env), guarded(&env).with_yolo(switch)] {
         for rel in [
             ".bashrc",
@@ -860,7 +860,7 @@ fn inherited_spills_are_read_only_and_cannot_escape_or_survive_a_switch() {
     let unrelated = env.agent_dir().join("tmp/unrelated/out.txt");
     let linked = source.join("linked.txt");
     std::os::unix::fs::symlink(&unrelated, &linked).unwrap();
-    let mut p = guarded(&env).with_yolo(oxa_proto::YoloSwitch::new(true));
+    let mut p = guarded(&env).with_yolo(oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Auto));
     p.set_spill_dir(&env.agent_dir().join("tmp/current"));
     p.set_inherited_spill_dirs(std::slice::from_ref(&source));
     for mode in Mode::ALL {

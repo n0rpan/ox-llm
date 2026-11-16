@@ -7,7 +7,7 @@ use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::{ModePolicy, PathGuard};
-use oxa_proto::{HeadlessUi, Role, ToolCall, VecSink};
+use oxa_proto::{Autonomy, HeadlessUi, Mode, Role, ToolCall, VecSink, YoloSwitch};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::MemStore;
@@ -19,6 +19,16 @@ const MARK: &str = "zq517marker";
 /// Run one reply with `calls` (name, args) in a session whose cwd is `cwd`, with the guard of
 /// the fake home; the tool results in call order.
 fn results(env: &TestEnv, cwd: &Path, calls: &[(&str, serde_json::Value)]) -> Vec<String> {
+    results_in_mode(env, cwd, calls, Autonomy::Standard, Mode::Workspace)
+}
+
+fn results_in_mode(
+    env: &TestEnv,
+    cwd: &Path,
+    calls: &[(&str, serde_json::Value)],
+    autonomy: Autonomy,
+    mode: Mode,
+) -> Vec<String> {
     let dirs = Dirs::under(env.root());
     let calls: Vec<ToolCall> = calls
         .iter()
@@ -39,7 +49,11 @@ fn results(env: &TestEnv, cwd: &Path, calls: &[(&str, serde_json::Value)]) -> Ve
             store: Arc::new(MemStore::new()),
             tools: oxa_tools::builtin_tools(),
             hooks: Vec::new(),
-            policy: Box::new(ModePolicy::new().with_guard(guard)),
+            policy: Box::new(
+                ModePolicy::new()
+                    .with_guard(guard)
+                    .with_yolo(YoloSwitch::new(autonomy)),
+            ),
             sandbox: Arc::new(NoSandbox),
             settings: Settings::default(),
             dirs,
@@ -48,7 +62,7 @@ fn results(env: &TestEnv, cwd: &Path, calls: &[(&str, serde_json::Value)]) -> Ve
             resources: Resources::default(),
             model: None,
             thinking: None,
-            mode: None,
+            mode: Some(mode),
             session_id: Some("s1".to_string()),
             jobs: oxa_core::fresh_jobs(),
         },
@@ -181,5 +195,27 @@ fn a_root_reached_through_a_symlink_still_hides_the_deny_list() {
     assert!(text.contains("notes.txt"), "{text}");
     for leak in ["ssh", "gh", "netrc"] {
         assert!(!text.contains(&format!("{MARK} {leak}")), "{leak} leaked: {text}");
+    }
+}
+
+#[test]
+fn yolo_walks_show_credentials_but_auto_and_plan_keep_the_floor() {
+    let env = TestEnv::new();
+    secrets(&env);
+    let calls = [
+        ("grep", serde_json::json!({"pattern": MARK, "path": "."})),
+        ("find", serde_json::json!({"pattern": "*"})),
+        ("ls", serde_json::json!({"path": "."})),
+    ];
+    for (autonomy, mode, full) in [
+        (Autonomy::Yolo, Mode::Workspace, true),
+        (Autonomy::Auto, Mode::Workspace, false),
+        (Autonomy::Yolo, Mode::Plan, false),
+    ] {
+        let out = results_in_mode(&env, &env.home(), &calls, autonomy, mode);
+        assert_eq!(out[0].contains(&format!("{MARK} ssh")), full, "{}", out[0]);
+        assert_eq!(out[1].contains("id_x"), full, "{}", out[1]);
+        assert_eq!(out[2].contains(".ssh"), full, "{}", out[2]);
+        assert!(out[0].contains("notes.txt"), "{}", out[0]);
     }
 }
