@@ -389,6 +389,8 @@ struct Built {
     model: Option<String>,
     thinking: Option<ThinkingLevel>,
     mode: Option<Mode>,
+    /// A supervised subagent keeps SIGTERM as immediate supervisor cancellation.
+    supervised_child: bool,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
@@ -800,6 +802,7 @@ fn prepare(
         model,
         thinking,
         mode: a.permission_mode,
+        supervised_child: child.nested(),
         hook_sets,
         yolo,
     };
@@ -1018,7 +1021,8 @@ fn run_headless(
             );
         }
     }
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time) {
+    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
+    {
         Ok(limit) => limit,
         Err(error) => return finish_outcome(Err(error), stderr),
     };
@@ -1056,7 +1060,8 @@ fn run_rpc(
     };
     notices.extend(handshake_notice(&built));
     write_notices(stderr, notices);
-    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time) {
+    let _limit = match crate::limits::LimitWatcher::start(session.handle(), max_time, built.supervised_child)
+    {
         Ok(limit) => limit,
         Err(error) => return finish_outcome(Err(error), stderr),
     };
