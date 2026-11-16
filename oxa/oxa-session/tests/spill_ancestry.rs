@@ -103,6 +103,113 @@ fn retained_ancestry_refuses_invalid_ids_and_mismatched_records() {
 }
 
 #[test]
+fn malformed_records_do_not_hide_unrelated_valid_ancestry() {
+    for bad_record in [
+        "{\"type\":\"session\",",
+        "{}",
+        r#"{"type":"session","version":3,"id":"../outside"}"#,
+    ] {
+        let env = oxa_fake::TestEnv::new();
+        let tmp = env.root().join("tmp");
+        let store = MemStore::new();
+        let cwd = Path::new("/work/project");
+        let src = store.create(cwd, Some("source"), None).unwrap();
+        let child = store.create(cwd, Some("child"), Some(&src.path)).unwrap();
+        fs::create_dir_all(tmp.join("source")).unwrap();
+        fs::write(tmp.join("source/output.txt"), "inherited output").unwrap();
+        remove_session_preserving_spills(&store, &tmp, &src).unwrap();
+        fs::write(tmp.join(".spill-ancestry/broken.json"), bad_record).unwrap();
+        assert_eq!(
+            inherited_spill_dirs(&store, &tmp, &child),
+            vec![tmp.join("source")],
+            "unrelated invalid record: {bad_record}"
+        );
+        // Incomplete ancestry cannot safely justify deleting any retained output.
+        assert!(remove_spill_dir_unless_forked(&store, &tmp, &src).is_err());
+        assert_eq!(
+            fs::read_to_string(tmp.join("source/output.txt")).unwrap(),
+            "inherited output"
+        );
+        fs::remove_file(tmp.join(".spill-ancestry/broken.json")).unwrap();
+        remove_session_preserving_spills(&store, &tmp, &child).unwrap();
+        assert_eq!(remove_spill_dir_unless_forked(&store, &tmp, &child).unwrap(), 1);
+        assert!(!tmp.join("source").exists());
+    }
+}
+
+#[test]
+fn retained_ancestry_is_published_by_replacement_not_in_place() {
+    let env = oxa_fake::TestEnv::new();
+    let tmp = env.root().join("tmp");
+    let store = MemStore::new();
+    let src = store
+        .create(Path::new("/work/project"), Some("source"), None)
+        .unwrap();
+    remove_session_preserving_spills(&store, &tmp, &src).unwrap();
+    let record = tmp.join(".spill-ancestry/source.json");
+    let snapshot = env.root().join("previous.json");
+    fs::hard_link(&record, &snapshot).unwrap();
+    let previous = fs::read(&snapshot).unwrap();
+    // Simulate replacing a record on a later preservation attempt.
+    let src = store
+        .create(Path::new("/work/other"), Some("source"), None)
+        .unwrap();
+    remove_session_preserving_spills(&store, &tmp, &src).unwrap();
+    assert_ne!(fs::read(&record).unwrap(), previous);
+    assert_eq!(
+        fs::read(&snapshot).unwrap(),
+        previous,
+        "published records must never be truncated"
+    );
+    assert_eq!(fs::metadata(&record).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(fs::read_dir(record.parent().unwrap()).unwrap().count(), 1);
+}
+
+#[test]
+fn unpublished_temporary_records_do_not_affect_ancestry_or_cleanup() {
+    let env = oxa_fake::TestEnv::new();
+    let tmp = env.root().join("tmp");
+    let store = MemStore::new();
+    let src = store
+        .create(Path::new("/work/project"), Some("source"), None)
+        .unwrap();
+    let child = store
+        .create(Path::new("/work/project"), Some("child"), Some(&src.path))
+        .unwrap();
+    remove_session_preserving_spills(&store, &tmp, &src).unwrap();
+    fs::write(tmp.join(".spill-ancestry/.interrupted.tmp"), "{").unwrap();
+    assert_eq!(
+        inherited_spill_dirs(&store, &tmp, &child),
+        vec![tmp.join("source")]
+    );
+    assert_eq!(remove_spill_dir_unless_forked(&store, &tmp, &src).unwrap(), 0);
+    remove_session_preserving_spills(&store, &tmp, &child).unwrap();
+    assert_eq!(remove_spill_dir_unless_forked(&store, &tmp, &child).unwrap(), 0);
+    assert!(!tmp.join(".spill-ancestry/source.json").exists());
+}
+
+#[test]
+fn failed_publication_keeps_the_session_and_removes_staging_files() {
+    let env = oxa_fake::TestEnv::new();
+    let tmp = env.root().join("tmp");
+    let root = tmp.join(".spill-ancestry");
+    // A directory at the destination makes rename fail after the staged file was synced.
+    fs::create_dir_all(root.join("source.json")).unwrap();
+    let store = MemStore::new();
+    let src = store
+        .create(Path::new("/work/project"), Some("source"), None)
+        .unwrap();
+    assert!(remove_session_preserving_spills(&store, &tmp, &src).is_err());
+    assert!(store.header(&src).is_ok());
+    assert!(root.join("source.json").is_dir());
+    assert_eq!(
+        fs::read_dir(&root).unwrap().count(),
+        1,
+        "no staging files left after failure"
+    );
+}
+
+#[test]
 fn retained_ancestry_cycles_do_not_hang_or_grant_the_active_scope_as_an_ancestor() {
     let env = oxa_fake::TestEnv::new();
     let tmp = env.root().join("tmp");

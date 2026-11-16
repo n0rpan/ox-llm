@@ -6,12 +6,14 @@ use crate::{
 use oxa_proto::{codes, OxaError};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const ANCESTRY_DIR: &str = ".spill-ancestry";
+static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 type Retained = HashMap<PathBuf, (SessionRef, SessionHeader)>;
 
 /// Remove a session, saving only its header and original path first. Deleted headers keep
@@ -37,21 +39,64 @@ pub fn remove_session_preserving_spills(
     let root = tmp_dir.join(ANCESTRY_DIR);
     ensure_dir(&root)?;
     let path = root.join(format!("{}.json", session.id));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&path)
-        .map_err(|e| OxaError::io("cannot preserve spill ancestry", &e))?;
-    file.write_all(&bytes)
-        .and_then(|()| file.sync_all())
-        .map_err(|e| OxaError::io("cannot preserve spill ancestry", &e))?;
+    check_safe(&path)?;
+    // Only complete, synced records become visible to readers. An interrupted write leaves
+    // at most an unpublished .tmp file, never a truncated record at the final path.
+    let (staging, mut file) = loop {
+        let staging = root.join(format!(
+            ".{}-{}-{}.tmp",
+            session.id,
+            std::process::id(),
+            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
+        ));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(&staging)
+        {
+            Ok(file) => break (staging, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(OxaError::io("cannot preserve spill ancestry", &e)),
+        }
+    };
+    let publish = || -> Result<(), OxaError> {
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|e| OxaError::io("cannot preserve spill ancestry", &e))?;
+        check_safe(&path)?;
+        fs::rename(&staging, &path)
+            .and_then(|()| File::open(&root)?.sync_all())
+            .map_err(|e| OxaError::io("cannot publish spill ancestry", &e))
+    }();
+    if publish.is_err() {
+        let _ = fs::remove_file(&staging);
+    }
+    publish?;
     store.remove(session)
 }
 
-fn retained_sessions(tmp_dir: &Path) -> Result<Retained, OxaError> {
+fn read_retained_session(path: &Path) -> Result<(SessionRef, SessionHeader), OxaError> {
+    check_safe(path)?;
+    let bytes = read_file(path)?;
+    let header = decode_header(&bytes)?;
+    validate_session_id(&header.id)?;
+    if path.file_name() != Some(std::ffi::OsStr::new(&format!("{}.json", header.id))) {
+        return Err(OxaError::new(codes::INVALID, "spill ancestry id mismatch"));
+    }
+    let record: Value = serde_json::from_slice(&bytes).expect("decoded header");
+    let original = record["sessionPath"]
+        .as_str()
+        .ok_or_else(|| OxaError::new(codes::INVALID, "spill ancestry has no original session path"))?;
+    let sref = SessionRef {
+        path: PathBuf::from(original),
+        id: header.id.clone(),
+    };
+    Ok((sref, header))
+}
+
+fn retained_sessions(tmp_dir: &Path, tolerate_invalid_records: bool) -> Result<Retained, OxaError> {
     let root = tmp_dir.join(ANCESTRY_DIR);
     check_safe(&root)?;
     let entries = match fs::read_dir(&root) {
@@ -64,22 +109,18 @@ fn retained_sessions(tmp_dir: &Path) -> Result<Retained, OxaError> {
         let path = entry
             .map_err(|e| OxaError::io("cannot read spill ancestry", &e))?
             .path();
-        check_safe(&path)?;
-        let bytes = read_file(&path)?;
-        let header = decode_header(&bytes)?;
-        validate_session_id(&header.id)?;
-        if path.file_name() != Some(std::ffi::OsStr::new(&format!("{}.json", header.id))) {
-            return Err(OxaError::new(codes::INVALID, "spill ancestry id mismatch"));
+        if path.extension() != Some(std::ffi::OsStr::new("json")) {
+            continue; // Unpublished staging files are not ancestry records.
         }
-        let record: Value = serde_json::from_slice(&bytes).expect("decoded header");
-        let original = record["sessionPath"]
-            .as_str()
-            .ok_or_else(|| OxaError::new(codes::INVALID, "spill ancestry has no original session path"))?;
-        let sref = SessionRef {
-            path: PathBuf::from(original),
-            id: header.id.clone(),
-        };
-        retained.insert(sref.path.clone(), (sref, header));
+        match read_retained_session(&path) {
+            Ok((sref, header)) => {
+                retained.insert(sref.path.clone(), (sref, header));
+            }
+            // Reads may use independently validated records. Cleanup must fail closed:
+            // an incomplete ancestry map cannot prove that a spill is unreferenced.
+            Err(_) if tolerate_invalid_records => continue,
+            Err(e) => return Err(e),
+        }
     }
     Ok(retained)
 }
@@ -113,7 +154,7 @@ fn ancestors(store: &dyn SessionStore, session: &SessionRef, retained: &Retained
 /// Read-only spill scopes inherited from trusted session headers, never from tool/model text.
 /// Deleted headers are consulted only when the corresponding live session no longer resolves.
 pub fn inherited_spill_dirs(store: &dyn SessionStore, tmp_dir: &Path, session: &SessionRef) -> Vec<PathBuf> {
-    let retained = retained_sessions(tmp_dir).unwrap_or_default();
+    let retained = retained_sessions(tmp_dir, true).unwrap_or_default();
     ancestors(store, session, &retained)
         .iter()
         .map(|s| tmp_dir.join(&s.id))
@@ -131,7 +172,7 @@ pub fn remove_spill_dir_unless_forked(
     removed: &SessionRef,
 ) -> Result<usize, OxaError> {
     validate_session_id(&removed.id)?;
-    let retained = retained_sessions(tmp_dir)?;
+    let retained = retained_sessions(tmp_dir, false)?;
     let mut live = HashSet::new();
     for session in store.list(None) {
         live.insert(session.sref.id.clone());
