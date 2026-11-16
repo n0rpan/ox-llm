@@ -68,24 +68,31 @@ continued byte-identically by a NEW OS process, missing-state refusal, refresh,
 malformed refresh, timeout/lock release, dropped futures, cancellation, redirects,
 body bounds, private usage opt-out and decoded credential redaction.
 
-The early draft remains unregistered pending the remaining helper modules (#660 and #673); subscription adaptation #657 and
-request replay #663 are merged. Local development compiles against scratch copies of those helper
-interfaces; that is not a completed merged-main gate. Once they land, add the
-client module behind the existing upstream-openai/anthropic-client/ledger feature
-combination and run the normal gateway fmt/strict all-target Clippy/full tests.
-No new dependency, daemon or default-on behavior is introduced. Until module
-registration, this client adds no linked production code; default features remain
-empty. Runtime/provider wiring stays with rust-cloud.
+The client is registered only with the existing `upstream-openai`,
+`anthropic-client` and `ledger` feature combination. It adds no new dependency,
+daemon, default-on behavior or route. Default features remain empty; enabled
+binary-size delta is not measured. Runtime/provider wiring stays with rust-cloud.
 
-A full parallel gateway run also exposed an existing fixture collision outside
-this lane: Anthropic discovery and OpenRouter discovery use the same temporary
-`gateway-discovery-{pid}-{counter}` names with independent counters. Serial
-library tests pass; that is diagnostic evidence, not a replacement parallel gate.
-Shared `/tmp/.git` artifacts correctly trigger the existing key-file repository
-guard. Local isolation uses a private `/tmp` mount rather than bypassing it.
+The client branch includes normal merges of the actual #660 stream revision and
+#673 refusal classifier; validation uses their public modules, not scratch copies.
+The #660 takeover fixes reasoning/answer separation, ordered opaque replay with
+redacted Debug, invalid usage remaining unknown and inconsistent argument-prefix
+rewrites. All 21 stream regressions pass, including failing-first cases. The
+native incomplete/invalid-usage client case now passes as well.
 
-A native incomplete-response test also exposed a contract-item-5 mismatch in
-stream helper #660 at its current head: invalid final usage fails the response
-instead of leaving usage unknown. Missing/null and valid usage controls pass.
-The regression stays in the client suite; the helper owner has been notified.
-This draft is not qualified or READY until that helper contract passes too.
+Full gateway tests pass in the normal parallel mode with private HOME, a private
+`/tmp` mount and network namespace. This includes 102 library tests, 17 actual
+client integration tests, eight token-file tests and four subscription classifier
+tests, plus the remaining gateway suites. Strict all-target/all-feature Clippy,
+formatting and default-off checks pass. Persisted history is serialized to disk
+and continued by a newly spawned OS process in both modes; captured upstream
+request bytes equal the same-process continuation, including error tool results.
+
+The suite requires `strace` for its existing durability/fault-injection test.
+Local validation supplies a checksum-verified package only inside the test
+namespace, with no system install or test changes. Shared `/tmp/.git` artifacts
+correctly trigger the key-file repository guard; isolation uses a private `/tmp`
+mount rather than bypassing that guard. An earlier parallel discovery-fixture
+name collision is tracked with rust-cloud for its separate S7 fix; this passing
+parallel run does not claim to fix it. No scanner or acceptance requirement is
+weakened.
