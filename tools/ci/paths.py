@@ -37,7 +37,7 @@ def classify(paths, full_event=False):
     for path in paths:
         if documentation(path):
             continue
-        if path.startswith('oxa/oxc-gateway/') or path in ('oxa/Cargo.toml', 'oxa/Cargo.lock'):
+        if path.startswith(('oxa/oxc-gateway/', 'oxa/oxa-engine/', 'oxa/oxa-proto/')) or path in ('oxa/Cargo.toml', 'oxa/Cargo.lock'):
             components = {'oxa', 'gateway'}
         else:
             components = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))

@@ -147,6 +147,10 @@ impl ReplyAssembler {
     pub fn chunk(&mut self, data: &str) -> Result<Vec<StreamEvent>, OxaError> {
         let v: Value =
             serde_json::from_str(data).map_err(|e| broken(format!("malformed stream chunk: {e}")))?;
+        self.chunk_value(&v)
+    }
+    /// Assemble already-decoded gateway chunks without encoding and reparsing them.
+    pub fn chunk_value(&mut self, v: &Value) -> Result<Vec<StreamEvent>, OxaError> {
         let obj = v
             .as_object()
             .ok_or_else(|| broken("a stream chunk is not a JSON object".to_string()))?;
