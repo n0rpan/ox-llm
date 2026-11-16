@@ -221,6 +221,12 @@ impl Session {
         // X3: the limits of the model this session will use (the `--model` target when given,
         // loaded or not), so the first request already fits it.
         let info = engine.info(model.as_deref())?;
+        if info.caps.remote && oxa_proto::offline() {
+            return Err(oxa_proto::offline_error(&format!(
+                "the cloud model {}",
+                info.limits_for
+            )));
+        }
         // H: the startup thinking level (pi sdk.ts): the CLI choice, else the setting for this
         // model (`modelThinkingLevels`), else `defaultThinkingLevel` (default `medium`). A
         // resumed session restores its own recorded level (`restore_settings`).

@@ -152,12 +152,27 @@ fn offline_refusal_names_the_selected_model_not_the_first_catalog_entry() {
         words.push("hi");
         let (code, _, err) = go(&env, &server.url(), &[], &words);
         assert_eq!(code, 7, "{err}");
-        assert!(err.contains("the cloud model provider-b/selected needs the network"), "{err}");
+        assert!(
+            err.contains("the cloud model provider-b/selected needs the network"),
+            "{err}"
+        );
         assert!(!err.contains("provider-a/first"), "{err}");
         let record: serde_json::Value = serde_json::from_str(err.lines().last().unwrap()).unwrap();
         assert_eq!(record["outcome"], "blocked");
         assert_eq!(record["error_class"], "offline");
     }
+    // Untargeted catalog discovery is allowed, but choosing its default must still refuse.
+    let (code, _, err) = go(
+        &env,
+        &server.url(),
+        &[],
+        &["--offline", "-p", "--no-session", "hi"],
+    );
+    assert_eq!(code, 7, "{err}");
+    assert!(
+        err.contains("the cloud model provider-a/first needs the network"),
+        "{err}"
+    );
     assert!(server.requests().is_empty(), "offline must never generate");
 }
 
