@@ -173,6 +173,7 @@ fn run_inner(
                 text: String::new(),
                 got_data: false,
                 detector: crate::loopguard::LoopDetector::new(),
+                reasoning_detector: crate::loopguard::LoopDetector::new(),
                 cancel: st.shared.cancel.clone(),
                 looped: false,
             };
@@ -216,6 +217,8 @@ fn run_inner(
                     // `Shown { cut }` (never sent, W2) and the request is resent from the same
                     // wire; a fresh `MessageStart` opens the replay's message.
                     replays += 1;
+                    // The cut request ran and its usage never arrived: count the request.
+                    st.stats.requests += 1;
                     let text = if partial.is_empty() {
                         e.to_string()
                     } else {
@@ -687,9 +690,9 @@ fn turn_end(
     crate::fire::turn_end(st, ids.0, &message, &tool_results, (ids.1, ids.2), sink, ui);
 }
 
-/// A request whose reply is not kept (the overrun turn and a failed retry): its tokens still
+/// A request whose reply is not kept (the overrun turn, a failed retry and a context-full cut): its tokens still
 /// count in the stats. No `Usage` entry, so the cache expectation is not moved by it.
-fn account_discarded(st: &mut SessionState, turn: &oxa_proto::AssistantTurn) {
+pub(crate) fn account_discarded(st: &mut SessionState, turn: &oxa_proto::AssistantTurn) {
     st.stats.requests += 1;
     st.stats.prompt_tokens += turn.usage.prompt as u64;
     st.stats.completion_tokens += turn.usage.completion as u64;
@@ -873,6 +876,8 @@ struct Capture<'a> {
     text: String,
     got_data: bool,
     detector: crate::loopguard::LoopDetector,
+    /// #513: a loop inside the reasoning is stopped the same way (kept apart from the answer).
+    reasoning_detector: crate::loopguard::LoopDetector,
     cancel: oxa_proto::CancelToken,
     looped: bool,
 }
@@ -883,16 +888,26 @@ impl EventSink for Capture<'_> {
             self.text.clear();
             self.got_data = false;
             self.detector.reset();
+            self.reasoning_detector.reset();
             self.looped = false;
         }
         if let AgentEvent::MessageUpdate { delta, .. } = e {
             self.got_data = true;
-            if let oxa_proto::MessageDelta::TextDelta { delta, .. } = delta {
-                self.text.push_str(delta);
-                if !self.looped && self.detector.push(delta) {
+            match delta {
+                oxa_proto::MessageDelta::TextDelta { delta, .. } => {
+                    self.text.push_str(delta);
+                    if !self.looped && self.detector.push(delta) {
+                        self.looped = true;
+                        self.cancel.cancel();
+                    }
+                }
+                oxa_proto::MessageDelta::ThinkingDelta { delta, .. }
+                    if !self.looped && self.reasoning_detector.push(delta) =>
+                {
                     self.looped = true;
                     self.cancel.cancel();
                 }
+                _ => {}
             }
         }
         self.inner.emit(e);
