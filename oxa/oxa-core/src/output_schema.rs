@@ -20,14 +20,23 @@ impl OutputSchema {
 }
 
 fn check_schema(schema: &Value, depth: usize) -> Result<(), &'static str> {
-    let bad = "Invalid output schema: supported keywords are type, properties, items, enum and required (object, array, string, number)";
+    let bad = "Invalid output schema: supported keywords are $schema, title, description, type, properties, additionalProperties (boolean), items, enum, required, minimum, maximum and minLength (object, array, string, number, integer)";
     let object = schema.as_object().ok_or(bad)?;
     if depth > 64 {
         return Err("Output schema is too deeply nested");
     }
     for (key, value) in object {
         match key.as_str() {
-            "type" if matches!(value.as_str(), Some("object" | "array" | "string" | "number")) => {}
+            // Annotations never trigger schema fetching or reference resolution.
+            "$schema" | "title" | "description" if value.is_string() => {}
+            "type"
+                if matches!(
+                    value.as_str(),
+                    Some("object" | "array" | "string" | "number" | "integer")
+                ) => {}
+            "additionalProperties" if value.is_boolean() => {}
+            "minimum" | "maximum" if value.is_number() => {}
+            "minLength" if value.as_u64().is_some() => {}
             "properties" => {
                 for child in value.as_object().ok_or(bad)?.values() {
                     check_schema(child, depth + 1)?;
@@ -75,6 +84,27 @@ fn schema_equal(left: &Value, right: &Value) -> bool {
     }
 }
 
+// Keep integer bounds exact even beyond f64's consecutive-integer range.
+fn compare_numbers(a: &serde_json::Number, b: &serde_json::Number) -> std::cmp::Ordering {
+    let integer = |n: &serde_json::Number| n.as_i64().map(i128::from).or_else(|| n.as_u64().map(i128::from));
+    let integer_float = |i: i128, f: f64| {
+        i.cmp(&(f.floor() as i128)).then_with(|| {
+            if f.fract() == 0.0 {
+                std::cmp::Ordering::Equal
+            } else {
+                std::cmp::Ordering::Less
+            }
+        })
+    };
+    // serde_json numbers are finite; every represented integer fits in i128.
+    match (integer(a), integer(b)) {
+        (Some(a), Some(b)) => a.cmp(&b),
+        (Some(i), None) => integer_float(i, b.as_f64().unwrap()),
+        (None, Some(i)) => integer_float(i, a.as_f64().unwrap()).reverse(),
+        (None, None) => a.as_f64().unwrap().partial_cmp(&b.as_f64().unwrap()).unwrap(),
+    }
+}
+
 fn matches_value(schema: &Value, value: &Value) -> bool {
     if let Some(kind) = schema.get("type").and_then(Value::as_str) {
         let valid = match kind {
@@ -82,6 +112,9 @@ fn matches_value(schema: &Value, value: &Value) -> bool {
             "array" => value.is_array(),
             "string" => value.is_string(),
             "number" => value.is_number(),
+            "integer" => value
+                .as_number()
+                .is_some_and(|n| n.is_i64() || n.is_u64() || n.as_f64().is_some_and(|f| f.fract() == 0.0)),
             _ => false,
         };
         if !valid {
@@ -93,7 +126,38 @@ fn matches_value(schema: &Value, value: &Value) -> bool {
             return false;
         }
     }
+    if let Some(number) = value.as_number() {
+        if schema
+            .get("minimum")
+            .and_then(Value::as_number)
+            .is_some_and(|min| compare_numbers(number, min).is_lt())
+            || schema
+                .get("maximum")
+                .and_then(Value::as_number)
+                .is_some_and(|max| compare_numbers(number, max).is_gt())
+        {
+            return false;
+        }
+    }
+    if let Some(text) = value.as_str() {
+        if schema
+            .get("minLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|min| (text.chars().count() as u64) < min)
+        {
+            return false;
+        }
+    }
     if let Some(object) = value.as_object() {
+        if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+            let properties = schema.get("properties").and_then(Value::as_object);
+            if object
+                .keys()
+                .any(|key| properties.is_none_or(|props| !props.contains_key(key)))
+            {
+                return false;
+            }
+        }
         if let Some(required) = schema.get("required").and_then(Value::as_array) {
             if !required
                 .iter()
@@ -155,6 +219,80 @@ mod tests {
     }
 
     #[test]
+    fn review_keywords_are_checked_and_enforced() {
+        let schema = OutputSchema::new(json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "title": "Example", "description": "An offline schema",
+            "type": "object", "additionalProperties": false,
+            "properties": {
+                "count": {"type": "integer", "minimum": 1, "maximum": 3},
+                "name": {"type": "string", "minLength": 2}
+            }
+        }))
+        .unwrap();
+        for text in [r#"{"count":1,"name":"é🦀"}"#, r#"{"count":3.0}"#, "{}"] {
+            assert!(schema.matches(text), "rejected {text}");
+        }
+        for text in [
+            r#"{"count":0}"#,
+            r#"{"count":4}"#,
+            r#"{"count":1.5}"#,
+            r#"{"count":"2"}"#,
+            r#"{"name":"é"}"#,
+            r#"{"extra":true}"#,
+        ] {
+            assert!(!schema.matches(text), "accepted {text}");
+        }
+        // These keywords only constrain instances of the applicable type.
+        let schema = OutputSchema::new(json!({
+            "minimum": 1, "maximum": 3, "minLength": 2, "additionalProperties": false
+        }))
+        .unwrap();
+        for text in ["null", "[]", "true", "{}", "2", "\"ok\""] {
+            assert!(schema.matches(text), "rejected {text}");
+        }
+        assert!(OutputSchema::new(json!({"additionalProperties": true}))
+            .unwrap()
+            .matches(r#"{"extra":true}"#));
+        for value in [
+            json!({"$schema": false}),
+            json!({"title": 1}),
+            json!({"description": null}),
+            json!({"additionalProperties": {}}),
+            json!({"minimum": "0"}),
+            json!({"maximum": null}),
+            json!({"minLength": -1}),
+            json!({"minLength": 1.5}),
+            json!({"unknown": true}),
+        ] {
+            assert!(OutputSchema::new(value.clone()).is_err(), "accepted {value}");
+        }
+    }
+
+    #[test]
+    fn numeric_bounds_preserve_large_integer_precision() {
+        for (bound, below, above) in [
+            (
+                json!(9007199254740993_u64),
+                "9007199254740992.0",
+                "9007199254740994",
+            ),
+            (json!(u64::MAX), "18446744073709551614", "18446744073709551616.0"),
+            (json!(-1.5), "-2", "-1"),
+            (json!(1.5), "1", "2"),
+        ] {
+            let min = OutputSchema::new(json!({"minimum": bound})).unwrap();
+            let max = OutputSchema::new(json!({"maximum": bound})).unwrap();
+            assert!(min.matches(&bound.to_string()));
+            assert!(max.matches(&bound.to_string()));
+            assert!(!min.matches(below), "{below} must be below {bound}");
+            assert!(max.matches(below));
+            assert!(min.matches(above));
+            assert!(!max.matches(above), "{above} must be above {bound}");
+        }
+    }
+
+    #[test]
     fn required_entries_must_be_unique_strings() {
         for schema in [
             json!({"type":"object","required":["answer","answer"]}),
@@ -184,7 +322,7 @@ mod tests {
         ] {
             assert!(!schema.matches(text), "{text}");
         }
-        assert!(OutputSchema::new(json!({"type":"integer"})).is_err());
+        assert!(OutputSchema::new(json!({"type":"boolean"})).is_err());
         assert!(OutputSchema::new(json!({"$ref":"https://example.invalid/schema"})).is_err());
         assert!(OutputSchema::new(json!({"required":[1]})).is_err());
     }
