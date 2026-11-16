@@ -1,7 +1,5 @@
-// The module-name request is on #331; no engine process or filesystem fixture is needed.
-#[path = "../src/launch_profile.rs"]
-mod launch_profile;
-use launch_profile::{from_user_settings, Error, InstalledLayout, InstalledModel};
+// No engine process or filesystem fixture is needed.
+use oxc_local::launch_profile::{from_user_settings, Error, InstalledLayout, InstalledModel};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
