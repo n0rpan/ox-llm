@@ -2307,6 +2307,40 @@ fn store_unit_deferred_maintenance_preserves_newer_writes() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Replacing a duplicate turn can remove a session's last RAM record without evicting it.
+/// Its queued append must still be invalidated by a session clear.
+#[test]
+fn store_unit_clear_disk_only_session_invalidates_pending_append() {
+    let g = Regen::new();
+    let dir = tmp_dir("clear-disk-only-pending");
+    let mut es = reopen(&dir);
+    assert!(g.deferred(&mut es, "old").write());
+    let pending = g.deferred(&mut es, "old");
+    let (kept, other) = es.record_deferred(
+        &g.p,
+        &g.asst,
+        g.im_end,
+        &unit_msg("Done", "old"),
+        &g.gen("old"),
+        crate::echo::TurnEnd::Eog,
+        Some("other"),
+    );
+    assert!(kept);
+    assert_eq!(es.n_session_records("s"), 0, "duplicate replaced in RAM");
+    let hash = crate::state_store::hint_hash("s");
+    let path = dir.join(format!("{hash}.jsonl"));
+    assert!(path.exists(), "original session is still on disk");
+    assert_eq!(es.drop_hint_hash(&hash), 0);
+    assert!(!path.exists(), "clear removed the disk-only session");
+    assert!(!pending.write(), "queued append must not survive clear");
+    assert!(other.unwrap().write(), "unrelated session remains writable");
+    assert!(!path.exists());
+    let reloaded = reopen(&dir);
+    assert_eq!(reloaded.n_session_records("s"), 0);
+    assert_eq!(reloaded.n_session_records("other"), 1);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 /// Clearing an evicted session must wait for a writer that already passed epoch validation.
 /// Otherwise that writer can recreate the file after clear has reported success.
 #[test]

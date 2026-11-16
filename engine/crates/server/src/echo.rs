@@ -538,16 +538,24 @@ fn flush_deletes(io: &Mutex<EchoIo>) {
 
 impl EchoIo {
     fn epoch(&self, group: &str) -> (u64, u64) {
-        (self.all, self.groups.get(group).copied().unwrap_or(0))
+        // Key generations by file stem so a disk-only session can be invalidated by hash,
+        // even after duplicate replacement removed its original group name from RAM.
+        (
+            self.all,
+            self.groups.get(&group_stem(group)).copied().unwrap_or(0),
+        )
     }
     fn invalidate(&mut self, group: &str) {
+        self.invalidate_hint_hash(&group_stem(group));
+    }
+    fn invalidate_hint_hash(&mut self, h: &str) {
         // bounded: past 4096 dropped groups the map restarts and every pending append is refused
         // (a line lost on disk at worst; the record stays in RAM)
         if self.groups.len() >= 4096 {
             self.groups.clear();
             self.all += 1;
         }
-        *self.groups.entry(group.to_string()).or_default() += 1;
+        *self.groups.entry(h.to_string()).or_default() += 1;
     }
     fn invalidate_all(&mut self) {
         self.all += 1;
@@ -1279,6 +1287,12 @@ impl EchoStore {
             .cloned()
             .collect();
         let n0 = self.n_records();
+        // A disk-only session can still have queued appends (for example after duplicate
+        // replacement). Invalidate them even when there is no RAM group left to drop.
+        self.io
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .invalidate_hint_hash(h);
         for g in groups {
             self.drop_group(&g);
         }
