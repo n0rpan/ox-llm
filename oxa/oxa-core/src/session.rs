@@ -1494,8 +1494,7 @@ pub(crate) fn attach_ids(st: &mut SessionState) {
         // Header ids from old/hand-written files have not necessarily been validated. An
         // id must be one normal path component, never an escape from the spill root.
         let mut components = std::path::Path::new(&parent.id).components();
-        if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-            || components.next().is_some()
+        if !matches!(components.next(), Some(std::path::Component::Normal(_))) || components.next().is_some()
         {
             break;
         }

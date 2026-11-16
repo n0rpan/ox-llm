@@ -35,6 +35,10 @@ pub struct PathGuard {
     inherited_spills: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
+    /// Clipboard images use generated names directly under tmp, not a session directory.
+    paste_dir: Option<PathBuf>,
+    /// A pasted-image name cannot override a credential path that resolves to that image.
+    paste_deny: Vec<PathBuf>,
     /// The home directory and its startup files, keys and agent settings
     /// (`oxa_proto::guard::PROTECTED_IN_HOME`): a write asks when the cwd is the home
     /// directory or above it (O-199 first run: oxa started in `$HOME`).
@@ -64,6 +68,17 @@ impl PathGuard {
         }
         deny.sort();
         deny.dedup();
+        // Only the agent-state mask is excepted for images, never a credential mask. Keep
+        // these paths separate so a credential symlink to a generated image stays denied.
+        let mut paste_deny = sensitive_paths(home, None);
+        paste_deny.retain(|p| p != &home.join(".oxa/agent"));
+        if let Some(r) = real_home.filter(|r| *r != home) {
+            paste_deny.extend(
+                sensitive_paths(r, None)
+                    .into_iter()
+                    .filter(|p| p != &r.join(".oxa/agent")),
+            );
+        }
         let mut home_protected = home_protected_paths(home);
         if let Some(r) = real_home.filter(|r| *r != home) {
             home_protected.extend(home_protected_paths(r));
@@ -74,6 +89,8 @@ impl PathGuard {
             spill: None,
             inherited_spills: Vec::new(),
             read_allow: vec![agent_dir.join("builtin-skills")],
+            paste_dir: Some(tmp_dir.to_path_buf()),
+            paste_deny,
             home: home.to_path_buf(),
             home_protected,
         }
@@ -114,9 +131,19 @@ impl PathGuard {
             && !self.is_spill(p)
     }
 
-    /// Like [`PathGuard::denies`] for a read: built-in skills and inherited spills are readable.
+    /// Like [`PathGuard::denies`] for a read, with skills, inherited output and pasted images
+    /// excepted. Images still go through the ordinary outside-project approval table.
     pub fn denies_read(&self, p: &Path) -> bool {
-        self.denies(p) && !self.is_builtin_skill(p) && !self.is_readable_spill(p)
+        let pasted = self
+            .paste_dir
+            .as_ref()
+            .is_some_and(|dir| match (resolve_real(p), resolve_real(dir)) {
+                (Some(real), Some(root)) => {
+                    is_pasted_image(&real, &root) && !self.paste_deny.iter().any(|d| is_inside(&real, d))
+                }
+                _ => false,
+            });
+        self.denies(p) && !self.is_builtin_skill(p) && !self.is_readable_spill(p) && !pasted
     }
 
     /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
@@ -145,8 +172,30 @@ impl PathGuard {
         HiddenPaths {
             deny: both(&self.deny),
             allow,
+            paste_dirs: both(&self.paste_dir.iter().cloned().collect::<Vec<_>>()),
+            paste_deny: both(&self.paste_deny),
         }
     }
+}
+
+/// Match only clipboard.rs's `paste-<16 lowercase hex digits>.<image extension>` directly
+/// under the resolved tmp root. Callers resolve symlinks before matching, so an image name
+/// cannot expose a key or another session's output through a link.
+fn is_pasted_image(real: &Path, tmp: &Path) -> bool {
+    if real.parent() != Some(tmp) {
+        return false;
+    }
+    let Some(name) = real.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some((hash, ext)) = name.strip_prefix("paste-").and_then(|n| n.split_once('.')) else {
+        return false;
+    };
+    hash.len() == 16
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && matches!(ext, "png" | "jpg" | "gif" | "webp")
 }
 
 /// #517: the deny-list of a [`PathGuard`] as a [`PathFilter`] for walked entries.
@@ -155,11 +204,18 @@ pub struct HiddenPaths {
     deny: Vec<PathBuf>,
     /// The readable exceptions inside a denied path (spill files, built-in skills).
     allow: Vec<PathBuf>,
+    /// Resolved roots for generated clipboard images, including ones pasted after this snapshot.
+    paste_dirs: Vec<PathBuf>,
+    /// Credential masks still apply even to a file with a generated image name.
+    paste_deny: Vec<PathBuf>,
 }
 
 impl PathFilter for HiddenPaths {
     fn hides(&self, real: &Path) -> bool {
-        self.deny.iter().any(|d| real.starts_with(d)) && !self.allow.iter().any(|a| real.starts_with(a))
+        self.deny.iter().any(|d| real.starts_with(d))
+            && !self.allow.iter().any(|a| real.starts_with(a))
+            && (!self.paste_dirs.iter().any(|d| is_pasted_image(real, d))
+                || self.paste_deny.iter().any(|d| real.starts_with(d)))
     }
 }
 
@@ -252,9 +308,7 @@ impl PartialEq for ModePolicy {
             (Some(a), Some(b)) => a.same(b),
             _ => false,
         };
-        self.grants == other.grants
-            && self.guard == other.guard
-            && same_switch
+        self.grants == other.grants && self.guard == other.guard && same_switch
     }
 }
 
