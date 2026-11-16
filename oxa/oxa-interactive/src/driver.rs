@@ -825,7 +825,9 @@ impl<'a> Loop<'a> {
             let cmds = self.cmds.clone();
             let session_id = info.id.clone();
             match oxa_session::Inbox::watch(&self.opts.dirs.agent_dir, &info.id, move |text| {
-                handle.follow_up(text);
+                // A clone/fork can change the worker's identity before the UI receives
+                // its Session notification. Keep even late admissions at their destination.
+                handle.follow_up_for(&session_id, text);
                 cmds.send(SessionCmd::Inbox {
                     session_id: session_id.clone(),
                 })

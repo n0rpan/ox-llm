@@ -1175,3 +1175,106 @@ fn inbox_wakes_the_real_tui_worker_when_idle() {
         "live inbox did not wake idle TUI: {out}"
     );
 }
+
+/// Keep the UI on the old session until its watcher has admitted a message.
+struct StaleInboxTerminal {
+    cmds: Receiver<SessionCmd>,
+    destination: String,
+}
+
+impl oxa_tui::Terminal for StaleInboxTerminal {
+    fn write(&mut self, _: &[u8]) {}
+    fn flush(&mut self) {}
+    fn size(&self) -> (u16, u16) {
+        (80, 24)
+    }
+    fn caps(&self) -> TermCaps {
+        TermCaps::BASIC
+    }
+    fn set_mode(&mut self, _: oxa_tui::TermMode, _: bool) {}
+    fn suspend(&mut self) {}
+    fn resume(&mut self) {}
+    fn poll(&mut self, _: u64) -> Vec<InputEvent> {
+        assert!(matches!(
+            self.cmds.recv_timeout(std::time::Duration::from_secs(3)),
+            Ok(SessionCmd::Inbox { session_id }) if session_id == self.destination
+        ));
+        vec![key("ctrl+d")]
+    }
+}
+
+#[test]
+fn stale_tui_inbox_callback_keeps_messages_with_original_session_after_clone_or_fork() {
+    for fork in [false, true] {
+        let env = TestEnv::new();
+        let mut s = session_with(&env, vec![oxa_fake::ScriptTurn::text("initial reply")]);
+        s.prompt(
+            "initial turn".into(),
+            Vec::new(),
+            &mut oxa_proto::VecSink::default(),
+            &mut oxa_proto::HeadlessUi::default(),
+        )
+        .unwrap();
+        let original = s.inner().sref.clone();
+        let handle = s.handle();
+        if fork {
+            let user = s
+                .inner()
+                .tree
+                .entries()
+                .iter()
+                .find(
+                    |e| matches!(&e.body, EntryBody::Msg { wire, .. } if wire.role == oxa_proto::Role::User),
+                )
+                .unwrap()
+                .id
+                .clone();
+            s.fork(&user).unwrap();
+        } else {
+            s.clone_session().unwrap();
+        }
+        assert_ne!(s.state().session_id, original.id);
+
+        // The worker has changed identity but the UI has not yet processed its Session
+        // notification. Its old watcher still owns this backlog and the shared handle.
+        let mut opts = interactive_opts(&env);
+        oxa_session::send_inbox(&opts.dirs.agent_dir, &original.id, "old destination only").unwrap();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (_ui_tx, ui_rx) = mpsc::channel();
+        msg_tx
+            .send(WorkerMsg::Session(oxa_interactive::SessionInfo {
+                id: original.id.clone(),
+                ..Default::default()
+            }))
+            .unwrap();
+        let mut term = StaleInboxTerminal {
+            cmds: cmd_rx,
+            destination: original.id.clone(),
+        };
+        assert_eq!(
+            run_loop(
+                &mut term,
+                &mut opts,
+                handle.clone(),
+                cmd_tx,
+                msg_rx,
+                ui_rx,
+                ViewModel::default()
+            )
+            .unwrap(),
+            0
+        );
+        assert!(
+            handle.queued().1.is_empty(),
+            "old inbox leaked across session transition"
+        );
+        s.switch(
+            Open::Resume(original),
+            &mut oxa_proto::VecSink::default(),
+            &mut oxa_proto::HeadlessUi::default(),
+        )
+        .unwrap();
+        assert_eq!(handle.dequeue(), ["old destination only"]);
+    }
+}
