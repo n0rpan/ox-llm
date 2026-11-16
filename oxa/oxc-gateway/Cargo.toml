@@ -8,6 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
+cloud-only = ["dep:url"]
 pricing = ["dep:serde_json", "dep:bigdecimal", "dep:num-traits"]
 accounting = ["policy", "pricing", "dep:nix"]
 policy = ["dep:serde_json"]
@@ -17,6 +18,7 @@ transport = ["dep:reqwest", "dep:tokio", "dep:futures-util"]
 [dependencies]
 bigdecimal = { version = "0.4", optional = true }
 num-traits = { version = "0.2", optional = true }
+url = { version = "2", optional = true }
 serde_json = { version = "1", features = ["arbitrary_precision", "preserve_order"], optional = true }
 nix = { version = "0.30", features = ["user"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"], optional = true }

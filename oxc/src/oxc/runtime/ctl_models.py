@@ -181,7 +181,8 @@ class ModelsMixin:
     def models(self, remote=False):
         value = json.loads(ctl.CONFIG.read_text())
         if value.get('cloud_only') is True:  # no local rows; only the remote catalog
-            return [cloud.row(item) for item in cloud.models(value)] if cloud.enabled(value) and not cloud.offline() and not remote else []
+            return [cloud.row(item) for item in (cloud.guest_models(value) if remote else cloud.models(value))
+                    ] if cloud.enabled(value) and not cloud.offline() else []
         aliases = [value.get('model_alias', 'qwen-local'), *value.get('profiles', {})]
         if value.get('profiles'): aliases.insert(0, 'qwen-local')
         rows = [{'id': alias, 'object': 'model', 'created': 0, 'owned_by': 'local',
@@ -189,8 +190,8 @@ class ModelsMixin:
                 if self.eligible(self.config(alias))]
         models = openai_api.model_rows(value, rows, value.get('selected_model', value.get('model_alias', 'qwen-local')))
         self._publish_limits(models, value)
-        if cloud.enabled(value) and not cloud.offline() and not remote:  # never to a LAN-share guest
-            models.extend(cloud.row(item) for item in cloud.models(value))
+        if cloud.enabled(value) and not cloud.offline():  # a guest sees only what it may use
+            models.extend(cloud.row(item) for item in (cloud.guest_models(value) if remote else cloud.models(value)))
         return models
 
     def _publish_limits(self, rows, value):
@@ -220,8 +221,8 @@ class ModelsMixin:
                 if isinstance(limits[target].get('capabilities'), dict):
                     row.setdefault('context_window', limits[target]['capabilities'].get('context_window'))
 
-    def catalog(self, remote=False):
-        """Chooser rows for eligible profiles; metadata only, never loads a model."""
+    def catalog(self):
+        """Owner-only chooser rows for eligible profiles; metadata only, never loads a model."""
         value = json.loads(ctl.CONFIG.read_text())
         if not isinstance(value, dict): raise ValueError('runtime_object_required')
         base = value.get('model_alias', 'qwen-local')
@@ -240,7 +241,7 @@ class ModelsMixin:
                                           flash_cache=(getattr(self, 'flash_cache_status', None) if loaded and
                                               loaded.get('model_alias') == alias else None)))
         rows.sort(key=model_catalog.sort_key)
-        if cloud.enabled(value) and not cloud.offline() and not remote:
+        if cloud.enabled(value) and not cloud.offline():
             rows.extend(cloud.catalog_row(item) for item in cloud.models(value))
         return {'object': 'list', 'default_model': model_catalog.DEFAULT_ALIAS,
                 'selected_model': selected, 'data': rows}
@@ -264,6 +265,7 @@ class ModelsMixin:
         if latched and ledger_error is None:
             ledger_error = 'cloud_ledger_unavailable'
         return {'enabled': cloud.enabled(value), 'offline': cloud.offline(),
+                'share_with_lan': cloud.share_with_lan(value),
                 'daily_budget_usd': cap, 'spend_today_usd': spend, 'ledger_ok': ledger_error is None,
                 'ledger_latched': latched,
                 'ledger_error': ledger_error,

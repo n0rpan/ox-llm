@@ -9,6 +9,27 @@ bwrap sandbox behind `oxa_proto::Sandbox`. Depends on `oxa-proto`, `libc`. Used 
 
 Contracts: see the crate docs. Tests that need a real bwrap skip when `Bwrap::detect` fails and print why (a failure under `OXA_REQUIRE_BWRAP=1`, see below); argv goldens always run.
 
+Captured `gh issue view --comments` output follows gh's redirected-output contract:
+comments only, so an issue with no comments produces no output. To get the issue
+body **and** comments reliably, use the machine-readable form (without `--comments`):
+
+```sh
+gh issue view NUMBER -R OWNER/REPO --json title,body,comments,state
+```
+
+For a human-readable view, scope terminal formatting to that invocation only:
+
+```sh
+GH_FORCE_TTY=80 GH_PAGER=cat NO_COLOR=1 gh issue view NUMBER -R OWNER/REPO --comments
+```
+
+stdin/stdout remain pipes; this does not enable interactive input. The sandbox does
+not set these three variables globally: `GH_FORCE_TTY` changes list/API formatting
+and truncates long table cells, while `NO_COLOR` affects every tool that respects it,
+not just gh. Ordinary `gh issue list | cut -f1` pipelines keep their raw tab-separated
+output. The gh regression test requires gh on PATH and uses only a synthetic API
+on a workspace Unix socket, with no network or real credentials.
+
 ## What bash sees of the machine (wave H lane `harden`, pre-flight B2 / B3 / B4)
 
 `Bwrap::layout` (`src/layout.rs`, built by the CLI from the user's environment and the USER

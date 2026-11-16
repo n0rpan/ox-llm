@@ -354,8 +354,11 @@ def completion_request(payload):
             native['n_predict'] = payload[key]
     # An explicit 0 is valid (OpenAI): the chosen token's logprob with an empty top list. The engine
     # then reports one candidate per token, which the translation leaves out (`top_n`).
+    # Like the engine (and OpenAI's legacy API): an integer from 0 to 5, anything else is a 400.
     logprobs = payload.get('logprobs')
-    top_n = min(logprobs, 20) if type(logprobs) is int and logprobs >= 0 else None
+    if type(logprobs) is int and not 0 <= logprobs <= 5:
+        raise BadParam('"logprobs" must be an integer from 0 to 5', 'logprobs', 'invalid_value')
+    top_n = logprobs if type(logprobs) is int else None
     if top_n is not None:
         native['n_probs'] = max(top_n, 1)
     options = payload.get('stream_options')
@@ -428,6 +431,7 @@ class CompletionStream:
         self.buffer = b''
         self.done = False
         self.first = True
+        self.offset = len(meta['echo'])  # running text_offset: starts after the echoed prompt
 
     def _frame(self, value):
         return b'data: ' + json.dumps(value, ensure_ascii=False).encode() + b'\n\n'
@@ -456,11 +460,13 @@ class CompletionStream:
         text = text if isinstance(text, str) else ''
         if self.first:
             text, self.first = self.meta['echo'] + text, False
+        rows = _logprobs(native, self.offset, self.meta.get('top_n', 20)) if self.meta['logprobs'] else None
+        if rows is not None:
+            self.offset = rows['text_offset'][-1] + len(rows['tokens'][-1]) if rows['tokens'] else self.offset
         if native.get('stop') is not True:
-            return self._frame(_chunk(self.meta, text, None,
-                                      _logprobs(native, 0, self.meta.get('top_n', 20)) if self.meta['logprobs'] else None))
+            return self._frame(_chunk(self.meta, text, None, rows))
         self.done = True
-        last = _chunk(self.meta, text, _finish(native))
+        last = _chunk(self.meta, text, _finish(native), rows)
         out = b''
         if self.meta['include_usage']:
             out += self._frame(last)
