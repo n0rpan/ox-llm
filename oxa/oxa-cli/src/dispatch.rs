@@ -223,7 +223,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Ok(ep) => with_api_key(ep, &a),
             Err(e) => return report(&mut *stderr, &e),
         };
-        let engine = match engine_for(&endpoint) {
+        let user = Settings::load(&dirs, &cwd, false);
+        let engine = match crate::in_process::select(&user, &dirs, || engine_for(&endpoint)) {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
@@ -558,6 +559,7 @@ fn prepare(
         })
         .transpose()?;
     let mut notices: Vec<(Level, String)> = Vec::new();
+    let user_settings = Settings::load(dirs, cwd, false);
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -567,7 +569,9 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
-    notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    if !user_settings.bool(crate::in_process::SETTING, false) {
+        notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    }
 
     let gated = gated_resources(cwd);
     let trusted = project_trusted(
@@ -618,7 +622,9 @@ fn prepare(
     }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
-    let engine = child.wrap(engine_with_settings(&endpoint, &settings)?);
+    let engine = child.wrap(crate::in_process::select(&user_settings, dirs, || {
+        engine_with_settings(&endpoint, &settings)
+    })?);
 
     let opts = discover_opts(a, dirs, cwd, trusted)?;
     // O-152: the built-in skills' files, so the model can read their bodies (written only
