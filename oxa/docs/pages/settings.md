@@ -167,7 +167,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
-| `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
+| `oxa.engine.inProcessCloud` | bool | `true` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices and daily USD cap; user settings only; see below |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
@@ -181,7 +181,7 @@ See [Run oxa without Python](no-python.md) for setup, remaining Python dependenc
 and a loopback-only manual check.
 
 Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
-gateway for sessions and `--list-models`. The default is `false`. Offline mode
+gateway for sessions and `--list-models`. v0.2.1 defaults this setting to `true`; an explicit user `false` remains effective. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 

@@ -1,9 +1,9 @@
 # All-zero defaults permit static linting; they cannot validate a source artifact.
 # Supply the exact source artifact and its checksum from an inspected workflow run.
 pkgname=ox-llm
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
-pkgdesc='oxe engine and oxa coding agent (CPU build)'
+pkgdesc='Rust-only oxa agent and native oxe-server (CPU build)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/oxstack/ox-llm'
 license=('MIT')

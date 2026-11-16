@@ -4,27 +4,24 @@ Local large language models, a coding agent and image generation on **Snapdragon
 Linux** (Omarchy), on the CPU. Local inference runs on the machine. Every speed number links its receipt.
 Failed attempts are kept too.
 
-ox-llm is one release with three parts. Each part is its own build unit:
+The v0.2.1 runtime installs `oxa` and `oxe-server` only. The repository also
+retains the v0.2.0 controller and experimental engines for legacy use and reproduction:
 
 | Directory | Part | Language / build | What it is |
 |---|---|---|---|
 | [`engine/`](engine/README.md) | **oxe** | Rust, its own cargo workspace | Inference engines with an OpenAI-compatible HTTP API: `oxe-server` (35B mixture-of-experts models such as Ornith and Qwen3.6), Flash (a 125B MoE whose experts stream from the SSD) and the experimental `oxi` image engine (FLUX.2 klein) |
-| [`oxc/`](oxc/README.md) | **oxc** | Python package | The controller: one loopback OpenAI-compatible endpoint, model loading and unloading, memory admission, a request ledger. It also holds the `oxc` CLI, the Omarchy panel widget, Studio (images), the installer, the benchmark and qualification tools, the receipts and the docs |
-| [`oxa/`](oxa/README.md) | **oxa** | Rust, its own cargo workspace | The coding agent: a Rust port of the pi coding agent (MIT, Mario Zechner), tuned for this engine. It is the coding client that `oxc code` and the widget's code button start |
+| [`oxc/`](oxc/README.md) | **oxc** | Python package | Legacy v0.2.0 controller, panel, Studio and build/qualification tools; not shipped in the v0.2.1 runtime |
+| [`oxa/`](oxa/README.md) | **oxa** | Rust, its own cargo workspace | The coding agent: a Rust port of the pi coding agent (MIT, Mario Zechner), tuned for this engine. Run `oxa` directly; it owns native cloud routing and the local engine child |
 
 ## How they fit
 
 ```
-  oxa (oxc code, widget code button)   other OpenAI-compatible clients (curl, ...)
-                    \                          /
-                     v                        v
-     oxc controller (loopback 127.0.0.1:8092, OpenAI-compatible; admission, queue, ledger)
-                                  |
-                                  v
-     oxe-server (MoE) | oxe-server --engine flash (125B) | oxi (images, via Studio)
+  oxa (Rust CLI/TUI)
+    +-- in-process gateway --> configured cloud provider
+    +-- owned loopback child --> oxe-server
 ```
 
-The engine and the controller are **client-neutral**: they make no client-specific choices, pin no
+The native engine is **client-neutral**: they make no client-specific choices, pin no
 client version and use no per-client byte templates. Caching is generic (exact prefix reuse,
 token-exact echo, state snapshots as a mechanism). The policy for when to compact, checkpoint or reshape
 history lives in the client. oxa is the client that is tuned for this engine. See
@@ -36,11 +33,11 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
   default (`oxa` plus the native engine), package verification and the activation gate.
   The Python bootstrap belongs to the legacy v0.2.0 installation.
 - **Prebuilt, any Linux:** each release attaches `ox-llm-<version>-linux-aarch64.tar.gz` and
-  `ox-llm-<version>-linux-x86_64.tar.gz` (oxc, oxa, oxe, licences) with SBOMs, `SHA256SUMS` and build provenance.
+  `ox-llm-<version>-linux-x86_64.tar.gz` (oxa, oxe-server, licences and upgrade note) with SBOMs, `SHA256SUMS` and build provenance.
 - **Cloud only:** configure the native user `oxa.cloud` catalog and run `oxa` directly;
   see [native installation](docs/NATIVE-INSTALL.md). No Python controller service is installed.
-- **Code:** run `oxa` (or the compatibility `oxc code`) in a project directory.
-- **Panel, LAN share and Studio:** disabled in the Rust-only default install.
+- **Code:** run `oxa` in a project directory.
+- **Panel, LAN share and Studio:** not included in the Rust-only default install.
 - **Legacy v0.2.0 clients:** the old controller setup is documented in
   [OTHER-CLIENTS](oxc/docs/OTHER-CLIENTS.md); it is not the new default install.
 - **Reproduce:** [oxc/docs/REPRODUCE.md](oxc/docs/REPRODUCE.md).
@@ -52,7 +49,7 @@ history lives in the client. oxa is the client that is tuned for this engine. Se
 ## The coding agent: oxa
 
 oxa is the default coding client. The native default uses the in-process gateway and
-native local engine path; `oxc code` simply starts that same oxa binary. Explicit HTTP
+native local engine path. The legacy `oxc` launchers are not installed. Explicit HTTP
 endpoint configuration remains a separate client option, not a Python install step.
 
 oxa's bash tool runs inside a bubblewrap (`bwrap`) sandbox; without `bwrap` the bash tool refuses

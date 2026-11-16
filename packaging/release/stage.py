@@ -13,11 +13,10 @@ def stage(root, dest, runner=subprocess.run):
     if os.path.lexists(dest):
         raise ValueError('destination must be fresh')
     (dest / 'usr/bin').mkdir(parents=True)
-    for workspace, names in [('engine', ('oxe', 'oxe-server')), ('oxa', ('oxa',))]:
+    for workspace, names in [('engine', ('oxe-server',)), ('oxa', ('oxa',))]:
         for name in names:
             shutil.copy2(root / workspace / 'target/release' / name, dest / 'usr/bin' / name)
     # No controller tree, Python-backed unit, panel plugin or diagnostics wrapper is staged.
-    shutil.copy2(root / 'packaging/native/oxc', dest / 'usr/bin/oxc')
     licenses = dest / 'usr/share/licenses/ox-llm'
     licenses.mkdir(parents=True)
     for product in ('engine', 'oxa', 'oxc'):
@@ -30,9 +29,12 @@ def stage(root, dest, runner=subprocess.run):
             if source.is_dir():
                 shutil.copytree(source, licenses / (product + '-' + directory))
     shutil.copy2(root / 'LICENSE', licenses / 'LICENSE')
+    guide = dest / 'usr/share/doc/ox-llm/NATIVE-INSTALL.md'
+    guide.parent.mkdir(parents=True)
+    shutil.copy2(root / 'docs/NATIVE-INSTALL.md', guide)
     # Use the repository's existing license collector for every linked Rust closure.
     collector = root / 'engine/tools/ci/crate_licenses.py'
-    for workspace, packages in [('engine', ('oxe-cli', 'server')), ('oxa', ('oxa-cli',))]:
+    for workspace, packages in [('engine', ('server',)), ('oxa', ('oxa-cli',))]:
         for package in packages:
             runner([sys.executable, '-I', str(collector), package,
                     str(licenses / 'crates' / package)], cwd=root / workspace, check=True)

@@ -39,19 +39,13 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
            'PYTHONDONTWRITEBYTECODE': '1'}
     assert not Path('/usr/share/ox-llm/oxc').exists(), 'Python controller payload installed'
     assert not Path('/usr/bin/oxc-diagnostics').exists(), 'Python diagnostics wrapper installed'
-    for feature in ('panel', 'share', 'studio'):
-        disabled = subprocess.run(['oxc', feature], env=env, capture_output=True, text=True)
-        assert disabled.returncode == 2 and len(disabled.stderr.splitlines()) == 1
-        assert 'disabled' in disabled.stderr
-    for binary in ('oxc', 'oxa', 'oxe'):
-        result = subprocess.run([binary, '--version'], env=env, text=True, capture_output=True, check=True)
-        assert '0.2.0' in result.stdout, (binary, result.stdout)
-        print(result.stdout.strip())
-    for binary in ('oxc', 'oxa', 'oxe-server'):
+    for retired in ('oxc', 'oxc-diagnostics', 'oxe'):
+        assert not Path('/usr/bin', retired).exists(), f'retired command installed: {retired}'
+    result = subprocess.run(['oxa', '--version'], env=env, text=True, capture_output=True, check=True)
+    assert '0.2.0' in result.stdout, result.stdout  # component version; release-version decision pending
+    print(result.stdout.strip())
+    for binary in ('oxa', 'oxe-server'):
         subprocess.run([binary, '--help'], env=env, stdout=subprocess.DEVNULL, check=True)
-    # This validates argument parsing without loading model weights.
-    subprocess.run(['oxe', 'gen', '--model', 'absent.gguf', '--tokens', '1', '--check-args'],
-                   env=env, check=True)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]

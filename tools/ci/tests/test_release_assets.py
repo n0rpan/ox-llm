@@ -1,4 +1,6 @@
 import re
+import os
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -25,12 +27,20 @@ class ReleaseAssets(unittest.TestCase):
         self.assertIsNone(re.search(r'cancel-in-progress:\s*true', rb))
         self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", rb)
 
-    def test_arch_consumers_accept_the_versioned_archive(self):
-        # release-build names the archive ox-llm-v<version>-linux-<arch>; the PKGBUILD wants the
-        # unprefixed pkgver name, so arch-test.sh must map one to the other.
-        t = (W.parents[1] / 'packaging/release/arch-test.sh').read_text()
-        self.assertIn('ox-llm-v*-linux-$(uname -m).tar.gz', t)
-        self.assertIn('ox-llm-0.2.0-linux-$(uname -m).tar.gz', t)
+    def test_arch_recipes_select_the_rust_only_bundle_version(self):
+        # Execute recipe metadata without invoking build/package or a package manager.
+        for arch in ('aarch64', 'x86_64'):
+            for variant in ('ox-llm', 'ox-llm-bin'):
+                recipe = W.parents[1] / 'packaging/arch' / variant / 'PKGBUILD'
+                result = subprocess.run(['/bin/bash', '-c', '. "$1"; printf "%s\\n" "$pkgver" "${source[0]}"',
+                                         'metadata', str(recipe)], env={'PATH':os.defpath, 'CARCH':arch},
+                                        capture_output=True, text=True, check=True)
+                version, source = result.stdout.splitlines()
+                self.assertEqual(version, '0.2.1')
+                if variant == 'ox-llm-bin':
+                    self.assertEqual(source, f'ox-llm-0.2.1-linux-{arch}.tar.gz')
+                else:
+                    self.assertEqual(source, 'ox-llm-' + '0' * 40 + '.tar.gz')
 
 
 if __name__ == '__main__':

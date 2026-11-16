@@ -11,9 +11,13 @@ sha256sum -c SHA256SUMS
 export SOURCE_DATE_EPOCH
 export OX_SOURCE_COMMIT
 export OX_SOURCE_SHA256=$(sha256sum "ox-llm-$OX_SOURCE_COMMIT.tar.gz" | cut -d' ' -f1)
-# release-build names the archive with the tag (ox-llm-v0.2.0-...); the PKGBUILD uses pkgver.
-cp ox-llm-v*-linux-$(uname -m).tar.gz "ox-llm-0.2.0-linux-$(uname -m).tar.gz"
-export OX_BINARY_SHA256=$(sha256sum "ox-llm-0.2.0-linux-$(uname -m).tar.gz" | cut -d' ' -f1)
+# Use the recipes' selected bundle version; never silently rename another version.
+pkgver=$(sed -n 's/^pkgver=//p' /recipes/ox-llm/PKGBUILD)
+[[ $pkgver =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+[[ $VERSION == "v$pkgver" ]]
+[[ $(sed -n 's/^pkgver=//p' /recipes/ox-llm-bin/PKGBUILD) == "$pkgver" ]]
+cp "ox-llm-$VERSION-linux-$(uname -m).tar.gz" "ox-llm-$pkgver-linux-$(uname -m).tar.gz"
+export OX_BINARY_SHA256=$(sha256sum "ox-llm-$pkgver-linux-$(uname -m).tar.gz" | cut -d' ' -f1)
 # Verify the binary package and then a real source rebuild (including check()).
 for variant in ox-llm-bin ox-llm; do
   install -d -o builder -g builder "/build/$variant"
@@ -33,6 +37,12 @@ for variant in ox-llm-bin ox-llm; do
   pacman -Ql "$variant" | awk '{print $2}' | while read -r path; do
     if [[ ! -d $path ]]; then echo "$path"; fi
   done > /tmp/installed-files
+  # Installation must preserve the exact native bytes qualified from the payload.
+  case $variant in
+    ox-llm-bin) payload="$PWD/src/usr/bin" ;;
+    ox-llm) payload="$PWD/src/payload/usr/bin" ;;
+  esac
+  for binary in oxa oxe-server; do cmp "$payload/$binary" "/usr/bin/$binary"; done
   python -B /smoke.py
   pacman -Qkk "$variant"
   pacman -Rns --noconfirm "$variant"

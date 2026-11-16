@@ -1,9 +1,9 @@
 # The all-zero fallback permits static recipe linting but cannot validate an artifact.
 # CI artifacts stay local: download, inspect and verify them before invoking makepkg.
 pkgname=ox-llm-bin
-pkgver=0.2.0
+pkgver=0.2.1
 pkgrel=1
-pkgdesc='oxe engine and oxa coding agent (CI CPU binaries)'
+pkgdesc='Rust-only oxa agent and native oxe-server (CI CPU binaries)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/oxstack/ox-llm'
 license=('MIT')

@@ -6,7 +6,7 @@ on:
       version:
         description: release tag, used in the archive names
         type: string
-        default: v0.2.0
+        default: v0.2.1
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -27,7 +27,7 @@ defaults:
     shell: bash
 
 env:
-  VERSION: ${{ inputs.version || 'v0.2.0' }}
+  VERSION: ${{ inputs.version || 'v0.2.1' }}
   CARGO_HOME: /opt/cargo
   RUSTUP_HOME: /opt/rustup
   CARGO_BUILD_JOBS: '2'
@@ -123,6 +123,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
+      VERSION: ${{ inputs.version || 'v0.2.1' }}
       SOURCE_DATE_EPOCH: ${{ needs.binaries.outputs.source_epoch }}
       OX_SOURCE_COMMIT: ${{ needs.binaries.outputs.source_commit }}
     steps:
@@ -137,7 +138,7 @@ jobs:
         run: |
           mkdir packages
           docker run --rm \
-            -e SOURCE_DATE_EPOCH -e OX_SOURCE_COMMIT \
+            -e VERSION -e SOURCE_DATE_EPOCH -e OX_SOURCE_COMMIT \
             -v "$GITHUB_WORKSPACE/artifacts:/artifacts:ro" \
             -v "$GITHUB_WORKSPACE/packages:/packages" \
             -v "$GITHUB_WORKSPACE/packaging/arch:/recipes:ro" \

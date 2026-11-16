@@ -6,6 +6,7 @@ components); record that scope explicitly rather than claim a minimal runtime BO
 """
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -41,5 +42,5 @@ for path in sorted(payload.rglob('*')):
         components[relative] = {'type': 'file', 'bom-ref': relative, 'name': relative,
                                 'hashes': [{'alg': 'SHA-256', 'content': hashlib.sha256(path.read_bytes()).hexdigest()}]}
 output.write_text(json.dumps({'bomFormat': 'CycloneDX', 'specVersion': '1.6', 'version': 1,
-    'metadata': {'component': {'type': 'application', 'name': 'ox-llm', 'version': '0.2.0'}},
+    'metadata': {'component': {'type': 'application', 'name': 'ox-llm', 'version': os.environ['VERSION'].removeprefix('v')}},
     'components': sorted(components.values(), key=lambda p: p['bom-ref'])}, indent=2) + '\n')

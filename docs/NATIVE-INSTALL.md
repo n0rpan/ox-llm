@@ -1,11 +1,11 @@
-# Native install (Rust-only MVP)
+# Native install (v0.2.1)
 
-The default installed product is `oxa`, `oxe` and `oxe-server`. Install a verified
-native package or extract its inspected `usr/` payload using the package manager's
-normal procedure. Build-time Python tools are not runtime dependencies.
+v0.2.1 installs two native commands: `oxa` and `oxe-server`. It ships no Python
+runtime/controller payload, `oxc` wrapper, panel, LAN share, Studio or controller
+systemd unit. Python remains a build/test tool for source packages, not a runtime
+dependency. v0.2.0 remains the legacy installation.
 
-For the Arch package, inspect the selected build's package and checksums before
-installation (substitute the actual inspected package filename):
+Inspect the selected build's package, provenance and checksums before installation:
 
 ```sh
 sha256sum -c SHA256SUMS --ignore-missing
@@ -14,44 +14,46 @@ oxa --version
 oxa --help
 ```
 
-The source recipe needs Python to build/stage the package; the installed binary
-package does not depend on Python. This draft publishes no release artifact.
-Do not run `python -m oxc.cloud_install` or the Python bootstrap as an additional
-step of this native install.
+The combined tarball has the same `usr/` layout as the Arch packages. Install it
+using the normal system package procedure. Do not run the Python bootstrap or
+cloud installer as an additional installation step. No weights, credentials or
+account sign-in are bundled or downloaded by installation.
 
-The default settings enable `oxa.engine.inProcessCloud` and
-`oxa.engine.inProcessLocal`; this retirement PR is their activation point.
-Run `oxa` in the project directory. `oxc code` is a compatibility launcher for that
-same binary; `oxc plan` selects its read-only file tools. Neither starts a controller.
-The local engine is an owned child of the native local path, not a systemd Python
-service. No model weights or credentials are bundled or downloaded by package installation.
+The defaults select `oxa.engine.inProcessCloud` and `oxa.engine.inProcessLocal`.
+Explicit user false remains respected. Trusted user settings own model paths,
+launch arguments/environment, cloud catalog and budget; project settings cannot
+choose executable or credential paths. `oxa` owns the local engine child. There
+is no controller endpoint on port 8092 and no controller service to start.
 
-Local model paths, explicit launch arguments and environment belong in the trusted
-user's `oxa.local.models.<alias>` configuration and the native installed layout.
-Cloud configuration belongs in the user's `oxa.cloud` object. Project settings
-must not choose executable paths or credentials. Missing local models or invalid
-native configuration must produce a native configuration error, never start the
-retired controller or invoke a Python installer.
+The installed engine path is `/usr/bin/oxe-server`. Put weights at the path named
+by the local model entry, for example `~/models/model.gguf`; no download manager
+is included. Configure `oxa.local.binary`, per-alias `oxa.local.models` and the
+qualified native limits as described in the [native local configuration](https://github.com/oxstack/ox-llm/blob/main/oxa/oxc-local/CONFIGURATION.md).
+Cloud catalog and budget configuration live in the user's `oxa.cloud` object.
+Missing weights or invalid native configuration must produce a clear error,
+never invoke a Python installer or silently fall back to a controller.
 
-Panel integration, LAN share and Studio are disabled by default in this install.
-Their compatibility commands return one explanatory line. No Python chat, Studio,
-digest, storage-cleanup or optional Flash helper unit is installed or enabled.
-The package manager prints a one-line notice; it does not mutate a user account,
-start services, open credential files or sign anyone in.
+## Upgrade from v0.2.0
 
-The Python source is still in the repository for the legacy v0.2.0 release. It is
-not copied into the default installed runtime. A later deletion PR removes that
-source after native end-to-end acceptance, with retained notices and historical
-receipts reviewed separately. Python remains available to builders/CI for staging,
-license inventory and tests; its use there does not make it an installed controller.
+Stop and disable any legacy controller service you previously enabled before
+using the new installation. The package does not stop processes or modify user
+systemd configuration automatically; it installs no replacement controller unit.
 
-## Activation gate for the retirement draft
+Keys and the ChatGPT token record are reused in place at the existing private
+`~/.config/oxc/llm/cloud-secrets.json` and
+`~/.config/oxc/llm/chatgpt-auth.json` locations. Installation does not open, move,
+rewrite or print them. It does not perform a sign-in. Keep private file modes;
+never put credentials in project settings or command-line arguments.
 
-The retirement PR must remain DRAFT until the orchestrator confirms the native
-end-to-end run passed. Native cloud selection (S7) and local slice-5 selection must
-land and be composed before its defaults can be finalized. In particular, an empty
-cloud catalog must not prevent local operation; no key or cloud account is needed
-for the local path. The accepted run must prove fresh-user native settings, the
-owned local engine, real task/tool turns, correct budget/ledger behavior where
-applicable, and no Python process or controller-port fallback. Package staging and
-stub smoke alone do not establish this acceptance or laptop cache/latency parity.
+Legacy controller configuration and warm caches are not imported automatically.
+Configure native models and a cloud budget in oxa; caches and sessions may start
+cold. Existing user data is not deleted. This upgrade does not promise laptop
+cache/latency parity or validate a real provider/model.
+
+## Acceptance boundary
+
+This packaging PR stays draft until the orchestrator accepts the native end-to-end
+run. Local/cloud factory and sign-in production prerequisites, release version
+qualification and #682's exact-artifact CI must be composed before release. A
+mock-cloud proof, staging/unit checks or tokenizer-only stub smoke alone does not
+establish real-provider, local-model, hardware or full E2E acceptance.
