@@ -93,7 +93,7 @@ pub async fn models(
             let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
             return Err(Error::Refused(super::refusal(status, &value)));
         }
-        let value: Value =
+        let mut value: Value =
             serde_json::from_slice(&bytes).map_err(|_| Error::Discovery(super::DiscoveryProblem::Json))?;
         // Discovery becomes public catalog metadata. Reject an echoed secret
         // anywhere in decoded fields, including names and nested hints; never
@@ -101,6 +101,7 @@ pub async fn models(
         if echoes_credential(&value, key) {
             return Err(Error::Discovery(super::DiscoveryProblem::CredentialEcho));
         }
+        super::derive_canonical_ids(&mut value).map_err(Error::Discovery)?;
         super::models_diagnostic(&value, base).map_err(|(_, problem)| Error::Discovery(problem))
     };
     tokio::time::timeout(timeout, operation)

@@ -44,6 +44,7 @@ pub enum DiscoveryProblem {
     Envelope,
     Id,
     CanonicalId,
+    CanonicalCollision,
     Context,
     Output,
     OutputExceedsContext,
@@ -59,6 +60,7 @@ impl DiscoveryProblem {
             Self::Envelope => "Go model discovery has an invalid data envelope.",
             Self::Id => "Go model discovery has an invalid model id.",
             Self::CanonicalId => "Go model discovery has an invalid canonical id.",
+            Self::CanonicalCollision => "Go model discovery has colliding canonical ids.",
             Self::Context => "Go model discovery has an invalid context limit.",
             Self::Output => "Go model discovery has an invalid output limit.",
             Self::OutputExceedsContext => "Go model discovery output limit exceeds context.",
@@ -107,6 +109,41 @@ fn endpoint(base: &str) -> Result<Url, Error> {
         return Err(Error::Endpoint);
     }
     Ok(url)
+}
+/// Derive display identity only; upstream routing keeps the original id.
+/// The strict parser validates the resulting canonical id as before.
+fn derive_canonical_ids(value: &mut Value) -> Result<(), DiscoveryProblem> {
+    let Some(data) = value.get_mut("data").and_then(Value::as_array_mut) else {
+        return Ok(());
+    };
+    let mut seen = BTreeMap::new();
+    for item in data {
+        let Some(id) = item.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let mut slug = String::new();
+        for byte in id.bytes() {
+            let byte = byte.to_ascii_lowercase();
+            if byte.is_ascii_alphanumeric() {
+                slug.push(char::from(byte));
+            } else if !slug.is_empty() && !slug.ends_with('-') {
+                slug.push('-');
+            }
+        }
+        let slug = slug.trim_end_matches('-');
+        if slug.is_empty() {
+            return Err(DiscoveryProblem::CanonicalId);
+        }
+        let canonical = format!("opencode/{slug}");
+        if seen
+            .insert(canonical.clone(), id.to_owned())
+            .is_some_and(|previous| previous != id)
+        {
+            return Err(DiscoveryProblem::CanonicalCollision);
+        }
+        item["canonical_id"] = canonical.into();
+    }
+    Ok(())
 }
 /// The trusted Go origin constrains every discovered API URL before any key
 /// can be sent. A malformed record never yields a partial catalog.
@@ -403,5 +440,27 @@ impl Refusal {
             Self::Forbidden => "cloud_forbidden",
             Self::Other(_) => "cloud_upstream_error",
         }
+    }
+}
+
+#[cfg(test)]
+mod canonical_tests {
+    use super::*;
+    #[test]
+    fn live_identity_is_derived_but_strict_parser_validation_remains() {
+        for (id, expected) in [
+            ("DeepSeek-V4.1-Flash", "opencode/deepseek-v4-1-flash"),
+            ("Vendor/Model::V1", "opencode/vendor-model-v1"),
+        ] {
+            let mut value = serde_json::json!({"data":[{"id":id,"canonical_id":null}]});
+            derive_canonical_ids(&mut value).unwrap();
+            assert_eq!(value["data"][0]["canonical_id"], expected);
+            assert_eq!(value["data"][0]["id"], id);
+        }
+        let value = serde_json::json!({"data":[{"id":"synthetic","canonical_id":null,"limit":{"context":32,"output":16},"api":{"chat-completions":{"base_url":"https://example.invalid/go/v1"}}}]});
+        assert_eq!(
+            models_diagnostic(&value, "https://example.invalid/go"),
+            Err((Error::Discovery, DiscoveryProblem::CanonicalId))
+        );
     }
 }

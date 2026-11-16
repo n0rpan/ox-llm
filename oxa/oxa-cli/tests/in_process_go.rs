@@ -237,6 +237,8 @@ fn invalid_discovery_reports_only_fixed_stage_categories_before_any_inference() 
         ("envelope", "Go model discovery has an invalid data envelope."),
         ("id", "Go model discovery has an invalid model id."),
         ("canonical", "Go model discovery has an invalid canonical id."),
+        ("collision", "Go model discovery has colliding canonical ids."),
+        ("partial", "Go model discovery has an invalid context limit."),
         ("context", "Go model discovery has an invalid context limit."),
         ("output", "Go model discovery has an invalid output limit."),
         ("exceeds", "Go model discovery output limit exceeds context."),
@@ -262,7 +264,12 @@ fn invalid_discovery_reports_only_fixed_stage_categories_before_any_inference() 
             match case {
                 "envelope" => value["data"] = json!({}),
                 "id" => value["data"][0]["id"] = "invalid id".into(),
-                "canonical" => value["data"][0]["canonical_id"] = Value::Null,
+                "canonical" => value["data"][0]["id"] = "---".into(),
+                "collision" => {
+                    value["data"][0]["id"] = "Synthetic.Flash".into();
+                    value["data"][1]["id"] = "synthetic-flash".into();
+                }
+                "partial" => value["data"].as_array_mut().unwrap().push(json!({})),
                 "context" => value["data"][0]["limit"]["context"] = 0.into(),
                 "output" => value["data"][0]["limit"]["output"] = 0.into(),
                 "exceeds" => value["data"][0]["limit"]["output"] = 32769.into(),
@@ -290,6 +297,48 @@ fn invalid_discovery_reports_only_fixed_stage_categories_before_any_inference() 
         assert!(output.stdout.is_empty());
         assert_eq!(mock.requests().len(), 1);
         assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn unused_canonical_metadata_does_not_control_routing_or_admission() {
+    for metadata in [
+        None,
+        Some(Value::Null),
+        Some(json!("synthetic@display name")),
+        Some(json!({"unused":true})),
+    ] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            let mut value = discovery(base);
+            for model in value["data"].as_array_mut().unwrap() {
+                if let Some(metadata) = &metadata {
+                    model["canonical_id"] = metadata.clone();
+                } else {
+                    model.as_object_mut().unwrap().remove("canonical_id");
+                }
+            }
+            vec![
+                Reply::json(value),
+                stream(json!({"content":"Synthetic answer"}), "stop"),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["-p", "--no-tools", "Synthetic task"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let requests = mock.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1].target, "/inference/go/openai/v1/chat/completions");
+        assert_eq!(requests[1].body["model"], "synthetic-flash");
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["cost_usd"], 0.0);
+        assert_eq!(ledger[0]["billing"], "subscription");
         mock.assert_healthy();
     }
 }
