@@ -46,6 +46,7 @@ pub struct Reply {
     headers: Vec<(&'static str, String)>,
     bytes: Vec<u8>,
     fragment: usize,
+    terminal: bool,
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
@@ -64,6 +65,7 @@ impl Reply {
     /// Native events for provider-specific continuation regressions, using the
     /// same bounded, fragmented loopback peer as the walking skeleton.
     pub fn events(events: Vec<Value>) -> Self {
+        let terminal = events.last().is_some_and(|event| event["type"] == "message_stop");
         let mut bytes = Vec::new();
         for event in events {
             bytes.extend_from_slice(
@@ -76,6 +78,7 @@ impl Reply {
             headers: Vec::new(),
             bytes,
             fragment: 7,
+            terminal,
             gate: None,
         }
     }
@@ -88,6 +91,7 @@ impl Reply {
                 .to_string()
                 .into_bytes(),
             fragment: 7,
+            terminal: false,
             gate: None,
         }
     }
@@ -99,6 +103,7 @@ impl Reply {
             headers: Vec::new(),
             bytes: bytes.to_vec(),
             fragment: 7,
+            terminal: false,
             gate: None,
         }
     }
@@ -308,6 +313,10 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
             }
         }
     }
+    write_reply(&mut stream, &reply)
+}
+
+fn write_reply(stream: &mut impl Write, reply: &Reply) -> io::Result<()> {
     write!(
         stream,
         "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n",
@@ -317,9 +326,27 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
         write!(stream, "{name}: {value}\r\n")?;
     }
     stream.write_all(b"\r\n")?;
-    for bytes in reply.bytes.chunks(reply.fragment) {
+    let mut chunks = reply.bytes.chunks(reply.fragment).peekable();
+    while let Some(bytes) = chunks.next() {
         write!(stream, "{:x}\r\n", bytes.len())?;
         stream.write_all(bytes)?;
+        if reply.terminal && chunks.peek().is_none() {
+            // Client::stream legitimately returns at message_stop, without
+            // waiting for HTTP EOF. Only framing remains after its last byte;
+            // disconnects before here (including partial stop events) are errors.
+            let framing = stream.write_all(b"\r\n0\r\n\r\n");
+            return match framing {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    Ok(())
+                }
+                result => result,
+            };
+        }
         stream.write_all(b"\r\n")?;
         stream.flush()?;
     }
@@ -351,6 +378,55 @@ mod mock_health {
 
     fn rejects(mock: MockAnthropic) {
         assert!(catch_unwind(AssertUnwindSafe(|| mock.finish())).is_err());
+    }
+
+    /// Deterministically model a client closing after any particular wire byte,
+    /// including between message_stop and the final HTTP chunk framing.
+    struct DisconnectAfter {
+        remaining: usize,
+        kind: io::ErrorKind,
+    }
+    impl Write for DisconnectAfter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(self.kind.into());
+            }
+            let count = bytes.len().min(self.remaining);
+            self.remaining -= count;
+            Ok(count)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn terminal_framing_disconnect_is_healthy_only_after_complete_message_stop() {
+        let complete = Reply::text("Synthetic", 1, 0, 0, 1);
+        let incomplete = Reply::events(vec![json!({"type":"message_delta"})]);
+        let raw = Reply::wire("text/event-stream", b"synthetic raw body");
+        for reply in [complete, incomplete, raw] {
+            let terminal = reply.bytes.ends_with(b"data: {\"type\":\"message_stop\"}\n\n");
+            let mut wire = Vec::new();
+            write_reply(&mut wire, &reply).unwrap();
+            // Last payload byte precedes the final CRLF and zero chunk.
+            let framing = wire.len() - 7;
+            for kind in [
+                io::ErrorKind::BrokenPipe,
+                io::ErrorKind::ConnectionReset,
+                io::ErrorKind::TimedOut,
+            ] {
+                for remaining in [0, framing - 1, framing, framing + 2] {
+                    let result = write_reply(&mut DisconnectAfter { remaining, kind }, &reply);
+                    let expected = terminal && remaining >= framing && kind != io::ErrorKind::TimedOut;
+                    assert_eq!(
+                        result.is_ok(),
+                        expected,
+                        "terminal={terminal}, byte={remaining}, error={kind:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
