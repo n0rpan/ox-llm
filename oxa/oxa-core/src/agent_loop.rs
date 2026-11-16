@@ -103,7 +103,7 @@ fn run_inner(
     opening: &[EventMessage],
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
-    let mut schema_repaired = false;
+    let mut schema_repaired = None;
     let mut done = crate::done::DoneState::default();
     done.begin(st);
     let mut wrapping_up = false;
@@ -183,10 +183,10 @@ fn run_inner(
                 .output_schema
                 .as_ref()
                 .map(|schema| {
-                    let instruction = if schema_repaired {
-                        "Your final answer did not match the output schema. Return only valid JSON matching this schema:"
+                    let instruction = if let Some(error) = &schema_repaired {
+                        format!("Your final answer did not match the output schema: {error}. Return only valid JSON matching this schema:")
                     } else {
-                        "Your final answer must be JSON matching this schema:"
+                        "Your final answer must be JSON matching this schema:".to_owned()
                     };
                     vec![WireMsg::user(format!("{instruction}\n{}", schema.value()))]
                 })

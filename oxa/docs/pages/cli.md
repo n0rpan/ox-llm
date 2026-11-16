@@ -17,6 +17,18 @@ $ oxa -p --continue SESSION_ID "continue with this instruction"
 
 Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word after `--continue` is taken as the id only if a session with that id exists; otherwise it stays part of the prompt and the most recent session continues, as before. The id is never sent as a prompt. `--continue` without a value (or `-c`) selects the most recent session. `--no-session` keeps the run ephemeral and prints no session id. An explicit continuation id cannot be combined with `--no-session` or `--session`.
 
+## Send a session follow-up
+
+```console
+$ oxa send SESSION_ID "task finished, red"
+```
+
+Use the full session id. This queues one follow-up without starting an engine or requiring the session to be running. Its TUI or RPC owner consumes it when idle or at a follow-up boundary, just like queued follow-up input; it does not interrupt the active turn. A stopped session retains the message until it is opened again in TUI or RPC mode. Success means **queued**, not that the model has answered.
+
+The inbox lives at `inbox/<session-id>/` under the agent directory, in private `0700` directories with `0600` message files. Publication is an atomic rename; the owner uses inotify (no file polling, socket or daemon), including a startup scan for queued messages. The agent directory remains masked by the sandbox. Messages are limited to 256 KiB. The owner admits at most 64 messages or 1 MiB of inbox text across destinations; excess files remain on disk and are retried when the owner releases capacity, without polling. Oversized externally written files remain on disk and are not delivered. Once admitted to the owner's in-memory follow-up queue, a message file is removed. This is not transactional with the session transcript: a process crash can lose an admitted message or replay a file not yet removed. Worker prompts are unchanged.
+
+## Headless results
+
 Print, JSON and RPC runs write exactly one terminal JSON result on standard error, after diagnostics. For example:
 
 ```json
@@ -68,9 +80,9 @@ If a local model spends its output budget on thinking without an answer, oxa ret
 
 ## Schema-checked answers
 
-Use `oxa -p --output-schema schema.json "your task"` to require a JSON final answer. The file is read relative to the working directory before the session starts. Supported schema keywords are `type` (`object`, `array`, `string`, `number`), `properties`, `items`, `enum` and `required`, including nested schemas. Unsupported keywords and malformed schemas are rejected rather than silently ignored; external references are never fetched.
+Use `oxa -p --output-schema schema.json "your task"` to require a JSON final answer. The file is read relative to the working directory before the session starts. Supported schema keywords are `type` (`object`, `array`, `string`, `number`, `integer`), `properties`, `items`, `enum`, `required`, boolean `additionalProperties`, `minLength` (Unicode character count), and inclusive numeric `minimum`/`maximum`, including nested schemas. The string annotations `title`, `description`, and `$schema` are also accepted as metadata only; they never trigger schema fetching or reference resolution. This offline subset supports the shipped review findings schema; it is not a general Draft 2020-12 validator. Unsupported keywords and malformed schemas are rejected rather than silently ignored; external references are never fetched. The runtime's `OutputSchema::validate` API returns a JSON Pointer and reason on failure; `matches` remains available for boolean checks. Numeric answer lexemes are checked without float rounding, with the same behavior whether dependency features enable arbitrary-precision JSON or not. Priority uses the existing finite enum form; integer/minimum enforce positive line numbers, minimum/maximum constrain confidence, minLength keeps finding strings nonempty, and additionalProperties rejects unrecognized finding/root fields.
 
-The contract is supplied as a turn message, not a system/worker prefix change. Tools work normally. If the final text is not valid JSON matching the schema, oxa appends one repair instruction and tries again. A second mismatch fails with exit 1 and `error_class: "schema_mismatch"`; print mode emits no final answer on failure. JSON mode still streams all attempt events. The repair budget resets for each user prompt. Without the flag, no schema instructions or validation are added.
+The contract is supplied as a turn message, not a system/worker prefix change. Tools work normally. If the final text is not valid JSON matching the schema, oxa appends one repair instruction with the returned instance path and reason and tries again. A second mismatch fails with exit 1 and `error_class: "schema_mismatch"`; print mode emits no final answer on failure. JSON mode still streams all attempt events. The repair budget resets for each user prompt. Without the flag, no schema instructions or validation are added.
 
 Validation always happens in oxa. Only cloud models explicitly advertising the `response_format` capability also receive an upstream JSON Schema `response_format`; it is never sent to the local engine. This option is process-local, is not saved as a setting, and is not inherited by workers.
 
