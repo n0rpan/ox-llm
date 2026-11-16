@@ -6,8 +6,8 @@
 use oxa_fake::TestEnv;
 use oxa_proto::{codes, Entry, EntryBody, Part, WireMsg};
 use oxa_session::{
-    clone_session, fork_file, fork_session, meta_of, search_sessions, set_label, set_name, sort_sessions,
-    FsStore, SessionMeta, SessionRef, SessionSort, SessionStore, Tree,
+    clone_session, fork_file, fork_session, search_sessions, set_label, set_name, sort_sessions, FsStore,
+    SessionMeta, SessionRef, SessionSort, SessionStore, Tree,
 };
 use std::path::{Path, PathBuf};
 
@@ -116,8 +116,7 @@ fn picker_metadata_excludes_recorded_env_notes() {
     // Literal user-authored blocks have no provenance and must remain searchable.
     st.append(&src, &user("0000000c", None, "<env>literal</env>"))
         .unwrap();
-    let entries = st.load(&src).unwrap();
-    let m = meta_of(&src, &st.header(&src).unwrap(), &entries);
+    let m = st.list(Some(&env.work())).remove(0);
     assert_eq!(m.first_message, "fix the picker");
     assert_eq!(m.all_text, "fix the picker\n<env>literal</env>");
     let metas = [m];
@@ -254,9 +253,8 @@ fn names() {
     assert_eq!(listed[0].name.as_deref(), Some("Refactor  parser"));
 
     set_name(&st, &src, "0000000e", "Second").unwrap();
-    let header = st.header(&src).unwrap();
     assert_eq!(
-        meta_of(&src, &header, &st.load(&src).unwrap()).name.as_deref(),
+        st.list(Some(&env.work()))[0].name.as_deref(),
         Some("Second"),
         "last name wins"
     );
@@ -274,14 +272,41 @@ fn meta_counts_messages_and_first_message() {
     let env = TestEnv::new();
     let st = store(&env);
     let src = make_tree(&st, &env.work());
-    let header = st.header(&src).unwrap();
     let entries = st.load(&src).unwrap();
-    let m = meta_of(&src, &header, &entries);
+    let m = st.list(Some(&env.work())).remove(0);
     assert_eq!(m.message_count, 5);
     assert_eq!(m.first_message, "start");
     assert_eq!(m.parent_session, None);
-    assert_eq!(m.modified_ms, entries.last().unwrap().ts_ms);
+    let created = st.header(&src).unwrap().ts_ms;
+    assert_eq!(m.modified_ms, created.max(entries.last().unwrap().ts_ms));
     assert!(m.all_text.contains("right follow-up"));
+}
+
+/// The picker's metadata (`SessionStore::list`) trims a recorded name and takes the newest
+/// timestamp over all entries, whatever their order in the file.
+#[test]
+fn list_metadata_trims_name_and_uses_newest_timestamp() {
+    let env = TestEnv::new();
+    let st = store(&env);
+    let src = st.create(&env.work(), None, None).unwrap();
+    let created = st.header(&src).unwrap().ts_ms;
+    st.append(&src, &user("0000000a", None, "hello")).unwrap();
+    let info = |id: &str, ts_ms: u64, name: &str| Entry {
+        id: id.to_string(),
+        parent: None,
+        ts_ms,
+        body: EntryBody::SessionInfo {
+            name: name.to_string(),
+        },
+    };
+    st.append(&src, &info("0000000b", created + 1_000, "Named"))
+        .unwrap();
+    // A later entry with an older (skewed) clock must not move the modified time back.
+    st.append(&src, &info("0000000c", created - 5_000, "   "))
+        .unwrap();
+    let m = st.list(Some(&env.work())).remove(0);
+    assert_eq!(m.name, None, "a whitespace-only name clears it");
+    assert_eq!(m.modified_ms, created + 1_000);
 }
 
 /// recent / threaded / relevance

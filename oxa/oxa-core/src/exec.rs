@@ -65,8 +65,7 @@ pub fn request(
     guard_hooks(st, HookPoint::ContextWithSystem, sink, ui)?;
     guard_hooks(st, HookPoint::BeforeProviderRequest, sink, ui)?;
 
-    let mut msgs: Vec<WireMsg> = st.transcript.wire().to_vec();
-    msgs.extend(opts.extra.iter().cloned());
+    let msgs = request_messages(&st.transcript.wire_shared(), &opts.extra);
     let idem = if opts.idem_key.is_empty() {
         new_idem_key(st)
     } else {
@@ -123,6 +122,18 @@ pub fn request(
         note_snapshot(st, &turn, opts.kind, sink);
     }
     Ok(turn)
+}
+
+/// The messages of one request: the wire itself (shared, not copied) when there is nothing to
+/// append, else a copy of it plus `extra`.
+fn request_messages(wire: &Arc<Vec<WireMsg>>, extra: &[WireMsg]) -> Arc<Vec<WireMsg>> {
+    if extra.is_empty() {
+        return Arc::clone(wire);
+    }
+    let mut v = Vec::with_capacity(wire.len() + extra.len());
+    v.extend(wire.iter().cloned());
+    v.extend(extra.iter().cloned());
+    Arc::new(v)
 }
 
 /// F11: what the engine did with an H4 hint. A kept checkpoint is recorded
@@ -1447,6 +1458,30 @@ pub(crate) fn reply_event(turn: &AssistantTurn, ts_ms: u64) -> EventMessage {
         tool_name: None,
         is_error: false,
         error_message: None,
+    }
+}
+
+#[cfg(test)]
+mod request_messages_tests {
+    use super::*;
+
+    #[test]
+    fn no_extra_messages_share_the_wire() {
+        let wire = Arc::new(vec![WireMsg::user("a"), WireMsg::assistant("b")]);
+        let msgs = request_messages(&wire, &[]);
+        assert!(
+            Arc::ptr_eq(&wire, &msgs),
+            "an empty `extra` must not copy the wire"
+        );
+    }
+
+    #[test]
+    fn extra_messages_are_appended_without_touching_the_wire() {
+        let wire = Arc::new(vec![WireMsg::user("a")]);
+        let msgs = request_messages(&wire, &[WireMsg::user("draft")]);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1], WireMsg::user("draft"));
+        assert_eq!(wire.len(), 1);
     }
 }
 
