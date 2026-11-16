@@ -292,9 +292,11 @@ impl Decimal {
 
 fn schema_equal(schema: &Value, value: &Value, raw: &Value) -> bool {
     match (schema, value) {
-        (Value::Number(a), Value::Number(_)) => Decimal::new(&a.to_string())
-            .cmp(&Decimal::new(raw.as_str().unwrap()))
-            .is_eq(),
+        // Enum equality recurses without validate_value at each leaf. Reject
+        // private number-map objects here too, rather than unwrapping their view.
+        (Value::Number(a), Value::Number(_)) => raw
+            .as_str()
+            .is_some_and(|raw| Decimal::new(&a.to_string()).cmp(&Decimal::new(raw)).is_eq()),
         (Value::Array(a), Value::Array(b)) => {
             a.len() == b.len()
                 && a.iter()
