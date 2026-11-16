@@ -677,6 +677,7 @@ fn scripted_engine_answers_trailing_assistant_like_the_real_engine() {
             model: "fake-model",
             max_tokens,
             thinking: false,
+            thinking_budget: None,
             preserve_thinking: true,
             sampling: None,
             hints,
@@ -792,6 +793,7 @@ fn length_stop_over_http_sends_no_unsupported_request() {
         model: "fake-model",
         max_tokens,
         thinking: false,
+        thinking_budget: None,
         preserve_thinking: true,
         sampling: None,
         hints,
@@ -1320,4 +1322,75 @@ fn write_locks_use_canonical_paths_for_aliases() {
         MutationQueue::key(&cwd.join("dlink/new.txt")),
         real("dir").join("new.txt")
     );
+}
+
+/// Exercise the real run-loop request construction, not just the settings accessor.
+#[test]
+fn optional_thinking_budget_flows_through_the_policy_only_for_supported_local_requests() {
+    struct CaptureBudget {
+        inner: ScriptedEngine,
+        cap: bool,
+        remote: bool,
+        seen: Mutex<Vec<Option<u64>>>,
+    }
+    impl Engine for CaptureBudget {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            let mut info = self.inner.info(target)?;
+            info.caps.thinking_budget = self.cap;
+            info.caps.remote = self.remote;
+            Ok(info)
+        }
+        fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+            self.inner.count_tokens(text)
+        }
+        fn chat(
+            &self,
+            r: &ChatRequest,
+            cancel: &CancelToken,
+            on: &mut dyn FnMut(StreamEvent),
+        ) -> Result<AssistantTurn, OxaError> {
+            self.seen.lock().unwrap().push(r.thinking_budget);
+            self.inner.chat(r, cancel, on)
+        }
+    }
+    for (budget, cap, remote, thinking, want) in [
+        (Value::Null, true, false, true, None),
+        (Value::from(512), true, false, true, Some(512)),
+        (Value::from(0), true, false, true, Some(0)),
+        (Value::from(512), false, false, true, None),
+        (Value::from(512), true, true, true, None),
+        (Value::from(512), true, false, false, None),
+    ] {
+        let env = TestEnv::new();
+        let engine = Arc::new(CaptureBudget {
+            inner: ScriptedEngine::new(vec![ScriptTurn::text("answer")]),
+            cap,
+            remote,
+            seen: Mutex::new(Vec::new()),
+        });
+        let mut st = build(
+            &env,
+            engine.clone(),
+            Arc::new(MemStore::new()),
+            Vec::new(),
+            Mode::Workspace,
+            Vec::new(),
+        );
+        st.settings = Settings::from_values(
+            serde_json::json!({"oxa":{"thinking":{"budget":budget,"policy":"fixed"}}}),
+            serde_json::json!({}),
+        );
+        st.thinking = if thinking {
+            ThinkingLevel::Medium
+        } else {
+            ThinkingLevel::Off
+        };
+        say(&mut st, "Reply with a short answer.");
+        assert_eq!(run(&mut st).0, RunEnd::Stopped);
+        assert_eq!(
+            *engine.seen.lock().unwrap(),
+            vec![want],
+            "cap={cap}, remote={remote}, thinking={thinking}"
+        );
+    }
 }

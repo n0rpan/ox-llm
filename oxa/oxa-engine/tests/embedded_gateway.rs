@@ -91,13 +91,9 @@ fn prefix() -> FrozenPrefix {
 }
 fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg]) -> ChatRequest<'a> {
     ChatRequest {
-        prefix,
-        messages,
-        model: "cloud-model",
         max_tokens: 64,
         thinking: true,
         preserve_thinking: true,
-        sampling: None,
         hints: Hints {
             session: "synthetic-session",
             idem_key: "synthetic-request-id",
@@ -105,6 +101,7 @@ fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg]) -> ChatRequest
             background: false,
             snapshot_keep: true,
         },
+        ..ChatRequest::new(prefix, messages, "cloud-model")
     }
 }
 

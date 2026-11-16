@@ -48,6 +48,14 @@ Turning thinking on and off changes the start of the prompt for those models, so
 turn would re-process the whole context. Subagent children read the same settings, so they
 follow the same rule.
 
+An optional `{"oxa":{"thinking":{"budget":512}}}` setting bounds generated reasoning
+text on supporting local oxe engines. It is sent only on requests whose thinking policy is
+on; `off`, prefill-only, unknown and remote engines omit it. At the cap oxe evaluates the
+closing think marker and continues into the answer/tool phase within the same total output
+limit. Omitted/null preserves the existing behavior; zero closes immediately. This limits
+reasoning rather than promising a correct or complete answer. The closing marker counts in
+usage, so reported reasoning tokens can be one greater than the text cap.
+
 ## Defaults for the tools and the context
 
 - **bash timeout.** A bash call with no `timeout` stops after 120 seconds.
