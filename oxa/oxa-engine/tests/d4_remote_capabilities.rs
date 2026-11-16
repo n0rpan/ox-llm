@@ -301,3 +301,81 @@ fn request_budget_is_local_thinking_only_and_discovered_without_model_names() {
         );
     }
 }
+
+/// Issue #574: a cloud model reached through oxc carries the request's own Idempotency-Key and
+/// session header (oxc's headers, never forwarded upstream); the local-only hint headers stay off.
+#[test]
+fn a_remote_request_sends_the_idempotency_key_and_session() {
+    use oxa_engine::HttpEngine;
+    use oxa_fake::{FakeOpts, FakeServer, ScriptTurn};
+    use oxa_proto::{CancelToken, Engine};
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("reply")],
+        FakeOpts {
+            remote: Some("openrouter"),
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let engine = HttpEngine::new(&server.url(), None).unwrap();
+    let info = engine.info(None).unwrap();
+    assert!(info.caps.remote);
+    let p = prefix();
+    let messages = [WireMsg::user("hi")];
+    engine
+        .chat(
+            &request(&p, &messages, &info.model),
+            &CancelToken::new(),
+            &mut |_| {},
+        )
+        .unwrap();
+    let seen = server.requests();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].idem_key, "idem");
+    assert_eq!(seen[0].session, "session");
+    let has = |name: &str| seen[0].headers.iter().any(|(k, _)| k == name);
+    assert!(!has("x-oxe-snapshot"), "{:?}", seen[0].headers);
+}
+
+/// Issue #574: a cut or silent stream before the first data line must not be re-sent by the
+/// engine for a cloud model (each send is a new, billed upstream generation); the core's single
+/// retry layer decides. A refused connection reached nothing and is still retried.
+#[test]
+fn a_remote_cut_before_data_is_not_resent_by_the_engine() {
+    use oxa_engine::HttpEngine;
+    use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn};
+    use oxa_proto::{CancelToken, Engine};
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn {
+                fault: Some(Fault::DropAt { bytes: 0 }),
+                ..ScriptTurn::text("lost")
+            },
+            ScriptTurn::text("second"),
+        ],
+        FakeOpts {
+            remote: Some("openrouter"),
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let engine = HttpEngine::new(&server.url(), None).unwrap();
+    let info = engine.info(None).unwrap();
+    let p = prefix();
+    let messages = [WireMsg::user("hi")];
+    let err = engine
+        .chat(
+            &request(&p, &messages, &info.model),
+            &CancelToken::new(),
+            &mut |_| {},
+        )
+        .unwrap_err();
+    assert_eq!(err.code, codes::STREAM_BROKEN);
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "one upstream request, no engine-level resend"
+    );
+}
