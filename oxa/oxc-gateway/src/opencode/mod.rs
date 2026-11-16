@@ -208,6 +208,7 @@ impl SessionHint {
         }
         Self(text)
     }
+    #[cfg(feature = "anthropic-gateway")]
     pub(crate) fn from_provider_hint(digest: String) -> Result<Self, Error> {
         if digest.len() != 32 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(Error::SessionHint);
