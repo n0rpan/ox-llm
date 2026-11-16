@@ -36,7 +36,32 @@ Linux oxa integration tests require `bubblewrap` and `strace` on `PATH` (Arch:
 `sudo pacman -S bubblewrap strace`; Debian/Ubuntu: `sudo apt-get install bubblewrap strace`).
 The native cloud tool-loop test uses `strace -f -e trace=execve` to verify that the real binary
 and its descendants never launch Python; running without the tracer is not a valid substitute.
-Hosted CI installs both prerequisites too.
+Hosted CI installs both prerequisites too. A missing `strace` is a runner prerequisite
+failure, not a reason to skip the test or replace the tracer with a stub.
+
+For a checkout-only Arch runner without sudo (with the package's runtime libraries
+already installed), extract the signed package into the ignored build directory.
+From the repository root:
+
+```sh
+(
+  set -eu
+  mkdir -p oxa/target/test-tools/strace
+  cd oxa/target/test-tools/strace
+  url=$(pacman -Sddp --print-format '%l' strace)
+  curl --fail --location "$url" -o strace.pkg.tar.zst
+  curl --fail --location "$url.sig" -o strace.pkg.tar.zst.sig
+  gpgv --homedir . --keyring /etc/pacman.d/gnupg/pubring.gpg strace.pkg.tar.zst.sig strace.pkg.tar.zst
+  bsdtar -xf strace.pkg.tar.zst usr/bin/strace
+)
+export PATH="$PWD/oxa/target/test-tools/strace/usr/bin:$PATH"
+cd oxa
+cargo test -p oxa-cli --test in_process_cloud native_discovery_tool_loop_and_budget_settlement_use_no_python_process -- --exact
+```
+
+Keep this `PATH` in the environment of subsequent test commands (including an
+outside check runner); exporting it in one shell does not configure another.
+This does not install anything system-wide or add a binary to the repository.
 
 ```sh
 cd oxc && ./tools/run_lab_tests.sh                       # lab
