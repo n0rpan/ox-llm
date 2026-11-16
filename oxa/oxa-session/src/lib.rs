@@ -104,6 +104,19 @@ pub trait SessionStore: Send + Sync {
     fn lists_path(&self, _path: &Path) -> bool {
         false
     }
+    /// Exhaustive live references for spill reclamation. Unlike picker listings, this must
+    /// fail on unreadable directories, files or headers, not silently omit live sessions.
+    fn spill_cleanup_sessions(&self) -> Result<Vec<SessionRef>, OxaError> {
+        Err(OxaError::new(
+            oxa_proto::codes::INVALID,
+            "store cannot enumerate spill references",
+        ))
+    }
+    /// Whether all cross-store children of this session are guaranteed to publish store links.
+    /// Legacy sessions cannot establish this retroactively and must retain their spills.
+    fn spill_stores_tracked(&self, _session: &SessionRef) -> Result<bool, OxaError> {
+        Ok(false)
+    }
     /// File-store roots linked by cross-store forks. Cleanup must check all of these stores
     /// before reclaiming spills; errors leave the spills intact. Other store types need no roots.
     fn spill_cleanup_roots(&self) -> Result<Vec<PathBuf>, OxaError> {

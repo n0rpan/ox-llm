@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const ANCESTRY_DIR: &str = ".spill-ancestry";
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-type Retained = HashMap<PathBuf, (SessionRef, SessionHeader)>;
+type Retained = HashMap<PathBuf, (SessionRef, SessionHeader, bool)>;
 const STORES_DIR: &str = ".spill-stores";
 
 // Persist links before publishing a cross-store child. Bidirectional links let deletion in
@@ -142,6 +142,7 @@ pub fn remove_session_preserving_spills(
     encode_header(&header, &mut bytes);
     let mut record: Value = serde_json::from_slice(&bytes).expect("encoded header");
     record["sessionPath"] = Value::from(session.path.to_string_lossy().as_ref());
+    record["spillStoresTracked"] = Value::Bool(store.spill_stores_tracked(session)?);
     let bytes = serde_json::to_vec(&record).expect("header record");
     ensure_dir(tmp_dir)?;
     let root = tmp_dir.join(ANCESTRY_DIR);
@@ -185,7 +186,7 @@ pub fn remove_session_preserving_spills(
     store.remove(session)
 }
 
-fn read_retained_session(path: &Path) -> Result<(SessionRef, SessionHeader), OxaError> {
+fn read_retained_session(path: &Path) -> Result<(SessionRef, SessionHeader, bool), OxaError> {
     check_safe(path)?;
     let bytes = read_file(path)?;
     let header = decode_header(&bytes)?;
@@ -201,7 +202,8 @@ fn read_retained_session(path: &Path) -> Result<(SessionRef, SessionHeader), Oxa
         path: PathBuf::from(original),
         id: header.id.clone(),
     };
-    Ok((sref, header))
+    let tracked = record["spillStoresTracked"] == Value::Bool(true);
+    Ok((sref, header, tracked))
 }
 
 fn retained_sessions(tmp_dir: &Path, tolerate_invalid_records: bool) -> Result<Retained, OxaError> {
@@ -221,8 +223,8 @@ fn retained_sessions(tmp_dir: &Path, tolerate_invalid_records: bool) -> Result<R
             continue; // Unpublished staging files are not ancestry records.
         }
         match read_retained_session(&path) {
-            Ok((sref, header)) => {
-                retained.insert(sref.path.clone(), (sref, header));
+            Ok((sref, header, tracked)) => {
+                retained.insert(sref.path.clone(), (sref, header, tracked));
             }
             // Reads may use independently validated records. Cleanup must fail closed:
             // an incomplete ancestry map cannot prove that a spill is unreferenced.
@@ -241,14 +243,14 @@ fn ancestors(store: &dyn SessionStore, session: &SessionRef, retained: &Retained
         let header = store
             .header(&source)
             .ok()
-            .or_else(|| retained.get(&source.path).map(|(_, header)| header.clone()));
+            .or_else(|| retained.get(&source.path).map(|(_, header, _)| header.clone()));
         let Some(parent) = header.and_then(|header| header.parent_session) else {
             break;
         };
         let parent = store
             .resolve(&parent)
             .ok()
-            .or_else(|| retained.get(Path::new(&parent)).map(|(sref, _)| sref.clone()));
+            .or_else(|| retained.get(Path::new(&parent)).map(|(sref, _, _)| sref.clone()));
         let Some(parent) = parent else { break };
         if !seen.insert(parent.path.clone()) || validate_session_id(&parent.id).is_err() {
             break;
@@ -274,6 +276,9 @@ pub fn inherited_spill_dirs(store: &dyn SessionStore, tmp_dir: &Path, session: &
 /// retained sources in all checked stores, so the last descendant reclaims ancestors' output.
 /// Unlinked stores can also share `tmp_dir`; their references have not been checked, so their
 /// retained sources are not candidates. Arbitrary scratch directories are not candidates either.
+/// Pre-tracking sessions and retained records are kept conservatively: an undiscoverable legacy
+/// cross-store descendant may still use them. An explicit wipe can remove that legacy output.
+/// Incomplete enumeration aborts reclamation without deleting spills or ancestry records.
 /// Returns the number of spill files removed (not metadata files).
 pub fn remove_spill_dir_unless_forked(
     store: &dyn SessionStore,
@@ -292,19 +297,17 @@ pub fn remove_spill_dir_unless_forked(
         .collect();
     let mut live = HashSet::new();
     for checked in &stores {
-        for session in checked.list(None) {
-            live.insert(session.sref.id.clone());
-            live.extend(
-                ancestors(*checked, &session.sref, &retained)
-                    .into_iter()
-                    .map(|s| s.id),
-            );
+        for session in checked.spill_cleanup_sessions()? {
+            live.insert(session.id.clone());
+            live.extend(ancestors(*checked, &session, &retained).into_iter().map(|s| s.id));
         }
     }
     let candidates: HashSet<_> = retained
         .values()
-        .map(|(s, _)| s)
-        .chain(std::iter::once(removed))
+        // Missing flags include records retained by an older version. Their descendants
+        // may live in arbitrary unlinked stores, so only an explicit wipe can reclaim them.
+        .filter(|(_, _, tracked)| *tracked)
+        .map(|(s, _, _)| s)
         .filter(|s| stores.iter().any(|checked| checked.lists_path(&s.path)))
         .map(|s| s.id.as_str())
         .collect();

@@ -105,6 +105,123 @@ fn cleanup_in_another_session_store_preserves_unchecked_ancestry() {
 }
 
 #[test]
+fn cleanup_fails_closed_when_live_sessions_cannot_be_enumerated() {
+    use oxa_session::FsStore;
+
+    for failure in ["file", "directory", "header", "linked-file"] {
+        let env = oxa_fake::TestEnv::new();
+        let tmp = env.root().join("tmp");
+        let store = FsStore::new(env.root().join("sessions-a"));
+        let other = FsStore::new(env.root().join("sessions-b"));
+        let cwd = Path::new("/work/project");
+        let source = store.create(cwd, Some("source"), None).unwrap();
+        let child_store = if failure == "linked-file" { &other } else { &store };
+        let child = child_store
+            .create(cwd, Some("child"), Some(&source.path))
+            .unwrap();
+        fs::create_dir_all(tmp.join("source")).unwrap();
+        let output = tmp.join("source/output.txt");
+        fs::write(&output, "keep").unwrap();
+        remove_session_preserving_spills(&store, &tmp, &source).unwrap();
+        let original = fs::read(&child.path).unwrap();
+        let inaccessible = if failure == "directory" {
+            child.path.parent().unwrap()
+        } else {
+            &child.path
+        };
+        if failure == "header" {
+            fs::write(&child.path, "{\n").unwrap();
+        } else {
+            fs::set_permissions(inaccessible, fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        let result = remove_spill_dir_unless_forked(&store, &tmp, &source);
+        // Restore before assertions, including on a regression, so fixtures remain removable.
+        if failure == "header" {
+            fs::write(&child.path, original).unwrap();
+        } else {
+            fs::set_permissions(inaccessible, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert!(
+            result.is_err(),
+            "incomplete {failure} enumeration must abort cleanup"
+        );
+        assert_eq!(fs::read_to_string(&output).unwrap(), "keep");
+        assert!(tmp.join(".spill-ancestry/source.json").is_file());
+        remove_session_preserving_spills(child_store, &tmp, &child).unwrap();
+        assert_eq!(remove_spill_dir_unless_forked(&store, &tmp, &child).unwrap(), 1);
+        assert!(!output.exists());
+    }
+}
+
+#[test]
+fn legacy_cross_store_forks_keep_untracked_source_spills() {
+    use oxa_session::{fork_file, FsStore};
+
+    for previously_retained in [false, true] {
+        let env = oxa_fake::TestEnv::new();
+        let tmp = env.root().join("tmp");
+        let root_a = env.root().join("sessions-a");
+        let root_b = env.root().join("sessions-b");
+        let store_a = FsStore::new(root_a.clone());
+        let store_b = FsStore::new(root_b.clone());
+        let cwd = Path::new("/work/project");
+        let source = store_a.create(cwd, Some("source"), None).unwrap();
+        // Recreate a pre-upgrade header, without any tracking guarantee.
+        let mut header = Vec::new();
+        oxa_session::encode_header(&store_a.header(&source).unwrap(), &mut header);
+        header.push(b'\n');
+        fs::write(&source.path, header).unwrap();
+        store_a
+            .append(
+                &source,
+                &oxa_proto::Entry {
+                    id: "00000001".into(),
+                    parent: None,
+                    ts_ms: 1,
+                    body: oxa_proto::EntryBody::Msg {
+                        wire: oxa_proto::WireMsg::user("synthetic history"),
+                        parts: vec![],
+                        tool: None,
+                    },
+                },
+            )
+            .unwrap();
+        let child = fork_file(&store_b, &source, cwd, None).unwrap();
+        // Pre-upgrade cross-store forks never published links in either store.
+        for root in [&root_a, &root_b] {
+            fs::remove_dir_all(root.join(".spill-stores")).unwrap();
+        }
+        fs::create_dir_all(tmp.join("source")).unwrap();
+        let output = tmp.join("source/output.txt");
+        fs::write(&output, "legacy output").unwrap();
+        remove_session_preserving_spills(&store_a, &tmp, &source).unwrap();
+        if previously_retained {
+            let record = tmp.join(".spill-ancestry/source.json");
+            let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+            value.as_object_mut().unwrap().remove("spillStoresTracked");
+            fs::write(record, serde_json::to_vec(&value).unwrap()).unwrap();
+        }
+        let reopened = FsStore::new(root_a);
+        assert_eq!(
+            remove_spill_dir_unless_forked(&reopened, &tmp, &source).unwrap(),
+            0
+        );
+        assert_eq!(fs::read_to_string(&output).unwrap(), "legacy output");
+        assert_eq!(
+            inherited_spill_dirs(&store_b, &tmp, &child),
+            vec![tmp.join("source")]
+        );
+        let unrelated = reopened.create(cwd, Some("unrelated"), None).unwrap();
+        remove_session_preserving_spills(&reopened, &tmp, &unrelated).unwrap();
+        remove_spill_dir_unless_forked(&reopened, &tmp, &unrelated).unwrap();
+        assert!(
+            output.is_file(),
+            "later cleanup must not reclaim untracked ancestors"
+        );
+    }
+}
+
+#[test]
 fn cross_store_links_are_private_deduplicated_and_fail_closed() {
     use oxa_session::FsStore;
 
