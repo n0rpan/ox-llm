@@ -116,17 +116,28 @@ pub(crate) fn apply(snapshot: &mut Snapshot, event: &Event) -> Result<()> {
         + snapshot.incidents.len()
         > MAX_ITEMS
     {
-        if !snapshot.landed.is_empty() {
-            snapshot.landed.remove(0);
-        } else if !snapshot.incidents.is_empty() {
-            snapshot.incidents.remove(0);
-        } else {
+        if !discard_history(snapshot) {
             return Err("active situation capacity exceeded".into());
         }
-        snapshot.history_truncated = true;
     }
     snapshot.as_of_seq = event.seq;
     snapshot.at_ms = event.at_ms;
-    snapshot.to_json().map_err(|error| error.to_string())?;
+    while let Err(error) = snapshot.to_json() {
+        if !discard_history(snapshot) {
+            return Err(error.to_string());
+        }
+    }
     Ok(())
+}
+
+fn discard_history(snapshot: &mut Snapshot) -> bool {
+    if !snapshot.landed.is_empty() {
+        snapshot.landed.remove(0);
+    } else if !snapshot.incidents.is_empty() {
+        snapshot.incidents.remove(0);
+    } else {
+        return false;
+    }
+    snapshot.history_truncated = true;
+    true
 }

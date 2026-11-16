@@ -54,6 +54,11 @@ impl Root {
         }
         let metadata = io(fs::symlink_metadata(path), "cannot inspect facts root")?;
         private(&metadata, true)?;
+        if create {
+            // A synced child does not persist its entry in the containing directory.
+            // Also sync on an initialization retry after an earlier mkdir/sync failure.
+            sync_directory(path.parent().ok_or("facts root has no parent directory")?)?;
+        }
         Ok(Self(path.to_path_buf()))
     }
     fn path(&self, leaf: &str) -> PathBuf {
@@ -191,13 +196,17 @@ impl Root {
         self.create(from, b"")
     }
     fn sync(&self) -> Result<()> {
-        let directory = io(
-            self.options()
-                .read(true)
-                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-                .open(&self.0),
-            "cannot open facts directory",
-        )?;
-        io(directory.sync_all(), "cannot sync facts directory")
+        sync_directory(&self.0)
     }
+}
+
+fn sync_directory(path: &Path) -> Result<()> {
+    let directory = io(
+        OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(path),
+        "cannot open facts directory",
+    )?;
+    io(directory.sync_all(), "cannot sync facts directory")
 }

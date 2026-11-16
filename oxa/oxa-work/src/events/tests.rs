@@ -405,6 +405,25 @@ fn byte_capacity_trims_history_before_refusing_active_asks() {
     assert!(snapshot.incidents.len() < 16);
     assert!(snapshot.to_json().unwrap().len() <= MAX_SNAPSHOT_BYTES);
     assert_eq!(Facts::open(&env.root()).unwrap().situation().unwrap(), snapshot);
+    for id in 95..MAX_ITEMS {
+        let before = facts.situation().unwrap();
+        let result = facts.append(
+            checkpoint("runner", id as u64 + 17),
+            0,
+            Fact::AskOpened(Ask {
+                id: format!("ask-{id}"),
+                subject: Subject::Repository,
+                question: "q".repeat(512),
+            }),
+        );
+        if result.is_err() {
+            assert!(before.incidents.is_empty());
+            assert_eq!(facts.situation().unwrap(), before);
+            return;
+        }
+        assert_eq!(facts.situation().unwrap().asks.len(), id + 1);
+    }
+    panic!("active asks alone must reach the byte limit before the row limit");
 }
 
 #[test]
