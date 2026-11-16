@@ -254,6 +254,8 @@ def prepare(self, st):
                 try: st.payload, st.completion_meta = openai_api.completion_request(st.payload)
                 except openai_api.Unsupported as error:
                     return answered(self.json_reply(400, {'error': {'message': str(error), 'type': 'invalid_request_error'}}))
+                except openai_api.BadParam as error:
+                    return answered(self.json_reply(400, error.body()))
                 st.backend_path = '/completion'
             st.body = json.dumps(st.payload).encode(); st.rewritten = True
             st.harness = None
