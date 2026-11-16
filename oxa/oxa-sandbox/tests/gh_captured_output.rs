@@ -158,6 +158,70 @@ fn run(b: &Bwrap, env: &TestEnv, command: &str) -> String {
     out
 }
 
+fn gh_binary(path: &str) -> std::path::PathBuf {
+    let binary = std::env::split_paths(path)
+        .find(|p| p.is_absolute() && p.join("gh").is_file())
+        .expect("gh must be installed on PATH for this regression test")
+        .join("gh")
+        .canonicalize()
+        .expect("resolve gh executable");
+    if binary.file_name().is_some_and(|name| name == "mise") {
+        // Resolve the installed tool before entering the isolated HOME. Never let mise
+        // fetch versions or install tools for this network-free regression test.
+        let output = std::process::Command::new(&binary)
+            .args(["which", "gh"])
+            .env("MISE_OFFLINE", "1")
+            .output()
+            .expect("resolve installed gh with mise");
+        assert!(
+            output.status.success(),
+            "gh must already be installed in mise: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let installed = std::path::PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("mise gh path is UTF-8")
+                .trim(),
+        );
+        assert!(
+            installed.is_absolute() && installed.is_file(),
+            "invalid gh path: {installed:?}"
+        );
+        installed.canonicalize().expect("resolve installed gh executable")
+    } else {
+        binary
+    }
+}
+
+#[test]
+fn gh_binary_resolves_mise_shim_without_installing_tools() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let env = TestEnv::new();
+    let binary = env.work().join("installed/bin/gh");
+    env.write("work/installed/bin/gh", "installed gh fixture");
+    env.write(
+        "work/tools/mise",
+        &format!(
+            "#!/bin/sh\n[ \"$*\" = 'which gh' ] && [ \"$MISE_OFFLINE\" = 1 ] || exit 1\nprintf '%s\\n' '{}'\n",
+            binary.display()
+        ),
+    );
+    std::fs::set_permissions(
+        env.work().join("tools/mise"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    std::fs::create_dir_all(env.work().join("shims")).unwrap();
+    symlink("../tools/mise", env.work().join("shims/gh")).unwrap();
+
+    assert_eq!(gh_binary(binary.parent().unwrap().to_str().unwrap()), binary);
+    std::fs::create_dir_all(env.work().join("links")).unwrap();
+    symlink(&binary, env.work().join("links/gh")).unwrap();
+    assert_eq!(gh_binary(env.work().join("links").to_str().unwrap()), binary);
+    assert_eq!(gh_binary(env.work().join("shims").to_str().unwrap()), binary);
+}
+
 #[test]
 fn real_gh_scoped_issue_details_preserve_piped_tables_and_tool_environment() {
     let env = TestEnv::new();
@@ -177,11 +241,10 @@ fn real_gh_scoped_issue_details_preserve_piped_tables_and_tool_environment() {
             return;
         }
     };
-    // gh is installed on the CI runners. A version-manager user can put its real bin directory
-    // on PATH; bind that directory read-only when it is hidden by the account-home mask.
-    let gh_dir = std::env::split_paths(&path)
-        .find(|p| p.is_absolute() && p.join("gh").is_file())
-        .expect("gh must be installed on PATH for this regression test");
+    // Bind the real binary's directory, not a version-manager shim that would try to
+    // resolve tools using the isolated HOME. gh must already be installed on the host.
+    let gh = gh_binary(&path);
+    let gh_dir = gh.parent().expect("gh binary directory").to_path_buf();
     b.layout = Layout::build(&LayoutInputs {
         home: env.home(),
         path_var: format!("{}:/usr/bin:/bin", gh_dir.display()),
