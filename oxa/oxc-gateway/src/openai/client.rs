@@ -420,9 +420,7 @@ fn scrub_refusal(mut refusal: Option<Refusal>, secrets: &[&str]) -> Option<Refus
         ..
     })) = &mut refusal
     {
-        for key in secrets {
-            *plan = plan.replace(key, "[redacted]");
-        }
+        *plan = redact_fragment(plan, secrets, true).0;
     }
     refusal
 }
@@ -567,18 +565,7 @@ impl<'a> Fields<'a> {
             let text = chunk.pointer(&path).and_then(Value::as_str).unwrap().to_owned();
             let (_, mut pending) = self.pending.remove(&id).unwrap_or((Value::Null, String::new()));
             pending.push_str(&text);
-            for key in &self.secrets {
-                pending = pending.replace(key, "[redacted]");
-            }
-            let hold = self
-                .secrets
-                .iter()
-                .flat_map(|key| (1..key.len().min(pending.len() + 1)).map(move |n| (*key, n)))
-                .filter(|(key, n)| key.is_char_boundary(*n) && pending.ends_with(&key[..*n]))
-                .map(|(_, n)| n)
-                .max()
-                .unwrap_or(0);
-            let suffix = pending.split_off(pending.len() - hold);
+            let (pending, suffix) = redact_fragment(&pending, &self.secrets, false);
             *chunk.pointer_mut(&path).unwrap() = Value::String(pending);
             if !suffix.is_empty() {
                 let mut template = chunk.clone();
@@ -595,6 +582,7 @@ impl<'a> Fields<'a> {
         on: &mut F,
     ) -> Result<(), Error> {
         for (id, (mut template, text)) in std::mem::take(&mut self.pending) {
+            let text = redact_fragment(&text, &self.secrets, true).0;
             // Flush only this independent field, never repeat other chunk data.
             let mut delta = serde_json::json!({});
             if let Some(rest) = id.strip_prefix("tool:") {
@@ -628,13 +616,39 @@ fn emit<F: FnMut(Event) -> Control + ?Sized>(
         Ok(())
     }
 }
+// Leftmost-longest matching, withholding a possible longer rotated credential
+// before consuming a shorter complete prefix. Offsets always remain UTF-8 boundaries.
+fn redact_fragment(text: &str, secrets: &[&str], final_fragment: bool) -> (String, String) {
+    let mut safe = String::with_capacity(text.len());
+    let mut offset = 0;
+    while offset < text.len() {
+        let rest = &text[offset..];
+        if !final_fragment
+            && secrets
+                .iter()
+                .any(|key| key.len() > rest.len() && key.starts_with(rest))
+        {
+            return (safe, rest.to_owned());
+        }
+        if let Some(key) = secrets
+            .iter()
+            .filter(|key| !key.is_empty() && rest.starts_with(**key))
+            .max_by_key(|key| key.len())
+        {
+            safe.push_str("[redacted]");
+            offset += key.len();
+        } else {
+            let ch = rest.chars().next().expect("nonempty suffix");
+            safe.push(ch);
+            offset += ch.len_utf8();
+        }
+    }
+    (safe, String::new())
+}
+
 fn redact_value(value: &mut Value, secrets: &[&str]) {
     match value {
-        Value::String(s) => {
-            for key in secrets {
-                *s = s.replace(key, "[redacted]")
-            }
-        }
+        Value::String(s) => *s = redact_fragment(s, secrets, true).0,
         Value::Array(v) => {
             for item in v {
                 redact_value(item, secrets)
@@ -643,9 +657,7 @@ fn redact_value(value: &mut Value, secrets: &[&str]) {
         Value::Object(v) => {
             let old = std::mem::take(v);
             for (mut key, mut item) in old {
-                for secret in secrets {
-                    key = key.replace(secret, "[redacted]")
-                }
+                key = redact_fragment(&key, secrets, true).0;
                 redact_value(&mut item, secrets);
                 v.insert(key, item);
             }
@@ -702,6 +714,27 @@ mod tests {
         let mut decoder = Decoder::default();
         let events: Vec<_> = wire.iter().filter_map(|b| decoder.push(*b).unwrap()).collect();
         assert_eq!(events, vec![serde_json::json!({"type":"ping","text":"λ"})]);
+    }
+    #[test]
+    fn redaction_withholds_overlapping_rotated_credentials_until_disambiguated() {
+        let mut fields = Fields::new(vec!["old-access", "old-access-rotated"]);
+        let mut values = vec![];
+        let cancel = Cancellation::default();
+        let mut on = |e| {
+            if let Event::Chunk(value) = e {
+                values.push(value)
+            }
+            Control::Continue
+        };
+        for text in ["Before old-access", "-rotated after"] {
+            fields.deliver(serde_json::json!({"choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]}),&cancel,&mut on).unwrap();
+        }
+        fields.flush(&cancel, &mut on).unwrap();
+        let text: String = values
+            .iter()
+            .filter_map(|v| v.pointer("/choices/0/delta/content")?.as_str())
+            .collect();
+        assert_eq!(text, "Before [redacted] after");
     }
     #[test]
     fn decoded_redaction_handles_unicode_and_split_secrets_without_panicking() {

@@ -42,7 +42,9 @@ provider incomplete response retains its length outcome and known usage.
 API and subscription HTTP refusals use the existing typed classifiers; upstream
 body text is never retained in errors. Authorization/account headers are marked
 sensitive. Decoded fields redact current and freshly retired credentials across
-chunk boundaries before callbacks and final assistant exposure. Auth, refresh
+chunk boundaries before callbacks and final assistant exposure. Overlapping rotated
+credentials use leftmost-longest matching, holding an ambiguous prefix until it
+can be disambiguated; a failing-first regression covers this case. Auth, refresh
 and completed-response Debug omit credentials/private content. Provider replay
 items are private input to the caller's scoped persistence, not a public event.
 
