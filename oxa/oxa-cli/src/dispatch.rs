@@ -1868,6 +1868,7 @@ mod session_scratch_tests {
             model: None,
             thinking: None,
             mode: None,
+            supervised_child: false,
             hook_sets: HookSets::default(),
             yolo: oxa_proto::YoloSwitch::new(false),
         };
