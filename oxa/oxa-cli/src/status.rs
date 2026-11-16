@@ -1,6 +1,6 @@
 //! One small atomic snapshot per saved session. Progress never serializes model/tool text.
 use oxa_config::{dirs_from_env, Dirs, Env, Settings};
-use oxa_core::{Progress, ProgressObserver, RunOutcome, Session};
+use oxa_core::{Progress, ProgressObserver, RunOutcome};
 use oxa_proto::{codes, OxaError, TurnKind};
 use oxa_session::{FsStore, SessionRef, SessionStore};
 use serde_json::{json, Value};
@@ -9,7 +9,7 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const MAX_BYTES: usize = 4096;
@@ -100,12 +100,7 @@ impl StatusWriter {
         }
     }
 
-    pub(crate) fn attach(self: &Arc<Self>, session: &mut Session) -> Result<(), OxaError> {
-        session.set_progress_observer(self.clone());
-        self.check()
-    }
-
-    fn check(&self) -> Result<(), OxaError> {
+    pub(crate) fn check(&self) -> Result<(), OxaError> {
         self.state
             .lock()
             .unwrap_or_else(|p| p.into_inner())

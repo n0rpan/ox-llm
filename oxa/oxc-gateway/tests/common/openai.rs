@@ -21,6 +21,8 @@ pub struct Request {
     pub method: String,
     pub target: String,
     pub body: Value,
+    #[allow(dead_code)] // Used by replay transport consumers of this shared fixture.
+    pub body_bytes: Vec<u8>,
     headers: BTreeMap<String, String>,
 }
 impl Request {
@@ -48,6 +50,34 @@ pub struct Reply {
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
+    #[allow(dead_code)] // Shared fixture constructor; not every consumer refreshes tokens.
+    pub fn json(value: Value) -> Self {
+        Self {
+            status: 200,
+            content_type: "application/json",
+            headers: vec![],
+            bytes: value.to_string().into_bytes(),
+            fragment: 7,
+            gate: None,
+        }
+    }
+    #[allow(dead_code)] // Shared fixture constructor for transport boundary cases.
+    pub fn raw(
+        status: u16,
+        content_type: &'static str,
+        bytes: Vec<u8>,
+        headers: Vec<(&'static str, String)>,
+    ) -> Self {
+        Self {
+            status,
+            content_type,
+            bytes,
+            headers,
+            fragment: 1024,
+            gate: None,
+        }
+    }
+
     /// Script native Responses events, fragmented across HTTP chunks.
     pub fn events(events: Vec<Value>) -> Self {
         let mut bytes = Vec::new();
@@ -311,6 +341,22 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
     }
     let body = if length == 0 {
         Value::Null
+    } else if headers
+        .get("content-type")
+        .is_some_and(|v| v.starts_with("application/x-www-form-urlencoded"))
+    {
+        #[cfg(feature = "transport")]
+        {
+            Value::Object(
+                url::form_urlencoded::parse(&bytes[end..end + length])
+                    .map(|(k, v)| (k.into_owned(), Value::String(v.into_owned())))
+                    .collect(),
+            )
+        }
+        #[cfg(not(feature = "transport"))]
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
     } else {
         serde_json::from_slice(&bytes[end..end + length]).map_err(|_| io::ErrorKind::InvalidData)?
     };
@@ -318,6 +364,7 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         method,
         target,
         body,
+        body_bytes: bytes[end..end + length].to_vec(),
         headers,
     })
 }

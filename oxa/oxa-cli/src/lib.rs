@@ -30,6 +30,7 @@ mod mcp_cmd;
 mod netguard;
 mod pkg_cmd;
 mod report_cmd;
+mod result_facts;
 mod sandbox_layout;
 mod status;
 mod themes;

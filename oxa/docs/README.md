@@ -1,6 +1,6 @@
 # oxa documentation
 
-`oxa` is the terminal coding agent of ox-llm. Its model talks only to the local engine. Its tools may use the network, and bash has network access by default; [security.md](pages/security.md) says what each part can reach. oxa runs bash in a sandbox, keeps sessions as trees, and can be extended with JavaScript, skills, prompt templates and MCP servers. These pages are for people who use it from a terminal.
+`oxa` is the terminal coding agent of ox-llm. Model requests use the configured engine endpoint. Its tools may use the network, and bash has network access by default; [security.md](pages/security.md) says what each part can reach. oxa runs bash in a sandbox, keeps sessions as trees, and can be extended with JavaScript, skills, prompt templates and MCP servers. These pages are for people who use it from a terminal.
 
 ## Quickstart
 

@@ -1218,6 +1218,7 @@ dependencies = [
  "hmac",
  "nix",
  "num-traits",
+ "oxa-engine",
  "oxa-proto",
  "reqwest",
  "serde_json",
@@ -1231,6 +1232,9 @@ name = "oxc-local"
 version = "0.2.0"
 dependencies = [
  "nix",
+ "oxa-engine",
+ "oxa-fake",
+ "oxa-proto",
  "serde_json",
  "tokio",
  "ureq",

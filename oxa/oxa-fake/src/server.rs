@@ -465,6 +465,7 @@ fn handle(mut stream: TcpStream, sh: &Shared) -> io::Result<()> {
     };
     lock(&sh.hits).push((req.method.clone(), req.path.clone()));
     match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/health") => respond_json(&mut stream, 200, &json!({"status":"ok"})),
         // Every `model_limits` row is a servable model (the controller's aliases).
         ("GET", "/v1/models") => {
             let data: Vec<Value> = model_rows(&sh.opts)
