@@ -1115,8 +1115,9 @@ def connection(item, key, account=None):
     else:
         headers['Authorization'] = 'Bearer ' + key
     if item['provider'] == 'chatgpt':
+        # source: docs/CHATGPT-SIGNIN.md (request headers row; S1 packages/core/src/plugin/provider/openai.ts L276-L280)
         headers.update({'chatgpt-account-id': account or '', 'OpenAI-Beta': 'responses=experimental',
-                        'Accept': 'text/event-stream'})
+                        'Accept': 'text/event-stream', 'originator': cloud_chatgpt.ORIGINATOR})
     return connection, path, headers
 
 
@@ -1214,7 +1215,10 @@ class Meter:
             out['catalog_cost_usd'] = usd
         if item['provider'] == 'openrouter' and self.reported_cost is not None:
             out['reported_cost_usd'] = self.reported_cost
-            out['cost_usd'] = max(usd or 0, self.reported_cost)
+            # The bill; catalog_cost_usd keeps the estimate.  A zero bill for a request that used
+            # tokens is not believed: the catalog estimate stays the charge then.
+            if self.reported_cost > 0 or not usd:
+                out['cost_usd'] = self.reported_cost
         return out
 
 

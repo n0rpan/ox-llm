@@ -92,7 +92,8 @@ def capabilities(config, context):
       (`/_local/cache/clear {"scope": "hint"}`, EG5): the Rust engine's (MoE and Flash), as its
       `/props` `oxe_hints` lists them; the classic llama.cpp engine, the C++ Flash adapter and an
       unknown engine claim none.
-    - `thinking`: "toggle" (on/off; no levels or budgets). `preserve_thinking`: the controller
+    - `thinking`: "toggle" (on/off). `thinking_budget`: the Rust binary advertises the optional
+      per-request token cap (false for unknown/older binaries). `preserve_thinking`: the controller
       keeps reasoning in the replayed history (Rust MoE engine only).
     - `mtp`: speculative MTP decoding on (True) / off (False) / the engine's per-model default (None).
       For the loaded model, the engine's own report wins: a requested draft-mtp the model cannot run
@@ -106,6 +107,7 @@ def capabilities(config, context):
     caps = [row.get('cap') for row in context.get('modes') or () if row.get('available') and type(row.get('cap')) is int]
     max_context = max(caps) if caps else context.get('cap')
     return {'prefill_only': rust, 'snapshot_hint': SNAPSHOT_KEEP if rust else 0, 'turn_kind': rust, 'hint_clear': rust,
+            'thinking_budget': rust and oxe_runtime.engine_has_thinking_budget(config.get('server_binary')),
             'thinking': 'toggle', 'preserve_thinking': family == 'rust', 'mtp': _mtp(config, family),
             'max_context': max_context, 'vision': False, 'slots': 1,
             'park': {'rust': 'ram+disk', 'rust-flash': 'disk'}.get(family, 'none'),
@@ -357,6 +359,10 @@ class ModelsMixin:
                             and spec.get('fallback')):
                         # the engine runs without the requested MTP drafts (no MTP block in the model)
                         caps = {**caps, 'mtp': False, 'mtp_fallback': str(spec['fallback'])[:300]}
+                    if (isinstance(loaded, dict) and loaded.get('model_alias') == target
+                            and getattr(self, 'engine_thinking_budget', None) is False):
+                        # the loaded model's template/tokens cannot take a cap (engine /props.thinking_budget)
+                        caps = {**caps, 'thinking_budget': False}
                     engine_sampling = self.engine_sampling_for(config)
                     if engine_sampling is not None:
                         caps = {**caps, 'sampling': sorted(engine_sampling)}

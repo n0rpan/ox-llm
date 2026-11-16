@@ -44,25 +44,23 @@ fn fake_opts(script: &str, opts: FakeOpts) -> FakeServer {
 /// listening refuses connections, and the kernel cannot hand the port to another test's fake
 /// engine (a dropped listener could be, which sent one test's requests to another's server).
 fn closed_url() -> String {
-    // A socket that is bound but never listening refuses connections, and holding it for the
-    // life of the test process keeps the kernel from handing the port to another test's
-    // server (a freed port can be reused at once, and the run would then reach that server).
-    // SAFETY: plain socket/bind/getsockname calls on a local zeroed sockaddr_in; the fd is
-    // deliberately kept open.
-    let port = unsafe {
-        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
+    // A bound but never listening socket refuses connections and keeps its port reserved for
+    // the life of the test process, so a concurrent test's server cannot be handed the same
+    // port (closing a listener and reusing its number raced with the other tests).
+    // SAFETY: plain socket/bind/getsockname calls on a zeroed, fully initialised sockaddr_in.
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
         assert!(fd >= 0, "socket");
         let mut addr: libc::sockaddr_in = std::mem::zeroed();
         addr.sin_family = libc::AF_INET as libc::sa_family_t;
         addr.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
         let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
-        let p = &mut addr as *mut libc::sockaddr_in as *mut libc::sockaddr;
-        assert_eq!(libc::bind(fd, p, len), 0, "bind");
+        let sa = std::ptr::addr_of_mut!(addr).cast::<libc::sockaddr>();
+        assert_eq!(libc::bind(fd, sa, len), 0, "bind");
         let mut got = len;
-        assert_eq!(libc::getsockname(fd, p, &mut got), 0, "getsockname");
-        u16::from_be(addr.sin_port)
-    };
-    format!("http://127.0.0.1:{port}")
+        assert_eq!(libc::getsockname(fd, sa, &mut got), 0, "getsockname");
+        format!("http://127.0.0.1:{}", u16::from_be(addr.sin_port))
+    }
 }
 
 /// Run `oxa <args>` with `TestEnv::envs`, extra variables, optional cwd and stdin.

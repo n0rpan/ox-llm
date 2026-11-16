@@ -25,6 +25,7 @@ fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg], model: &'a str
     ChatRequest {
         max_tokens: 64,
         thinking: true,
+        thinking_budget: None,
         preserve_thinking: true,
         hints: Hints {
             session: "session",
@@ -249,4 +250,54 @@ fn openai_http_chat_omits_local_cache_echo_and_prefill_controls() {
         );
     }
     assert_eq!(body["reasoning_effort"], "high");
+}
+
+#[test]
+fn request_budget_is_local_thinking_only_and_discovered_without_model_names() {
+    let p = prefix();
+    let messages = [WireMsg::user("hi")];
+    let mut req = request(&p, &messages, "synthetic");
+    req.thinking_budget = Some(0);
+    let mut body = Vec::new();
+    build_body(&req, &mut body);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["thinking_budget"],
+        0
+    );
+    body.clear();
+    build_body_for(&req, true, &mut body);
+    assert!(serde_json::from_slice::<serde_json::Value>(&body)
+        .unwrap()
+        .get("thinking_budget")
+        .is_none());
+    for (thinking, total) in [(false, 64), (true, 0)] {
+        req.thinking = thinking;
+        req.max_tokens = total;
+        body.clear();
+        build_body(&req, &mut body);
+        assert!(serde_json::from_slice::<serde_json::Value>(&body)
+            .unwrap()
+            .get("thinking_budget")
+            .is_none());
+    }
+    let models = json!({"data":[{"id":"synthetic"}]});
+    for supported in [false, true] {
+        let status =
+            json!({"model_alias":"synthetic","n_ctx":8192,"thinking_budget":supported,"oxe_hints":{}});
+        assert_eq!(
+            parse_info_for("http://127.0.0.1:8092", &models, &status, None)
+                .unwrap()
+                .caps
+                .thinking_budget,
+            supported
+        );
+        let status = json!({"model":"synthetic","context_size":8192,"model_limits":{"synthetic":{"cap":8192,"capabilities":{"thinking_budget":supported}}}});
+        assert_eq!(
+            parse_info_for("http://127.0.0.1:8092", &models, &status, None)
+                .unwrap()
+                .caps
+                .thinking_budget,
+            supported
+        );
+    }
 }

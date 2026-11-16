@@ -95,14 +95,19 @@ def _error_body(status, data, secret):
 def _completed_response(data):
     """The final response object of a Responses SSE body, as JSON bytes."""
     decoder = cloud.SSEDecoder()
-    events = decoder.feed(data) + decoder.finish()
-    for _, raw in reversed(events):
+    items = {}
+    for _, raw in decoder.feed(data) + decoder.finish():
         try:
             value = json.loads(raw)
         except ValueError:
             continue
-        if isinstance(value, dict) and value.get('type') in ('response.completed', 'response.incomplete'):
-            return json.dumps(value.get('response'), ensure_ascii=False).encode()
+        if not isinstance(value, dict):
+            continue
+        if value.get('type') == 'response.output_item.done' and isinstance(value.get('output_index'), int):
+            items[value['output_index']] = value.get('item')
+        if value.get('type') in ('response.completed', 'response.incomplete'):
+            final = cloud_openai.with_streamed_output(value.get('response'), items)
+            return json.dumps(final, ensure_ascii=False).encode()
     raise cloud.CloudError('The ChatGPT stream ended before completion.', 502, 'cloud_stream_error')
 
 

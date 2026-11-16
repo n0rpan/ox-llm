@@ -48,6 +48,8 @@ pub struct EngineCaps {
     /// the request must not carry `preserve_thinking` at all; `None` = not published, the W6
     /// default (`true`) is sent.
     pub preserve_thinking: Option<bool>,
+    /// Local request-level reasoning-token cap is supported; unknown/remote defaults false.
+    pub thinking_budget: bool,
     /// `park == "disk"`: a parked session of this model is restored from disk only (Flash).
     pub park_disk_only: bool,
     /// Wave D D4: this model runs at a cloud provider through the controller. Local-only
@@ -113,6 +115,8 @@ pub struct ChatRequest<'a> {
     pub max_tokens: u32,
     /// W6 `enable_thinking`.
     pub thinking: bool,
+    /// Optional local reasoning-token cap; omitted unless thinking is on.
+    pub thinking_budget: Option<u64>,
     /// W6 / F8: send `chat_template_kwargs.preserve_thinking: true`. `false` omits the key (the
     /// server's own default applies; never forced on a model without the capability).
     pub preserve_thinking: bool,
@@ -146,6 +150,7 @@ impl<'a> ChatRequest<'a> {
             model,
             max_tokens: 1024,
             thinking: false,
+            thinking_budget: None,
             preserve_thinking: false,
             sampling: None,
             hints: Hints::default(),

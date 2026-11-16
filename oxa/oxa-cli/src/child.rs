@@ -217,6 +217,7 @@ mod tests {
                 model: "m",
                 max_tokens: 1,
                 thinking: false,
+                thinking_budget: None,
                 preserve_thinking: false,
                 sampling: None,
                 hints: Hints {

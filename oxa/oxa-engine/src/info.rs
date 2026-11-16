@@ -40,11 +40,14 @@ pub fn parse_info(base_url: &str, models: &Value, status: &Value) -> Result<Engi
 ///   (D5), else `None`.
 /// * Capabilities (F4 / EG2): `model_limits[limits_for].capabilities`, published by the
 ///   controller BEFORE the model loads: `prefill_only` (bool), `snapshot_hint` (int ->
-///   `caps.snapshot_keep`), `hint_clear` (bool), `preserve_thinking` (bool -> `Some`), `park ==
+///   `caps.snapshot_keep`), `hint_clear` (bool), `thinking_budget` (local-only bool),
+///   `preserve_thinking` (bool -> `Some`), `park ==
 ///   "disk"` (`caps.park_disk_only`). When that row has no `capabilities` block, the loaded
 ///   engine's `/props` `oxe_hints` ([`fetch_info`] merges it into the controller's status):
 ///   `prefill_only`, `snapshot_keep`, `hint_clear`; `preserve_thinking` is then `None` and
-///   `park_disk_only` `false`. Neither = nothing advertised.
+///   `park_disk_only` `false`. The generation-policy capability `thinking_budget` is read
+///   from `/props` top level, not `oxe_hints` (hints must not change output). Neither =
+///   nothing advertised.
 /// * F14: a status without any context size whose `state` is `loading`, `starting` or
 ///   `stopping` (the controller answers so while it loads a model) is the retryable
 ///   `engine_busy`, not `engine_http`.
@@ -215,6 +218,7 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
             snapshot_keep: count(c, "snapshot_hint"),
             hint_clear: flag(c, "hint_clear") || flag(c, "cache_hints"),
             preserve_thinking: c.get("preserve_thinking").and_then(Value::as_bool),
+            thinking_budget: flag(c, "thinking_budget") && !flag(c, "remote"),
             park_disk_only: c.get("park").and_then(Value::as_str) == Some("disk"),
             remote: flag(c, "remote"),
             remote_provider: match c.get("remote_provider").and_then(Value::as_str) {
@@ -238,6 +242,7 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
                 snapshot_keep: count(h, "snapshot_keep"),
                 hint_clear: flag(h, "hint_clear"),
                 preserve_thinking: None,
+                thinking_budget: flag(status, "thinking_budget"),
                 park_disk_only: false,
                 cache_hints: flag(h, "hint_clear"),
                 prefill: flag(h, "prefill_only"),

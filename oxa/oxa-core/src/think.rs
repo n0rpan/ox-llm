@@ -220,6 +220,16 @@ pub fn thinking_for(st: &SessionState, kind: ReplyKind) -> bool {
     }
 }
 
+/// An explicit optional cap is sent only to a supporting local model while thinking is on.
+/// Unknown/remote engines retain their existing request shape, as do prefill-only callers.
+pub(crate) fn request_budget(st: &SessionState, thinking: bool) -> Option<u64> {
+    if thinking && st.info.caps.thinking_budget && !st.info.caps.remote {
+        st.settings.thinking_budget()
+    } else {
+        None
+    }
+}
+
 /// The notice shown when a thinking-only overrun is retried without thinking.
 pub const OVERRUN_NOTICE: &str = "thinking used the whole output budget; answered without thinking";
 

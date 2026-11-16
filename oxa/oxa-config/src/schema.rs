@@ -187,6 +187,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
+    // Optional local engine cap, capability-gated; null leaves the current policy unchanged.
+    key("oxa.thinking.budget", Kind::Number, "null"),
     // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
     // before thinking turns on; 0 = never on that ground.
     key("oxa.thinking.escalation.fruitlessCalls", Kind::Number, "6"),
@@ -414,7 +416,7 @@ fn check_value(v: &Value, path: &str, source: &str, diags: &mut Vec<Diagnostic>)
             ));
             return Some(v.clone());
         }
-        if kind_matches(def.kind, v) {
+        if kind_matches(def.kind, v) || (path == "oxa.thinking.budget" && v.is_null()) {
             return Some(v.clone());
         }
         diags.push(warn(
