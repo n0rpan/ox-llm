@@ -155,3 +155,10 @@ firm refresh deadlines and atomic storage checks are unchanged. Same-client and
 concurrent-process tests use synthetic records only. The small legacy exception
 corrects expiry precedence and rechecks JWT expiry in stored records; no legacy
 forwarding, billing, auth endpoint or sign-in changes are introduced.
+
+Issue #743: a normalized translator error is propagated immediately at the
+client event boundary, before delivering it or reading another event. This uses
+the existing translator result, not another parser or a generation deadline.
+Cancellation retains precedence, untrusted usage stays absent, and pending tools
+are discarded. A held-peer regression releases the negative control through a
+bounded barrier and checks both modes with configured and disabled reads.

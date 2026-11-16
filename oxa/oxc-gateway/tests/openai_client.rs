@@ -1793,3 +1793,70 @@ async fn concurrent_processes_refresh_a_rejected_generation_once() {
     refresh.assert_healthy();
     upstream.assert_healthy();
 }
+
+#[tokio::test]
+async fn rejected_nonterminal_event_fails_before_a_held_peer_is_released() {
+    for subscription in [false, true] {
+        for read_timeout in [Some(std::time::Duration::from_secs(5)), None] {
+            let fixture = Fixture::new();
+            let path = fixture.token_path(true);
+            let peer = HeldResponsesPeer::start();
+            peer.send(held_text());
+            peer.send(json!({"type":"response.output_item.done","output_index":1,"item":{
+                "type":"function_call","id":"fc_pending","call_id":"call_pending","name":"read","arguments":"{}","status":"completed"
+            }}));
+            // No item99 exists: the real translator rejects this nonterminal
+            // argument delta. The peer then deliberately holds its socket open.
+            peer.send(
+                json!({"type":"response.function_call_arguments.delta","output_index":99,"delta":"{}"}),
+            );
+            let auth = if subscription {
+                subscription_auth(&path, &peer.base)
+            } else {
+                Auth::ApiKey(&fixture.key)
+            };
+            let client = Client::with_read_timeout(read_timeout).unwrap();
+            let body = payload();
+            let cancel = Cancellation::default();
+            let mut chunks = Vec::new();
+            let mut usage = None;
+            let mut callback = |event| {
+                if let Event::Chunk(chunk) = event {
+                    chunks.push(chunk);
+                }
+                Control::Continue
+            };
+            let mut inference = Box::pin(client.stream_with_usage(
+                chat(&peer.base, &body, &[]),
+                auth,
+                &cancel,
+                &mut callback,
+                &mut usage,
+            ));
+            let prompt =
+                tokio::time::timeout(std::time::Duration::from_millis(500), inference.as_mut()).await;
+            let before_release = prompt.is_ok();
+            let result = match prompt {
+                Ok(result) => result,
+                Err(_) => {
+                    // Negative control is bounded: release the peer and await
+                    // the old path's terminal check, rather than hanging forever.
+                    peer.send(held_complete());
+                    tokio::time::timeout(std::time::Duration::from_secs(2), inference.as_mut())
+                        .await
+                        .unwrap()
+                }
+            };
+            drop(inference);
+            assert!(before_release,"translator rejection waited for the held peer; subscription={subscription}, reads_disabled={}",read_timeout.is_none());
+            assert_eq!(result.unwrap_err(), client::Error::Protocol);
+            assert!(usage.is_none());
+            assert!(chunks
+                .iter()
+                .any(|c| c["choices"][0]["delta"]["content"] == "Visible output."));
+            assert!(chunks
+                .iter()
+                .all(|c| c.get("error").is_none() && c.pointer("/choices/0/delta/tool_calls").is_none()));
+        }
+    }
+}

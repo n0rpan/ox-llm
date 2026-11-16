@@ -377,6 +377,15 @@ impl Client {
                     Some("response.completed" | "response.incomplete" | "response.failed" | "error")
                 );
                 let chunks = translator.event(&event);
+                // A normalized error is the translator's rejection signal.
+                // Do not wait for a terminal event/EOF from a peer held open.
+                if chunks.iter().any(|chunk| chunk.get("error").is_some()) {
+                    return Err(if cancel.is_cancelled() {
+                        Error::Cancelled
+                    } else {
+                        Error::Protocol
+                    });
+                }
                 if terminal {
                     let native = translator.finish();
                     if native.failed {
