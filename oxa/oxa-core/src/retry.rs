@@ -85,6 +85,8 @@ pub(crate) fn chat_with_retry_keyed(
         let (res, got_data) = probed_request(st, opts, sink, ui);
         let err = match res {
             Ok(turn) if opts.max_tokens != Some(0) && context_full(st, &turn) => {
+                // The reply is dropped, but the request ran: its tokens count in the stats.
+                crate::agent_loop::account_discarded(st, &turn);
                 let err = OxaError::new(
                     codes::CONTEXT_OVERFLOW,
                     format!(
