@@ -59,6 +59,33 @@ fn testenv_envs_is_isolated() {
     }
 }
 
+#[test]
+fn testenv_explicit_parent_is_isolated_and_cleaned_up() {
+    let parent = TestEnv::new();
+    let root;
+    {
+        let first = TestEnv::new_in(parent.tmp());
+        let second = TestEnv::new_in(parent.tmp());
+        root = first.root().to_path_buf();
+        assert_eq!(root.parent(), Some(parent.tmp().as_path()));
+        assert_ne!(first.root(), second.root());
+        for dir in [first.home(), first.agent_dir(), first.tmp(), first.work()] {
+            assert!(dir.is_dir() && dir.starts_with(&root));
+        }
+        for (name, value) in first.envs("http://127.0.0.1:1") {
+            if matches!(name.as_str(), "HOME" | "OXA_AGENT_DIR" | "TMPDIR") {
+                assert!(Path::new(&value).starts_with(&root));
+            }
+        }
+        first.write("work/synthetic.txt", "synthetic content");
+    }
+    assert!(
+        !root.exists(),
+        "the explicit-parent environment must be removed on drop"
+    );
+    assert!(parent.tmp().is_dir(), "cleanup must preserve the caller's parent");
+}
+
 fn rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     let mut entries: Vec<PathBuf> = rd.flatten().map(|e| e.path()).collect();

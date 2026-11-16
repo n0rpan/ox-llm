@@ -15,6 +15,11 @@ pub struct TestEnv {
 
 impl TestEnv {
     pub fn new() -> TestEnv {
+        Self::new_in(std::env::temp_dir())
+    }
+    /// Use an explicit temporary parent, e.g. for credentials/ledgers that must
+    /// live outside repositories even when the runner's TMPDIR is in a checkout.
+    pub fn new_in(parent: impl AsRef<Path>) -> TestEnv {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -23,7 +28,9 @@ impl TestEnv {
         // Underscores between the numbers: `<pid>-<n>-<nanos>` can read as a date
         // (`6348-10-86`) once a process has made ten directories, and the cwd is part of the
         // system prompt, where the W3 check looks for dates.
-        let root = std::env::temp_dir().join(format!("oxa-test-{}_{}_{}", std::process::id(), n, nanos));
+        let root = parent
+            .as_ref()
+            .join(format!("oxa-test-{}_{}_{}", std::process::id(), n, nanos));
         for d in ["home/.oxa/agent", "tmp", "work"] {
             std::fs::create_dir_all(root.join(d)).expect("create test dir");
         }

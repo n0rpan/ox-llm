@@ -17,6 +17,13 @@ use std::{
 const MODEL: &str = "synthetic-cloud";
 const UPSTREAM: &str = "synthetic-anthropic";
 
+fn cloud_env() -> TestEnv {
+    // Credentials AND the usage ledger deliberately refuse repository paths.
+    // The test runner may put TMPDIR inside the checkout; do not relax those
+    // production checks or mutate the process environment to accommodate it.
+    TestEnv::new_in("/tmp")
+}
+
 fn settings(env: &TestEnv, base: &str, enabled: bool) {
     env.write(
         "home/.oxa/agent/settings.json",
@@ -95,7 +102,7 @@ fn success(output: &Output) {
 /// The public RPC statistic must not label a settled, priced cloud call as free.
 #[test]
 fn native_rpc_session_cost_is_unknown_after_priced_settlement() {
-    let env = TestEnv::new();
+    let env = cloud_env();
     let mock = MockAnthropic::start(vec![Reply::text("Synthetic answer", 11, 0, 0, 5)]);
     settings(&env, &mock.base_url(), true);
     write_key(&env, &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string());
@@ -167,7 +174,7 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
         (json!(0), None, false, false),
         (json!("disabled"), None, false, false),
     ] {
-        let env = TestEnv::new();
+        let env = cloud_env();
         let (reply, release) = Reply::text("delayed native answer", 11, 7, 3, 5).gated();
         let mock = MockAnthropic::start(vec![reply]);
         settings(&env, &mock.base_url(), true);
@@ -220,7 +227,7 @@ fn native_silence_timeout_honors_effective_settings_and_provider_override() {
 
 #[test]
 fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
-    let env = TestEnv::new();
+    let env = cloud_env();
     let mock = MockAnthropic::start(vec![]);
     settings(&env, &mock.base_url(), true);
     let path = env.home().join(".oxa/agent/settings.json");
@@ -250,7 +257,7 @@ fn missing_native_budget_names_oxa_settings_before_reading_an_invalid_key() {
 
 #[test]
 fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
-    let env = TestEnv::new();
+    let env = cloud_env();
     env.write("work/note.txt", "SYNTHETIC PROOF\n");
     let tool_reply = Reply::events(vec![
         json!({"type":"message_start","message":{"usage":{"input_tokens":11,
