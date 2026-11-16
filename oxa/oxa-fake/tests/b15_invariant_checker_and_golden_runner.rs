@@ -82,6 +82,7 @@ fn mid_run_flow(head: Vec<WireMsg>) -> Vec<Recorded> {
             name: "read".into(),
             args_raw: "{}".into(),
         }],
+        provider_history: None,
         tool_call_id: None,
     };
     let tool = WireMsg::tool_result("c1", "file text");

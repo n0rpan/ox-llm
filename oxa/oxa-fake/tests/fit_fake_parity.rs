@@ -470,6 +470,7 @@ fn f13_bad_tool_arguments_are_refused() {
             name: "read".into(),
             args_raw: "{\"path\": ".into(),
         }],
+        provider_history: None,
         tool_call_id: None,
     };
     let msgs = vec![
