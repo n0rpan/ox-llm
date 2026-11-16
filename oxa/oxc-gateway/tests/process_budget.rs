@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    os::unix::fs::{symlink, PermissionsExt},
+    os::unix::fs::{symlink, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::mpsc::{self, Receiver},
@@ -173,6 +173,20 @@ fn worker(path: PathBuf) {
                 .finish(&Usage::default(), Outcome::Failed, |_| Err(
                     std::io::ErrorKind::Other.into()
                 ))
+                .is_err());
+        }
+        "partial-fail" => {
+            hold.mark_forwarded();
+            assert!(hold
+                .finish(&Usage::default(), Outcome::Failed, |_| {
+                    let mut file = fs::OpenOptions::new()
+                        .append(true)
+                        .create(true)
+                        .mode(0o600)
+                        .open(&path)?;
+                    file.write_all(b"{\"remote\":true,")?;
+                    Err(std::io::ErrorKind::Other.into())
+                })
                 .is_err());
         }
         "drop" => {
@@ -388,7 +402,7 @@ fn malformed_or_unsafe_persisted_state_fails_closed() {
 
 #[test]
 fn paid_inflight_requests_settle_after_another_process_disables_admission() {
-    for failure in ["fail", "drop"] {
+    for failure in ["fail", "drop", "partial-fail"] {
         let home = Home::new();
         let mut failing = Worker::new(&home.path(), 1.0);
         let mut healthy = Worker::new(&home.path(), 1.0);
@@ -400,13 +414,14 @@ fn paid_inflight_requests_settle_after_another_process_disables_admission() {
         assert_eq!(failing.read(), "done");
         healthy.send("settle");
         assert_eq!(healthy.read(), "done");
-        let rows: Vec<Value> = fs::read_to_string(home.path())
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["cost_usd"], 0.0001);
+        let text = fs::read_to_string(home.path()).unwrap();
+        let mut rows = text.lines();
+        if failure == "partial-fail" {
+            assert_eq!(rows.next(), Some("{\"remote\":true,"));
+        }
+        let row: Value = serde_json::from_str(rows.next().unwrap()).unwrap();
+        assert_eq!(row["cost_usd"], 0.0001);
+        assert!(rows.next().is_none());
         let snapshot: Value =
             serde_json::from_slice(&fs::read(home.0.join("requests.jsonl.holds")).unwrap()).unwrap();
         assert_eq!(snapshot["failed"], true);
