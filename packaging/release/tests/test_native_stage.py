@@ -86,6 +86,16 @@ class NativeStage(unittest.TestCase):
             STAGE.stage(self.source, destination)
         self.assertFalse(outside.exists())
 
+    def test_runtime_metadata_does_not_require_python(self):
+        for variant in ('ox-llm', 'ox-llm-bin'):
+            recipe = REPO / 'packaging/arch' / variant / 'PKGBUILD'
+            result = subprocess.run(['/bin/bash', '-c', '. "$1"; printf "%s\\n" "${depends[@]}"',
+                                     'recipe', str(recipe)], env=self.env,
+                                    capture_output=True, text=True, check=True)
+            dependencies = result.stdout.splitlines()
+            self.assertNotIn('python', dependencies)
+            self.assertIn('bash', dependencies)
+
     def test_fresh_destination_is_required(self):
         with self.assertRaises(ValueError):
             STAGE.stage(self.source, self.payload)
