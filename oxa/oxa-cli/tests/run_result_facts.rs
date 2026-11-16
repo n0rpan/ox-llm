@@ -1,6 +1,7 @@
 //! Terminal facts describe this invocation, without guessing workspace effects from prose.
-use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use serde_json::Value;
+use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn command(env: &TestEnv, url: &str) -> Command {
@@ -66,7 +67,10 @@ fn real_print_and_json_report_session_requests_tokens_and_explicit_unknown_file_
                 "{}",
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert_eq!(std::fs::read_to_string(env.work().join("result.txt")).unwrap(), "actual file");
+            assert_eq!(
+                std::fs::read_to_string(env.work().join("result.txt")).unwrap(),
+                "actual file"
+            );
             let result = terminal(&output.stderr);
             assert_eq!(result["outcome"], "done");
             assert_eq!(result["requests"], 2);
@@ -102,4 +106,108 @@ fn argument_failure_reports_unknown_facts_instead_of_zero_work() {
         assert!(result.as_object().unwrap().contains_key(key), "{key}");
         assert!(result[key].is_null(), "{key}");
     }
+}
+
+#[test]
+fn rpc_reports_the_same_process_facts_with_or_without_a_saved_session() {
+    for saved in [false, true] {
+        let env = TestEnv::new();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"cacheWarming":"off","oxa":{"envNote":false,"bootPreload":false}}"#,
+        );
+        let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+        let mut command = command(&env, &server.url());
+        command.args(["--mode", "rpc", "--no-tools", "--no-mcp", "--no-extensions"]);
+        if !saved {
+            command.arg("--no-session");
+        }
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        writeln!(
+            child.stdin.take().unwrap(),
+            "{}",
+            serde_json::json!({"type":"prompt", "message":"hello"})
+        )
+        .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result = terminal(&output.stderr);
+        assert_eq!(result["requests"], 1);
+        assert_eq!(result["turns"], 1);
+        assert_eq!(result["tokens"]["complete"], true);
+        assert_eq!(result["session_id"].is_string(), saved);
+    }
+}
+
+#[test]
+fn a_resumed_invocation_does_not_recount_the_saved_sessions_usage() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"cacheWarming":"off","oxa":{"envNote":false,"bootPreload":false}}"#,
+    );
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("first"), ScriptTurn::text("second")],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let first = command(&env, &server.url())
+        .args(["-p", "--no-tools", "--no-mcp", "--no-extensions", "hello"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(first.status.code(), Some(0));
+    let first = terminal(&first.stderr);
+    let id = first["session_id"].as_str().unwrap();
+    let second = command(&env, &server.url())
+        .args([
+            "-p",
+            "--no-tools",
+            "--no-mcp",
+            "--no-extensions",
+            &format!("--continue={id}"),
+            "continue",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(second.status.code(), Some(0));
+    let second = terminal(&second.stderr);
+    assert_eq!(second["session_id"], id);
+    assert_eq!(second["requests"], 1);
+    assert_eq!(second["turns"], 1);
+    assert_eq!(server.requests().len(), 2);
+}
+
+#[test]
+fn a_failed_request_with_no_usage_is_an_explicit_incomplete_lower_bound() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"cacheWarming":"off","retry":{"enabled":false},"oxa":{"envNote":false,"bootPreload":false}}"#,
+    );
+    let mut cut = ScriptTurn::text("partial response");
+    cut.fault = Some(Fault::DropAt { bytes: 5 });
+    let server = FakeServer::start(vec![cut], FakeOpts::default()).unwrap();
+    let output = command(&env, &server.url())
+        .args(["-p", "--no-tools", "--no-mcp", "--no-extensions", "hello"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let result = terminal(&output.stderr);
+    assert_eq!(result["requests"], 1);
+    assert_eq!(result["turns"], 1);
+    assert_eq!(result["tokens"]["complete"], false);
+    assert_eq!(result["tokens"]["unreported_requests"], 1);
 }

@@ -1,8 +1,9 @@
 //! Invocation-local, text-free terminal evidence. Nothing is restored from session history.
-use oxa_core::RunOutcome;
+use oxa_core::{Progress, ProgressObserver, RunOutcome, Session};
+use oxa_proto::OxaError;
 use oxa_proto::{TurnKind, Usage};
 use serde_json::{json, Value};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 struct State {
@@ -40,10 +41,23 @@ fn add(total: &mut Option<u64>, value: u64) {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct ResultFacts(Mutex<State>);
+pub(crate) struct ResultFacts {
+    state: Mutex<State>,
+    status: Option<Arc<crate::status::StatusWriter>>,
+}
 impl ResultFacts {
+    pub(crate) fn new(status: Option<Arc<crate::status::StatusWriter>>) -> Self {
+        Self {
+            status,
+            ..Self::default()
+        }
+    }
+    pub(crate) fn attach(self: &Arc<Self>, session: &mut Session) -> Result<(), OxaError> {
+        session.set_progress_observer(self.clone());
+        self.status.as_ref().map_or(Ok(()), |status| status.check())
+    }
     pub(crate) fn session(&self, saved_id: Option<&str>) {
-        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.finished {
             return;
         }
@@ -51,7 +65,7 @@ impl ResultFacts {
         state.session_id = saved_id.map(str::to_owned);
     }
     pub(crate) fn request_start(&self, kind: TurnKind) {
-        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.finished {
             return;
         }
@@ -66,7 +80,7 @@ impl ResultFacts {
         }
     }
     pub(crate) fn request_end(&self, usage: Option<Usage>) {
-        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if state.finished {
             return;
         }
@@ -91,7 +105,7 @@ impl ResultFacts {
     /// Freeze the evidence at the terminal record so a late helper cannot revise that claim.
     pub(crate) fn record(outcome: RunOutcome, facts: Option<&Self>) -> Value {
         let mut record = outcome.record();
-        let mut guard = facts.map(|facts| facts.0.lock().unwrap_or_else(|p| p.into_inner()));
+        let mut guard = facts.map(|facts| facts.state.lock().unwrap_or_else(|p| p.into_inner()));
         if let Some(state) = &mut guard {
             state.finished = true;
         }
@@ -114,6 +128,20 @@ impl ResultFacts {
         record["files_changed"] = Value::Null;
         record["files_changed_evidence"] = json!("unavailable");
         record
+    }
+}
+
+impl ProgressObserver for ResultFacts {
+    fn notify(&self, session: &oxa_session::SessionRef, progress: Progress<'_>) {
+        match progress {
+            Progress::Session { file } => self.session(file.map(|_| session.id.as_str())),
+            Progress::RequestStart { kind, .. } => self.request_start(kind),
+            Progress::RequestEnd { usage, .. } => self.request_end(usage),
+            _ => {}
+        }
+        if let Some(status) = &self.status {
+            status.notify(session, progress);
+        }
     }
 }
 
