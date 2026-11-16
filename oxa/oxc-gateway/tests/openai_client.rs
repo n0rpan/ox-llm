@@ -1860,3 +1860,50 @@ async fn rejected_nonterminal_event_fails_before_a_held_peer_is_released() {
         }
     }
 }
+
+#[tokio::test]
+async fn responses_framing_keeps_json_only_and_unfinished_eof_policy_in_both_modes() {
+    let invalid_frames: &[&[u8]] = &[
+        b"data: [DONE]\r\n\r\n",
+        b"data\n\n",
+        b"data: {not-json}\n\n",
+        b"data: {\"type\":\"response.created\",\"text\":\"\xff\"}\n\n",
+        // Valid JSON without the blank event boundary must not be flushed at EOF.
+        b"data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n",
+    ];
+    for subscription in [false, true] {
+        for bytes in invalid_frames {
+            let fixture = Fixture::new();
+            let path = fixture.token_path(true);
+            let mock = MockOpenAi::start(vec![Reply::raw(200, "text/event-stream", bytes.to_vec(), vec![])]);
+            let base = mock.base_url();
+            let auth = if subscription {
+                subscription_auth(&path, &base)
+            } else {
+                Auth::ApiKey(&fixture.key)
+            };
+            let mut chunks = Vec::new();
+            let mut usage = None;
+            let error = Client::new()
+                .unwrap()
+                .stream_with_usage(
+                    chat(&base, &payload(), &[]),
+                    auth,
+                    &Cancellation::default(),
+                    &mut |event| {
+                        if let Event::Chunk(chunk) = event {
+                            chunks.push(chunk);
+                        }
+                        Control::Continue
+                    },
+                    &mut usage,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(error, client::Error::Protocol);
+            assert!(usage.is_none());
+            assert!(chunks.is_empty());
+            mock.assert_healthy();
+        }
+    }
+}
