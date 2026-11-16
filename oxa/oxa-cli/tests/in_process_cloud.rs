@@ -204,7 +204,7 @@ fn native_openrouter_discovery_tool_loop_and_settlement() {
     assert_eq!(refused["error"], "budget_exceeded");
     assert_eq!(refused["remote_provider"], "openrouter");
     assert_eq!(refused["cost_usd"], 0.0);
-    mock.assert_healthy();
+    mock.finish();
 }
 
 #[test]
