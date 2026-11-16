@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 #[derive(Debug)]
 struct State {
     opened: bool,
+    goal: Option<Value>,
     finished: bool,
     session_id: Option<String>,
     requests: Option<u64>,
@@ -23,6 +24,7 @@ impl Default for State {
     fn default() -> Self {
         Self {
             opened: false,
+            goal: None,
             finished: false,
             session_id: None,
             requests: Some(0),
@@ -55,6 +57,14 @@ impl ResultFacts {
     pub(crate) fn attach(self: &Arc<Self>, session: &mut Session) -> Result<(), OxaError> {
         session.set_progress_observer(self.clone());
         self.status.as_ref().map_or(Ok(()), |status| status.check())
+    }
+    pub(crate) fn goal(&self, goal: Option<oxa_session::Goal>) {
+        self.state.lock().unwrap_or_else(|p| p.into_inner()).goal = goal.map(|g| {
+            serde_json::json!({
+                "status":g.status.as_str(), "evidence":g.evidence, "turns":g.turns,
+                "tokens_used":g.tokens_used, "elapsed_ms":g.elapsed_ms,
+            })
+        });
     }
     pub(crate) fn session(&self, saved_id: Option<&str>) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -123,6 +133,9 @@ impl ResultFacts {
                 "unreported_requests":state.unreported,
             })
         });
+        if let Some(goal) = state.as_ref().and_then(|state| state.goal.as_ref()) {
+            record["goal"] = goal.clone();
+        }
         record["usage_scope"] = json!("process");
         // Successful tool calls and generated text are not checked workspace/commit evidence.
         record["files_changed"] = Value::Null;

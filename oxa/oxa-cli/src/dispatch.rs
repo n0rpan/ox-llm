@@ -332,7 +332,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
         }
         RunMode::Print | RunMode::Json => {
-            let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
+            let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty || a.goal.is_some()) {
                 Ok(t) => t,
                 Err(e) => return report(&mut *stderr, &e),
             };
@@ -340,7 +340,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 Ok(p) => p,
                 Err(e) => return report(&mut *stderr, &e),
             };
-            if prompts.is_empty() {
+            if prompts.is_empty() && a.goal.is_none() && !a.continue_ && !a.resume {
                 let e = OxaError::new(codes::USAGE, "no prompt: give a message, an @file or piped stdin")
                     .with_hint(USAGE_HINT);
                 return report(&mut *stderr, &e);
@@ -419,6 +419,9 @@ fn open_named(
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
     session.set_output_schema(built.output_schema.clone());
+    if let Some(goal) = &built.goal {
+        session.set_goal(Some(goal.clone()), &mut oxa_proto::VecSink::default())?;
+    }
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
@@ -433,6 +436,7 @@ struct Built {
     status: Option<Arc<crate::status::StatusWriter>>,
     result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
+    goal: Option<oxa_session::Goal>,
     engine: Arc<dyn Engine>,
     store: Arc<dyn SessionStore>,
     sandbox: Arc<dyn Sandbox>,
@@ -545,6 +549,13 @@ fn prepare(
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
 ) -> Result<Prep, OxaError> {
+    if a.goal.is_some() && !matches!(mode, RunMode::Print | RunMode::Json) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "--goal currently requires print or JSON mode.",
+        ));
+    }
+    let goal = crate::goal_cmd::load(a, cwd)?;
     let output_schema = a
         .output_schema
         .as_ref()
@@ -834,6 +845,7 @@ fn prepare(
         status,
         result_facts,
         output_schema,
+        goal,
         engine,
         store,
         sandbox,
@@ -1171,6 +1183,23 @@ fn run_headless(
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
+    let mut prompts = prompts;
+    if let Some(goal) = session.goal() {
+        if goal.status == oxa_session::GoalStatus::Pursuing {
+            if built.goal.is_some() {
+                prompts.insert(0, (oxa_core::prompt::goal_start(&goal.objective), vec![]));
+            } else if prompts.is_empty() {
+                prompts.push((oxa_core::prompt::GOAL_CONTINUE.into(), vec![]));
+            }
+        }
+    }
+    if prompts.is_empty() {
+        return finish_outcome_facts(
+            Err(OxaError::new(codes::USAGE, "No prompt or pursuing stored goal.")),
+            stderr,
+            Some(&built.result_facts),
+        );
+    }
     notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     if mode == RunMode::Print {
@@ -1184,6 +1213,25 @@ fn run_headless(
             );
         }
     }
+    let goal = session
+        .goal()
+        .filter(|g| g.status == oxa_session::GoalStatus::Pursuing);
+    let goal_time = goal.as_ref().and_then(|g| {
+        g.budget
+            .max_time_ms
+            .map(|cap| std::time::Duration::from_millis(cap.saturating_sub(g.elapsed_ms)))
+    });
+    let goal_tokens = goal
+        .as_ref()
+        .and_then(|g| g.budget.max_tokens.map(|cap| cap.saturating_sub(g.tokens_used)));
+    let max_time = match (max_time, goal_time) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    let max_tokens = match (max_tokens, goal_tokens) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     let _limit = match crate::limits::LimitWatcher::start(
         session.handle(),
         max_time,
@@ -1203,6 +1251,7 @@ fn run_headless(
         RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
         _ => run_print_outcome(&mut session, prompts, stdout, stderr),
     };
+    built.result_facts.goal(session.goal());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
@@ -2072,6 +2121,7 @@ mod session_scratch_tests {
             status: None,
             result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,
+            goal: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             store: Arc::new(MemStore::new()),
             sandbox: base.clone(),

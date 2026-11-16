@@ -1,0 +1,272 @@
+use oxa_config::{Dirs, Settings};
+use oxa_core::{Deps, Open, RunOutcome, Session, ToolSelection};
+use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
+use oxa_perm::ModePolicy;
+use oxa_proto::{HeadlessUi, ToolCall, VecSink};
+use oxa_resources::Resources;
+use oxa_sandbox::NoSandbox;
+use oxa_session::{Goal, GoalBudget, GoalStatus, MemStore, SessionStore};
+use std::sync::Arc;
+fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
+    Deps {
+        engine,
+        store,
+        tools: Vec::new(),
+        hooks: Vec::new(),
+        policy: Box::new(ModePolicy::new()),
+        sandbox: Arc::new(NoSandbox),
+        // Exact prompt-byte fixtures select note-free queues/RPC/replay.
+        settings: Settings::from_values(
+            serde_json::json!({"oxa": {"envNote": false}}),
+            serde_json::json!({}),
+        ),
+        dirs: Dirs::under(env.root()),
+        cwd: env.work(),
+        selection: ToolSelection::default(),
+        resources: Resources::default(),
+        model: None,
+        thinking: None,
+        mode: None,
+        session_id: None,
+        jobs: oxa_core::fresh_jobs(),
+    }
+}
+
+fn objective(budget: GoalBudget) -> Goal {
+    Goal::new("Review synthetic work and wait for more.".into(), budget, 1000).unwrap()
+}
+#[test]
+fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuation() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("Idle"),
+        ScriptTurn::text("Still idle"),
+    ]));
+    let store = Arc::new(MemStore::new());
+    let mut session = Session::open(deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
+    let ordinary = session.inner().prefix.clone();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    assert!(session.inner().active.get("goal_done").is_some());
+    assert!(session.inner().active.get("wait").is_some());
+    session
+        .prompt(
+            "Start the stored goal".into(),
+            vec![],
+            &mut sink,
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Stalled);
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Paused);
+    assert_eq!(goal.turns, 2);
+    assert!(goal.tokens_used > 0);
+    let messages = session.inner().transcript.wire();
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|m| m.content.as_deref() == Some(oxa_core::prompt::GOAL_CONTINUE))
+            .count(),
+        1
+    );
+    let sref = session.inner().sref.clone();
+    session.shutdown(&mut HeadlessUi::default());
+    drop(session);
+    let mut resumed = Session::open(deps(&env, store, engine), Open::Resume(sref)).unwrap();
+    assert_eq!(resumed.goal(), Some(goal));
+    resumed.set_goal(None, &mut sink).unwrap();
+    assert_eq!(resumed.inner().prefix, ordinary);
+    assert!(resumed.inner().active.get("wait").is_none());
+}
+#[test]
+fn done_closes_all_calls_without_running_later_calls_or_requesting_another_reply() {
+    for (status, expected) in [
+        ("complete", RunOutcome::Done),
+        ("blocked", RunOutcome::Blocked("goal_blocked")),
+    ] {
+        let env = TestEnv::new();
+        let mut turn = ScriptTurn::tool(
+            "finish",
+            "goal_done",
+            &format!(r#"{{"status":"{status}","evidence":"Synthetic proof."}}"#),
+        );
+        turn.tool_calls.push(ToolCall {
+            id: "later".into(),
+            name: "wait".into(),
+            args_raw: r#"{"seconds":3600,"reason":"Must never run"}"#.into(),
+        });
+        let engine = Arc::new(ScriptedEngine::new(vec![turn]));
+        let store = Arc::new(MemStore::new());
+        let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+        let mut sink = VecSink::default();
+        session
+            .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+            .unwrap();
+        session
+            .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+            .unwrap();
+        assert_eq!(session.stats().outcome, expected);
+        let goal = session.goal().unwrap();
+        assert_eq!(goal.evidence.as_deref(), Some("Synthetic proof."));
+        let wire = session.inner().transcript.wire();
+        assert!(wire.iter().any(|m| m.tool_call_id.as_deref() == Some("later")
+            && m.content.as_deref().is_some_and(|s| s.contains("not executed"))));
+        assert_eq!(
+            Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+            Some(goal)
+        );
+    }
+}
+#[test]
+fn spent_token_or_turn_budget_stops_without_an_extra_request() {
+    for budget in [
+        GoalBudget {
+            max_tokens: Some(1),
+            ..GoalBudget::default()
+        },
+        GoalBudget {
+            max_turns: Some(1),
+            ..GoalBudget::default()
+        },
+    ] {
+        let env = TestEnv::new();
+        let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("Progress")]));
+        let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+        let mut sink = VecSink::default();
+        session.set_goal(Some(objective(budget)), &mut sink).unwrap();
+        session
+            .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+            .unwrap();
+        assert_eq!(session.stats().outcome, RunOutcome::Blocked("goal_blocked"));
+        assert_eq!(session.goal().unwrap().turns, 1);
+    }
+}
+
+#[test]
+fn repeated_completed_waits_are_work_not_stalls_and_charge_wall_time() {
+    let env = TestEnv::new();
+    let mut turns: Vec<_> = (0..7)
+        .map(|i| {
+            ScriptTurn::tool(
+                &format!("wait{i}"),
+                "wait",
+                r#"{"seconds":1,"reason":"Await synthetic work"}"#,
+            )
+        })
+        .collect();
+    turns.push(ScriptTurn::tool(
+        "done",
+        "goal_done",
+        r#"{"status":"complete","evidence":"All waits completed."}"#,
+    ));
+    let engine = Arc::new(ScriptedEngine::new(turns));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Done);
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.turns, 8);
+    assert!(goal.elapsed_ms >= 7000);
+}
+
+#[test]
+fn wait_is_cancellable_and_elapsed_budget_caps_it() {
+    use oxa_proto::{AgentEvent, EventSink};
+    struct AbortWait(oxa_core::Handle);
+    impl EventSink for AbortWait {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::ToolExecutionUpdate { tool_name, .. } if tool_name == "wait") {
+                self.0.abort();
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::tool(
+        "wait",
+        "wait",
+        r#"{"seconds":3600,"reason":"Cancellation test"}"#,
+    )]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut VecSink::default())
+        .unwrap();
+    let start = std::time::Instant::now();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut AbortWait(session.handle()),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Interrupted);
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+
+    let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::tool(
+        "wait",
+        "wait",
+        r#"{"seconds":3600,"reason":"Budget test"}"#,
+    )]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    session
+        .set_goal(
+            Some(objective(GoalBudget {
+                max_time_ms: Some(100),
+                ..GoalBudget::default()
+            })),
+            &mut VecSink::default(),
+        )
+        .unwrap();
+    session
+        .prompt(
+            "Start".into(),
+            vec![],
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Blocked("goal_blocked"));
+    assert!(session.goal().unwrap().elapsed_ms >= 100);
+}
+
+#[test]
+fn goal_done_cannot_bypass_project_done_checks() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool(
+            "edit",
+            "write",
+            r#"{"path":"result.txt","content":"Synthetic result"}"#,
+        ),
+        ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Model claims completion."}"#,
+        ),
+    ]));
+    let mut dependencies = deps(&env, Arc::new(MemStore::new()), engine);
+    dependencies.tools = oxa_tools::builtin_tools();
+    dependencies.settings = Settings::from_values(
+        serde_json::json!({"done":["exit 1"], "oxa":{"envNote":false}}),
+        serde_json::json!({}),
+    );
+    let mut session = Session::open(dependencies, Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    session
+        .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+        .unwrap();
+    assert_eq!(session.stats().outcome, RunOutcome::Failed("done_checks_failed"));
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Blocked);
+}

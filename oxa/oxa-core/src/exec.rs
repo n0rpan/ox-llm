@@ -344,6 +344,15 @@ pub(crate) fn run_calls(
     let mut prefilled = false;
     let mut i = 0;
     while i < n {
+        if crate::goal::terminal(st) {
+            if matches!(prepared[i].plan, Plan::Run { .. }) {
+                let p = &prepared[i];
+                crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
+            }
+            prepared[i].plan = Plan::Done(ToolOutput::error(
+                "Goal is no longer pursuing; call not executed.",
+            ));
+        }
         let mut j = i;
         while j < n && prepared[j].parallel_read() {
             j += 1;
@@ -355,7 +364,9 @@ pub(crate) fn run_calls(
             }
             i = j;
         } else {
-            let warming = !prefilled && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
+            let warming = !prefilled
+                && !(st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
+                && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
             outputs[i] = Some(run_one(st, &prepared[i], sink, ui));
@@ -383,7 +394,10 @@ pub(crate) fn run_calls(
         // answered with a notice (the call ran; only its result text changes).
         let mut stop = false;
         let ran = matches!(p.plan, Plan::Run { .. });
-        if ran {
+        // A successful native goal wait deliberately returns the same result on
+        // every scheduled wake. Other tools and failed waits keep the guard.
+        let completed_goal_wait = st.goal.is_some() && p.name == "wait" && !output.is_error;
+        if ran && !completed_goal_wait {
             let earlier: Vec<(&str, &str, &str, bool)> = batch
                 .iter()
                 .map(|(n, a, t, failed)| (n.as_str(), a.as_str(), t.as_str(), *failed))
