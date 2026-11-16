@@ -228,8 +228,8 @@ class ReportedCost(CloudCase):
         self.assertEqual(self.chat()[0], 429)
         self.assertEqual(len(upstream.requests), 1)
 
-    def test_streamed_bill_keeps_precision_and_never_lowers_catalog_cost(self):
-        for reported, expected in ((0.000021237, 0.000021237), (0.0, 0.000015)):
+    def test_streamed_bill_keeps_precision_and_settles_at_reported_cost(self):
+        for reported, expected in ((0.000021237, 0.000021237), (0.0, 0.000015), (0.000001, 0.000001)):
             with self.subTest(reported=reported):
                 meter = cloud.Meter()
                 frame = {'usage': {'prompt_tokens': 11, 'completion_tokens': 4,
@@ -241,7 +241,7 @@ class ReportedCost(CloudCase):
                 self.assertEqual(row['reported_cost_usd'], reported)
                 self.assertEqual(row['cost_usd'], expected)
 
-    def test_invalid_or_non_openrouter_cost_cannot_lower_the_catalog_bill(self):
+    def test_invalid_or_non_openrouter_cost_fall_back_to_the_catalog_bill(self):
         for reported in (None, -1, True, '0.1', float('nan'), float('inf'), 10 ** 1000):
             with self.subTest(reported=reported):
                 meter = cloud.Meter()
@@ -265,6 +265,13 @@ class ReportedCost(CloudCase):
         row = self.ledger_rows()[-1]
         self.assertEqual(row['cost_usd'], 0.000015)
         self.assertNotIn('reported_cost_usd', row)
+
+    def test_reported_cost_below_computed_is_recorded(self):
+        meter = cloud.Meter()
+        meter._object({'usage': {'prompt_tokens': 11, 'completion_tokens': 4, 'cost': 0.000001}})
+        row = meter.row(profiles()[REMOTE])
+        self.assertEqual(row['cost_usd'], 0.000001)
+        self.assertEqual(row['catalog_cost_usd'], 0.000015)
 
     def test_openrouter_reserves_headroom_on_the_full_catalog_window(self):
         item = profiles()[REMOTE]
