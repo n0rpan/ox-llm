@@ -17,6 +17,14 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 type Retained = HashMap<PathBuf, (SessionRef, SessionHeader, bool)>;
 const STORES_DIR: &str = ".spill-stores";
 
+fn ancestry_record_name(session: &SessionRef) -> String {
+    format!(
+        "{}-{}",
+        session.id,
+        store_link_name(session.path.to_string_lossy().as_bytes())
+    )
+}
+
 // Persist links before publishing a cross-store child. Bidirectional links let deletion in
 // either store check the whole connected component, even after intermediate sessions vanish.
 // Only private store metadata supplies roots; tool/model text never supplies them.
@@ -148,7 +156,9 @@ pub fn remove_session_preserving_spills(
     ensure_dir(tmp_dir)?;
     let root = tmp_dir.join(ANCESTRY_DIR);
     ensure_dir(&root)?;
-    let path = root.join(format!("{}.json", session.id));
+    // IDs can be reused after deletion, including in another store/workspace. Parent links
+    // identify the original path, so each such identity needs its own retained header.
+    let path = root.join(ancestry_record_name(session));
     check_safe(&path)?;
     // Only complete, synced records become visible to readers. An interrupted write leaves
     // at most an unpublished .tmp file, never a truncated record at the final path.
@@ -192,9 +202,6 @@ fn read_retained_session(path: &Path) -> Result<(SessionRef, SessionHeader, bool
     let bytes = read_file(path)?;
     let header = decode_header(&bytes)?;
     validate_session_id(&header.id)?;
-    if path.file_name() != Some(std::ffi::OsStr::new(&format!("{}.json", header.id))) {
-        return Err(OxaError::new(codes::INVALID, "spill ancestry id mismatch"));
-    }
     let record: Value = serde_json::from_slice(&bytes).expect("decoded header");
     let original = record["sessionPath"]
         .as_str()
@@ -203,6 +210,13 @@ fn read_retained_session(path: &Path) -> Result<(SessionRef, SessionHeader, bool
         path: PathBuf::from(original),
         id: header.id.clone(),
     };
+    // Accept the previous ID-only format as well; cleanup must account for both formats.
+    let name = path.file_name();
+    if name != Some(std::ffi::OsStr::new(&ancestry_record_name(&sref)))
+        && name != Some(std::ffi::OsStr::new(&format!("{}.json", header.id)))
+    {
+        return Err(OxaError::new(codes::INVALID, "spill ancestry identity mismatch"));
+    }
     let tracked = record["spillStoresTracked"] == Value::Bool(true);
     Ok((sref, header, tracked))
 }
@@ -225,7 +239,12 @@ fn retained_sessions(tmp_dir: &Path, tolerate_invalid_records: bool) -> Result<R
         }
         match read_retained_session(&path) {
             Ok((sref, header, tracked)) => {
-                retained.insert(sref.path.clone(), (sref, header, tracked));
+                retained
+                    .entry(sref.path.clone())
+                    .and_modify(|(_, _, previous): &mut (SessionRef, SessionHeader, bool)| {
+                        *previous &= tracked
+                    })
+                    .or_insert((sref, header, tracked));
             }
             // Reads may use independently validated records. Cleanup must fail closed:
             // an incomplete ancestry map cannot prove that a spill is unreferenced.
@@ -304,26 +323,33 @@ pub fn remove_spill_dir_unless_forked(
             live.extend(ancestors(*checked, &session, &retained).into_iter().map(|s| s.id));
         }
     }
-    let candidates: HashSet<_> = retained
-        .values()
-        // Missing flags include records retained by an older version. Their descendants
-        // may live in arbitrary unlinked stores, so only an explicit wipe can reclaim them.
-        .filter(|(_, _, tracked)| *tracked)
-        .map(|(s, _, _)| s)
-        .filter(|s| stores.iter().any(|checked| checked.lists_path(&s.path)))
-        .map(|s| s.id.as_str())
-        .collect();
+    let candidates: HashSet<_> = retained.values().map(|(s, _, _)| s.id.as_str()).collect();
     let mut removed_files = 0;
     for id in candidates {
-        if live.contains(id) {
+        // Spill directories are shared by ID, not identity. Every retained identity must be
+        // tracked and covered by this scan before any of their output can be reclaimed.
+        // Missing flags may hide legacy descendants in arbitrary unlinked stores.
+        if live.contains(id)
+            || retained.values().any(|(s, _, tracked)| {
+                s.id == id && (!tracked || !stores.iter().any(|checked| checked.lists_path(&s.path)))
+            })
+        {
             continue;
         }
         removed_files += remove_spill_dir(tmp_dir, id)?;
-        let path = tmp_dir.join(ANCESTRY_DIR).join(format!("{id}.json"));
-        match fs::remove_file(path) {
-            Ok(()) => (),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            Err(e) => return Err(OxaError::io("cannot remove spill ancestry", &e)),
+        let root = tmp_dir.join(ANCESTRY_DIR);
+        let names = std::iter::once(format!("{id}.json")).chain(
+            retained
+                .values()
+                .filter(|(s, _, _)| s.id == id)
+                .map(|(s, _, _)| ancestry_record_name(s)),
+        );
+        for name in names {
+            match fs::remove_file(root.join(name)) {
+                Ok(()) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                Err(e) => return Err(OxaError::io("cannot remove spill ancestry", &e)),
+            }
         }
     }
     Ok(removed_files)

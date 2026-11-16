@@ -5,7 +5,14 @@ use oxa_session::{
 };
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+fn record_path(tmp: &Path, session: &oxa_session::SessionRef) -> PathBuf {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(session.path.to_string_lossy().as_bytes());
+    tmp.join(".spill-ancestry")
+        .join(format!("{}-{hash:x}.json", session.id))
+}
 
 #[test]
 fn retained_ancestry_is_private_and_only_lives_as_long_as_its_descendant() {
@@ -18,7 +25,7 @@ fn retained_ancestry_is_private_and_only_lives_as_long_as_its_descendant() {
     fs::create_dir_all(tmp.join("unrelated")).unwrap();
     fs::write(tmp.join("unrelated/keep.txt"), "keep").unwrap();
     remove_session_preserving_spills(&store, &tmp, &src).unwrap();
-    let record = tmp.join(".spill-ancestry/source.json");
+    let record = record_path(&tmp, &src);
     assert_eq!(fs::metadata(&record).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(
         fs::metadata(record.parent().unwrap())
@@ -46,6 +53,59 @@ fn retained_ancestry_is_private_and_only_lives_as_long_as_its_descendant() {
     );
     // Repeated cleanup has nothing to remove.
     assert_eq!(remove_spill_dir_unless_forked(&store, &tmp, &child).unwrap(), 0);
+}
+
+#[test]
+fn reused_ids_preserve_every_original_identity_until_all_descendants_are_gone() {
+    use oxa_session::FsStore;
+
+    for other_store in [false, true] {
+        let env = oxa_fake::TestEnv::new();
+        let tmp = env.root().join("tmp");
+        let store = FsStore::new(env.root().join("sessions"));
+        let other = FsStore::new(env.root().join("other-sessions"));
+        let source = store
+            .create(Path::new("/work/original"), Some("reused"), None)
+            .unwrap();
+        let child = store
+            .create(Path::new("/work/original"), Some("child"), Some(&source.path))
+            .unwrap();
+        fs::create_dir_all(tmp.join("reused")).unwrap();
+        fs::write(tmp.join("reused/output.txt"), "keep").unwrap();
+        remove_session_preserving_spills(&store, &tmp, &source).unwrap();
+        remove_spill_dir_unless_forked(&store, &tmp, &source).unwrap();
+        let deleting = if other_store { &other } else { &store };
+        let replacement = deleting
+            .create(Path::new("/work/replacement"), Some("reused"), None)
+            .unwrap();
+        remove_session_preserving_spills(deleting, &tmp, &replacement).unwrap();
+        assert_eq!(
+            remove_spill_dir_unless_forked(deleting, &tmp, &replacement).unwrap(),
+            0
+        );
+        assert_eq!(fs::read_to_string(tmp.join("reused/output.txt")).unwrap(), "keep");
+        assert_eq!(
+            inherited_spill_dirs(&store, &tmp, &child),
+            vec![tmp.join("reused")]
+        );
+        remove_session_preserving_spills(&store, &tmp, &child).unwrap();
+        remove_spill_dir_unless_forked(&store, &tmp, &child).unwrap();
+        // An unlinked store must keep the shared ID conservatively until it is checked too.
+        if other_store {
+            assert!(tmp.join("reused/output.txt").is_file());
+            let bridge = other
+                .create(Path::new("/work/replacement"), Some("bridge"), None)
+                .unwrap();
+            let leaf = store
+                .create(Path::new("/work/original"), Some("leaf"), Some(&bridge.path))
+                .unwrap();
+            remove_session_preserving_spills(&other, &tmp, &bridge).unwrap();
+            remove_session_preserving_spills(&store, &tmp, &leaf).unwrap();
+            remove_spill_dir_unless_forked(&store, &tmp, &leaf).unwrap();
+        }
+        assert!(!tmp.join("reused").exists());
+        assert_eq!(fs::read_dir(tmp.join(".spill-ancestry")).unwrap().count(), 0);
+    }
 }
 
 #[test]
@@ -87,7 +147,7 @@ fn cleanup_in_another_session_store_preserves_unchecked_ancestry() {
             fs::read_to_string(tmp.join("source/output.txt")).unwrap(),
             "output"
         );
-        assert!(tmp.join(".spill-ancestry/source.json").is_file());
+        assert!(record_path(&tmp, &source).is_file());
         // Reopening the original store must still grant the child's inherited read scope.
         let reopened = FsStore::new(root_a);
         assert_eq!(
@@ -146,7 +206,7 @@ fn cleanup_fails_closed_when_live_sessions_cannot_be_enumerated() {
             "incomplete {failure} enumeration must abort cleanup"
         );
         assert_eq!(fs::read_to_string(&output).unwrap(), "keep");
-        assert!(tmp.join(".spill-ancestry/source.json").is_file());
+        assert!(record_path(&tmp, &source).is_file());
         remove_session_preserving_spills(child_store, &tmp, &child).unwrap();
         assert_eq!(remove_spill_dir_unless_forked(&store, &tmp, &child).unwrap(), 1);
         assert!(!output.exists());
@@ -196,7 +256,7 @@ fn legacy_cross_store_forks_keep_untracked_source_spills() {
         fs::write(&output, "legacy output").unwrap();
         remove_session_preserving_spills(&store_a, &tmp, &source).unwrap();
         if previously_retained {
-            let record = tmp.join(".spill-ancestry/source.json");
+            let record = record_path(&tmp, &source);
             let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
             value.as_object_mut().unwrap().remove("spillStoresTracked");
             fs::write(record, serde_json::to_vec(&value).unwrap()).unwrap();
@@ -315,16 +375,16 @@ fn retained_ancestry_refuses_symlinked_metadata_before_deleting_the_session() {
         let root = tmp.join(".spill-ancestry");
         let target = outside.join("keep.txt");
         fs::write(&target, "keep").unwrap();
-        if link_file {
-            fs::create_dir_all(&root).unwrap();
-            symlink(&target, root.join("source.json")).unwrap();
-        } else {
-            symlink(&outside, &root).unwrap();
-        }
         let store = MemStore::new();
         let src = store
             .create(Path::new("/work/project"), Some("source"), None)
             .unwrap();
+        if link_file {
+            fs::create_dir_all(&root).unwrap();
+            symlink(&target, record_path(&tmp, &src)).unwrap();
+        } else {
+            symlink(&outside, &root).unwrap();
+        }
         assert!(remove_session_preserving_spills(&store, &tmp, &src).is_err());
         assert!(
             store.header(&src).is_ok(),
@@ -345,7 +405,7 @@ fn retained_ancestry_refuses_invalid_ids_and_mismatched_records() {
         let src = store.create(cwd, Some("source"), None).unwrap();
         let child = store.create(cwd, Some("child"), Some(&src.path)).unwrap();
         remove_session_preserving_spills(&store, &tmp, &src).unwrap();
-        let record = tmp.join(".spill-ancestry/source.json");
+        let record = record_path(&tmp, &src);
         let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
         value["id"] = bad_id.into();
         fs::write(record, serde_json::to_vec(&value).unwrap()).unwrap();
@@ -402,7 +462,7 @@ fn retained_ancestry_is_published_by_replacement_not_in_place() {
         .create(Path::new("/work/project"), Some("source"), None)
         .unwrap();
     remove_session_preserving_spills(&store, &tmp, &src).unwrap();
-    let record = tmp.join(".spill-ancestry/source.json");
+    let record = record_path(&tmp, &src);
     let snapshot = env.root().join("previous.json");
     fs::hard_link(&record, &snapshot).unwrap();
     let previous = fs::read(&snapshot).unwrap();
@@ -441,7 +501,7 @@ fn unpublished_temporary_records_do_not_affect_ancestry_or_cleanup() {
     assert_eq!(remove_spill_dir_unless_forked(&store, &tmp, &src).unwrap(), 0);
     remove_session_preserving_spills(&store, &tmp, &child).unwrap();
     assert_eq!(remove_spill_dir_unless_forked(&store, &tmp, &child).unwrap(), 0);
-    assert!(!tmp.join(".spill-ancestry/source.json").exists());
+    assert!(!record_path(&tmp, &src).exists());
 }
 
 #[test]
@@ -449,15 +509,15 @@ fn failed_publication_keeps_the_session_and_removes_staging_files() {
     let env = oxa_fake::TestEnv::new();
     let tmp = env.root().join("tmp");
     let root = tmp.join(".spill-ancestry");
-    // A directory at the destination makes rename fail after the staged file was synced.
-    fs::create_dir_all(root.join("source.json")).unwrap();
     let store = MemStore::new();
     let src = store
         .create(Path::new("/work/project"), Some("source"), None)
         .unwrap();
+    // A directory at the destination makes rename fail after the staged file was synced.
+    fs::create_dir_all(record_path(&tmp, &src)).unwrap();
     assert!(remove_session_preserving_spills(&store, &tmp, &src).is_err());
     assert!(store.header(&src).is_ok());
-    assert!(root.join("source.json").is_dir());
+    assert!(record_path(&tmp, &src).is_dir());
     assert_eq!(
         fs::read_dir(&root).unwrap().count(),
         1,
