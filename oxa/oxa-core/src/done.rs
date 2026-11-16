@@ -28,19 +28,8 @@ pub(crate) struct DoneState {
 /// Seconds a git probe may run before the fingerprint gives up (`None`: checks stay as they were).
 const PROBE_TIMEOUT_S: u64 = 20;
 
-/// Seconds within which a file's change time may still equal a later change's (coarse clocks).
-const RACY_WINDOW_S: u64 = 2;
-
-/// The file was modified or changed less than [`RACY_WINDOW_S`] ago (or in the future).
-fn recent(m: &std::fs::Metadata) -> bool {
-    m.modified()
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .is_none_or(|age| age.as_secs() < RACY_WINDOW_S)
-}
-
 /// Hash of the work folder's git file list (index entries and untracked files) with each file's
-/// size, times, inode and mode (contents only of just-touched files); `None` outside a git repo, without git, or on a timeout.
+/// size, times, inode and mode; `None` outside a git repo, without git, or on a timeout.
 /// The probes run on the host, so they only list files (`ls-files`): nothing that can start a
 /// repository-configured program (`status` and `diff` run clean filters, textconv, external
 /// diff). Files are stat-ed here instead of diffed by git.
@@ -95,11 +84,8 @@ fn tree_fingerprint(cwd: &Path) -> Option<u64> {
                 m.ino().hash(&mut h);
                 m.mode().hash(&mut h);
                 (m.ctime(), m.ctime_nsec()).hash(&mut h);
-                // Only a file touched within the clock's resolution of now can hide a change
-                // behind unchanged stamps; reading every file would cost tens of MB per call.
-                if m.is_file() && m.len() <= (1 << 20) && recent(&m) {
-                    std::fs::read(&path).ok().hash(&mut h);
-                }
+                // Do not read file contents: the metadata avoids repository-wide I/O and
+                // stays stable as unchanged files age, unlike a recency-gated content hash.
             }
             Err(_) => 0u8.hash(&mut h),
         }
@@ -343,6 +329,55 @@ fn tail(s: &str) -> String {
 mod tests {
     use super::tree_fingerprint;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn fingerprint_stays_stable_as_an_unchanged_file_ages() {
+        let dir = std::env::temp_dir().join(format!("oxa-fp-aging-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(dir.join("a.txt"), "unchanged\n").unwrap();
+        let before = tree_fingerprint(&dir).unwrap();
+        // Cross the former two-second content-hashing window without changing the file.
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        assert_eq!(before, tree_fingerprint(&dir).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn fingerprint_sees_a_same_size_rewrite_with_restored_mtime() {
+        let dir = std::env::temp_dir().join(format!("oxa-fp-rewrite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&dir)
+            .status()
+            .unwrap()
+            .success());
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "before\n").unwrap();
+        let file = std::fs::File::options().write(true).open(&f).unwrap();
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        file.set_modified(old).unwrap();
+        let metadata = file.metadata().unwrap();
+        let before = tree_fingerprint(&dir).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(&f, "after!\n").unwrap();
+        file.set_modified(old).unwrap();
+        assert_eq!(metadata.len(), file.metadata().unwrap().len());
+        assert_eq!(
+            metadata.modified().unwrap(),
+            file.metadata().unwrap().modified().unwrap()
+        );
+        assert_ne!(before, tree_fingerprint(&dir).unwrap());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn fingerprint_sees_a_mode_change_of_an_old_untracked_file() {
