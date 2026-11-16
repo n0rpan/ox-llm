@@ -141,7 +141,7 @@ pub fn from_user_settings(
         let flag = word.split('=').next().unwrap_or("");
         if matches!(
             flag,
-            "--host" | "--port" | "--listen" | "--bind" | "--model" | "--alias" | "-m"
+            "--host" | "--port" | "--listen" | "--bind" | "--model" | "--alias" | "-a" | "-m"
         ) || (word.starts_with("-m") && !word.starts_with("--"))
         {
             return Err(Error::OwnedArgument);
