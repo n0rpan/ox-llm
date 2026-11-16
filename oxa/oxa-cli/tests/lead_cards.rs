@@ -19,6 +19,20 @@ fn snapshot() -> Snapshot {
 }
 
 #[test]
+fn absent_standing_revision_stays_unavailable() {
+    let mut observation = snapshot();
+    observation.standing_revision = 0;
+    let cards = Cards::from_snapshot(observation, 1000, 100).unwrap();
+    for card in [cards.status(), cards.asks()] {
+        assert!(
+            card.lines().next().unwrap().contains("standing unavailable"),
+            "{card}"
+        );
+        assert!(!card.contains("standing 0"));
+    }
+}
+
+#[test]
 fn crowded_card_keeps_source_and_counts_within_twelve_lines() {
     let mut s = snapshot();
     for n in 0..40 {

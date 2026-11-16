@@ -38,9 +38,14 @@ impl Cards {
 
     fn source(&self) -> String {
         let s = &self.snapshot;
+        let standing = if s.standing_revision == 0 {
+            "unavailable".to_owned()
+        } else {
+            s.standing_revision.to_string()
+        };
         format!(
-            "Runner observation: seq {} · standing {} · at {} ms",
-            s.as_of_seq, s.standing_revision, s.at_ms
+            "Runner observation: seq {} · standing {standing} · at {} ms",
+            s.as_of_seq, s.at_ms
         )
     }
 
