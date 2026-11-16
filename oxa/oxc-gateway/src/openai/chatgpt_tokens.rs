@@ -74,6 +74,7 @@ impl TokenRecord {
         {
             return Err(Error::InvalidRecord);
         }
+        let expires_at = access_expiry(&access_token).map_or(expires_at, |expiry| expiry.min(expires_at));
         Ok(Self {
             access_token,
             refresh_token,
@@ -103,6 +104,54 @@ impl TokenRecord {
             .as_secs_f64();
         Ok(self.is_fresh_at(now))
     }
+}
+
+// Unverified JWT expiry is ONLY a conservative lifetime hint. It never
+// authorizes an identity, endpoint or scope. No signature/auth claims are used.
+pub(super) fn access_expiry(access: &str) -> Option<f64> {
+    if access.len() > MAX_BYTES as usize {
+        return None;
+    }
+    let mut parts = access.split('.');
+    parts.next()?;
+    let payload = parts.next()?;
+    parts.next()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    let data = payload.trim_end_matches('=');
+    let padding = payload.len() - data.len();
+    if padding > 2
+        || data.len() % 4 == 1
+        || (padding != 0 && (payload.len() % 4 != 0 || padding != (4 - data.len() % 4) % 4))
+    {
+        return None;
+    }
+    let mut decoded = Vec::with_capacity(data.len() * 3 / 4);
+    let (mut pending, mut bits) = (0_u32, 0_u32);
+    for byte in data.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'-' => 62,
+            b'_' => 63,
+            _ => return None,
+        };
+        pending = (pending << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            decoded.push((pending >> bits) as u8);
+            pending &= (1 << bits) - 1;
+        }
+    }
+    if pending != 0 {
+        return None;
+    }
+    serde_json::from_slice::<Value>(&decoded).ok()?["exp"]
+        .as_f64()
+        .filter(|n| n.is_finite())
 }
 
 /// Borrowed refresh fields. Debug never exposes the refresh token or client id.
@@ -325,7 +374,7 @@ pub fn credentials<E>(
     path: &Path,
     refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
 ) -> Result<TokenRecord, Error> {
-    credentials_locked(path, refresh, true)?.ok_or(Error::Unavailable)
+    credentials_locked(path, refresh, true, None)?.ok_or(Error::Unavailable)
 }
 
 /// Nonblocking refresh-lock admission. `None` means only WouldBlock: no refresh
@@ -335,17 +384,28 @@ pub fn try_credentials<E>(
     path: &Path,
     refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
 ) -> Result<Option<TokenRecord>, Error> {
-    credentials_locked(path, refresh, false)
+    credentials_locked(path, refresh, false, None)
+}
+
+/// After an explicit token_expired rejection, refresh only that access-token
+/// generation. A waiter reuses another process's fresh rotation under the lock.
+pub fn try_credentials_after_rejection<E>(
+    path: &Path,
+    rejected_access: &str,
+    refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
+) -> Result<Option<TokenRecord>, Error> {
+    credentials_locked(path, refresh, false, Some(rejected_access))
 }
 
 fn credentials_locked<E>(
     path: &Path,
     refresh: impl FnOnce(&TokenRecord) -> Result<TokenRecord, E>,
     blocking: bool,
+    rejected_access: Option<&str>,
 ) -> Result<Option<TokenRecord>, Error> {
     let dir = Directory::open(path)?;
     let record = dir.read()?;
-    if record.fresh()? {
+    if record.fresh()? && rejected_access != Some(record.access_token()) {
         return Ok(Some(record));
     }
     let lock = dir.open_file(OsStr::new(LOCK), OFlag::O_RDWR | OFlag::O_CREAT)?;
@@ -361,7 +421,7 @@ fn credentials_locked<E>(
         Err(_) => return Err(Error::Unavailable),
     };
     let record = dir.read()?;
-    if record.fresh()? {
+    if record.fresh()? && rejected_access != Some(record.access_token()) {
         return Ok(Some(record));
     }
     let updated = refresh(&record).map_err(|_| Error::Refresh)?;

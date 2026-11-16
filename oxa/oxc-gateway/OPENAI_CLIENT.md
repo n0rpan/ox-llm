@@ -96,7 +96,7 @@ rewrites. All 21 stream regressions pass, including failing-first cases. The
 native incomplete/invalid-usage client case now passes as well.
 
 Full gateway tests pass in the normal parallel mode with private HOME, a private
-`/tmp` mount and network namespace. This includes 102 library tests, 21 actual
+`/tmp` mount and network namespace. This includes 102 library tests, 24 actual
 client integration tests, eight token-file tests and four subscription classifier
 tests, plus the remaining gateway suites. Strict all-target/all-feature Clippy,
 formatting and default-off checks pass. Persisted history is serialized to disk
@@ -124,3 +124,41 @@ that identity would invalidate replay. Interrupted mixed-call responses still
 expose all ordered raw items privately, authorize no replay and deliver no calls
 to the real assembler. The consumer is a dev dependency only; its source is
 unchanged.
+
+The caller may construct `Client::with_read_timeout(Option<Duration>)` with its
+selected upstream silence timeout. `Some` resets on each read; `None` disables
+that timer. `Client::new()` retains the 1800-second default through the same
+no-proxy/no-redirect builder and 30-second connection bound. No total-generation
+deadline is installed. Token refresh still has its independent whole-operation
+deadline (including lock acquisition), bounded to 30 seconds even with reads
+disabled, and remains cancellable. Held-peer regressions cover delayed headers,
+quiet SSE after visible output, progress extending beyond the read timeout and
+quiet cancellation, in both auth modes. Settings selection and production
+factory/provider dispatch remain with the owner.
+
+Issue #726: freshness also bounds persisted expiry by the access JWT's exp hint.
+That unverified hint can only shorten lifetime; it never selects an account,
+endpoint, issuer or scope. The existing 120-second proactive margin remains.
+Refresh accepts Codex-shaped token-only replies when a usable JWT expiry exists;
+opaque replies still require a usable expires_in. Rotated tokens are atomically
+persisted before use. A subscription token_expired401, before any response data
+is delivered, permits one refresh-and-retry of the same body. The lock re-read
+reuses another process's fresh rotation instead of refreshing it again. API keys,
+other refusals and started streams never enter this recovery path. Private
+redaction retains both rejected and renewed credentials across the attempt.
+
+Failed refresh/recovery yields typed SignedOut and subscription_state() supplies
+State::SignedOut for the existing #627 card, without inventing a balance. File
+safety/account mismatch remains a credential refusal, and lock admission timeout
+stays unavailable until a refresher actually starts. Cancellation still wins;
+firm refresh deadlines and atomic storage checks are unchanged. Same-client and
+concurrent-process tests use synthetic records only. The small legacy exception
+corrects expiry precedence and rechecks JWT expiry in stored records; no legacy
+forwarding, billing, auth endpoint or sign-in changes are introduced.
+
+Issue #743: a normalized translator error is propagated immediately at the
+client event boundary, before delivering it or reading another event. This uses
+the existing translator result, not another parser or a generation deadline.
+Cancellation retains precedence, untrusted usage stays absent, and pending tools
+are discarded. A held-peer regression releases the negative control through a
+bounded barrier and checks both modes with configured and disabled reads.
