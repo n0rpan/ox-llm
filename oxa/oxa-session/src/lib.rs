@@ -19,6 +19,7 @@
 
 mod clock;
 mod durable;
+mod lifecycle;
 mod lock;
 mod meta;
 mod ops;
@@ -28,6 +29,7 @@ mod transcript;
 mod tree;
 
 pub use clock::{local_time, LocalTime};
+pub use lifecycle::SpillLifecycleLock;
 pub use lock::{lock_path_of, SessionLock, LOCKED};
 pub use meta::{search_sessions, sort_sessions, SessionSort};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
@@ -116,6 +118,17 @@ pub trait SessionStore: Send + Sync {
     /// Legacy sessions cannot establish this retroactively and must retain their spills.
     fn spill_stores_tracked(&self, _session: &SessionRef) -> Result<bool, OxaError> {
         Ok(false)
+    }
+    /// Serialize source loading through child publication with source deletion. This is
+    /// independent of the writer lock, so an open session can still be forked normally.
+    /// File-backed stores must coordinate across processes and lock both store endpoints.
+    fn spill_lifecycle_lock(&self, _session: &SessionRef) -> Result<SpillLifecycleLock, OxaError> {
+        Ok(SpillLifecycleLock::memory())
+    }
+    /// Hold all stores whose references reclamation will enumerate. The connected component
+    /// must be rechecked after locking, in case a concurrent fork published another link.
+    fn spill_cleanup_lock(&self) -> Result<SpillLifecycleLock, OxaError> {
+        Ok(SpillLifecycleLock::memory())
     }
     /// File-store roots linked by cross-store forks. Cleanup must check all of these stores
     /// before reclaiming spills; errors leave the spills intact. Other store types need no roots.

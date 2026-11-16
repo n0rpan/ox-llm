@@ -134,6 +134,7 @@ pub fn remove_session_preserving_spills(
     session: &SessionRef,
 ) -> Result<Removed, OxaError> {
     validate_session_id(&session.id)?;
+    let _lifecycle = store.spill_lifecycle_lock(session)?;
     let header = store.header(session)?;
     if header.id != session.id {
         return Err(OxaError::new(codes::INVALID, "session header id mismatch"));
@@ -286,6 +287,7 @@ pub fn remove_spill_dir_unless_forked(
     removed: &SessionRef,
 ) -> Result<usize, OxaError> {
     validate_session_id(&removed.id)?;
+    let _lifecycle = store.spill_cleanup_lock()?;
     let retained = retained_sessions(tmp_dir, false)?;
     let linked: Vec<_> = store
         .spill_cleanup_roots()?

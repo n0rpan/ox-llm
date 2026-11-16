@@ -340,6 +340,14 @@ impl SessionStore for FsStore {
         Ok(value["spillStoresTracked"] == Value::Bool(true))
     }
 
+    fn spill_lifecycle_lock(&self, session: &SessionRef) -> Result<crate::SpillLifecycleLock, OxaError> {
+        crate::SpillLifecycleLock::publication(&self.root, &session.path)
+    }
+
+    fn spill_cleanup_lock(&self) -> Result<crate::SpillLifecycleLock, OxaError> {
+        crate::SpillLifecycleLock::cleanup(&self.root)
+    }
+
     fn spill_cleanup_roots(&self) -> Result<Vec<PathBuf>, OxaError> {
         crate::spill::linked_spill_stores(&self.root)
     }
