@@ -59,6 +59,20 @@ impl Surfaces {
     }
 }
 
+// Reservations are invisible until the corresponding consumer handler is integrated.
+const LEAD_PENDING: Surfaces = Surfaces {
+    cli: Availability::Exception("Lead handler integration is pending"),
+    slash: Availability::Exception("Lead handler integration is pending"),
+    menu: Availability::Exception("Lead menu integration is pending"),
+    web: Availability::Exception("Lead web adapter integration is pending"),
+};
+const NO_REQUIREMENTS: Requirements = Requirements {
+    restart: false,
+    browser: false,
+    tty: false,
+    owner_only: false,
+};
+
 #[derive(Clone, Copy, Debug)]
 pub struct Declaration {
     pub id: CommandId,
@@ -119,6 +133,36 @@ commands! {
             web: Availability::Exception("No web frontend is shipped"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
+    Lead {
+        path: &["lead"], aliases: &[], summary: "Open the lead command menu",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+    },
+    LeadServe {
+        path: &["lead", "serve"], aliases: &[], summary: "Serve the local lead board",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+    },
+    LeadBoard {
+        path: &["lead", "board"], aliases: &[], summary: "Show the lead board",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+    },
+    LeadStatus {
+        path: &["lead", "status"], aliases: &[], summary: "Show lead status",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+    },
+    LeadAsks {
+        path: &["lead", "asks"], aliases: &[], summary: "Show lead questions",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+    },
+    LeadChat {
+        path: &["lead", "chat"], aliases: &[], summary: "Open lead chat",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
     },
 }
 
@@ -256,6 +300,25 @@ mod tests {
                     .all(|word| !word.is_empty() && !word.contains(char::is_whitespace)));
                 assert!(paths.insert(path), "duplicate command path");
             }
+        }
+    }
+    #[test]
+    fn lead_family_is_reserved_without_admitting_uninstalled_handlers() {
+        let routes: &[(CommandId, &[&str])] = &[
+            (CommandId::Lead, &["lead"]),
+            (CommandId::LeadServe, &["lead", "serve"]),
+            (CommandId::LeadBoard, &["lead", "board"]),
+            (CommandId::LeadStatus, &["lead", "status"]),
+            (CommandId::LeadAsks, &["lead", "asks"]),
+            (CommandId::LeadChat, &["lead", "chat"]),
+        ];
+        for (id, path) in routes {
+            let declaration = COMMANDS.iter().find(|entry| entry.id == *id).unwrap();
+            assert_eq!(declaration.path, *path);
+            let input: Vec<_> = path.iter().map(|part| (*part).to_string()).collect();
+            assert!(parse_cli(&input).is_none());
+            assert!(dispatch_slash(&input).is_none());
+            assert!(!entries(Surface::Menu).any(|entry| entry.id == *id));
         }
     }
 }
