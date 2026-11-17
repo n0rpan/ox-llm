@@ -113,6 +113,37 @@ mod tests {
         fs::write(&path, b"broken complete sample\n").unwrap();
         assert_eq!(board(&path, uid).unwrap_err(), "invalid board sample");
     }
+
+    #[test]
+    fn reads_a_full_paginated_shadow_board() {
+        use oxa_work::board::{Action, Entry};
+
+        let env = TestEnv::new();
+        let (path, uid) = fixture(&env, b"");
+        let snapshot = Board {
+            observed_at: 20,
+            entries: (1..=1_000)
+                .map(|number| Entry {
+                    number,
+                    head: "a".repeat(40),
+                    action: Action::Ready,
+                    release_pinned: false,
+                    lease: None,
+                    attempts_today: 0,
+                    eligible: true,
+                })
+                .collect(),
+        };
+        let mut log = oxa_work::shadow::open_log(&path).unwrap();
+        oxa_work::shadow::run(&mut log, true, || Ok(snapshot.clone()), |_| unreachable!()).unwrap();
+        drop(log);
+
+        let read = board(&path, uid).expect("complete board sample is readable by lead");
+        assert_eq!(read.observed_at, 20);
+        assert_eq!(read.entries.len(), 1_000);
+        assert_eq!(read.entries.last().unwrap().number, 1_000);
+    }
+
     #[test]
     fn refuses_shared_links_wrong_owner_and_unbounded_inputs() {
         let env = TestEnv::new();
