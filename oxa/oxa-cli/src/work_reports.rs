@@ -370,7 +370,7 @@ mod tests {
                 prompts.push(prompt.to_owned());
                 Some(true)
             },
-            &mut |program, args| {
+            |program, args: &[String], _: &File| {
                 if program != "gh" {
                     return Some((0, "{}".into()));
                 }
