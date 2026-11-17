@@ -149,7 +149,10 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
         if run["__typename"] == "CheckRun"
             && run["isRequired"] == true
             && run["status"] == "COMPLETED"
-            && run["conclusion"] == "FAILURE"
+            && matches!(
+                run["conclusion"].as_str(),
+                Some("FAILURE" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" | "STALE")
+            )
             && github_utc(&run["completedAt"]).is_some_and(|completed_at| completed_at <= removed_at)
         {
             let id = run["databaseId"]
