@@ -1,7 +1,7 @@
 #![cfg(feature = "a2a")]
 
 use oxa_orchestrator::follow::History;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 // Carry #436's goal_pagination regression intent, adapting its inclusive cursor
 // to #129's exclusive-after API. A page's high-water mark is not its next cursor.
