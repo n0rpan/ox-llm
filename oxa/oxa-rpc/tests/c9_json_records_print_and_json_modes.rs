@@ -1122,7 +1122,7 @@ fn print_retains_completed_reply_when_wrap_up_arrives_at_settlement() {
         &mut err,
     )
     .unwrap();
-    assert_eq!(outcome, oxa_proto::RunOutcome::Interrupted);
+    assert_eq!(outcome, oxa_core::RunOutcome::Interrupted);
     assert_eq!(engine.requests().len(), 1, "the later prompt is not admitted");
     assert_eq!(out, b"completed first reply\n");
 }
