@@ -86,14 +86,19 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
     html.push_str(&page.navigation());
     match page {
         Page::Home => {
-            board(&mut html, view, now);
+            board(&mut html, view, now, 0);
             workers(&mut html, view);
             queue(&mut html, view);
             release(&mut html, view);
             asks(&mut html, view);
         }
-        Page::Board => {
-            board(&mut html, view, now);
+        Page::Board | Page::BoardPage(_) => {
+            let index = if let Page::BoardPage(index) = page {
+                index
+            } else {
+                0
+            };
+            board(&mut html, view, now, index);
             queue(&mut html, view);
         }
         Page::Workers => workers(&mut html, view),
@@ -154,7 +159,7 @@ fn attention(html: &mut String, view: &View<'_>) {
     }
 }
 
-fn board(html: &mut String, view: &View<'_>, now: u64) {
+fn board(html: &mut String, view: &View<'_>, now: u64, page: usize) {
     html.push_str("<section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
         let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
@@ -169,7 +174,8 @@ fn board(html: &mut String, view: &View<'_>, now: u64) {
             board.observed_at
         );
         html.push_str("<div class=scroll><table><thead><tr><th>PR</th><th>Next action</th><th>Priority</th><th>Lease</th><th>Attempts today</th></tr></thead><tbody>");
-        for row in &board.entries {
+        let offset = page.saturating_mul(pages::BOARD_ROWS);
+        for row in board.entries.iter().skip(offset).take(pages::BOARD_ROWS) {
             let lease = row.lease.as_ref().map_or("Unleased".into(), |l| {
                 format!(
                     "{} · expires {}{}",
@@ -190,6 +196,17 @@ fn board(html: &mut String, view: &View<'_>, now: u64) {
         html.push_str("</tbody></table></div>");
         if board.entries.is_empty() {
             html.push_str("<p>No open PRs in this snapshot.</p>");
+        } else {
+            let shown = board.entries.len().saturating_sub(offset).min(pages::BOARD_ROWS);
+            let _ = write!(html, "<p>Showing {shown} of {} items</p>", board.entries.len());
+            html.push_str("<nav class=pages aria-label=\"Board pages\">");
+            if page > 0 {
+                html.push_str("<a href=/board>First page</a>");
+            }
+            if offset.saturating_add(pages::BOARD_ROWS) < board.entries.len() {
+                let _ = write!(html, "<a href=/board?page={}>Show more</a>", page + 1);
+            }
+            html.push_str("</nav>");
         }
     } else {
         html.push_str("<p>Board unavailable.</p>");
