@@ -301,6 +301,59 @@ fn max_tokens_wraps_up_child_and_parent_without_starting_queued_child() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("parent wrap-up"));
 }
 
+#[test]
+fn child_cannot_regain_parent_excluded_tools() {
+    for (tools, flags, denied) in [
+        ("tools: bash,read\n", vec!["--no-bash"], vec!["bash"]),
+        ("", vec!["--exclude-tools", "b*"], vec!["bash"]),
+        (
+            "tools: bash,read,grep\n",
+            vec!["--no-bash", "-xt", "grep"],
+            vec!["bash", "grep"],
+        ),
+        ("tools: bash,read\n", vec![], vec![]),
+    ] {
+        let env = TestEnv::new();
+        setup(&env);
+        env.write(
+            "home/.oxa/agent/agents/scout.md",
+            &format!("---\nname: scout\ndescription: Looks around\n{tools}---\nYou are a scout.\n"),
+        );
+        let server = FakeServer::start(
+            vec![
+                ScriptTurn::tool("c1", "subagent", r#"{"agent":"scout","task":"look around"}"#),
+                ScriptTurn::text("child done"),
+                ScriptTurn::text("parent done"),
+            ],
+            FakeOpts::default(),
+        )
+        .expect("fake engine");
+        let mut words = vec!["-p"];
+        words.extend(flags);
+        words.push("delegate this");
+        let out = oxa(&env, &server.url(), &words);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let reqs = requests(&server);
+        let child = reqs.iter().find(|r| r.kind == "subagent").expect("child request");
+        for request in [&reqs[0], child] {
+            for name in &denied {
+                assert!(
+                    !request.tools_json.contains(&format!("\"name\":\"{name}\"")),
+                    "{words:?}: {}",
+                    request.tools_json
+                );
+            }
+            assert!(request.tools_json.contains("\"name\":\"read\""));
+        }
+        if denied.is_empty() {
+            assert!(
+                child.tools_json.contains("\"name\":\"bash\""),
+                "unrestricted child keeps bash"
+            );
+        }
+    }
+}
+
 /// A session-start hook consumes startup time, not the parent's run allowance.
 #[test]
 fn slow_session_initialization_does_not_expire_the_child_deadline() {

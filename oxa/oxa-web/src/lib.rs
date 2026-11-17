@@ -35,7 +35,8 @@ pub use tool::{parse_query, Query, WebSearchTool, SOURCE};
 pub const ENV_KEY: &str = "BRAVE_SEARCH_API_KEY";
 /// The key file's name inside the agent directory.
 pub const KEY_FILE: &str = "brave-search.key";
-/// `OXA_WEB_SEARCH=0` (also `false`, `no`, `off`) switches the tool off for this process.
+/// `OXA_WEB_SEARCH=0` (also `false`, `no`, `off`) switches the tool off for this process; `1`,
+/// `true`, `yes` and `on` say on. The same eight words as every other user-facing boolean.
 pub const ENV_SWITCH: &str = "OXA_WEB_SEARCH";
 /// Hidden: the provider's base URL, honoured only when it is a loopback URL (tests).
 pub const ENV_BASE_URL: &str = "OXA_BRAVE_BASE_URL";

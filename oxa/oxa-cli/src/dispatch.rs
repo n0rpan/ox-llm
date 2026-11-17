@@ -466,6 +466,7 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    lead: bool,
     status: Option<Arc<crate::status::StatusWriter>>,
     result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
@@ -531,6 +532,9 @@ impl Built {
                     .with_owner_present(self.ask_owner_present),
             ));
         }
+        if self.lead {
+            tools.retain(|tool| crate::lead_preset::READ_TOOLS.contains(&tool.spec().name.as_str()));
+        }
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
@@ -591,20 +595,33 @@ fn prepare(
         ));
     }
     let goal = crate::goal_cmd::load(a, cwd)?;
-    let output_schema = a
-        .output_schema
-        .as_ref()
-        .map(|file| {
-            let path = cwd.join(file);
-            let text = std::fs::read_to_string(&path)
-                .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
-            let value = serde_json::from_str(&text)
-                .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
-            oxa_core::output_schema::OutputSchema::new(value)
-        })
-        .transpose()?;
+    let output_schema = if a.lead {
+        Some(crate::lead_preset::schema()?)
+    } else {
+        a.output_schema
+            .as_ref()
+            .map(|file| {
+                let path = cwd.join(file);
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
+                let value = serde_json::from_str(&text)
+                    .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
+                oxa_core::output_schema::OutputSchema::new(value)
+            })
+            .transpose()?
+    };
     let mut notices: Vec<(Level, String)> = Vec::new();
     let user_settings = Settings::load(dirs, cwd, false);
+    // Only user settings may enable this default-off proposal session.
+    if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            format!(
+                "lead --shadow is disabled; set \"{}\": true in the user settings.json to enable it",
+                crate::lead_preset::SETTING
+            ),
+        ));
+    }
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -638,6 +655,8 @@ fn prepare(
         let list = patterns.iter().cloned().map(serde_json::Value::String).collect();
         settings = settings.with_override("enabledModels", serde_json::Value::Array(list));
     }
+    // UX/DX item 5: `--animation` overrides `ui.animation` for this run (in memory only).
+    settings = animation_override(settings, a.animation.as_deref());
     notices.extend(
         settings
             .diagnostics()
@@ -908,6 +927,7 @@ fn prepare(
         crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
     );
     let built = Built {
+        lead: a.lead,
         status,
         result_facts,
         output_schema,
@@ -1094,6 +1114,9 @@ fn discover_opts(a: &Args, dirs: &Dirs, cwd: &Path, trusted: bool) -> Result<Dis
 /// that would need the dialog stays untrusted. Problems are reported on `err` and give no
 /// flags; the help is printed anyway.
 fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) -> Vec<oxa_proto::FlagSpec> {
+    if a.lead {
+        return Vec::new();
+    }
     let Ok(dirs) = dirs_from_env(env, a.session_dir.as_deref()) else {
         return Vec::new();
     };
@@ -1566,6 +1589,24 @@ fn with_api_key(mut endpoint: Endpoint, a: &Args) -> Endpoint {
         endpoint.api_key = Some(key.0.clone());
     }
     endpoint
+}
+
+/// UX/DX item 5: `--animation <mode>` overrides `ui.animation` for this run, in memory only, so the
+/// setting on disk is untouched. `None` (no flag) keeps whatever the settings resolved to.
+///
+/// #869: `off` also overrides `ui.reducedMotion` (the mode and reduced motion draw the same static
+/// badge, as cli.md says), and `arcade`/`minimal` clear it, so the flag is not silently ignored on
+/// a machine whose settings ask for reduced motion. `OXA_REDUCED_MOTION` still wins for the run.
+fn animation_override(settings: Settings, mode: Option<&str>) -> Settings {
+    match mode {
+        Some(mode) => {
+            let reduced = mode == "off";
+            settings
+                .with_override("ui.animation", Value::String(mode.to_string()))
+                .with_override("ui.reducedMotion", Value::Bool(reduced))
+        }
+        None => settings,
+    }
 }
 
 /// [`engine_for`] with the stream silence limit of the settings: `retry.provider.timeoutMs`,
@@ -2288,6 +2329,49 @@ mod model_limits_tests {
 }
 
 #[cfg(test)]
+mod animation_override_tests {
+    use super::*;
+
+    /// #869: `--animation <mode>` reaches the settings the interactive driver reads
+    /// (`ui.animation`), `off` is the same as `ui.reducedMotion` for the run (the YOLO flames
+    /// follow the badge), and no flag leaves the resolved setting alone.
+    #[test]
+    fn the_flag_overrides_ui_animation_for_this_run_only() {
+        let loaded = Settings::from_values(serde_json::json!({"ui": {"animation": "arcade"}}), Value::Null);
+        assert_eq!(loaded.string("ui.animation").as_deref(), Some("arcade"));
+        assert!(!loaded.bool("ui.reducedMotion", false));
+
+        let off = animation_override(loaded.clone(), Some("off"));
+        assert_eq!(off.string("ui.animation").as_deref(), Some("off"));
+        assert!(off.bool("ui.reducedMotion", false));
+        // The settings the flag was applied to are untouched: the override is in memory only.
+        assert_eq!(loaded.string("ui.animation").as_deref(), Some("arcade"));
+        assert!(!loaded.bool("ui.reducedMotion", false));
+
+        assert_eq!(
+            animation_override(loaded.clone(), None)
+                .string("ui.animation")
+                .as_deref(),
+            Some("arcade")
+        );
+        assert!(!animation_override(loaded.clone(), None).bool("ui.reducedMotion", false));
+
+        // The other two modes draw, even when the settings ask for reduced motion.
+        let still = Settings::from_values(
+            serde_json::json!({"ui": {"animation": "off", "reducedMotion": true}}),
+            Value::Null,
+        );
+        for mode in ["arcade", "minimal"] {
+            let s = animation_override(still.clone(), Some(mode));
+            assert_eq!(s.string("ui.animation").as_deref(), Some(mode));
+            assert!(!s.bool("ui.reducedMotion", false), "--animation {mode}");
+        }
+        // ... and the settings on disk still say reduced motion.
+        assert!(still.bool("ui.reducedMotion", false));
+    }
+}
+
+#[cfg(test)]
 mod session_scratch_tests {
     use super::*;
     use oxa_proto::ExecSpec;
@@ -2329,6 +2413,7 @@ mod session_scratch_tests {
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
         let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
+            lead: false,
             status: None,
             result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,

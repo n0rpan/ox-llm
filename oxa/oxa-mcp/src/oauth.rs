@@ -528,7 +528,8 @@ pub trait LoginIo {
 /// (configured `clientId`, a client stored earlier, or dynamic registration under
 /// `clientName`, default `oxa`), open the authorization page, wait for the callback or a
 /// pasted redirect URL, check `state`, exchange the code. `timeout` bounds the whole sign-in.
-/// `ClientRegistration::Cimd` is `Err(unsupported_in_oxa)`.
+/// `ClientRegistration::Cimd` is `Err(unsupported_in_oxa)`. A `!command` value (`clientSecret`)
+/// runs through `run`, the caller's `crate::run_value_command` with its gate, home and cwd.
 pub fn login(
     server: &str,
     cfg: &HttpConfig,
@@ -536,6 +537,7 @@ pub fn login(
     io: &mut dyn LoginIo,
     timeout: Duration,
     cancel: &CancelToken,
+    run: &dyn Fn(&str) -> Result<String, OxaError>,
 ) -> Result<(), OxaError> {
     let deadline = Instant::now() + timeout;
     let default_settings = OAuthSettings::default();
@@ -558,7 +560,7 @@ pub fn login(
     // client is bound to the redirect URI it was registered with.
     let stored_client = stored.as_ref().and_then(|a| a.client_id.clone());
     let (client_id, client_secret) = if let Some(id) = settings.client_id.clone() {
-        (id, expand_secret(settings.client_secret.as_deref())?)
+        (id, expand_secret(settings.client_secret.as_deref(), run)?)
     } else if let (ClientRegistration::Auto, Some(_), Some(id)) =
         (settings.client_registration, fixed_port, stored_client)
     {
@@ -1290,32 +1292,18 @@ fn parse_as_metadata(body: &str) -> Result<AuthServerMeta, OxaError> {
     })
 }
 
-/// Client secrets and other OAuth values may be `${VAR}` or `!command`, as elsewhere in `mcp.json`.
-fn expand_secret(raw: Option<&str>) -> Result<Option<String>, OxaError> {
+/// Client secrets and other OAuth values may be `${VAR}` or `!command`, as elsewhere in `mcp.json`;
+/// a `!command` runs through `run` (`crate::run_value_command` behind the caller's gate).
+fn expand_secret(
+    raw: Option<&str>,
+    run: &dyn Fn(&str) -> Result<String, OxaError>,
+) -> Result<Option<String>, OxaError> {
     let Some(raw) = raw else {
         return Ok(None);
     };
     let lookup = |key: &str| std::env::var(key).ok();
-    let run = |command: &str| run_value_command(command);
-    let value = crate::expand_value(raw, &lookup, &run)?;
+    let value = crate::expand_value(raw, &lookup, run)?;
     Ok(Some(value).filter(|v| !v.is_empty()))
-}
-
-fn run_value_command(command: &str) -> Result<String, OxaError> {
-    let out = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .map_err(|e| OxaError::io("cannot run a !command value", &e))?;
-    if !out.status.success() {
-        return Err(OxaError::new(
-            codes::INVALID,
-            format!("the !command value `{command}` failed"),
-        ));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// The port a sign-in must listen on, when the configuration fixes one.
