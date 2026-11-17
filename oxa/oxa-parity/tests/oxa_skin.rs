@@ -71,7 +71,14 @@ fn activity_row(s: &Screen) -> Option<String> {
 /// follows below it.
 #[test]
 fn splash_heads_every_empty_chat() {
-    let rig = start(&[], FakeOpts::default());
+    // Rendering the reply is not completion: hold [DONE] to exercise that gap reliably.
+    let rig = start(
+        &[],
+        FakeOpts {
+            done_gap_ms: 1000,
+            ..FakeOpts::default()
+        },
+    );
     let first = rig.pty.wait_for_named("the splash", splash_on, WAIT).unwrap();
     assert!(first.contains("part of ox-llm"), "{first:?}");
     assert!(first.contains("written by Oscar"), "{first:?}");
@@ -95,6 +102,15 @@ fn splash_heads_every_empty_chat() {
         "the conversation follows the splash: {replied:?}"
     );
 
+    // The reply can be visible while its stream is still open. /new requires an idle
+    // session, so synchronize on the completed run rather than a streamed text delta.
+    rig.pty
+        .wait_for_named(
+            "the completed reply and idle prompt",
+            |s| s.contains(REPLY) && s.contains("● READY") && s.contains("enter send"),
+            WAIT,
+        )
+        .unwrap();
     rig.pty.send_text("/new");
     rig.pty.send_key("enter");
     let fresh = rig

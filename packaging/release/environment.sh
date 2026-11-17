@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared release build/test environment, sourced by the build and check scripts.
 set -euo pipefail
-root=$(cd "$(dirname "$0")/../.." && pwd)
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$root"
 : "${SOURCE_DATE_EPOCH:?set SOURCE_DATE_EPOCH to the source commit timestamp}"
 : "${CARGO_HOME:=$HOME/.cargo}"

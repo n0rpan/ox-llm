@@ -35,12 +35,14 @@ fn hints(session: &str) -> Hints<'_> {
 
 fn request<'a>(p: &'a FrozenPrefix, msgs: &'a [WireMsg], max_tokens: u32, h: Hints<'a>) -> ChatRequest<'a> {
     ChatRequest {
+        output_schema: None,
         prefix: p,
         messages: msgs,
         model: "fake-model",
         max_tokens,
         thinking: false,
         thinking_budget: None,
+        thinking_level: None,
         preserve_thinking: true,
         sampling: None,
         hints: h,

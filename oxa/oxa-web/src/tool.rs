@@ -1,8 +1,9 @@
-//! The `web_search` tool and the provider seam.
-use crate::shape::{shape, Budgets, Found};
+//! The `web_search` tool.
+use crate::shape::{shape, Budgets};
+use crate::Brave;
 use oxa_proto::{
-    tool_errors, Access, CancelToken, Exposure, Level, Mode, Source, Tool, ToolClass, ToolCtx, ToolOutput,
-    ToolSpec, Ui, Value,
+    tool_errors, Access, Exposure, Level, Mode, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui,
+    Value,
 };
 use oxa_tools::descriptions::web_search as text;
 use std::sync::Arc;
@@ -19,18 +20,6 @@ pub struct Query {
     pub freshness: Option<String>,
     pub country: Option<String>,
     pub search_lang: Option<String>,
-}
-
-/// A search provider. Errors are model-facing texts in the problem shape (fixed, W4).
-pub trait SearchProvider: Send + Sync {
-    /// The host the tool connects to (`Access::Net` in the ask mode).
-    fn host(&self) -> String;
-    /// Run one search. Must honour `cancel` (then `Err(tool_errors::ABORTED)`).
-    fn search(&self, q: &Query, cancel: &CancelToken) -> Result<Vec<Found>, String>;
-    /// A user notice to show once (the fallback notice), taken at most once per process.
-    fn take_notice(&self) -> Option<String> {
-        None
-    }
 }
 
 /// The Brave `freshness` value of `s`: the codes `pd` / `pw` / `pm` / `py`, the natural words
@@ -145,12 +134,12 @@ pub fn parse_query(args: &Value) -> Result<Query, String> {
 /// grant covers the host). Offline, every call is refused with the offline error.
 pub struct WebSearchTool {
     spec: ToolSpec,
-    provider: Arc<dyn SearchProvider>,
+    provider: Arc<Brave>,
     budgets: Budgets,
 }
 
 impl WebSearchTool {
-    pub fn new(provider: Arc<dyn SearchProvider>) -> WebSearchTool {
+    pub fn new(provider: Arc<Brave>) -> WebSearchTool {
         WebSearchTool {
             spec: ToolSpec {
                 name: text::NAME.to_string(),

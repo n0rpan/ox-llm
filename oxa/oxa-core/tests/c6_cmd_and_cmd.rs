@@ -55,6 +55,8 @@ fn build(
     });
     let tools: Vec<Arc<dyn Tool>> = Vec::new();
     SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks,

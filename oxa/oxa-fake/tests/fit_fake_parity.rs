@@ -194,12 +194,14 @@ fn hints(session: &str) -> Hints<'_> {
 
 fn request<'a>(p: &'a FrozenPrefix, msgs: &'a [WireMsg], max_tokens: u32, h: Hints<'a>) -> ChatRequest<'a> {
     ChatRequest {
+        output_schema: None,
         prefix: p,
         messages: msgs,
         model: "fake-model",
         max_tokens,
         thinking: false,
         thinking_budget: None,
+        thinking_level: None,
         preserve_thinking: false,
         sampling: None,
         hints: h,
@@ -468,6 +470,7 @@ fn f13_bad_tool_arguments_are_refused() {
             name: "read".into(),
             args_raw: "{\"path\": ".into(),
         }],
+        provider_history: None,
         tool_call_id: None,
     };
     let msgs = vec![

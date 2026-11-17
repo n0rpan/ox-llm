@@ -918,6 +918,9 @@ dependencies = [
  "oxa-tools",
  "oxa-tui",
  "oxa-web",
+ "oxa-work",
+ "oxc-gateway",
+ "oxc-local",
  "regex",
  "serde_json",
  "sha2",
@@ -979,7 +982,9 @@ version = "0.2.0"
 dependencies = [
  "oxa-fake",
  "oxa-proto",
+ "oxc-gateway",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -1196,6 +1201,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxa-work"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "oxc-gateway"
 version = "0.2.0"
 dependencies = [
@@ -1206,11 +1219,36 @@ dependencies = [
  "hmac",
  "nix",
  "num-traits",
+ "oxa-engine",
+ "oxa-proto",
  "reqwest",
  "serde_json",
  "sha2",
  "tokio",
  "url",
+]
+
+[[package]]
+name = "oxc-local"
+version = "0.2.0"
+dependencies = [
+ "nix",
+ "oxa-engine",
+ "oxa-fake",
+ "oxa-proto",
+ "serde_json",
+ "tokio",
+ "ureq",
+]
+
+[[package]]
+name = "oxc-memlat"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "regex",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

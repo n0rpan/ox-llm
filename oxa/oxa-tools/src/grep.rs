@@ -3,7 +3,7 @@
 //!
 //! The helpers at the bottom of this file are shared with `find.rs` and `ls.rs` (same owner).
 use crate::descriptions::{diet, errors, limits};
-use crate::resolve_path;
+use crate::resolve_tool_path;
 use oxa_proto::{Access, CancelToken, PathFilter, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use std::collections::VecDeque;
 use std::fs::File;
@@ -130,14 +130,14 @@ impl Tool for GrepTool {
     /// `[Access::Read(search root)]`.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
         let q = parse(args)?;
-        Ok(vec![Access::Read(resolve_path(cx.cwd, &q.path))])
+        Ok(vec![Access::Read(resolve_tool_path(cx, &q.path))])
     }
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         let q = match parse(args) {
             Ok(q) => q,
             Err(e) => return ToolOutput::error(e),
         };
-        let root = resolve_path(cx.cwd, &q.path);
+        let root = resolve_tool_path(cx, &q.path);
         let meta = match std::fs::metadata(&root) {
             Ok(m) => m,
             Err(_) => return ToolOutput::error(errors::path_not_found(&q.path)),

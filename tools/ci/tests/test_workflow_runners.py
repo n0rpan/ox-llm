@@ -45,7 +45,7 @@ def jobs_runs_on(text):
         m = re.match(r'^  ([A-Za-z0-9_-]+):\s*$', line)
         if m:
             job = m.group(1)
-            jobs[job] = {'runs_on': None, 'matrix': {}}
+            jobs[job] = {'runs_on': None, 'matrix': {}, 'runner_values': []}
             continue
         if job is None:
             continue
@@ -53,6 +53,9 @@ def jobs_runs_on(text):
         if m:
             jobs[job]['runs_on'] = m.group(1).strip('"\'') if not m.group(1).startswith('${{') else m.group(1)
             continue
+        scalar_runner = re.match(r'^\s+(?:-\s+)?runner:\s*(.+?)\s*$', line)
+        if scalar_runner and not scalar_runner.group(1).startswith('['):
+            jobs[job]['runner_values'].append(scalar_runner.group(1).strip(chr(34) + chr(39)))
         m = re.match(r'^\s+([A-Za-z0-9_-]+):\s*\[(.*)\]\s*$', line)
         if m:
             values = [v.strip().strip('"\'') for v in m.group(2).split(',') if v.strip()]
@@ -66,6 +69,12 @@ def problems(name, text):
         value = info['runs_on']
         if value is None:
             continue  # reusable-workflow call: no runner of its own
+        # Owner lane CI: standard free Linux runners, including explicit matrix overrides.
+        free = {'ubuntu-24.04', ARM_IMAGE}
+        if ((name, job, value) == ('lane.yml', 'test', '${{ matrix.runner }}')
+                and set(info['matrix'].get('runner', [])) == free
+                and all(runner in free for runner in info['runner_values'])):
+            continue
         if value == ARM_IMAGE or value == RUNNER_EXPRESSION:
             continue
         if value.startswith('${{'):
@@ -110,6 +119,19 @@ class WorkflowRunners(unittest.TestCase):
         self.assertTrue(problems('x.yml', text))
         expr = RUNNER_EXPRESSION.replace("|| 'ubuntu-24.04' }}", "|| 'ubuntu-22.04' }}")
         self.assertTrue(problems('x.yml', f'jobs:\n  a:\n    runs-on: {expr}\n'))
+
+    def test_lane_matrix_accepts_only_its_fixed_free_runners(self):
+        text = ('jobs:\n  test:\n    runs-on: ${{ matrix.runner }}\n'
+                '    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n')
+        self.assertFalse(problems('lane.yml', text))
+        self.assertTrue(problems('other.yml', text))
+        self.assertTrue(problems('lane.yml', text.replace('test:', 'other:')))
+        for runner in ('self-hosted', 'oxci', 'macos-15'):
+            self.assertTrue(problems('lane.yml', text.replace('ubuntu-24.04,', runner + ',')))
+            override = text + '        include:\n          - runner: ' + runner + '\n'
+            self.assertTrue(problems('lane.yml', override))
+        override = text + '        include:\n          - runner: ${{ inputs.runner }}\n'
+        self.assertTrue(problems('lane.yml', override))
 
     def test_accepts_arm_and_expression(self):
         for value in (ARM_IMAGE, RUNNER_EXPRESSION):

@@ -31,10 +31,16 @@ pub struct PathGuard {
     /// The current session's spill directory: the full output of a capped result is read from
     /// here without asking (#522).
     spill: Option<PathBuf>,
+    /// #597: the session's scratch directory, the host side of `/tmp` in the bash sandbox: what
+    /// bash wrote there is read without asking.
+    scratch: Option<PathBuf>,
     /// Source sessions of a fork/clone: copied history still points at these outputs.
     inherited_spills: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
+    /// Exact Cargo configuration files already exposed read-only in the bash sandbox (#611).
+    /// These bypass approval only, never the deny-list.
+    cargo_configs: Vec<PathBuf>,
     /// Clipboard images use generated names directly under tmp, not a session directory.
     paste_dir: Option<PathBuf>,
     /// A pasted-image name cannot override a credential path that resolves to that image.
@@ -87,8 +93,13 @@ impl PathGuard {
             deny,
             allow: vec![tmp_dir.join("codemode")],
             spill: None,
+            scratch: None,
             inherited_spills: Vec::new(),
             read_allow: vec![agent_dir.join("builtin-skills")],
+            cargo_configs: std::iter::once(home)
+                .chain(real_home)
+                .flat_map(|h| [h.join(".cargo/config.toml"), h.join(".cargo/config")])
+                .collect(),
             paste_dir: Some(tmp_dir.to_path_buf()),
             paste_deny,
             home: home.to_path_buf(),
@@ -105,6 +116,18 @@ impl PathGuard {
             && (!is_inside(p, cwd)
                 || is_home_or_above(cwd, &self.home)
                 || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
+    }
+
+    /// #597: read the session's scratch directory `dir` without asking. Reads only: it is not
+    /// on the deny-list, so a link out of it is judged at its target like any other path.
+    pub fn with_scratch(mut self, dir: &Path) -> PathGuard {
+        self.scratch = Some(dir.to_path_buf());
+        self
+    }
+
+    /// `p` (absolute) is inside the session's scratch directory.
+    fn is_scratch(&self, p: &Path) -> bool {
+        self.scratch.as_ref().is_some_and(|s| is_inside(p, s))
     }
 
     /// Point the exception at the spill directory of the session now running. Switching
@@ -149,6 +172,16 @@ impl PathGuard {
     /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
     pub fn is_builtin_skill(&self, p: &Path) -> bool {
         self.read_allow.iter().any(|a| is_inside(p, a))
+    }
+
+    /// An exact Cargo config, not its directory or siblings. Resolve both sides so symlinked
+    /// homes/configs work; the caller must check the deny-list first, including the real path.
+    fn is_cargo_config(&self, p: &Path) -> bool {
+        resolve_real(p).is_some_and(|real| {
+            self.cargo_configs
+                .iter()
+                .any(|config| resolve_real(config).as_ref() == Some(&real))
+        })
     }
 
     /// #517: [`PathGuard::denies_read`] for the entries of a directory walk, with every list
@@ -318,17 +351,20 @@ impl ModePolicy {
     pub fn new() -> ModePolicy {
         ModePolicy::default()
     }
-    /// B3: deny the paths of `guard` to the file tools, in every mode, whatever the grants.
+    /// B3: deny the paths of `guard` to the file tools, whatever the grants, except for
+    /// user-selected full-access `yolo` outside plan mode.
     pub fn with_guard(mut self, guard: PathGuard) -> ModePolicy {
         self.hidden = Some(Arc::new(guard.hidden_paths()));
         self.guard = guard;
         self
     }
-    /// O-182 (YOLO): while `switch` is on, every `Decision::Ask` of the mode table becomes
-    /// `Decision::Allow` and is counted on the switch. The safety floor is not part of the
-    /// table and is unchanged: the deny-list (B3) and git's files (B4) stay `Deny`, plan
-    /// mode's `Deny`s stand, and a write to the project's protected configuration (`.oxa`,
-    /// B4: it is loaded outside the sandbox later) still asks.
+    /// O-182, #202: at `Autonomy::Auto` every `Decision::Ask` of the mode table becomes
+    /// `Decision::Allow` and is counted on the switch; the safety floor is unchanged: the
+    /// deny-list (B3) and git's files (B4) stay `Deny`, plan mode's `Deny`s stand, and a write
+    /// to the project's protected configuration (`.oxa`) still asks. At `Autonomy::Yolo` (full
+    /// access) every `Ask` and every `Deny` becomes `Allow` outside plan mode (owner's decision
+    /// on #202/#314); only questions count as auto-approved, not bypassed denials (#443).
+    /// In plan mode it answers as `Auto`.
     pub fn with_yolo(mut self, switch: YoloSwitch) -> ModePolicy {
         self.yolo = Some(switch);
         self
@@ -425,8 +461,8 @@ fn table(mode: Mode, a: &Access, cwd: &Path) -> Decision {
     }
 }
 
-/// A verdict before YOLO: `AskAlways` is the safety floor's prompt, which YOLO never turns
-/// into an allow.
+/// A verdict before autonomy is applied: `AskAlways` is the safety floor's prompt, which
+/// `auto` never turns into an allow. Only user-selected `yolo` outside plan mode bypasses it.
 #[derive(Clone, Copy)]
 enum Verdict {
     Is(Decision),
@@ -446,10 +482,14 @@ impl ModePolicy {
             if denied {
                 return Verdict::Is(Decision::Deny(deny_reasons::SENSITIVE));
             }
-            // #492, #522, #531: advertised built-in skills and this session's output
-            // (including fork/clone ancestry) are read without asking, wherever the cwd is.
+            // #492, #522, #531, #597, #611: advertised built-in skills, this session's
+            // output (including fork/clone ancestry), scratch directory and Cargo configs
+            // are read without asking. The deny-list above still applies.
             if matches!(a, Access::Read(_))
-                && (self.guard.is_builtin_skill(&abs) || self.guard.is_readable_spill(&abs))
+                && (self.guard.is_builtin_skill(&abs)
+                    || self.guard.is_readable_spill(&abs)
+                    || self.guard.is_scratch(&abs)
+                    || self.guard.is_cargo_config(&abs))
             {
                 return Verdict::Is(Decision::Allow);
             }
@@ -510,7 +550,16 @@ impl Policy for ModePolicy {
             }
             _ => (self.verdict(mode, a, cwd), None),
         };
+        // Owner decision (#202/#314): yolo outside plan mode lifts every file-tool
+        // guard. Resolve and pin first, so the open still uses the checked location.
+        let full = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan);
         let decision = match verdict {
+            Verdict::Is(Decision::Deny(_)) if full.is_some() => Decision::Allow,
+            Verdict::AskAlways if full.is_some() => {
+                // #443: only questions count as auto-approved; bypassed denials do not.
+                full.unwrap().count();
+                Decision::Allow
+            }
             Verdict::AskAlways => Decision::Ask,
             Verdict::Is(Decision::Ask) => match &self.yolo {
                 Some(switch) if switch.is_on() => {
@@ -559,6 +608,13 @@ impl Policy for ModePolicy {
     }
 
     fn path_filter(&self) -> Option<Arc<dyn PathFilter>> {
+        self.path_filter_for_mode(Mode::Workspace)
+    }
+
+    fn path_filter_for_mode(&self, mode: Mode) -> Option<Arc<dyn PathFilter>> {
+        if mode != Mode::Plan && self.yolo.as_ref().is_some_and(YoloSwitch::full) {
+            return None;
+        }
         self.hidden.clone().map(|h| h as Arc<dyn PathFilter>)
     }
 }

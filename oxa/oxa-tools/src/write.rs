@@ -40,7 +40,7 @@ impl Tool for WriteTool {
     /// `[Access::Write(path)]`.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
         let path = arg_path(args)?;
-        Ok(vec![Access::Write(crate::resolve_path(cx.cwd, path))])
+        Ok(vec![Access::Write(crate::resolve_tool_path(cx, path))])
     }
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         let path = match arg_path(args) {
@@ -69,7 +69,7 @@ fn write_file(args: &Value, cx: &ToolCtx) -> Result<(usize, bool), String> {
         return Err(errors::ABORTED.to_string());
     }
 
-    let mut target = crate::resolve_path(cx.cwd, path);
+    let mut target = crate::resolve_tool_path(cx, path);
     // #518: the location the permission check judged (symlinks resolved): written there or not
     // at all, whatever a link points at by now.
     let pin = cx.checked_real(&target).map(Path::to_path_buf);
