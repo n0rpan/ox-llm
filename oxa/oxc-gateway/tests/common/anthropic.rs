@@ -338,16 +338,20 @@ fn write_reply(stream: &mut impl Write, reply: &Reply) -> io::Result<()> {
         .position(|part| part == b"event: message_stop\n")
         .unwrap_or(reply.bytes.len());
     // A reply without a semantic terminal event is read to EOF, so its final
-    // payload and the HTTP tail leave in one write: a client that stops at its
-    // own terminal event (an OpenAI-style `[DONE]`) closes the peer as soon as
-    // it sees that byte, and a later tail write would be a false failure.
-    let tail: &[u8] = if reply.terminal { b"" } else { b"\r\n0\r\n\r\n" };
-    write_fragments(stream, &reply.bytes[..split], reply.fragment, false, tail)?;
+    // payload and the HTTP last-chunk leave in one write: a client that stops at
+    // its own terminal event (an OpenAI-style `[DONE]`) closes the peer as soon
+    // as it sees that byte, and a later tail write would be a false failure.
+    let tail: &[u8] = if reply.terminal { b"" } else { b"0\r\n\r\n" };
+    let (head, rest) = reply.bytes.split_at(split);
+    // The last-chunk belongs to whichever part carries the final body byte.
+    let head_tail = if rest.is_empty() { tail } else { b"" };
+    write_fragments(stream, head, reply.fragment, false, head_tail)?;
     if reply.stop_delay >= DEADLINE {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     thread::sleep(reply.stop_delay);
-    write_fragments(stream, &reply.bytes[split..], reply.fragment, reply.terminal, b"")
+    let rest_tail = if rest.is_empty() { b"" } else { tail };
+    write_fragments(stream, rest, reply.fragment, reply.terminal, rest_tail)
 }
 /// `tail` is appended to the final chunk in the same write, so a client that
 /// stops at its own semantic terminal cannot race a later tail write.
@@ -630,9 +634,21 @@ mod mock_health {
             Ok(())
         }
     }
+    impl CloseOnDoneFlush {
+        /// Everything after the response head: the chunked body framing.
+        fn wire(&self) -> &[u8] {
+            let head = self
+                .bytes
+                .windows(4)
+                .position(|part| part == b"\r\n\r\n")
+                .expect("the mock must write a response head");
+            &self.bytes[head + 4..]
+        }
+    }
 
     /// An OpenAI-style `[DONE]` reply has no `message_stop`, so the client stops
-    /// at that byte and closes. The HTTP tail must already be on the wire.
+    /// at that byte and closes. The HTTP message must be complete before that
+    /// flush, including the empty last-chunk that ends the body.
     #[test]
     fn final_payload_and_http_tail_leave_in_one_write() {
         let reply = Reply::wire("text/event-stream", b"data: [DONE]\n\n");
@@ -642,7 +658,25 @@ mod mock_health {
             peer.closed,
             "the control must close the peer at the semantic terminal"
         );
-        assert!(peer.bytes.ends_with(b"\r\n0\r\n\r\n"));
+        assert_eq!(peer.wire(), b"10\r\ndata: [DONE]\n\n\r\n0\r\n\r\n");
+    }
+
+    /// Unlike a body, an empty reply is read to EOF: the empty last-chunk is
+    /// delivered as the very last fragment, after which the peer may close.
+    #[test]
+    fn empty_reply_ends_with_the_last_chunk_after_the_final_flush() {
+        let reply = Reply::wire("text/event-stream", b"");
+        let mut peer = CloseOnDoneFlush::default();
+        write_reply(&mut peer, &reply).expect("an empty body still ends with a zero chunk");
+        assert!(!peer.closed, "nothing was sent: the control closed early");
+        assert_eq!(peer.wire(), b"0\r\n\r\n");
+
+        let mut closed = CloseOnDoneFlush {
+            closed: true,
+            ..Default::default()
+        };
+        let error = write_reply(&mut closed, &reply).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 
     /// A close before later payload chunks is still a failure.
