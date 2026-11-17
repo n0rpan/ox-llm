@@ -105,16 +105,14 @@ esac
         .status
         .success());
     assert_eq!(
-        (actual, log_for("example/repo") != log_for("example/other")),
-        (
-            vec![
-                "fix_required_ci",
-                "wait_review",
-                "add_removes",
-                "add_removes",
-                "add_removes"
-            ],
-            true
-        )
+        actual,
+        vec![
+            "fix_required_ci",
+            "wait_review",
+            "add_removes",
+            "add_removes",
+            "add_removes"
+        ]
     );
+    assert_ne!(log_for("example/repo"), log_for("example/other"));
 }
