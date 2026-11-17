@@ -2,12 +2,17 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
     FixFindings,
     FixRequiredCi,
     ResolveConflict,
+    AddRemoves,
+    PromoteDraft,
+    Ready,
+    WaitRequiredCi,
+    WaitMergeability,
     WaitReview,
 }
 
@@ -36,6 +41,11 @@ pub struct PullRequest {
     pub findings: bool,
     pub required_ci: RequiredCi,
     pub mergeability: Mergeability,
+    pub body: String,
+    pub removes_source: bool,
+    pub draft: bool,
+    /// Required review policy is satisfied for the PR's own diff, not merely an old head.
+    pub reviewed: bool,
 }
 
 /// The adapter must return the complete open-PR snapshot or fail, never a partial page.
@@ -115,6 +125,22 @@ impl Board {
                 Action::FixRequiredCi
             } else if pr.mergeability == Mergeability::Conflicting {
                 Action::ResolveConflict
+            } else if pr.removes_source
+                && !pr.body.lines().any(|line| {
+                    line.trim()
+                        .strip_prefix("Removes:")
+                        .is_some_and(|note| !note.trim().is_empty())
+                })
+            {
+                Action::AddRemoves
+            } else if pr.required_ci != RequiredCi::Passed {
+                Action::WaitRequiredCi
+            } else if pr.mergeability == Mergeability::Unknown {
+                Action::WaitMergeability
+            } else if pr.draft {
+                Action::PromoteDraft
+            } else if pr.reviewed {
+                Action::Ready
             } else {
                 Action::WaitReview
             };
@@ -123,8 +149,10 @@ impl Board {
                 .filter(|s| s.utc_day >= now / 86_400)
                 .map_or(0, |s| s.attempts);
             let lease = saved.and_then(|s| s.lease.clone());
-            let eligible = action != Action::WaitReview
-                && attempts_today < policy.max_attempts_per_day
+            let eligible = !matches!(
+                action,
+                Action::WaitReview | Action::WaitRequiredCi | Action::WaitMergeability
+            ) && attempts_today < policy.max_attempts_per_day
                 && lease.as_ref().is_none_or(|l| l.expires_at <= now);
             board.entries.push(Entry {
                 number: pr.number,
@@ -136,7 +164,9 @@ impl Board {
                 eligible,
             });
         }
-        board.entries.sort_by_key(|e| (!e.release_pinned, e.number));
+        board
+            .entries
+            .sort_by_key(|e| (!e.release_pinned, e.action, e.number));
         Ok(board)
     }
 }

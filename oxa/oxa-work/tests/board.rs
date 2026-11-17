@@ -21,6 +21,10 @@ fn pr(number: u64) -> PullRequest {
         findings: false,
         required_ci: RequiredCi::Passed,
         mergeability: Mergeability::Mergeable,
+        body: String::new(),
+        removes_source: false,
+        draft: false,
+        reviewed: false,
     }
 }
 
@@ -105,4 +109,94 @@ fn release_priority_lease_expiry_and_daily_attempt_cap() {
     state.get_mut(&9).unwrap().attempts = 3;
     assert!(!board(vec![pinned.clone()], state.clone(), 86_410).entries[0].eligible);
     assert!(board(vec![pinned], state, 172_800).entries[0].eligible);
+}
+
+#[test]
+fn source_removal_needs_a_nonempty_removes_line_before_promotion() {
+    let mut input = pr(1);
+    input.removes_source = true;
+    input.draft = true;
+    for body in ["", "Removes:  ", "prose mentions Removes: old module"] {
+        input.body = body.into();
+        assert_eq!(
+            board(vec![input.clone()], BTreeMap::new(), 0).entries[0].action,
+            Action::AddRemoves
+        );
+    }
+    input.body = "Summary\nRemoves: obsolete module — replaced by the board\n".into();
+    assert_eq!(
+        board(vec![input], BTreeMap::new(), 0).entries[0].action,
+        Action::PromoteDraft
+    );
+}
+
+#[test]
+fn promotion_waiting_and_readiness_require_current_checks_and_mergeability() {
+    let mut input = pr(1);
+    for reviewed in [false, true] {
+        input.reviewed = reviewed;
+        for draft in [false, true] {
+            input.draft = draft;
+            input.required_ci = RequiredCi::Pending;
+            let result = board(vec![input.clone()], BTreeMap::new(), 0);
+            assert_eq!(result.entries[0].action, Action::WaitRequiredCi);
+            assert!(!result.entries[0].eligible);
+            input.required_ci = RequiredCi::Passed;
+            input.mergeability = Mergeability::Unknown;
+            assert_eq!(
+                board(vec![input.clone()], BTreeMap::new(), 0).entries[0].action,
+                Action::WaitMergeability
+            );
+            input.mergeability = Mergeability::Mergeable;
+            let expected = if draft {
+                Action::PromoteDraft
+            } else if reviewed {
+                Action::Ready
+            } else {
+                Action::WaitReview
+            };
+            assert_eq!(
+                board(vec![input.clone()], BTreeMap::new(), 0).entries[0].action,
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn invalid_snapshots_fail_instead_of_dropping_work() {
+    let policy = Policy {
+        enabled: true,
+        ..Policy::default()
+    };
+    for prs in [vec![pr(1), pr(1)], vec![pr(0)]] {
+        let mut github = FakeGitHub { prs, reads: 0 };
+        assert!(Board::read(&mut github, &policy, &BTreeMap::new(), 0).is_err());
+    }
+}
+
+#[test]
+fn github_errors_propagate_without_an_empty_successful_board() {
+    struct Unavailable;
+    impl GitHub for Unavailable {
+        fn open_pull_requests(&mut self) -> oxa_work::Result<Vec<PullRequest>> {
+            Err("synthetic snapshot failure".into())
+        }
+    }
+    let policy = Policy {
+        enabled: true,
+        ..Policy::default()
+    };
+    assert!(Board::read(&mut Unavailable, &policy, &BTreeMap::new(), 0).is_err());
+}
+
+#[test]
+fn action_priority_is_stable_within_release_priority() {
+    let mut findings = pr(9);
+    findings.findings = true;
+    let result = board(vec![pr(1), findings], BTreeMap::new(), 0);
+    assert_eq!(result.entries[0].number, 9);
+    let json = serde_json::to_string(&result).unwrap();
+    let restored: Board = serde_json::from_str(&json).unwrap();
+    assert_eq!(restored.entries[0].action, Action::FixFindings);
 }
