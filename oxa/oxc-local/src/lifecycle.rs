@@ -404,7 +404,7 @@ impl Lifecycle {
             let gated = self.supervisor.as_ref().is_some_and(Supervisor::gated);
             let ready = self.supervisor.as_mut().unwrap().await_gate();
             match ready
-                .and_then(|()| platform.attach(pid, gated))
+                .and_then(|()| platform.attach(pid, gated, self.supervisor.as_ref().unwrap().deadline))
                 .and_then(|attached| {
                     crate::platform::no_swap(attached.sample)?;
                     Ok(attached)

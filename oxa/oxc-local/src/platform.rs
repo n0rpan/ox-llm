@@ -2,7 +2,7 @@
 use crate::lifecycle::MemorySample;
 #[cfg(target_os = "linux")]
 use crate::memory::MemorySource;
-use std::{fmt, io};
+use std::{fmt, io, time::Instant};
 
 /// Attach an already owned child and validate its platform memory policy before readiness.
 /// macOS supplies a separate implementation; Linux cgroup rules are not portable.
@@ -10,7 +10,7 @@ pub trait PlatformLauncher: Send + Sync {
     fn requires_scope(&self) -> io::Result<bool> {
         Ok(false)
     }
-    fn attach(&self, pid: u32, gated: bool) -> io::Result<Attachment>;
+    fn attach(&self, pid: u32, gated: bool, deadline: Instant) -> io::Result<Attachment>;
 }
 #[derive(Debug)]
 pub struct Attachment {
@@ -82,6 +82,7 @@ impl LinuxLauncher {
         &self,
         pid: u32,
         gated: bool,
+        _deadline: Instant,
         start: impl FnOnce(u32, &str) -> io::Result<()>,
     ) -> io::Result<Attachment> {
         if !gated {
@@ -121,8 +122,8 @@ impl PlatformLauncher for LinuxLauncher {
             .map(|s| no_swap(s).is_err())
             .map_err(|_| refused("caller cgroup v2 no-swap policy readable"))
     }
-    fn attach(&self, pid: u32, gated: bool) -> io::Result<Attachment> {
-        self.attach_with(pid, gated, |pid, unit| {
+    fn attach(&self, pid: u32, gated: bool, deadline: Instant) -> io::Result<Attachment> {
+        self.attach_with(pid, gated, deadline, |pid, unit| {
             use zbus::zvariant::Value;
             let bus = user_bus()?;
             let properties = scope_properties(pid);
@@ -240,6 +241,19 @@ mod tests {
         (env, LinuxLauncher(source))
     }
     #[test]
+    fn expired_startup_deadline_refuses_before_direct_or_scope_attachment() {
+        let (_env, launcher) = fixture(true);
+        let past = Instant::now() - std::time::Duration::from_secs(1);
+        for gated in [false, true] {
+            let error = launcher
+                .attach_with(42, gated, past, |_, _| {
+                    panic!("expired startup must not invoke the user manager")
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("startup deadline"));
+        }
+    }
+    #[test]
     fn delegation_remediation_keeps_all_controllers_in_one_shell_argument() {
         let message = refused("child controller delegation").to_string();
         assert!(message.contains("\"Delegate=cpu memory pids\""), "{message}");
@@ -262,11 +276,21 @@ mod tests {
         let (env, launcher) = fixture(true);
         assert!(!launcher.requires_scope().unwrap());
         assert!(launcher
-            .attach_with(42, false, |_, _| panic!("must not need user bus"))
+            .attach_with(
+                42,
+                false,
+                Instant::now() + std::time::Duration::from_secs(3),
+                |_, _| panic!("must not need user bus")
+            )
             .is_ok());
         env.write("work/cgroup/child/memory.swap.max", "max");
         let error = launcher
-            .attach_with(42, false, |_, _| panic!("inherited path"))
+            .attach_with(
+                42,
+                false,
+                Instant::now() + std::time::Duration::from_secs(3),
+                |_, _| panic!("inherited path"),
+            )
             .unwrap_err();
         assert!(error.to_string().contains("engine child memory.swap.max == 0"));
     }
@@ -274,16 +298,21 @@ mod tests {
     fn scope_attachment_uses_new_child_group_and_new_baseline() {
         let (env, launcher) = fixture(false);
         let sample = launcher
-            .attach_with(42, true, |pid, unit| {
-                assert_eq!(pid, 42);
-                assert!(unit.starts_with("oxa-local-") && unit.ends_with(".scope"));
-                std::fs::rename(
-                    env.work().join("cgroup/child"),
-                    env.work().join("cgroup").join(unit),
-                )?;
-                env.write("work/proc/42/cgroup", &format!("0::/{unit}\n"));
-                Ok(())
-            })
+            .attach_with(
+                42,
+                true,
+                Instant::now() + std::time::Duration::from_secs(3),
+                |pid, unit| {
+                    assert_eq!(pid, 42);
+                    assert!(unit.starts_with("oxa-local-") && unit.ends_with(".scope"));
+                    std::fs::rename(
+                        env.work().join("cgroup/child"),
+                        env.work().join("cgroup").join(unit),
+                    )?;
+                    env.write("work/proc/42/cgroup", &format!("0::/{unit}\n"));
+                    Ok(())
+                },
+            )
             .unwrap();
         assert!(sample.sample.swap_limit_zero);
         assert!(sample.scope.unwrap().ends_with(".scope"));
@@ -294,7 +323,12 @@ mod tests {
         for manager in [false, true] {
             let (_env, launcher) = fixture(false);
             let error = launcher
-                .attach_with(42, true, |_, _| Err(bus_unavailable(manager)))
+                .attach_with(
+                    42,
+                    true,
+                    Instant::now() + std::time::Duration::from_secs(3),
+                    |_, _| Err(bus_unavailable(manager)),
+                )
                 .unwrap_err();
             let message = error.to_string();
             assert!(message.contains("StartTransientUnit(MemorySwapMax=0)"));
