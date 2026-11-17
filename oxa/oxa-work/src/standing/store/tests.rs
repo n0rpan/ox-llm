@@ -295,7 +295,14 @@ fn verify_refuses_released_and_retired_rules() {
     }
     let read = standing.read().unwrap();
     assert_eq!(read.revision, 4);
-    for entry in read.entries.iter().filter(|entry| !entry.is_live()) {
+    // The refused verification leaves the released and retired records as stored; only the
+    // records they supersede carry `Superseded`.
+    for refused in [&released.id, &retired.id] {
+        let entry = read
+            .entries
+            .iter()
+            .find(|entry| &entry.id == refused)
+            .expect("refused entry is still recorded");
         assert_eq!(entry.state, EntryState::Stored);
     }
 }
