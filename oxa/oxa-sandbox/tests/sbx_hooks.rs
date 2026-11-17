@@ -847,3 +847,44 @@ fn real_worktree_cannot_change_its_commondir_or_gitdir() {
     let log = git(&main, &env, &["log", "--format=%s", "feature"]);
     assert_eq!(String::from_utf8_lossy(&log.stdout), "outside\ninside\ninit\n");
 }
+
+/// #995: a `post-commit` hook that logs to the hardcoded cache path `$HOME/.cache` (not
+/// `$XDG_CACHE_HOME`) runs inside the sandbox's `git commit` and writes into the session's own
+/// cache directory: the commit lands, the log stays the session's, and the host's cache home is
+/// never written. `$HOME` itself is still read-only for anything else (the control).
+#[test]
+fn real_post_commit_hook_logs_to_the_session_cache_home() {
+    let env = TestEnv::new();
+    let repo = env.work().join("logged");
+    init_repo(&repo, &env);
+    let hook = repo.join(".git/hooks/post-commit");
+    file(
+        &hook,
+        "#!/bin/sh\nmkdir -p \"$HOME/.cache\" && echo committed >> \"$HOME/.cache/post-commit.log\"\n",
+    );
+    fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).expect("chmod");
+    let Some(mut b) = sandbox(&env, &repo) else { return };
+    // The process sandbox has no session; a session binds its own `$HOME/.cache` (#995).
+    b.layout.scratch_root = Some(oxa_sandbox::scratch_root(&env.home()));
+    let sb = b.session();
+    let session_dir = fs::read_dir(oxa_sandbox::scratch_root(&env.home()))
+        .expect("session directories")
+        .flatten()
+        .next()
+        .expect("the session directory")
+        .path();
+    let log = session_dir.join(".cache-home/post-commit.log");
+    let (exit, out) = run(&sb, "git commit -q --allow-empty -m logged", &repo, true);
+    assert_eq!(exit, Some(0), "{out}");
+    assert_eq!(
+        fs::read_to_string(&log).expect("the hook log in the session"),
+        "committed\n"
+    );
+    assert!(!env.home().join(".cache/post-commit.log").exists());
+    let subject = git(&repo, &env, &["log", "-1", "--format=%s"]);
+    assert_eq!(String::from_utf8_lossy(&subject.stdout).trim(), "logged");
+    // Control: the home itself stays read-only, only the cache directory is the session's.
+    let (exit, out) = run(&sb, "touch \"$HOME/elsewhere\"", &repo, true);
+    assert_ne!(exit, Some(0), "{out}");
+    assert!(!env.home().join("elsewhere").exists());
+}

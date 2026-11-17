@@ -1158,6 +1158,78 @@ fn user_cache_home_keeps_its_read_write_caches() {
     assert_eq!(l.cache_home, home.join(".cache"));
 }
 
+/// A `Bwrap` for `layout` with a session directory ([`Bwrap::session`]): the argv then carries
+/// the session's `/tmp` and `$HOME/.cache` binds.
+fn session_layout(layout: &Layout, env: &TestEnv) -> Bwrap {
+    let b = Bwrap {
+        bwrap: PathBuf::from("/usr/bin/bwrap"),
+        home: env.home(),
+        layout: Layout {
+            scratch_root: Some(oxa_sandbox::scratch_root(&env.home())),
+            ..layout.clone()
+        },
+    };
+    b.session()
+}
+
+/// The `--bind <session cache> <home>/.cache` position in `args`, if any.
+fn session_cache_bind(args: &[String], cache: &Path) -> Option<usize> {
+    let cache = cache.display().to_string();
+    args.windows(3)
+        .position(|w| w[0] == "--bind" && w[1].ends_with(".cache-home") && w[2] == cache)
+}
+
+/// #995: `$HOME/.cache` is the cache path tools hardcode (a git post-commit hook's log,
+/// `CARGO_TARGET_DIR=$HOME/.cache/...`), and it stays the read-only home tmpfs without a
+/// session. A session binds its own directory there, before the read-write package caches under
+/// it (which stay shared), and leaves it out when the workspace or a user bind already sets it.
+#[test]
+fn a_session_binds_its_own_home_cache_before_the_shared_caches() {
+    let env = TestEnv::new();
+    let home = env.home();
+    std::fs::create_dir_all(home.join(".cache/pip")).unwrap();
+    let cache = home.canonicalize().unwrap().join(".cache");
+    // The process sandbox (no session directory): unchanged, the read-only home tmpfs shows.
+    let a = bwrap_args_with(&spec("true", &env.work(), true), &home, &machine(&env));
+    assert!(session_cache_bind(&a, &cache).is_none(), "{a:?}");
+    // A session: its own directory at `$HOME/.cache`, before the shared pip cache bind.
+    let b = session_layout(&machine(&env), &env);
+    let a = bwrap_args_with(&spec("true", &env.work(), true), &home, &b.layout);
+    let at = session_cache_bind(&a, &cache).expect("the session's own $HOME/.cache");
+    let pip = a
+        .windows(3)
+        .position(|w| w[0] == "--bind" && w[2] == home.join(".cache/pip").display().to_string())
+        .expect("the shared pip cache");
+    assert!(at < pip, "{a:?}");
+    // The bound source is the session directory's own empty cache directory.
+    let source = b.layout.scratch.as_ref().unwrap().home_cache_dir();
+    assert!(a[at + 1] == source.display().to_string(), "{a:?}");
+    assert!(source.is_dir());
+    // A workspace inside the cache home keeps the workspace bind.
+    for cwd in [home.join(".cache/pip"), home.join(".cache")] {
+        let a = bwrap_args_with(&spec("true", &cwd, true), &home, &b.layout);
+        assert!(session_cache_bind(&a, &cache).is_none(), "{cwd:?}: {a:?}");
+    }
+    // A cwd at or above `$HOME` covers the home tmpfs with its own bind; the cache path is a
+    // mount point there too (the session directory lives under it), so the bind still works.
+    for cwd in [home.clone(), home.parent().unwrap().to_path_buf()] {
+        let a = bwrap_args_with(&spec("true", &cwd, true), &home, &b.layout);
+        assert!(session_cache_bind(&a, &cache).is_some(), "{cwd:?}: {a:?}");
+    }
+    // A user setting that binds the cache home keeps its own access, read-only or writable.
+    for (read, write) in [(true, false), (false, true)] {
+        let mut l = machine(&env);
+        if read {
+            l.read.push(home.join(".cache"));
+        } else {
+            l.write.push(home.join(".cache"));
+        }
+        let b = session_layout(&l, &env);
+        let a = bwrap_args_with(&spec("true", &env.work(), true), &home, &b.layout);
+        assert!(session_cache_bind(&a, &cache).is_none(), "a user bind: {a:?}");
+    }
+}
+
 /// #457 review: each session of one `Bwrap` gets its own directory at `/tmp`, removed when
 /// that session's sandbox is dropped; the process sandbox keeps a per-command tmpfs. When no
 /// directory can be made, the session falls back to the tmpfs and its notice says so.

@@ -196,6 +196,45 @@ fn cache_home_is_writable_and_shared_caches_stay_shared() {
     }
 }
 
+/// #995: the cache path tools hardcode is `$HOME/.cache`, not `$XDG_CACHE_HOME`. The host cache
+/// home is read-only inside a session, so a helper (a git hook's log, `$CARGO_TARGET_DIR` under
+/// it) writing there fails on the read-only home. The session binds its own empty directory
+/// there: the write works, lands in the session directory and is deleted with it, a shared
+/// package cache under `$HOME/.cache` stays the user's, and the scratch root (other sessions)
+/// is not exposed through it.
+#[test]
+fn the_hardcoded_home_cache_is_writable_in_the_session() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(home_file(&env, ".cache/sccache")).unwrap();
+    let Some((sb, dir)) = session(&env) else {
+        return;
+    };
+    let (exit, out) = run(
+        &sb,
+        &env.work(),
+        "mkdir -p \"$HOME/.cache/build\" && echo built > \"$HOME/.cache/build/out\" \
+         && touch \"$HOME/.cache/sccache/shared\" && echo written",
+        true,
+        false,
+    );
+    assert_ok(exit, &out, "hardcoded $HOME/.cache");
+    assert!(out.contains("written"), "{out}");
+    // The writes are the session's; on the host only the shared package cache was written.
+    assert!(dir.join(".cache-home/build/out").is_file(), "{dir:?}");
+    assert!(!home_file(&env, ".cache/build").exists());
+    assert!(home_file(&env, ".cache/sccache/shared").exists());
+    // Other sessions' directories are not shown through the cache home.
+    let (exit, out) = run(
+        &sb,
+        &env.work(),
+        "test ! -e \"$HOME/.cache/oxa\" && echo absent",
+        true,
+        false,
+    );
+    assert_ok(exit, &out, "scratch root");
+    assert!(out.contains("absent"), "{out}");
+}
+
 /// #530 / PR #539: custom cache paths must not expose other checkouts, but builds must
 /// still get a writable cache (also on a fresh home, for wrappers with any name).
 #[test]
