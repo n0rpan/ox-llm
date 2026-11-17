@@ -718,6 +718,162 @@ fn native_local_release_pair(binary: &Path, engine: &Path, missing_weights: bool
     println!("PASS exact release native model-free control: missing_weights={missing_weights}; no Python/controller; not real-model qualification");
 }
 
+struct ScopeTrace {
+    root: u32,
+    engines: std::collections::BTreeSet<u32>,
+    gates: std::collections::BTreeSet<u32>,
+    pids: std::collections::BTreeSet<u32>,
+}
+
+// The literal kernel image reference is allowed only for a fork descendant
+// inheriting the verified agent image, before that PID attempts engine exec.
+// Tracing execveat closes the alternative-image path; no general /proc rule.
+fn audit_scope_trace(text: &str, binary: &Path, engine: &Path) -> Result<ScopeTrace, &'static str> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut parents = BTreeMap::new();
+    let mut pending = BTreeMap::new();
+    let mut attempts = Vec::new();
+    let mut success = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let Some(offset) = line.find(char::is_whitespace) else {
+            continue;
+        };
+        let body = line[offset..].trim_start();
+        let pid = || line[..offset].parse::<u32>().map_err(|_| "missing traced PID");
+        if body.starts_with("execveat(") || body.starts_with("<... execveat resumed>") {
+            return Err("unexpected execveat image change");
+        }
+        if let Some(args) = body.strip_prefix("execve(\"") {
+            let path = PathBuf::from(args.split('"').next().ok_or("missing exec path")?);
+            if path != binary && path != engine && path != Path::new("/proc/self/exe") {
+                return Err("unexpected executable image");
+            }
+            let pid = pid()?;
+            attempts.push((pid, path.clone(), index));
+            if body.ends_with("= 0") {
+                success.push((pid, path, index));
+            } else if body.contains("<unfinished ...>") {
+                if pending.insert(pid, (path, index)).is_some() {
+                    return Err("overlapping exec records");
+                }
+            }
+        } else if body.starts_with("<... execve resumed>") {
+            let pid = pid()?;
+            let (path, index) = pending.remove(&pid).ok_or("unbound resumed exec")?;
+            if body.ends_with("= 0") {
+                success.push((pid, path, index));
+            }
+        } else if ["clone", "clone3", "fork", "vfork"].iter().any(|call| {
+            body.starts_with(&format!("{call}(")) || body.starts_with(&format!("<... {call} resumed>"))
+        }) {
+            if let Some(child) = body.rsplit(" = ").next().and_then(|s| s.parse::<u32>().ok()) {
+                if child > 0 {
+                    let parent = pid()?;
+                    if parents.insert(child, parent).is_some_and(|old| old != parent) {
+                        return Err("ambiguous child lineage");
+                    }
+                }
+            }
+        }
+    }
+    if !pending.is_empty() {
+        return Err("unfinished exec record");
+    }
+    let (root, _, root_index) = success
+        .iter()
+        .find(|(_, path, _)| path == binary)
+        .ok_or("exact agent must execute")?;
+    for (pid, path, index) in &attempts {
+        if path != Path::new("/proc/self/exe") {
+            continue;
+        }
+        if pid == root || index <= root_index {
+            return Err("image gate must be an owned child");
+        }
+        let mut at = *pid;
+        let mut seen = BTreeSet::new();
+        loop {
+            if !seen.insert(at) {
+                return Err("cyclic image lineage");
+            }
+            if attempts
+                .iter()
+                .any(|(owner, image, when)| *owner == at && image == engine && (at != *pid || when <= index))
+            {
+                return Err("image gate did not inherit the agent image");
+            }
+            if at == *root {
+                break;
+            }
+            at = *parents.get(&at).ok_or("unbound image-gate child")?;
+        }
+    }
+    Ok(ScopeTrace {
+        root: *root,
+        engines: success
+            .iter()
+            .filter(|(_, path, _)| path == engine)
+            .map(|(pid, _, _)| *pid)
+            .collect(),
+        gates: success
+            .iter()
+            .filter(|(_, path, _)| path == Path::new("/proc/self/exe"))
+            .map(|(pid, _, _)| *pid)
+            .collect(),
+        pids: success
+            .iter()
+            .map(|(pid, _, _)| *pid)
+            .chain(parents.keys().copied())
+            .collect(),
+    })
+}
+
+#[test]
+fn image_gate_trace_requires_selected_image_lineage() {
+    let binary = Path::new("/artifact/oxa");
+    let engine = Path::new("/artifact/oxe-server");
+    let trace = concat!(
+        "10 execve(\"/artifact/oxa\", [], []) = 0\n",
+        "10 clone3({flags=CLONE_THREAD}, 88) = 11\n",
+        "11 clone(child_stack=NULL, flags=0 <unfinished ...>\n",
+        "12 execve(\"/proc/self/exe\", [], []) = 0\n",
+        "11 <... clone resumed>) = 12\n",
+        "12 execve(\"/artifact/oxe-server\", [], []) = 0\n",
+    );
+    let checked = audit_scope_trace(trace, binary, engine).unwrap();
+    assert_eq!(checked.root, 10);
+    assert_eq!(checked.gates.into_iter().collect::<Vec<_>>(), [12]);
+    assert_eq!(checked.engines.into_iter().collect::<Vec<_>>(), [12]);
+    for bad in [
+        trace.replace("11 <... clone resumed>) = 12\n", ""),
+        trace.replace("/proc/self/exe", "/proc/10/exe"),
+        trace.replace("/proc/self/exe", "/proc/self/fd/3"),
+        trace.replace("10 clone3(", "12 clone3("),
+        trace.replace(
+            "10 clone3(",
+            "10 execve(\"/artifact/oxe-server\", [], []) = 0\n10 clone3(",
+        ),
+        trace.replace("12 execve(\"/proc/self/exe\"", "10 execve(\"/proc/self/exe\""),
+        format!("{trace}12 execve(\"/unapproved/image\", [], []) = -1 ENOENT\n"),
+        format!("{trace}12 execveat(3, \"\", [], [], AT_EMPTY_PATH) = 0\n"),
+        format!("{trace}12 execve(\"/proc/self/exe\", [], []) = 0\n"),
+        format!("{trace}13 execve(\"/artifact/oxa\", [], [] <unfinished ...>\n"),
+    ] {
+        assert!(
+            audit_scope_trace(&bad, binary, engine).is_err(),
+            "unbound image accepted"
+        );
+    }
+    let resumed = trace.replace(
+        "12 execve(\"/artifact/oxe-server\", [], []) = 0",
+        "12 execve(\"/artifact/oxe-server\", [], [] <unfinished ...>\n12 <... execve resumed>) = 0",
+    );
+    assert!(audit_scope_trace(&resumed, binary, engine)
+        .unwrap()
+        .engines
+        .contains(&12));
+}
+
 // Prepared proof-only helper for composition with the published child sampler.
 // Existing exact artifact verification and calibrated traps remain the caller's.
 fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
@@ -762,7 +918,7 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
     let trace = env.tmp().join("scope.trace");
     let mut child = TracedChild(
         Command::new(required_tracer())
-            .args(["--kill-on-exit", "-f", "-e", "trace=execve,connect", "-o"])
+            .args(["--kill-on-exit", "-f", "-e", "trace=%process,connect", "-o"])
             .arg(&trace)
             .arg(binary)
             .args(["--mode", "rpc", "--offline", "--no-tools", "--model", "synthetic"])
@@ -784,16 +940,9 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
     let mut observed = None;
     loop {
         let text = fs::read_to_string(&trace).unwrap_or_default();
-        let oxa_pid = text.lines().find_map(|line| {
-            (line.contains(&format!("execve(\"{}\"", binary.display())) && line.ends_with("= 0"))
-                .then(|| line.split_whitespace().next()?.parse::<u32>().ok())
-                .flatten()
-        });
-        let pid = text.lines().find_map(|line| {
-            (line.contains(&format!("execve(\"{}\"", engine.display())) && line.ends_with("= 0"))
-                .then(|| line.split_whitespace().next()?.parse::<u32>().ok())
-                .flatten()
-        });
+        let checked = audit_scope_trace(&text, binary, engine).ok();
+        let oxa_pid = checked.as_ref().map(|t| t.root);
+        let pid = checked.as_ref().and_then(|t| t.engines.first().copied());
         if let Some(pid) = pid {
             if let Ok(membership) = fs::read_to_string(format!("/proc/{pid}/cgroup")) {
                 if let Some(relative) = membership.lines().find_map(|s| s.strip_prefix("0::/")) {
@@ -880,6 +1029,7 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
         assert!(Instant::now() < deadline, "RPC cleanup timed out");
         std::thread::sleep(Duration::from_millis(20));
     };
+    let observed_pid = observed.as_ref().map(|(pid, _)| *pid);
     if !absent_bus {
         assert!(status.success(), "{}", fs::read_to_string(&stderr).unwrap());
         let (pid, path) = observed.expect("real scope is mandatory");
@@ -902,32 +1052,17 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
         assert!(!status.success(), "absent user bus must return nonzero");
     }
     let text = fs::read_to_string(&trace).unwrap();
-    let mut executed = std::collections::BTreeSet::new();
-    let mut subject_pids = std::collections::BTreeSet::new();
-    for line in text
-        .lines()
-        .filter(|s| s.contains("execve(\"") && s.ends_with("= 0"))
-    {
-        let path = line.split("execve(\"").nth(1).unwrap().split('"').next().unwrap();
-        assert!(
-            Path::new(path) == binary || Path::new(path) == engine,
-            "unexpected scoped child executable"
-        );
-        executed.insert(PathBuf::from(path));
-        let pid: u32 = line
-            .split_whitespace()
-            .next()
-            .unwrap()
-            .parse()
-            .expect("successful subject exec must identify its owned PID");
-        subject_pids.insert(pid);
-    }
-    assert!(executed.contains(binary));
+    let checked = audit_scope_trace(&text, binary, engine).expect("selected-image trace must verify");
     if !absent_bus {
-        assert!(executed.contains(engine));
+        let pid = observed_pid.expect("owned scope child PID");
+        assert!(checked.engines.contains(&pid), "exact engine must execute");
+        assert!(
+            checked.gates.contains(&pid),
+            "owned engine must use the selected-image gate"
+        );
     } else {
         assert!(
-            !executed.contains(engine),
+            checked.engines.is_empty(),
             "absent bus must refuse before engine exec"
         );
         assert!(
@@ -935,7 +1070,7 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
             "absent bus must not attempt engine exec"
         );
     }
-    for pid in subject_pids {
+    for pid in checked.pids {
         assert!(
             !Path::new(&format!("/proc/{pid}")).exists(),
             "owned subject/gated child survived RPC exit"

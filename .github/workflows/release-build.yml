@@ -416,7 +416,7 @@ jobs:
               OXA_TEST_RELEASE_OXE_SERVER="$engine" OXA_TEST_RELEASE_OXE_SERVER_SHA256="$engine_sha" \
               "$PROOF_INPUTS/no-python-proof" --nocapture 2>&1 | tee -a "$receipt"
           done
-          (cd scope-receipts && sha256sum -- *.txt > SHA256SUMS)
+          (cd "$GITHUB_WORKSPACE/scope-receipts" && sha256sum -- *.txt > SHA256SUMS)
       - name: Remove only this job's copied proof inputs
         if: always()
         run: |
