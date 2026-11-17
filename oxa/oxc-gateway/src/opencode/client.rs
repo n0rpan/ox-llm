@@ -88,10 +88,16 @@ pub async fn models(
             .header(AUTHORIZATION, bearer(key)?);
         let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|Error::Transport)?, };
         let status = response.status().as_u16();
+        // Reuse the existing duplicate-rejecting numeric parser. Native retry
+        // policy bounds the resulting delay further; overflow is not a delay.
+        let retry_after = crate::rate_limits::retry_after(response.headers())
+            .and_then(|delay| u32::try_from(delay.as_secs()).ok());
         let bytes = bounded(response, MAX_DISCOVERY, cancel).await?;
         if status != 200 {
             let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-            return Err(Error::Refused(super::refusal(status, &value)));
+            return Err(Error::Refused(
+                super::refusal(status, &value).with_retry_after(retry_after),
+            ));
         }
         let mut value: Value =
             serde_json::from_slice(&bytes).map_err(|_| Error::Discovery(super::DiscoveryProblem::Json))?;
@@ -154,10 +160,16 @@ where
         .body(body);
     let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|Error::Transport)?, };
     let status = response.status().as_u16();
+    // Reuse the existing duplicate-rejecting numeric parser. Native retry
+    // policy bounds the resulting delay further; overflow is not a delay.
+    let retry_after = crate::rate_limits::retry_after(response.headers())
+        .and_then(|delay| u32::try_from(delay.as_secs()).ok());
     if status != 200 {
         let bytes = bounded(response, 64 * 1024, cancel).await?;
         let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
-        return Err(Error::Refused(super::refusal(status, &value)));
+        return Err(Error::Refused(
+            super::refusal(status, &value).with_retry_after(retry_after),
+        ));
     }
     if !response
         .headers()

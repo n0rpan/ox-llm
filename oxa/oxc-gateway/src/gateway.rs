@@ -77,13 +77,25 @@ impl Error {
             },
         }
     }
+    pub fn retry_after(&self) -> Option<u32> {
+        match self {
+            Self::OpenCode(crate::opencode::client::Error::Refused(
+                crate::opencode::Refusal::RateLimited { retry_after },
+            )) => *retry_after,
+            _ => None,
+        }
+    }
     pub fn body(&self) -> Value {
         self.refusal().body()
     }
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.refusal().message)
+        f.write_str(self.refusal().message)?;
+        if let Some(seconds) = self.retry_after() {
+            write!(f, " (retry after {seconds} s)")?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for Error {}
@@ -316,7 +328,20 @@ impl Gateway {
                 } else {
                     Outcome::Failed
                 };
-                (outcome, refusal.status, Some(refusal.code))
+                // The ledger's clean-refusal guard requires the actual 4xx.
+                // Go auth is intentionally public503, but upstream401 is known
+                // before generation; do not poison accounting with public503.
+                let status = if matches!(
+                    error,
+                    Error::OpenCode(crate::opencode::client::Error::Refused(
+                        crate::opencode::Refusal::Unauthenticated
+                    ))
+                ) {
+                    401
+                } else {
+                    refusal.status
+                };
+                (outcome, status, Some(refusal.code))
             }
         };
         let pending = match (&result, history) {
@@ -484,10 +509,10 @@ fn go_refusal(error: crate::opencode::client::Error) -> Refusal {
             "region_blocked",
             "This Go model is blocked by the workspace region policy.",
         ),
-        E::Refused(R::LimitReached) => (
+        E::Refused(R::RateLimited { .. }) => (
             429,
-            "subscription_limit_reached",
-            "The Go subscription limit was reached; no paid fallback was attempted.",
+            "cloud_rate_limited",
+            "The Go model is rate limited; the request can be retried.",
         ),
         E::Refused(R::Unauthenticated) => (
             503,
