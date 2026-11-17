@@ -1141,3 +1141,68 @@ fn print_retains_completed_reply_when_wrap_up_arrives_at_settlement() {
         }
     }
 }
+
+/// A real before-settle append starts another run: its prior completed reply is progress.
+#[test]
+fn print_keeps_intermediate_reply_when_before_settle_appends_another_run() {
+    use oxa_proto::{CommandSpec, HookPoint, HookReply, Hooks, Tool, Ui};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[derive(Default)]
+    struct AppendOnce(AtomicBool);
+    impl Hooks for AppendOnce {
+        fn fire(&self, point: HookPoint, _: &Value, _: &mut dyn Ui) -> HookReply {
+            if point == HookPoint::AgentBeforeSettle && !self.0.swap(true, Ordering::SeqCst) {
+                return HookReply::Append(vec![WireMsg::user("Synthetic added work")]);
+            }
+            HookReply::Continue
+        }
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            Vec::new()
+        }
+        fn commands(&self) -> Vec<CommandSpec> {
+            Vec::new()
+        }
+        fn run_command(&self, _: &str, _: &str, _: &mut dyn Ui) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn prompt_sections(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+    }
+    for later_prompt in [false, true] {
+        let env = TestEnv::new();
+        let mut turns = vec![
+            ScriptTurn::text("before-settle reply"),
+            ScriptTurn::text("hook-added reply"),
+        ];
+        if later_prompt {
+            turns.push(ScriptTurn::text("last-prompt reply"));
+        }
+        let engine = Arc::new(ScriptedEngine::new(turns));
+        let mut session = open_with_hooks(&env, &engine, vec![Arc::new(AppendOnce::default())]);
+        let mut prompts = vec![("first".into(), Vec::new())];
+        if later_prompt {
+            prompts.push(("last".into(), Vec::new()));
+        }
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let outcome = oxa_rpc::run_print_outcome(&mut session, prompts, &mut out, &mut err).unwrap();
+        assert_eq!(outcome, oxa_core::RunOutcome::Done);
+        assert_eq!(engine.requests().len(), if later_prompt { 3 } else { 2 });
+        let progress = String::from_utf8(err).unwrap();
+        assert_eq!(
+            progress.matches("before-settle reply\n").count(),
+            1,
+            "completed intermediate reply must not disappear"
+        );
+        if later_prompt {
+            assert_eq!(progress.matches("hook-added reply\n").count(), 1);
+            assert!(
+                progress.find("before-settle reply").unwrap() < progress.find("hook-added reply").unwrap()
+            );
+            assert_eq!(out, b"last-prompt reply\n");
+        } else {
+            assert!(!progress.contains("hook-added reply"));
+            assert_eq!(out, b"hook-added reply\n");
+        }
+    }
+}
