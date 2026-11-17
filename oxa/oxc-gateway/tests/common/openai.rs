@@ -51,6 +51,12 @@ pub struct Reply {
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
+    /// Bounded replies for clients that reject the response at its headers.
+    #[allow(dead_code)] // Only header-refusal controls opt in.
+    pub fn buffer_header_refusal(self) -> Self {
+        assert!(self.bytes.len() <= 1024 && !self.truncate_transfer);
+        self
+    }
     #[allow(dead_code)] // Shared fixture constructor; not every consumer refreshes tokens.
     pub fn json(value: Value) -> Self {
         Self {
