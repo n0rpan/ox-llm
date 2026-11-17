@@ -1,6 +1,6 @@
 //! Durable reservations only; execution and GitHub writes are outside this API.
 use super::{valid_worker_id, Action, AttemptState, Entry, Lease, Policy};
-use crate::Result;
+use crate::{facts_io, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -36,13 +36,14 @@ pub struct Claims {
 
 impl Claims {
     pub fn open(root: &Path) -> Result<Self> {
-        // SAFETY: geteuid has no arguments or preconditions.
-        Self::open_for_owner(root, unsafe { libc::geteuid() })
+        Self::open_for_owner(root, facts_io::effective_uid())
     }
 
-    fn open_for_owner(root: &Path, _expected_owner: u32) -> Result<Self> {
+    fn open_for_owner(root: &Path, expected_owner: u32) -> Result<Self> {
         let metadata = io(fs::symlink_metadata(root))?;
-        if !metadata.is_dir() || metadata.mode() & 0o077 != 0 || io(root.canonicalize())? != root {
+        if facts_io::private_for_owner(&metadata, true, expected_owner).is_err()
+            || io(root.canonicalize())? != root
+        {
             return Err("board claims require a canonical private directory".into());
         }
         Ok(Self {

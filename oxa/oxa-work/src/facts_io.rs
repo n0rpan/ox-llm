@@ -10,8 +10,15 @@ fn io<T>(result: std::io::Result<T>, what: &str) -> Result<T> {
     result.map_err(|error| format!("{what}: {:?}", error.kind()))
 }
 fn private(metadata: &fs::Metadata, directory: bool) -> Result<()> {
+    private_for_owner(metadata, directory, effective_uid())
+}
+
+pub(crate) fn effective_uid() -> u32 {
     // SAFETY: geteuid has no arguments, pointers or failure mode.
-    let uid = unsafe { libc::geteuid() };
+    unsafe { libc::geteuid() }
+}
+
+pub(crate) fn private_for_owner(metadata: &fs::Metadata, directory: bool, uid: u32) -> Result<()> {
     if metadata.uid() != uid
         || metadata.mode() & 0o077 != 0
         || if directory {
