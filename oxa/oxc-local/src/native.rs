@@ -310,10 +310,10 @@ impl Engine for LocalEngine {
             images: model.images,
         })
     }
-    fn local_memory_policy(&self, model: &str) -> Option<&'static str> {
+    fn local_memory_status(&self, model: &str) -> Option<(u32, &'static str)> {
         let status = self.status();
         (model.is_empty() || status.model.as_deref() == Some(model))
-            .then_some(status.memory_policy)
+            .then_some(status.pid.zip(status.memory_policy))
             .flatten()
     }
     fn count_tokens(&self, _text: &str) -> Result<u32, OxaError> {
@@ -814,8 +814,11 @@ mod tests {
                 assert!(engine.gate.try_acquire().is_err()); // unloaded, not a stale ready permit
             } else {
                 result.unwrap();
-                assert_eq!(engine.local_memory_policy("fake-model"), Some("scope"));
-                assert_eq!(engine.local_memory_policy("other-model"), None);
+                assert_eq!(
+                    engine.local_memory_status("fake-model"),
+                    Some((scope.pid.load(Ordering::Acquire), "scope"))
+                );
+                assert_eq!(engine.local_memory_status("other-model"), None);
                 engine
                     .inner
                     .state
@@ -828,6 +831,7 @@ mod tests {
                 until(&engine, State::Stopped);
             }
             assert_eq!(engine.status().pid, None);
+            assert_eq!(engine.local_memory_status("fake-model"), None);
             assert!(wait_operation(&engine.gate, &CancelToken::new()).is_ok());
             assert!(!PathBuf::from(format!("/proc/{}", scope.pid.load(Ordering::Acquire))).exists());
         }

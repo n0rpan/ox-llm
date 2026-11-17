@@ -194,8 +194,9 @@ impl StatusWriter {
             record["last_billing"] = billing.record();
         }
         if let Some(engine) = self.local_policy.as_ref() {
-            if let Some(policy) = engine.upgrade().and_then(|e| e.local_memory_policy("")) {
+            if let Some((pid, policy)) = engine.upgrade().and_then(|e| e.local_memory_status("")) {
                 record["local_memory_policy"] = policy.into();
+                record["local_engine_pid"] = pid.into();
             }
         }
         let bytes = serde_json::to_vec(&record)?;
@@ -419,6 +420,37 @@ pub(crate) fn run(
             codes::INVALID,
             "worker status does not match this session/version",
         ));
+    }
+    if let Some(child) = value["local_engine_pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+    {
+        let parent = value["pid"].as_u64();
+        let owned = fs::read_to_string(format!("/proc/{child}/stat"))
+            .ok()
+            .and_then(|s| {
+                s.rsplit_once(") ")
+                    .and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<u64>().ok())
+            })
+            == parent;
+        let safe = oxc_local::memory::MemorySource::default()
+            .sample_child(child)
+            .is_ok_and(|s| s.swap_limit_zero && s.swap_current_bytes == 0);
+        let scope = value["local_memory_policy"] != "scope"
+            || parent.is_some_and(|parent| {
+                fs::read_to_string(format!("/proc/{child}/cgroup")).is_ok_and(|s| {
+                    s.lines().any(|line| {
+                        line.rsplit('/').next().is_some_and(|name| {
+                            name.starts_with(&format!("oxa-local-{parent}-{child}-"))
+                                && name.ends_with(".scope")
+                        })
+                    })
+                })
+            });
+        if parent.is_none() || !owned || !safe || !scope {
+            value.as_object_mut().unwrap().remove("local_memory_policy");
+            value.as_object_mut().unwrap().remove("local_engine_pid");
+        }
     }
     value["stalled"] = value["stall_deadline_ms"]
         .as_u64()

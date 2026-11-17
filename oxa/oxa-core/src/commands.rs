@@ -289,7 +289,7 @@ fn run_builtin_inner(
                         None,
                         st.stats.cache_misses,
                     );
-                    if let Some(policy) = st.engine.local_memory_policy(&st.model) {
+                    if let Some((_, policy)) = st.engine.local_memory_status(&st.model) {
                         lines.push(format!("Memory: {policy}"));
                     }
                     Ok(lines)

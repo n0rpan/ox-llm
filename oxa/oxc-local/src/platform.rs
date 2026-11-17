@@ -118,14 +118,7 @@ impl PlatformLauncher for LinuxLauncher {
     fn attach(&self, pid: u32, gated: bool) -> io::Result<Attachment> {
         self.attach_with(pid, gated, |pid, unit| {
             use zbus::zvariant::Value;
-            let address = format!("unix:path=/run/user/{}/bus", nix::unistd::geteuid());
-            let bus = zbus::blocking::connection::Builder::address(address.as_str())
-                .and_then(|b| {
-                    b.auth_mechanism(zbus::connection::AuthMechanism::External)
-                        .method_timeout(std::time::Duration::from_secs(3))
-                        .build()
-                })
-                .map_err(|_| bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir()))?;
+            let bus = user_bus()?;
             let properties = scope_properties(pid);
             let auxiliary: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
             bus.call_method(
@@ -138,6 +131,53 @@ impl PlatformLauncher for LinuxLauncher {
             .map_err(|_| refused("systemd StartTransientUnit with delegated MemorySwapMax=0"))?;
             Ok(())
         })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn user_bus() -> io::Result<zbus::blocking::Connection> {
+    let address = format!("unix:path=/run/user/{}/bus", nix::unistd::geteuid());
+    zbus::blocking::connection::Builder::address(address.as_str())
+        .and_then(|b| {
+            b.auth_mechanism(zbus::connection::AuthMechanism::External)
+                .method_timeout(std::time::Duration::from_secs(3))
+                .build()
+        })
+        .map_err(|_| bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir()))
+}
+/// Explicit observation for debugging/proof: only NoSuchUnit establishes collection.
+#[cfg(target_os = "linux")]
+pub fn scope_exists(unit: &str) -> io::Result<bool> {
+    if !unit.starts_with("oxa-local-")
+        || !unit.ends_with(".scope")
+        || unit.len() > 128
+        || !unit
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b".-".contains(&b))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid owned local scope name",
+        ));
+    }
+    match user_bus()?.call_method(
+        Some("org.freedesktop.systemd1"),
+        "/org/freedesktop/systemd1",
+        Some("org.freedesktop.systemd1.Manager"),
+        "GetUnit",
+        &(unit,),
+    ) {
+        Ok(reply) => reply
+            .body()
+            .deserialize::<zbus::zvariant::OwnedObjectPath>()
+            .map(|_| true)
+            .map_err(|_| refused("systemd GetUnit reply valid")),
+        Err(zbus::Error::MethodError(name, _, _))
+            if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit" =>
+        {
+            Ok(false)
+        }
+        Err(_) => Err(refused("systemd GetUnit available to observe owned scope")),
     }
 }
 
@@ -196,6 +236,7 @@ mod tests {
     #[test]
     fn scope_request_contains_child_pid_zero_swap_and_collect_without_memorymax() {
         use zbus::zvariant::Value;
+        assert!(scope_exists("unrelated.scope").is_err());
         assert_eq!(
             scope_properties(42),
             vec![
