@@ -27,6 +27,7 @@ mod identity_cmd;
 mod in_process;
 pub mod lead;
 mod limits;
+mod login_cmd;
 mod mcp_cmd;
 mod netguard;
 mod pkg_cmd;
@@ -39,7 +40,7 @@ mod wipe_cmd;
 mod work_checks;
 mod work_cmd;
 
-pub use args::{parse_args, usage_text, ApiKey, Args, ModeArg, Subcommand};
+pub use args::{parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand};
 pub use config_cmd::run_config;
 pub use dispatch::{choose_mode, run, RunMode, Stdio};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};

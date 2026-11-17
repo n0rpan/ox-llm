@@ -47,6 +47,7 @@ pub struct Reply {
     headers: Vec<(&'static str, String)>,
     bytes: Vec<u8>,
     fragment: usize,
+    pub truncate_transfer: bool,
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
@@ -58,6 +59,7 @@ impl Reply {
             headers: vec![],
             bytes: value.to_string().into_bytes(),
             fragment: 7,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -74,6 +76,7 @@ impl Reply {
             bytes,
             headers,
             fragment: 1024,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -92,6 +95,7 @@ impl Reply {
             headers: Vec::new(),
             bytes,
             fragment: 7,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -104,6 +108,7 @@ impl Reply {
                 .to_string()
                 .into_bytes(),
             fragment: 7,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -113,6 +118,18 @@ impl Reply {
             headers: vec![("Retry-After", retry_after_seconds.to_string())],
             ..Self::error(429, "insufficient_quota", "synthetic quota exhausted")
         }
+    }
+    /// Synthetic private subscription usage reply; no credentials or live service.
+    #[allow(dead_code)] // Shared constructor; only usage-parser tests consume it.
+    pub fn chatgpt_usage() -> Self {
+        Self::json(json!({
+            "plan_type": "synthetic-plan",
+            "rate_limit": {
+                "primary_window": {"used_percent": 12.5, "reset_at": 1_800_000_000},
+                "secondary_window": {"used_percent": 75, "reset_at": 1_800_600_000}
+            },
+            "credits": {"has_credits": true, "unlimited": false, "balance": "42.50"}
+        }))
     }
     /// #450: three parallel calls with all arguments delivered as deltas.
     /// Completed output is empty; output_item.done is authoritative.
@@ -211,9 +228,14 @@ pub struct MockOpenAi {
 }
 impl MockOpenAi {
     pub fn start(replies: Vec<Reply>) -> Self {
+        Self::start_with(|_| replies)
+    }
+    /// Discovery fixtures advertise the exact already-bound loopback origin.
+    pub fn start_with(replies: impl FnOnce(&str) -> Vec<Reply>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
+        let replies = replies(&format!("http://{address}"));
         let shared = Arc::new(Shared::default());
         let worker = shared.clone();
         let replies = Arc::new(Mutex::new(VecDeque::from(replies)));
@@ -408,5 +430,9 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
         stream.write_all(b"\r\n")?;
         stream.flush()?;
     }
-    stream.write_all(b"0\r\n\r\n")
+    if reply.truncate_transfer {
+        Ok(())
+    } else {
+        stream.write_all(b"0\r\n\r\n")
+    }
 }

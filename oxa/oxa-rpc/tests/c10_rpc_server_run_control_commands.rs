@@ -947,3 +947,51 @@ fn response_envelopes_keep_id() {
     assert_eq!(err["error"], "busy");
     assert_eq!(err["id"], "x-1");
 }
+
+#[test]
+fn inbox_during_a_turn_is_a_follow_up_not_an_interrupt() {
+    let env = TestEnv::new();
+    let open = Arc::new(AtomicBool::new(false));
+    let inner = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("first"),
+        ScriptTurn::text("second"),
+    ]));
+    let engine = Arc::new(GatedEngine {
+        inner: inner.clone(),
+        open: open.clone(),
+        models: Vec::new(),
+        entered: None,
+    });
+    let session = open_session(&env, engine);
+    let id = session.state().session_id;
+    let handle = session.handle();
+    let mut rpc = Rpc::start(session, &env);
+    rpc.call("p", json!({"type": "prompt", "message": "start"}));
+    rpc.wait_for("agent_start", |r| r["type"] == "agent_start");
+    oxa_session::send_inbox(&Dirs::under(env.root()).agent_dir, &id, "then this").unwrap();
+    let start = std::time::Instant::now();
+    while handle.queued().1.is_empty() {
+        assert!(
+            start.elapsed() < Duration::from_secs(3),
+            "inbox did not queue during the run"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        inner.requests().is_empty(),
+        "the active request remains held, not cancelled"
+    );
+    open.store(true, Ordering::SeqCst);
+    rpc.agent_settled();
+    let (code, records) = rpc.finish();
+    assert_eq!(code, 0);
+    assert!(has_settled(&records, false));
+    let requests = inner.requests();
+    assert_eq!(requests.iter().filter(|r| r.max_tokens > 0).count(), 2);
+    assert!(requests
+        .last()
+        .unwrap()
+        .messages
+        .iter()
+        .any(|m| m.content.as_deref() == Some("then this")));
+}

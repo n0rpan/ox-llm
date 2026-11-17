@@ -41,11 +41,26 @@ pub trait EmbeddedGateway: Send + Sync {
     ) -> Result<(), OxaError>;
 }
 
-#[derive(Clone, Debug)]
+pub type GatewayHistory =
+    Arc<dyn Fn(&oxa_proto::WireMsg) -> Result<oxa_proto::ProviderHistory, OxaError> + Send + Sync>;
+
+#[derive(Clone)]
 pub enum GatewayEvent {
     Chunk(Value),
     /// The complete reply and private ledger settlement are committed.
     Done,
+    /// Settlement is committed; bind private replay to the actual assembled
+    /// message rather than a provider's pre-assembly content projection.
+    DoneWithHistory(GatewayHistory),
+}
+impl std::fmt::Debug for GatewayEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Chunk(value) => f.debug_tuple("Chunk").field(value).finish(),
+            Self::Done => f.write_str("Done"),
+            Self::DoneWithHistory(_) => f.write_str("DoneWithHistory([redacted])"),
+        }
+    }
 }
 
 /// An explicitly constructed cloud-only Engine; the default remains HttpEngine.
@@ -122,11 +137,14 @@ impl Engine for EmbeddedEngine {
         let mut done = false;
         let mut emitted = false;
         let mut failure = None;
+        let mut history = None;
         let outcome = self.gateway.chat(request, context, cancel, &mut |event| {
             if failure.is_some() {
                 return Flow::Stop;
             }
-            if !matches!(event, GatewayEvent::Done) && cancel.is_cancelled() {
+            if !matches!(event, GatewayEvent::Done | GatewayEvent::DoneWithHistory(_))
+                && cancel.is_cancelled()
+            {
                 failure = Some(aborted());
                 return Flow::Stop;
             }
@@ -158,6 +176,10 @@ impl Engine for EmbeddedEngine {
                     }
                 },
                 GatewayEvent::Done => done = true,
+                GatewayEvent::DoneWithHistory(bind) => {
+                    history = Some(bind);
+                    done = true;
+                }
             }
             Flow::Continue
         });
@@ -190,6 +212,9 @@ impl Engine for EmbeddedEngine {
         }
         let level = request.effective_level();
         let mut turn = assembler.finish(level)?;
+        if let Some(bind) = history {
+            turn.msg.provider_history = Some(bind(&turn.msg)?);
+        }
         if turn.model.is_empty() {
             turn.model = request.model.to_string();
         }

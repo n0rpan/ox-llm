@@ -19,6 +19,7 @@ const MAX_EVENT: usize = 1024 * 1024;
 pub struct Transport {
     url: Url,
     opts: StreamOpts,
+    bearer: Option<String>,
 }
 /// Caller-owned cancellation and bounded process/memory probes. No hidden reader.
 pub struct Monitor<'a> {
@@ -42,7 +43,15 @@ impl Transport {
                 base_path: String::new(),
             },
             opts,
+            bearer: None,
         })
+    }
+    pub(crate) fn with_bearer(mut self, token: &str) -> Result<Self, OxaError> {
+        if token.is_empty() || !token.bytes().all(|b| b.is_ascii_alphanumeric()) {
+            return Err(OxaError::new(codes::INVALID, "invalid child authentication"));
+        }
+        self.bearer = Some(token.into());
+        Ok(self)
     }
 
     /// Borrow the gateway's shared ChatRequest, encoding only at the actual engine
@@ -81,7 +90,10 @@ impl Transport {
                 "local chat request exceeds its size limit",
             ));
         }
-        let headers = build_headers(&request.hints);
+        let mut headers = build_headers(&request.hints);
+        if let Some(token) = &self.bearer {
+            headers.push(("Authorization", format!("Bearer {token}")));
+        }
         let mut active = Active {
             owner,
             lease: Some(lease),
@@ -170,7 +182,15 @@ impl Transport {
         if result.is_ok() {
             drop(active.lease.take());
         }
-        result
+        result.map_err(|mut error| {
+            if let Some(token) = &self.bearer {
+                error.message = error.message.replace(token, "[redacted]");
+                if let Some(hint) = error.hint.as_mut() {
+                    *hint = hint.replace(token, "[redacted]");
+                }
+            }
+            error
+        })
     }
 }
 
@@ -238,7 +258,11 @@ fn drive(
             next_poll = Instant::now() + Duration::from_millis(250);
         }
         match receive.recv_timeout(Duration::from_millis(50)) {
-            Ok(Message::Event(GatewayEvent::Chunk(value))) => {
+            Ok(Message::Event(event)) => {
+                let Some(value) = local_event(event)? else {
+                    done = true;
+                    continue;
+                };
                 if done {
                     return Err(broken("local stream data after completion"));
                 }
@@ -249,7 +273,6 @@ fn drive(
                     on(event);
                 }
             }
-            Ok(Message::Event(GatewayEvent::Done)) => done = true,
             Ok(Message::Comment(text)) => {
                 if let Some(event) =
                     assembler.comment(&text, started.elapsed().as_secs().try_into().unwrap_or(u32::MAX))
@@ -283,6 +306,18 @@ fn drive(
         }
     }
 }
+// Local HTTP has no cloud replay authority. Do not inspect, invoke or serialize
+// private completion events added by other native gateway implementations.
+fn local_event(event: GatewayEvent) -> Result<Option<oxa_proto::Value>, OxaError> {
+    if let GatewayEvent::Chunk(value) = event {
+        Ok(Some(value))
+    } else if matches!(event, GatewayEvent::Done) {
+        Ok(None)
+    } else {
+        Err(broken("unsupported local gateway event"))
+    }
+}
+
 fn aborted() -> OxaError {
     OxaError::new(codes::ABORTED, "local request cancelled")
 }
@@ -291,4 +326,26 @@ fn down() -> OxaError {
 }
 fn broken(message: &str) -> OxaError {
     OxaError::new(codes::STREAM_BROKEN, message)
+}
+
+#[cfg(test)]
+mod private_completion_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    #[test]
+    fn cloud_completion_authority_is_refused_without_invoking_its_binder() {
+        let called = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&called);
+        let event = GatewayEvent::DoneWithHistory(Arc::new(move |_| {
+            called.store(true, Ordering::SeqCst);
+            panic!("synthetic_private_authority must never run in local transport");
+        }));
+        let error = local_event(event).unwrap_err();
+        assert_eq!(error.code, codes::STREAM_BROKEN);
+        assert!(!observed.load(Ordering::SeqCst));
+        assert!(!error.message.contains("synthetic_private_authority"));
+    }
 }

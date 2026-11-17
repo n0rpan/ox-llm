@@ -31,6 +31,67 @@ fn spec(name: &str, boolean: bool) -> FlagSpec {
     }
 }
 
+/// Inbox delivery and the commands added on main must all remain subcommands.
+#[test]
+fn send_status_and_work_preserve_subcommand_arguments() {
+    let cases = [
+        (
+            ["send", "session-123", "follow up"],
+            Subcommand::Send(argv(&["session-123", "follow up"])),
+        ),
+        (
+            ["status", "session-123", "--json"],
+            Subcommand::Status(argv(&["session-123", "--json"])),
+        ),
+        (
+            ["work", "task.toml", "--offline"],
+            Subcommand::Work(argv(&["task.toml", "--offline"])),
+        ),
+    ];
+    for (words, expected) in cases {
+        let args = parse(&words);
+        assert_eq!(args.subcommand, Some(expected), "{words:?}");
+        assert!(args.messages.is_empty(), "not a model prompt: {words:?}");
+    }
+}
+
+/// A leading offline switch must not turn inbox delivery into a model prompt.
+#[test]
+fn offline_send_preserves_subcommand_arguments() {
+    for words in [
+        vec!["--offline", "send", "session-733", "follow up"],
+        vec![
+            "--offline",
+            "--offline",
+            "send",
+            "session-733",
+            "@literal --offline",
+        ],
+        vec!["--offline", "send", "session-733", "--offline"],
+        vec!["send", "session-733", "--offline"],
+        vec!["send", "session-733", "@literal"],
+    ] {
+        let args = parse(&words);
+        assert_eq!(args.offline, words[0] == "--offline", "{words:?}");
+        assert_eq!(
+            args.subcommand,
+            Some(Subcommand::Send(argv(&words[words.len() - 2..])))
+        );
+        assert!(args.messages.is_empty());
+        assert!(args.files.is_empty());
+    }
+    // Explicit prompts and the option terminator must still allow the word "send".
+    for words in [
+        vec!["--offline", "--", "send", "session-733", "follow up"],
+        vec!["--offline", "explain", "send"],
+        vec!["-p", "send"],
+    ] {
+        let args = parse(&words);
+        assert_eq!(args.subcommand, None, "{words:?}");
+        assert!(args.messages.iter().any(|word| word == "send"));
+    }
+}
+
 /// table test, long and short spellings
 #[test]
 fn every_flag_of_cli_md() {

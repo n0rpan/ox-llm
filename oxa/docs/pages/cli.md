@@ -17,6 +17,18 @@ $ oxa -p --continue SESSION_ID "continue with this instruction"
 
 Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word after `--continue` is taken as the id only if a session with that id exists; otherwise it stays part of the prompt and the most recent session continues, as before. The id is never sent as a prompt. `--continue` without a value (or `-c`) selects the most recent session. `--no-session` keeps the run ephemeral and prints no session id. An explicit continuation id cannot be combined with `--no-session` or `--session`.
 
+## Send a session follow-up
+
+```console
+$ oxa send SESSION_ID "task finished, red"
+```
+
+Use the full session id. This queues one follow-up without starting an engine or requiring the session to be running. Its TUI or RPC owner consumes it when idle or at a follow-up boundary, just like queued follow-up input; it does not interrupt the active turn. A stopped session retains the message until it is opened again in TUI or RPC mode. Success means **queued**, not that the model has answered.
+
+The inbox lives at `inbox/<session-id>/` under the agent directory, in private `0700` directories with `0600` message files. Publication is an atomic rename; the owner uses inotify (no file polling, socket or daemon), including a startup scan for queued messages. The agent directory remains masked by the sandbox. Messages are limited to 256 KiB. The owner admits at most 64 messages or 1 MiB of inbox text across destinations; excess files remain on disk and are retried when the owner releases capacity, without polling. Oversized externally written files remain on disk and are not delivered. Once admitted to the owner's in-memory follow-up queue, a message file is removed. This is not transactional with the session transcript: a process crash can lose an admitted message or replay a file not yet removed. Worker prompts are unchanged.
+
+## Headless results
+
 Print, JSON and RPC runs write exactly one terminal JSON result on standard error, after diagnostics. For example:
 
 ```json
@@ -82,6 +94,8 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
+| `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
+| `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
@@ -95,6 +109,28 @@ Commands take the place of the message. They do not start a session.
 `oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes`.
 
 `oxa config` lists the settings as oxa resolves them.
+
+### Experimental ChatGPT sign-in
+
+Run `oxa login chatgpt --experimental` in your own terminal. It prints the
+experimental public-client notice and a browser URL; open that URL yourself.
+The loopback callback must use `http://localhost:1455/auth/callback`, with port
+1455 free. With `--paste`, paste the complete callback URL into the hidden
+terminal prompt. Sign-in expires after five minutes; Ctrl+C or Escape cancels it.
+No browser is launched automatically.
+
+The command writes only the existing private
+`~/.config/oxc/llm/chatgpt-auth.json`. It does not enable cloud access, change
+models/settings, or print tokens/account details. Login is create-only by
+default. `--replace` explicitly replaces an existing record for the same account;
+it refuses an account switch. `oxa logout chatgpt` removes the checked token
+record under the refresh lock and keeps that lock for concurrent refresh safety.
+These commands are separate from chat/RPC and unavailable from agent tools.
+
+A failure before atomic publication leaves the previous token record unchanged.
+If the directory sync fails after atomic rename, the command returns a fixed
+storage error: the new record is already visible, but its crash durability is
+uncertain. The command does not roll back the record or repeat the token exchange.
 
 ### MCP commands
 
