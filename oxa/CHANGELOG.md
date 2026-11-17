@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- Bash and the `done` checks now find an installed toolchain: the sandbox `PATH` keeps the caller's own entries and appends the toolchain `bin` directories under the home that exist (`~/.cargo/bin`, `~/.local/bin`, the mise, asdf, volta, go, pyenv, rbenv, bun and deno ones), after the system path so nothing the caller's `PATH` already finds is shadowed. A run started without a login shell's profile ran `cargo fmt --check` and the like as "command not found" although the toolchain was installed.
+- Bash and the `done` checks now find an installed toolchain: the sandbox `PATH` keeps the caller's own entries and appends the toolchain `bin` directories under the home that exist (`~/.cargo/bin`, `~/.local/bin`, the mise, asdf, volta, go, pyenv, rbenv, bun and deno ones), and, when none of those provides a `cargo`, the `bin` of a toolchain the sandbox already shows read-only (`~/.rustup/toolchains/<name>/bin` and an `oxa.sandbox.readPaths` entry), after the system path so nothing the caller's `PATH` already finds is shadowed. A run started without a login shell's profile, or with rustup's shims missing, ran `cargo fmt --check` and the like as "command not found" although the toolchain was installed.
 
 ### Changed
 

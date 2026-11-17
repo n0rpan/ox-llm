@@ -3,14 +3,16 @@
 //! * **Toolchains (B2).** The user's `PATH` is kept inside the sandbox (absolute entries that
 //!   exist as directories, in order; the base `/usr/local/bin:/usr/bin:/bin` is appended when
 //!   missing; then the existing executable directories of toolchains installed under `$HOME`
-//!   ([`TOOLCHAIN_PATH`]), so a toolchain is usable when the environment oxa started from
-//!   never read a login shell's profile). Toolchain directories under `$HOME` are bound
-//!   read-only and package caches read-write ([`TOOLCHAIN_READ`], [`CACHE_WRITE`], each only
-//!   when it exists; plus every `PATH` entry under `$HOME`, read-only). The settings
-//!   `oxa.sandbox.readPaths` / `oxa.sandbox.writePaths` (user settings only) add more. The
-//!   environment variables that tell toolchains where they live ([`TOOLCHAIN_ENV`], `MISE_*`)
-//!   are passed through when set, never a variable whose name looks like a secret
-//!   ([`is_secret_name`]).
+//!   ([`TOOLCHAIN_PATH`]), or - when none of them holds a `cargo` - the `bin` of a toolchain the
+//!   sandbox already shows read-only (a rustup toolchain under `~/.rustup/toolchains`, and a
+//!   toolchain exposed with `oxa.sandbox.readPaths`), so a toolchain is usable when the
+//!   environment oxa started from never read a login shell's profile). Toolchain directories
+//!   under `$HOME` are bound read-only and package caches read-write ([`TOOLCHAIN_READ`],
+//!   [`CACHE_WRITE`], each only when it exists; plus every `PATH` entry under `$HOME`,
+//!   read-only). The settings `oxa.sandbox.readPaths` / `oxa.sandbox.writePaths` (user
+//!   settings only) add more. The environment variables that tell toolchains where they live
+//!   ([`TOOLCHAIN_ENV`], `MISE_*`) are passed through when set, never a variable whose name
+//!   looks like a secret ([`is_secret_name`]).
 //! * **Deny-list (B3).** [`sensitive_paths`] (keys, tokens, trust, the agent directory,
 //!   password stores, browser profiles) are masked after every bind: an empty read-only tmpfs
 //!   over a directory, `/dev/null` over a file. Whatever the cwd or the settings, they are
@@ -238,6 +240,33 @@ pub fn expand_home(raw: &str, home: &Path) -> PathBuf {
     }
 }
 
+/// The directories that hold a `cargo` and that the sandbox shows read-only anyway: the
+/// toolchains under `$HOME/.rustup/toolchains`, and - for every read-only extra path the user
+/// exposed (`oxa.sandbox.readPaths`, user settings only) - the path itself, its `bin` and the
+/// toolchains below it. Sorted, and only consulted when the built `PATH` finds no `cargo`, so
+/// a toolchain stays usable when a run never read a login shell's profile (rustup writes its
+/// shims to `~/.cargo/bin`) or when the shims are missing.
+fn cargo_bins_shown(home: &Path, exposed: &[PathBuf]) -> Vec<String> {
+    fn toolchain_bins(bins: &mut Vec<PathBuf>, toolchains: &Path) {
+        if let Ok(entries) = std::fs::read_dir(toolchains) {
+            for entry in entries.flatten() {
+                bins.push(entry.path().join("bin"));
+            }
+        }
+    }
+    let mut bins: Vec<PathBuf> = Vec::new();
+    toolchain_bins(&mut bins, &home.join(".rustup/toolchains"));
+    for path in exposed {
+        bins.push(path.clone());
+        bins.push(path.join("bin"));
+        toolchain_bins(&mut bins, &path.join("toolchains"));
+    }
+    bins.retain(|bin| bin.join("cargo").is_file());
+    bins.sort();
+    bins.dedup();
+    bins.iter().map(|bin| bin.display().to_string()).collect()
+}
+
 fn denied(p: &Path, deny: &[PathBuf]) -> bool {
     deny.iter().any(|d| p.starts_with(d))
 }
@@ -290,6 +319,21 @@ impl Layout {
             if !path.contains(&shown) {
                 path.push(shown);
             }
+        }
+        // Still no `cargo` on the PATH: the run inherited a PATH without the toolchain (no
+        // login shell's profile) or rustup's shims are missing. Use the toolchain directories
+        // the sandbox shows read-only anyway - `~/.rustup/toolchains`, and the ones the user
+        // exposed with `oxa.sandbox.readPaths` - so a `done` check such as `cargo fmt --check`
+        // runs instead of reporting "command not found". A cargo the path finds keeps its place.
+        let cargo_on_path = path.iter().any(|dir| Path::new(dir).join("cargo").is_file());
+        if !cargo_on_path {
+            let mut exposed: Vec<PathBuf> = Vec::new();
+            for extra in &i.read_extra {
+                if Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), extra) {
+                    exposed.push(extra.clone());
+                }
+            }
+            path.extend(cargo_bins_shown(&i.home, &exposed));
         }
         read.extend(TOOLCHAIN_READ.iter().map(|r| i.home.join(r)));
         read.extend(i.read_extra.iter().cloned());
@@ -594,6 +638,30 @@ mod tests {
         assert_eq!(rustup, vec![&shown], "{path:?}");
         // The bind is the read-only toolchain directory above it.
         assert!(read.contains(&home.join(".rustup")), "{read:?}");
+    }
+
+    /// The toolchain of a session whose home is a directory of its own: the user exposed it
+    /// read-only (`oxa.sandbox.readPaths`), so the bind shows it, and its `bin` goes on the
+    /// PATH when nothing else provides a `cargo`.
+    #[test]
+    fn a_toolchain_exposed_by_read_paths_is_on_the_sandbox_path() {
+        let root = std::env::temp_dir().join(format!("oxa-exposed-{}", std::process::id()));
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let toolchain = root.join("toolchain/1.0.0");
+        std::fs::create_dir_all(toolchain.join("bin")).unwrap();
+        std::fs::write(toolchain.join("bin/cargo"), "x").unwrap();
+        let Layout { path, read, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: "/usr/bin:/bin".into(),
+            read_extra: vec![toolchain.clone()],
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        let shown = toolchain.join("bin").display().to_string();
+        assert!(path.contains(&shown), "{path:?}");
+        // The directory the PATH names is the one the argv binds read-only.
+        assert!(read.contains(&toolchain), "{read:?}");
     }
 
     #[test]
