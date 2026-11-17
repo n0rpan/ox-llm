@@ -659,6 +659,8 @@ async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
         json!({"access_token":"","refresh_token":"synthetic-refresh","expires_in":3600}),
         json!({"access_token":KEY,"expires_in":"synthetic-refresh"}),
         json!({"access_token":"e30.eyJleHAiOjEwMDB9.synthetic","refresh_token":"synthetic-refresh","expires_in":3600}),
+        json!({"access_token":"synthetic-next-access","refresh_token":false,"expires_in":3600}),
+        json!({"access_token":"synthetic-next-access","refresh_token":42,"expires_in":3600}),
     ] {
         let refresh = MockOpenAi::start(vec![Reply::json(reply)]);
         let base = refresh.base_url();
