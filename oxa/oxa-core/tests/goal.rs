@@ -242,7 +242,7 @@ fn done_closes_all_calls_without_running_later_calls_or_requesting_another_reply
     }
 }
 #[test]
-fn spent_token_or_turn_budget_stops_without_an_extra_request() {
+fn spent_token_or_turn_budget_can_cancel_but_cannot_resume() {
     for budget in [
         GoalBudget {
             max_tokens: Some(1),
@@ -255,14 +255,35 @@ fn spent_token_or_turn_budget_stops_without_an_extra_request() {
     ] {
         let env = TestEnv::new();
         let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("Progress")]));
-        let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+        let store = Arc::new(MemStore::new());
+        let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
         let mut sink = VecSink::default();
         session.set_goal(Some(objective(budget)), &mut sink).unwrap();
         session
             .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
             .unwrap();
         assert_eq!(session.stats().outcome, RunOutcome::Blocked("goal_blocked"));
-        assert_eq!(session.goal().unwrap().turns, 1);
+        let mut expected = session.goal().unwrap();
+        assert_eq!(expected.status, GoalStatus::Blocked);
+        assert_eq!(expected.turns, 1);
+        assert!(expected.exhausted());
+
+        let bound = session.inner().sref.clone();
+        let revision = session.goal_revision();
+        assert!(session
+            .control_goal(&bound, revision, GoalControl::Resume, &mut sink)
+            .is_err());
+        assert_eq!(session.goal_revision(), revision);
+        let canceled_revision = session
+            .control_goal(&bound, revision, GoalControl::Cancel, &mut sink)
+            .expect("an exhausted goal can still be canceled");
+        assert!(canceled_revision > revision);
+        expected.status = GoalStatus::Canceled;
+        assert_eq!(session.goal(), Some(expected.clone()));
+        assert_eq!(
+            Goal::latest(&store.load(&bound).unwrap()).unwrap(),
+            Some(expected)
+        );
     }
 }
 
