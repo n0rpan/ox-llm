@@ -1485,9 +1485,18 @@ fn with_api_key(mut endpoint: Endpoint, a: &Args) -> Endpoint {
 
 /// UX/DX item 5: `--animation <mode>` overrides `ui.animation` for this run, in memory only, so the
 /// setting on disk is untouched. `None` (no flag) keeps whatever the settings resolved to.
+///
+/// #869: `off` also overrides `ui.reducedMotion` (the mode and reduced motion draw the same static
+/// badge, as cli.md says), and `arcade`/`minimal` clear it, so the flag is not silently ignored on
+/// a machine whose settings ask for reduced motion. `OXA_REDUCED_MOTION` still wins for the run.
 fn animation_override(settings: Settings, mode: Option<&str>) -> Settings {
     match mode {
-        Some(mode) => settings.with_override("ui.animation", Value::String(mode.to_string())),
+        Some(mode) => {
+            let reduced = mode == "off";
+            settings
+                .with_override("ui.animation", Value::String(mode.to_string()))
+                .with_override("ui.reducedMotion", Value::Bool(reduced))
+        }
         None => settings,
     }
 }
@@ -2122,21 +2131,41 @@ mod animation_override_tests {
     use super::*;
 
     /// #869: `--animation <mode>` reaches the settings the interactive driver reads
-    /// (`ui.animation`), and no flag leaves the resolved setting alone.
+    /// (`ui.animation`), `off` is the same as `ui.reducedMotion` for the run (the YOLO flames
+    /// follow the badge), and no flag leaves the resolved setting alone.
     #[test]
     fn the_flag_overrides_ui_animation_for_this_run_only() {
         let loaded = Settings::from_values(serde_json::json!({"ui": {"animation": "arcade"}}), Value::Null);
         assert_eq!(loaded.string("ui.animation").as_deref(), Some("arcade"));
+        assert!(!loaded.bool("ui.reducedMotion", false));
 
         let off = animation_override(loaded.clone(), Some("off"));
         assert_eq!(off.string("ui.animation").as_deref(), Some("off"));
+        assert!(off.bool("ui.reducedMotion", false));
         // The settings the flag was applied to are untouched: the override is in memory only.
         assert_eq!(loaded.string("ui.animation").as_deref(), Some("arcade"));
+        assert!(!loaded.bool("ui.reducedMotion", false));
 
         assert_eq!(
-            animation_override(loaded, None).string("ui.animation").as_deref(),
+            animation_override(loaded.clone(), None)
+                .string("ui.animation")
+                .as_deref(),
             Some("arcade")
         );
+        assert!(!animation_override(loaded.clone(), None).bool("ui.reducedMotion", false));
+
+        // The other two modes draw, even when the settings ask for reduced motion.
+        let still = Settings::from_values(
+            serde_json::json!({"ui": {"animation": "off", "reducedMotion": true}}),
+            Value::Null,
+        );
+        for mode in ["arcade", "minimal"] {
+            let s = animation_override(still.clone(), Some(mode));
+            assert_eq!(s.string("ui.animation").as_deref(), Some(mode));
+            assert!(!s.bool("ui.reducedMotion", false), "--animation {mode}");
+        }
+        // ... and the settings on disk still say reduced motion.
+        assert!(still.bool("ui.reducedMotion", false));
     }
 }
 

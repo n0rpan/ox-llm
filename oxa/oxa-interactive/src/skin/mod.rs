@@ -219,15 +219,26 @@ pub fn sprite_frame(sprite: Sprite, ms: u64) -> &'static str {
     frames.get(index).copied().unwrap_or("      ")
 }
 
-/// `true` when the environment asks for no animation: `OXA_REDUCED_MOTION` set to one of the
-/// documented true words (`1`, `true`, `yes`, `on`, any case). `false`, `no` and `off` say the
-/// opposite for one run; unset, empty and any unknown word keep the default (motion on). The
-/// `ui.reducedMotion` setting is the caller's other input.
-pub fn env_reduced_motion(env: &[(String, String)]) -> bool {
+/// The environment's answer for reduced motion, when it gives one: `Some(true)` for the
+/// documented true words (`1`, `true`, `yes`, `on`, any case), `Some(false)` for `0`, `false`,
+/// `no` and `off`, and `None` when `OXA_REDUCED_MOTION` is unset, empty or an unknown word (the
+/// caller's default stands). The last entry wins.
+pub fn env_reduced_motion(env: &[(String, String)]) -> Option<bool> {
     env.iter()
         .rev()
         .find(|(k, _)| k == "OXA_REDUCED_MOTION")
-        .is_some_and(|(_, v)| oxa_config::EnvFlag::parse(Some(v)) == oxa_config::EnvFlag::On)
+        .and_then(|(_, v)| match oxa_config::EnvFlag::parse(Some(v)) {
+            oxa_config::EnvFlag::On => Some(true),
+            oxa_config::EnvFlag::Off => Some(false),
+            oxa_config::EnvFlag::Unset | oxa_config::EnvFlag::Invalid => None,
+        })
+}
+
+/// The effective reduced-motion decision: `OXA_REDUCED_MOTION` when it names one of the eight
+/// words (it overrides the `ui.reducedMotion` setting for one run, as cli.md and settings.md
+/// document), else the setting.
+pub fn reduced_motion(setting: bool, env: &[(String, String)]) -> bool {
+    env_reduced_motion(env).unwrap_or(setting)
 }
 
 /// The theme while YOLO is on (O-182): the accents and the frames turn hot (the theme's
@@ -378,14 +389,45 @@ mod tests {
         let e = |v: &str| vec![("OXA_REDUCED_MOTION".to_string(), v.to_string())];
         // The four true words, in any case.
         for v in ["1", "true", "TRUE", "yes", "Yes", "on", "ON"] {
-            assert!(env_reduced_motion(&e(v)), "OXA_REDUCED_MOTION={v}");
+            assert_eq!(env_reduced_motion(&e(v)), Some(true), "OXA_REDUCED_MOTION={v}");
         }
-        // `false`, `no` and `off` say motion is wanted; unset, empty and unknown words keep
-        // the default (motion on).
-        for v in ["0", "false", "FALSE", "no", "off", "Off", "", "  ", "maybe", "2"] {
-            assert!(!env_reduced_motion(&e(v)), "OXA_REDUCED_MOTION={v}");
+        // `false`, `no` and `off` say motion is wanted for one run.
+        for v in ["0", "false", "FALSE", "no", "off", "Off"] {
+            assert_eq!(env_reduced_motion(&e(v)), Some(false), "OXA_REDUCED_MOTION={v}");
         }
-        assert!(!env_reduced_motion(&[]));
+        // Unset, empty and unknown words give no answer: the caller's default stands.
+        for v in ["", "  ", "maybe", "2"] {
+            assert_eq!(env_reduced_motion(&e(v)), None, "OXA_REDUCED_MOTION={v}");
+        }
+        assert_eq!(env_reduced_motion(&[]), None);
+        // The last entry wins, as for the other environment readers.
+        assert_eq!(
+            env_reduced_motion(&[
+                ("OXA_REDUCED_MOTION".to_string(), "1".to_string()),
+                ("OXA_REDUCED_MOTION".to_string(), "0".to_string()),
+            ]),
+            Some(false)
+        );
+    }
+
+    /// #869: the environment overrides the `ui.reducedMotion` setting for one run, in both
+    /// directions; an absent or unknown value leaves the setting alone.
+    #[test]
+    fn reduced_motion_resolution() {
+        let e = |v: &str| vec![("OXA_REDUCED_MOTION".to_string(), v.to_string())];
+        assert!(reduced_motion(true, &e("1")));
+        assert!(!reduced_motion(false, &e("1")));
+        assert!(
+            !reduced_motion(true, &e("0")),
+            "an explicit false overrides the setting"
+        );
+        assert!(!reduced_motion(false, &e("0")));
+        for v in ["", "  ", "maybe"] {
+            assert!(reduced_motion(true, &e(v)), "OXA_REDUCED_MOTION={v:?}");
+            assert!(!reduced_motion(false, &e(v)), "OXA_REDUCED_MOTION={v:?}");
+        }
+        assert!(reduced_motion(true, &[]));
+        assert!(!reduced_motion(false, &[]));
     }
 
     #[test]

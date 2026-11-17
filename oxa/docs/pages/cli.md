@@ -200,7 +200,7 @@ See [sessions.md](sessions.md).
 
 | Option | Meaning |
 |---|---|
-| `--animation <mode>` | animation of the `oxa` skin for this run: `arcade`, `minimal` or `off`, over the `ui.animation` setting. Anything else is a usage error. `--animation off` is the same as `ui.reducedMotion` for one run |
+| `--animation <mode>` | animation of the `oxa` skin for this run: `arcade`, `minimal` or `off`, over the `ui.animation` setting. Anything else is a usage error. `off` is the same as `ui.reducedMotion` for one run (the working sprite, the YOLO flames and the arcade are all still); `arcade` and `minimal` clear it for the run, so the mode applies even when the setting asks for reduced motion. `OXA_REDUCED_MOTION` still wins over both |
 
 See [settings.md](settings.md#ui) for what each mode draws.
 

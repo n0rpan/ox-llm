@@ -21,6 +21,11 @@ struct Rig {
 }
 
 fn start_in(env: TestEnv, extra_env: &[(&str, &str)], fake: FakeOpts) -> Rig {
+    start_args(env, &[], extra_env, fake)
+}
+
+/// As [`start_in`], with command-line arguments after the binary (`--animation off`, ...).
+fn start_args(env: TestEnv, args: &[&str], extra_env: &[(&str, &str)], fake: FakeOpts) -> Rig {
     let line = format!("{{\"text\":\"{REPLY}\"}}\n");
     let server =
         FakeServer::start(parse_script(&line.repeat(6)).expect("script"), fake).expect("start fake engine");
@@ -32,7 +37,7 @@ fn start_in(env: TestEnv, extra_env: &[(&str, &str)], fake: FakeOpts) -> Rig {
     let pty = PtySession::spawn_with(
         &env,
         &server.url(),
-        &[],
+        args,
         PtyOpts {
             size: (30, 110),
             env: vars,
@@ -271,6 +276,100 @@ fn reduced_motion_shows_a_static_badge() {
             );
         }
         rig.pty.wait_for_text(REPLY).unwrap();
+    }
+}
+
+/// The block glyphs of the YOLO banner's flame frames (`glyphs().flames`); the static banner
+/// draws the single flame instead.
+const FLAME_FRAME_GLYPHS: [char; 4] = ['▁', '▃', '▅', '▇'];
+
+/// #869: `OXA_REDUCED_MOTION=0` (also `false`, `no`, `off`) overrides `ui.reducedMotion: true`
+/// for one run: the sprite is back and it moves. The setting on disk is untouched (a later
+/// start without the variable is a static badge again — see
+/// [`reduced_motion_shows_a_static_badge`]).
+#[test]
+fn env_can_turn_motion_back_on_over_the_setting() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"ui":{"reducedMotion":true},"oxa":{"bootPreload":false}}"#,
+    );
+    let rig = start_in(
+        env,
+        &[("OXA_REDUCED_MOTION", "0")],
+        FakeOpts {
+            hold_headers_ms: 2500,
+            ..FakeOpts::default()
+        },
+    );
+    rig.pty.wait_for_text("● READY").unwrap();
+    rig.pty.send_text("ping");
+    rig.pty.send_key("enter");
+    let working = rig
+        .pty
+        .wait_for_named("the activity line", |s| activity_row(s).is_some(), WAIT)
+        .unwrap();
+    let row = activity_row(&working).expect("activity row");
+    assert!(
+        row.chars().any(|c| SPRITE_GLYPHS.contains(&c)),
+        "OXA_REDUCED_MOTION=0 overrides ui.reducedMotion: {row:?}"
+    );
+    rig.pty
+        .wait_for_named(
+            "the next sprite frame",
+            |s| activity_row(s).is_some_and(|r| r != row),
+            Duration::from_secs(2),
+        )
+        .unwrap();
+}
+
+/// #869: `--animation off` is the same as `ui.reducedMotion` for the run (cli.md), so the YOLO
+/// banner — which follows motion, not `ui.animation` — is the static flame too, not the
+/// moving flame frames.
+#[test]
+fn animation_off_is_reduced_motion_for_the_run() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"bootPreload":false}}"#,
+    );
+    let rig = start_args(env, &["--animation", "off"], &[], FakeOpts::default());
+    rig.pty.wait_for_text("● READY").unwrap();
+    // The working line is the static badge as well.
+    rig.pty.send_text("ping");
+    rig.pty.send_key("enter");
+    let working = rig
+        .pty
+        .wait_for_named("the activity line", |s| activity_row(s).is_some(), WAIT)
+        .unwrap();
+    let row = activity_row(&working).expect("activity row");
+    assert!(
+        !row.chars().any(|c| SPRITE_GLYPHS.contains(&c)),
+        "--animation off draws no sprite: {row:?}"
+    );
+    rig.pty.wait_for_text(REPLY).unwrap();
+    rig.pty
+        .wait_for_named("the idle HUD", |s| s.contains("● READY"), WAIT)
+        .unwrap();
+
+    // YOLO draws a banner for a moment; its flames move with motion only.
+    rig.pty.send_text("/mode yolo");
+    rig.pty.send_key("enter");
+    let banner = rig
+        .pty
+        .wait_for_named("the YOLO banner", |s| s.find_row("YOLO MODE").is_some(), WAIT)
+        .unwrap();
+    let first = banner.row(banner.find_row("YOLO MODE").expect("banner row"));
+    assert!(
+        !first.chars().any(|c| FLAME_FRAME_GLYPHS.contains(&c)),
+        "--animation off is reduced motion: {first:?}"
+    );
+    assert!(first.contains('🔥'), "the static flame: {first:?}");
+    // It is still: the moving frames change every 120 ms.
+    std::thread::sleep(Duration::from_millis(500));
+    let later = rig.pty.screen();
+    if let Some(r) = later.find_row("YOLO MODE") {
+        assert_eq!(later.row(r), first, "the banner does not animate");
     }
 }
 
