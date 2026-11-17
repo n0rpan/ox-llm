@@ -1,6 +1,6 @@
 //! Read-only web projection. Never serialize runner records or arbitrary GitHub payloads.
 use oxa_proto::work::{IncidentKind, PullRequest, Snapshot, Subject};
-use oxa_work::board::{Action, Board};
+use oxa_work::board::{Action, Board, Entry};
 use std::fmt::Write;
 
 mod pages;
@@ -79,7 +79,11 @@ pub fn content(view: &View<'_>, now: u64) -> String {
 }
 
 pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
-    let mut html = format!("<main><h1 id=main tabindex=-1>{}</h1>", page.title());
+    let title = match page {
+        Page::Item(number) => format!("Item #{number}"),
+        _ => page.title().into(),
+    };
+    let mut html = format!("<main><h1 id=main tabindex=-1>{title}</h1>");
     if page == Page::Home {
         attention(&mut html, view);
     }
@@ -98,6 +102,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         }
         Page::Workers => workers(&mut html, view),
         Page::Asks => asks(&mut html, view),
+        Page::Item(number) => item(&mut html, view, number, now),
         Page::Usage => html
             .push_str("<section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>"),
     }
@@ -170,17 +175,10 @@ fn board(html: &mut String, view: &View<'_>, now: u64) {
         );
         html.push_str("<div class=scroll><table><thead><tr><th>PR</th><th>Next action</th><th>Priority</th><th>Lease</th><th>Attempts today</th></tr></thead><tbody>");
         for row in &board.entries {
-            let lease = row.lease.as_ref().map_or("Unleased".into(), |l| {
-                format!(
-                    "{} · expires {}{}",
-                    escape(&l.holder),
-                    l.expires_at,
-                    if l.expires_at <= now { " (expired)" } else { "" }
-                )
-            });
+            let lease = lease(row, now);
             let _ = write!(
                 html,
-                "<tr><td>#{}</td><td>{}</td><td>{}</td><td>{lease}</td><td>{}</td></tr>",
+                "<tr><td><a href=/items/{0}>#{0}</a></td><td>{1}</td><td>{2}</td><td>{lease}</td><td>{3}</td></tr>",
                 row.number,
                 action(row.action),
                 if row.release_pinned { "Release" } else { "Normal" },
@@ -195,6 +193,34 @@ fn board(html: &mut String, view: &View<'_>, now: u64) {
         html.push_str("<p>Board unavailable.</p>");
     }
     html.push_str("</section>");
+}
+
+fn lease(row: &Entry, now: u64) -> String {
+    row.lease.as_ref().map_or("Unleased".into(), |l| {
+        format!(
+            "{} · expires {}{}",
+            escape(&l.holder),
+            l.expires_at,
+            if l.expires_at <= now { " (expired)" } else { "" }
+        )
+    })
+}
+
+fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
+    html.push_str("<p><a href=/board>Back to Board</a></p>");
+    let Some(board) = view.board else {
+        html.push_str("<p>Board unavailable.</p>");
+        return;
+    };
+    let Some(row) = board.entries.iter().find(|row| row.number == number) else {
+        html.push_str("<p>Item unavailable in this snapshot.</p>");
+        return;
+    };
+    let _ = write!(html,
+        "<section><h2>Next action</h2><p>{}</p></section><section><h2>State</h2><p>{}</p><p>{}</p><p>Attempts today: {}</p><p class=muted>Observed at {} (Unix seconds)</p></section>",
+        action(row.action), if row.release_pinned { "Release" } else { "Normal priority" },
+        lease(row, now), row.attempts_today, board.observed_at);
+    html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable.</p></section>");
 }
 
 fn workers(html: &mut String, view: &View<'_>) {

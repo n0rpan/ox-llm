@@ -8,6 +8,7 @@ pub enum Page {
     Board,
     Workers,
     Usage,
+    Item(u64),
 }
 
 impl Page {
@@ -20,6 +21,7 @@ impl Page {
             Self::Board => "Board",
             Self::Workers => "Workers",
             Self::Usage => "Usage",
+            Self::Item(_) => "Item",
         }
     }
 
@@ -27,7 +29,7 @@ impl Page {
         match self {
             Self::Home => "/",
             Self::Asks => "/asks",
-            Self::Board => "/board",
+            Self::Board | Self::Item(_) => "/board",
             Self::Workers => "/workers",
             Self::Usage => "/usage",
         }
@@ -37,6 +39,10 @@ impl Page {
         let (path, fragment) = path
             .strip_suffix("?fragment=1")
             .map_or((path, false), |path| (path, true));
+        if let Some(number) = path.strip_prefix("/items/") {
+            let parsed: u64 = number.parse().ok()?;
+            return (parsed > 0 && parsed.to_string() == number).then_some((Self::Item(parsed), fragment));
+        }
         Self::ALL
             .into_iter()
             .find(|page| page.path() == path)
@@ -45,12 +51,21 @@ impl Page {
 
     pub(super) fn navigation(self) -> String {
         let mut html = String::from("<nav class=tabs aria-label=Main>");
+        let selected = if matches!(self, Self::Item(_)) {
+            Self::Board
+        } else {
+            self
+        };
         for page in Self::ALL {
             let _ = write!(
                 html,
                 "<a href={}{}>{}</a>",
                 page.path(),
-                if page == self { " aria-current=page" } else { "" },
+                if page == selected {
+                    " aria-current=page"
+                } else {
+                    ""
+                },
                 if page == Self::Home { "Home" } else { page.title() }
             );
         }
