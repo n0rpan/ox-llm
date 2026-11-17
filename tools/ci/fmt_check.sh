@@ -65,8 +65,18 @@ preferred_dirs() {
                 esac
             done < "$root/settings.toml"
         fi
-        [ -n "$selected" ] && printf '%s\n' "$root/toolchains/$selected/bin"
-        :
+        if [ -n "$selected" ]; then
+            selected=$root/toolchains/$selected
+            if [ ! -d "$selected/bin" ]; then
+                case ${selected##*/} in
+                    stable|beta|nightly|nightly-[0-9]*|[0-9]*)
+                        set -- "$selected"-*/bin
+                        if [ "$#" -eq 1 ] && [ -d "$1" ]; then selected=${1%/bin}; fi
+                        ;;
+                esac
+            fi
+            printf '%s\n' "$selected/bin"
+        fi
     done
     return 0
 }
