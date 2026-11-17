@@ -396,3 +396,25 @@ fn mcp_add_still_saves_a_command_that_contains_a_help_flag() {
         "adding an MCP server made a loopback request"
     );
 }
+
+#[test]
+fn send_delivers_literal_help_flags_as_message_payloads() {
+    for message in ["--help", "-h"] {
+        let env = TestEnv::new();
+        let server = FakeServer::start(Vec::new(), FakeOpts::default()).unwrap();
+        let got = run(&env, &server.url(), &["send", "session-help", message]);
+        assert_eq!(got.code, 0, "{}", got.err);
+        assert!(
+            !got.out.contains("Usage:\n"),
+            "message payload must not invoke help"
+        );
+        let files: Vec<_> = fs::read_dir(env.agent_dir().join("inbox/session-help"))
+            .expect("send must publish the literal payload")
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].extension().unwrap(), "msg");
+        assert_eq!(fs::read_to_string(&files[0]).unwrap(), message);
+        assert!(server.requests().is_empty(), "send must not contact an engine");
+    }
+}
