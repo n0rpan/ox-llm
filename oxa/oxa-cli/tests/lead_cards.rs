@@ -130,3 +130,22 @@ fn invalid_multiline_snapshot_is_rejected_and_long_unicode_is_bounded() {
     assert!(cards.status().lines().nth(1).unwrap().ends_with('…'));
     assert!(cards.asks().contains("No open asks in this runner observation"));
 }
+
+#[test]
+fn accepted_directional_marks_are_escaped_in_goal_and_ask_cards() {
+    let mut observation = snapshot();
+    let text = "before\u{061c}\u{200e}\u{200f}after";
+    observation.goal = Some(text.into());
+    observation.asks.push(Ask {
+        id: "A1".into(),
+        subject: Subject::Repository,
+        question: text.into(),
+    });
+    let cards = Cards::decode(&observation.to_json().unwrap(), 1000, 100).unwrap();
+    for output in [cards.status(), cards.asks()] {
+        assert!(output.contains(r"before\u{61c}\u{200e}\u{200f}after"));
+        assert!(!output
+            .chars()
+            .any(|ch| matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}')));
+    }
+}
