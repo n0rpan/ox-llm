@@ -578,6 +578,20 @@ class OxeArmTests(unittest.TestCase):
         self.assertIn("N4", err.getvalue())
         self.assertFalse(os.path.exists(out_dir))
 
+    def test_oxe_cpu_is_staged_before_platform_probes_or_execution(self):
+        out_dir = os.path.join(self.tmp, "out")
+        err = io.StringIO()
+        with mock.patch.object(mr.subprocess, "run", side_effect=AssertionError("started a command")), \
+             mock.patch.object(mr, "collect_hardware", side_effect=AssertionError("probed hardware")), \
+             mock.patch.object(mr, "_load_prompts", side_effect=AssertionError("read fixtures")):
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = mr.main(["run", "--stacks", "oxe-cpu", "--models-dir", self.models,
+                              "--oxe-bin", self.oxe, "--out", out_dir])
+        self.assertEqual(rc, 2)
+        self.assertIn("not available", err.getvalue())
+        self.assertIn("Linux affinity/futex", err.getvalue())
+        self.assertFalse(os.path.exists(out_dir))
+
     def test_missing_oxe_bin_fails_before_any_side_effect(self):
         out_dir = os.path.join(self.tmp, "out")
         err = io.StringIO()

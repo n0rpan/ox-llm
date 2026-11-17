@@ -12,7 +12,9 @@ WHAT IT DOES
     - mlx:         MLX via mlx-lm. MLX cannot load GGUF, so you convert the model to MLX
                    yourself and pass its directory with --mlx-model. These receipts say
                    "same_quant_file": false.
-    - oxe-cpu:     the repository's own CPU-only engine, using an `oxe` binary you installed
+    - oxe-cpu:     STAGED, not runnable on this Mac runner. The engine requires Linux scheduler
+                   affinity/futex APIs; aarch64 alone does not provide a macOS build. Uses an
+                   `oxe` binary you installed
                    yourself (--oxe-bin PATH). Decode (`oxe bench`) and prefill (`oxe
                    prefill-bench`) are timed separately. Both read the same verified GGUF file
                    as the llama.cpp arms, so same_quant_file is true, but they take fixed token
@@ -58,7 +60,8 @@ COMMANDS (run from the directory that holds this script)
      DIR is the folder with the GGUF files; --llama-dir is your llama.cpp checkout.
   4. python3 mac_reproduce.py run --models-dir DIR --oxe-bin PATH --out receipts/ \
          --stacks oxe-cpu
-     PATH is the `oxe` binary you installed from this repository; nothing is downloaded.
+     Plan only: `run` refuses this arm until a supported execution path exists.
+     The current engine requires Linux affinity/futex; this runner requires Mac sysctl.
   Please send back only the receipts/*.json files.
 
   No CPU-vs-GPU/Metal/MLX ratio is a gate. A decode or prefill ratio between arms is only
@@ -959,7 +962,7 @@ def run_oxe_cell(cell, oxe_bin, model_path, stack, threads, reps, tmpdir, path_m
     ids = oxe_prompt_ids()
     prompt_arg = _oxe_ids_arg(ids)
     id_placeholder = "<synthetic-ids:%d>" % len(ids)
-    exact = {prompt_arg: id_placeholder}
+    exact = {prompt_arg: id_placeholder, oxe_bin: "<oxe-bin>"}
     path_map = dict(path_map)
     path_map[oxe_bin] = "<oxe-bin>"
     path_map[model_path] = "<models-dir>"
@@ -1192,6 +1195,7 @@ def cmd_plan(args):
             if stack == "oxe-cpu":
                 model_path = "<models-dir>/" + MANIFEST[mid]["files"][0]["name"]
                 threads = "<performance-cores>"
+                print("  staged, not available: oxe requires Linux affinity/futex; this runner uses Mac sysctl.")
                 print("  needs: --oxe-bin PATH, an oxe binary you installed from this repository (the "
                       "script never downloads, builds or installs it; no device is used)")
                 print("  format: same verified GGUF bytes as llama.cpp, but fixed token ids instead of "
@@ -1203,7 +1207,7 @@ def cmd_plan(args):
                 print("  input: %d fixed synthetic token ids (no fixture text reaches the engine)" % OXE_PROMPT_TOKENS)
                 continue
             if stack == "oxe-adapter":
-                print("  needs: the adapter arm (N4). Not available here: `run` refuses this stack and "
+                print("  needs: the adapter arm (N4). not available here: `run` refuses this stack and "
                       "writes no receipt.")
                 continue
             print("  needs: llama.cpp checkout at %s, clean tree, build/bin/llama-bench and llama-completion"
@@ -1274,6 +1278,11 @@ def cmd_run(args):
         if not ok:
             print("error: %s. Nothing was run and no receipt was written." % problem, file=sys.stderr)
             return 2
+        print("error: oxe-cpu is staged, not available: the engine requires Linux affinity/futex "
+              "APIs and this runner requires Mac performance-core sysctl. Aarch64 alone is not "
+              "a supported macOS execution path. Nothing was run and no receipt was written.",
+              file=sys.stderr)
+        return 2
     prompts = _load_prompts(args.fixtures)
     hardware = collect_hardware()
     if hardware["performance_cores"] < 1:

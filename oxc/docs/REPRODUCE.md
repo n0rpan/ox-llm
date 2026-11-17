@@ -109,7 +109,7 @@ For the full controller (one port, lazy loading, idle unload, memory guard, pref
 | MoE prefill | `oxe bench` prefill shapes (2,048 new tokens on prefix 0 / 6,144) | report the kernel mask and group |
 | Flash decode / prefill | `flash-m3` in the engine repo (`prefill`, `export`, `bench-dense`) and timed requests against `oxe-server --engine flash` | always state the cache size and the free RAM at launch |
 | Stock baseline | upstream llama.cpp at `5f490d7bfe78844e6390c869454c149fd7e003a8`, `llama-bench -p 512 -n 128` at 8 and 12 threads | [UPSTREAM-EVIDENCE.md](UPSTREAM-EVIDENCE.md) |
-| Mac comparison | `python3 tools/mac_reproduce.py plan` / `verify-models` / `run` | same model files by SHA256; untested on a Mac. `--stacks oxe-cpu --oxe-bin PATH` adds the repo's own CPU engine (`oxe bench` decode, `oxe prefill-bench` prefill, recorded separately); oxe reads its own quantisation, so that receipt says `unmatched_format` and no format-matched ratio is claimed |
+| Mac comparison | `python3 tools/mac_reproduce.py plan` / `verify-models` / `run` | same model files by SHA256; untested on a Mac. `plan --stacks oxe-cpu` stages the repo's CPU arm (`oxe bench` decode, `oxe prefill-bench` prefill, recorded separately), but `run` refuses it: the engine requires Linux affinity/futex and this runner requires Mac sysctl; oxe reads its own quantisation, so that receipt says `unmatched_format` and no format-matched ratio is claimed |
 | Your own receipt | `python3 -I tools/export_receipt.py export …` | keeps numbers, hashes, argv and hardware; refuses to write anything that looks like a path, user, host, serial or key |
 
 Rules that make a number comparable with ours (details in [RESULTS.md §2](RESULTS.md#2-method)):
