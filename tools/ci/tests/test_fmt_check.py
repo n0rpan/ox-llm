@@ -53,9 +53,10 @@ class FmtCheck(unittest.TestCase):
         self.executable(self.bin / 'getent',
                         'printf "u:x:1000:1000::%s:/bin/sh\\n" "{}"\n'.format(home))
 
-    def run_check(self, cwd, path=None):
+    def run_check(self, cwd, path=None, **overrides):
         env = {'PATH': os.pathsep.join(str(p) for p in (path or [self.bin])),
                'HOME': str(self.root / 'home'), 'FMT_LOG': str(self.log), 'LANG': 'C'}
+        env.update(overrides)
         return subprocess.run(['/bin/sh', str(SCRIPT)], cwd=str(cwd), env=env,
                               text=True, capture_output=True)
 
@@ -145,6 +146,15 @@ class FmtCheck(unittest.TestCase):
         done = self.run_check(self.workspace)
         self.assertEqual(done.returncode, 0, done.stderr)
         self.assertIn('cargo=' + str(selected / 'cargo'), self.calls())
+    def test_short_toolchain_name_resolves_its_installed_host_suffix(self):
+        selected = (self.root / 'home' / '.rustup' / 'toolchains' /
+                    'stable-x86_64-unknown-linux-gnu' / 'bin')
+        self.fake_cargo(selected)
+        self.fake_cargo_fmt(selected)
+        done = self.run_check(self.workspace, RUSTUP_TOOLCHAIN='stable')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('cargo=' + str(selected / 'cargo'), self.calls())
+
 
 ROOT = Path(__file__).resolve().parents[3]
 HELPER = ROOT / 'tools/ci/fmt_check.sh'
