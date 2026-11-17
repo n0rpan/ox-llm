@@ -1507,6 +1507,25 @@ fn execute(
     out: &Sender<WorkerMsg>,
 ) -> (Result<(), OxaError>, bool) {
     match cmd {
+        SessionCmd::QueuedInput(handle) => {
+            handle.clear_queued_wake();
+            let (steering, follow_up) = handle.queued();
+            // A failed/blocked/interrupted run retains queued input for explicit recovery.
+            // A wake may bridge successful completion, never override that stop boundary.
+            let can_continue = matches!(
+                s.outcome(),
+                oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo
+            );
+            let result = if handle.same_instance(&s.handle())
+                && can_continue
+                && (!steering.is_empty() || !follow_up.is_empty())
+            {
+                s.run_queued(sink, ui).map(|_| ())
+            } else {
+                Ok(())
+            };
+            (result, false)
+        }
         SessionCmd::Inbox { session_id } => {
             s.handle().clear_inbox_wake();
             // A coalesced wake may carry an older destination. Only run the
@@ -2418,3 +2437,6 @@ mod toolcall_stream_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod steering_tests;
