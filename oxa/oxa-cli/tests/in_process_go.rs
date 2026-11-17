@@ -516,7 +516,9 @@ fn native_go_text_deltas_allow_null_or_empty_tool_calls_and_keep_final_usage() {
         assert_eq!(ledger[0]["subscription_tokens"], 105);
         assert!(ledger[0].get("usage_missing").is_none());
         assert_eq!(mock.requests().len(), 2);
-        mock.assert_healthy();
+        // The client returned at [DONE]; draining peers before the verdict keeps
+        // the late transfer-end write out of the health check (#514 lane).
+        mock.finish();
     }
 }
 
@@ -554,7 +556,7 @@ fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
         assert_eq!(ledger[0]["usage_missing"], true);
         assert_eq!(mock.requests().len(), 2);
         eprintln!("synthetic_tool_shape_case={case}");
-        mock.assert_healthy();
+        mock.finish();
     }
 }
 
