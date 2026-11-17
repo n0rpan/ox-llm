@@ -251,6 +251,16 @@ pub fn text(path: &[&str]) -> Option<String> {
     entries().into_iter().find(|e| e.path == path).map(render)
 }
 
+/// Existing table's early CLI bridge; the shared #1062 registry will generate this route.
+pub(crate) fn from_argv(argv: &[String]) -> Option<Result<String, &'static str>> {
+    let (name, words) = argv.split_first()?;
+    if name == "help" {
+        let path: Vec<_> = words.iter().map(String::as_str).collect();
+        return Some(text(if path.is_empty() { &["help"] } else { &path }).ok_or("unknown help command"));
+    }
+    requested(name, words).map(Ok)
+}
+
 /// The longest public command path that is a prefix of `words`.
 fn longest(words: &[&str]) -> Option<&'static Entry> {
     (1..=words.len())

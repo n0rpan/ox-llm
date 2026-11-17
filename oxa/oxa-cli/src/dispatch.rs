@@ -77,6 +77,21 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         cwd,
     } = io;
 
+    if let Some(help) = crate::help::from_argv(argv) {
+        return match help {
+            Ok(text) => {
+                if stdout.write_all(text.as_bytes()).is_ok() {
+                    0
+                } else {
+                    2
+                }
+            }
+            Err(message) => {
+                let _ = writeln!(stderr, "{message}");
+                2
+            }
+        };
+    }
     let a = match parse_args(argv, &[]) {
         Ok(a) => a,
         Err(e) => {
