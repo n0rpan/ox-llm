@@ -7,6 +7,7 @@ pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, ReleaseRec
 pub mod assignment;
 mod intake;
 pub use intake::{ImportState, Issue, Snapshot};
+pub mod review;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -170,13 +171,7 @@ impl Board {
                 Action::FixRequiredCi
             } else if pr.mergeability == Mergeability::Conflicting {
                 Action::ResolveConflict
-            } else if pr.removes_source
-                && !pr.body.lines().any(|line| {
-                    line.trim()
-                        .strip_prefix("Removes:")
-                        .is_some_and(|note| !note.trim().is_empty())
-                })
-            {
+            } else if pr.removes_source && !review::has_removes_note(&pr.body) {
                 Action::AddRemoves
             } else if pr.required_ci != RequiredCi::Passed {
                 Action::WaitRequiredCi
