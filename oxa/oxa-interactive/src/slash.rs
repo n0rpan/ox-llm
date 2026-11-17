@@ -141,8 +141,12 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
         {
             return None;
         }
-        let e = OxaError::unsupported(&format!("/{name}"))
-            .with_hint("oxa has no provider login and no upload; see PARITY.md");
+        let hint = match name {
+            "login" => "For ChatGPT sign-in, run `oxa login chatgpt --experimental` in a shell.",
+            "logout" => "For ChatGPT sign-out, run `oxa logout chatgpt` in a shell.",
+            _ => "The /share transcript upload command is unavailable. `oxa share key <add|list|revoke>` manages guest keys; it does not upload this conversation.",
+        };
+        let e = OxaError::unsupported(&format!("/{name}")).with_hint(hint);
         return Some(notify(Level::Error, format!("{}: {}", e.code, e)));
     }
 

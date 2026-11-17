@@ -73,7 +73,7 @@ impl Default for TermOpts {
 /// * Resize through `SIGWINCH` (a flag set by the handler, read by `poll`).
 /// * `poll` reads fd 0 with `libc::poll`, feeds [`crate::parse_input`], and applies the ESC
 ///   timeout with [`crate::flush_pending`].
-/// * `SIGTERM`/`SIGHUP` restore the terminal before the process exits.
+/// * `SIGTERM` restores before terminating; `SIGHUP` is reported as terminal loss for orderly shutdown.
 pub struct ProcessTerminal {
     /// Bytes written but not yet flushed.
     out: Vec<u8>,
@@ -193,6 +193,9 @@ impl ProcessTerminal {
     fn wait(&mut self, timeout_ms: u64, out: &mut Vec<InputEvent>) -> bool {
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
+            if HUNG_UP.load(Ordering::SeqCst) {
+                return false;
+            }
             let (events, used, paste_open) = drain_ready(&mut self.pending, &mut self.paste_scan);
             {
                 if used > 0 || self.pending.is_empty() {
@@ -304,8 +307,8 @@ impl Terminal for ProcessTerminal {
     fn poll(&mut self, timeout_ms: u64) -> Vec<InputEvent> {
         let mut out = std::mem::take(&mut self.queued);
         self.resize_into(&mut out);
-        if out.is_empty() {
-            self.wait(timeout_ms, &mut out);
+        if HUNG_UP.load(Ordering::SeqCst) || (out.is_empty() && !self.wait(timeout_ms, &mut out)) {
+            out.push(InputEvent::TerminalClosed);
         }
         out
     }
@@ -509,6 +512,8 @@ static SAVED: OnceLock<libc::termios> = OnceLock::new();
 static PANIC_HOOK: AtomicBool = AtomicBool::new(false);
 static PANIC_OWNER: OnceLock<std::thread::ThreadId> = OnceLock::new();
 static SIGNALS: Once = Once::new();
+// Signal handlers only publish terminal loss; the UI owns orderly worker/session shutdown.
+static HUNG_UP: AtomicBool = AtomicBool::new(false);
 /// The terminal has kitty keyboard flags pushed on the alternate screen (for the emergency
 /// restore of a panic or a signal, which cannot see the terminal's mode list).
 static ALT_KITTY: AtomicBool = AtomicBool::new(false);
@@ -598,6 +603,10 @@ extern "C" fn on_winch(_sig: libc::c_int) {
     // Only interrupts `poll`; the size is compared in `resize_into`.
 }
 
+extern "C" fn on_hangup(_sig: libc::c_int) {
+    HUNG_UP.store(true, Ordering::SeqCst);
+}
+
 extern "C" fn on_terminate(sig: libc::c_int) {
     emergency_restore();
     unsafe {
@@ -618,7 +627,7 @@ fn install_signals() {
         );
         libc::signal(
             libc::SIGHUP,
-            on_terminate as extern "C" fn(libc::c_int) as libc::sighandler_t,
+            on_hangup as extern "C" fn(libc::c_int) as libc::sighandler_t,
         );
     });
 }
