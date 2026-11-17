@@ -56,6 +56,8 @@ authenticated `gh` CLI to fetch the issue title, body, state and comments, and t
 one lookup is the whole task packet the worker receives: the worker stays inside a
 sandbox that cannot read the issue, so the state and the comment thread (oldest
 first, bounded to 16 KiB with an explicit truncation marker) arrive with the text.
+If comments are truncated, the worker asks its runner for the missing data instead
+of fetching the issue itself.
 A reply body that is not text, or a malformed state, refuses the task instead of
 dropping it. Issue lookup is refused when the environment or user settings enable
 offline mode.

@@ -344,7 +344,7 @@ fn bounded(text: &str, limit: usize) -> String {
         end -= 1;
     }
     format!(
-        "{}\n--- further comments truncated; open the issue for the rest ---\n",
+        "{}\n--- further comments truncated; ask the runner for the rest ---\n",
         &text[..end]
     )
 }
@@ -817,9 +817,83 @@ mod tests {
         .unwrap();
         assert!(prompt.len() < MAX_COMMENT_BYTES + 1024, "{}", prompt.len());
         assert!(
-            prompt.contains("further comments truncated; open the issue for the rest"),
+            prompt.contains("further comments truncated; ask the runner for the rest"),
             "{prompt}"
         );
         assert!(!prompt.contains("tail"), "{prompt}");
+    }
+}
+
+#[cfg(test)]
+mod comment_packet_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn issue_prompt_carries_comment_findings_after_the_body() {
+        let prompt = issue_prompt(
+            42,
+            &json!({
+                "title": "Dogfood task",
+                "body": "Fix the fixture",
+                "state": "OPEN",
+                "comments": [
+                    {"author": {"login": "reviewer"}, "body": "Keep the frame when delegating"},
+                    {"author": null, "body": "   "},
+                ],
+            }),
+        )
+        .unwrap();
+        assert!(prompt.starts_with("Implement issue #42: Dogfood task\n\nFix the fixture"));
+        assert!(prompt.contains("--- comment by reviewer ---\nKeep the frame when delegating"));
+        assert!(!prompt.contains("--- comment by unknown ---"));
+        assert!(prompt.find("Fix the fixture") < prompt.find("Keep the frame"));
+    }
+
+    #[test]
+    fn issue_prompt_tolerates_missing_comments_and_keeps_body_errors() {
+        let prompt = issue_prompt(7, &json!({"title": "t", "body": "b", "state": "OPEN"})).unwrap();
+        assert_eq!(
+            prompt,
+            "Implement issue #7: t\n\nb\n\nRunner-fetched issue state: OPEN."
+        );
+        assert!(issue_prompt(7, &json!({"body": "b"})).is_err());
+        assert!(issue_prompt(7, &json!({"title": "t"})).is_err());
+        assert!(issue_prompt(
+            7,
+            &json!({"title": "t", "body": "b",
+                "state": "OPEN", "comments": "no"})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn issue_prompt_bounds_a_long_thread_without_splitting_a_character() {
+        let comment = "x".repeat(MAX_COMMENT_BYTES) + "é";
+        let prompt = issue_prompt(
+            1,
+            &json!({
+                "title": "t",
+                "body": "b",
+                "state": "OPEN",
+                "comments": [
+                    {"author": {"login": "a"}, "body": comment},
+                    {"author": {"login": "b"}, "body": "later finding"},
+                ],
+            }),
+        )
+        .unwrap();
+        assert!(prompt.contains("further comments truncated"), "{prompt}");
+        assert!(!prompt.contains("later finding"));
+        assert!(prompt.ends_with("ask the runner for the rest ---\n"));
+        let thread = &prompt[prompt.find("--- comment by a ---").unwrap()..];
+        assert!(thread.len() < MAX_COMMENT_BYTES + 256, "{}", thread.len());
+        assert!(thread.starts_with("--- comment by a ---\nx"));
+    }
+
+    #[test]
+    fn bounded_keeps_short_text_unchanged() {
+        assert_eq!(bounded("short", 16), "short");
+        assert!(bounded("é", 1).contains("truncated"));
     }
 }

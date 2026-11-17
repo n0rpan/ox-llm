@@ -253,6 +253,8 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OP
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "issue task did not run: {stderr}");
     let record: serde_json::Value = String::from_utf8_lossy(&out.stdout)
         .lines()
         .next()
@@ -263,15 +265,69 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OP
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
     // The packet the child receives is the one lookup: text, state and comments. A worker
     // that cannot read the issue itself must not receive a title-shaped packet.
-    let request = server.requests().remove(0);
-    let user = request
-        .messages
-        .last()
-        .and_then(|m| m.content.as_deref())
-        .unwrap_or_default();
-    assert!(user.contains("Fix the test fixture"), "{user}");
-    assert!(user.contains("Runner-fetched issue state: OPEN."), "{user}");
-    assert!(user.contains("Synthetic follow-up finding"), "{user}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "worker made no request: {record}");
+    let request = &requests[0];
+    let prompt = std::iter::once(request.system.as_str())
+        .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("Fix the test fixture"), "{prompt}");
+    assert!(prompt.contains("Runner-fetched issue state: OPEN."), "{prompt}");
+    assert!(prompt.contains("Synthetic follow-up finding"), "{prompt}");
+}
+/// A dogfood issue carried its content in comments, so a packet built from the
+/// title and body alone reached the worker without it. The child's first request
+/// must contain the body and the comment findings, all as data.
+#[test]
+fn github_issue_packet_carries_comment_findings() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r##"#!/bin/sh
+[ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OPEN","comments":[{"author":{"login":"reviewer"},"body":"Review finding: keep the frame when delegating"},{"author":null,"body":"Unknown-author finding"}]}'
+"##,
+    );
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "issue task did not run: {stderr}");
+    let record: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {stderr}"));
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "worker made no request: {record}");
+    let mut prompt = requests[0].system.clone();
+    for message in &requests[0].messages {
+        if let Some(content) = &message.content {
+            prompt.push('\n');
+            prompt.push_str(content);
+        }
+    }
+    assert!(prompt.contains("Fix the test fixture"), "{prompt}");
+    assert!(
+        prompt.contains("Review finding: keep the frame when delegating"),
+        "issue comments were not in the task packet: {prompt}"
+    );
+    assert!(prompt.contains("reviewer"), "{prompt}");
+    assert!(prompt.contains("Runner-fetched issue state: OPEN."), "{prompt}");
+    assert!(
+        prompt.contains("--- comment by unknown ---\nUnknown-author finding"),
+        "{prompt}"
+    );
 }
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
