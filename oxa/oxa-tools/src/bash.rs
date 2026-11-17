@@ -552,11 +552,16 @@ impl BashTool {
 
         let mut output = String::from_utf8_lossy(&res.output).into_owned();
         // #1058: with a session scratch directory the write survives the call, so a successful
-        // one is not a lifetime risk (the scratch view the bash tool runs in decides).
-        let persistence_relevant =
-            persistence_relevant(raw_command, res.exit, &output, cx.sandbox.scratch_dir().is_some());
-        if let Some(notice) = self
-            .sandbox(cx)
+        // one is not a lifetime risk. The sandbox that supplies the notice also decides: a tool
+        // with its own sandbox (#202) runs, and explains, through that one, not `ToolCtx`'s.
+        let notice_source = self.sandbox(cx);
+        let persistence_relevant = persistence_relevant(
+            raw_command,
+            res.exit,
+            &output,
+            notice_source.scratch_dir().is_some(),
+        );
+        if let Some(notice) = notice_source
             .persistence_notice()
             .filter(|_| persistence_relevant)
         {
@@ -755,6 +760,33 @@ mod tests {
         assert!(!persistence_relevant("false", Some(1), "", false));
     }
 
+    /// #1058: the sandbox that supplies the notice decides whether a write persists. A tool with
+    /// its own session-scratch sandbox (#202) must not read `ToolCtx`'s per-command sandbox.
+    #[test]
+    fn persistence_notice_follows_the_sandbox_that_prints_it() {
+        let own = Fake {
+            scratch: Some(PathBuf::from("/scratch/session")),
+            ..Fake::ok(b"", Some(0))
+        };
+        let tool = BashTool::new().with_sandbox(Arc::new(own));
+        let cx_sandbox = Fake::ok(b"", Some(0));
+        let cancel = CancelToken::new();
+        let cx = ToolCtx {
+            checked: &[],
+            cwd: Path::new("/work"),
+            spill_dir: Path::new("/work"),
+            sandbox: &cx_sandbox,
+            mode: Mode::Workspace,
+            cancel: &cancel,
+            env: &[],
+            tune: Default::default(),
+            hidden: None,
+        };
+        let out = tool.run(&json!({"command": "echo x > /tmp/oxa-1058"}), &cx, &mut |_| {});
+        assert!(!out.is_error, "{}", out.text);
+        assert_eq!(out.text, "(no output)", "{}", out.text);
+    }
+
     /// #532: a successful read that merely mentions /tmp gets no persistence notice.
     #[test]
     fn scratch_notice_only_for_writes() {
@@ -840,6 +872,8 @@ echo '\''a'\'''"#
         chunks: Vec<Vec<u8>>,
         seen: Mutex<Option<ExecSpec>>,
         home: Option<PathBuf>,
+        /// #1058: the host directory this sandbox mounts at `/tmp` (a session scratch).
+        scratch: Option<PathBuf>,
     }
 
     impl Fake {
@@ -854,6 +888,7 @@ echo '\''a'\'''"#
                 chunks: vec![output.to_vec()],
                 seen: Mutex::new(None),
                 home: None,
+                scratch: None,
             }
         }
     }
@@ -867,6 +902,9 @@ echo '\''a'\'''"#
         }
         fn home(&self) -> Option<&Path> {
             self.home.as_deref()
+        }
+        fn scratch_dir(&self) -> Option<&Path> {
+            self.scratch.as_deref()
         }
         fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
             Vec::new()
