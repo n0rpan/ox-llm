@@ -442,7 +442,7 @@ fn native_local_settings(env: &TestEnv, valid: bool) {
         serde_json::json!({"binary":"/synthetic/not-launched-oxe",
             "models":{"synthetic-local":{"model":"/synthetic/model.gguf"}},
             "limits":{"synthetic-local":{"context_window":4096,"max_output":64,
-                "required_available_bytes":1048576}}})
+                "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}})
     } else {
         serde_json::json!({})
     };
