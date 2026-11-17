@@ -801,7 +801,7 @@ async fn openrouter_null_identity_support_keeps_required_and_typed_identity_guar
 }
 
 #[tokio::test]
-async fn openrouter_repeated_whole_tool_names_are_idempotent_and_fragments_still_append() {
+async fn openrouter_repeated_whole_tool_identities_are_idempotent_and_name_fragments_still_append() {
     for names in [
         vec!["list_files", "list_files"],
         vec!["list_", "files"],
@@ -809,11 +809,8 @@ async fn openrouter_repeated_whole_tool_names_are_idempotent_and_fragments_still
     ] {
         let mut events = Vec::new();
         for (index, name) in names.iter().enumerate() {
-            let mut call = json!({"index":3,"function":{"name":name,
+            let call = json!({"index":3,"id":"synthetic-call","function":{"name":name,
                 "arguments":if index == 0 {"{\"path\":"} else if index == 1 {"\"note.txt\"}"} else {""}}});
-            if index == 0 {
-                call["id"] = json!("synthetic-call");
-            }
             events.push(json!({"choices":[{"index":0,"delta":{"tool_calls":[call]},"finish_reason":null}]}));
         }
         events.push(
@@ -846,6 +843,7 @@ async fn openrouter_repeated_whole_tool_names_are_idempotent_and_fragments_still
             .filter_map(|v| v.pointer("/choices/0/delta/tool_calls/0"))
             .collect();
         assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "synthetic-call");
         assert_eq!(calls[0]["function"], call["function"]);
         assert_eq!(rows(&fixture)[0]["settled"], "usage");
         mock.finish();
