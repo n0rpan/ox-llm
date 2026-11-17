@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// `bash {command, timeout?}`: runs through `ToolCtx::sandbox` (never directly). `writable` = mode is not Plan; `net` = [`net_for`] (O-167(b): the sandbox network by mode and `oxa.sandbox.net`; `access` keeps `net: false`). Output streams to `live`; the result text is the merged output plus pi's exit-code / timeout lines; no timing text (W4). If `sandbox.check()` fails the result is that error (`is_error`). `ToolOutput::ui` = `{"exit": n|null, "timedOut": bool}`. Environment: `ToolCtx::env`.
+/// `bash {command, timeout?}`: runs through `ToolCtx::sandbox` (never directly). `writable` = mode is not Plan; `net` = [`net_for`] (O-167(b): the sandbox network by mode and `oxa.sandbox.net`; `access` keeps `net: false`). Output streams to `live`; the result text is the merged output plus the exit-status, timeout or aborted line (pi's, always present); no timing text (W4). If `sandbox.check()` fails the result is that error (`is_error`). `ToolOutput::ui` = `{"exit": n|null, "timedOut": bool}`. Environment: `ToolCtx::env`.
 #[derive(Debug, Clone)]
 pub struct BashTool {
     spec: ToolSpec,
@@ -627,8 +627,10 @@ impl BashTool {
                 is_error: true,
                 ui,
             },
+            // Issue #992: a successful command names its status too. Without it a pipeline that
+            // reports its last stage (`head`, `tail`) as 0 can read as a passed check.
             Some(0) => ToolOutput {
-                text: shown,
+                text: errors::bash_with_status(&shown, &errors::bash_exit(0)),
                 is_error: false,
                 ui,
             },
@@ -1134,7 +1136,7 @@ echo '\''a'\'''"#
                 &CancelToken::new(),
             );
             assert!(!res.is_error);
-            assert_eq!(res.text, "(no output)", "{cmd}");
+            assert_eq!(res.text, "(no output)\n\nCommand exited with code 0", "{cmd}");
         }
     }
 
@@ -1157,7 +1159,7 @@ echo '\''a'\'''"#
             );
             assert!(!res.is_error);
             assert!(
-                res.text == "(no output)",
+                res.text == "(no output)\n\nCommand exited with code 0",
                 "a pipeline's empty output must not receive a comments hint"
             );
         }
@@ -1178,7 +1180,12 @@ echo '\''a'\'''"#
                 );
                 if exit == Some(0) {
                     assert!(!res.is_error);
-                    assert_eq!(res.text, output, "successful inspection of {path}");
+                    let status = "Command exited with code 0";
+                    assert!(
+                        res.text.starts_with(&output) && res.text.ends_with(status),
+                        "successful inspection of {path}: {}",
+                        res.text
+                    );
                 } else {
                     assert!(res.text.contains(&format!("git could not write {path}:")));
                     assert_eq!(
@@ -1203,7 +1210,8 @@ echo '\''a'\'''"#
         );
         assert!(!res.is_error);
         assert!(!res.text.contains("read-only in the sandbox"), "{}", res.text);
-        assert_eq!(res.text.trim_end().lines().count(), 1, "{}", res.text);
+        // The JSON line, the blank run its trailing newline makes, and the status line.
+        assert_eq!(res.text.lines().count(), 4, "{}", res.text);
         // Even a line starting with git's words does not count when the command succeeded.
         let sb = Fake::ok(b"error: could not write config file x\n", Some(0));
         let (res, _) = run_with(
@@ -1213,6 +1221,21 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert!(!res.text.contains("read-only in the sandbox"), "{}", res.text);
+    }
+
+    /// Issue #992: a result names the command's own exit status, a successful command
+    /// included, so a caller never infers the status from a line the tool omitted (a pipeline
+    /// reports its last stage, so its output can still hide a failed check).
+    #[test]
+    fn every_result_names_the_commands_exit_status() {
+        let sb = Fake::ok(b"Differences found in 1 file\n", Some(0));
+        let (out, _) = run_with(&sb, json!({"command": "x"}), Mode::Workspace, &CancelToken::new());
+        assert!(!out.is_error);
+        assert_eq!(
+            out.text,
+            "Differences found in 1 file\n\nCommand exited with code 0"
+        );
+        assert_eq!(out.ui, json!({"exit": 0, "timedOut": false}));
     }
 
     #[test]
@@ -1231,7 +1254,7 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert!(!out.is_error);
-        assert_eq!(out.text, "(no output)");
+        assert_eq!(out.text, "(no output)\n\nCommand exited with code 0");
 
         let sb = Fake::ok(b"", Some(1));
         let (out, _) = run_with(
@@ -1264,7 +1287,7 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert!(
-            out.text.ends_with(descriptions::errors::BASH_BACKGROUND_STOPPED),
+            out.text.contains(descriptions::errors::BASH_BACKGROUND_STOPPED),
             "{}",
             out.text
         );
@@ -1410,7 +1433,8 @@ echo '\''a'\'''"#
         sb.result.output = "€!\u{FFFD}".as_bytes().to_vec();
         let (out, streamed) = run_with(&sb, json!({"command": "x"}), Mode::Workspace, &CancelToken::new());
         assert_eq!(streamed, "€!\u{FFFD}");
-        assert_eq!(out.text, "€!\u{FFFD}");
+        assert!(out.text.starts_with("€!\u{FFFD}"), "{:?}", out.text);
+        assert!(out.text.ends_with("Command exited with code 0"), "{:?}", out.text);
     }
 
     #[test]
@@ -1476,7 +1500,7 @@ echo '\''a'\'''"#
         let expected = "Compiling a v1\n   \n\t\nerror: boom  \n\n\nnext\t\t\n";
         let sb = Fake::ok(raw.as_bytes(), Some(0));
         let plain = run_tuned(&sb, json!({"command": "x"}), Default::default());
-        assert_eq!(plain.text, raw);
+        assert_eq!(plain.text, format!("{raw}\n\nCommand exited with code 0"));
 
         let sb = Fake::ok(raw.as_bytes(), Some(0));
         let diet = oxa_proto::ToolTune {
@@ -1484,7 +1508,7 @@ echo '\''a'\'''"#
             ..Default::default()
         };
         let out = run_tuned(&sb, json!({"command": "x"}), diet);
-        assert_eq!(out.text, expected);
+        assert_eq!(out.text, format!("{expected}\n\nCommand exited with code 0"));
         assert!(!out.is_error);
 
         // Deterministic and idempotent; one or two blank lines and trailing blanks are kept.

@@ -568,8 +568,10 @@ fn tools_009() {
     );
 }
 
-/// TOOLS-010 (P): `bash` runs the command; stdout and stderr are combined; the status line ends the output.
+/// TOOLS-010 (A): `bash` runs the command; stdout and stderr are combined; the status line ends the output.
 /// pi: `packages/coding-agent/src/core/tools/bash.ts` (`Command exited with code N`).
+/// INVARIANT: the exit status is always on the result, a successful command included (issue
+/// #992), so a result is never read by the absence of a status line.
 #[test]
 fn tools_010() {
     let env = TestEnv::new();
@@ -597,9 +599,10 @@ fn tools_010() {
         r.ends_with("\n\nCommand exited with code 3"),
         "pi: status line: {r:?}"
     );
-    // pi: a zero exit adds no status line (`bash.ts`: only `exitCode !== 0` appends it).
+    // Issue #992: a zero exit names its status too, unlike pi (`bash.ts`: only
+    // `exitCode !== 0` appends it).
     let ok = run_one(&env, "bash", r#"{"command":"printf hi"}"#, &[]);
-    assert_eq!(ok, "hi", "pi: no status line on exit 0");
+    assert_eq!(ok, "hi\n\nCommand exited with code 0");
 }
 
 /// TOOLS-011 (A): bash output over the cap keeps head and tail and names a spill file.

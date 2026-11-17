@@ -60,6 +60,10 @@ usage, so reported reasoning tokens can be one greater than the text cap.
 
 - **bash timeout.** A bash call with no `timeout` stops after 120 seconds.
   `oxa.bash.defaultTimeout` sets the value; `0` means none.
+- **bash exit status.** Every bash result ends with the command's own status line,
+  `Command exited with code 0` included, so a result is never read from a missing line. A
+  pipeline or a `;` list reports only its last command's status: in
+  `cmd | head; echo "exit: $?"` the printed status is `head`'s, not `cmd`'s.
 - **Shorter first page of `read`.** A `read` with no `offset` or `limit` returns the first 400
   lines, and at most 8 KiB. On a model with a context below 32K tokens it returns 200 lines and
   the byte cap is lower. The first page ends with a note that says how to continue, and

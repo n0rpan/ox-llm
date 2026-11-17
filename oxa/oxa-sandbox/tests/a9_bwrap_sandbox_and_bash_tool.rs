@@ -620,7 +620,7 @@ fn bash_tool_refuses_without_sandbox() {
     assert!(!marker.exists(), "nothing may run without a sandbox");
 }
 
-/// pi's texts, no timings
+/// The tool's status texts, no timings.
 #[test]
 fn bash_tool_exit_code_and_timeout_lines() {
     use oxa_proto::Tool;
@@ -645,7 +645,8 @@ fn bash_tool_exit_code_and_timeout_lines() {
 
     let out = run(serde_json::json!({ "command": "echo hi" }));
     assert!(!out.is_error, "{}", out.text);
-    assert_eq!(out.text, "hi\n");
+    // Issue #992: the status line is always present, exit 0 included.
+    assert_eq!(out.text, "hi\n\n\nCommand exited with code 0");
 
     let out = run(serde_json::json!({ "command": "echo hi; exit 3" }));
     assert!(out.is_error);
@@ -653,7 +654,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
     assert_eq!(out.ui, serde_json::json!({ "exit": 3, "timedOut": false }));
 
     let out = run(serde_json::json!({ "command": "true" }));
-    assert_eq!(out.text, "(no output)");
+    assert_eq!(out.text, "(no output)\n\nCommand exited with code 0");
 
     let notice = sb.persistence_notice().unwrap();
     // A successful command that only reads or mentions /tmp gets no notice (#532) ...
@@ -681,7 +682,12 @@ fn bash_tool_exit_code_and_timeout_lines() {
     ] {
         let out = run(serde_json::json!({ "command": command }));
         assert!(!out.is_error, "{}", out.text);
-        assert!(out.text.ends_with(notice), "{command}: {}", out.text);
+        assert!(out.text.contains(notice), "{command}: {}", out.text);
+        assert!(
+            out.text.ends_with("Command exited with code 0"),
+            "{command}: {}",
+            out.text
+        );
     }
     // A failing command also gets a notice, since the scratch lifetime may be the cause (#525).
     for command in ["cat /tmp/oxa-525-missing", "echo TMPDIR; exit 1"] {
@@ -703,7 +709,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
         assert!(!out.text.contains(notice), "successful output is not an error");
     }
     let out = run(serde_json::json!({ "command": "echo tmpdir /TMP" }));
-    assert_eq!(out.text, "tmpdir /TMP\n");
+    assert_eq!(out.text, "tmpdir /TMP\n\n\nCommand exited with code 0");
 
     // Scratch succeeds, but the model sees its lifetime; streaming process bytes stay raw.
     let mut live = String::new();
@@ -714,7 +720,8 @@ fn bash_tool_exit_code_and_timeout_lines() {
     );
     assert!(!out.is_error, "{}", out.text);
     assert_eq!(live, "scratch\n");
-    assert!(out.text.ends_with(notice), "{}", out.text);
+    assert!(out.text.contains(notice), "{}", out.text);
+    assert!(out.text.ends_with("Command exited with code 0"), "{}", out.text);
     let out = run(serde_json::json!({ "command": "test ! -e /tmp/oxa-98-tool" }));
     assert!(!out.is_error, "{}", out.text);
     let out = run(serde_json::json!({ "command": "echo lost > ~/oxa-98-tool" }));

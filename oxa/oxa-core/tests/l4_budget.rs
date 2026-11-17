@@ -201,7 +201,12 @@ fn with_a_soft_point_of_8000_caps_every_builtin_result_at_6000_bytes() {
     // bash: the tail is kept, and the notice names the spill file with the full output.
     let bash = &results[1];
     assert!(bash.contains("[output truncated:"), "bash: {bash}");
-    assert!(bash.trim_end().ends_with("20000"), "bash keeps the tail: {bash}");
+    assert!(bash.contains("\n20000\n"), "bash keeps the tail: {bash}");
+    // Issue #992: the exit-status line sits after the kept tail and survives the cap.
+    assert!(
+        bash.trim_end().ends_with("Command exited with code 0"),
+        "bash keeps the status line: {bash}"
+    );
     let spill = bash
         .split("full output in ")
         .nth(1)

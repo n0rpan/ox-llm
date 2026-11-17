@@ -212,7 +212,7 @@ pi page(s): cli.md#tools, usage.md, pi source tools/*. Tests: `oxa-parity/tests/
 | TOOLS-007 | `edit`: not found / duplicate / empty / overlap / no-change error texts | P | pi's exact texts | `tools.rs::tools_007` |
 | TOOLS-008 | `edit`: BOM, CRLF and mixed line endings preserved; fuzzy match fallback | P | edit-diff ported | `tools.rs::tools_008` |
 | TOOLS-009 | `edit`: legacy single `oldText`/`newText` input accepted | P |  | `tools.rs::tools_009` |
-| TOOLS-010 | `bash`: `command`, `timeout` seconds; combined stdout+stderr; exit code status line | P |  | `tools.rs::tools_010` |
+| TOOLS-010 | `bash`: `command`, `timeout` seconds; combined stdout+stderr; exit code status line | A | the status line is always present, exit 0 included, so a command's status is never read from a missing line (issue #992) | `tools.rs::tools_010` |
 | TOOLS-011 | `bash`: output truncated to the last 2000 lines or 50 KB, full output in a temp file | A | W4: head + tail + one fixed line naming a spill file (sha256 name) | `tools.rs::tools_011` |
 | TOOLS-012 | `bash`: timeout kills the process tree; background-writer case | A | W4: pi's text without the `after S seconds` clause (no timings in model-facing text) | `tools.rs::tools_012` |
 | TOOLS-013 | `bash` runs unsandboxed with the user's rights | A | bwrap sandbox; no bwrap = bash refuses; mode decides writable/net | `tools.rs::tools_013` |

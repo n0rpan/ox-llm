@@ -1663,9 +1663,11 @@ fn set_028() {
 
     let rig = Rig::new(&[bash_call("yes a | head -c 5000"), text("done")]);
     ok(&rig.print(&[]));
+    // Issue #992: the status line is part of the result, so the 5000-byte output arrives whole
+    // followed by its own status.
     assert_eq!(
         tool_result(&rig.bodies()[1]).len(),
-        5000,
+        5000 + "\n\nCommand exited with code 0".len(),
         "the default cap is 16 KiB: sent whole"
     );
 }
