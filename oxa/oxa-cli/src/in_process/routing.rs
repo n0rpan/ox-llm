@@ -286,6 +286,22 @@ mod tests {
         }
     }
     #[test]
+    fn suffix_preflight_preserves_whole_cloud_identity_and_unknown_level_errors() {
+        for (requested, cloud_alias) in [
+            ("opencode/custom-local:high", Some("opencode/custom-local:high")),
+            ("opencode/custom-local:not-a-level", None),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let saved = oxa_proto::offline_error("synthetic Go");
+            let mut router = routed(Err(saved.clone()), calls.clone());
+            router.local_models = BTreeSet::from(["opencode/custom-local".into()]);
+            router.cloud_models = cloud_alias.into_iter().map(str::to_owned).collect();
+            router.dynamic_go = true;
+            assert_eq!(router.into_engine(Some(requested)).err().unwrap(), saved);
+            assert!(calls.lock().unwrap().is_empty());
+        }
+    }
+    #[test]
     fn disabled_or_successfully_discovered_go_does_not_claim_unknown_models() {
         for enabled in [false, true] {
             let calls = Arc::new(Mutex::new(Vec::new()));
