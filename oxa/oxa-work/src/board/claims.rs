@@ -138,12 +138,15 @@ impl Claims {
     /// Atomic replacements permit a coherent per-PR read without taking execution leases.
     pub fn snapshot(&self) -> Result<BTreeMap<u64, AttemptState>> {
         Self::open(&self.root)?;
+        let lock = io(File::open(&self.root))?;
+        io(lock.lock())?;
         let mut states = BTreeMap::new();
         for entry in io(fs::read_dir(&self.root))? {
             let name = io(entry)?.file_name();
             let Some(id) = name.to_str().and_then(|s| {
                 s.strip_suffix(".board-claim.json")
                     .or_else(|| s.strip_suffix(".board-claim.lock"))
+                    .or_else(|| s.strip_suffix(".board-claim.created"))
             }) else {
                 continue;
             };
@@ -249,7 +252,7 @@ impl Claims {
             return Ok(false);
         }
         state.lease = None;
-        self.save(number, state, false)?;
+        self.save(number, state, true)?;
         Ok(true)
     }
 }
