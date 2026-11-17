@@ -391,8 +391,8 @@ async fn openrouter_held_key_equal_to_redaction_marker_is_still_refused() {
 #[tokio::test]
 async fn openrouter_fragmented_tools_and_usage_on_finish_chunk() {
     let mut events = vec![
-        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"synthetic-","function":{"name":"re","arguments":"{\"path\":"}}]},"finish_reason":null}]}),
-        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"call","function":{"name":"ad","arguments":"\"note.txt\"}"}}]},"finish_reason":null}]}),
+        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"synthetic-call","function":{"name":"re","arguments":"{\"path\":"}}]},"finish_reason":null}]}),
+        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"synthetic-call","function":{"name":"ad","arguments":"\"note.txt\"}"}}]},"finish_reason":null}]}),
     ];
     events.push(
         json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
@@ -714,6 +714,163 @@ async fn normalized_tool_reply(calls: Value) -> (Completed, Vec<Value>, Vec<Valu
     let ledger = rows(&fixture);
     mock.finish();
     (completed, output, ledger)
+}
+
+#[tokio::test]
+async fn openrouter_atomic_tool_ids_preserve_empty_and_replace_nonempty_values() {
+    for (continuation, expected_id) in [
+        (
+            json!({"index":3,"id":null,"function":{"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"function":{"name":null,"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"id":null,"function":{"name":null,"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"id":"","function":{"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"id":"synthetic-call","function":{"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"id":"replacement-call","function":{"arguments":"\"note.txt\"}"}}),
+            "replacement-call",
+        ),
+    ] {
+        let mock = MockAnthropic::start(vec![wire(
+            vec![
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"synthetic-call","function":{"name":"read","arguments":"{\"path\":"}}]},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[continuation]},"finish_reason":null}]}),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":21,"completion_tokens":5}}),
+            ],
+            true,
+        )]);
+        let (gateway, fixture) = gateway(&mock);
+        let mut output = Vec::new();
+        let completed = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    if let Event::Chunk(value) = event {
+                        output.push(value);
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap();
+        let expected = json!({"id":expected_id,"type":"function","function":{"name":"read","arguments":"{\"path\":\"note.txt\"}"}});
+        assert_eq!(completed.assistant["tool_calls"], json!([expected]));
+        let calls: Vec<_> = output
+            .iter()
+            .filter_map(|v| v.pointer("/choices/0/delta/tool_calls/0"))
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], expected_id);
+        assert_eq!(calls[0]["function"], expected["function"]);
+        assert_eq!(rows(&fixture)[0]["settled"], "usage");
+        mock.finish();
+    }
+}
+
+#[tokio::test]
+async fn openrouter_identity_support_keeps_required_typed_and_held_key_guards() {
+    for call in [
+        json!({"id":null,"function":{"name":"read","arguments":"{}"}}),
+        json!({"id":"synthetic-call","function":{"name":null,"arguments":"{}"}}),
+        json!({"id":17,"function":{"name":"read","arguments":"{}"}}),
+        json!({"id":"synthetic-call","function":{"name":{},"arguments":"{}"}}),
+        json!({"id":CREDENTIAL,"function":{"name":"read","arguments":"{}"}}),
+        json!({"id":"synthetic-call","function":{"name":CREDENTIAL,"arguments":"{}"}}),
+    ] {
+        let mock = MockAnthropic::start(vec![wire(
+            vec![json!({"choices":[{"index":0,
+            "delta":{"tool_calls":[call]},"finish_reason":"tool_calls"}],
+            "usage":{"prompt_tokens":21,"completion_tokens":5}})],
+            true,
+        )]);
+        let (gateway, fixture) = gateway(&mock);
+        let error = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    match event {
+                        Event::Chunk(value) => {
+                            assert!(value.pointer("/choices/0/delta/tool_calls").is_none())
+                        }
+                        Event::Done => panic!("missing or invalid identity cannot complete"),
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.refusal().code, "cloud_upstream_stream_broken");
+        assert_eq!(rows(&fixture)[0]["settled"], "reserved");
+        mock.finish();
+    }
+}
+
+#[tokio::test]
+async fn openrouter_repeated_whole_tool_identities_are_idempotent_and_name_fragments_still_append() {
+    for names in [
+        vec!["list_files", "list_files"],
+        vec!["list_", "files"],
+        vec!["list_", "files", "list_files"],
+    ] {
+        let mut events = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let call = json!({"index":3,"id":"synthetic-call","function":{"name":name,
+                "arguments":if index == 0 {"{\"path\":"} else if index == 1 {"\"note.txt\"}"} else {""}}});
+            events.push(json!({"choices":[{"index":0,"delta":{"tool_calls":[call]},"finish_reason":null}]}));
+        }
+        events.push(
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+            "usage":{"prompt_tokens":21,"completion_tokens":5}}),
+        );
+        let mock = MockAnthropic::start(vec![wire(events, true)]);
+        let (gateway, fixture) = gateway(&mock);
+        let mut output = Vec::new();
+        let completed = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    if let Event::Chunk(value) = event {
+                        output.push(value);
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap();
+        let call = &completed.assistant["tool_calls"][0];
+        assert_eq!(call["id"], "synthetic-call");
+        assert_eq!(call["function"]["name"], "list_files");
+        assert_eq!(call["function"]["arguments"], "{\"path\":\"note.txt\"}");
+        let calls: Vec<_> = output
+            .iter()
+            .filter_map(|v| v.pointer("/choices/0/delta/tool_calls/0"))
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["id"], "synthetic-call");
+        assert_eq!(calls[0]["function"], call["function"]);
+        assert_eq!(rows(&fixture)[0]["settled"], "usage");
+        mock.finish();
+    }
 }
 
 #[tokio::test]
