@@ -703,6 +703,7 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
             "APPROVED",
             serde_json::json!(["codex", "security"]),
         ),
+        (&[][..], "APPROVED", serde_json::json!(["codex", "security"])),
         (
             &["docs/token-usage.md"][..],
             "DISMISSED",
@@ -729,7 +730,7 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
             env.write(&format!("work/{path}"), "follow-up\n");
             git(&["add", "--", path]);
         }
-        git(&["commit", "-m", "follow-up"]);
+        git(&["commit", "--allow-empty", "-m", "follow-up"]);
         let new_head = git(&["rev-parse", "HEAD"]);
         detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = new_head.clone().into();
         let row = &mut detail["data"]["repository"]["p42"];
