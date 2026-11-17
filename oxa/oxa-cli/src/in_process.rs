@@ -57,6 +57,11 @@ pub(crate) fn report_diagnostics(
     if let Some(cause) = snapshot.cause {
         let _ = write!(stderr, " cause={}", cause.as_str());
     }
+    if snapshot.cause == Some(oxc_gateway::diagnostics::StreamCause::TerminalUsage) {
+        if let Some(check) = snapshot.terminal_check {
+            let _ = write!(stderr, " terminal_check={}", check.as_str());
+        }
+    }
     let _ = writeln!(stderr);
 }
 
