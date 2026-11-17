@@ -202,6 +202,30 @@ async fn openrouter_incomplete_or_invalid_stream_never_signals_done() {
     }
 }
 #[tokio::test]
+async fn openrouter_invalid_reasoning_usage_retains_reservation() {
+    for tokens in [json!(null), json!(-1), json!(1.5), json!("2"), json!(6)] {
+        let mut events = chunks();
+        events[3]["usage"]["completion_tokens_details"] = json!({"reasoning_tokens":tokens});
+        let mock = MockAnthropic::start(vec![wire(events, true)]);
+        let (gateway, fixture) = gateway(&mock);
+        let error = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    assert!(!matches!(event, Event::Done));
+                    Control::Continue
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.refusal().code, "cloud_upstream_stream_broken");
+        assert_eq!(rows(&fixture)[0]["settled"], "reserved");
+    }
+}
+#[tokio::test]
 async fn openrouter_credit_refusal_does_not_charge_the_reservation() {
     let mock = MockAnthropic::start(vec![Reply::error(402, CREDENTIAL)]);
     let (gateway, fixture) = gateway(&mock);
