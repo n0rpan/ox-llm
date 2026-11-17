@@ -168,7 +168,12 @@ fn generation_pty_ctrl_c_cancels_and_keeps_prompt_usable() {
     let mut p = Process::start(&env, &server, "tui");
     p.wait_text("READY");
     p.send(b"synthetic cancellation check\r");
-    p.wait_for(|| !server.requests().is_empty());
+    // The boot preload's zero-token request is recorded too, so `requests()` is non-empty before
+    // this prompt runs. Wait for the prompt's own `chat` request and for the run in the footer:
+    // only then is the session claimed, and Ctrl+C cancels the run instead of clearing an empty
+    // idle editor (which arms the exit and lets the generation finish).
+    p.wait_for(|| server.requests().iter().any(|r| r.kind == "chat"));
+    p.wait_text("THINKING");
     p.send(b"\x03");
     p.wait_text("partial reply dropped; your prompt stays");
     // A fresh prompt proves the first Ctrl+C did not arm exit or poison the next turn.
@@ -189,7 +194,7 @@ fn headless_sigint_returns_typed_interrupted_with_stdin_still_open() {
         } else {
             p.child.stdin.take();
         }
-        p.wait_for(|| !server.requests().is_empty());
+        p.wait_for(|| server.requests().iter().any(|r| r.kind == "chat"));
         p.signal();
         let out = p.finish();
         let err = String::from_utf8_lossy(&out.stderr);
