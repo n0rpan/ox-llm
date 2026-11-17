@@ -425,6 +425,9 @@ fn session_loop(
     gate: Arc<Mutex<Gate>>,
     bash_running: Arc<AtomicBool>,
     tx: Sender<Job>,
+    #[cfg(all(target_os = "linux", feature = "a2a-control"))] steering_authority: Arc<
+        oxa_core::goal::SteeringAuthority,
+    >,
 ) -> RunOutcome {
     let mut outcome = RunOutcome::NothingToDo;
     let mut inbox = None;
@@ -477,6 +480,7 @@ fn session_loop(
                 let out = cx.out.clone();
                 let handle = cx.handle.clone();
                 let binding = session.clone();
+                let steering_authority = steering_authority.clone();
                 oxa_session::Inbox::watch_bound(&cx.dirs.agent_dir, session, move |item| match item {
                     InboxItem::FollowUp(text) => follow_up(text),
                     InboxItem::Control(packet) => {
@@ -491,6 +495,55 @@ fn session_loop(
                                 return true;
                             }
                         };
+                        if let oxa_orchestrator::control::Request::Steer {
+                            id,
+                            revision,
+                            text,
+                            lease,
+                        } = request
+                        {
+                            use oxa_core::goal::{GoalSteering, SteeringBinding, SteeringLease};
+                            let lease = lease.map(|lease| SteeringLease {
+                                holder: lease.holder,
+                                generation: lease.generation,
+                            });
+                            let mut lease_matches = false;
+                            steering_authority(&binding, &mut |current| {
+                                lease_matches = current == lease.as_ref();
+                            });
+                            if !lease_matches {
+                                write_control_receipt(&out, json!({"id":id,"error":"goal_steer_stale"}));
+                                return true;
+                            }
+                            let result_gate = control_gate.clone();
+                            let result_out = out.clone();
+                            let result_id = id.clone();
+                            let request = GoalSteering::new(
+                                SteeringBinding {
+                                    session: binding.clone(),
+                                    revision,
+                                    lease,
+                                },
+                                text,
+                                steering_authority.clone(),
+                                move |result| {
+                                    // Admission is written under this gate first, even if
+                                    // the next owner boundary consumes the request immediately.
+                                    let _gate = lock(&result_gate);
+                                    let data = match result {
+                                        Ok(()) => json!({"id": result_id, "appended": true}),
+                                        Err(code) => json!({"id": result_id, "error": code}),
+                                    };
+                                    write_control_receipt(&result_out, data);
+                                },
+                            );
+                            let data = match handle.submit_goal_steering(request) {
+                                Ok(()) => json!({"id": id, "queued": true}),
+                                Err(code) => json!({"id": id, "error": code}),
+                            };
+                            write_control_receipt(&out, data);
+                            return true;
+                        }
                         let control = BoundControl::new(binding.clone(), request);
                         if sender.send(Job::GoalControl(control)).is_err() {
                             return false;
@@ -736,7 +789,40 @@ pub fn serve_outcome(
     input: Box<dyn BufRead + Send>,
     out: Out,
 ) -> Result<RunOutcome, OxaError> {
+    serve_inner(
+        session,
+        dirs,
+        input,
+        out,
+        #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+        Arc::new(|_, with_lease| with_lease(None)),
+    )
+}
+
+/// Serve an assigned session using the frontend's existing guarded lease read.
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+pub fn serve_outcome_with_steering_authority(
+    session: Session,
+    dirs: oxa_config::Dirs,
+    input: Box<dyn BufRead + Send>,
+    out: Out,
+    authority: Arc<oxa_core::goal::SteeringAuthority>,
+) -> Result<RunOutcome, OxaError> {
+    serve_inner(session, dirs, input, out, authority)
+}
+
+fn serve_inner(
+    session: Session,
+    dirs: oxa_config::Dirs,
+    input: Box<dyn BufRead + Send>,
+    out: Out,
+    #[cfg(all(target_os = "linux", feature = "a2a-control"))] steering_authority: Arc<
+        oxa_core::goal::SteeringAuthority,
+    >,
+) -> Result<RunOutcome, OxaError> {
     let handle = session.handle();
+    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+    handle.enable_goal_steering();
     let router = Arc::new(UiRouter::new());
     let gate = Arc::new(Mutex::new(Gate::default()));
     let bash_running = Arc::new(AtomicBool::new(false));
@@ -756,7 +842,18 @@ pub fn serve_outcome(
         let tx = tx.clone();
         thread::Builder::new()
             .name("oxa-rpc-session".to_string())
-            .spawn(move || session_loop(cx, rx, cache, gate, bash_flag, tx))
+            .spawn(move || {
+                session_loop(
+                    cx,
+                    rx,
+                    cache,
+                    gate,
+                    bash_flag,
+                    tx,
+                    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+                    steering_authority,
+                )
+            })
             .map_err(|e| OxaError::io("cannot start the session thread", &e))?
     };
     let control = handle.clone();

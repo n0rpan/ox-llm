@@ -69,6 +69,11 @@ pub fn run_loop(
 ) -> Result<RunEnd, OxaError> {
     crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
+    let steering = st
+        .goal
+        .as_ref()
+        .filter(|goal| goal.pursuing())
+        .and_then(|_| st.shared.open_goal_steering(&st.sref));
     sink.emit(&AgentEvent::AgentStart);
     observe_hooks(st, HookPoint::AgentStart, &Value::Null, sink, ui);
     let mut run_msgs: Vec<EventMessage> = Vec::new();
@@ -77,6 +82,7 @@ pub fn run_loop(
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
     crate::goal::checkpoint(st, false, sink)?;
+    drop(steering);
     crate::think::end_run(st, ui);
     sink.emit(&AgentEvent::AgentEnd {
         messages: run_msgs.clone(),
@@ -746,13 +752,14 @@ fn deliver_steering(
     run_msgs: &mut Vec<EventMessage>,
 ) -> Result<bool, OxaError> {
     let taken = drain_steering(st, sink);
-    if taken.is_empty() {
-        return Ok(false);
-    }
+    let mut appended = !taken.is_empty();
     for text in taken {
         push_user(st, text, sink, ui, run_msgs)?;
     }
-    Ok(true)
+    if let Some(request) = st.shared.take_goal_steering() {
+        appended |= request.deliver(st, |state, text| push_user(state, text, sink, ui, run_msgs))?;
+    }
+    Ok(appended)
 }
 
 /// Append one user message to the transcript and announce it.

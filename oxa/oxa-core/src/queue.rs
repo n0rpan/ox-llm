@@ -1,7 +1,9 @@
 //! C1: steering / follow-up queues and the cross-thread handle.
 // ported from pi packages/agent/src/agent.ts (steer, followUp, queue modes)
+use crate::goal::GoalSteering;
 use oxa_config::QueueMode;
 use oxa_proto::CancelToken;
+use oxa_session::SessionRef;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -14,6 +16,9 @@ pub struct Queue {
     session_id: String,
     /// Inbox messages stay with their destination, including across switches and clones.
     session_follow_up: BTreeMap<String, Vec<String>>,
+    /// One private steering request per active native run.
+    steering_session: Option<SessionRef>,
+    goal_steering: Option<GoalSteering>,
 }
 
 impl Queue {
@@ -100,6 +105,7 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    goal_steering_enabled: std::sync::atomic::AtomicBool,
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
@@ -130,6 +136,21 @@ pub struct Gate {
 
 /// Holds [`Gate::in_flight`] for one request; dropping it opens the gate.
 pub(crate) struct GateGuard(Arc<Shared>);
+
+pub(crate) struct GoalSteeringGuard(Arc<Shared>);
+
+impl Drop for GoalSteeringGuard {
+    fn drop(&mut self) {
+        let pending = {
+            let mut queue = lock(&self.0.queue);
+            queue.steering_session = None;
+            queue.goal_steering.take()
+        };
+        if let Some(request) = pending {
+            request.reject();
+        }
+    }
+}
 
 impl Drop for GateGuard {
     fn drop(&mut self) {
@@ -231,6 +252,21 @@ impl Shared {
         taken
     }
 
+    pub(crate) fn open_goal_steering(self: &Arc<Self>, session: &SessionRef) -> Option<GoalSteeringGuard> {
+        if !self.gate.goal_steering_enabled.load(Ordering::Relaxed) {
+            return None;
+        }
+        lock(&self.queue).steering_session = Some(session.clone());
+        Some(GoalSteeringGuard(self.clone()))
+    }
+
+    pub(crate) fn take_goal_steering(&self) -> Option<GoalSteering> {
+        if !self.gate.goal_steering_enabled.load(Ordering::Relaxed) {
+            return None;
+        }
+        lock(&self.queue).goal_steering.take()
+    }
+
     /// Take follow-ups when the agent would stop; same mode rule.
     pub fn take_follow_up(&self) -> Vec<String> {
         let mode = lock(&self.modes).1;
@@ -255,6 +291,28 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// Enable typed steering for this frontend before it starts the native run.
+    pub fn enable_goal_steering(&self) {
+        self.shared
+            .gate
+            .goal_steering_enabled
+            .store(true, Ordering::Relaxed);
+    }
+
+    /// Submit to the current native run. Success reports admission only. The
+    /// owner revalidates the binding when it is ready to append.
+    pub fn submit_goal_steering(&self, request: GoalSteering) -> Result<(), &'static str> {
+        let mut queue = lock(&self.shared.queue);
+        if queue.steering_session.as_ref() != Some(&request.binding.session) {
+            return Err("goal_steer_stale");
+        }
+        if queue.goal_steering.is_some() {
+            return Err("control_queue_full");
+        }
+        queue.goal_steering = Some(request);
+        Ok(())
+    }
+
     /// Queue a steering message (delivered after the current tool batch; when idle the caller
     /// should `prompt` instead).
     /// It also cancels this instance's own background request (ENG-002); a foreground request
