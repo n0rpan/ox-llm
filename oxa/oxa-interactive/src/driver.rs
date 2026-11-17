@@ -2698,6 +2698,7 @@ impl<'a> Loop<'a> {
             version: env!("CARGO_PKG_VERSION").to_string(),
             resources: self.resources.clone(),
             engine_url: self.session.engine_url.clone(),
+            memory_policy: self.session.memory_policy,
             model: self.vm.status.model.clone(),
             model_remote: self.vm.status.model_remote,
             model_provider: self.vm.status.model_provider,
@@ -2929,6 +2930,13 @@ impl<'a> Loop<'a> {
             self.vm.status = saved;
         } else {
             lines.extend(render_footer(&self.vm, width, &self.theme));
+        }
+        // Regular mode commits its splash once; policy changes belong in the live
+        // region so a cold load, switch or idle unload remains observable.
+        if !self.fullscreen {
+            if let Some(policy) = self.session.memory_policy {
+                lines.push(self.theme.dim(&format!("Memory: {policy}")));
+            }
         }
         (lines, cursor)
     }
