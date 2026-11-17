@@ -673,10 +673,16 @@ mod tui {
         /// The read-only export is executed by the worker after the current run settles.
         /// Reply text and a quiet frame alone do not acknowledge that boundary.
         pub fn wait_worker_reply_end(&self, marker: &str) {
+            let chats = self.chats().len();
             self.slash(&format!("/export {marker}"));
             self.wait("worker completed the read-only export", |s| {
                 s.contains("Exported the session to") && s.contains(marker)
             });
+            assert_eq!(
+                self.chats().len(),
+                chats,
+                "the witness must not make a model request"
+            );
         }
         /// The user prompts the engine got (chat requests only), in order.
         pub fn prompts(&self) -> Vec<String> {
@@ -2693,6 +2699,10 @@ fn key_005() {
     // terminal sends a plain CR for it); ctrl+j works everywhere.
     let mut t = Setup::new()
         .profile(TermProfile::kitty())
+        .fake(tui::FakeOpts {
+            done_gap_ms: 2500,
+            ..tui::FakeOpts::default()
+        })
         .replies("got it", 2)
         .start();
     t.type_text("first line");
