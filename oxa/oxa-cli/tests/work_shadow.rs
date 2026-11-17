@@ -41,6 +41,9 @@ fn fixture() -> (TestEnv, serde_json::Value) {
     let gh = env.write("tmp/gh", r#"#!/bin/sh
 printf 'read\n' >> gh-calls
 if [ -e expect-input ]; then IFS= read -r expected < expect-input; [ "$GH_TOKEN" = "$expected" ] || exit 93; fi
+if [ -e held-pipe ]; then
+  (n=0; while [ ! -e release-pipe ] && [ "$n" -lt 450 ]; do sleep 0.1; n=$((n+1)); done) &
+fi
 if [ -e oversized ]; then
   printf '{"data":{"repository":{"pullRequests":{"totalCount":0,"nodes":[]},"padding":"'
   head -c 4194305 /dev/zero | tr '\000' 'a'
@@ -299,4 +302,38 @@ fn unreported_classic_and_ruleset_requirements_are_pending() {
             "wait_required_ci"
         );
     }
+}
+
+#[test]
+fn exited_github_child_cannot_escape_the_whole_read_deadline() {
+    use std::time::{Duration, Instant};
+    let (env, _) = fixture();
+    fs::write(env.work().join("held-pipe"), "synthetic").unwrap();
+    let mut child = command(&env, "work board --shadow --repo example/repo --once")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let ended = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if start.elapsed() >= Duration::from_secs(35) {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // Release the finite peer before assertions, including the before-fix failure.
+    fs::write(env.work().join("release-pipe"), "release").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        ended,
+        "a descendant-held pipe bypassed the 30-second read deadline"
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        !log_for(&env, "example/repo").exists()
+            || fs::metadata(log_for(&env, "example/repo")).unwrap().len() == 0
+    );
 }
