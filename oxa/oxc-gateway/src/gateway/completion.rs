@@ -42,7 +42,7 @@ pub(super) fn clean_refusal(error: &Error) -> bool {
     match error {
         Error::OpenCode(crate::opencode::client::Error::Refused(
             crate::opencode::Refusal::RegionBlocked
-            | crate::opencode::Refusal::LimitReached
+            | crate::opencode::Refusal::RateLimited { .. }
             | crate::opencode::Refusal::Unauthenticated
             | crate::opencode::Refusal::Forbidden,
         )) => true,

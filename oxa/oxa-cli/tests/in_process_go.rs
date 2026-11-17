@@ -165,9 +165,9 @@ fn native_go_review_skill_schema_and_tool_loop_settle_subscription_rows() {
     mock.assert_healthy();
 }
 #[test]
-fn region_and_allowance_refusals_stay_typed_without_retry_or_paid_fallback() {
+fn region_and_rate_refusals_stay_typed_without_paid_fallback() {
     for (status,message,expected) in [(400,"Model is hosted outside Europe and the United States; https://example.invalid/workspaces/synthetic","region_blocked"),
-        (429,"Synthetic subscription allowance exhausted","subscription_limit_reached")] {
+        (429,"Synthetic subscription allowance exhausted","cloud_rate_limited")] {
         let env = TestEnv::new();
         let mock = MockOpenAi::start_with(|base|vec![Reply::json(discovery(base)),Reply::error(status,"invalid_request_error",message)]);
         setup(&env,&format!("http://{}",mock.address()));
@@ -180,6 +180,194 @@ fn region_and_allowance_refusals_stay_typed_without_retry_or_paid_fallback() {
         let ledger = rows(&env); assert_eq!(ledger.len(),1); assert_eq!(ledger[0]["cost_usd"],0.0);
         mock.assert_healthy();
     }
+}
+
+#[test]
+fn native_go_401_keeps_public_credentials_error_and_a_valid_refusal_receipt() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::error(401, "authentication_error", CREDENTIAL),
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic recovery"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let first = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(
+        first.status.code(),
+        Some(5),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(terminal(&first)["error_class"], "cloud_credentials_unavailable");
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 401);
+    assert_eq!(ledger[0]["error"], "cloud_credentials_unavailable");
+    assert_eq!(ledger[0]["settled"], "refused");
+    assert_eq!(ledger[0]["subscription_requests"], 1);
+    assert_eq!(ledger[0]["subscription_tokens"], 0);
+    let second = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic recovery request"],
+    );
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(rows(&env).len(), 2);
+    assert_eq!(mock.requests().len(), 4);
+    for output in [first, second] {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+    }
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_all_429_bodies_are_retryable_and_numeric_retry_after_is_bounded() {
+    for (kind, headers, delay) in [
+        ("RateLimit.Exceeded", vec![("Retry-After", "7".into())], Some(7)),
+        (
+            "inference_failed",
+            vec![("Retry-After", "4294967296".into())],
+            None,
+        ),
+        ("unknown", vec![("Retry-After", CREDENTIAL.into())], None),
+        (
+            "unknown",
+            vec![("Retry-After", "7".into()), ("Retry-After", "8".into())],
+            None,
+        ),
+    ] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                Reply::raw(
+                    429,
+                    "application/json",
+                    json!({"error":{"type":kind,"message":CREDENTIAL}})
+                        .to_string()
+                        .into_bytes(),
+                    headers,
+                ),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+        assert_eq!(terminal(&output)["error_class"], "cloud_rate_limited");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Some(delay) = delay {
+            assert!(stderr.contains(&format!("retry after {delay} s")), "{stderr}");
+        } else {
+            assert!(!stderr.contains("retry after "), "{stderr}");
+        }
+        assert!(!stderr.contains("subscription_limit_reached"));
+        assert!(!stderr.contains(CREDENTIAL));
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["status"], 429);
+        assert_eq!(ledger[0]["error"], "cloud_rate_limited");
+        assert_eq!(ledger[0]["subscription_tokens"], 0);
+        assert_eq!(ledger[0]["settled"], "refused");
+        assert_eq!(mock.requests().len(), 2);
+        mock.assert_healthy();
+    }
+}
+
+fn enable_one_fast_retry(env: &TestEnv) {
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    settings["retry"] = json!({"enabled":true,"maxRetries":1,"baseDelayMs":1,"maxAgentDelayMs":1});
+    fs::write(path, settings.to_string()).unwrap();
+}
+
+#[test]
+fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::raw(
+                429,
+                "application/json",
+                b"not JSON".to_vec(),
+                vec![("Retry-After", "7".into())],
+            ),
+            stream(json!({"content":"Synthetic after rate wait"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    enable_one_fast_retry(&env);
+    let output = run(
+        &env,
+        &[
+            "--no-session",
+            "--no-tools",
+            "--mode",
+            "json",
+            "-p",
+            "Synthetic request",
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events: Vec<Value> = output
+        .stdout
+        .split(|b| *b == b'\n')
+        .filter_map(|line| serde_json::from_slice(line).ok())
+        .collect();
+    let retries: Vec<_> = events
+        .iter()
+        .filter(|event| event["type"] == "auto_retry_start")
+        .collect();
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0]["delayMs"], 1);
+    assert!(retries[0]["errorMessage"]
+        .as_str()
+        .unwrap()
+        .contains("retry after 7 s"));
+    assert_eq!(mock.requests().len(), 3);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    assert!(ledger
+        .iter()
+        .any(|row| row["status"] == 429 && row["settled"] == "refused"));
+    assert!(ledger
+        .iter()
+        .any(|row| row["status"] == 200 && row["settled"] == "usage"));
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_inference_failed_is_a_request_error_without_a_retry_or_allowance_claim() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::error(400, "inference_failed", CREDENTIAL),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    enable_one_fast_retry(&env);
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(terminal(&output)["error_class"], "engine_http");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("HTTP 400"), "{stderr}");
+    assert!(!stderr.contains("subscription_limit"));
+    assert!(!stderr.contains(CREDENTIAL));
+    assert_eq!(mock.requests().len(), 2);
+    assert_eq!(rows(&env)[0]["status"], 400);
+    mock.assert_healthy();
 }
 #[test]
 fn live_discovery_lists_chat_models_only_and_offline_precedes_credentials() {
@@ -208,7 +396,7 @@ fn non_json_discovery_refusals_keep_http_classification_without_exposing_body() 
     for (status, expected) in [
         (401, "cloud_credentials_unavailable"),
         (403, "cloud_forbidden"),
-        (429, "subscription_limit_reached"),
+        (429, "cloud_rate_limited"),
     ] {
         let env = TestEnv::new();
         let mock = MockOpenAi::start(vec![Reply::raw(
@@ -620,7 +808,9 @@ fn go_chat_401_keeps_the_public_error_without_claiming_a_local_store_failure() {
     assert_eq!(mock.requests().len(), 2);
     let ledger = rows(&env);
     assert_eq!(ledger.len(), 1);
-    assert_eq!(ledger[0]["status"], 503);
+    assert_eq!(ledger[0]["status"], 401);
+    assert_eq!(ledger[0]["settled"], "refused");
+    assert_eq!(ledger[0]["subscription_tokens"], 0);
     assert_eq!(ledger[0]["error"], "cloud_credentials_unavailable");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
