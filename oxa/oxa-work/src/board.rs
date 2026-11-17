@@ -2,6 +2,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+mod claims;
+pub use claims::Claims;
+pub mod assignment;
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum Action {
@@ -33,7 +37,7 @@ pub enum Mergeability {
 }
 
 /// Normalized GitHub facts: findings are unresolved; required CI describes the current head.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct PullRequest {
     pub number: u64,
     pub head: String,
@@ -48,6 +52,23 @@ pub struct PullRequest {
     pub reviewed: bool,
 }
 
+impl std::fmt::Debug for PullRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PullRequest")
+            .field("number", &self.number)
+            .field("head", &self.head)
+            .field("release_pinned", &self.release_pinned)
+            .field("findings", &self.findings)
+            .field("required_ci", &self.required_ci)
+            .field("mergeability", &self.mergeability)
+            .field("body", &"<redacted>")
+            .field("removes_source", &self.removes_source)
+            .field("draft", &self.draft)
+            .field("reviewed", &self.reviewed)
+            .finish()
+    }
+}
+
 /// The adapter must return the complete open-PR snapshot or fail, never a partial page.
 pub trait GitHub {
     fn open_pull_requests(&mut self) -> crate::Result<Vec<PullRequest>>;
@@ -57,6 +78,15 @@ pub trait GitHub {
 pub struct Lease {
     pub holder: String,
     pub expires_at: u64,
+    #[serde(default)]
+    pub claimed_at: Option<u64>,
+    /// UTC admission day and its non-refunded attempt ordinal identify this reservation.
+    #[serde(default)]
+    pub generation: (u64, u32),
+}
+
+pub fn valid_worker_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.split([':', '/']).all(crate::valid_task_id)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]

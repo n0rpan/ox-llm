@@ -31,6 +31,7 @@ User files live in `~/.oxa/agent/`. Project files live in `.oxa/` and load only 
 | [quickstart.md](pages/quickstart.md) | building, connecting to the engine, the first prompt, where files live |
 | [usage.md](pages/usage.md) | the interface: editor, keys, slash commands, footer, selectors |
 | [cli.md](pages/cli.md) | every flag, subcommand and environment variable |
+| [lead-web.md](pages/lead-web.md) | default-off lead web access scaffold and future Tailscale setup |
 | [settings.md](pages/settings.md) | every settings key, its type and default, and how files are merged |
 | [tools-context.md](pages/tools-context.md) | the tool formats and the context defaults, and the settings that change them |
 | [sessions.md](pages/sessions.md) | session storage, resuming, forking, the tree, labels, export, what is stored and how to remove it |

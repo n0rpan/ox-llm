@@ -27,7 +27,10 @@ mod home_cwd;
 mod hooks;
 mod identity_cmd;
 mod in_process;
+pub mod lead_access;
+pub mod lead_input;
 pub mod lead_page;
+pub mod lead_peer;
 mod lead_web;
 mod limits;
 mod login_cmd;
@@ -40,6 +43,7 @@ mod sandbox_layout;
 mod status;
 mod themes;
 mod wipe_cmd;
+mod work_board;
 mod work_checks;
 mod work_cmd;
 

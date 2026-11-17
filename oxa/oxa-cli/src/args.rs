@@ -233,7 +233,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
     ),
     (
-        "oxa work <taskfile> | --issue N --model MODEL",
+        "oxa work <taskfile> | --issue N --model MODEL | board --shadow --repo OWNER/REPO --once",
         "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (
