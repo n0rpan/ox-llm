@@ -333,6 +333,38 @@ fn synced_skills_under_agents_home_are_opt_in() {
 }
 
 #[test]
+fn pull_request_skill_reads_supplied_review_text_before_github() {
+    let text = BUILTIN_SKILLS
+        .iter()
+        .find(|(n, _)| *n == "pull-request")
+        .map(|(_, t)| *t)
+        .unwrap();
+    let supplied = text
+        .find("review text you were given")
+        .expect("the task's own copy is the first source of review findings");
+    assert!(
+        text.contains("needs no GitHub call"),
+        "a supplied copy is read without calling GitHub"
+    );
+    let github = text
+        .find("gh pr view N --comments")
+        .expect("GitHub stays the way to read reviews where it may be used");
+    assert!(supplied < github, "the supplied copy is read before GitHub");
+    assert!(
+        text.contains("gh api repos/OWNER/REPO/pulls/N/reviews"),
+        "inline review comments are read too"
+    );
+    let missing = text
+        .find("could not read")
+        .expect("review text that was not supplied is named, not guessed at");
+    assert!(missing > github, "the refusal follows the GitHub step");
+    assert!(
+        text.contains("has no findings"),
+        "a missing copy is not mistaken for a finding-free review"
+    );
+}
+
+#[test]
 fn report_issue_skill_searches_for_duplicates_before_filing() {
     let text = BUILTIN_SKILLS
         .iter()
