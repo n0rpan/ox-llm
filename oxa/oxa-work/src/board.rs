@@ -6,8 +6,9 @@ mod claims;
 pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, ReleaseRecord};
 pub mod assignment;
 mod intake;
-pub mod review;
+pub mod landing;
 pub use intake::{ImportState, Issue, Snapshot};
+pub mod review;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]

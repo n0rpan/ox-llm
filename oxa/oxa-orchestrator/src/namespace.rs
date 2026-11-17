@@ -67,6 +67,16 @@ fn check_namespace(directory: &File) -> io::Result<()> {
     Ok(())
 }
 
+pub(crate) fn require_private_directory(directory: &File, message: &'static str) -> io::Result<()> {
+    let metadata = directory.metadata()?;
+    // SAFETY: geteuid has no arguments or memory access side effects.
+    let owner = unsafe { libc::geteuid() };
+    if metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
+        return Err(io::Error::new(io::ErrorKind::PermissionDenied, message));
+    }
+    Ok(())
+}
+
 // Only the operator and real root are trusted. The overflow uid (65534) stands for
 // every unmapped host uid inside a user namespace, so it is never trusted by value.
 fn trusted_owner(owner: u32, user: u32) -> bool {

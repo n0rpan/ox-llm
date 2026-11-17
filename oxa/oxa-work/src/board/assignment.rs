@@ -29,9 +29,7 @@ pub struct Worker {
     pub roles: BTreeSet<Role>,
 }
 
-pub fn valid_worker_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 128 && id.split([':', '/']).all(crate::valid_task_id)
-}
+pub use super::valid_worker_id;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
