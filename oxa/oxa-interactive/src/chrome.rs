@@ -206,10 +206,18 @@ pub struct HeaderInfo {
     /// Loaded context files, skills, templates, extensions, themes: `(kind, names)`.
     pub resources: Vec<(String, Vec<String>)>,
     pub engine_url: String,
+    /// The in-process engine child's observed memory policy, shown beside the endpoint.
+    pub memory_policy: Option<&'static str>,
     pub model: String,
     /// Wave D D4b: where the model runs; shown in the start banner.
     pub model_remote: bool,
     pub model_provider: Option<&'static str>,
+}
+
+/// The observed memory policy of the in-process engine child, after the endpoint. `None` (an
+/// engine that does not observe one) adds nothing, so the line keeps just the endpoint.
+fn memory_note(policy: Option<&'static str>) -> Option<String> {
+    policy.map(|policy| format!(" · {policy}"))
 }
 
 /// The startup header: logo line, key hints from the keymap, loaded resources. With
@@ -269,8 +277,12 @@ pub fn render_header(
         };
         format!(" · {location} · {}", info.model)
     };
+    // A real endpoint, never the policy word, and no trailing space when nothing follows.
     out.push(truncate_to_width(
-        &theme.dim(&format!("{}{model}", info.engine_url)),
+        &theme.dim(&match memory_note(info.memory_policy) {
+            Some(note) => format!("{}{note}", info.engine_url),
+            None => info.engine_url.clone(),
+        }),
         w,
         "...",
     ));
