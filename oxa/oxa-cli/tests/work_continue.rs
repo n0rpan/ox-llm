@@ -330,18 +330,22 @@ fn base_branch_fast_forward_runs_no_repository_hook_on_the_host() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     setup(&env, "[]");
+    // The source checkout pulled `main` while its local branch stayed behind,
+    // and it works on its own branch, so `main` is not checked out.
+    let stale = git(&env, &project(&env), &["rev-parse", "main"]);
+    commit_file(&env, "fetched.txt", "fetched base\n");
+    git(&env, &project(&env), &["push", "origin", "main"]);
+    git(&env, &project(&env), &["reset", "--hard", "HEAD~1"]);
+    git(&env, &project(&env), &["checkout", "-b", "source"]);
+    let fetched = git(&env, &project(&env), &["rev-parse", "origin/main"]);
+    assert_ne!(fetched, stale);
+    // Install the hook only now: the fixture's own commits and pushes are
+    // expected to run it, the runner's host metadata is not.
     let hook = env.write(
         "work/project/.git/hooks/reference-transaction",
         "#!/bin/sh\ncat >/dev/null\nprintf escaped > \"$HOME/branch-advance-escape\"\nprintf ran > branch-advance-ran\n",
     );
     std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // The source checkout pulled `main` while its local branch stayed behind.
-    git(&env, &project(&env), &["checkout", "-b", "source"]);
-    commit_file(&env, "fetched.txt", "fetched base\n");
-    git(&env, &project(&env), &["push", "origin", "main"]);
-    let fetched = git(&env, &project(&env), &["rev-parse", "origin/main"]);
-    let stale = git(&env, &project(&env), &["rev-parse", "main"]);
-    assert_ne!(fetched, stale);
     env.write(
         "work/tasks.json",
         r#"[{"id":"test","branch":"agent/test","model":"fake","base":"origin/main","prompt":"Finish task"}]"#,
