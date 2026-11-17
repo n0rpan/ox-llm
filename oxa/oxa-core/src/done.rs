@@ -40,12 +40,13 @@ fn tree_fingerprint(cwd: &Path) -> Option<u64> {
 /// Entries the non-git walk looks at before it gives up (`None`: no checks from tree changes).
 const WALK_CAP: usize = 20_000;
 
-/// Hash of every readable file's relative path, size and modification time under `cwd`, plus
+/// Hash of every readable file's relative path, size, mode and modification time under `cwd`, plus
 /// contents for regular files up to 1 MiB. Does not follow symlinks or descend
 /// into `.git`, `node_modules`, `target` or unreadable subdirectories. `None` above [`WALK_CAP`]
 /// entries or when `cwd` cannot be read.
 fn walk_fingerprint(cwd: &Path) -> Option<u64> {
     use std::hash::{Hash, Hasher};
+    use std::os::unix::fs::MetadataExt;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     let mut seen = 0usize;
     let mut stack = vec![cwd.to_path_buf()];
@@ -65,6 +66,7 @@ fn walk_fingerprint(cwd: &Path) -> Option<u64> {
             name.hash(&mut h);
             dir.strip_prefix(cwd).ok().hash(&mut h);
             m.len().hash(&mut h);
+            m.mode().hash(&mut h);
             m.modified().ok().hash(&mut h);
             if m.is_file() && m.len() <= (1 << 20) {
                 std::fs::read(e.path()).ok().hash(&mut h);
