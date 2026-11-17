@@ -98,6 +98,8 @@ pub(crate) async fn models_observed(
             .header(AUTHORIZATION, bearer(key)?);
         let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|Error::Transport)?, };
         let status = response.status().as_u16();
+        let retry_after = crate::rate_limits::retry_after(response.headers())
+            .and_then(|delay| u32::try_from(delay.as_secs()).ok());
         if let Some(diagnostics) = diagnostics {
             diagnostics.http(
                 crate::diagnostics::Stage::DiscoveryHttp,
@@ -111,7 +113,9 @@ pub(crate) async fn models_observed(
             if let Some(diagnostics) = diagnostics {
                 diagnostics.error_code(&value);
             }
-            return Err(Error::Refused(super::refusal(status, &value)));
+            return Err(Error::Refused(
+                super::refusal(status, &value).with_retry_after(retry_after),
+            ));
         }
         let mut value: Value =
             serde_json::from_slice(&bytes).map_err(|_| Error::Discovery(super::DiscoveryProblem::Json))?;
@@ -187,6 +191,8 @@ where
         .body(body);
     let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|Error::Transport)?, };
     let status = response.status().as_u16();
+    let retry_after = crate::rate_limits::retry_after(response.headers())
+        .and_then(|delay| u32::try_from(delay.as_secs()).ok());
     if let Some(diagnostics) = diagnostics {
         diagnostics.http(crate::diagnostics::Stage::ChatHttp, status, response.headers());
     }
@@ -196,7 +202,9 @@ where
         if let Some(diagnostics) = diagnostics {
             diagnostics.error_code(&value);
         }
-        return Err(Error::Refused(super::refusal(status, &value)));
+        return Err(Error::Refused(
+            super::refusal(status, &value).with_retry_after(retry_after),
+        ));
     }
     if !response
         .headers()

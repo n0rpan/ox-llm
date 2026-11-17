@@ -71,8 +71,8 @@ impl Diagnostics {
     pub(crate) fn error_code(&self, body: &Value) {
         let known = |value: &Value| match value.as_str()? {
             "RateLimit" => Some("RateLimit"),
+            "RateLimit.Exceeded" => Some("RateLimit.Exceeded"),
             "rate_limit_error" => Some("rate_limit_error"),
-            "subscription_limit_reached" => Some("subscription_limit_reached"),
             "inference_failed" => Some("inference_failed"),
             "invalid_request_error" => Some("invalid_request_error"),
             "authentication_error" => Some("authentication_error"),

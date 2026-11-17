@@ -186,7 +186,7 @@ fn open(
     let timeout = crate::dispatch::stream_silence_timeout(effective).map(Duration::from_millis);
     let mut gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
         let refusal = e.refusal();
-        OxaError::new(refusal.code, refusal.message)
+        OxaError::new(refusal.code, e.to_string())
     })?;
     if go_enabled {
         let base = cloud
@@ -197,7 +197,7 @@ fn open(
             .discover_opencode(base, Duration::from_secs(30))
             .map_err(|e| {
                 let refusal = e.refusal();
-                OxaError::new(refusal.code, refusal.message)
+                OxaError::new(refusal.code, e.to_string())
             })?;
     }
     Ok(Arc::new(EmbeddedEngine::from_gateway(gateway)))
