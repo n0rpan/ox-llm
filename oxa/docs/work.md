@@ -34,7 +34,18 @@ continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.
 This explicitly invokes your installed,
 authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
 when the environment or user settings enable offline mode.
-Issue lookup also requires source-project trust. Git and GitHub CLI host calls use
+
+For a pull request use `oxa work --pr 123 --model your-model`. That packet carries
+the review bodies and issue comments (newest first, labelled as data), the inline
+review comments with their path and line (each section bounded to 16 KiB), the head
+commit the reviews and checks refer to, and the names of the failing checks at that
+head. An inline-comment lookup failure or a malformed field blocks the task instead
+of dropping findings, and a head with no review text says so rather than reading as
+a clean review. The task branch is the pull request's own head branch, so a
+follow-up run continues that head. Check logs are not included: raw job output can
+carry secrets, so read a failing job outside this packet.
+
+GitHub lookup also requires source-project trust. Git and GitHub CLI host calls use
 validated executables outside the repository. Worker and check-supervisor PATHs
 exclude project directories, relative entries and unsafe aliases; project tools
 can still run by explicit path inside the sandbox.

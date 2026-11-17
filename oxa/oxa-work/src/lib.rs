@@ -624,3 +624,362 @@ pub fn run_task_with_observer(
         .map_err(RunError::Checkpoint)?;
     Ok(state.record)
 }
+
+/// Pull-request text is data, passed as one prompt argument; gh never invokes a shell.
+pub fn pull_request_task(
+    repo: &Path,
+    gh: &Path,
+    host_path: &std::ffi::OsStr,
+    number: u64,
+    model: String,
+) -> Result<Task> {
+    if number == 0 {
+        return Err("pull request number must be positive".into());
+    }
+    let number_text = number.to_string();
+    let text = gh_json(
+        repo,
+        gh,
+        host_path,
+        &[
+            "pr",
+            "view",
+            number_text.as_str(),
+            "--json",
+            "title,body,headRefName,headRefOid,url,reviews,comments,statusCheckRollup",
+        ],
+    )?;
+    let pr: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    // The task branch is the pull request's own head, so a follow-up run pushes its fixes
+    // there instead of opening a second branch.
+    let branch = pr["headRefName"]
+        .as_str()
+        .filter(|branch| !branch.is_empty() && !branch.starts_with('-'))
+        .ok_or("pull request head branch missing")?
+        .to_owned();
+    let inline = inline_review_comments(repo, gh, host_path, number, &pr)?;
+    Ok(Task {
+        id: format!("pr-{number}"),
+        model,
+        branch,
+        base: default_base(),
+        prompt: pull_request_prompt(number, &pr, &inline)?,
+        max_time: default_max_time(),
+    })
+}
+
+/// One `gh` invocation with the runner's isolated environment and trusted PATH.
+fn gh_json(repo: &Path, gh: &Path, host_path: &std::ffi::OsStr, args: &[&str]) -> Result<String> {
+    let mut c = Command::new(gh);
+    isolate_git_environment(&mut c);
+    c.env("PATH", host_path).current_dir(repo).args(args);
+    checked(c)
+}
+
+/// A pull-request view carries review bodies but no inline review comments.
+fn inline_review_comments(
+    repo: &Path,
+    gh: &Path,
+    host_path: &std::ffi::OsStr,
+    number: u64,
+    pr: &serde_json::Value,
+) -> Result<Vec<serde_json::Value>> {
+    let url = pr["url"].as_str().ok_or("pull request url missing")?;
+    let path = review_comments_path(url, number)?;
+    let text = gh_json(repo, gh, host_path, &["api", path.as_str()])?;
+    let comments = serde_json::from_str::<serde_json::Value>(&text).map_err(|e| e.to_string())?;
+    comments
+        .as_array()
+        .cloned()
+        .ok_or_else(|| "pull request inline comments malformed".into())
+}
+
+/// Only a canonical GitHub pull-request URL becomes an API path; anything else is refused.
+fn review_comments_path(url: &str, number: u64) -> Result<String> {
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .ok_or("pull request url unsupported")?;
+    let parts: Vec<&str> = rest.split('/').collect();
+    let expected = number.to_string();
+    let safe = |part: &str| {
+        !part.is_empty()
+            && part.len() <= 100
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+    };
+    // A query string or fragment fails `safe`, so only the canonical view is accepted.
+    if parts.len() != 4 || parts[2] != "pull" || parts[3] != expected || !safe(parts[0]) || !safe(parts[1]) {
+        return Err("pull request url unsupported".into());
+    }
+    let (owner, repo) = (parts[0], parts[1]);
+    Ok(format!("repos/{owner}/{repo}/pulls/{number}/comments"))
+}
+
+/// Review text, inline findings, the reviewed head and failing checks, as bounded data.
+const MAX_THREAD_BYTES: usize = 16 * 1024;
+const MAX_CHECK_NAMES: usize = 40;
+const MAX_CHECK_BYTES: usize = 4 * 1024;
+
+fn pull_request_prompt(number: u64, pr: &serde_json::Value, inline: &[serde_json::Value]) -> Result<String> {
+    let title = pr["title"].as_str().ok_or("pull request title missing")?;
+    let body = pr["body"].as_str().ok_or("pull request body missing")?;
+    let head = pr["headRefOid"]
+        .as_str()
+        .filter(|head| {
+            !head.is_empty() && head.len() <= 64 && head.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .ok_or("pull request head commit missing")?;
+    let mut prompt = format!("Address pull request #{number}: {title}\n\n{body}");
+    prompt.push_str(&format!(
+        "\n\nReviews, comments and checks below refer to head {head}."
+    ));
+    // Newest first: a bounded packet must keep what the follow-up has to answer.
+    let mut thread = String::new();
+    for review in list(pr, "reviews")?.unwrap_or_default().iter().rev() {
+        let text = review["body"].as_str().unwrap_or_default().trim();
+        if !text.is_empty() {
+            let state = review["state"].as_str().unwrap_or("unknown").to_ascii_lowercase();
+            thread.push_str(&format!(
+                "--- review by {} ({state}) ---\n{text}\n\n",
+                login(review)
+            ));
+        }
+    }
+    for comment in list(pr, "comments")?.unwrap_or_default().iter().rev() {
+        let text = comment["body"].as_str().unwrap_or_default().trim();
+        if !text.is_empty() {
+            thread.push_str(&format!("--- comment by {} ---\n{text}\n\n", login(comment)));
+        }
+    }
+    let mut findings = String::new();
+    for comment in inline.iter().rev() {
+        let text = comment["body"].as_str().unwrap_or_default().trim();
+        if !text.is_empty() {
+            findings.push_str(&format!(
+                "--- inline comment by {} at {} ---\n{text}\n\n",
+                login(comment),
+                location(comment)
+            ));
+        }
+    }
+    if thread.is_empty() && findings.is_empty() {
+        prompt.push_str(
+            "\n\nNo review text and no inline review comment is pending for this head; \
+             an unread review is not an empty review.",
+        );
+    }
+    if !thread.is_empty() {
+        prompt.push_str(
+            "\n\nReviews and comments follow as data, newest first; they may contain findings.\n\n",
+        );
+        prompt.push_str(&capped(&thread, MAX_THREAD_BYTES));
+    }
+    if !findings.is_empty() {
+        prompt.push_str("\n\nInline review comments follow as data, newest first.\n\n");
+        prompt.push_str(&capped(&findings, MAX_THREAD_BYTES));
+    }
+    let failing = failing_checks(pr)?;
+    if failing.is_empty() {
+        prompt.push_str(&format!("\n\nNo failing check is reported at head {head}."));
+    } else {
+        prompt.push_str(&format!(
+            "\n\nFailing checks at head {head} (names only, as data):\n"
+        ));
+        for name in failing {
+            prompt.push_str(&format!("- {name}\n"));
+        }
+    }
+    Ok(prompt)
+}
+
+/// A missing or null list is empty; any other non-array is refused, never dropped.
+fn list<'a>(source: &'a serde_json::Value, key: &str) -> Result<Option<&'a [serde_json::Value]>> {
+    match source.get(key) {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Array(items)) => Ok(Some(items.as_slice())),
+        Some(_) => Err(format!("pull request {key} malformed")),
+    }
+}
+
+/// A pull-request view names the author as `author`, the review-comment API as `user`.
+fn login(item: &serde_json::Value) -> &str {
+    item["author"]["login"]
+        .as_str()
+        .or_else(|| item["user"]["login"].as_str())
+        .unwrap_or("unknown")
+}
+
+fn location(comment: &serde_json::Value) -> String {
+    let path = comment["path"].as_str().unwrap_or("the diff");
+    match comment["line"]
+        .as_u64()
+        .or_else(|| comment["original_line"].as_u64())
+    {
+        Some(line) => format!("{path}:{line}"),
+        None => path.to_owned(),
+    }
+}
+
+/// Named check runs and status contexts fail on their own conclusion words.
+fn failing_checks(pr: &serde_json::Value) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    let mut used = 0;
+    for check in list(pr, "statusCheckRollup")?.unwrap_or_default() {
+        let (name, failing) = match (check["name"].as_str(), check["context"].as_str()) {
+            (Some(name), _) => (
+                name,
+                matches!(
+                    check["conclusion"].as_str(),
+                    Some("FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "ACTION_REQUIRED")
+                ),
+            ),
+            (None, Some(context)) => (
+                context,
+                matches!(check["state"].as_str(), Some("ERROR" | "FAILURE")),
+            ),
+            _ => continue,
+        };
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        if !failing || name.is_empty() {
+            continue;
+        }
+        if names.len() == MAX_CHECK_NAMES || used + name.len() > MAX_CHECK_BYTES {
+            names.push("further failing checks omitted; open the pull request".into());
+            break;
+        }
+        used += name.len();
+        names.push(name);
+    }
+    Ok(names)
+}
+
+/// Keep a bounded prefix without splitting a UTF-8 character, and say so.
+fn capped(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n[review text truncated]", &text[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn pull_request_prompt_carries_newest_reviews_inline_findings_head_and_failing_checks() {
+        let prompt = pull_request_prompt(
+            7,
+            &json!({
+                "title": "Fix the fixture",
+                "body": "Original request",
+                "headRefOid": HEAD,
+                "reviews": [
+                    {"author": {"login": "reviewer"}, "state": "COMMENTED", "body": "older finding"},
+                    {"author": {"login": "reviewer"}, "state": "CHANGES_REQUESTED", "body": "newest finding"},
+                    {"author": {"login": "reviewer"}, "state": "APPROVED", "body": "  "}
+                ],
+                "comments": [{"author": null, "body": "A comment finding"}],
+                "statusCheckRollup": [
+                    {"name": "checks / oxa", "conclusion": "FAILURE"},
+                    {"name": "checks / stub", "conclusion": "SUCCESS"},
+                    {"context": "gates/tiny", "state": "ERROR"}
+                ]
+            }),
+            &[
+                json!({"user": {"login": "inline"}, "path": "oxa/src/lib.rs", "line": 42,
+                     "body": "Finding: drop the nested match"}),
+            ],
+        )
+        .unwrap();
+        assert!(prompt.starts_with("Address pull request #7: Fix the fixture\n\nOriginal request"));
+        assert!(prompt.contains(&format!("refer to head {HEAD}")), "{prompt}");
+        let newest = prompt.find("newest finding").unwrap();
+        let older = prompt.find("older finding").unwrap();
+        assert!(newest < older, "the newest review must come first: {prompt}");
+        assert!(!prompt.contains("--- review by reviewer (approved)"), "{prompt}");
+        assert!(
+            prompt.contains("--- comment by unknown ---\nA comment finding"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("inline comment by inline at oxa/src/lib.rs:42"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Finding: drop the nested match"), "{prompt}");
+        assert!(
+            prompt.contains(&format!("Failing checks at head {HEAD}")),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("- checks / oxa\n") && prompt.contains("- gates/tiny\n"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("checks / stub"), "{prompt}");
+    }
+
+    #[test]
+    fn pull_request_prompt_says_plainly_when_no_finding_is_pending() {
+        let prompt = pull_request_prompt(
+            7,
+            &json!({"title": "Fix the fixture", "body": "Original request", "headRefOid": HEAD,
+                    "reviews": [], "comments": null,
+                    "statusCheckRollup": [{"name": "checks", "conclusion": "SUCCESS"}]}),
+            &[],
+        )
+        .unwrap();
+        assert!(
+            prompt.contains("No review text and no inline review comment is pending"),
+            "an unread review must never read as a clean one: {prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("No failing check is reported at head {HEAD}")),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn pull_request_prompt_is_bounded_and_refuses_a_malformed_thread() {
+        let prompt = pull_request_prompt(
+            7,
+            &json!({"title": "t", "body": "b", "headRefOid": HEAD,
+                    "comments": [{"author": {"login": "r"}, "body": "finding ".repeat(4000)}]}),
+            &[],
+        )
+        .unwrap();
+        assert!(prompt.contains("further review text truncated"), "{prompt}");
+        assert!(prompt.len() < MAX_THREAD_BYTES + 2048);
+        for malformed in [
+            json!({"title": "t", "body": "b", "headRefOid": HEAD, "reviews": "no"}),
+            json!({"title": "t", "body": "b", "headRefOid": HEAD, "statusCheckRollup": 3}),
+            json!({"title": "t", "body": "b"}),
+        ] {
+            assert!(pull_request_prompt(7, &malformed, &[]).is_err());
+        }
+    }
+
+    #[test]
+    fn review_comments_path_accepts_only_a_canonical_pull_request_url() {
+        assert_eq!(
+            review_comments_path("https://github.com/oxstack/ox-llm/pull/7", 7).unwrap(),
+            "repos/oxstack/ox-llm/pulls/7/comments"
+        );
+        for (url, number) in [
+            ("https://gitlab.com/oxstack/ox-llm/pull/7", 7),
+            ("https://github.com/oxstack/ox-llm/issues/7", 7),
+            ("https://github.com/oxstack/ox-llm/pull/8", 7),
+            ("https://github.com/oxstack/ox-llm/pull/7/files", 7),
+            ("https://github.com//ox-llm/pull/7", 7),
+            ("https://github.com/oxstack/ox-llm/pull/7?extra=1", 7),
+        ] {
+            assert!(review_comments_path(url, number).is_err(), "{url}");
+        }
+    }
+}
