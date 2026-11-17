@@ -31,20 +31,25 @@ impl Routed {
         // CLI model resolution needs a catalog first. If that catalog cannot
         // be discovered, retain the selected dynamic provider's saved failure
         // before the caller can replace it with a model-not-found error.
-        // Match the existing resolver's recognized thinking suffix, while a
-        // whole configured cloud identity (which may contain ':') wins first.
-        let requested = requested.map(|model| match model.rsplit_once(':') {
-            Some((base, level))
-                if !self.cloud_models.contains(model)
-                    && self.local_models.contains(base)
-                    && oxa_proto::ThinkingLevel::parse(level).is_some() =>
-            {
-                base
-            }
-            _ => model,
+        let requested_local = requested.is_some_and(|pattern| {
+            // Preflight only catalog IDs, without opening either backend. The
+            // caller remains responsible for endpoint/provider resolution.
+            let available: Vec<_> = self
+                .models()
+                .into_iter()
+                .map(|model| oxa_config::ModelRef {
+                    endpoint: String::new(),
+                    model,
+                    thinking: None,
+                })
+                .collect();
+            oxa_config::resolve_model(pattern, None, &available)
+                .is_ok_and(|resolved| self.local_models.contains(&resolved.model))
         });
-        if let Some(error) = requested.and_then(|model| self.dynamic_error(model)) {
-            return Err(error.clone());
+        if !requested_local {
+            if let Some(error) = requested.and_then(|model| self.dynamic_error(model)) {
+                return Err(error.clone());
+            }
         }
         if self.local.is_err() && self.cloud.is_err() {
             return Err(self.cloud.err().unwrap());
