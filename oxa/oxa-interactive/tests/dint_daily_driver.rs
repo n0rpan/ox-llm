@@ -908,6 +908,7 @@ fn controls_are_rebound_to_the_new_session() {
             ..FakeOpts::default()
         },
     );
+    let server = world.server.clone();
     let steps = vec![
         step("open", &["oxa v"], typed("first", &["enter"])),
         // A final content delta does not mean the worker is idle. The queued,
@@ -932,7 +933,13 @@ fn controls_are_rebound_to_the_new_session() {
             "running",
             &["slow question", "Working..."],
             typed("steer me", &["enter"]),
-        ),
+        )
+        .until(move || {
+            server
+                .requests()
+                .iter()
+                .any(|r| r.max_tokens > 0 && last_user(r) == "slow question")
+        }),
         // The message waits in the new session's queue, shown above the editor. Escape aborts
         // the run and brings the queued message back into the editor.
         step("steered", &["Steering: steer me"], vec![key("escape")]),
@@ -1365,8 +1372,25 @@ fn trust_question_before_the_session() {
         )],
     );
     assert_eq!(
-        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated),
+        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated)
+            .expect("trust dialog remains connected"),
         Some(TrustChoice::NoTrust)
+    );
+    // Terminal loss is distinct from dismissal and never yields a trust choice.
+    let mut closed = ScriptTerm::new(
+        100,
+        20,
+        vec![step(
+            "question",
+            &["Project trust"],
+            vec![InputEvent::TerminalClosed],
+        )],
+    );
+    assert_eq!(
+        ask_trust_on(&mut closed, &keymap, &theme, "/work/proj", &gated)
+            .unwrap_err()
+            .code,
+        oxa_proto::codes::TERMINAL_CLOSED
     );
     // Ctrl+C leaves it unanswered: untrusted for this run, asked again next time.
     let mut term = ScriptTerm::new(
@@ -1375,7 +1399,8 @@ fn trust_question_before_the_session() {
         vec![step("question", &["Project trust"], vec![key("ctrl+c")])],
     );
     assert_eq!(
-        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated),
+        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated)
+            .expect("trust dialog remains connected"),
         None
     );
 }

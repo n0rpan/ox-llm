@@ -442,6 +442,15 @@ pub type ReopenFn =
 /// One request to the worker thread that owns the `Session`. Each maps to one
 /// `oxa_core::Session` call; the results come back as `AgentEvent`s and [`WorkerMsg`]s.
 pub enum SessionCmd {
+    /// Coalesced wake for editor input. The handle binds it to the original ordinary queues;
+    /// a wake left behind by a session rebind must not run the replacement's input.
+    QueuedInput(oxa_core::Handle),
+    /// Explicit input after a cancel key belongs to the canceled session, not a queued replacement.
+    RecoveryPrompt {
+        handle: oxa_core::Handle,
+        text: String,
+        parts: Vec<Part>,
+    },
     /// Event-driven inbox wake. The id makes a wake queued before a swap harmless.
     Inbox {
         session_id: String,
@@ -510,6 +519,11 @@ pub enum WorkerMsg {
     Event(oxa_proto::AgentEvent),
     /// A command finished; `Err` is shown as an error notice.
     Done(Result<(), OxaError>),
+    /// A session switch overtook explicit recovery input; return it without sending it.
+    UnsentPrompt {
+        text: String,
+        parts: Vec<Part>,
+    },
     /// The session was swapped; the app rebuilds the view model from the new branch.
     Reopened {
         entries: Vec<oxa_proto::Entry>,
@@ -543,6 +557,10 @@ pub struct SessionInfo {
     pub commands: Vec<oxa_proto::CommandSpec>,
     /// The engine endpoint and the models it can serve (`EngineInfo`).
     pub engine_url: String,
+    /// The observed memory policy of an in-process local engine child (`scope`, or
+    /// `inherited` under a no-swap service). `None` for an engine that does not observe one.
+    /// Separate from `engine_url`, which stays the endpoint's own name for comparison.
+    pub memory_policy: Option<&'static str>,
     pub models: Vec<String>,
     /// Requests waiting on the engine, as of the last `Engine::info`.
     pub queue: u32,

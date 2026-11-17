@@ -44,7 +44,9 @@ pub fn choose_clip_method(
     // (containers, a bare console), so OSC 52 is emitted; with a display and no tool the copy
     // fails instead (OSC 52 cannot be verified).
     let headless = var("WAYLAND_DISPLAY").is_none() && var("DISPLAY").is_none();
-    if caps.osc52 || over_ssh || headless || var("OXA_CLIPBOARD_OSC52") == Some("1") {
+    // `OXA_CLIPBOARD_OSC52` takes the shared true words (`1`, `true`, `yes`, `on`).
+    let osc52_var = oxa_config::EnvFlag::parse(var("OXA_CLIPBOARD_OSC52")) == oxa_config::EnvFlag::On;
+    if caps.osc52 || over_ssh || headless || osc52_var {
         return ClipMethod::Osc52;
     }
     ClipMethod::None

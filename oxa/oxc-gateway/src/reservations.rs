@@ -38,7 +38,7 @@ fn options() -> OpenOptions {
 
 pub(crate) enum Reserved {
     Metered(f64),
-    Subscription(u64),
+    Subscription(u64, f64),
 }
 impl Reserved {
     fn from_value(value: &Value) -> io::Result<Self> {
@@ -47,19 +47,34 @@ impl Reserved {
         }
         let object = value
             .as_object()
-            .filter(|o| o.len() == 1)
+            .filter(|o| o.len() == 1 || o.len() == 2 && o.contains_key("reserved_usd"))
             .ok_or(io::ErrorKind::InvalidData)?;
         let tokens = object
             .get("subscription_tokens")
             .and_then(Value::as_u64)
             .filter(|n| *n > 0)
             .ok_or(io::ErrorKind::InvalidData)?;
-        Ok(Self::Subscription(tokens))
+        let usd = match object.get("reserved_usd") {
+            Some(value) => value
+                .as_f64()
+                .filter(|cost| cost.is_finite() && *cost > 0.0)
+                .ok_or(io::ErrorKind::InvalidData)?,
+            None => 0.0,
+        };
+        Ok(Self::Subscription(tokens, usd))
     }
     fn to_value(&self) -> Value {
         match self {
             Self::Metered(cost) => json!(cost),
-            Self::Subscription(tokens) => json!({"subscription_tokens":tokens}),
+            Self::Subscription(tokens, usd) if *usd > 0.0 => {
+                json!({"subscription_tokens":tokens,"reserved_usd":usd})
+            }
+            Self::Subscription(tokens, _) => json!({"subscription_tokens":tokens}),
+        }
+    }
+    fn usd(&self) -> f64 {
+        match self {
+            Self::Metered(cost) | Self::Subscription(_, cost) => *cost,
         }
     }
 }
@@ -121,9 +136,7 @@ impl Shared {
                 if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
-                if let Reserved::Metered(cost) = &amount {
-                    total += cost;
-                }
+                total += amount.usd();
                 if !total.is_finite() {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
@@ -145,20 +158,21 @@ impl Shared {
         Ok(shared)
     }
     pub fn reserved(&self) -> f64 {
+        self.holds.values().map(Reserved::usd).sum()
+    }
+    /// An unpriced call owns the remaining USD headroom until settlement.
+    /// Do not let floating-point summation or a changed cap admit another call.
+    pub fn has_conservative_hold(&self) -> bool {
         self.holds
             .values()
-            .filter_map(|amount| match amount {
-                Reserved::Metered(cost) => Some(cost),
-                Reserved::Subscription(_) => None,
-            })
-            .sum()
+            .any(|amount| matches!(amount, Reserved::Subscription(_, usd) if *usd > 0.0))
     }
     pub fn subscription_reserved(&self) -> io::Result<Counts> {
         self.holds
             .values()
             .try_fold(Counts::default(), |counts, amount| match amount {
                 Reserved::Metered(_) => Ok(counts),
-                Reserved::Subscription(tokens) => counts
+                Reserved::Subscription(tokens, _) => counts
                     .add(Counts {
                         requests: 1,
                         tokens: *tokens,
@@ -169,11 +183,11 @@ impl Shared {
     pub fn insert(&mut self, cost: f64) -> io::Result<String> {
         self.insert_amount(Reserved::Metered(cost))
     }
-    pub fn insert_subscription(&mut self, tokens: u64) -> io::Result<String> {
-        if tokens == 0 {
+    pub fn insert_subscription_with_usd(&mut self, tokens: u64, usd: f64) -> io::Result<String> {
+        if tokens == 0 || !usd.is_finite() || usd < 0.0 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        self.insert_amount(Reserved::Subscription(tokens))
+        self.insert_amount(Reserved::Subscription(tokens, usd))
     }
     fn insert_amount(&mut self, amount: Reserved) -> io::Result<String> {
         if self.holds.len() >= MAX_HOLDS {
@@ -210,5 +224,34 @@ impl Shared {
         self.file.write_all(&bytes)?;
         self.file.sync_data()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Reserved;
+    use serde_json::json;
+
+    #[test]
+    fn monetary_subscription_holds_preserve_legacy_forms_and_reject_malformed_usd() {
+        for valid in [
+            json!(0.01),
+            json!({"subscription_tokens":120}),
+            json!({"subscription_tokens":120,"reserved_usd":0.01}),
+        ] {
+            let hold = Reserved::from_value(&valid).unwrap();
+            assert_eq!(hold.to_value(), valid);
+        }
+        for invalid in [
+            json!({"subscription_tokens":120,"reserved_usd":null}),
+            json!({"subscription_tokens":120,"reserved_usd":"0.01"}),
+            json!({"subscription_tokens":120,"reserved_usd":-0.01}),
+            json!({"subscription_tokens":120,"reserved_usd":0}),
+            json!({"subscription_tokens":0,"reserved_usd":0.01}),
+            json!({"subscription_tokens":120,"reserved_usd":0.01,"extra":true}),
+            json!({"subscription_tokens":120,"other":0.01}),
+        ] {
+            assert!(Reserved::from_value(&invalid).is_err(), "{invalid}");
+        }
     }
 }

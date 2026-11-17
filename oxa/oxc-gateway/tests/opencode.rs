@@ -120,8 +120,7 @@ fn subscription_usage_keeps_token_categories_and_exact_allowance_without_paid_fa
     assert_eq!(parsed.allowance, json!(0.00012));
     assert_eq!(parsed.list_cost, json!(0.00015));
     for (pointer, replacement) in [
-        ("/cost", json!(0.001)),
-        ("/opencode/billing_source", json!("paid")),
+        ("/cost", json!(-0.001)),
         ("/opencode/allowance", json!(-1)),
         ("/opencode/list_cost", Value::Null),
         ("/opencode/tokens/reasoning", json!(-1)),
@@ -148,6 +147,45 @@ fn subscription_usage_keeps_token_categories_and_exact_allowance_without_paid_fa
     let mut huge = usage();
     huge["opencode"]["allowance"] = serde_json::from_str("1e999999999").unwrap();
     assert_eq!(Usage::parse(&huge), Err(Error::Usage));
+}
+#[test]
+fn go_plus_usage_keeps_subscription_guards() {
+    let mut plus = usage();
+    plus["opencode"]["billing_source"] = json!("go-plus");
+    assert_eq!(
+        Usage::parse(&plus).unwrap().tokens,
+        Usage::parse(&usage()).unwrap().tokens
+    );
+    for source in [
+        json!("go"),
+        json!("go-plus"),
+        json!("balance"),
+        json!("byok"),
+        json!("new-plan"),
+        Value::Null,
+        json!("invalid plan"),
+        json!("x".repeat(33)),
+    ] {
+        let mut invalid = plus.clone();
+        invalid["opencode"]["billing_source"] = source;
+        assert!(Usage::parse(&invalid).is_ok());
+    }
+    plus["cost"] = json!(0.01);
+    assert!(Usage::parse(&plus).is_ok());
+    plus["cost"] = json!(0);
+    for (pointer, replacement) in [
+        ("/cost", json!(-0.001)),
+        ("/cost", Value::Null),
+        ("/opencode/allowance", json!(-1)),
+        ("/opencode/list_cost", Value::Null),
+        ("/opencode/tokens/reasoning", Value::Null),
+    ] {
+        let mut invalid = plus.clone();
+        *invalid.pointer_mut(pointer).unwrap() = replacement;
+        assert_eq!(Usage::parse(&invalid), Err(Error::Usage));
+    }
+    plus["prompt_tokens_details"] = json!({"cached_tokens":null});
+    assert_eq!(Usage::parse(&plus), Err(Error::Usage));
 }
 #[test]
 fn headers_are_agent_specific_stable_and_carry_only_the_supplied_private_digest() {
