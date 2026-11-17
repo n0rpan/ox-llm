@@ -391,3 +391,38 @@ fn mock_still_rejects_peer_close_before_later_payload_chunks() {
     assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
     assert_eq!(failure.part, Some(openai::ReplyPart::ChunkHeader));
 }
+
+/// A client can reject the content type as soon as headers are readable, before
+/// it reads even the first body chunk. It must receive a complete finite reply.
+#[derive(Default)]
+struct RejectOnHeaders {
+    bytes: Vec<u8>,
+    closed: bool,
+}
+impl Write for RejectOnHeaders {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.closed {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.bytes.extend_from_slice(bytes);
+        self.closed = self.bytes.windows(4).any(|w| w == b"\r\n\r\n");
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn mock_finishes_small_reply_before_header_refusal_can_close_the_peer() {
+    let reply = Reply::raw(
+        200,
+        "application/json",
+        b"synthetic-private-frame".to_vec(),
+        vec![],
+    );
+    let mut peer = RejectOnHeaders::default();
+    openai::write_reply(&mut peer, &reply).expect("complete framing must precede header rejection");
+    assert!(peer.closed);
+    assert!(peer.bytes.ends_with(b"synthetic-private-frame\r\n0\r\n\r\n"));
+}
