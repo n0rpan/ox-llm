@@ -224,7 +224,9 @@ impl Board {
             } else if pr.draft
                 && (!review_policy.enabled
                     || facts.is_some_and(|facts| {
-                        !facts.changes.is_empty() && facts.patch_id.is_some_and(|id| !id.is_empty())
+                        facts.review_admitted
+                            && !facts.changes.is_empty()
+                            && facts.patch_id.is_some_and(|id| !id.is_empty())
                     }))
             {
                 Action::PromoteDraft

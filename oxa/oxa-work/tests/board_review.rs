@@ -19,7 +19,7 @@ const SOURCE: Change<'static> = Change {
     deleted_file: false,
 };
 
-fn facts(changes: &[Change<'static>]) -> Facts<'_> {
+fn facts<'a>(changes: &'a [Change<'static>]) -> Facts<'a> {
     Facts {
         changes,
         two_review: false,
@@ -244,6 +244,15 @@ fn board_holds_stale_evidence_and_uses_current_pull_request_facts() {
     evidence.head = "old-head";
     assert_eq!(read(&mut github, evidence), (Action::WaitReview, Decision::Wait));
     evidence.head = "new-head";
+    github.0.draft = true;
+    evidence.review_admitted = false;
+    assert_eq!(read(&mut github, evidence), (Action::WaitReview, Decision::Wait));
+    evidence.review_admitted = true;
+    assert_eq!(
+        read(&mut github, evidence),
+        (Action::PromoteDraft, Decision::Wait)
+    );
+    github.0.draft = false;
     evidence.approvals = &[Approval {
         reviewer: Reviewer::Codex,
         head: "new-head",
