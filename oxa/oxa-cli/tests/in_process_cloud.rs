@@ -3,6 +3,8 @@
 #[allow(dead_code)]
 #[path = "../../oxc-gateway/tests/common/anthropic.rs"]
 mod anthropic;
+#[path = "common/strace.rs"]
+mod strace;
 use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use serde_json::{json, Value};
@@ -52,7 +54,7 @@ fn run(env: &TestEnv, args: &[&str], trace: Option<&Path>) -> Output {
 }
 fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Output {
     let mut cmd = if let Some(path) = trace {
-        let mut cmd = Command::new("strace");
+        let mut cmd = Command::new(strace::executable());
         cmd.args(["-f", "-e", "trace=execve", "-o"])
             .arg(path)
             .arg(env!("CARGO_BIN_EXE_oxa"));
