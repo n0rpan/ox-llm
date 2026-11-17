@@ -1,5 +1,8 @@
 use oxa_work::board::{review::*, RequiredCi};
 
+const PATCH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const NEXT_PATCH: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
 const PATHS: &[PathRule<'_>] = &[
     PathRule {
         path: "engine",
@@ -29,7 +32,7 @@ fn facts<'a>(changes: &'a [Change<'static>]) -> Facts<'a> {
         unresolved_findings: false,
         body: "",
         head: "new-head",
-        patch_id: Some("own-patch"),
+        patch_id: Some(PATCH),
         main_merge_predecessors: &[],
         requested: &[],
         approvals: &[],
@@ -109,18 +112,18 @@ fn request_receipts_deduplicate_and_only_pure_merges_carry_approvals() {
     let mut input = facts(&changes);
     input.requested = &[RequestReceipt {
         reviewer: Reviewer::Codex,
-        patch_id: "own-patch",
+        patch_id: PATCH,
     }];
     input.approvals = &[
         Approval {
             reviewer: Reviewer::Codex,
             head: "old-head",
-            patch_id: "own-patch",
+            patch_id: PATCH,
         },
         Approval {
             reviewer: Reviewer::Security,
             head: "old-head",
-            patch_id: "different-patch",
+            patch_id: NEXT_PATCH,
         },
     ];
     input.main_merge_predecessors = &["old-head"];
@@ -141,7 +144,7 @@ fn request_receipts_deduplicate_and_only_pure_merges_carry_approvals() {
             outstanding: vec![Reviewer::Codex, Reviewer::Security, Reviewer::Owner],
         }
     );
-    input.patch_id = Some("next-own-patch");
+    input.patch_id = Some(NEXT_PATCH);
     assert!(matches!(
         decide(&input),
         Decision::Review { request, .. } if request == [Reviewer::Codex, Reviewer::Security]
@@ -227,7 +230,10 @@ fn board_holds_stale_evidence_and_uses_current_pull_request_facts() {
             &BTreeMap::from([(23, evidence)]),
         )
         .unwrap();
-        (board.entries[0].action, plans.into_values().next().unwrap())
+        (
+            board.entries[0].action,
+            plans.into_values().next().unwrap().decision,
+        )
     };
 
     assert_eq!(
@@ -256,7 +262,7 @@ fn board_holds_stale_evidence_and_uses_current_pull_request_facts() {
     evidence.approvals = &[Approval {
         reviewer: Reviewer::Codex,
         head: "new-head",
-        patch_id: "own-patch",
+        patch_id: PATCH,
     }];
     assert_eq!(
         read(&mut github, evidence),

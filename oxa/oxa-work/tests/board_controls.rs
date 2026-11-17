@@ -528,3 +528,80 @@ fn records_without_release_metadata_remain_readable() {
     assert_eq!(rows[&3].state.attempts, 1);
     assert!(rows[&3].data.last_release.is_none());
 }
+
+#[test]
+fn review_reservations_survive_reopening_and_head_changes() {
+    use oxa_work::board::review::{self, Change, ChangeKind, Facts, Plan, Reviewer};
+
+    struct ReviewPr(PullRequest);
+    impl GitHub for ReviewPr {
+        fn open_pull_requests(&mut self) -> oxa_work::Result<Vec<PullRequest>> {
+            Ok(vec![self.0.clone()])
+        }
+    }
+
+    let plan = |head: &str, patch_id: &str| -> Plan {
+        let changes = [Change {
+            path: "src/main.rs",
+            previous_path: None,
+            kind: ChangeKind::Source,
+            deleted_lines: 0,
+            deleted_file: false,
+        }];
+        let facts = Facts {
+            changes: &changes,
+            two_review: false,
+            required_ci: RequiredCi::Pending,
+            draft: false,
+            review_admitted: true,
+            unresolved_findings: false,
+            body: "",
+            head,
+            patch_id: Some(patch_id),
+            main_merge_predecessors: &[],
+            requested: &[],
+            approvals: &[],
+        };
+        let mut pr = FakeGitHub(0).open_pull_requests().unwrap().remove(0);
+        pr.head = head.into();
+        pr.findings = false;
+        let (_, mut plans) = Board::read_with_review_policy(
+            &mut ReviewPr(pr),
+            &policy(),
+            &BTreeMap::new(),
+            0,
+            &review::Policy {
+                enabled: true,
+                paths: &[],
+            },
+            &BTreeMap::from([(1, facts)]),
+        )
+        .unwrap();
+        plans.remove(&1).unwrap()
+    };
+
+    let fixture = Fixture::new();
+    let claims = fixture.store();
+    let patch_id = "a".repeat(40);
+    let original = plan("tested-head", &patch_id);
+    let request = &original.requests()[0];
+    assert_eq!(request.reviewer(), Reviewer::Codex);
+    assert!(claims.reserve_review_request(request, None).is_err());
+    let owner = Some(ManualAuthority::Owner);
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| claims.reserve_review_request(request, owner).unwrap());
+        let second = scope.spawn(|| claims.reserve_review_request(request, owner).unwrap());
+        assert_ne!(first.join().unwrap(), second.join().unwrap());
+    });
+
+    let reopened = fixture.store();
+    let merged = plan("main-merge-head", &patch_id);
+    assert!(!reopened
+        .reserve_review_request(&merged.requests()[0], owner)
+        .unwrap());
+    let changed = plan("edited-head", &"b".repeat(40));
+    assert!(reopened
+        .reserve_review_request(&changed.requests()[0], owner)
+        .unwrap());
+    assert_eq!(reopened.snapshot().unwrap()[&1].attempts, 0);
+}

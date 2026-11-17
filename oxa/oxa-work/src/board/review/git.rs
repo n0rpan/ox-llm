@@ -49,7 +49,7 @@ impl GitDiff {
     }
 }
 
-fn object_id(id: &str) -> bool {
+pub(super) fn object_id(id: &str) -> bool {
     matches!(id.len(), 40 | 64) && id.bytes().all(|b| b.is_ascii_digit() || matches!(b, b'a'..=b'f'))
 }
 

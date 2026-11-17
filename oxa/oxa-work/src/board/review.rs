@@ -2,6 +2,7 @@
 //! diff facts and authenticated receipts. This module cannot post or approve reviews.
 
 use super::RequiredCi;
+use serde::{Deserialize, Serialize};
 
 mod git;
 pub use git::GitDiff;
@@ -14,7 +15,8 @@ pub enum Tier {
     Protected,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Reviewer {
     Codex,
     Security,
@@ -69,6 +71,12 @@ pub struct Facts<'a> {
     pub approvals: &'a [Approval<'a>],
 }
 
+impl<'a> Facts<'a> {
+    pub(super) fn verified_patch_id(&self) -> Option<&'a str> {
+        self.patch_id.filter(|id| git::object_id(id))
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Decision {
     Disabled,
@@ -80,6 +88,76 @@ pub enum Decision {
         request: Vec<Reviewer>,
         outstanding: Vec<Reviewer>,
     },
+}
+
+#[derive(Debug)]
+pub struct Plan {
+    pub decision: Decision,
+    requests: Vec<Request>,
+}
+
+/// Only the board can produce requests. A dispatcher must revalidate the head
+/// and required checks and reserve the request before causing external effects.
+#[derive(Debug)]
+pub struct Request {
+    pub(super) number: u64,
+    pub(super) head: String,
+    pub(super) key: RequestKey,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RequestKey {
+    patch_id: String,
+    reviewer: Reviewer,
+}
+
+impl RequestKey {
+    pub(super) fn valid(&self) -> bool {
+        self.reviewer != Reviewer::Owner && git::object_id(&self.patch_id)
+    }
+}
+
+impl Request {
+    pub fn number(&self) -> u64 {
+        self.number
+    }
+
+    pub fn head(&self) -> &str {
+        &self.head
+    }
+
+    pub fn reviewer(&self) -> Reviewer {
+        self.key.reviewer
+    }
+
+    pub fn patch_id(&self) -> &str {
+        &self.key.patch_id
+    }
+}
+
+impl Plan {
+    pub(super) fn new(number: u64, head: &str, patch_id: Option<&str>, decision: Decision) -> Self {
+        let requests = match (&decision, patch_id) {
+            (Decision::Review { request, .. }, Some(patch_id)) => request
+                .iter()
+                .map(|&reviewer| Request {
+                    number,
+                    head: head.to_owned(),
+                    key: RequestKey {
+                        patch_id: patch_id.to_owned(),
+                        reviewer,
+                    },
+                })
+                .collect(),
+            _ => vec![],
+        };
+        Self { decision, requests }
+    }
+
+    pub fn requests(&self) -> &[Request] {
+        &self.requests
+    }
 }
 
 /// Match an exact repo-relative path or a whole directory prefix.
@@ -113,7 +191,7 @@ impl Policy<'_> {
         {
             return Decision::AddRemoves;
         }
-        let Some(patch_id) = facts.patch_id.filter(|id| !id.is_empty()) else {
+        let Some(patch_id) = facts.verified_patch_id() else {
             return Decision::Wait;
         };
         if facts.required_ci != RequiredCi::Passed

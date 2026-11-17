@@ -173,7 +173,7 @@ impl Board {
         now: u64,
         review_policy: &review::Policy<'_>,
         evidence: &BTreeMap<u64, review::Facts<'_>>,
-    ) -> crate::Result<(Self, BTreeMap<u64, review::Decision>)> {
+    ) -> crate::Result<(Self, BTreeMap<u64, review::Plan>)> {
         let mut board = Self {
             observed_at: now,
             entries: vec![],
@@ -226,7 +226,7 @@ impl Board {
                     || facts.is_some_and(|facts| {
                         facts.review_admitted
                             && !facts.changes.is_empty()
-                            && facts.patch_id.is_some_and(|id| !id.is_empty())
+                            && facts.verified_patch_id().is_some()
                     }))
             {
                 Action::PromoteDraft
@@ -238,7 +238,15 @@ impl Board {
                 Action::WaitReview
             };
             if let Some(decision) = review {
-                review_plans.insert(pr.number, decision);
+                review_plans.insert(
+                    pr.number,
+                    review::Plan::new(
+                        pr.number,
+                        &pr.head,
+                        facts.and_then(review::Facts::verified_patch_id),
+                        decision,
+                    ),
+                );
             }
             board.entries.push(intake::entry(
                 pr.number,
