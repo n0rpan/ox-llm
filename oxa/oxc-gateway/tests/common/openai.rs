@@ -47,6 +47,7 @@ pub struct Reply {
     headers: Vec<(&'static str, String)>,
     bytes: Vec<u8>,
     fragment: usize,
+    pub truncate_transfer: bool,
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
@@ -58,6 +59,7 @@ impl Reply {
             headers: vec![],
             bytes: value.to_string().into_bytes(),
             fragment: 7,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -74,6 +76,7 @@ impl Reply {
             bytes,
             headers,
             fragment: 1024,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -92,6 +95,7 @@ impl Reply {
             headers: Vec::new(),
             bytes,
             fragment: 7,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -104,6 +108,7 @@ impl Reply {
                 .to_string()
                 .into_bytes(),
             fragment: 7,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -425,5 +430,9 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
         stream.write_all(b"\r\n")?;
         stream.flush()?;
     }
-    stream.write_all(b"0\r\n\r\n")
+    if reply.truncate_transfer {
+        Ok(())
+    } else {
+        stream.write_all(b"0\r\n\r\n")
+    }
 }

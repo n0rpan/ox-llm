@@ -1139,3 +1139,90 @@ fn go_private_discovery_diagnostic_is_absent_for_rpc_and_supervised_children() {
         mock.assert_healthy();
     }
 }
+
+fn check_private_stream_cause(cause: &str, reply: Reply) {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base)), reply]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-tools", "--mode", "json", "-p", "Synthetic request"]);
+    assert!(!output.status.success());
+    assert_eq!(
+        terminal(&output)["error_class"],
+        if cause == "transport" {
+            "engine_http"
+        } else {
+            "stream_broken"
+        }
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("cause={cause}\n")),
+        "missing finite cause {cause}"
+    );
+    assert!(stderr.contains("stage=chat_http status=200"));
+    assert!(!stderr.contains(CREDENTIAL));
+    assert!(!stderr.contains("synthetic-private-frame"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("cause="));
+    assert!(!stdout.contains(CREDENTIAL));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 502);
+    assert_eq!(ledger[0]["settled"], "reserved");
+    assert_eq!(ledger[0]["usage_missing"], true);
+    assert_eq!(ledger[0]["subscription_tokens"], 33280);
+    for path in session_files(&env.home().join(".oxa/agent/sessions")) {
+        let history = fs::read_to_string(path).unwrap();
+        assert!(!history.contains("cause="));
+        assert!(!history.contains(CREDENTIAL));
+    }
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+fn cause_reply(bytes: &[u8]) -> Reply {
+    Reply::raw(200, "text/event-stream", bytes.to_vec(), vec![])
+}
+#[test]
+fn go_private_stream_cause_content_type() {
+    check_private_stream_cause(
+        "content_type",
+        Reply::raw(
+            200,
+            "application/json",
+            b"synthetic-private-frame".to_vec(),
+            vec![],
+        ),
+    );
+}
+#[test]
+fn go_private_stream_cause_transport() {
+    let mut reply = cause_reply(b"data: ");
+    reply.truncate_transfer = true;
+    check_private_stream_cause("transport", reply);
+}
+#[test]
+fn go_private_stream_cause_eof() {
+    check_private_stream_cause("eof", cause_reply(b""));
+}
+#[test]
+fn go_private_stream_cause_frame_shape() {
+    check_private_stream_cause("frame_shape", cause_reply(b"data: synthetic-private-frame\n\n"));
+}
+#[test]
+fn go_private_stream_cause_tool_shape() {
+    check_private_stream_cause("tool_shape", stream(json!({"tool_calls":{}}), "stop"));
+}
+#[test]
+fn go_private_stream_cause_tool_arguments() {
+    check_private_stream_cause(
+        "tool_arguments",
+        stream(
+            json!({"tool_calls":[{"index":0,"id":"synthetic-call","type":"function","function":{"name":"read","arguments":json!({"path":CREDENTIAL}).to_string()}}]}),
+            "tool_calls",
+        ),
+    );
+}
+#[test]
+fn go_private_stream_cause_terminal_usage() {
+    check_private_stream_cause("terminal_usage",cause_reply(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
+}

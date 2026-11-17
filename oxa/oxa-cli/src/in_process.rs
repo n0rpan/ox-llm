@@ -54,6 +54,9 @@ pub(crate) fn report_diagnostics(
             let _ = write!(stderr, " {name}={value}");
         }
     }
+    if let Some(cause) = snapshot.cause {
+        let _ = write!(stderr, " cause={}", cause.as_str());
+    }
     let _ = writeln!(stderr);
 }
 
