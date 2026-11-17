@@ -104,6 +104,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
+| `oxa share serve --model ALIAS` | start the authenticated streaming OpenAI-compatible listener for explicitly selected native local models in a build with the `share` feature |
 | `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
 | `oxa report-issue <draft\|submit>` | draft a scrubbed issue for the ox-llm repository, or post a draft after confirmation |
 | `oxa wipe --session <id> \| --all [--yes] [--engine]` | remove the stored session files and spill files of one session or of all sessions. See [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) |
@@ -116,6 +117,8 @@ Commands take the place of the message. They do not start a session.
 $ oxa share key add guest --daily-requests 100 --daily-tokens 200000
 $ oxa share key list
 ```
+
+`oxa share serve` starts a foreground listener after the owner enables the native local engine and selects one or more local aliases with `--model`. It binds to the Tailscale interface by default and prints its `/v1` base URL. Set `--port` to use a fixed port, or `--bind 127.0.0.1` to put the listener behind Tailscale Serve. `--same-owner` requires the connecting peer to pass the Tailscale owner check. Clients send a guest bearer and can list models or stream text chat. Ctrl+C stops admission and joins active cleanup.
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
@@ -175,6 +178,7 @@ $ oxa mcp logout <name>
 | `--list-models [search]` | list the models the engine serves, optionally filtered by a fuzzy search, and exit |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
+| `--shadow` | required with `oxa lead`; read-only proposal preset, enabled only by user setting `oxa.lead.shadow` (default false) |
 | `--output-schema <file>` | check the final answer against a JSON schema file (a supported subset), retrying once on mismatch |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
 | `--goal <file>` | pursue a stored UTF-8 objective in print/JSON mode; continue the saved pursuing goal after restart |
@@ -273,6 +277,7 @@ Every boolean variable takes the same eight words, in any case: `1`, `true`, `ye
 |---|---|
 | `OXA_ENGINE_URL` | engine endpoint for the default model entry. Default `http://127.0.0.1:8092` |
 | `OXA_AGENT_DIR` | agent directory. Default `~/.oxa/agent`; `~` is expanded |
+| `OXA_LEAD_BOARD_LOG` | owner-selected absolute path to a private local board sample log; missing or refused data stays unavailable |
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
 | `OXA_PACKAGE_DIR` | package directory, for Nix or Guix store paths |
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |

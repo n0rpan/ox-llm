@@ -759,6 +759,12 @@ impl Session {
         if self.st.shared.busy.load(Ordering::SeqCst) {
             return Err(OxaError::new(codes::BUSY, "Cannot change a goal during a run."));
         }
+        if goal.is_some() && self.st.hooks.iter().any(|hook| !hook.allows_goals()) {
+            return Err(OxaError::new(
+                codes::USAGE,
+                "The active session preset does not support goal mode",
+            ));
+        }
         let body = goal
             .as_ref()
             .map_or_else(oxa_session::Goal::clear_body, oxa_session::Goal::body);
@@ -1449,6 +1455,12 @@ fn restore_locked(
     }
     let tree = Tree::new(st.store.load(&sref)?);
     let goal = oxa_session::Goal::latest(tree.entries())?.map(|g| Arc::new(crate::goal::GoalRuntime::new(g)));
+    if goal.is_some() && st.hooks.iter().any(|hook| !hook.allows_goals()) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "The active session preset does not support goal mode",
+        ));
+    }
     let branch: Vec<Entry> = tree.branch(tree.leaf()).into_iter().cloned().collect();
     let replayed = {
         let refs: Vec<&Entry> = branch.iter().collect();
@@ -1500,6 +1512,9 @@ fn restore_locked(
     crate::resume::close_interrupted(st, sink)?; // R1
                                                  // pi fires `session_start` (and `resources_discover`) for a resumed session too.
     crate::fire::session_start(st, start, sink, ui);
+    if st.hooks.iter().any(|hook| hook.owns_resources()) {
+        crate::open_epoch(st, "preset_resume", false, sink)?;
+    }
     Ok(())
 }
 
