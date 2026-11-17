@@ -300,8 +300,137 @@ fn print_uses_native_gateway_without_python_or_controller() {
     assert!(!rows[0].to_string().contains(CREDENTIAL));
     mock.finish();
     if let Some(engine) = engine {
-        native_local_release_pair(&binary, &engine);
+        shipped_engine_authenticated_props(&engine);
+        native_local_release_pair(&binary, &engine, false);
+        native_local_release_pair(&binary, &engine, true);
     }
+}
+
+fn required_tracer() -> PathBuf {
+    std::env::split_paths(&std::env::var_os("PATH").expect("test-tool PATH"))
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join("strace"))
+        .find(|p| p.is_file())
+        .expect("strace is mandatory")
+}
+
+// Always reap the traced process on assertion failure; strace's EXITKILL also
+// terminates its tracees, including the supervised child's separate group.
+struct TracedChild(std::process::Child);
+impl Drop for TracedChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn shipped_engine_authenticated_props(engine: &Path) {
+    use oxa_engine::{http_request, HttpRequest, Url};
+    let env = TestEnv::new();
+    let model = env.work().join("tokenizer-only.gguf");
+    tokenizer_fixture(&model);
+    // Only this test-created synthetic fixture is passed to the child. The
+    // test never reads an existing credential or the supervisor's auth file.
+    let auth = env.write("tmp/synthetic-auth", CREDENTIAL);
+    fs::set_permissions(&auth, fs::Permissions::from_mode(0o600)).unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let bin = python_shims(&env);
+    let marker = env.tmp().join("python-invoked");
+    let trace = env.tmp().join("props.trace");
+    let mut child = TracedChild(
+        Command::new(required_tracer())
+            .args(["--kill-on-exit", "-f", "-e", "trace=execve,connect", "-o"])
+            .arg(&trace)
+            .arg(engine)
+            .args(["--engine", "stub", "--model"])
+            .arg(&model)
+            .args([
+                "--alias",
+                "synthetic",
+                "--stub-reply",
+                "model-free",
+                "--reasoning",
+                "off",
+                "--host",
+                "127.0.0.1",
+                "--port",
+            ])
+            .arg(port.to_string())
+            .arg("--api-key-file")
+            .arg(&auth)
+            .env_clear()
+            .env("HOME", env.home())
+            .env("PATH", bin)
+            .env("OXA_TEST_PYTHON_MARKER", &marker)
+            .current_dir(env.work())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn exact shipped engine props control"),
+    );
+    let url = Url::parse(&format!("http://127.0.0.1:{port}")).unwrap();
+    let headers = [("Authorization", format!("Bearer {CREDENTIAL}"))];
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let response = loop {
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "shipped engine exited before props"
+        );
+        if let Ok(response) = http_request(&HttpRequest {
+            method: "GET",
+            url: &url,
+            path: "/props",
+            headers: &headers,
+            body: &[],
+            timeout_ms: 1000,
+        }) {
+            if response.status == 200 {
+                break response;
+            }
+        }
+        assert!(
+            Instant::now() < deadline,
+            "authenticated shipped engine props timed out"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let props: serde_json::Value = serde_json::from_slice(&response.body).expect("props JSON");
+    assert_eq!(props["build_info"], concat!("oxe-", env!("CARGO_PKG_VERSION")));
+    assert!(!String::from_utf8_lossy(&response.body).contains(CREDENTIAL));
+    let denied = http_request(&HttpRequest {
+        method: "GET",
+        url: &url,
+        path: "/props",
+        headers: &[],
+        body: &[],
+        timeout_ms: 1000,
+    })
+    .expect("unauthenticated props control");
+    assert_eq!(
+        denied.status, 401,
+        "props must require the synthetic child credential"
+    );
+    drop(child);
+    let trace = fs::read_to_string(trace).unwrap();
+    assert!(
+        trace
+            .lines()
+            .any(|line| line.contains(&format!("execve(\"{}\"", engine.display())) && line.ends_with("= 0")),
+        "selected shipped engine must execute"
+    );
+    for line in trace.lines().filter(|line| line.contains("execve(\"")) {
+        let executable = line.split("execve(\"").nth(1).unwrap().split('"').next().unwrap();
+        assert_eq!(
+            Path::new(executable),
+            engine,
+            "unexpected props-control executable"
+        );
+    }
+    assert!(!marker.exists());
+    println!("PASS exact shipped oxe-server authenticated props/build identity; model-free only");
 }
 
 // Same tokenizer-only, tensor-free fixture as the existing installed stub smoke.
@@ -372,10 +501,14 @@ fn tokenizer_fixture(path: &Path) {
     fs::write(path, bytes).unwrap();
 }
 
-fn native_local_release_pair(binary: &Path, engine: &Path) {
+// The shipped engine's existing stub is model-free. This is not a fake-child
+// replacement and does not qualify weights, numerics or a real local-model task.
+fn native_local_release_pair(binary: &Path, engine: &Path, missing_weights: bool) {
     let env = TestEnv::new();
     let model = env.work().join("tokenizer-only.gguf");
-    tokenizer_fixture(&model);
+    if !missing_weights {
+        tokenizer_fixture(&model);
+    }
     let controller = TcpListener::bind("127.0.0.1:0").expect("owned controller trap");
     controller.set_nonblocking(true).unwrap();
     let controller_url = format!("http://{}", controller.local_addr().unwrap());
@@ -394,12 +527,7 @@ fn native_local_release_pair(binary: &Path, engine: &Path) {
     let stdout = env.tmp().join("stdout");
     let stderr = env.tmp().join("stderr");
     let trace = env.tmp().join("local-process.trace");
-    let tracer = std::env::split_paths(&std::env::var_os("PATH").expect("test-tool PATH"))
-        .filter(|p| p.is_absolute())
-        .map(|p| p.join("strace"))
-        .find(|p| p.is_file())
-        .expect("strace is mandatory");
-    let mut child = Command::new(tracer)
+    let mut child = Command::new(required_tracer())
         .args(["--kill-on-exit", "-f", "-e", "trace=execve,connect", "-o"])
         .arg(&trace)
         .arg(binary)
@@ -449,11 +577,6 @@ fn native_local_release_pair(binary: &Path, engine: &Path) {
         executed.insert(PathBuf::from(path));
     }
     assert!(executed.contains(binary), "exact oxa must execute");
-    assert!(executed.contains(engine), "exact oxe-server must execute");
-    assert!(
-        trace.contains("connect("),
-        "native loopback transport must be traced"
-    );
     for port in [8092, controller.local_addr().unwrap().port()] {
         assert!(
             !trace.contains(&format!("_port=htons({port})")),
@@ -461,15 +584,34 @@ fn native_local_release_pair(binary: &Path, engine: &Path) {
         );
     }
     assert!(!marker.exists(), "Python shim invoked");
-    assert!(
-        status.success(),
-        "native local proof failed: {}",
-        fs::read_to_string(stderr).unwrap()
-    );
-    assert!(fs::read_to_string(stdout).unwrap().contains("native-local-proof"));
+    let stdout = fs::read_to_string(stdout).unwrap();
+    let stderr = fs::read_to_string(stderr).unwrap();
+    if missing_weights {
+        assert!(!status.success(), "missing weights must refuse");
+        assert!(stderr.contains("Local weights are missing"), "{stderr}");
+        assert!(!stdout.contains("native-local-proof"));
+        assert!(
+            !executed.contains(engine),
+            "missing weights must refuse before engine spawn"
+        );
+        assert!(
+            !env.agent_dir().join("local-engine").exists(),
+            "missing weights must refuse before child authentication"
+        );
+    } else {
+        assert!(executed.contains(engine), "exact oxe-server must execute");
+        assert!(
+            trace.contains("connect("),
+            "native loopback transport must be traced"
+        );
+        // LocalEngine startup requires authenticated /health and /props and
+        // rejects a mismatched build_info before a chat request can proceed.
+        assert!(status.success(), "native local proof failed: {stderr}");
+        assert!(stdout.contains("native-local-proof"));
+    }
     assert!(
         !env.home().join(".config/oxc").exists(),
         "local proof must need no cloud credentials"
     );
-    println!("PASS exact release oxa+oxe-server native-local stub; traced pair, no Python/controller");
+    println!("PASS exact release native model-free control: missing_weights={missing_weights}; no Python/controller; not real-model qualification");
 }
