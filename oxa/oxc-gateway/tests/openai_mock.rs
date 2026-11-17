@@ -433,7 +433,8 @@ fn done_reply() -> Reply {
 fn wire_and_payload_end(reply: &Reply) -> (Vec<u8>, usize) {
     let mut wire = Vec::new();
     openai::write_reply(&mut wire, reply).unwrap();
-    (wire, wire.len() - b"\r\n0\r\n\r\n".len())
+    let payload_end = wire.len() - b"\r\n0\r\n\r\n".len();
+    (wire, payload_end)
 }
 
 /// The final payload and its terminal framing leave in one bounded write, so a peer
