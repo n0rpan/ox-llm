@@ -225,6 +225,7 @@ enum IoPhase {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReplyPart {
+    CompleteReply,
     Headers,
     HeaderEnd,
     ChunkHeader,
@@ -482,6 +483,27 @@ fn serve(
     write_reply(&mut stream, &reply)
 }
 pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), HealthFailure> {
+    if !reply.truncate_transfer && reply.bytes.len() <= reply.fragment {
+        // A client can refuse on headers alone (for example an unexpected content type).
+        // Put the entire small reply on the wire before making those headers readable.
+        let mut complete = format!("HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n", reply.status, reply.content_type).into_bytes();
+        for (name, value) in &reply.headers {
+            complete.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+        }
+        complete.extend_from_slice(b"\r\n");
+        if !reply.bytes.is_empty() {
+            complete.extend_from_slice(format!("{:x}\r\n", reply.bytes.len()).as_bytes());
+            complete.extend_from_slice(&reply.bytes);
+            complete.extend_from_slice(b"\r\n");
+        }
+        complete.extend_from_slice(b"0\r\n\r\n");
+        stream
+            .write_all(&complete)
+            .map_err(|error| HealthFailure::reply(ReplyPart::CompleteReply, error))?;
+        return stream
+            .flush()
+            .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error));
+    }
     write!(
         stream,
         "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n",

@@ -279,17 +279,7 @@ fn diagnostic_reply() -> Reply {
 fn mock_reply_write_diagnostics_identify_each_finite_part_without_error_text() {
     use openai::ReplyPart;
     let cases = [
-        (
-            false,
-            vec![
-                ReplyPart::Headers,
-                ReplyPart::Headers,
-                ReplyPart::HeaderEnd,
-                ReplyPart::ChunkHeader,
-                ReplyPart::FinalChunk,
-                ReplyPart::Flush,
-            ],
-        ),
+        (false, vec![ReplyPart::CompleteReply, ReplyPart::Flush]),
         (
             true,
             vec![
@@ -323,13 +313,13 @@ fn mock_reply_write_diagnostics_identify_each_finite_part_without_error_text() {
         }
     }
     let mut writer = FailingReplyWriter {
-        fail_at: 2,
+        fail_at: 0,
         calls: 0,
         bytes: Vec::new(),
     };
     let empty = Reply::raw(200, "text/plain", Vec::new(), vec![]);
     let failure = openai::write_reply(&mut writer, &empty).unwrap_err();
-    assert_eq!(failure.part, Some(ReplyPart::TransferEnd));
+    assert_eq!(failure.part, Some(ReplyPart::CompleteReply));
     assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
 }
 #[test]
@@ -348,7 +338,7 @@ fn mock_reply_diagnostics_preserve_wire_flush_and_transfer_truncation() {
             expected.extend_from_slice(b"0\r\n\r\n");
         }
         assert_eq!(writer.bytes, expected);
-        assert_eq!(writer.calls, if truncate { 7 } else { 6 });
+        assert_eq!(writer.calls, if truncate { 7 } else { 2 });
     }
 }
 
@@ -425,4 +415,25 @@ fn mock_finishes_small_reply_before_header_refusal_can_close_the_peer() {
     openai::write_reply(&mut peer, &reply).expect("complete framing must precede header rejection");
     assert!(peer.closed);
     assert!(peer.bytes.ends_with(b"synthetic-private-frame\r\n0\r\n\r\n"));
+}
+
+#[test]
+fn partial_write_followed_by_header_rejection_still_fails_health() {
+    struct ShortWrite(RejectOnHeaders);
+    impl Write for ShortWrite {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let count = bytes
+                .windows(4)
+                .position(|w| w == b"\r\n\r\n")
+                .map_or(bytes.len(), |p| p + 4);
+            self.0.write(&bytes[..count])
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.flush()
+        }
+    }
+    let reply = Reply::raw(200, "application/json", b"synthetic payload".to_vec(), vec![]);
+    let failure = openai::write_reply(&mut ShortWrite(RejectOnHeaders::default()), &reply).unwrap_err();
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(failure.part, Some(openai::ReplyPart::CompleteReply));
 }
