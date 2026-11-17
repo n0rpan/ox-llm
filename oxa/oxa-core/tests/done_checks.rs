@@ -206,7 +206,8 @@ fn missing_program_is_skipped_and_not_sent_back() {
             checks[0].starts_with(&format!("done check: {PROGRAM} --check SKIPPED (")),
             "project={project}: {checks:?}"
         );
-        // The shell's own line (its wording differs between shells) is the shown reason.
+        // The shell's own line (its wording differs between shells) is the shown reason, and
+        // it is not repeated as output below the header.
         assert!(checks[0].ends_with(&format!("{PROGRAM}: command not found)")), "{checks:?}");
         assert!(!failed, "project={project}: a check that cannot run is not a failed check");
         assert_eq!(engine.requests().len(), 2, "project={project}: no repair round is spent");

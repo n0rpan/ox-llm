@@ -171,9 +171,17 @@ git --no-replace-objects commit -m '{message}'
             // `done` check, that is reported, not failed: no worker turn installs it.
             let out = String::from_utf8_lossy(&tail).into_owned();
             if let Some(missing) = oxa_tools::command_not_found_line(&out) {
+                // The header carries the shell's line as the reason already: do not repeat it.
                 let header = format!("{entry}: SKIPPED ({missing})\n");
+                let rest = out
+                    .lines()
+                    .filter(|l| l.trim_end() != missing)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 keep_tail(&mut diagnostics, header.as_bytes(), 16384);
-                keep_tail(&mut diagnostics, &tail, 16384);
+                if !rest.is_empty() {
+                    keep_tail(&mut diagnostics, format!("{rest}\n").as_bytes(), 16384);
+                }
                 continue;
             }
             failed = true;

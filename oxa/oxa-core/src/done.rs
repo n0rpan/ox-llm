@@ -394,7 +394,14 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
     // reported once and never sent back. Other exit 127s (a repo script that is missing, a
     // missing shebang interpreter) name a real defect and still fail.
     if let Some(missing) = oxa_tools::command_not_found_line(&out) {
-        return (false, format!("done check: {label} SKIPPED ({missing})"), out);
+        // The header already carries the shell's own line as the reason, so the same line is
+        // not repeated in the output below it; any other output still is.
+        let rest = out
+            .lines()
+            .filter(|l| l.trim_end() != missing)
+            .collect::<Vec<_>>()
+            .join("\n");
+        return (false, format!("done check: {label} SKIPPED ({missing})"), rest);
     }
     (false, format!("done check: {label} FAILED ({why})"), out)
 }
