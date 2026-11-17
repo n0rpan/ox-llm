@@ -36,33 +36,7 @@ Linux oxa integration tests require `bubblewrap` and `strace` on `PATH` (Arch:
 `sudo pacman -S bubblewrap strace`; Debian/Ubuntu: `sudo apt-get install bubblewrap strace`).
 The native cloud tool-loop test uses `strace -f -e trace=execve` to verify that the real binary
 and its descendants never launch Python; running without the tracer is not a valid substitute.
-Hosted CI installs both prerequisites too. External/local check runners must provision them as
-well; a missing tracer is an environment failure, not a reason to skip the proof.
-
-If `bubblewrap` is already available but you cannot install system packages, you can build
-`strace` inside the ignored build directory (requires a C compiler, `make`, `curl`, and `tar`).
-From the repository root:
-
-```sh
-mkdir -p oxa/target/test-tools
-(
-  cd oxa/target/test-tools
-  curl --fail --location --retry 2 -o strace-7.3.tar.xz https://strace.io/files/7.3/strace-7.3.tar.xz
-  tar -xf strace-7.3.tar.xz
-  cd strace-7.3
-  ./configure --prefix="$(pwd)/../installed" --enable-mpers=no --enable-bundled=yes
-  make -j2
-  make install
-)
-export PATH="$PWD/oxa/target/test-tools/installed/bin:$PATH"
-strace --version
-(cd oxa && cargo test -p oxa-cli --test in_process_cloud native_discovery_tool_loop_and_budget_settlement_use_no_python_process -- --exact)
-```
-
-Keep that `PATH` in the environment of any subsequent test/check runner; exporting it in a
-separate shell does not update an already-running runner. The test still requires working
-`ptrace` support and fails if tracing is denied. `--enable-mpers=no` only disables optional
-cross-ABI decoding in this local tracer build; the proof traces the native binary.
+Hosted CI installs both prerequisites too.
 
 If `bubblewrap` is already available but host package installation is not permitted, build
 upstream `strace` inside the checkout instead (requires a C compiler, make, curl, tar and xz).
