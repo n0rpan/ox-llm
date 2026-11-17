@@ -85,8 +85,9 @@ pub(crate) fn validate(policy: &RunPolicy, repo: &Path, tree: &Path, task: &Task
 /// redo work from a tree that predates it. Only a lone remote-tracking tip
 /// that descends from the captured base (and carries commits the base lacks) is
 /// adopted; no fetch runs, and an unrelated or diverging tip is never preferred
-/// over the base.
-fn adopt_published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &str) -> Result<()> {
+/// over the base. Returns whether the local branch was created, so the caller
+/// attaches the worktree to it instead of creating the ref a second time.
+fn adopt_published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &str) -> Result<bool> {
     let base_sha = checked(git(
         policy,
         repo,
@@ -126,7 +127,7 @@ fn adopt_published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &st
     heads.sort();
     heads.dedup();
     let [tip] = heads.as_slice() else {
-        return Ok(());
+        return Ok(false);
     };
     // The branch does not exist yet, so only a zero old value can match.
     let created = "0".repeat(40);
@@ -145,7 +146,7 @@ fn adopt_published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &st
     if !updated.status.success() {
         return Err(String::from_utf8_lossy(&updated.stderr).into());
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) fn prepare(
@@ -166,9 +167,7 @@ pub(crate) fn prepare(
             Some(1) => true,
             _ => return Err(String::from_utf8_lossy(&exists.stderr).into()),
         };
-        if create {
-            adopt_published_head(policy, repo, &task.branch, base)?;
-        }
+        let adopted = create && adopt_published_head(policy, repo, &task.branch, base)?;
         let tree_arg = tree.to_str().ok_or("non-UTF8 worktree path")?;
         let mut args = vec![
             "-c",
@@ -177,11 +176,14 @@ pub(crate) fn prepare(
             "add",
             "--no-checkout",
         ];
-        if create {
+        // An adopted branch already exists at its published tip, so the
+        // worktree attaches to it; otherwise it starts detached at the base and
+        // the sandboxed checkout creates the branch.
+        if create && !adopted {
             args.push("--detach");
         }
         args.push(tree_arg);
-        args.push(if create { base } else { &task.branch });
+        args.push(if create && !adopted { base } else { &task.branch });
         // Only metadata on the host. Git still refuses a branch checked out
         // elsewhere; no task-branch update or checkout callback runs here.
         checked(git(policy, repo, &args))?;
@@ -192,7 +194,7 @@ pub(crate) fn prepare(
                 source: repo.to_path_buf(),
                 operation: SupervisorOperation::Checkout {
                     branch: task.branch.clone(),
-                    create,
+                    create: create && !adopted,
                 },
             },
             policy,

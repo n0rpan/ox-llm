@@ -92,6 +92,11 @@ fn fresh_worktree_starts_at_the_published_task_branch_head() {
         "from the pull request\n"
     );
     assert_eq!(git(&env, &project(&env), &["rev-parse", "agent/test"]), pushed);
+    assert_eq!(
+        git(&env, &project(&env), &["symbolic-ref", "--quiet", "HEAD"]),
+        "refs/heads/agent/test"
+    );
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), pushed);
 }
 
 #[test]
