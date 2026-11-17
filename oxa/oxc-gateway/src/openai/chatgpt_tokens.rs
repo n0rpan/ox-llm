@@ -4,8 +4,10 @@
 //! `chatgpt-auth.json`. Its persistent sibling `chatgpt-auth.lock` is also used by Python.
 //! Never unlink the lock: independent opens of that inode serialize threads and processes.
 //! Available with `upstream-openai` + `secrets`; unused code adds no default-binary code.
+#[cfg(target_os = "linux")]
+use nix::fcntl::{renameat2, RenameFlags};
 use nix::{
-    fcntl::{openat, renameat, renameat2, Flock, FlockArg, OFlag, RenameFlags},
+    fcntl::{openat, renameat, Flock, FlockArg, OFlag},
     sys::stat::{mkdirat, Mode},
     unistd::{getuid, unlinkat, UnlinkatFlags},
 };
@@ -28,6 +30,8 @@ const FLAGS: OFlag = OFlag::O_NOFOLLOW.union(OFlag::O_CLOEXEC).union(OFlag::O_NO
 /// Only fixed diagnostics: paths, input JSON and refresher errors are never retained.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
+    #[cfg(not(target_os = "linux"))]
+    UnsupportedPlatform,
     Unavailable,
     UnsafeFile,
     TooLarge,
@@ -39,6 +43,8 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
+            #[cfg(not(target_os = "linux"))]
+            Self::UnsupportedPlatform => "atomic token creation is unsupported on this platform",
             Self::Unavailable => "token file unavailable",
             Self::UnsafeFile => "token file is not private and regular",
             Self::TooLarge => "token record exceeds size limit",
@@ -372,6 +378,10 @@ impl Directory {
         create_only: bool,
         mut sync: impl FnMut(&File) -> std::io::Result<()>,
     ) -> Result<(), Error> {
+        #[cfg(not(target_os = "linux"))]
+        if create_only {
+            return Err(Error::UnsupportedPlatform);
+        }
         let bytes = serde_json::to_vec(&json!({
             "access_token": record.access_token, "refresh_token": record.refresh_token,
             "account_id": record.account_id, "expires_at": record.expires_at,
@@ -397,6 +407,7 @@ impl Directory {
             file.write_all(&bytes).map_err(|_| Error::Unavailable)?;
             sync(&file).map_err(|_| Error::Unavailable)?;
             if create_only {
+                #[cfg(target_os = "linux")]
                 renameat2(
                     &self.file,
                     name.as_os_str(),
@@ -838,6 +849,40 @@ mod conversion_tests {
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn unsupported_create_only_refuses_before_staging_or_sync() {
+        let root = std::env::temp_dir().join(format!("unsupported-publication-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("chatgpt-auth.json");
+        let directory = Directory::open(&path).unwrap();
+        let record = TokenRecord::new(
+            "synthetic-access".repeat(MAX_BYTES as usize),
+            "synthetic-refresh".into(),
+            "synthetic-account".into(),
+            2_000_000_000.0,
+        )
+        .unwrap();
+        let syncs = std::cell::Cell::new(0);
+        // Refusal wins even over serialization/size checks; no staging name or sync is reached.
+        assert_eq!(
+            directory.publish_sync(&record, true, |_| {
+                syncs.set(syncs.get() + 1);
+                Ok(())
+            }),
+            Err(Error::UnsupportedPlatform)
+        );
+        assert_eq!(syncs.get(), 0);
+        assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+        assert!(!path.exists());
+        assert_eq!(
+            Error::UnsupportedPlatform.to_string(),
+            "atomic token creation is unsupported on this platform"
+        );
+        drop(directory);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn failed_file_sync_or_noreplace_publication_preserves_original_and_cleans_staging() {
         let root = std::env::temp_dir().join(format!("login-publication-{}", std::process::id()));
