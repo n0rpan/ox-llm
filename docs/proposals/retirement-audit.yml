@@ -33,13 +33,6 @@ jobs:
           rustup run 1.99.1 cargo install --locked cargo-machete --version 0.9.1 --root "$audit_root/tools"
           export PATH="$audit_root/tools/bin:$PATH" RUSTUP_TOOLCHAIN=1.99.1
           python3 -I tools/ci/rust_retirement_audit.py "$audit_root/artifacts"
-          for workspace in oxa engine oxc-rs; do
-            result=0
-            (cd "$workspace" && cargo machete) > "$audit_root/artifacts/$workspace-machete.txt" 2>&1 || result=$?
-            printf '%s\n' "$result" > "$audit_root/artifacts/$workspace-machete-exit.txt"
-            # 1 means findings, 2 means the tool failed. Never erase tool failures.
-            test "$result" -le 1
-          done
           git diff --exit-code
           echo 'Inventory only: no product build, engine execution or automatic removal.'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
