@@ -90,6 +90,13 @@ impl Host for MockHost {
         self.calls.lock().unwrap().push(action.clone());
         match action {
             HostAction::EngineLimits => Ok(self.limits.lock().unwrap().clone()),
+            HostAction::AccountRunTokens(tokens) => {
+                let mut limits = self.limits.lock().unwrap();
+                if let Some(left) = limits["remainingTokens"].as_u64() {
+                    limits["remainingTokens"] = json!(left.saturating_sub(tokens));
+                }
+                Ok(Value::Null)
+            }
             HostAction::ModelInfo(m) => {
                 let remote = self.remote.lock().unwrap().contains(&m);
                 Ok(json!({"model": m, "remote": remote}))
@@ -203,11 +210,22 @@ struct Outcome {
 }
 
 fn run_with(env: &TestEnv, h: &SubagentHooks, args: Value, cancel: &CancelToken) -> Outcome {
+    run_checked(env, h, args, cancel, &[])
+}
+
+fn run_checked(
+    env: &TestEnv,
+    h: &SubagentHooks,
+    args: Value,
+    cancel: &CancelToken,
+    checked: &[(PathBuf, PathBuf)],
+) -> Outcome {
     let t = tool(h);
     let sandbox = oxa_sandbox::NoSandbox;
     let spill = env.tmp().join("spill");
     let work = env.work();
     let cx = ToolCtx {
+        checked,
         cwd: &work,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -261,16 +279,40 @@ fn env_of(env: &TestEnv, hint: &str, name: &str) -> Option<String> {
 
 fn wait_for(path: &Path) {
     let end = Instant::now() + Duration::from_secs(10);
-    while !path.exists() {
-        assert!(Instant::now() < end, "{} never appeared", path.display());
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if text.ends_with('\n') && text.trim().parse::<u32>().is_ok_and(|pid| pid > 0) {
+                return;
+            }
+        }
+        assert!(
+            Instant::now() < end,
+            "{} never contained a complete PID line",
+            path.display()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
-    // The writer may not have finished the line yet.
-    std::thread::sleep(Duration::from_millis(20));
 }
 
 fn pid_in(path: &Path) -> u32 {
     std::fs::read_to_string(path).unwrap().trim().parse().unwrap()
+}
+
+/// File creation and even a PID prefix are not a completed readiness record.
+#[test]
+fn readiness_waits_for_the_complete_pid_line() {
+    let env = TestEnv::new();
+    let path = env.root().join("partial-pid");
+    std::fs::write(&path, "12").unwrap();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            // Deliberately slow publication, not a delay used to infer readiness.
+            std::thread::sleep(Duration::from_millis(100));
+            append(&path, "345");
+        });
+        wait_for(&path);
+        assert_eq!(pid_in(&path), 12345, "wait for the newline, not file creation");
+    });
 }
 
 /// `true` while `pid` exists and is not a zombie.
@@ -518,6 +560,7 @@ fn parallel_is_queued() {
                 let work = root.join("work");
                 let cancel = CancelToken::new();
                 let cx = ToolCtx {
+                    checked: &[],
                     cwd: &work,
                     spill_dir: &spill,
                     sandbox: &sandbox,
@@ -655,6 +698,7 @@ fn run_in(env: &TestEnvRef, h: &SubagentHooks, args: Value, cancel: &CancelToken
     let spill = env.0.join("tmp");
     let work = env.0.join("work");
     let cx = ToolCtx {
+        checked: &[],
         cwd: &work,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -1362,4 +1406,281 @@ fn cap_counts_running_and_queued_children_across_calls() {
         "the budget is released when calls end: {}",
         o.out.text
     );
+}
+
+// ---------------------------------------------------------------- #509: the child's cwd
+
+fn access_of(env: &TestEnv, h: &SubagentHooks, args: Value) -> Vec<oxa_proto::Access> {
+    let t = tool(h);
+    let sandbox = oxa_sandbox::NoSandbox;
+    let spill = env.tmp().join("spill");
+    let work = env.work();
+    let cancel = CancelToken::new();
+    let cx = ToolCtx {
+        cwd: &work,
+        spill_dir: &spill,
+        sandbox: &sandbox,
+        mode: Mode::Workspace,
+        cancel: &cancel,
+        env: &[],
+        tune: Default::default(),
+        checked: &[],
+        hidden: None,
+    };
+    t.access(&args, &cx).expect("access")
+}
+
+#[test]
+fn a_child_cwd_outside_the_session_is_a_write_access_for_the_permission_layer() {
+    use oxa_proto::Access;
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let exec = Access::Exec {
+        command: "subagent".to_string(),
+        net: false,
+    };
+    let work = env.work();
+    std::fs::create_dir_all(work.join("sub")).unwrap();
+    let outside = env.root().join("other-repo");
+    std::fs::create_dir_all(&outside).unwrap();
+
+    // Normal work: no extra prompt. Explicit in-project roots are pinned as writes,
+    // which the workspace policy allows without asking.
+    assert_eq!(
+        access_of(&env, &h, json!({"agent": "scout", "task": "x"})),
+        vec![exec.clone()]
+    );
+    for cwd in ["sub", "sub/../sub"] {
+        use oxa_proto::Policy;
+        let accesses = access_of(&env, &h, json!({"agent": "scout", "task": "x", "cwd": cwd}));
+        assert_eq!(accesses, vec![exec.clone(), Access::Write(work.join("sub"))]);
+        assert_eq!(
+            oxa_perm::ModePolicy::new().decide(Mode::Workspace, &accesses[1], &work),
+            oxa_proto::Decision::Allow,
+            "ordinary in-project cwd must not prompt"
+        );
+    }
+
+    // `..` and an absolute path both leave the project: the target is reported as a write.
+    let rel = access_of(
+        &env,
+        &h,
+        json!({"agent": "scout", "task": "x", "cwd": "../other-repo"}),
+    );
+    assert_eq!(rel, vec![exec.clone(), Access::Write(outside.clone())]);
+    let abs = access_of(
+        &env,
+        &h,
+        json!({"agent": "scout", "task": "x", "cwd": outside.to_str().unwrap()}),
+    );
+    assert_eq!(abs, vec![exec.clone(), Access::Write(outside.clone())]);
+
+    // Every task of a parallel call and every step of a chain is checked.
+    let par = access_of(
+        &env,
+        &h,
+        json!({"tasks": [
+            {"agent": "scout", "task": "a", "cwd": "sub"},
+            {"agent": "scout", "task": "b", "cwd": "../other-repo"},
+        ]}),
+    );
+    assert_eq!(
+        par,
+        vec![
+            exec.clone(),
+            Access::Write(work.join("sub")),
+            Access::Write(outside.clone())
+        ]
+    );
+    let chain = access_of(
+        &env,
+        &h,
+        json!({"chain": [{"agent": "scout", "task": "a", "cwd": "../other-repo"}]}),
+    );
+    assert_eq!(chain, vec![exec, Access::Write(outside)]);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_child_cwd_symlink_out_of_the_session_is_a_write_access() {
+    use oxa_proto::Access;
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let target = env.root().join("elsewhere");
+    std::fs::create_dir_all(&target).unwrap();
+    std::os::unix::fs::symlink(&target, env.work().join("link")).unwrap();
+    let a = access_of(&env, &h, json!({"agent": "scout", "task": "x", "cwd": "link"}));
+    assert_eq!(a.len(), 2, "{a:?}");
+    assert!(matches!(&a[1], Access::Write(_)), "{a:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_preserves_symlink_parent_semantics_for_access_and_spawn() {
+    use oxa_proto::Access;
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let outside = env.root().join("elsewhere");
+    std::fs::create_dir_all(outside.join("tree")).unwrap();
+    std::fs::create_dir_all(outside.join("sibling")).unwrap();
+    std::fs::create_dir_all(env.work().join("sibling")).unwrap();
+    std::os::unix::fs::symlink(outside.join("tree"), env.work().join("link")).unwrap();
+    let args = json!({"agent": "scout", "task": "x", "cwd": "link/../sibling"});
+    assert_eq!(
+        access_of(&env, &h, args.clone()),
+        vec![
+            Access::Exec {
+                command: "subagent".into(),
+                net: false
+            },
+            Access::Write(outside.join("sibling")),
+        ],
+    );
+    let o = run(&env, &h, args);
+    assert!(!o.out.is_error, "{}", o.out.text);
+    assert_eq!(
+        env_of(&env, "sess.s1", "cwd").as_deref(),
+        outside.join("sibling").to_str(),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_retargeted_by_an_earlier_child_is_refused() {
+    for shape in ["chain", "tasks"] {
+        let env = TestEnv::new();
+        let host = MockHost::new(&env);
+        let body = format!(
+            "if [ \"$hint\" = sess.s1 ]; then rm \"$ROOT/work/link\"; ln -s \"$ROOT/elsewhere\" \"$ROOT/work/link\"; fi\n{OK_BODY}"
+        );
+        let h = hooks(&env, &body, &host);
+        std::fs::create_dir_all(env.work().join("sub")).unwrap();
+        std::fs::create_dir_all(env.root().join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(env.work().join("sub"), env.work().join("link")).unwrap();
+        let args = json!({shape: [
+            {"agent": "scout", "task": "retarget"},
+            {"agent": "worker", "task": "must not start", "cwd": "link"}
+        ]});
+        let o = run(&env, &h, args);
+        assert!(o.out.is_error, "{shape}: {}", o.out.text);
+        assert!(o.out.text.contains("directory changed"), "{}", o.out.text);
+        assert_eq!(log(&env).iter().filter(|s| s.starts_with("start ")).count(), 1);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_retargeted_after_permission_check_is_refused() {
+    use oxa_proto::{Access, Policy};
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let sub = env.work().join("sub");
+    let outside = env.root().join("elsewhere");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    let link = env.work().join("link");
+    std::os::unix::fs::symlink(&sub, &link).unwrap();
+    let args = json!({"agent": "scout", "task": "must not start", "cwd": "link"});
+    let policy = oxa_perm::ModePolicy::new();
+    let checked: Vec<_> = access_of(&env, &h, args.clone())
+        .iter()
+        .filter_map(|a| {
+            let (_, pin) = policy.decide_pinned(Mode::Workspace, a, &env.work());
+            match (a, pin) {
+                (Access::Write(p), Some(real)) => Some((p.clone(), real)),
+                _ => None,
+            }
+        })
+        .collect();
+    std::fs::remove_file(&link).unwrap();
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    let o = run_checked(&env, &h, args, &CancelToken::new(), &checked);
+    assert!(o.out.is_error, "{}", o.out.text);
+    assert!(o.out.text.contains("directory changed"), "{}", o.out.text);
+    assert!(!log(&env).iter().any(|s| s.starts_with("start ")));
+}
+
+#[cfg(unix)]
+#[test]
+fn child_cwd_missing_component_does_not_spawn_in_lexical_parent() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host);
+    let o = run(
+        &env,
+        &h,
+        json!({
+            "agent": "scout", "task": "x", "cwd": "missing/.."
+        }),
+    );
+    assert!(o.out.is_error, "{}", o.out.text);
+    assert!(!log(&env).iter().any(|s| s.starts_with("start ")));
+}
+
+#[test]
+fn run_token_budget_is_passed_at_spawn_and_child_usage_is_charged() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    let body = r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":10,"cacheRead":70,"output":5}}}'
+"#;
+    let h = hooks(&env, body, &host);
+    let outcome = run(
+        &env,
+        &h,
+        json!({"chain":[
+            {"agent":"scout","task":"first"}, {"agent":"worker","task":"second"}
+        ]}),
+    );
+    assert!(!outcome.out.is_error, "{}", outcome.out.text);
+    for (hint, remaining) in [("sess.s1", "100"), ("sess.s2", "85")] {
+        let args = argv(&env, hint);
+        let at = args
+            .iter()
+            .position(|a| a == "--max-tokens")
+            .expect("child run budget");
+        assert_eq!(args[at + 1], remaining);
+    }
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(70));
+}
+
+#[test]
+fn child_run_usage_includes_non_chat_requests_without_double_charging() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    // 15 chat tokens plus 45 from compaction / tool prefill. The cumulative
+    // record includes the chat already reported and may exceed the child budget.
+    let body = r#"printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stopReason":"stop","usage":{"input":10,"cacheRead":70,"output":5}}}' '{"type":"run_usage","tokens":60}'
+"#;
+    let h = hooks(&env, body, &host);
+    let _ = run(
+        &env,
+        &h,
+        json!({"tasks":[
+            {"agent":"scout","task":"first"},
+            {"agent":"worker","task":"second"},
+            {"agent":"scout","task":"third"}
+        ]}),
+    );
+    let args = argv(&env, "sess.s2");
+    let at = args.iter().position(|a| a == "--max-tokens").unwrap();
+    assert_eq!(args[at + 1], "40", "charge total usage exactly once");
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(0));
+    assert_eq!(log(&env).iter().filter(|s| s.starts_with("start ")).count(), 2);
+}
+
+#[test]
+fn depleted_run_token_budget_starts_no_child() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(0);
+    let h = hooks(&env, OK_BODY, &host);
+    let outcome = run(&env, &h, json!({"agent":"scout","task":"go"}));
+    assert!(outcome.out.is_error);
+    assert!(!log(&env).iter().any(|s| s.starts_with("start ")));
 }

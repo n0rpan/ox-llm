@@ -15,8 +15,10 @@
 //! the same way every time is still a loop). Only consecutive pairs count; the walk stops at:
 //! * a user message (a new instruction may legitimately need the same call again);
 //! * any other call's result, except another read/grep/find/ls result when the call itself is one
-//!   of those (#463: the unchanged range is still in context); an edit, a write or a command
-//!   ends the run: this is what keeps `cargo test` after an edit, and a read after an edit, from ever being counted;
+//!   of those (#463: the unchanged range is still in context), and an `edit` or `write` that
+//!   failed (#507: it changed nothing, so `read, edit (fails), read, edit (fails), ...` is a loop);
+//!   a successful edit or write or a command ends the run: this is what keeps `cargo test` after
+//!   an edit, and a read after an edit, from ever being counted;
 //! * a result of the same call with different text (a polling command whose output changes, a
 //!   test whose output changed): a legitimate re-run.
 //!
@@ -41,6 +43,10 @@ use oxa_proto::{Role, Value, WireMsg};
 
 /// The setting that turns the guard off (default on).
 pub const SETTING: &str = "oxa.toolRepeatGuard";
+/// The setting that caps the model replies of one run (default unset: no limit).
+pub const MAX_TURNS: &str = "oxa.maxTurns";
+/// The error class of a run this guard stopped (`outcome` / exit code 1, not a finished task).
+pub const ERROR_CODE: &str = "repeat_guard";
 /// Identical results already on the wire before a repeat is answered with the notice.
 pub const LIMIT: u32 = 3;
 /// Notices for the same call before the next repeat stops the run.
@@ -58,13 +64,13 @@ pub enum Verdict {
 }
 
 /// Judge one call `name(args)` that ran and whose shaped result is `text`. `in_batch` = the
-/// earlier calls of the same batch with their final result texts, in call order.
+/// earlier calls of the same batch with their final result texts and error flags, in call order.
 pub(crate) fn judge(
     st: &SessionState,
     name: &str,
     args_raw: &str,
     text: &str,
-    in_batch: &[(&str, &str, &str)],
+    in_batch: &[(&str, &str, &str, bool)],
 ) -> Verdict {
     if !st.settings.bool(SETTING, true) {
         return Verdict::Pass;
@@ -90,11 +96,11 @@ pub(crate) fn judge(
     }
     // The batch first (newest), then the wire, both walked back from the newest.
     let mut found = Found::default();
-    for (n, a, t) in in_batch.iter().rev() {
+    for (n, a, t, failed) in in_batch.iter().rev() {
         if !same_call(n, a, name, &args) {
-            // Another read-only call leaves the earlier copies in context (#463); any other
-            // call may change files and ends the run (the suffix found so far still counts).
-            if READ_ONLY.contains(n) && READ_ONLY.contains(&name) {
+            // Match the wire walk: failed writers only skip over a different call's run;
+            // identical failures and their notices must still count as repeats themselves.
+            if (READ_ONLY.contains(n) && READ_ONLY.contains(&name)) || (WRITERS.contains(n) && *failed) {
                 continue;
             }
             return finish(found, name, args_raw);
@@ -104,7 +110,8 @@ pub(crate) fn judge(
             Step::Break => return finish(found, name, args_raw),
         }
     }
-    scan(st.transcript.wire(), name, &args, text, &mut found);
+    let failed = |i: usize| result_failed(st, i);
+    scan(st.transcript.wire(), &failed, name, &args, text, &mut found);
     finish(found, name, args_raw)
 }
 
@@ -126,6 +133,16 @@ pub fn stop_text(name: &str) -> String {
         "Run stopped: the model repeated the same tool call after being told its result is unchanged",
         &format!("`{name}` kept returning the same result ({LIMIT} times in a row, then {NOTICES_BEFORE_STOP} notices)"),
         "send a more specific instruction, or switch model with /model",
+    )
+}
+
+/// The error that ends a run at `oxa.maxTurns` replies (#507).
+pub fn turn_limit_error(max: u32) -> oxa_proto::OxaError {
+    oxa_proto::problem(
+        oxa_proto::codes::TURN_LIMIT,
+        "Run stopped",
+        &format!("it reached {MAX_TURNS} ({max} model replies)"),
+        &format!("send a more specific instruction, or raise or unset {MAX_TURNS}"),
     )
 }
 
@@ -163,8 +180,27 @@ fn same_call(n: &str, a: &str, name: &str, args: &Value) -> bool {
     n == name && parse(a).as_ref() == Some(args)
 }
 
-/// Walk the wire back from the newest message (rule in the module docs).
-pub(crate) fn scan(wire: &[WireMsg], name: &str, args: &Value, text: &str, found: &mut Found) {
+/// Tools that change files only when they succeed (#507).
+pub(crate) const WRITERS: [&str; 2] = ["edit", "write"];
+
+/// Whether the tool result at wire index `i` was stored as an error (`ToolMeta::is_error`).
+fn result_failed(st: &SessionState, i: usize) -> bool {
+    st.transcript
+        .origin(i)
+        .and_then(|id| st.tree.get(id))
+        .is_some_and(|e| matches!(&e.body, oxa_proto::EntryBody::Msg { tool: Some(t), .. } if t.is_error))
+}
+
+/// Walk the wire back from the newest message (rule in the module docs). `failed(i)` tells
+/// whether the tool result at wire index `i` is an error.
+pub(crate) fn scan(
+    wire: &[WireMsg],
+    failed: &dyn Fn(usize) -> bool,
+    name: &str,
+    args: &Value,
+    text: &str,
+    found: &mut Found,
+) {
     for (i, m) in wire.iter().enumerate().rev() {
         match m.role {
             Role::User => return,
@@ -176,6 +212,10 @@ pub(crate) fn scan(wire: &[WireMsg], name: &str, args: &Value, text: &str, found
                     // Another read-only call (a different range, a search) leaves the earlier
                     // copies in context and unchanged; anything else may change files (#463).
                     if READ_ONLY.contains(&call.name.as_str()) && READ_ONLY.contains(&name) {
+                        continue;
+                    }
+                    // A failed edit or write changed nothing (#507).
+                    if WRITERS.contains(&call.name.as_str()) && failed(i) {
                         continue;
                     }
                     return;
@@ -220,6 +260,7 @@ mod job_poll_tests {
                 name: "bash".to_string(),
                 args_raw: r#"{"job":"job-1"}"#.to_string(),
             }],
+            provider_history: None,
             tool_call_id: None,
         }
     }
@@ -237,7 +278,7 @@ mod job_poll_tests {
     fn count_for(wire: &[WireMsg], newest: &str) -> Found {
         let mut found = Found::default();
         let args = parse(r#"{"job":"job-1"}"#).unwrap();
-        scan(wire, "bash", &args, newest, &mut found);
+        scan(wire, &|_| false, "bash", &args, newest, &mut found);
         found
     }
 

@@ -16,7 +16,7 @@ dest = args.destination.resolve()
 if dest.exists():
     raise SystemExit('destination must be fresh')
 (dest / 'usr/bin').mkdir(parents=True)
-for workspace, names in [('engine', ('oxe', 'oxe-server')), ('oxa', ('oxa',))]:
+for workspace, names in [('engine', ('oxe', 'oxe-server')), ('oxa', ('oxa', 'local-ai-memlat-boot'))]:
     for name in names:
         shutil.copy2(root / workspace / 'target/release' / name, dest / 'usr/bin' / name)
 for workspace in ('oxc', 'oxc-rs'):
@@ -54,7 +54,7 @@ for product in ('engine', 'oxa', 'oxc'):
 shutil.copy2(root / 'LICENSE', licenses / 'LICENSE')
 # Use the repository's existing license collector for every linked Rust closure.
 collector = root / 'engine/tools/ci/crate_licenses.py'
-for workspace, packages in [('engine', ('oxe-cli', 'server')), ('oxa', ('oxa-cli',))]:
+for workspace, packages in [('engine', ('oxe-cli', 'server')), ('oxa', ('oxa-cli', 'oxc-memlat'))]:
     for package in packages:
         subprocess.run([sys.executable, '-I', str(collector), package,
                         str(licenses / 'crates' / package)], cwd=root / workspace, check=True)

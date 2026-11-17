@@ -17,7 +17,9 @@
 //! * Paths: relative paths resolve against `ToolCtx::cwd`; `~` expands to nothing special
 //!   (the sandbox hides home). `Tool::access` reports absolute, lexically normalised paths.
 
+mod ask;
 mod bash;
+mod checked;
 pub mod descriptions;
 mod diff;
 mod edit;
@@ -29,6 +31,7 @@ mod read;
 mod shape;
 mod write;
 
+pub use ask::AskTool;
 pub use bash::{net_for as bash_net_for, BashTool, ShellConfig};
 pub use diff::{apply_edits, detect_line_ending, strip_bom, unified_diff, Edit, EditOutcome};
 pub use edit::EditTool;
@@ -87,6 +90,18 @@ pub fn builtin_tools_with_shell_and_jobs(shell: ShellConfig, jobs: Arc<JobRegist
     tools
 }
 
+/// #202: [`builtin_tools_with_shell_and_jobs`] with the bash tool running through `sandbox`
+/// (the session's full-access wrapper) instead of `ToolCtx::sandbox`.
+pub fn builtin_tools_with_bash_sandbox(
+    shell: ShellConfig,
+    jobs: Arc<JobRegistry>,
+    sandbox: Arc<dyn oxa_proto::Sandbox>,
+) -> Vec<Arc<dyn Tool>> {
+    let mut tools = builtin_tools();
+    tools[1] = Arc::new(BashTool::with_shell_and_jobs(shell, jobs).with_sandbox(sandbox));
+    tools
+}
+
 /// Resolve a tool path argument against `cwd` and normalise it lexically (`.` and `..` removed
 /// without touching the file system). Shared by every tool's `access` and `run`.
 pub fn resolve_path(cwd: &Path, arg: &str) -> PathBuf {
@@ -106,4 +121,28 @@ pub fn resolve_path(cwd: &Path, arg: &str) -> PathBuf {
         }
     }
     out
+}
+
+/// #597: the same path identity for every file tool's permission check and execution.
+/// Explicit absolute `/tmp` paths name session scratch, except host mounts and outputs.
+/// Relative paths retain their host-cwd meaning, including `..` outside the workspace.
+/// This translates names only: the policy still judges the resolved host path.
+pub fn resolve_tool_path(cx: &oxa_proto::ToolCtx, arg: &str) -> PathBuf {
+    let abs = resolve_path(cx.cwd, arg);
+    let Ok(rest) = abs.strip_prefix("/tmp") else {
+        return abs;
+    };
+    let Some(scratch) = cx.sandbox.file_scratch_dir(cx.mode) else {
+        return abs;
+    };
+    if !Path::new(arg).is_absolute()
+        || abs.starts_with(cx.cwd)
+        || std::fs::canonicalize(cx.cwd).is_ok_and(|real| abs.starts_with(real))
+        || abs.starts_with(cx.spill_dir)
+        || abs.starts_with(scratch)
+        || cx.sandbox.preserves_host_path(&abs)
+    {
+        return abs;
+    }
+    scratch.join(rest)
 }

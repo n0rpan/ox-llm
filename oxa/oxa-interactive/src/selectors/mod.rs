@@ -7,6 +7,7 @@
 //! and, where text is typed, `paste`. None of them touches the session, the store or the
 //! settings files: the result is data, and the app (D1) turns it into `AppAction`s.
 mod mcp;
+mod mode;
 mod model;
 mod sessions;
 mod settings;
@@ -15,6 +16,7 @@ mod thinking;
 mod tree;
 
 pub use mcp::*;
+pub use mode::*;
 pub use model::*;
 pub use sessions::*;
 pub use settings::*;

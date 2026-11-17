@@ -338,6 +338,7 @@ fn wire_from_json(v: &Value) -> Option<WireMsg> {
         content,
         reasoning,
         tool_calls,
+        provider_history: None,
         tool_call_id,
     })
 }

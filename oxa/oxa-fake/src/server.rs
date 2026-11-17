@@ -47,6 +47,8 @@ pub struct FakeOpts {
     /// `/props` answers 503 "no model loaded" (the controller with nothing loaded). Also
     /// switchable at run time ([`FakeServer::set_props_unloaded`]).
     pub props_unloaded: bool,
+    /// Owned native-engine build identity; None models an older/unidentified peer.
+    pub build_info: Option<String>,
     /// `/_local/status` answers the controller's short `state: loading` body (no model, no
     /// context; F14). Also switchable at run time ([`FakeServer::set_loading`]).
     pub loading: bool,
@@ -215,6 +217,7 @@ impl Default for FakeOpts {
             omit_modality: false,
             models: Vec::new(),
             props_unloaded: false,
+            build_info: Some(format!("oxe-{}", env!("CARGO_PKG_VERSION"))),
             loading: false,
             controller: true,
             strict_tool_args: true,
@@ -465,6 +468,7 @@ fn handle(mut stream: TcpStream, sh: &Shared) -> io::Result<()> {
     };
     lock(&sh.hits).push((req.method.clone(), req.path.clone()));
     match (req.method.as_str(), req.path.as_str()) {
+        ("GET", "/health") => respond_json(&mut stream, 200, &json!({"status":"ok"})),
         // Every `model_limits` row is a servable model (the controller's aliases).
         ("GET", "/v1/models") => {
             let data: Vec<Value> = model_rows(&sh.opts)
@@ -724,6 +728,9 @@ fn engine_props(o: &FakeOpts, cancel: CancelMode) -> Value {
         "model_alias": o.model,
         "is_sleeping": false,
     });
+    if let Some(build) = &o.build_info {
+        v["build_info"] = json!(build);
+    }
     if o.hints {
         v["oxe_hints"] = json!({"snapshot_keep": 2, "prefill_only": true, "hint_clear": true});
         if cancel != CancelMode::Off {
@@ -1167,6 +1174,7 @@ pub(crate) fn generate(turn: &ScriptTurn, limit: u32) -> (oxa_proto::WireMsg, Fi
         content: text,
         reasoning,
         tool_calls: Vec::new(),
+        provider_history: None,
         tool_call_id: None,
     };
     (out, Finish::Length, limit)
@@ -1632,6 +1640,33 @@ fn model_row(v: &str) -> Result<FakeModel, OxaError> {
     })
 }
 
+const HELP: &str = "\
+Scripted, test-only HTTP engine (no model required).
+
+Usage: oxa-fake --script <FILE> [OPTIONS]
+
+Options:
+  --script <FILE>             JSON Lines turns (see docs/fake-script.md); required to serve
+  --record <FILE>             Append recorded requests to this file
+  --port <N>                  Loopback port (default: 0, choose a free port)
+  --n-ctx <N>                 Context size in byte-tokens (default: 1048576)
+  --model <NAME>              Model alias (default: fake-model)
+  --model-row <ALIAS:CAP[:MAX_OUTPUT][:moe|flash|none]>
+                             Add a model row (repeatable; capabilities default to moe)
+                             MAX_OUTPUT may be empty or - for no limit
+  --done-gap-ms <MS>         Pause before [DONE] (default: 0)
+  --hold-headers <MS>        Hold every chat response's headers (default: 0)
+  --comments-only <MS>       Send only SSE comments before replying (default: 0)
+  --drop-at <BYTES>          Drop the first chat response after this many body bytes
+  --hold-prefill <MS>        Hold prefill response headers (default: 0)
+  --rewrite-resume-block <N> Simulate block-aligned cache resume after a rewrite
+  --no-hints                Disable engine hints (enabled by default)
+  -h, --help                Print help and exit without starting the server
+
+Prints 'listening <url>' on stdout; serves until stdin closes.
+Example: oxa-fake --script turns.jsonl --port 0
+";
+
 fn run_main(args: &[String]) -> Result<(), OxaError> {
     let mut opts = FakeOpts::default();
     let mut script_path: Option<String> = None;
@@ -1640,6 +1675,12 @@ fn run_main(args: &[String]) -> Result<(), OxaError> {
     while i < args.len() {
         let flag = args[i].as_str();
         match flag {
+            "-h" | "--help" => {
+                io::stdout()
+                    .write_all(HELP.as_bytes())
+                    .map_err(|e| OxaError::io("stdout", &e))?;
+                return Ok(());
+            }
             "--script" => script_path = Some(take(args, &mut i, flag)?.to_string()),
             "--record" => record = Some(take(args, &mut i, flag)?.to_string()),
             "--port" => opts.port = number(take(args, &mut i, flag)?, flag)?,

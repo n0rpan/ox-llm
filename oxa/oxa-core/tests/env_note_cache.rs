@@ -160,7 +160,7 @@ fn generated_note_round_trips_and_only_it_is_stripped() {
         s.prompt(p.into(), Vec::new(), &mut sink, &mut ui)
             .expect("prompt");
     }
-    // `/resume` reads SessionStore::list, not the standalone meta_of helper.
+    // `/resume` reads SessionStore::list.
     let listed = store.list(Some(&env.work()));
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].first_message, typed[0]);

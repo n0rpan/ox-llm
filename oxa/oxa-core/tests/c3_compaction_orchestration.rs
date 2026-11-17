@@ -81,6 +81,8 @@ fn build_with_store(
         gate: Default::default(),
     });
     SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks,
@@ -187,6 +189,7 @@ fn calls(list: Vec<(&str, &str, &str)>) -> WireMsg {
                 args_raw: args.to_string(),
             })
             .collect(),
+        provider_history: None,
         tool_call_id: None,
     }
 }

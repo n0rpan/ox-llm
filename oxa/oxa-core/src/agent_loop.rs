@@ -56,18 +56,19 @@ pub fn append_entry(st: &mut SessionState, body: EntryBody) -> Result<Entry, Oxa
 /// entry per request. Mid-run compaction (`When::MidRun`) is delegated to `maybe_compact`
 /// between turns. Fires the observer hooks of each step.
 ///
-/// `Finish::Length` (the reply hit the output limit), as in pi: there is no automatic
-/// continuation. Continuing would send a request that ends in the cut assistant message with
-/// `max_tokens > 0`, which the engine refuses (400; only an H6 prefill may end in an assistant
-/// message), and W1 forbids rewriting the reply or inventing a user turn. A cut reply without
-/// tool calls ends the run like a normal stop (its stop reason `length` is shown); a cut reply
-/// with tool calls never runs them: each gets the error result `tool_errors::TRUNCATED` and
-/// the loop goes on, so the model re-issues them with complete arguments.
+/// A plain `Finish::Length` reply gets bounded recovery under the auto-retry policy. Local
+/// recovery keeps the cut reply, appends an explicit continuation instruction, and uses an
+/// advertised zero-token prefill. Remote recovery keeps the cut reply as shown progress only
+/// and requests a concise complete answer. A cut reply with tool calls never runs them: each
+/// gets `tool_errors::TRUNCATED`, so the model can reissue complete arguments. Soft termination
+/// takes priority over either recovery path.
 pub fn run_loop(
     st: &mut SessionState,
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    crate::goal::ensure_begin(st);
+    crate::goal::checkpoint(st, false, sink)?;
     sink.emit(&AgentEvent::AgentStart);
     observe_hooks(st, HookPoint::AgentStart, &Value::Null, sink, ui);
     let mut run_msgs: Vec<EventMessage> = Vec::new();
@@ -75,6 +76,7 @@ pub fn run_loop(
     // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
+    crate::goal::checkpoint(st, false, sink)?;
     crate::think::end_run(st, ui);
     sink.emit(&AgentEvent::AgentEnd {
         messages: run_msgs.clone(),
@@ -93,15 +95,40 @@ fn run_inner(
     opening: &[EventMessage],
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
+    let mut schema_repaired = None;
+    let mut pending_completion = None;
     let mut done = crate::done::DoneState::default();
     done.begin(st);
     let mut wrapping_up = false;
     let mut wrap_up_failure = None;
+    let mut length_recoveries = 0;
+    // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
+    let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
+        if crate::goal::terminal(st) {
+            return Ok(RunEnd::Stopped);
+        }
+        if max_turns > 0 && turn_index >= max_turns && !wrapping_up {
+            let e = crate::repeat::turn_limit_error(max_turns);
+            persist(
+                st,
+                EntryBody::Shown {
+                    text: e.to_string(),
+                    why: shown_why::FAILED,
+                },
+                sink,
+            )?;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Error,
+                text: e.to_string(),
+            });
+            return Ok(RunEnd::Failed(e));
+        }
         if !wrapping_up {
             let reason = match st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) {
                 1 => Some(crate::WrapUpReason::TimeLimit),
                 2 => Some(crate::WrapUpReason::Signal),
+                3 => Some(crate::WrapUpReason::TokenLimit),
                 _ => None,
             };
             if let Some(reason) = reason {
@@ -143,7 +170,20 @@ fn run_inner(
             thinking: wrapping_up.then_some(false),
             background: false,
             snapshot_keep: false,
-            extra: Vec::new(),
+            // The contract (including repair feedback) belongs to this run, not the
+            // persisted conversation. Repeat it for tool/continuation requests too.
+            extra: st
+                .output_schema
+                .as_ref()
+                .map(|schema| {
+                    let instruction = if let Some(error) = &schema_repaired {
+                        format!("Your final answer did not match the output schema: {error}. Return only valid JSON matching this schema:")
+                    } else {
+                        "Your final answer must be JSON matching this schema:".to_owned()
+                    };
+                    vec![WireMsg::user(format!("{instruction}\n{}", schema.value()))]
+                })
+                .unwrap_or_default(),
             events: true,
             idem_key: String::new(),
         };
@@ -353,6 +393,53 @@ fn run_inner(
             break turn;
         };
 
+        if turn.finish == Finish::Length
+            && turn.msg.tool_calls.is_empty()
+            && st.info.caps.remote
+            && !wrapping_up
+            && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && length_recoverable(st, length_recoveries)
+        {
+            account_discarded(st, &turn);
+            let text = turn
+                .msg
+                .content
+                .clone()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "The reply reached its output limit before answering.".to_string());
+            let progress = persist(
+                st,
+                EntryBody::Shown {
+                    text,
+                    why: shown_why::CUT,
+                },
+                sink,
+            )?;
+            finish_discarded_turn(
+                st,
+                sink,
+                ui,
+                reply_event(&turn, now_ms()),
+                (turn_index, &progress.id),
+            );
+            turn_index += 1;
+            length_recoveries += 1;
+            push_user(
+                st,
+                crate::prompt::LENGTH_RETRY_REMOTE.to_string(),
+                sink,
+                ui,
+                run_msgs,
+            )?;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Info,
+                text: "Reply reached the output limit; requesting a concise complete answer.".to_string(),
+            });
+            continue 'turns;
+        }
+        if turn.finish != Finish::Length {
+            length_recoveries = 0;
+        }
         st.stats.output_truncated = turn.finish == Finish::Length;
         let usage: Usage = turn.usage;
         if !st.info.caps.remote {
@@ -399,6 +486,7 @@ fn run_inner(
         run_msgs.push(reply.clone());
         account_reply(st, turn.timings, usage);
         st.last_usage = Some(usage);
+        crate::goal::checkpoint(st, true, sink)?;
         // F4: capabilities that only a loaded engine reports (`/props` `oxe_hints`): re-read
         // once after the first reply while `prefill_only` is still false, and after a request
         // that recovered from a model load or restart. Never per request otherwise.
@@ -414,6 +502,9 @@ fn run_inner(
 
         let calls = turn.msg.tool_calls.clone();
         if !calls.is_empty() {
+            if let Some(goal) = &st.goal {
+                goal.note_tools();
+            }
             // A reply cut by the output limit may carry truncated arguments: fail, never run.
             let results = if turn.finish == Finish::Length {
                 fail_truncated_calls(st, &calls, sink, ui)
@@ -469,6 +560,34 @@ fn run_inner(
             );
             turn_index += 1;
 
+            crate::goal::account(st, false)?;
+            if crate::goal::terminal(st) {
+                let _ = crate::done::check(st, &mut done, sink, ui);
+                if st.stats.done_failed {
+                    if let Some(goal) = &st.goal {
+                        goal.reject_completion();
+                    }
+                }
+                if let Some(goal) = st
+                    .goal
+                    .clone()
+                    .filter(|goal| goal.snapshot().status == oxa_session::GoalStatus::Done)
+                {
+                    match crate::repair::schema_repair_turn(st, &turn, &mut schema_repaired, sink) {
+                        Ok(false) => {}
+                        repair => {
+                            pending_completion = goal.defer_completion();
+                            crate::goal::checkpoint(st, false, sink)?;
+                            repair?;
+                            continue;
+                        }
+                    }
+                }
+                crate::goal::checkpoint(st, false, sink)?;
+                return Ok(RunEnd::Stopped);
+            }
+            crate::goal::checkpoint(st, false, sink)?;
+
             if st.shared.cancel.is_cancelled() || wrapping_up {
                 return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
             }
@@ -488,9 +607,13 @@ fn run_inner(
                 )?;
                 sink.emit(&AgentEvent::Notice {
                     level: Level::Error,
-                    text,
+                    text: text.clone(),
                 });
-                return Ok(RunEnd::Stopped);
+                // The files edited so far are still checked and the result shown; the run is
+                // over, so a failure is not sent back to the model.
+                let _ = crate::done::check(st, &mut done, sink, ui);
+                // Giving up is not a finished task: a caller must not read it as success.
+                return Ok(RunEnd::Failed(OxaError::new(crate::repeat::ERROR_CODE, text)));
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
@@ -526,6 +649,23 @@ fn run_inner(
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             continue;
         }
+        if turn.finish == Finish::Length && !st.info.caps.remote && length_recoverable(st, length_recoveries)
+        {
+            length_recoveries += 1;
+            push_user(
+                st,
+                crate::prompt::LENGTH_CONTINUE_LOCAL.to_string(),
+                sink,
+                ui,
+                run_msgs,
+            )?;
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Info,
+                text: "Reply reached the output limit; continuing the task.".to_string(),
+            });
+            crate::compaction::idle_prefill(st, sink, ui);
+            continue;
+        }
         if crate::repair::repair_turn(st, &turn, sink)? {
             continue;
         }
@@ -538,6 +678,25 @@ fn run_inner(
         }
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             continue;
+        }
+        if crate::repair::schema_repair_turn(st, &turn, &mut schema_repaired, sink)? {
+            continue;
+        }
+        if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+            crate::goal::checkpoint(st, false, sink)?;
+            if let Some(evidence) = pending_completion.take() {
+                if goal.pursuing() {
+                    goal.finish_completion(evidence)?;
+                }
+                crate::goal::checkpoint(st, false, sink)?;
+                return Ok(RunEnd::Stopped);
+            }
+            let snapshot = goal.stopped();
+            persist(st, snapshot.body(), sink)?;
+            if goal.pursuing() {
+                push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
+                continue;
+            }
         }
         return Ok(RunEnd::Stopped);
     }
@@ -845,6 +1004,11 @@ fn replayable(st: &SessionState, e: &OxaError, got_data: bool, looped: bool, rep
         && r.enabled
         && replays < r.max_retries
         && !st.shared.cancel.is_cancelled()
+}
+
+fn length_recoverable(st: &SessionState, attempts: u32) -> bool {
+    let policy = st.settings.retry();
+    st.auto_retry && policy.enabled && attempts < policy.max_retries && !st.shared.cancel.is_cancelled()
 }
 
 fn failure_why(e: &OxaError, got_data: bool) -> &'static str {

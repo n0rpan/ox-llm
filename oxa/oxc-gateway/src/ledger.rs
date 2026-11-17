@@ -82,6 +82,14 @@ struct Inner {
     budgets: Mutex<HashMap<String, Budget>>,
     writer: Mutex<()>,
 }
+#[cfg(feature = "anthropic-gateway")]
+impl Ledger {
+    pub(crate) fn history_mac(&self) -> Hmac<Sha256> {
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.0.salt).expect("fixed-length ledger salt");
+        mac.update(b"oxa-provider-history-v1\0");
+        mac
+    }
+}
 #[derive(Clone)]
 pub struct Ledger(Arc<Inner>);
 #[derive(Clone)]
@@ -110,6 +118,10 @@ pub struct Context<'a> {
     pub origin: Origin,
     pub session: Option<&'a str>,
     pub idempotency_key: Option<&'a str>,
+    /// Validated owner key name, never a bearer/header. API callers only;
+    /// persisted in `guest_key` as a separate-domain ledger-salted digest,
+    /// never raw text or a session/provider identity. None preserves owner calls.
+    pub guest_key_name: Option<&'a str>,
 }
 pub struct Entry {
     daily: Daily,
@@ -121,6 +133,7 @@ pub struct Entry {
 fn millis(start: Instant, end: Instant) -> f64 {
     end.duration_since(start).as_secs_f64() * 1000.0
 }
+
 impl Ledger {
     /// Explicit opt-in, dedicated directory outside source repositories.
     /// Keep one Ledger for the gateway lifetime; cloning preserves all holds.
@@ -128,6 +141,12 @@ impl Ledger {
         if !directory.is_absolute() {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        let mut ancestor = directory;
+        while !ancestor.try_exists()? {
+            ancestor = ancestor.parent().ok_or(io::ErrorKind::InvalidInput)?;
+        }
+        KeyFile::prepare(&ancestor.join(".salt"))
+            .map_err(|_| io::Error::from(io::ErrorKind::PermissionDenied))?;
         fs::create_dir_all(directory)?;
         let info = fs::symlink_metadata(directory)?;
         if !info.is_dir() || info.uid() != nix::unistd::Uid::current().as_raw() {
@@ -181,7 +200,11 @@ impl Daily {
         self.budget.clone()
     }
     pub fn entry(&self, model: &str, context: Context<'_>) -> io::Result<Entry> {
-        if model.is_empty() || model.len() > 128 {
+        if model.is_empty()
+            || model.len() > 128
+            || context.guest_key_name.is_some_and(|name| name.is_empty())
+            || (context.guest_key_name.is_some() && !matches!(context.origin, Origin::Api))
+        {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let started = Instant::now();
@@ -197,6 +220,11 @@ impl Daily {
                 "idempotency",
                 b"oxc-idempotency-v1\0".as_slice(),
                 context.idempotency_key,
+            ),
+            (
+                "guest_key",
+                b"oxc-guest-key-name-v1\0".as_slice(),
+                context.guest_key_name,
             ),
         ] {
             if let Some(value) = value.filter(|value| !value.is_empty()) {
@@ -216,14 +244,30 @@ impl Daily {
     }
 }
 impl Entry {
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn provider_session_hint(&self, provider: &str) -> Option<String> {
+        let session = self.row["session"].as_str()?;
+        let identity = format!("{provider}\0{session}");
+        Some(
+            self.daily
+                .ledger
+                .digest(b"oxa-provider-session-v1\0", identity.as_bytes()),
+        )
+    }
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn ledger(&self) -> &Ledger {
+        &self.daily.ledger
+    }
     pub fn admitted(&mut self) {
-        self.admitted = Some(Instant::now());
-        self.row["admit_ms"] = json!(millis(self.started, self.admitted.unwrap()));
+        let admitted = *self.admitted.get_or_insert_with(Instant::now);
+        self.row["admit_ms"] = json!(millis(self.started, admitted));
     }
     /// Call only for response data (not SSE keepalive comments). No body bytes
     /// are retained here; provider accounting observes usage separately.
     pub fn observe(&mut self) {
-        self.first.get_or_insert_with(Instant::now);
+        if self.admitted.is_some() {
+            self.first.get_or_insert_with(Instant::now);
+        }
     }
     /// Consume exactly once inside Hold::finish's callback. Failure propagates
     /// into the shared budget's fail-closed state before admission is released.
@@ -231,14 +275,27 @@ impl Entry {
     /// be injected through the supplied object. Pass the provider key to redact
     /// even catalog labels or provider finish strings before the append.
     pub fn append(
-        mut self,
+        self,
         fields: &Value,
         status: u16,
         error: Option<&'static str>,
         key: Option<&Key>,
     ) -> io::Result<Value> {
+        self.append_redacting(fields, status, error, &|row| {
+            if let Some(key) = key {
+                redaction::value(row, key);
+            }
+        })
+    }
+    pub(crate) fn append_redacting(
+        mut self,
+        fields: &Value,
+        status: u16,
+        error: Option<&'static str>,
+        redact: &dyn Fn(&mut Value),
+    ) -> io::Result<Value> {
         if fields["remote"] != true
-            || !["anthropic", "openai", "openrouter"]
+            || !["anthropic", "openai", "openrouter", "chatgpt", "opencode"]
                 .contains(&fields["remote_provider"].as_str().unwrap_or(""))
             || fields["cost_usd"]
                 .as_f64()
@@ -248,6 +305,21 @@ impl Entry {
         }
         self.row["remote"] = json!(true);
         self.row["remote_provider"] = fields["remote_provider"].clone();
+        if let Some(value) = fields.get("opencode") {
+            if fields["remote_provider"] != "opencode" || fields["billing"] != "subscription" {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            #[cfg(feature = "anthropic-client")]
+            {
+                self.row["opencode"] =
+                    crate::opencode::ledger_metadata(value).map_err(|_| io::ErrorKind::InvalidData)?;
+            }
+            #[cfg(not(feature = "anthropic-client"))]
+            {
+                let _ = value;
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        }
         self.row["remote_model"] = json!(fields["remote_model"]
             .as_str()
             .filter(|value| !value.is_empty() && value.len() <= 1024)
@@ -278,8 +350,54 @@ impl Entry {
         }
         let settled = fields["settled"]
             .as_str()
-            .filter(|value| ["usage", "reserved", "estimated", "not_forwarded"].contains(value))
+            .filter(|value| ["usage", "reserved", "estimated", "not_forwarded", "refused"].contains(value))
             .ok_or(io::ErrorKind::InvalidData)?;
+        if settled == "refused" && (fields["cost_usd"].as_f64() != Some(0.0) || !(400..500).contains(&status))
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        match fields.get("billing") {
+            Some(value) if value == "subscription" => {
+                if !matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                    || fields["cost_usd"].as_f64() != Some(0.0)
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                let requests = fields["subscription_requests"]
+                    .as_u64()
+                    .filter(|n| *n <= 1)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                let tokens = fields["subscription_tokens"]
+                    .as_u64()
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                if (requests == 0) != (settled == "not_forwarded")
+                    || (matches!(settled, "not_forwarded" | "refused") && tokens != 0)
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                self.row["billing"] = json!("subscription");
+                self.row["subscription_requests"] = json!(requests);
+                self.row["subscription_tokens"] = json!(tokens);
+            }
+            None => {
+                if matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                    || fields.get("subscription_requests").is_some()
+                    || fields.get("subscription_tokens").is_some()
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+            }
+            Some(value) if value == "metered" => {
+                if matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                    || fields.get("subscription_requests").is_some()
+                    || fields.get("subscription_tokens").is_some()
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                self.row["billing"] = json!("metered");
+            }
+            _ => return Err(io::ErrorKind::InvalidData.into()),
+        }
         self.row["settled"] = json!(settled);
         if let Some(finish) = fields["finish_reason"].as_str().filter(|value| {
             !value.is_empty()
@@ -304,10 +422,39 @@ impl Entry {
             .writer
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(key) = key {
-            redaction::value(&mut self.row, key);
-        }
+        redact(&mut self.row);
         append_private(&self.daily.path, &self.row)?;
         Ok(self.row)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repeated_timing_notifications_preserve_the_first_transition() {
+        // Timing notifications do not perform IO. Use a daily handle without
+        // opening a ledger or creating any salt or request file.
+        let ledger = Ledger(Arc::new(Inner {
+            directory: PathBuf::new(),
+            salt: [0; 32],
+            budgets: Mutex::default(),
+            writer: Mutex::default(),
+        }));
+        let mut entry = ledger
+            .day("20260102")
+            .unwrap()
+            .entry("synthetic", Context::default())
+            .unwrap();
+        entry.admitted();
+        let admitted = entry.admitted;
+        entry.observe();
+        let first = entry.first;
+        entry.admitted();
+        entry.observe();
+        assert_eq!(entry.admitted, admitted);
+        assert_eq!(entry.first, first);
+        assert!(first >= admitted);
     }
 }

@@ -2,7 +2,7 @@
 //! The injected peer replaces provider I/O; it never reads a key or opens a port.
 use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
-use oxa_engine::{EmbeddedEngine, EmbeddedGateway, Flow, GatewayContext, GatewayDiscovery, SseEvent};
+use oxa_engine::{EmbeddedEngine, EmbeddedGateway, Flow, GatewayContext, GatewayDiscovery, GatewayEvent};
 use oxa_fake::TestEnv;
 use oxa_perm::ModePolicy;
 use oxa_proto::{codes, AgentEvent, CancelToken, EntryBody, HeadlessUi, Mode, OxaError, Role, VecSink};
@@ -10,7 +10,7 @@ use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
 use oxa_session::MemStore;
 use oxa_tools::ReadTool;
-use serde_json::{json, Value};
+use serde_json::json;
 use std::{
     collections::VecDeque,
     sync::{Arc, Mutex},
@@ -24,7 +24,8 @@ enum Reply {
 }
 #[derive(Default)]
 struct Calls {
-    bodies: Vec<Value>,
+    bodies: Vec<Vec<oxa_proto::WireMsg>>,
+    models: Vec<String>,
     contexts: Vec<(String, String, String)>,
 }
 struct Gateway {
@@ -47,14 +48,15 @@ impl EmbeddedGateway for Gateway {
     }
     fn chat(
         &self,
-        body: &[u8],
+        request: &oxa_proto::ChatRequest<'_>,
         context: GatewayContext<'_>,
         cancel: &CancelToken,
-        on: &mut dyn FnMut(SseEvent) -> Flow,
+        on: &mut dyn FnMut(GatewayEvent) -> Flow,
     ) -> Result<(), OxaError> {
         {
             let mut calls = self.calls.lock().unwrap();
-            calls.bodies.push(serde_json::from_slice(body).unwrap());
+            calls.bodies.push(request.messages.to_vec());
+            calls.models.push(request.model.into());
             calls.contexts.push((
                 context.origin.into(),
                 context.session.into(),
@@ -86,8 +88,8 @@ impl EmbeddedGateway for Gateway {
             "usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}}));
         for event in events
             .into_iter()
-            .map(|v| SseEvent::Data(v.to_string()))
-            .chain([SseEvent::Done])
+            .map(GatewayEvent::Chunk)
+            .chain([GatewayEvent::Done])
         {
             if cancel.is_cancelled() || on(event) == Flow::Stop {
                 return Err(OxaError::new(codes::ABORTED, "request cancelled"));
@@ -159,15 +161,12 @@ fn a_real_read_tool_loop_replays_raw_calls_and_remote_metadata_in_process() {
         .any(|e| matches!(e, AgentEvent::ToolExecutionEnd { .. })));
     let calls = calls.lock().unwrap();
     assert_eq!(calls.bodies.len(), 2, "no local prefill or extra engine request");
-    let replay = calls.bodies[1]["messages"].as_array().unwrap();
+    let replay = &calls.bodies[1];
     assert!(replay
         .iter()
-        .any(|m| m["role"] == "tool" && m["tool_call_id"] == "call-read"));
-    for body in &calls.bodies {
-        assert!(body.get("cache_prompt").is_none());
-        assert!(body.get("chat_template_kwargs").is_none());
-        assert_eq!(body["model"], "cloud-model");
-    }
+        .any(|m| m.role == Role::Tool && m.tool_call_id.as_deref() == Some("call-read")));
+    assert!(calls.models.iter().all(|model| model == "cloud-model"));
+
     assert!(calls
         .contexts
         .iter()
@@ -227,9 +226,10 @@ fn unsettled_stream_text_stays_out_of_history_and_the_next_turn_is_healthy() {
         .unwrap();
     let calls = calls.lock().unwrap();
     assert_eq!(calls.bodies.len(), 2);
-    assert!(!calls.bodies[1]["messages"]
-        .to_string()
-        .contains("unsettled answer"));
+    assert!(!calls.bodies[1].iter().any(|message| message
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("unsettled answer"))));
     assert_eq!(
         session
             .inner()

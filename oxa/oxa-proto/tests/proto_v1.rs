@@ -25,6 +25,7 @@ fn assistant_bytes_keep_everything_as_streamed() {
             name: "read".into(),
             args_raw: "{\"path\": \"a.rs\" }".into(),
         }],
+        provider_history: None,
         tool_call_id: None,
     };
     assert_eq!(
@@ -40,6 +41,7 @@ fn assistant_without_content_is_null_and_omits_empty_fields() {
         content: None,
         reasoning: None,
         tool_calls: vec![],
+        provider_history: None,
         tool_call_id: None,
     };
     assert_eq!(json(&m), r#"{"role":"assistant","content":null}"#);

@@ -83,6 +83,8 @@ pub struct State<E: Engine> {
     pub work: Arc<std::sync::atomic::AtomicUsize>,
     /// fair time-slicing between generations (`fair.rs`; `OXE_FAIR_QUANTUM_MS`, 0 = off)
     pub fair: crate::fair::Fair,
+    /// the diagnostic env knobs, read once by the worker (`OXE_SERVER_LEGACY` ...)
+    pub diag: crate::generate::DiagKnobs,
 }
 
 /// One unit of [`State::work`] (dropped = done with the worker).
@@ -137,12 +139,18 @@ impl<E: Engine> State<E> {
             .filter(|t| t.contains("<|im_start|>"))
             .map(|_| tok.encode("<|im_start|>assistant", false, true))
             .filter(|d| d.len() >= 2);
+        let mut echo = crate::echo::EchoStore::new(crate::echo::EchoConfig::from_env());
+        if let Some(store) = &worker.states {
+            echo.track_disk_usage(store.usage.clone());
+        }
         let im_end = tok.token_id("<|im_end|>");
         let speculative = speculative_json(
             worker.engine.spec_max_depth(),
             worker.engine.spec_fallback(),
         );
+        let diag = worker.diag;
         Ok(State {
+            diag,
             cfg,
             tok: Arc::new(tok),
             tmpl,
@@ -163,9 +171,7 @@ impl<E: Engine> State<E> {
             sse_keepalive: sse_keepalive_from_env(),
             default_max_tokens: default_max_tokens_from_env(n_ctx),
             speculative,
-            echo: Mutex::new(crate::echo::EchoStore::new(
-                crate::echo::EchoConfig::from_env(),
-            )),
+            echo: Mutex::new(echo),
             asst_delim,
             im_end,
             state_cache,
@@ -934,7 +940,7 @@ pub async fn handle_hints<E: Engine>(
                         }
                     }
                     let s = w.states.as_ref().unwrap();
-                    return Ok(json!({"budget_bytes": s.budget, "used_bytes": s.used_bytes(), "freed_bytes": freed, "legacy_stores": if w.legacy_off.is_some() { "off" } else { "on" }}));
+                    return Ok(json!({"budget_bytes": s.budget, "used_bytes": s.refresh_usage(), "freed_bytes": freed, "legacy_stores": if w.legacy_off.is_some() { "off" } else { "on" }}));
                 }
                 let scope = b.get("scope").and_then(Json::as_str).unwrap_or("all").to_string();
                 let s = w.states.as_mut().unwrap();
@@ -949,7 +955,7 @@ pub async fn handle_hints<E: Engine>(
                         Some(h) if !s.hint_in_use(h) => echo.drop_hint_hash(h),
                         _ => 0,
                     };
-                    return Ok(json!({"freed_bytes": freed, "used_bytes": s.used_bytes(), "ram_states": ram, "legacy_entries": legacy, "echo_records": echo_n}));
+                    return Ok(json!({"freed_bytes": freed, "used_bytes": s.refresh_usage(), "ram_states": ram, "legacy_entries": legacy, "echo_records": echo_n}));
                 }
                 if scope == "hint" {
                     // v0.2.0 EG5: every session CREATED under this exact request hint (`X-Oxe-Session`),
@@ -974,7 +980,7 @@ pub async fn handle_hints<E: Engine>(
                     }
                     let s = w.states.as_ref().unwrap();
                     let echo_n = if s.hint_in_use(&h) { 0 } else { echo.drop_hint_hash(&h) };
-                    return Ok(json!({"freed_bytes": freed, "used_bytes": s.used_bytes(), "sessions": purged, "released": released, "ram_states": ram, "legacy_entries": legacy, "echo_records": echo_n}));
+                    return Ok(json!({"freed_bytes": freed, "used_bytes": s.refresh_usage(), "sessions": purged, "released": released, "ram_states": ram, "legacy_entries": legacy, "echo_records": echo_n}));
                 }
                 let freed = match (scope.as_str(), other_model) {
                     ("model", Some(key)) => {
@@ -988,7 +994,7 @@ pub async fn handle_hints<E: Engine>(
                     }
                     _ => s.clear(&scope, None).map_err(|e| (400, e))?,
                 };
-                let used = s.used_bytes();
+                let used = s.refresh_usage();
                 let mut legacy = 0;
                 if other_model.is_none() {
                     // the RAM side of the same scope: live state, parked sessions, echo records, and the
@@ -1657,7 +1663,6 @@ async fn completion<E: Engine>(
     ephemeral: bool,
     snapshot_keep: bool,
 ) -> Reply {
-    let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
     }
@@ -1670,7 +1675,6 @@ async fn completion<E: Engine>(
     }
     gp.ephemeral = ephemeral;
     gp.session = session.clone();
-    gp.req_no = Some(req_no);
     let prompt_json = b
         .get("prompt")
         .cloned()
@@ -1687,6 +1691,9 @@ async fn completion<E: Engine>(
     if prompt.len() >= st.n_ctx {
         return Reply::Json(400, api::exceed_context_json(prompt.len(), st.n_ctx));
     }
+    // validated: only now does this request preempt the background jobs and take a number
+    let req_no = st.preempt_idle();
+    gp.req_no = Some(req_no);
     // H4 on a raw prompt: there are no messages, so the point is the prompt end
     gp.snap_keep = snapshot_keep;
     gp.snap_at = snapshot_keep.then_some(prompt.len());
@@ -1817,7 +1824,6 @@ async fn v1_completion<E: Engine>(
     if let Err(j) = api::check_n(&b) {
         return Reply::Json(400, j);
     }
-    let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
     }
@@ -1892,7 +1898,6 @@ async fn v1_completion<E: Engine>(
     }
     gp.ephemeral = ephemeral;
     gp.session = session.clone();
-    gp.req_no = Some(req_no);
     let t_tok = std::time::Instant::now();
     let prompt = match st.tokenize_prompt(&prompt_json, true) {
         Ok(p) => p,
@@ -1913,6 +1918,9 @@ async fn v1_completion<E: Engine>(
     if prompt.len() >= st.n_ctx {
         return Reply::Json(400, api::exceed_context_json(prompt.len(), st.n_ctx));
     }
+    // validated: only now does this request preempt the background jobs and take a number
+    let req_no = st.preempt_idle();
+    gp.req_no = Some(req_no);
     gp.snap_keep = snapshot_keep;
     gp.snap_at = snapshot_keep.then_some(prompt.len());
     let stream = b.get("stream").and_then(Json::as_bool).unwrap_or(false);
@@ -2040,7 +2048,6 @@ async fn chat_completion<E: Engine>(
     if let Err(j) = api::check_n(&b) {
         return Reply::Json(400, j);
     }
-    let req_no = st.preempt_idle();
     if let Some(m) = unsupported_constraint(&b) {
         return bad(m);
     }
@@ -2149,6 +2156,8 @@ async fn chat_completion<E: Engine>(
         .and_then(Json::as_str)
         == Some("user");
     gp.session = session.clone();
+    // validated: only now does this request preempt the background jobs and take a number
+    let req_no = st.preempt_idle();
     gp.req_no = Some(req_no);
     // H4: the exact end of the last message (`snapshot_point`); none for an ephemeral request
     gp.snap_keep = snapshot_keep && !ephemeral;
@@ -2192,7 +2201,7 @@ async fn chat_completion<E: Engine>(
         };
         r.reasoning_tokens = reasoning_tokens(&st.tok, &r.tokens, &gen_prompt);
         let mut sess = Session::new(pcfg, gen_prompt, Box::new(chat::random_string));
-        sess.incremental = std::env::var_os("OXE_SERVER_LEGACY").is_none();
+        sess.incremental = !st.diag.legacy;
         if !prefill_only {
             if let Err(e) = sess.feed(&r.text, true) {
                 return Reply::Json(500, api::error_json(500, &e));
@@ -2225,7 +2234,7 @@ async fn chat_completion<E: Engine>(
     let tok_r = st.tok.clone();
     let mut sess0 = Session::new(pcfg, gen_prompt, Box::new(chat::random_string));
     // OXE_SERVER_LEGACY=1 (A/B diagnostic only): full re-parse every token
-    sess0.incremental = std::env::var_os("OXE_SERVER_LEGACY").is_none();
+    sess0.incremental = !st.diag.legacy;
     let sess = Arc::new(Mutex::new(sess0));
     let st2 = st.clone();
     let stall = st.stream_stall;

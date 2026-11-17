@@ -31,7 +31,11 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
         "Engine status, or load a model on the engine (replaces /llama)",
         Some("[status|load <model>]"),
     ),
-    ("mode", "Set permission mode", Some("<plan|workspace|ask>")),
+    (
+        "mode",
+        "Set permission mode",
+        Some("<standard|auto|yolo|plan|workspace|ask> [--save]"),
+    ),
     ("scoped-models", "Enable/disable models for Ctrl+P cycling", None),
     (
         "export",

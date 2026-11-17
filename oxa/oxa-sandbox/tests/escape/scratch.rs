@@ -1,6 +1,6 @@
 //! #457: the session directory at `/tmp` (persistent scratch and a writable cache home).
 
-use crate::harness::{assert_ok, assert_refused, home_file, run, sandbox_with_layout, sh, write};
+use crate::harness::{assert_ok, assert_refused, home_file, run, run_result, sandbox_with_layout, sh, write};
 use oxa_fake::TestEnv;
 use oxa_sandbox::{scratch_root, Bwrap, Layout, LayoutInputs};
 use std::path::Path;
@@ -196,6 +196,98 @@ fn cache_home_is_writable_and_shared_caches_stay_shared() {
     }
 }
 
+/// #530 / PR #539: custom cache paths must not expose other checkouts, but builds must
+/// still get a writable cache (also on a fresh home, for wrappers with any name).
+#[test]
+fn sccache_fallback_is_writable_without_exposing_external_checkouts() {
+    let env = TestEnv::new();
+    let outside = env.root().join("data/sccache-work");
+    let hook = outside.join("checkout/.git/hooks/pre-commit");
+    write(&hook, "original hook");
+    let user = vec![("SCCACHE_DIR".into(), outside.display().to_string())];
+    let Some(p) = process(&env, user, Vec::new()) else {
+        return;
+    };
+    let Some((sb, dir)) = session_of(&p) else {
+        return;
+    };
+    let (exit, out) = run(
+        &sb,
+        &env.work(),
+        "mkdir -p \"$SCCACHE_DIR/a/b\" && echo cached > \"$SCCACHE_DIR/a/b/object\" && echo \"$SCCACHE_DIR\"",
+        true,
+        false,
+    );
+    assert_ok(exit, &out, "fallback cache write");
+    assert_eq!(out.trim(), "/tmp/.cache/sccache");
+    assert!(dir.join(".cache/sccache/a/b/object").is_file());
+    let (exit, out) = run(
+        &sb,
+        &env.work(),
+        &format!("echo replaced > {}", sh(&hook.display().to_string())),
+        true,
+        false,
+    );
+    assert_refused(exit, &out, "external hook write");
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), "original hook");
+
+    let Some(p) = process(&env, Vec::new(), Vec::new()) else {
+        return;
+    };
+    let Some((sb, dir)) = session_of(&p) else {
+        return;
+    };
+    let (exit, out) = run(
+        &sb,
+        &env.work(),
+        "mkdir -p \"$SCCACHE_DIR\" && touch \"$SCCACHE_DIR/fresh\"",
+        true,
+        false,
+    );
+    assert_ok(exit, &out, "fresh cache write");
+    assert!(dir.join(".cache/sccache/fresh").is_file());
+    assert!(!home_file(&env, ".cache/sccache").exists());
+}
+
+/// Both existing home caches and explicit outside writePaths keep sharing across layouts,
+/// regardless of their name and whether an earlier build has populated them.
+#[test]
+fn sccache_shared_caches_stay_shared_after_population() {
+    for (relative, custom, explicit) in [
+        ("home/.cache/sccache", false, false),
+        ("home/.cache/build-cache", true, false),
+        ("data/build-cache", true, true),
+    ] {
+        let env = TestEnv::new();
+        let cache = env.root().join(relative);
+        std::fs::create_dir_all(&cache).unwrap();
+        for marker in ["first", "second"] {
+            let user = if custom {
+                vec![("SCCACHE_DIR".into(), cache.display().to_string())]
+            } else {
+                Vec::new()
+            };
+            let writes = if explicit { vec![cache.clone()] } else { Vec::new() };
+            let Some(p) = process(&env, user, writes) else {
+                return;
+            };
+            let Some((sb, _)) = session_of(&p) else {
+                return;
+            };
+            let (exit, out) = run(
+                &sb,
+                &env.work(),
+                &format!("mkdir -p \"$SCCACHE_DIR/a/b\" && echo cached > \"$SCCACHE_DIR/a/b/{marker}\""),
+                true,
+                false,
+            );
+            assert_ok(exit, &out, "shared cache write");
+            assert!(cache.join("a/b").join(marker).is_file(), "{relative}");
+        }
+        assert!(cache.join("a/b/first").is_file());
+    }
+}
+
 /// pip runs inside the sandbox (python3 with its pip module visible there).
 fn pip_in(sb: &Bwrap, env: &TestEnv) -> bool {
     let (exit, _) = run(sb, &env.work(), "python3 -m pip --version", true, false);
@@ -286,9 +378,17 @@ fn cargo_builds_in_tmp_across_calls() {
     let Some((sb, _dir)) = session(&env) else {
         return;
     };
-    let build = "mkdir -p /tmp/p/src && printf '[package]\\nname=\"p\"\\nversion=\"0.1.0\"\\nedition=\"2021\"\\n' > /tmp/p/Cargo.toml && printf 'fn main(){println!(\"hi457\")}' > /tmp/p/src/main.rs && cd /tmp/p && cargo build --offline -q 2>&1";
-    let (exit, out) = run(&sb, &env.work(), build, true, false);
-    assert_ok(exit, &out, "cargo build");
+    let build = "printf 'fixture.phase=prepare\\n' && mkdir -p /tmp/p/src && printf '[package]\\nname=\"p\"\\nversion=\"0.1.0\"\\nedition=\"2021\"\\n' > /tmp/p/Cargo.toml && printf 'fn main(){println!(\"hi457\")}' > /tmp/p/src/main.rs && cd /tmp/p && printf 'fixture.phase=cargo-build\\n' && cargo build --offline -vv 2>&1";
+    let result = run_result(&sb, &env.work(), build, true, false);
+    assert_ok(
+        result.exit,
+        &format!(
+            "fixture.phase=build-return timed_out={}\n{}",
+            result.timed_out,
+            String::from_utf8_lossy(&result.output)
+        ),
+        "cargo build",
+    );
     let (exit, out) = run(&sb, &env.work(), "/tmp/p/target/debug/p", true, false);
     assert_ok(exit, &out, "run");
     assert_eq!(out.trim(), "hi457");
