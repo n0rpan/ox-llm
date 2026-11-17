@@ -16,7 +16,7 @@ fn command(test: &TestEnv) -> Command {
 fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
     let test = TestEnv::new();
     for args in [vec!["lead"], vec!["lead", "--help"], vec!["help", "lead"]] {
-        let output = command(&test).args(args).output().unwrap();
+        let output = command(&test).args(&args).output().unwrap();
         assert!(
             output.status.success(),
             "{}",
@@ -24,7 +24,7 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
         );
         let text = String::from_utf8_lossy(&output.stdout);
         assert!(text.contains("lead"));
-        assert!(text.contains("lead serve"));
+        assert_eq!(text.contains("lead serve"), args.as_slice() == ["lead"]);
     }
     for child in ["board", "status", "asks", "chat"] {
         let output = command(&test).args(["lead", child]).output().unwrap();
