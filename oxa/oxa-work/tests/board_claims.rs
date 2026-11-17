@@ -16,6 +16,11 @@ impl Fixture {
     fn store(&self) -> Claims {
         Claims::open(&self.0).unwrap()
     }
+    fn claim(&self, now: u64, ttl: u64) -> Option<Lease> {
+        self.store()
+            .claim(&entry(), &policy(), "worker", now, ttl)
+            .unwrap()
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -76,37 +81,16 @@ fn disabled_and_zero_cap_do_not_create_claim_files() {
 fn durable_daily_cap_and_stale_release_fencing() {
     let fixture = Fixture::new();
     let store = fixture.store();
-    let first = store
-        .claim(&entry(), &policy(), "worker-a", 10, 10)
-        .unwrap()
-        .unwrap();
-    assert!(fixture
-        .store()
-        .claim(&entry(), &policy(), "worker-b", 19, 10)
-        .unwrap()
-        .is_none());
-    let second = fixture
-        .store()
-        .claim(&entry(), &policy(), "worker-b", 20, 10)
-        .unwrap()
-        .unwrap();
+    let first = fixture.claim(10, 10).unwrap();
+    assert!(fixture.claim(19, 10).is_none());
+    let second = fixture.claim(20, 10).unwrap();
     assert!(!store.release(1, &first).unwrap());
     assert!(store.release(1, &second).unwrap());
-    let third = store
-        .claim(&entry(), &policy(), "worker-c", 21, 10)
-        .unwrap()
-        .unwrap();
+    let third = fixture.claim(21, 10).unwrap();
     assert!(store.release(1, &third).unwrap());
-    assert!(fixture
-        .store()
-        .claim(&entry(), &policy(), "worker-d", 22, 10)
-        .unwrap()
-        .is_none());
+    assert!(fixture.claim(22, 10).is_none());
     assert_eq!(store.snapshot().unwrap()[&1].attempts, 3);
-    assert!(store
-        .claim(&entry(), &policy(), "worker-e", 86_400, 10)
-        .unwrap()
-        .is_some());
+    assert!(fixture.claim(86_400, 10).is_some());
     assert_eq!(fixture.store().snapshot().unwrap()[&1].attempts, 1);
 }
 
@@ -114,19 +98,35 @@ fn durable_daily_cap_and_stale_release_fencing() {
 fn midnight_does_not_revoke_a_lease_and_clock_rollback_refuses() {
     let fixture = Fixture::new();
     let store = fixture.store();
-    store
-        .claim(&entry(), &policy(), "worker-a", 86_399, 5)
-        .unwrap()
-        .unwrap();
-    assert!(store
-        .claim(&entry(), &policy(), "worker-b", 86_400, 5)
-        .unwrap()
-        .is_none());
-    assert!(store
-        .claim(&entry(), &policy(), "worker-b", 86_404, 5)
-        .unwrap()
-        .is_some());
+    fixture.claim(86_399, 5).unwrap();
+    assert!(fixture.claim(86_400, 5).is_none());
+    assert!(fixture.claim(86_404, 5).is_some());
     assert!(store.claim(&entry(), &policy(), "worker-c", 0, 5).is_err());
+}
+
+#[test]
+fn missing_corrupt_symlinked_or_public_state_never_resets_the_cap() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    for poison in ["missing", "corrupt", "symlink", "public"] {
+        let fixture = Fixture::new();
+        fixture.claim(10, 10).unwrap();
+        let path = fixture.0.join("1.board-claim.json");
+        match poison {
+            "missing" => fs::remove_file(&path).unwrap(),
+            "corrupt" => fs::write(&path, b"not valid state").unwrap(),
+            "symlink" => {
+                fs::rename(&path, fixture.0.join("outside")).unwrap();
+                symlink(fixture.0.join("outside"), &path).unwrap();
+            }
+            _ => fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap(),
+        }
+        let store = fixture.store();
+        assert!(store.snapshot().is_err(), "{poison}");
+        assert!(
+            store.claim(&entry(), &policy(), "worker", 30, 10).is_err(),
+            "{poison}"
+        );
+    }
 }
 
 #[test]

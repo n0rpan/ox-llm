@@ -56,6 +56,10 @@ impl Claims {
         if Self::open(&self.root)?.uid != self.uid || number == 0 {
             return Err("invalid board claim directory or PR".into());
         }
+        // Lock the existing directory inode before creating any per-PR marker.
+        // Otherwise a contender could lock a new marker before its creator does.
+        let lock = io(File::open(&self.root))?;
+        io(lock.lock())?;
         let path = self.root.join(format!("{number}.board-claim.lock"));
         let (file, fresh) = match OpenOptions::new()
             .write(true)
@@ -71,8 +75,8 @@ impl Claims {
             Err(e) => return io(Err(e)),
         };
         self.private(&path)?;
-        io(file.lock())?;
-        Ok((file, fresh))
+        drop(file);
+        Ok((lock, fresh))
     }
 
     fn load(&self, number: u64, fresh: bool) -> Result<AttemptState> {
