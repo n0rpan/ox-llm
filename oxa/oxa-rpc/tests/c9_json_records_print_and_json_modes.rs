@@ -1109,11 +1109,12 @@ fn print_retains_completed_reply_when_wrap_up_arrives_at_settlement() {
             Vec::new()
         }
     }
-    for partial_failure in [false, true] {
-        for partial in [false, true] {
+    for partial in [false, true] {
         let env = TestEnv::new();
         let mut first = ScriptTurn::text("completed first reply");
-        if partial { first.fault = Some(Fault::DropAt { bytes: 7 }); }
+        if partial {
+            first.fault = Some(Fault::DropAt { bytes: 7 });
+        }
         let engine = Arc::new(ScriptedEngine::new(vec![
             first,
             ScriptTurn::text("later prompt must not run"),
@@ -1128,7 +1129,8 @@ fn print_retains_completed_reply_when_wrap_up_arrives_at_settlement() {
             vec![("first".into(), Vec::new()), ("later".into(), Vec::new())],
             &mut out,
             &mut err,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(engine.requests().len(), 1, "the later prompt is not admitted");
         if partial {
             assert_eq!(outcome, oxa_core::RunOutcome::Failed(codes::STREAM_BROKEN));
