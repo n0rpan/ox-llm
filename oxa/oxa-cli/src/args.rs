@@ -20,7 +20,7 @@ pub enum Subcommand {
     Status(Vec<String>),
     /// Explicit owner ChatGPT sign-in/sign-out.
     Login(bool, LoginArgs),
-    /// `oxa work <taskfile> | --issue N --model MODEL`.
+    /// `oxa work <taskfile> | --issue N --model MODEL | --pr N --model MODEL`.
     Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
     Mcp(Vec<String>),
@@ -231,7 +231,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
     ),
     (
-        "oxa work <taskfile> | --issue N --model MODEL",
+        "oxa work <taskfile> | --issue N --model MODEL | --pr N --model MODEL",
         "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (

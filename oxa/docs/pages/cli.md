@@ -96,7 +96,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
-| `oxa work <taskfile> \| --issue N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
+| `oxa work <taskfile> \| --issue N --model MODEL \| --pr N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |

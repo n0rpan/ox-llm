@@ -254,6 +254,88 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
 }
 #[test]
+fn github_pull_request_input_uses_mock_gh() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        &format!(
+            r##"#!/bin/sh
+case "$*" in
+  "pr view 42 --json title,body,headRefName,headRefOid,url,reviews,comments,statusCheckRollup")
+    printf '%s' '{{"title":"Synthetic review","body":"Original request","headRefName":"agent/synthetic","headRefOid":"{head}","url":"https://github.com/example/synthetic/pull/42","reviews":[{{"author":{{"login":"reviewer"}},"state":"CHANGES_REQUESTED","body":"Keep the frame"}}],"comments":[],"statusCheckRollup":[{{"name":"checks / oxa","conclusion":"FAILURE"}}]}}' ;;
+  "api repos/example/synthetic/pulls/42/comments")
+    printf '%s' '[{{"user":{{"login":"reviewer"}},"path":"src/frame.rs","line":12,"body":"Rename this"}}]' ;;
+  *) exit 9 ;;
+esac
+"##
+        ),
+    );
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("done")],
+        &["work", "--pr", "42", "--model", "fake"],
+        Some(path),
+    );
+    assert_eq!(record["id"], "pr-42");
+    assert_eq!(record["branch"], "agent/synthetic");
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    let checkpoint: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(storage(&env).join("pr-42.json")).unwrap()).unwrap();
+    let prompt = checkpoint["task"]["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains(&format!("refer to head {head}")),
+        "the packet must name the reviewed head: {prompt}"
+    );
+    assert!(prompt.contains("Keep the frame"), "{prompt}");
+    assert!(
+        prompt.contains("src/frame.rs:12") && prompt.contains("Rename this"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("checks / oxa"), "{prompt}");
+}
+
+#[test]
+fn a_failed_inline_comment_lookup_blocks_instead_of_dropping_findings() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r##"#!/bin/sh
+case "$1" in
+  pr) printf '%s' '{"title":"Synthetic review","body":"Fix it","headRefName":"agent/synthetic","headRefOid":"0123456789abcdef0123456789abcdef01234567","url":"https://github.com/example/synthetic/pull/42","reviews":[],"comments":[],"statusCheckRollup":[]}' ;;
+  api) echo "review comments unavailable" >&2; exit 1 ;;
+  *) exit 9 ;;
+esac
+"##,
+    );
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--pr", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("review comments unavailable"), "{stderr}");
+    assert!(
+        !storage(&env).join("pr-42.json").exists(),
+        "an unread review must not start a worker without its findings"
+    );
+}
+
+#[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
     let env = TestEnv::new();
     setup(&env, "[]");

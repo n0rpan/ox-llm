@@ -154,8 +154,32 @@ pub(crate) fn run(
                     model.clone(),
                 )?]
             }
+            // Review work needs the review findings and the failing checks in the
+            // packet: the same session may be refused every GitHub call.
+            [flag, number, model_flag, model] if flag == "--pr" && model_flag == "--model" => {
+                if oxa_proto::offline() {
+                    return Err("GitHub pull request lookup is unavailable in offline mode".into());
+                }
+                if !is_trusted {
+                    return Err("source project is not trusted; approve it before GitHub lookup".into());
+                }
+                let gh = crate::netguard::trusted_executable_for(
+                    "gh",
+                    Some(policy.host_path.as_os_str()),
+                    Some(&root),
+                    Some(&dirs.home),
+                )
+                .ok_or("no trusted gh executable outside the source project")?;
+                vec![oxa_work::pull_request_task(
+                    &root,
+                    &gh,
+                    &policy.host_path,
+                    number.parse().map_err(|_| "invalid pull request number")?,
+                    model.clone(),
+                )?]
+            }
             _ => return Err(
-                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | status [--json]"
+                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--pr N --model MODEL] [--rerun] | status [--json]"
                     .into(),
             ),
         };
