@@ -10,11 +10,37 @@ pub enum Stage {
     ChatHttp,
 }
 
+/// Closed local validation categories; never contains upstream data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamCause {
+    ContentType,
+    Transport,
+    Eof,
+    FrameShape,
+    ToolShape,
+    ToolArguments,
+    TerminalUsage,
+}
+impl StreamCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ContentType => "content_type",
+            Self::Transport => "transport",
+            Self::Eof => "eof",
+            Self::FrameShape => "frame_shape",
+            Self::ToolShape => "tool_shape",
+            Self::ToolArguments => "tool_arguments",
+            Self::TerminalUsage => "terminal_usage",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub stage: Stage,
     pub status: Option<u16>,
     pub code: Option<&'static str>,
+    pub cause: Option<StreamCause>,
     /// Fixed order: Retry-After, limit, remaining, reset. Numeric values only.
     pub rate: [Option<u32>; 4],
 }
@@ -36,6 +62,7 @@ impl Diagnostics {
                 stage: Stage::LocalCredentialRead,
                 status: None,
                 code: None,
+                cause: None,
                 rate: [None; 4],
             });
         }
@@ -64,8 +91,16 @@ impl Diagnostics {
                 stage,
                 status: Some(status),
                 code: None,
+                cause: None,
                 rate,
             });
+        }
+    }
+    pub(crate) fn stream_cause(&self, cause: StreamCause) {
+        if let Ok(mut slot) = self.0.lock() {
+            if let Some(snapshot) = slot.as_mut() {
+                snapshot.cause = Some(cause);
+            }
         }
     }
     pub(crate) fn error_code(&self, body: &Value) {
