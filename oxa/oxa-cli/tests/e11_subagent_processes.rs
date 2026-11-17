@@ -372,9 +372,14 @@ fn parent_deadline_cancels_a_child_still_in_session_initialization() {
     );
     assert_eq!(
         out.status.code(),
-        Some(0),
+        Some(130),
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("parent final reply"));
+    assert_eq!(
+        requests(&server).iter().filter(|r| r.max_tokens > 0).count(),
+        2,
+        "the parent gets exactly one final turn after its interrupted tool"
+    );
 }
