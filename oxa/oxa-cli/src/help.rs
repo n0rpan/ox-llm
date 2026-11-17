@@ -251,13 +251,21 @@ fn longest(words: &[&str]) -> Option<&'static Entry> {
 ///
 /// The path is the command name plus the leading words that are not options, so
 /// `oxa mcp add NAME --help` resolves `mcp add` and `oxa wipe --session x --help` resolves
-/// `wipe`. `None` when no word asks for help.
+/// `wipe`.
+///
+/// Only oxa's own words count: `--` ends them, so a child command's arguments stay untouched
+/// (`oxa mcp add demo -- server --help` must still save `server --help` as that command).
+/// `None` when no word before the separator asks for help.
 pub fn requested(name: &str, words: &[String]) -> Option<String> {
-    if !words.iter().any(|w| w == "--help" || w == "-h") {
+    let own = match words.iter().position(|w| w == "--") {
+        Some(end) => &words[..end],
+        None => words,
+    };
+    if !own.iter().any(|w| w == "--help" || w == "-h") {
         return None;
     }
     let mut path = vec![name];
-    for word in words {
+    for word in own {
         if word == "--help" || word == "-h" || word.starts_with('-') {
             break;
         }
@@ -322,6 +330,19 @@ mod tests {
             .unwrap()
             .contains("oxa config -"));
         assert!(requested("mcp", &words(&["list"])).is_none());
+    }
+
+    /// `--` ends oxa's own words: a child command's arguments are never oxa's help request.
+    #[test]
+    fn requested_stops_at_the_command_separator() {
+        let words = |w: &[&str]| w.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(requested("mcp", &words(&["add", "demo", "--", "server", "--help"])).is_none());
+        assert!(requested("mcp", &words(&["add", "demo", "--", "-h"])).is_none());
+        assert!(requested("wipe", &words(&["--", "--help"])).is_none());
+        // A help request before the separator still wins: the child arguments are not parsed.
+        assert!(requested("mcp", &words(&["add", "--help", "--", "server"]))
+            .unwrap()
+            .contains("oxa mcp add -"));
     }
 
     /// An unknown path has no text; the caller turns that into a usage error.

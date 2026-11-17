@@ -368,3 +368,31 @@ fn previously_rejected_help_flags_now_exit_zero() {
     assert_eq!(tree(env.root()), before, "help changed a file");
     assert_eq!(server.requests().len(), 0, "help made a loopback request");
 }
+
+/// `--` separates oxa's words from the command it stores: `oxa mcp add demo -- server --help`
+/// saves that command, exactly as before help detection existed.
+#[test]
+fn mcp_add_still_saves_a_command_that_contains_a_help_flag() {
+    let env = TestEnv::new();
+    let server = FakeServer::start(Vec::new(), FakeOpts::default()).expect("fake engine");
+    let got = run(
+        &env,
+        &server.url(),
+        &["mcp", "add", "demo", "--", "server", "--help"],
+    );
+    assert_eq!(got.code, 0, "oxa mcp add: {}{}", got.out, got.err);
+    assert!(
+        got.out.contains("Saved MCP server \"demo\""),
+        "a child --help flag was taken as oxa help: {}{}",
+        got.out,
+        got.err
+    );
+    let saved = fs::read_to_string(env.agent_dir().join("mcp.json")).expect("saved mcp.json");
+    assert!(saved.contains("\"server\""), "{saved}");
+    assert!(saved.contains("\"--help\""), "{saved}");
+    assert_eq!(
+        server.requests().len(),
+        0,
+        "adding an MCP server made a loopback request"
+    );
+}
