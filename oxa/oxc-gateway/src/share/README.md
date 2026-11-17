@@ -2,8 +2,8 @@
 
 The `share` feature is off by default. It supplies private keys, durable guest
 admission and an explicit HTTP listener. The CLI's opt-in share feature adds
-owner key commands. Importing it creates no files, sockets or threads. Real
-gateway integration follows after the native controller seams.
+owner key commands and foreground serving for the native local engine.
+Importing the module creates no files, sockets or threads.
 
 `keys::Store::open` binds an existing mode-0700 directory outside repositories.
 Every path component is opened without following links. Registry and lock files
@@ -75,9 +75,9 @@ cancellation and join cleanup instead of abandoning generation. Streaming
 connections accept one request and treat client EOF/pipelining as cancellation.
 Cancel and await `serve` for orderly shutdown; do not detach it or its backend.
 
-Real gateway routing, owner-priority local leases, native request-ledger rows,
-and owner status-surface wiring are
-subsequent work. The counters here are quota authority, not a second copy of
+The native guest backend uses the controller's local lifecycle and guest-priority
+lease. Sharing a running owner session's engine, recording native request-ledger
+rows, and wiring the owner status surface remain subsequent work. The counters here are quota authority, not a second copy of
 cloud billing or a complete request ledger. TLS can terminate at `tailscale
 serve`; direct certificate support is not implemented in this slice.
 
@@ -103,9 +103,8 @@ creating a replacement; the bearer cannot be recovered. Both limits are required
 positive integers. Storage is `~/.oxa/share`, independent of project settings and
 `OXA_AGENT_DIR`. Missing directories are created privately through anchored
 no-follow descriptors, with parent syncs on creation and retry. Existing unsafe
-permissions, symlinks and repository paths are refused without repair. No model,
-provider credentials or listener are opened by these commands. Serving still
-requires the separately coordinated native gateway/owner-priority integration.
+permissions, symlinks and repository paths are refused without repair. These commands touch only the key registry. Use the explicit foreground serve
+command to start the listener with owner-selected native local aliases.
 
 ## Owner live activity
 
