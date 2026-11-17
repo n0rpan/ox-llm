@@ -349,10 +349,16 @@ pub(crate) fn git_exclude_note(output: &str, exit: Option<i32>) -> Option<String
     Some("Git's info/exclude is shared git metadata and stays read-only in a worktree sandbox. To ignore a local scratch directory without changing tracked files, put a .gitignore inside that directory, for example `printf '*\\n' > .venv-test/.gitignore` (the directory must already exist). This ignores its contents, including that .gitignore; do not overwrite an existing tracked .gitignore. For individual files, use `git -c core.excludesFile=<local-ignore-file> status` with patterns in a writable local file; that override applies only to that git invocation".to_string())
 }
 
-/// #253: when stdout is not a terminal, `gh issue view --comments` (also `gh pr view`) prints the
-/// comments only, so an issue without comments gives an empty, successful result that reads as a
-/// failure of the sandbox. Say what happened and how to get the text. Only for a successful
-/// command whose output is empty (tool warnings such as mise's `WARN` lines do not count).
+/// #253 / #1053: when stdout is not a terminal, `gh issue view --comments` (also `gh pr view`)
+/// prints the comment list only: `author:` / `association:` / `edited:` / `status:` lines, then
+/// `--`, the body and another `--`. The block's `--` lines sit on either side of a body, so the
+/// one above a body reads like a heading of the next block and a body can be credited to the
+/// wrong author. A list of blocks gets one line saying which header owns a body (gh's own text
+/// is left alone). Without comments the result is empty and reads as a failure of the sandbox,
+/// so say what happened and how to get the text, naming the review summaries that a pull
+/// request's `--json comments` also leaves out. Only for a successful command whose output is
+/// captured (a redirect or pipeline can drop it), not `--json`, without colour, and not an
+/// empty comment list made only of tool warnings such as mise's `WARN` lines.
 pub(crate) fn gh_comments_note(command: &str, output: &str, exit: Option<i32>) -> Option<&'static str> {
     // Redirects and pipelines can hide real comments. Skip both rather than guessing
     // whether later stages preserve output (even `head` can discard it with `-n 0`).
@@ -368,10 +374,66 @@ pub(crate) fn gh_comments_note(command: &str, output: &str, exit: Option<i32>) -
     let json = words
         .iter()
         .any(|w| w.starts_with("--json") || w.starts_with("--jq") || *w == "-q");
+    if exit != Some(0) || !viewing || !comments || json || output.contains('\u{1b}') {
+        return None;
+    }
+    let pull = words
+        .windows(3)
+        .any(|w| w[0] == "gh" && w[1] == "pr" && w[2] == "view");
     let silent = output
         .lines()
         .all(|l| l.trim().is_empty() || l.trim_start().starts_with("mise WARN"));
-    (exit == Some(0) && viewing && comments && !json && silent).then_some("gh prints only the comments when its output is captured, so an issue or pull request without comments gives no output; the issue text is not missing. Use `gh issue view N -R OWNER/REPO --json title,body,comments,state` (or `gh pr view`) to get the body and the comments")
+    if silent {
+        return Some(if pull { EMPTY_PR } else { EMPTY_ISSUE });
+    }
+    if gh_comment_blocks(output) {
+        return Some(if pull { LAYOUT_PR } else { LAYOUT });
+    }
+    None
+}
+
+/// gh prints only the comments when its output is captured; say so, and where a pull request's
+/// description and its review bodies are (a review's own body is not a comment).
+const EMPTY_PR: &str = "gh prints only the comments when its output is captured, so a pull request without comments gives no output; the description is not missing, and a review's own body is a separate field, not a comment. Use `gh pr view N -R OWNER/REPO --json title,body,comments,reviews,state` for the description, the comments and the reviews, or `gh api repos/OWNER/REPO/pulls/N/reviews` for the review bodies alone";
+/// The same for an issue.
+const EMPTY_ISSUE: &str = "gh prints only the comments when its output is captured, so an issue without comments gives no output; the issue text is not missing. Use `gh issue view N -R OWNER/REPO --json title,body,comments,state` to get the body and the comments";
+/// Head lines of one captured comment block: the author and its metadata, then `--`.
+const BLOCK_HEAD: [&str; 5] = ["author:", "association:", "edited:", "status:", "--"];
+/// How a captured comment list lays out a body, for an issue or a pull request.
+const LAYOUT: &str = "gh's captured comment blocks separate a header from its body with `--` and close the block with another `--`, so a body belongs to the `author:` / `association:` / `edited:` / `status:` lines above the first separator, and the second `--` only ends that block instead of heading the next one";
+/// The same, plus where a pull request's review summaries and inline comments are.
+const LAYOUT_PR: &str = "gh's captured comment blocks separate a header from its body with `--` and close the block with another `--`, so a body belongs to the `author:` / `association:` / `edited:` / `status:` lines above the first separator, and the second `--` only ends that block instead of heading the next one. A pull request's inline review comments (per file and line) are not in this list: `gh pr view N --json reviews` gives the review summaries and `gh api repos/OWNER/REPO/pulls/N/comments` the inline ones";
+
+/// Whether `output` is gh's captured comment list: head lines `author:` / `association:` /
+/// `edited:` / `status:`, the `--` separator, a body and the closing `--`, repeated. Only a
+/// whole list counts, so prose, JSON or a single quoted header gets no note.
+fn gh_comment_blocks(output: &str) -> bool {
+    let mut lines: Vec<&str> = output.lines().map(str::trim_end).collect();
+    // gh's list ends with the closing `--`; trailing blank lines are not part of a block.
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    let mut blocks = 0;
+    let mut i = 0;
+    while i < lines.len() {
+        // The head must be complete: a cut-short or prose block is no list.
+        let head = &lines[i..];
+        if head.len() < BLOCK_HEAD.len()
+            || head
+                .iter()
+                .zip(BLOCK_HEAD)
+                .any(|(line, want)| !line.starts_with(want))
+        {
+            return false;
+        }
+        i += BLOCK_HEAD.len();
+        match lines[i..].iter().position(|l| *l == "--") {
+            Some(close) => i += close + 1,
+            None => return false,
+        }
+        blocks += 1;
+    }
+    blocks > 0
 }
 
 /// #670: a detached tmux server cannot outlive the sandbox command that owns its PID namespace.
@@ -1112,6 +1174,97 @@ echo '\''a'\'''"#
                 "{cmd} (exit {exit}) must not receive a comments hint"
             );
         }
+    }
+
+    /// #1053: gh's captured comment list surrounds a body with `--`, so a body can read as if it
+    /// belonged to the block below it. The result says which header owns the body.
+    #[test]
+    fn gh_captured_pr_comments_explain_the_block_layout() {
+        let run = |cmd: &str, out: &[u8], exit: i32| {
+            let sb = Fake::ok(out, Some(exit));
+            run_with(
+                &sb,
+                json!({ "command": cmd }),
+                Mode::Workspace,
+                &CancelToken::new(),
+            )
+            .0
+        };
+        // gh 2.104's captured list, verbatim (a review body may hold its own `---` rule):
+        // head lines, `--`, the body, closing `--`.
+        const BLOCKS: &str = concat!(
+            "author:\ttester\nassociation:\tcollaborator\nedited:\tfalse\nstatus:\tnone\n",
+            "--\nFirst comment body\nwith two lines\n--\n",
+            "author:\treviewer\nassociation:\tmember\nedited:\tfalse\nstatus:\tapproved\n",
+            "--\n### Review\nApproved.\n\n---\n\nDetails here.\n--\n"
+        );
+        let blocks = BLOCKS.as_bytes();
+        let cmd = "gh pr view 1038 -R oxstack/ox-llm --comments";
+        let res = run(cmd, blocks, 0);
+        assert!(!res.is_error);
+        assert!(
+            res.text.starts_with("author:\ttester"),
+            "gh's own output comes first"
+        );
+        assert!(
+            res.text.contains("instead of heading the next one"),
+            "the closing `--` is not the heading of the next block"
+        );
+        assert!(
+            res.text.contains("body belongs to the `author:`"),
+            "a body is attributed to the `author:` line above it"
+        );
+        assert!(
+            res.text.contains("pulls/N/comments"),
+            "inline review comments are named as a separate read"
+        );
+        for (cmd, out, exit) in [
+            ("gh pr view 1038 --json title,body,comments,reviews", blocks, 0),
+            ("gh pr view 1038 --comments > /tmp/c.txt", blocks, 0),
+            ("gh pr view 1038 --comments | head -20", blocks, 0),
+            (cmd, b"a body without gh's block header\n", 0),
+            // A list cut before its closing `--` is incomplete: no layout claim is made.
+            (cmd, &BLOCKS.as_bytes()[..BLOCKS.len() - 3], 0),
+            (cmd, blocks, 1),
+            ("gh pr checks 1038", blocks, 0),
+            ("gh issue view 1038", blocks, 0),
+        ] {
+            let res = run(cmd, out, exit);
+            assert!(
+                !res.text.contains("instead of heading the next one"),
+                "{cmd} (exit {exit}) must not receive a block hint"
+            );
+        }
+    }
+
+    /// #1053: `--json comments` leaves the review summaries out, so the empty-PR hint names them.
+    #[test]
+    fn gh_empty_pr_comments_point_at_reviews() {
+        let run = |cmd: &str| {
+            let sb = Fake::ok(b"", Some(0));
+            run_with(
+                &sb,
+                json!({ "command": cmd }),
+                Mode::Workspace,
+                &CancelToken::new(),
+            )
+            .0
+        };
+        let pr = run("gh pr view 5 --comments");
+        assert!(!pr.is_error);
+        assert!(pr.text.contains("only the comments"), "{}", pr.text);
+        assert!(
+            pr.text.contains("--json title,body,comments,reviews,state"),
+            "a PR hint must name the review field: {}",
+            pr.text
+        );
+        let issue = run("gh issue view 5 --comments");
+        assert!(
+            issue.text.contains("--json title,body,comments,state"),
+            "{}",
+            issue.text
+        );
+        assert!(!issue.text.contains("reviews"), "{}", issue.text);
     }
 
     /// Empty captured output does not imply no comments when stdout went elsewhere.
