@@ -489,3 +489,93 @@ fn owner_session_sharing_flags_refuse_noninteractive_and_agent_invocations() {
     assert!(String::from_utf8_lossy(&agent.stderr).contains("requires the owner outside an agent tool"));
     assert!(!home.0.join(".oxa/share").exists());
 }
+
+#[cfg(feature = "share")]
+#[test]
+fn owner_terminal_shows_guest_connections_and_durable_usage_on_demand() {
+    use oxc_gateway::share::keys::{Limits, Store};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // The same openpty/select harness used for the terminal-loss controls.
+    const PTY_STATUS: &str = r#"
+import fcntl, os, pty, select, struct, subprocess, sys, termios, time
+master, slave = pty.openpty()
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 48, 140, 0, 0))
+child = subprocess.Popen([
+    sys.argv[1], '--share-model', 'synthetic-model', '--share-bind', '127.0.0.1',
+    '--model', 'synthetic-model', '--no-session', '--no-mcp', '--no-extensions',
+    '--no-skills', '--no-context-files',
+], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+os.close(slave)
+try:
+    output = b''
+    def wait_for(*needles):
+        global output
+        deadline = time.monotonic() + 15
+        while not all(needle in output for needle in needles):
+            assert child.poll() is None, 'interactive share exited early'
+            assert time.monotonic() < deadline, 'interactive share status deadline'
+            if select.select([master], [], [], .1)[0]:
+                output += os.read(master, 65536)
+    wait_for(b'Guest OpenAI API listening')
+    assert b'Guest usage today' not in output
+    os.write(master, b'/engine status\r')
+    wait_for(b'LAN sharing', b'0 connections', b'Guest usage today (UTC)',
+             b'Synthetic Tablet', b'1/10 requests', b'7/100 tokens')
+    os.write(master, b'/quit\r')
+    assert child.wait(timeout=5) == 0, 'owner terminal did not exit normally'
+finally:
+    os.close(master)
+    if child.poll() is None:
+        child.kill()
+    child.wait(timeout=3)
+"#;
+
+    let home = Home::new();
+    let agent = home.0.join(".oxa/agent");
+    fs::create_dir_all(&agent).unwrap();
+    fs::write(
+        agent.join("settings.json"),
+        r#"{"cacheWarming":"off","oxa":{
+            "engine":{"inProcessLocal":true},
+            "local":{"binary":"/synthetic/oxe-server",
+                "models":{"synthetic-model":{"model":"/synthetic/model.gguf","arguments":["--engine","stub"]}},
+                "limits":{"synthetic-model":{"context_window":4096,"max_output":64,
+                    "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,
+                                         "mtp_state_bytes":0,"margin_bytes":1044480}}}}
+        }}"#,
+    )
+    .unwrap();
+    let keys = Store::initialize(&home.0.join(".oxa/share")).unwrap();
+    let key = keys
+        .create(
+            "Synthetic Tablet",
+            Limits {
+                daily_requests: 10,
+                daily_tokens: 100,
+            },
+        )
+        .unwrap();
+    let day = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() / 86400;
+    keys.admit(key.bearer.expose(), day, 10)
+        .unwrap()
+        .unwrap()
+        .settle(7)
+        .unwrap();
+
+    let output = Command::new("python3")
+        .args(["-I", "-c", PTY_STATUS, env!("CARGO_BIN_EXE_oxa")])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &home.0)
+        .env("OXA_TEST_ISOLATION", "1")
+        .env("TERM", "xterm-256color")
+        .current_dir(&home.0)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

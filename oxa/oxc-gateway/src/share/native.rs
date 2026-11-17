@@ -127,7 +127,7 @@ pub fn serve<A: Answer, T: super::listener::Tailnet>(
     tailnet: Arc<T>,
     config: super::listener::Config,
     stop: CancelToken,
-    ready: impl FnOnce(std::net::SocketAddr) -> Result<(), Failure>,
+    ready: impl FnOnce(std::net::SocketAddr, super::status::Status) -> Result<(), Failure>,
 ) -> Result<(), Failure> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -135,7 +135,7 @@ pub fn serve<A: Answer, T: super::listener::Tailnet>(
         .map_err(|_| Failure::Failed)?;
     runtime.block_on(async {
         let server = super::listener::Server::bind(keys, answer, tailnet, config).await?;
-        ready(server.address()?)?;
+        ready(server.address()?, server.status())?;
         server.serve(stop).await
     })
 }

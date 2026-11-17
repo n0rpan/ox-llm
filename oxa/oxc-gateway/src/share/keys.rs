@@ -309,6 +309,10 @@ impl Store {
 
     pub fn list(&self) -> Result<Vec<KeyInfo>, Error> {
         let _lock = self.lock()?;
+        self.list_locked()
+    }
+
+    pub(super) fn list_locked(&self) -> Result<Vec<KeyInfo>, Error> {
         Ok(self.read()?.into_iter().map(|r| r.info).collect())
     }
 
