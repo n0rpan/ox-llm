@@ -714,9 +714,10 @@ pub(super) fn finish_line(
 ///
 /// * `Animation::Arcade`: the line starts with the scene of the activity; for [`FINISH_MS`]
 ///   after a run, an otherwise idle line shows the closing scene (`CLEAR` / `FAILED`).
-/// * `Animation::Minimal`: O-184's small sprites ([`oxa_activity_line_with`], motion on).
+/// * `Animation::Minimal`: small sprites ([`oxa_activity_line_with`], motion on).
 /// * `Animation::Off`, a plain theme (`NO_COLOR`, `TERM=dumb`) and waiting for the user's
-///   answer: the static badge, no escape sequence that moves anything, no closing scene.
+///   answer: the static badge, no escape sequence that moves anything. Timed runs keep a
+///   static completion line without a closing animation.
 ///
 /// Idle and no closing scene: `None`. Never wider than `width`; one line, always.
 pub fn oxa_arcade_line(
@@ -731,6 +732,10 @@ pub fn oxa_arcade_line(
 ) -> Option<String> {
     let arcade = animation == Animation::Arcade && skin.is_oxa() && !theme.is_plain();
     if !arcade {
+        if width > 0 && matches!(st.activity, Activity::Idle) && run.elapsed_ms.is_some() {
+            let (how, _) = run.finish?;
+            return Some(finish_line(String::new(), how, run, width, theme, skin));
+        }
         return oxa_activity_line_with(st, keymap, animation == Animation::Minimal, width, theme, skin);
     }
     let cells = scene_cells(width);
