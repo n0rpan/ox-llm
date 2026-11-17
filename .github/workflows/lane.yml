@@ -121,8 +121,7 @@ jobs:
         run: |
           base=$(git merge-base origin/main HEAD)
           if git diff --quiet "$base" HEAD -- \
-            oxa/oxa-cli/Cargo.toml oxa/oxa-cli/src/args.rs oxa/oxa-cli/src/dispatch.rs \
-            'oxa/oxa-cli/src/share*' oxa/oxa-cli/tests/share_keys.rs 'oxa/oxc-gateway/src/share/**'; then
+            'oxa/oxa-cli/**' 'oxa/oxc-gateway/src/share/**'; then
             echo 'CLI share-key controls: no affected share paths.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
