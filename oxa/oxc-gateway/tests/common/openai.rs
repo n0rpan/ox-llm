@@ -352,15 +352,17 @@ impl MockOpenAi {
         requests.clone()
     }
     pub fn assert_healthy(&self) {
-        // Every recorded failure is reported, not only the first: a later peer's
-        // phase and kind must never be lost behind an earlier one. The entries
+        // Snapshot the list before asserting. A failing verdict that panicked
+        // while holding the lock would poison it, and every later verdict would
+        // then report the poisoning instead of the remaining failures, so a
+        // failure recorded after the first could never be named. The entries
         // hold closed test-only facts and no error text or request data.
-        let errors = self.shared.errors.lock().unwrap();
+        let failures = self.shared.errors.lock().unwrap().clone();
         assert!(
-            errors.is_empty(),
+            failures.is_empty(),
             "mock upstream reported a connection failure count={} failures={:?}",
-            errors.len(),
-            *errors,
+            failures.len(),
+            failures,
         );
     }
 }

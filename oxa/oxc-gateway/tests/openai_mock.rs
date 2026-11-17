@@ -258,6 +258,28 @@ fn mock_health_names_a_finite_kind_for_an_unexpected_request() {
     assert_eq!(mock.requests().len(), 1);
 }
 
+/// A failing verdict must leave the recording list usable: peers keep recording
+/// after it, and the next verdict reports the new fact instead of a poison error.
+#[test]
+fn mock_health_verdict_leaves_later_failures_recordable() {
+    let mock = MockOpenAi::start(Vec::new());
+    response(request(&mock, &json!({"synthetic": "unexpected"})));
+    let first = health_report(&mock, &["phase: UnexpectedRequest", "count=1"]);
+    assert!(!first.contains("poisoned"), "{first}");
+    // Another peer fails only after the first failing verdict has been raised.
+    let mut malformed = TcpStream::connect(mock.address()).unwrap();
+    malformed
+        .write_all(b"POST /synthetic HTTP/1.1\r\nContent-Length: synthetic-private-header\r\n\r\n")
+        .unwrap();
+    malformed.shutdown(Shutdown::Write).unwrap();
+    let message = health_report(&mock, &["count=2"]);
+    assert!(
+        message.contains("phase: RequestRead") && message.contains("phase: UnexpectedRequest"),
+        "a failure recorded after a failing verdict is reported too: {first} then {message}"
+    );
+    assert!(!message.contains("poisoned"), "{message}");
+}
+
 /// Two peers fail for different reasons; the verdict must report both facts
 /// rather than only the first recorded one.
 #[test]
