@@ -297,7 +297,9 @@ fn gated_prompt_with_cancel(
     if window == Window::AfterExplicitAbort {
         // The recovered text must reach the session unchanged, whichever side of the
         // settlement the explicit input lands on: a bound recovery prompt while the
-        // canceled operation still holds the session, an ordinary prompt after it.
+        // canceled operation still holds the session, an ordinary prompt after it. An idle
+        // Alt+Enter leaves its newline in the editor and submission strips it, so both
+        // admit forms carry exactly the typed prompt.
         let recovered = match commands.as_slice() {
             [SessionCmd::RecoveryPrompt { handle, text, parts }] if !settle_before_submit => {
                 assert!(handle.same_instance(&control), "recovery keeps its destination");
