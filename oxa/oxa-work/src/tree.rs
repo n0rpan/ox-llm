@@ -80,6 +80,74 @@ pub(crate) fn validate(policy: &RunPolicy, repo: &Path, tree: &Path, task: &Task
     Ok(())
 }
 
+/// A published task branch may have no local ref at all: the worktree would
+/// then start at the base, so a worker auditing a pull request's head would
+/// redo work from a tree that predates it. Only a lone remote-tracking tip
+/// that descends from the captured base (and carries commits the base lacks) is
+/// adopted; no fetch runs, and an unrelated or diverging tip is never preferred
+/// over the base.
+fn adopt_published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &str) -> Result<()> {
+    let base_sha = checked(git(
+        policy,
+        repo,
+        &["rev-parse", "--verify", &format!("{base}^{{commit}}")],
+    ))?;
+    let pattern = format!("refs/remotes/*/{branch}");
+    let tracking = checked(git(
+        policy,
+        repo,
+        &["for-each-ref", "--format=%(refname)", &pattern],
+    ))?;
+    let mut heads = Vec::new();
+    for name in tracking.lines().filter(|name| !name.ends_with("/HEAD")) {
+        // A stale or dangling tracking ref is ignored, not turned into a block.
+        let read = output(git(
+            policy,
+            repo,
+            &["rev-parse", "--verify", &format!("{name}^{{commit}}")],
+        ))?;
+        if !read.status.success() {
+            continue;
+        }
+        let tip = String::from_utf8_lossy(&read.stdout).trim().to_owned();
+        if tip != base_sha
+            && output(git(
+                policy,
+                repo,
+                &["merge-base", "--is-ancestor", &base_sha, &tip],
+            ))?
+            .status
+            .code()
+                == Some(0)
+        {
+            heads.push(tip);
+        }
+    }
+    heads.sort();
+    heads.dedup();
+    let [tip] = heads.as_slice() else {
+        return Ok(());
+    };
+    // The branch does not exist yet, so only a zero old value can match.
+    let created = "0".repeat(40);
+    let updated = output(git(
+        policy,
+        repo,
+        &[
+            "update-ref",
+            "-m",
+            "oxa work: start the task branch at its published head",
+            &format!("refs/heads/{branch}"),
+            tip,
+            &created,
+        ],
+    ))?;
+    if !updated.status.success() {
+        return Err(String::from_utf8_lossy(&updated.stderr).into());
+    }
+    Ok(())
+}
+
 pub(crate) fn prepare(
     repo: &Path,
     tree: &Path,
@@ -98,6 +166,9 @@ pub(crate) fn prepare(
             Some(1) => true,
             _ => return Err(String::from_utf8_lossy(&exists.stderr).into()),
         };
+        if create {
+            adopt_published_head(policy, repo, &task.branch, base)?;
+        }
         let tree_arg = tree.to_str().ok_or("non-UTF8 worktree path")?;
         let mut args = vec![
             "-c",

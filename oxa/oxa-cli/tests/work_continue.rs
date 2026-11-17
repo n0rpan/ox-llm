@@ -75,6 +75,26 @@ fn existing_branch_fast_forwards_to_base_before_agent() {
     );
 }
 #[test]
+fn fresh_worktree_starts_at_the_published_task_branch_head() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    git(&env, &project(&env), &["checkout", "-b", "agent/test"]);
+    commit_file(&env, "pr.txt", "from the pull request\n");
+    git(&env, &project(&env), &["push", "origin", "agent/test"]);
+    git(&env, &project(&env), &["checkout", "main"]);
+    git(&env, &project(&env), &["branch", "-D", "agent/test"]);
+    git(&env, &project(&env), &["fetch", "origin"]);
+    let pushed = git(&env, &project(&env), &["rev-parse", "origin/agent/test"]);
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(tree(&record).join("pr.txt")).unwrap(),
+        "from the pull request\n"
+    );
+    assert_eq!(git(&env, &project(&env), &["rev-parse", "agent/test"]), pushed);
+}
+
+#[test]
 fn divergent_branch_gets_normal_merge_without_losing_task_commit() {
     let env = TestEnv::new();
     diverge(&env, false);

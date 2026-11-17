@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `oxa work` starts a new task branch at its published head (`origin/<branch>`) when that tip descends from the captured base, instead of always at the base. A task for an already pushed pull-request branch now audits and continues that head rather than redoing work from a tree that predates it; several diverging tips or an unrelated one keep the base. See [work.md](docs/work.md).
+
 ### Changed
 
 - Provider preconnect (#881): qualified as not implementable through the existing gateway pool. The pinned reqwest 0.12 transport has no preconnect or pool-insertion API, so warming the selected provider would need a real authenticated request after the first frame; no warm-up was added. The limitation and the owner's options are in [provider-preconnect.md](docs/design/provider-preconnect.md).
