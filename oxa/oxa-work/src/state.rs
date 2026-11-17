@@ -9,6 +9,21 @@ use std::path::{Path, PathBuf};
 const VERSION: u64 = 1;
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 
+pub(crate) fn lock(path: &Path) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    file.try_lock()
+        .map_err(|error| format!("queue is already running: {error}"))?;
+    Ok(file)
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Step {
@@ -20,6 +35,8 @@ pub enum Step {
     Saving,
     #[default]
     Finished,
+    Publishing,
+    Reporting,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -134,7 +151,18 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         .get("record")
         .and_then(serde_json::Value::as_object)
         .ok_or("task checkpoint record is missing")?;
-    if record.len() != keys.len() || keys.iter().any(|key| !record.contains_key(*key)) {
+    let optional = [
+        "pull_request",
+        "draft",
+        "problem_notes",
+        "reports",
+        "acceptance_outcome",
+    ];
+    if keys.iter().any(|key| !record.contains_key(*key))
+        || record
+            .keys()
+            .any(|key| !keys.contains(&key.as_str()) && !optional.contains(&key.as_str()))
+    {
         return Err("incomplete or unknown task checkpoint record fields".into());
     }
     let state: State = serde_json::from_value(value).map_err(|e| format!("task checkpoint: {e}"))?;
