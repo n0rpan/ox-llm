@@ -317,6 +317,10 @@ pub(crate) struct Loop<'a> {
     /// Assume focus until the terminal reports otherwise (unsupported terminals stay quiet).
     focused: bool,
     run_finished: bool,
+    /// The user aborted the run and it has not reported a new turn since. Input typed in that
+    /// window is a new prompt, not steering: the run is ending and would drop the steering
+    /// message (#699). Cleared when a run starts a turn.
+    abort_requested: bool,
     pub(crate) dirty: bool,
     /// Ctrl+C was pressed on an empty editor; a second press within two seconds quits.
     armed: bool,
@@ -449,6 +453,7 @@ impl<'a> Loop<'a> {
             sent_title: None,
             focused: true,
             run_finished: false,
+            abort_requested: false,
             dirty: true,
             armed: false,
             armed_at: None,
@@ -683,12 +688,17 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// A run is active: the worker reported a non-idle activity or the handle says busy. The
-    /// boot preload (O-152) claims the session too, but is not a run: input is a prompt.
-    /// V020-OPTIMIZE #13: so is a draft prefill.
+    /// A run is active: the worker reported a non-idle activity. The boot preload (O-152)
+    /// claims the session too, but is not a run: input is a prompt. V020-OPTIMIZE #13: so is a
+    /// draft prefill. Both keep the activity idle (their progress events are dropped), so the
+    /// activity alone answers the question.
+    ///
+    /// The session's claim is not the signal: it is held past the end of the run, for the
+    /// settle work (hooks, the front end's status file). A reply the core dropped (an abort, a
+    /// failure, a cut) ends the run and clears the activity at once, so a prompt typed after
+    /// the dropped reply is a prompt and not steering on a run that has already ended (#699).
     fn running(&self) -> bool {
         self.vm.status.activity != Activity::Idle
-            || (self.handle.is_busy() && !self.worker.is_preloading() && !self.worker.is_drafting())
     }
 
     pub(crate) fn animating(&self) -> bool {
@@ -739,6 +749,10 @@ impl<'a> Loop<'a> {
                 }
             }
             WorkerMsg::Event(e) => {
+                // A turn started: the run goes on, so input is steering again.
+                if matches!(e, AgentEvent::AgentStart) {
+                    self.abort_requested = false;
+                }
                 // AgentEnd can occur between tool/follow-up turns; only settled ends a run.
                 if matches!(e, AgentEvent::AgentSettled { .. }) {
                     if let Some(inbox) = &self.inbox {
@@ -1306,6 +1320,9 @@ impl<'a> Loop<'a> {
         {
             self.handle.abort();
             self.handle.abort_retry();
+            // The run is ending: a prompt typed before it settles is a new prompt, not
+            // steering on a run that will drop it (#699).
+            self.abort_requested = true;
             self.dialogs.key(&key, &self.opts.keymap);
             self.restore_queue();
             return;
@@ -1681,7 +1698,7 @@ impl<'a> Loop<'a> {
         if self.fullscreen {
             self.viewport.scroll_to_bottom();
         }
-        if self.running() {
+        if self.running() && !self.abort_requested {
             self.handle.steer(trimmed);
             self.sync_queue();
         } else {

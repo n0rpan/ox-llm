@@ -1131,6 +1131,14 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             EntryBody::Shown { text, why } => {
                 if [shown_why::ABORTED, shown_why::FAILED, shown_why::CUT].contains(why) {
                     shown_reply(vm, text, why);
+                    // The reply was dropped: the turn is over, whatever the session is still
+                    // claimed for (the settle work, including the front end's status file).
+                    // Leaving the activity at `Thinking` made the UI treat a prompt typed
+                    // after the dropped reply as steering on a run that had already ended
+                    // (#699). A run that continues (a wrap-up turn, a replay after a cut)
+                    // reports its next turn and sets the activity again.
+                    vm.status.activity = Activity::Idle;
+                    vm.status.activity_ms = 0;
                 }
             }
             EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => {
