@@ -44,7 +44,8 @@ pub(super) fn clean_refusal(error: &Error) -> bool {
             crate::opencode::Refusal::RegionBlocked
             | crate::opencode::Refusal::RateLimited { .. }
             | crate::opencode::Refusal::Unauthenticated
-            | crate::opencode::Refusal::Forbidden,
+            | crate::opencode::Refusal::Forbidden
+            | crate::opencode::Refusal::Other(400 | 404 | 413),
         )) => true,
         Error::Upstream(anthropic_client::Error::Http(400 | 401 | 403 | 404 | 413 | 429)) => true,
         #[cfg(feature = "upstream-openai")]
