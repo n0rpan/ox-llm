@@ -783,6 +783,7 @@ fn session_info(s: &Session) -> SessionInfo {
         engine_url: info.base_url.clone(),
         models,
         queue: info.queue,
+        jobs_running: s.inner().jobs.running() as u32,
         shortcuts: s
             .inner()
             .hooks

@@ -499,7 +499,10 @@ fn bare_status_shows_the_current_sessions_view() {
             .unwrap_or_else(|| panic!("no {name} row in {text:?}"))
             .to_string()
     };
-    assert!(text.lines().next().is_some_and(|l| l.contains("Status")), "{text}");
+    assert!(
+        text.lines().next().is_some_and(|l| l.contains("Status")),
+        "{text}"
+    );
     assert!(row("session").contains(&sref.id), "{:?}", row("session"));
     assert!(
         row("session").contains(&sref.path.display().to_string()),

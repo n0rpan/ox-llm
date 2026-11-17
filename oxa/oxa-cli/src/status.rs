@@ -1,6 +1,7 @@
 //! One small atomic snapshot per saved session. Progress never serializes model/tool text.
 use oxa_config::{dirs_from_env, Dirs, Env, Settings};
 use oxa_core::{Progress, ProgressObserver, RunOutcome};
+use oxa_interactive::{StatusRow, StatusView};
 use oxa_proto::{codes, OxaError, TurnKind};
 use oxa_session::{FsStore, SessionRef, SessionStore};
 use serde_json::{json, Value};
@@ -372,15 +373,19 @@ pub(crate) fn run(
             "usage: oxa status <session-id|session-file> [--session-dir <dir>]",
         )
     };
-    let Some(id) = words.first().filter(|id| !id.starts_with('-')) else {
-        return Err(usage());
-    };
     let mut sessions = dirs.sessions_dir.clone();
     if env.get("OXA_SESSION_DIR").is_none() {
         if let Some(configured) = Settings::load(dirs, cwd, false).session_dir(&dirs.home, cwd) {
             sessions = configured;
         }
     }
+    let Some(id) = words.first().filter(|id| !id.starts_with('-')) else {
+        if words.is_empty() {
+            // #872: bare `oxa status` is the one status view of the current saved session.
+            return view_current(sessions, cwd, out);
+        }
+        return Err(usage());
+    };
     match &words[1..] {
         [] => {}
         [flag, dir] if flag == "--session-dir" => {
@@ -404,6 +409,56 @@ pub(crate) fn run(
     serde_json::to_writer(&mut *out, &value).map_err(|e| OxaError::new(codes::IO, e.to_string()))?;
     out.write_all(b"\n")
         .map_err(|e| OxaError::io("cannot write worker status", &e))?;
+    Ok(0)
+}
+
+/// #872: the one status view of the current saved session of `cwd` (the session `oxa` would
+/// continue). Every fact comes from the session store and the status sidecar; the rows this
+/// surface cannot answer (jobs, engine queue, engine, child, goal, lead) say `unavailable:`
+/// with the reason, never a zero. It contacts no engine, provider or auth store.
+fn view_current(sessions: PathBuf, cwd: &Path, out: &mut dyn Write) -> Result<i32, OxaError> {
+    let store = FsStore::new(sessions);
+    let Some(meta) = store.list(Some(cwd)).into_iter().max_by_key(|m| m.modified_ms) else {
+        return Err(OxaError::new(
+            codes::NOT_FOUND,
+            format!(
+                "no saved session for {}; pass `oxa status <session-id|session-file>`",
+                cwd.display()
+            ),
+        ));
+    };
+    let sref = meta.sref;
+    let name = meta.name.as_deref().unwrap_or("(not set)");
+    let mut view = StatusView {
+        session: StatusRow::Fact(format!("{} (name {name}) {}", sref.id, sref.path.display())),
+        ..StatusView::default()
+    };
+    // The sidecar is written by the worker that ran the session; a missing or foreign one
+    // leaves the turn and budget rows unavailable rather than guessing.
+    let path = sref.path.with_extension("status.json");
+    if let Ok(value) = read_snapshot(&path) {
+        if value["type"] == "oxa_status" && value["version"] == 1 && value["session_id"] == sref.id {
+            let phase = value["phase"].as_str().unwrap_or("unknown");
+            let outcome = value["outcome"]
+                .as_str()
+                .map(|o| format!(" outcome {o}"))
+                .unwrap_or_default();
+            let stalled = value["stall_deadline_ms"]
+                .as_u64()
+                .is_some_and(|deadline| now_ms() >= deadline);
+            let stalled = if stalled { " stalled" } else { "" };
+            view.turn = StatusRow::Fact(format!("phase {phase}{outcome}{stalled}"));
+            let tokens = &value["tokens"];
+            view.budget = StatusRow::Fact(format!(
+                "input {} output {} tokens",
+                tokens["prompt"].as_u64().unwrap_or(0),
+                tokens["completion"].as_u64().unwrap_or(0)
+            ));
+        }
+    }
+    for line in view.lines() {
+        writeln!(out, "{line}").map_err(|e| OxaError::io("cannot write the status view", &e))?;
+    }
     Ok(0)
 }
 

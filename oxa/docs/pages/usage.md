@@ -140,6 +140,7 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/clone` | duplicate the current session at the current point |
 | `/name [name]` | set the session's display name |
 | `/session` | show session info and stats |
+| `/status` | show the one status view: session, turn, jobs, queue, engine, budget, and the child, goal and lead rows later surfaces fill. A row this surface cannot answer says `unavailable:` with the reason, never a zero. Bare `oxa status` prints the same rows for the current saved session |
 | `/export [path]` | export the session to HTML (or `.jsonl`) |
 | `/copy` | copy the last assistant message to the clipboard |
 | `/hotkeys` | show the key bindings in force |

@@ -70,6 +70,7 @@ impl Fx {
             engine_url: "",
             models: &[],
             queue: None,
+            jobs_running: None,
         }
     }
 

@@ -1,6 +1,8 @@
 //! D11: handlers of the built-in slash commands.
 // ported from pi packages/coding-agent/src/modes/interactive/interactive-mode.ts (slash command handling) and docs/slash-commands.md
-use crate::{AppAction, Block, Reopen, SelectorKind, SessionCmd, StatusModel, ViewModel};
+use crate::{
+    AppAction, Block, Reopen, SelectorKind, SessionCmd, StatusModel, StatusRow, StatusView, ViewModel,
+};
 use oxa_config::{resolve_model, Dirs, Env, Keymap, ModelRef, ModelsConfig, Settings};
 use oxa_proto::{CommandSpec, Level, Mode, OxaError, PermissionMode, Source, ThinkingLevel};
 use std::path::{Path, PathBuf};
@@ -30,13 +32,16 @@ pub struct SlashCx<'a> {
     pub models: &'a [String],
     /// Requests waiting on the engine, when known.
     pub queue: Option<u32>,
+    /// Background commands still running (`JobRegistry::running()`), when the caller holds the
+    /// registry. `None` = this surface has no job registry: the `/status` jobs row says so.
+    pub jobs_running: Option<u32>,
 }
 
 /// The built-in commands this module handles, without the slash, in pi's listing order.
 /// Kept in oxa: every command of slash-commands.md that plan sec. 1 keeps, plus `engine`,
 /// `mode` and `mcp`. Omitted pi commands (`login`, `logout`, `share`) are handled too: they
 /// answer the fixed `unsupported_in_oxa` notice.
-pub const INTERACTIVE_COMMANDS: [&str; 32] = [
+pub const INTERACTIVE_COMMANDS: [&str; 33] = [
     "settings",
     "model",
     "scoped-models",
@@ -44,6 +49,7 @@ pub const INTERACTIVE_COMMANDS: [&str; 32] = [
     "copy",
     "name",
     "session",
+    "status",
     "hotkeys",
     "fork",
     "clone",
@@ -225,6 +231,7 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
             }
         }
         "session" | "usage" => AppAction::ShowLines(session_info_lines(cx)),
+        "status" => AppAction::ShowLines(status_lines(cx)),
         "help" => AppAction::ShowLines(help_lines(cx)),
         "hotkeys" => AppAction::ShowLines(hotkeys_lines(cx.keymap)),
         "fork" => AppAction::Open(SelectorKind::ForkPoint),
@@ -357,6 +364,40 @@ pub fn session_info_lines(cx: &SlashCx) -> Vec<String> {
         out.push(format!("Cache, last request: {}", cache_text(cached, prompt)));
     }
     out
+}
+
+/// #872: the one status view of the interactive surface. Every fact comes from what the UI
+/// thread already holds (the view model, the session info, the engine info); a row this
+/// surface cannot answer says `unavailable:` with the reason, never a zero. Bare
+/// `oxa status` renders the same rows from the status sidecar.
+pub fn status_lines(cx: &SlashCx) -> Vec<String> {
+    let st: &StatusModel = &cx.vm.status;
+    let file = match cx.session_file {
+        Some(p) => p.display().to_string(),
+        None => "(ephemeral, not saved)".to_string(),
+    };
+    let name = st.session_name.as_deref().unwrap_or("(not set)");
+    let mut view = StatusView {
+        session: StatusRow::Fact(format!("{} (name {name}) {file}", cx.session_id)),
+        turn: StatusRow::Fact(crate::chrome::activity_text(st).unwrap_or_else(|| "idle".to_string())),
+        budget: StatusRow::Fact(format!("input {} output {} tokens", st.total_in, st.total_out)),
+        ..StatusView::default()
+    };
+    if let Some(running) = cx.jobs_running {
+        view.jobs = StatusRow::Fact(format!("{running} running"));
+    }
+    if let Some(queue) = cx.queue {
+        view.queue = StatusRow::Fact(format!("{queue} waiting"));
+    }
+    if !cx.engine_url.is_empty() {
+        let model = if st.model.is_empty() {
+            "(model unknown)".to_string()
+        } else {
+            st.model.clone()
+        };
+        view.engine = StatusRow::Fact(format!("{} model {model}", cx.engine_url));
+    }
+    view.lines()
 }
 
 /// The `/engine` listing from the status model (endpoint, model, context window, cache hit of

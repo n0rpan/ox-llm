@@ -50,6 +50,11 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
     ("copy", "Copy last agent message to clipboard", None),
     ("name", "Set session display name", Some("[name]")),
     ("session", "Show session info and stats", None),
+    (
+        "status",
+        "Show the one status view: session, turn, jobs, queue, engine, budget",
+        None,
+    ),
     ("hotkeys", "Show all keyboard shortcuts", None),
     ("fork", "Create a new fork from a previous user message", None),
     (

@@ -1711,6 +1711,7 @@ impl<'a> Loop<'a> {
                 engine_url: &self.session.engine_url,
                 models: &self.session.models,
                 queue: (!self.session.engine_url.is_empty()).then_some(self.session.queue),
+                jobs_running: Some(self.session.jobs_running),
             };
             dispatch_slash(line, &cx)
         };

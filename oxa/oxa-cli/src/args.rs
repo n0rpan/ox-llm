@@ -190,8 +190,8 @@ const COMMANDS: &[(&str, &str)] = &[
         "Manage private guest keys and daily limits",
     ),
     (
-        "oxa status <session-id|session-file>",
-        "Read a saved session's current progress and stall signal",
+        "oxa status [session-id|session-file]",
+        "Show the one status view of the current saved session, or read a saved session's progress and stall signal",
     ),
     (
         "oxa install <source> [-l]",
