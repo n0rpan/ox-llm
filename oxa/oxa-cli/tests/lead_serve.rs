@@ -182,6 +182,56 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     for page in ["-1", "01", "18446744073709551615"] {
         assert!(get(port, &format!("/board?page={page}"), &authority, "").starts_with("HTTP/1.1 404"));
     }
+    let mut filtered = record.clone();
+    for (index, row) in filtered["board"]["entries"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+    {
+        row["action"] = if index < 60 {
+            "fix_findings"
+        } else if index < 100 {
+            "wait_review"
+        } else {
+            "ready"
+        }
+        .into();
+    }
+    std::fs::write(&sample, format!("{filtered}\n")).unwrap();
+    for (query, first, last, absent) in [
+        ("f=fix", 1, 50, 51),
+        ("f=fix&page=1", 51, 60, 61),
+        ("f=waiting", 61, 100, 1),
+        ("f=ready", 101, 101, 100),
+    ] {
+        let path = format!("/board?{query}");
+        let reply = get(port, &path, &authority, "");
+        assert!(reply.starts_with("HTTP/1.1 200"), "{path}");
+        for text in ["Needs fix (60)", "Waiting (40)", "Ready (1)"] {
+            assert!(reply.contains(text), "{text}");
+        }
+        for number in [first, last] {
+            assert!(reply.contains(&format!("#{number}<")), "{path}");
+        }
+        assert!(!reply.contains(&format!("#{absent}<")), "{path}");
+        let fragment = get(port, &format!("{path}&fragment=1"), &authority, "");
+        assert!(fragment.starts_with("HTTP/1.1 200") && !fragment.contains("<!doctype"));
+        assert!(get(port, &path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
+    }
+    assert!(get(port, "/board?f=blocked", &authority, "").contains("Blocked observations unavailable"));
+    for query in [
+        "f=unknown",
+        "f=fix&f=ready",
+        "page=1&page=2",
+        "f=fix&other=x",
+        "f=fix&page=01",
+    ] {
+        assert!(
+            get(port, &format!("/board?{query}"), &authority, "").starts_with("HTTP/1.1 404"),
+            "{query}"
+        );
+    }
     assert!(get(port, "/", "attacker.invalid", "").starts_with("HTTP/1.1 403"));
     assert!(get(
         port,
