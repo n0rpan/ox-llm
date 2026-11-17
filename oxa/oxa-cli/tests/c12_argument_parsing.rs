@@ -522,6 +522,24 @@ fn no_tool_aliases_are_exclude_tools_and_pick_the_same_tools() {
     assert_eq!(parse_err(&["--no-bash=1"]).code, codes::USAGE);
 }
 
+/// A later exclusion must never undo an earlier explicit tool restriction.
+#[test]
+fn mixed_tool_exclusions_remain_disabled_in_either_order() {
+    for words in [
+        vec!["--no-bash", "--exclude-tools", "read"],
+        vec!["--exclude-tools", "read", "--no-bash"],
+        vec!["-xt", "bash", "--exclude-tools", "read"],
+    ] {
+        let args = parse(&words);
+        let (tools, warnings) = oxa_core::resolve_toolset(&oxa_tools::builtin_tools(), &selection(&args));
+        assert!(warnings.is_empty(), "{words:?}: {warnings:?}");
+        let names: Vec<_> = tools.specs().iter().map(|s| s.name.as_str()).collect();
+        assert!(!names.contains(&"bash"), "{words:?} re-enabled bash");
+        assert!(!names.contains(&"read"), "{words:?} re-enabled read");
+        assert!(names.contains(&"edit"), "{words:?} removed an unrelated tool");
+    }
+}
+
 /// Extra: `--animation <mode>` takes the three `ui.animation` values; anything else is a usage
 /// error (exit 2 through `codes::USAGE`).
 #[test]
