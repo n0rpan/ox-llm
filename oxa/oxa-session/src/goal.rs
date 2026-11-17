@@ -150,7 +150,7 @@ impl Goal {
         }
     }
     pub fn resume(&mut self) -> Result<(), OxaError> {
-        if !self.can_continue() {
+        if self.is_terminal() || self.exhausted() {
             return Err(invalid());
         }
         self.status = GoalStatus::Pursuing;
@@ -159,14 +159,14 @@ impl Goal {
         Ok(())
     }
     pub fn cancel(&mut self) -> Result<(), OxaError> {
-        if !self.can_continue() {
+        if self.is_terminal() {
             return Err(invalid());
         }
         self.status = GoalStatus::Canceled;
         Ok(())
     }
-    fn can_continue(&self) -> bool {
-        !matches!(self.status, GoalStatus::Done | GoalStatus::Canceled) && !self.exhausted()
+    fn is_terminal(&self) -> bool {
+        matches!(self.status, GoalStatus::Done | GoalStatus::Canceled)
     }
     pub fn value(&self) -> Value {
         json!({"version":1,"objective":self.objective,"status":self.status.as_str(),"started_ms":self.started_ms,
