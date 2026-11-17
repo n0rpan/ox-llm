@@ -1,4 +1,4 @@
-//! A1: minimal HTTP/1.1 client over TcpStream. Owner: task A1. Signatures below are frozen; bodies are yours.
+//! A1: minimal HTTP/1.1 client over TcpStream.
 use oxa_proto::{codes, CancelToken, OxaError};
 use std::fmt::Write as _;
 use std::io::{self, ErrorKind, Read, Write};

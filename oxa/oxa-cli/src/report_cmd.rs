@@ -225,14 +225,7 @@ fn cap(text: &str) -> String {
 pub fn draft_body(notes: &str, dirs: &Dirs, ctx: &ScrubCtx, runner: Runner<'_>) -> String {
     let mut parts: Vec<String> = Vec::new();
     let notes = clean_notes(notes, ctx);
-    parts.push(format!(
-        "## What happened\n\n{}",
-        if notes.is_empty() {
-            "(no description)".to_string()
-        } else {
-            notes
-        }
-    ));
+    parts.push(format!("## What happened\n\n{}", notes));
     let mut system: Vec<String> = vec![format!("- oxa version: {}", env!("CARGO_PKG_VERSION"))];
     if let Some(identity) = read_identity(dirs) {
         system.extend(
@@ -295,6 +288,13 @@ pub fn save_draft(
     let title = scrub(title.trim(), ctx).replace('\n', " ");
     if title.is_empty() {
         return Err(OxaError::new(codes::USAGE, "a title is required").with_hint(USAGE));
+    }
+    if clean_notes(notes, ctx).is_empty() {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "no description: the notes are empty, so there is nothing to report; write what happened and draft again",
+        )
+        .with_hint(USAGE));
     }
     let body = draft_body(notes, dirs, ctx, runner);
     let text = draft_text(&title, &body);

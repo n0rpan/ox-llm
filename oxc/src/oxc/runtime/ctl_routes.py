@@ -43,7 +43,7 @@ class ControlRoutes:
             except (Unavailable, OSError, ValueError, KeyError, TypeError, AttributeError):
                 return self.json_reply(503, {'error': 'Flash cache settings are unavailable.'})
         if path == '/_local/models' and self.command in ('GET', 'HEAD'):
-            try: return self.json_reply(200, self.manager.catalog(remote=remote))
+            try: return self.json_reply(200, self.manager.catalog())
             except (Unavailable, OSError, ValueError, KeyError, TypeError):
                 return self.json_reply(503, {'error': 'Model setup is not finished yet. Run `oxc status` to follow it.'})
         if path == '/_local/storage' and self.command in ('GET', 'HEAD'):

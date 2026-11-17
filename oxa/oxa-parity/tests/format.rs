@@ -460,7 +460,12 @@ fn fmt_001() {
     oxa(&env, &server.url(), &["-p", "hello"]).ok();
     let file = only_file(&env);
     let h = lines(&file)[0].clone();
-    assert_eq!(keys(&h), keys(&doc(PI_HEADER)), "pi's header fields: {h}");
+    let mut expected = keys(&doc(PI_HEADER));
+    // oxa extends the inherited v3 header with a birth-time spill tracking marker.
+    // It must not be backfilled on legacy sessions (whose cross-store forks are unknown).
+    expected.insert("spillStoresTracked".into());
+    assert_eq!(keys(&h), expected, "oxa's header fields: {h}");
+    assert_eq!(h["spillStoresTracked"], true);
     assert_eq!(h["type"], "session");
     assert_eq!(h["version"], 3);
     let id = h["id"].as_str().expect("id");
@@ -476,7 +481,10 @@ fn fmt_001() {
     let forked: Vec<PathBuf> = session_files(&env).into_iter().filter(|f| *f != file).collect();
     assert_eq!(forked.len(), 1, "{forked:?}");
     let fh = lines(&forked[0])[0].clone();
-    assert_eq!(keys(&fh), keys(&doc(PI_HEADER_PARENT)), "{fh}");
+    let mut expected = keys(&doc(PI_HEADER_PARENT));
+    expected.insert("spillStoresTracked".into());
+    assert_eq!(keys(&fh), expected, "{fh}");
+    assert_eq!(fh["spillStoresTracked"], true);
     assert_eq!(fh["parentSession"], json!(src));
     assert_ne!(fh["id"], h["id"], "a new id");
 }
@@ -1440,7 +1448,11 @@ fn fmt_021() {
     rpc.ok(json!({"type": "set_mode", "mode": "plan"}));
     rpc.prompt("second");
     let file = rpc.file();
-    assert_eq!(rpc.finish(), Some(0));
+    assert_eq!(
+        rpc.finish(),
+        Some(1),
+        "the first failed prompt remains the terminal outcome"
+    );
     let ls = lines(&file);
     let shown = of_type(&ls, "shown");
     let failed = shown

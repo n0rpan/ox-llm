@@ -1,10 +1,10 @@
-//! E12: fill pi's HTML template from a session. Owner: task E12. Signatures below are frozen; bodies are yours.
+//! E12: fill pi's HTML template from a session.
 // ported from pi packages/coding-agent/src/core/export-html/index.ts and tool-renderer.ts
 use crate::template::{
     HIGHLIGHT_JS, MARKED_CJK_FRIENDLY_JS, MARKED_JS, TEMPLATE_CSS, TEMPLATE_HTML, TEMPLATE_JS,
 };
 use oxa_proto::{codes, Entry, EntryBody, OxaError, Value};
-use oxa_session::{encode_entry, encode_header, SessionHeader};
+use oxa_session::{encode_header, encode_visible_entry as encode_entry, SessionHeader};
 use std::collections::{HashMap, HashSet};
 use std::fs::{OpenOptions, Permissions};
 use std::io::Write;
@@ -194,7 +194,7 @@ pub fn export_html(header: &SessionHeader, entries: &[Entry], opts: &ExportOpts)
 ///
 /// Oxa-only entries (`shown`, `mode_change`) are left out. A kept entry whose parent was left out
 /// is re-parented to its nearest kept ancestor, so the template's tree stays connected; every
-/// other entry is written with the bytes `encode_entry` gives for the session file.
+/// other entry uses the visible entry codec, excluding private provider replay.
 pub fn session_data_json(
     header: &SessionHeader,
     entries: &[Entry],

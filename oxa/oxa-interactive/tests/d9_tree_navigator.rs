@@ -1,4 +1,4 @@
-//! D9 acceptance tests: Tree navigator. Owner: task D9.
+//! D9 acceptance tests: Tree navigator.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -28,6 +28,7 @@ fn user(id: &str, parent: Option<&str>, text: &str) -> Entry {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
 }
@@ -39,6 +40,7 @@ fn assistant(id: &str, parent: Option<&str>, text: &str) -> Entry {
         EntryBody::Msg {
             wire: WireMsg::assistant(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
 }
@@ -177,6 +179,7 @@ fn five_filters() {
                     ..WireMsg::assistant("")
                 },
                 parts: Vec::new(),
+                tool: None,
             },
         ),
         entry(
@@ -185,6 +188,7 @@ fn five_filters() {
             EntryBody::Msg {
                 wire: WireMsg::tool_result("call1", "file list"),
                 parts: Vec::new(),
+                tool: None,
             },
         ),
         assistant("a2", Some("t1"), "done"),
@@ -457,6 +461,7 @@ fn tool_calls_render_as_names() {
                     ..WireMsg::assistant("")
                 },
                 parts: Vec::new(),
+                tool: None,
             },
         ),
         entry(
@@ -465,6 +470,7 @@ fn tool_calls_render_as_names() {
             EntryBody::Msg {
                 wire: WireMsg::tool_result("call9", "fn main"),
                 parts: Vec::new(),
+                tool: None,
             },
         ),
         entry(

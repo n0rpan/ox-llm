@@ -1,4 +1,4 @@
-//! B1 acceptance tests: Compaction policy and summary shapes. Owner: task B1.
+//! B1 acceptance tests: Compaction policy and summary shapes.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -53,6 +53,7 @@ fn assistant_calls(text: Option<&str>, calls: &[(&str, &str)]) -> WireMsg {
                 args_raw: (*args).to_owned(),
             })
             .collect(),
+        provider_history: None,
         tool_call_id: None,
     }
 }
@@ -331,6 +332,7 @@ fn file_lists_accumulate() {
                     ],
                 ),
                 parts: vec![],
+                tool: None,
             },
         ),
         entry(

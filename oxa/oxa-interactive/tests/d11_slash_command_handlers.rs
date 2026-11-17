@@ -1,4 +1,4 @@
-//! D11 acceptance tests: Slash command handlers. Owner: task D11.
+//! D11 acceptance tests: Slash command handlers.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -398,6 +398,19 @@ fn omitted_commands_error() {
         assert_eq!(level, Level::Error);
         assert!(text.contains("unsupported_in_oxa"), "{name}: {text}");
     }
+    // #862: unsupported slash commands must describe the standalone commands truthfully.
+    for (line, expected) in [
+        ("/login", "oxa login chatgpt --experimental"),
+        ("/logout", "oxa logout chatgpt"),
+        ("/share", "oxa share key"),
+    ] {
+        let (_, text) = notice(expect_some(line, fx.run(line)));
+        assert!(text.contains(expected), "{line}: {text}");
+        assert!(!text.contains("oxa has no provider login"), "{line}: {text}");
+    }
+    let (_, share) = notice(expect_some("/share", fx.run("/share")));
+    assert!(share.contains("guest keys"), "{share}");
+    assert!(share.contains("transcript upload"), "{share}");
     // A hook command with the same name runs first (not reserved, as pi).
     let mut fx = Fx::new();
     fx.commands.push(CommandSpec {
@@ -435,4 +448,56 @@ fn busy_refuses_only_session_changes() {
         notice(dispatch_slash("/model qwen", &cx).unwrap()).0,
         Level::Warning
     );
+}
+
+/// #202: `/mode` without an argument opens the picker; `/mode <name> [--save]` sets the
+/// permission mode (and saves it); `/auto` sets auto; the table modes still work.
+#[test]
+fn mode_and_auto_set_the_permission_mode() {
+    use oxa_proto::{Mode, PermissionMode};
+    let fx = Fx::new();
+    assert!(matches!(
+        fx.run("/mode").unwrap(),
+        AppAction::Open(SelectorKind::Mode)
+    ));
+    for (line, want, saved) in [
+        ("/mode standard", PermissionMode::Standard, false),
+        ("/mode yolo --save", PermissionMode::Yolo, true),
+        ("/mode --save plan", PermissionMode::Plan, true),
+        ("/auto", PermissionMode::Auto, false),
+    ] {
+        match fx.run(line).unwrap() {
+            AppAction::SetPermissionMode { mode, save } => {
+                assert_eq!((mode, save), (want, saved), "{line}");
+            }
+            _ => panic!("{line}: not a permission-mode change"),
+        }
+    }
+    match fx.run("/mode ask").unwrap() {
+        AppAction::Many(actions) => assert!(matches!(
+            actions.as_slice(),
+            [
+                AppAction::SetPermissionMode {
+                    mode: PermissionMode::Standard,
+                    save: false
+                },
+                AppAction::Session(SessionCmd::SetMode(Mode::Ask))
+            ]
+        )),
+        _ => panic!("/mode ask: standard, then the ask table"),
+    }
+    for bad in ["/mode root", "/mode ask --save", "/mode --save", "/auto now"] {
+        assert_eq!(notice(fx.run(bad).unwrap()).0, Level::Error, "{bad}");
+    }
+}
+
+/// #202: the mode key cycles standard -> auto -> yolo -> standard; plan leaves to standard.
+#[test]
+fn the_mode_cycle_is_standard_auto_yolo() {
+    use oxa_proto::PermissionMode as P;
+    assert_eq!(P::Standard.next(), P::Auto);
+    assert_eq!(P::Auto.next(), P::Yolo);
+    assert_eq!(P::Yolo.next(), P::Standard);
+    assert_eq!(P::Plan.next(), P::Standard);
+    assert_eq!(P::DEFAULT, P::Auto);
 }

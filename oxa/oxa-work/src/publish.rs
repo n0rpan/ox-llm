@@ -1,36 +1,61 @@
 //! Explicit publishing of the accepted commit; existing queued PRs are never pushed.
-use super::{checked, git, state, tree, Outcome, Record, Result, Task};
+use super::{checked, state, tree, CheckpointObserver, Outcome, Record, Result, RunPolicy, Task};
 use state::Step;
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
     fs::File,
     path::{Path, PathBuf},
     process::Command,
 };
 
-fn context(repo: &Path, task: &Task) -> Result<(PathBuf, File, state::State)> {
-    let common = PathBuf::from(checked(git(
-        repo,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    ))?);
-    let path = common.join("oxa-work").join(format!("{}.json", task.id));
-    let lock = state::lock(&path.with_extension("lock"))?;
-    let value = state::read(&path)?;
+fn context(
+    task: &Task,
+    policy: &RunPolicy,
+    observer: &dyn CheckpointObserver,
+) -> Result<(state::Writer, File, state::State)> {
+    super::validate(task)?;
+    let path = policy.storage.join(format!("{}.json", task.id));
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .open(path.with_extension("lock"))
+        .map_err(|e| e.to_string())?;
+    lock.try_lock()
+        .map_err(|e| format!("task is already running: {e}"))?;
+    let value = state::load(&path)?;
     if value.task != *task {
         return Err("task specification changed".into());
     }
-    Ok((path, lock, value))
+    let mut writer = state::Writer::new(path, true);
+    writer.replay(&value, observer)?;
+    Ok((writer, lock, value))
 }
-fn gh(repo: &Path, lock: &File, args: &[&str]) -> Result<String> {
-    let mut command = Command::new("gh");
-    command.current_dir(repo).args(args);
+fn gh(binary: &Path, policy: &RunPolicy, repo: &Path, lock: &File, args: &[&str]) -> Result<String> {
+    let mut command = Command::new(binary);
+    super::isolate_git_environment(&mut command);
+    command
+        .env("PATH", &policy.host_path)
+        .env_remove("GH_REPO")
+        .env_remove("GH_HOST")
+        .current_dir(repo)
+        .args(args);
     command.stdin(lock.try_clone().map_err(|e| e.to_string())?);
-    super::checked_output(command.output().map_err(|e| e.to_string())?)
+    let output = command.output().map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err("GitHub publication request failed".into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().into())
 }
 fn json(text: &str) -> Result<serde_json::Value> {
     serde_json::from_str(text).map_err(|e| e.to_string())
 }
-fn pr_base(repo: &Path, task: &Task) -> Result<String> {
-    let reference = checked(git(repo, &["rev-parse", "--symbolic-full-name", &task.base]))?;
+fn pr_base(repo: &Path, task: &Task, policy: &RunPolicy) -> Result<String> {
+    let reference = checked(super::git(
+        policy,
+        repo,
+        &["rev-parse", "--symbolic-full-name", &task.base],
+    ))?;
     reference
         .strip_prefix("refs/heads/")
         .or_else(|| reference.strip_prefix("refs/remotes/origin/"))
@@ -40,32 +65,48 @@ fn pr_base(repo: &Path, task: &Task) -> Result<String> {
 }
 pub fn publish(
     repo: &Path,
+    binary: &Path,
     task: &Task,
-    offline: bool,
+    policy: &RunPolicy,
+    gh_binary: &Path,
+    observer: &dyn CheckpointObserver,
     confirm: &mut dyn FnMut(&str) -> Option<bool>,
 ) -> Result<Record> {
-    let (path, lock, mut value) = context(repo, task)?;
-    let accepted = value.acceptance_outcome.unwrap_or(value.record.outcome);
-    if !matches!(accepted, Outcome::Done | Outcome::Red) {
+    let (mut writer, lock, mut value) = context(task, policy, observer)?;
+    let accepted = value.record.acceptance_outcome.unwrap_or(value.record.outcome);
+    if !matches!(accepted, Outcome::Done | Outcome::NothingToDo) {
         return Ok(value.record);
     }
-    value.acceptance_outcome = Some(accepted);
-    state::save(&path, &mut value, Step::Publishing)?;
+    value.record.acceptance_outcome = Some(accepted);
+    writer.save(&mut value, Step::Publishing, observer)?;
+    let git = |repo: &Path, args: &[&str]| super::git(policy, repo, args);
+    let gh = |repo: &Path, lock: &File, args: &[&str]| gh(gh_binary, policy, repo, lock, args);
     let result = (|| -> Result<(String, bool)> {
-        if offline {
+        if policy.offline {
             return Err("publishing is unavailable in offline mode".into());
         }
         let tree = &value.record.worktree;
-        tree::validate(repo, tree, task)?;
-        if !checked(git(tree, &["status", "--porcelain"]))?.is_empty() {
+        tree::validate(policy, repo, tree, task)?;
+        if super::dirty_worktree(binary, tree, repo, policy, &lock)? {
             return Err("uncommitted work must be saved before publishing".into());
         }
         let head = checked(git(tree, &["rev-parse", "HEAD"]))?;
-        if value.record.head.as_deref() != Some(head.as_str()) {
+        if value.record.head_sha.as_deref() != Some(head.as_str()) {
             return Err("task branch changed after acceptance; use --rerun before publishing".into());
         }
-        let base = pr_base(tree, task)?;
-        let repository = json(&gh(tree, &lock, &["repo", "view", "--json", "nameWithOwner"])?)?;
+        let base = pr_base(tree, task, policy)?;
+        if task.branch == base {
+            return Err("task branch must differ from its base branch".into());
+        }
+        let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
+        if remote.lines().count() != 1 {
+            return Err("publishing requires one origin push URL".into());
+        }
+        let repository = json(&gh(
+            tree,
+            &lock,
+            &["repo", "view", &remote, "--json", "nameWithOwner"],
+        )?)?;
         let name = repository["nameWithOwner"]
             .as_str()
             .ok_or("repository name missing")?;
@@ -83,13 +124,38 @@ pub fn publish(
                 "--head",
                 &task.branch,
                 "--json",
-                "number,url,isDraft",
+                "number,url,isDraft,headRepositoryOwner",
             ],
         )?)?;
         let prs = prs.as_array().ok_or("invalid PR list")?;
         if prs.len() > 1 {
             return Err("multiple open PRs match the task branch".into());
         }
+        if prs
+            .first()
+            .is_some_and(|pr| pr["headRepositoryOwner"]["login"].as_str() != Some(owner))
+        {
+            return Err("PR head repository does not match origin".into());
+        }
+        if accepted == Outcome::NothingToDo
+            && prs.is_empty()
+            && value.record.head_sha == value.record.base_sha
+        {
+            return Err("nothing to publish".into());
+        }
+        if confirm(&format!(
+            "Push accepted commit {head} as {} to origin and create/update its PR in {name} (base {base})? Type yes to publish: ",
+            task.branch
+        )) != Some(true) {
+            return Err("publication requires confirmation through the controlling terminal".into());
+        }
+        if remote != checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?
+            || head != checked(git(tree, &["rev-parse", "HEAD"]))?
+        {
+            return Err("publication destination or task head changed during confirmation".into());
+        }
+        // Confirmation may remain open indefinitely: queue admission is checked
+        // only after it returns, immediately before the push.
         if let Some(pr) = prs.first() {
             let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
             let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}";
@@ -117,22 +183,29 @@ pub fn publish(
                 return Err("PR is in the merge queue; use a new task branch for follow-up work".into());
             }
         }
-        if confirm(&format!(
-            "Push accepted commit {head} as {} to origin and create/update its PR in {name} (base {base})? Type yes to publish: ",
-            task.branch
-        )) != Some(true) {
-            return Err("publication requires confirmation through the controlling terminal".into());
-        }
         let mut push = git(
             repo,
-            &["push", "origin", &format!("{head}:refs/heads/{}", task.branch)],
+            &[
+                "-c",
+                "protocol.https.allow=always",
+                "-c",
+                "protocol.ssh.allow=always",
+                "-c",
+                "protocol.file.allow=always",
+                "push",
+                "origin",
+                &format!("{head}:refs/heads/{}", task.branch),
+            ],
         );
         push.env("GIT_TERMINAL_PROMPT", "0")
             .stdin(lock.try_clone().map_err(|e| e.to_string())?);
-        super::checked_output(push.output().map_err(|e| e.to_string())?)?;
-        let draft = accepted == Outcome::Red;
-        let body = path.with_extension("pr-body.md");
-        let text = format!("Task `{}` executed by `oxa work`.\n\nAcceptance result: `{}`.\n\nThe runner retained the task worktree and saved its changes.\n", task.id, if draft { "red" } else { "done" });
+        let pushed = push.output().map_err(|e| e.to_string())?;
+        if !pushed.status.success() {
+            return Err("accepted commit push failed".into());
+        }
+        let draft = false;
+        let body = policy.storage.join(format!("{}.pr-body.md", task.id));
+        let text = format!("T2 — task `{}` executed by `oxa work`.\n\nWhat/why: explicitly requested task; review its changes against the base.\n\nChanges: accepted commit `{head}`; worktree retained.\n\nRemoves: inspect the diff before promotion; no deletion clearance is inferred.\n\nValidation: frozen local acceptance passed. CI: not yet qualified.\n", task.id);
         std::fs::write(&body, text).map_err(|e| e.to_string())?;
         let body_arg = body.to_str().ok_or("non-UTF8 PR body path")?;
         let result = if let Some(pr) = prs.first() {
@@ -140,7 +213,7 @@ pub fn publish(
             gh(
                 tree,
                 &lock,
-                &["pr", "edit", &number, "--repo", name, "--body-file", body_arg],
+                &["pr", "edit", &number, "--repo", name, "--base", &base],
             )?;
             let was_draft = pr["isDraft"].as_bool().ok_or("PR draft state missing")?;
             if was_draft != draft {
@@ -181,23 +254,23 @@ pub fn publish(
             value.record.draft = draft;
             value.record.outcome = accepted;
             value.record.detail.clear();
-            state::save(&path, &mut value, Step::Finished)?;
+            writer.save(&mut value, Step::Finished, observer)?;
         }
         Err(error) => {
             value.record.outcome = Outcome::Blocked;
             value.record.detail = format!("publishing: {error}");
-            state::save(&path, &mut value, Step::Publishing)?;
+            writer.save(&mut value, Step::Publishing, observer)?;
         }
     }
     Ok(value.record)
 }
 pub fn report_notes(
-    repo: &Path,
     task: &Task,
-    offline: bool,
+    policy: &RunPolicy,
+    observer: &dyn CheckpointObserver,
     reporter: &mut dyn FnMut(&super::ProblemNote, &File, bool) -> Result<super::ReportRecord>,
 ) -> Result<Record> {
-    let (path, lock, mut value) = context(repo, task)?;
+    let (mut writer, lock, mut value) = context(task, policy, observer)?;
     let prior_step = value.record.step;
     for index in 0..value.record.problem_notes.len() {
         if value
@@ -208,30 +281,31 @@ pub fn report_notes(
         {
             continue;
         }
-        state::save(&path, &mut value, Step::Reporting)?;
-        let report = reporter(&value.record.problem_notes[index], &lock, offline).unwrap_or_else(|detail| {
-            super::ReportRecord {
-                disposition: "failed".into(),
-                draft: PathBuf::new(),
-                url: None,
-                detail,
-            }
-        });
+        writer.save(&mut value, Step::Reporting, observer)?;
+        let report =
+            reporter(&value.record.problem_notes[index], &lock, policy.offline).unwrap_or_else(|detail| {
+                super::ReportRecord {
+                    disposition: "failed".into(),
+                    draft: PathBuf::new(),
+                    url: None,
+                    detail,
+                }
+            });
         if index < value.record.reports.len() {
             value.record.reports[index] = report;
         } else {
             value.record.reports.push(report);
         }
-        state::save(&path, &mut value, Step::Reporting)?;
+        writer.save(&mut value, Step::Reporting, observer)?;
     }
-    state::save(
-        &path,
+    writer.save(
         &mut value,
         if prior_step == Step::Publishing {
             Step::Publishing
         } else {
             Step::Finished
         },
+        observer,
     )?;
     Ok(value.record)
 }

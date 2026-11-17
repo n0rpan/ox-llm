@@ -1,4 +1,4 @@
-//! A2: engine info and tokenize. Owner: task A2. Signatures below are frozen; bodies are yours.
+//! A2: engine info and tokenize.
 use crate::{http_request, HttpRequest, Url};
 use oxa_proto::{codes, EngineCaps, EngineInfo, OxaError, Value, CANCEL_HINT, CANCEL_PATH};
 
@@ -40,11 +40,14 @@ pub fn parse_info(base_url: &str, models: &Value, status: &Value) -> Result<Engi
 ///   (D5), else `None`.
 /// * Capabilities (F4 / EG2): `model_limits[limits_for].capabilities`, published by the
 ///   controller BEFORE the model loads: `prefill_only` (bool), `snapshot_hint` (int ->
-///   `caps.snapshot_keep`), `hint_clear` (bool), `preserve_thinking` (bool -> `Some`), `park ==
+///   `caps.snapshot_keep`), `hint_clear` (bool), `thinking_budget` (local-only bool),
+///   `preserve_thinking` (bool -> `Some`), `park ==
 ///   "disk"` (`caps.park_disk_only`). When that row has no `capabilities` block, the loaded
 ///   engine's `/props` `oxe_hints` ([`fetch_info`] merges it into the controller's status):
 ///   `prefill_only`, `snapshot_keep`, `hint_clear`; `preserve_thinking` is then `None` and
-///   `park_disk_only` `false`. Neither = nothing advertised.
+///   `park_disk_only` `false`. The generation-policy capability `thinking_budget` is read
+///   from `/props` top level, not `oxe_hints` (hints must not change output). Neither =
+///   nothing advertised.
 /// * F14: a status without any context size whose `state` is `loading`, `starting` or
 ///   `stopping` (the controller answers so while it loads a model) is the retryable
 ///   `engine_busy`, not `engine_http`.
@@ -148,7 +151,9 @@ pub fn parse_info_for(
     let queue = first_u32(status, &["/queued_requests", "/active/queued_requests", "/queue"]).unwrap_or(0);
     let (prefill_only, mut caps) = capabilities(status, &limits_for);
     caps.remote = caps.remote || remote.is_some();
-    if caps.remote && oxa_proto::offline() {
+    // Untargeted discovery must expose the catalog so callers can resolve their selection.
+    // Session startup checks the resolved model, including when it uses the default.
+    if target.is_some() && caps.remote && oxa_proto::offline() {
         return Err(oxa_proto::offline_error(&format!("the cloud model {limits_for}")));
     }
     let (thinking, images) = modality(status, &limits_for);
@@ -215,12 +220,16 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
             snapshot_keep: count(c, "snapshot_hint"),
             hint_clear: flag(c, "hint_clear") || flag(c, "cache_hints"),
             preserve_thinking: c.get("preserve_thinking").and_then(Value::as_bool),
+            thinking_budget: flag(c, "thinking_budget") && !flag(c, "remote"),
             park_disk_only: c.get("park").and_then(Value::as_str) == Some("disk"),
             remote: flag(c, "remote"),
+            response_format: flag(c, "remote") && flag(c, "response_format"),
             remote_provider: match c.get("remote_provider").and_then(Value::as_str) {
                 Some("openrouter") => Some("openrouter"),
                 Some("anthropic") => Some("anthropic"),
                 Some("openai") => Some("openai"),
+                Some("chatgpt") => Some("chatgpt"),
+                Some("opencode") => Some("opencode"),
                 _ => None,
             },
             echo: flag(c, "echo"),
@@ -238,6 +247,7 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
                 snapshot_keep: count(h, "snapshot_keep"),
                 hint_clear: flag(h, "hint_clear"),
                 preserve_thinking: None,
+                thinking_budget: flag(status, "thinking_budget"),
                 park_disk_only: false,
                 cache_hints: flag(h, "hint_clear"),
                 prefill: flag(h, "prefill_only"),
@@ -610,9 +620,7 @@ pub(crate) fn http_error_with(status: u16, body: &[u8], retry_after: Option<u32>
             codes::BUDGET_EXHAUSTED,
             format!("the cloud gateway refused the request (budget_exceeded): {detail}"),
         )
-        .with_hint(
-            "raise cloud.daily_budget_usd in oxc, or wait for the next spend day; this is not retried",
-        );
+        .with_hint("wait for the next spend day; this is not retried");
     }
     if status == 503 {
         if let Some(code) = err
@@ -726,6 +734,11 @@ mod cloud_refusal_tests {
             e.message.contains("daily cloud budget is exhausted"),
             "{}",
             e.message
+        );
+        assert_eq!(
+            e.hint.as_deref(),
+            Some("wait for the next spend day; this is not retried"),
+            "shared normalization must not point native cloud users to a controller setting"
         );
         let plain = http_error_with(429, br#"{"error":{"message":"slow down"}}"#, None);
         assert_eq!(plain.code, codes::ENGINE_HTTP, "other 429s stay retryable");

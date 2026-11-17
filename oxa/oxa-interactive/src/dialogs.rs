@@ -1,4 +1,4 @@
-//! D10: the `Ui` implementation of the TUI and its dialogs. Owner: task D10. Signatures below are frozen; bodies are yours.
+//! D10: the `Ui` implementation of the TUI and its dialogs.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{extension-selector.ts,extension-input.ts,extension-editor.ts,trust-selector.ts,countdown-timer.ts}
 use crate::{Block, UiRequest, ViewModel};
 use oxa_config::Keymap;
@@ -196,6 +196,8 @@ pub struct DialogHost {
     clock: u64,
     /// Hardware cursor of the open text dialog as of the last `render`.
     cursor_at: Option<CursorPos>,
+    /// Edge consumed by the app, not by hooks. Queued permissions count only on opening.
+    permission_opened: bool,
 }
 
 impl DialogHost {
@@ -205,7 +207,12 @@ impl DialogHost {
             queue: VecDeque::new(),
             clock: 0,
             cursor_at: None,
+            permission_opened: false,
         }
+    }
+
+    pub(crate) fn take_permission_opened(&mut self) -> bool {
+        std::mem::take(&mut self.permission_opened)
     }
 
     /// Take a request: blocking ones open or queue a dialog; the others are applied to `vm`
@@ -518,12 +525,14 @@ impl DialogHost {
             dialog.reply.settle(None);
         }
         self.cursor_at = None;
+        self.permission_opened = false;
     }
 
     /// Open `dialog` now, or queue it behind the open one.
     fn push(&mut self, mut dialog: Dialog, now_ms: u64) {
         if self.open.is_none() {
             dialog.arm(now_ms);
+            self.permission_opened |= matches!(dialog.reply, Reply::Access(_));
             self.open = Some(dialog);
         } else {
             self.queue.push_back(dialog);
@@ -537,6 +546,7 @@ impl DialogHost {
         }
         if let Some(mut next) = self.queue.pop_front() {
             next.arm(self.clock);
+            self.permission_opened |= matches!(next.reply, Reply::Access(_));
             self.open = Some(next);
         }
         self.cursor_at = None;
@@ -890,5 +900,46 @@ impl Dialog {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+
+    #[test]
+    fn queued_permissions_notify_only_when_opened_once_each() {
+        let mut host = DialogHost::new();
+        let mut vm = ViewModel::default();
+        let (reply, _rx) = channel();
+        host.handle(
+            UiRequest::Confirm {
+                title: "Question".into(),
+                body: String::new(),
+                timeout_ms: None,
+                reply,
+            },
+            &mut vm,
+            0,
+        );
+        for _ in 0..2 {
+            let (reply, _rx) = channel();
+            host.handle(
+                UiRequest::AskAccess {
+                    access: Access::Write(std::path::PathBuf::from("/project/file")),
+                    reply,
+                },
+                &mut vm,
+                0,
+            );
+        }
+        assert!(!host.take_permission_opened(), "queued is not open");
+        host.key(&Key::press("escape"), &Keymap::defaults());
+        assert!(host.take_permission_opened());
+        assert!(!host.take_permission_opened(), "no repeat on redraw");
+        host.key(&Key::press("escape"), &Keymap::defaults());
+        assert!(host.take_permission_opened(), "next queued permission");
+        host.close_all();
+        assert!(!host.take_permission_opened());
     }
 }

@@ -1,4 +1,4 @@
-//! D7: model selector and scoped-models editor. Owner: task D7. Signatures below are frozen; bodies are yours.
+//! D7: model selector and scoped-models editor.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{model-selector.ts,scoped-models-selector.ts} and model-search.ts
 use crate::Outcome;
 use oxa_config::Keymap;
@@ -77,6 +77,18 @@ impl ModelSelector {
         selector
     }
 
+    /// Refresh an open picker without resetting the user's query, scope or highlighted id.
+    pub fn set_models(&mut self, models: Vec<ModelChoice>, current: &str, scoped: &[String]) {
+        let selected = self.list.selected().map(|item| item.value.clone());
+        self.models = models;
+        self.current = current.to_string();
+        self.scoped = scoped.to_vec();
+        self.rebuild();
+        if !selected.as_deref().is_some_and(|id| self.select_id(id)) {
+            self.select_current();
+        }
+    }
+
     /// `true` when the model was chosen with `app.models.save`: the caller also writes it as
     /// `defaultModel` (pi model-selector.ts `onSelectAsDefault`).
     pub fn saves_default(&self) -> bool {
@@ -115,17 +127,18 @@ impl ModelSelector {
 
     /// Move the selection onto the current model when it is shown; the top row otherwise.
     fn select_current(&mut self) {
+        self.select_id(&self.current.clone());
+    }
+
+    fn select_id(&mut self, id: &str) -> bool {
         for i in 0..self.list.len() {
             self.list.set_selected_index(i);
-            if self
-                .list
-                .selected()
-                .is_some_and(|item| item.value == self.current)
-            {
-                return;
+            if self.list.selected().is_some_and(|item| item.value == id) {
+                return true;
             }
         }
         self.list.set_selected_index(0);
+        false
     }
 
     pub fn key(&mut self, key: &Key, keymap: &Keymap) -> Outcome<String> {
@@ -264,6 +277,31 @@ impl ScopedModelsSelector {
         };
         selector.rebuild(0);
         selector
+    }
+
+    /// Refresh availability while retaining the open editor's order and unsaved toggles.
+    pub fn set_models(&mut self, models: Vec<ModelChoice>) {
+        let selected = self.list.selected().map(|item| item.value.clone());
+        for row in &mut self.rows {
+            row.endpoint = models
+                .iter()
+                .find(|m| m.id == row.id)
+                .map(|m| m.endpoint.clone())
+                .unwrap_or_default();
+        }
+        for model in models {
+            if !self.rows.iter().any(|row| row.id == model.id) {
+                self.rows.push(ScopedRow {
+                    id: model.id,
+                    endpoint: model.endpoint,
+                    enabled: false,
+                });
+            }
+        }
+        let cursor = selected
+            .and_then(|id| self.rows.iter().position(|row| row.id == id))
+            .unwrap_or(0);
+        self.rebuild(cursor);
     }
 
     /// Rows from `rows`, the cursor moved to `select`.

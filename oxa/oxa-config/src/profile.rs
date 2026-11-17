@@ -50,6 +50,12 @@ impl Settings {
         self.thinking_policy_setting().unwrap_or_default()
     }
 
+    /// Optional local `oxa.thinking.budget` in generated reasoning text tokens. No default cap.
+    pub fn thinking_budget(&self) -> Option<u64> {
+        self.get("oxa.thinking.budget")
+            .and_then(serde_json::Value::as_u64)
+    }
+
     /// A `null`-default bool that is on unless a layer sets it off.
     fn default_bool(&self, key: &str) -> bool {
         self.bool(key, true)
@@ -121,6 +127,31 @@ mod tests {
             .find(|d| d.key == ThinkingPolicy::SETTING)
             .unwrap();
         assert_eq!(pol.default, "null");
+    }
+
+    #[test]
+    fn optional_thinking_budget_has_no_default_and_keeps_zero() {
+        assert_eq!(
+            Settings::from_values(json!({}), json!({})).thinking_budget(),
+            None
+        );
+        for value in [json!(null), json!(0), json!(512), json!(u64::MAX)] {
+            let settings =
+                Settings::from_values(json!({"oxa":{"thinking":{"budget":value.clone()}}}), json!({}));
+            assert!(settings.diagnostics().is_empty(), "{:?}", settings.diagnostics());
+            assert_eq!(settings.thinking_budget(), value.as_u64());
+        }
+        let cleared = Settings::from_values(
+            json!({"oxa":{"thinking":{"budget":512}}}),
+            json!({"oxa":{"thinking":{"budget":null}}}),
+        );
+        assert!(cleared.diagnostics().is_empty());
+        assert_eq!(cleared.thinking_budget(), None);
+        for value in [json!(-1), json!(1.5), json!(true), json!("512")] {
+            let settings = Settings::from_values(json!({"oxa":{"thinking":{"budget":value}}}), json!({}));
+            assert!(!settings.diagnostics().is_empty());
+            assert_eq!(settings.thinking_budget(), None);
+        }
     }
 
     #[test]

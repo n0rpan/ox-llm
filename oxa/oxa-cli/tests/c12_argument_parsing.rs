@@ -1,4 +1,4 @@
-//! C12 acceptance tests: Argument parsing. Owner: task C12.
+//! C12 acceptance tests: Argument parsing.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -28,6 +28,67 @@ fn spec(name: &str, boolean: bool) -> FlagSpec {
         description: format!("{name} flag"),
         boolean,
         default: Value::Null,
+    }
+}
+
+/// Inbox delivery and the commands added on main must all remain subcommands.
+#[test]
+fn send_status_and_work_preserve_subcommand_arguments() {
+    let cases = [
+        (
+            ["send", "session-123", "follow up"],
+            Subcommand::Send(argv(&["session-123", "follow up"])),
+        ),
+        (
+            ["status", "session-123", "--json"],
+            Subcommand::Status(argv(&["session-123", "--json"])),
+        ),
+        (
+            ["work", "task.toml", "--offline"],
+            Subcommand::Work(argv(&["task.toml", "--offline"])),
+        ),
+    ];
+    for (words, expected) in cases {
+        let args = parse(&words);
+        assert_eq!(args.subcommand, Some(expected), "{words:?}");
+        assert!(args.messages.is_empty(), "not a model prompt: {words:?}");
+    }
+}
+
+/// A leading offline switch must not turn inbox delivery into a model prompt.
+#[test]
+fn offline_send_preserves_subcommand_arguments() {
+    for words in [
+        vec!["--offline", "send", "session-733", "follow up"],
+        vec![
+            "--offline",
+            "--offline",
+            "send",
+            "session-733",
+            "@literal --offline",
+        ],
+        vec!["--offline", "send", "session-733", "--offline"],
+        vec!["send", "session-733", "--offline"],
+        vec!["send", "session-733", "@literal"],
+    ] {
+        let args = parse(&words);
+        assert_eq!(args.offline, words[0] == "--offline", "{words:?}");
+        assert_eq!(
+            args.subcommand,
+            Some(Subcommand::Send(argv(&words[words.len() - 2..])))
+        );
+        assert!(args.messages.is_empty());
+        assert!(args.files.is_empty());
+    }
+    // Explicit prompts and the option terminator must still allow the word "send".
+    for words in [
+        vec!["--offline", "--", "send", "session-733", "follow up"],
+        vec!["--offline", "explain", "send"],
+        vec!["-p", "send"],
+    ] {
+        let args = parse(&words);
+        assert_eq!(args.subcommand, None, "{words:?}");
+        assert!(args.messages.iter().any(|word| word == "send"));
     }
 }
 
@@ -461,4 +522,60 @@ fn prompts_keep_order_and_default_is_empty() {
     assert_eq!(a.messages, ["first", "second"]);
     assert_eq!(a.files, ["f"]);
     assert_eq!(parse(&[]), Args::default());
+}
+
+/// Review of #314: the last permission flag wins, also when it is `workspace` or `ask`.
+#[test]
+fn last_permission_flag_wins_over_an_earlier_yolo() {
+    use oxa_proto::PermissionMode;
+    for m in ["ask", "workspace"] {
+        let a = parse(&["--yolo", "--permission-mode", m]);
+        assert_eq!(a.level, Some(PermissionMode::Standard), "{m}");
+    }
+    let a = parse(&["--permission-mode", "ask", "--yolo"]);
+    assert_eq!(a.level, Some(PermissionMode::Yolo));
+}
+
+#[test]
+fn continue_consumes_an_explicit_id_and_leaves_the_new_instruction() {
+    let args = parse(&["--continue=session-123", "next instruction"]);
+    assert!(args.continue_);
+    assert_eq!(args.continue_id.as_deref(), Some("session-123"));
+    assert_eq!(args.messages, vec!["next instruction"]);
+    // The spaced form is settled against the session store at dispatch.
+    let args = parse(&["--continue", "session-123", "next instruction"]);
+    assert!(args.continue_);
+    assert_eq!(args.continue_id, None);
+    assert_eq!(args.continue_word, Some(("session-123".to_string(), 0)));
+    assert_eq!(args.messages, vec!["next instruction"]);
+    for words in [
+        vec!["--continue=session-123", "--no-session"],
+        vec!["--continue=session-123", "--session", "other"],
+        vec!["--continue=../escape"],
+    ] {
+        assert_eq!(parse_err(&words).code, codes::USAGE);
+    }
+}
+
+#[test]
+fn max_time_accepts_fractional_seconds_and_rejects_invalid_durations() {
+    assert_eq!(
+        parse(&["--max-time", "0.25", "-p", "go"]).max_time,
+        Some(std::time::Duration::from_millis(250))
+    );
+    for value in ["0", "-1", "NaN", "inf", "1e100", "invalid"] {
+        assert_eq!(parse_err(&["--max-time", value]).code, codes::USAGE, "{value}");
+    }
+}
+
+#[test]
+fn max_tokens_requires_a_positive_integer() {
+    assert_eq!(parse(&["--max-tokens", "42", "-p", "go"]).max_tokens, Some(42));
+    assert_eq!(
+        parse(&["--max-tokens=18446744073709551615"]).max_tokens,
+        Some(u64::MAX)
+    );
+    for value in ["0", "-1", "NaN", "inf", "1.5", "18446744073709551616", "invalid"] {
+        assert_eq!(parse_err(&["--max-tokens", value]).code, codes::USAGE, "{value}");
+    }
 }

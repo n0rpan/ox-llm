@@ -148,7 +148,7 @@ fn unresolved_merge_can_be_continued_without_resetting_it() {
     assert!(!merge_head(&env, tree(&second)).exists());
 }
 #[test]
-fn completed_work_is_saved_and_not_replayed() {
+fn dirty_retained_worktree_is_blocked_without_dropping_edits() {
     let env = TestEnv::new();
     setup(&env, "[]");
     trust(&env);
@@ -160,13 +160,13 @@ fn completed_work_is_saved_and_not_replayed() {
         ],
     );
     assert_eq!(first["outcome"], "done", "{first}");
-    let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
-    assert_eq!(record["outcome"], "done", "{record}");
+    std::fs::write(tree(&first).join("notes.txt"), "new retained edits").unwrap();
+    let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json", "--rerun"], None);
+    assert_eq!(record["outcome"], "blocked", "{record}");
     assert!(requests.is_empty());
-    assert!(git(&env, tree(&record), &["status", "--porcelain"]).is_empty());
     assert_eq!(
         std::fs::read_to_string(tree(&record).join("notes.txt")).unwrap(),
-        "keep me"
+        "new retained edits"
     );
 }
 #[test]
@@ -251,5 +251,141 @@ fn resumed_old_merge_is_told_to_integrate_the_newly_captured_base() {
         &env,
         &project(&env),
         &["merge-base", "--is-ancestor", &new_base, "agent/test"],
+    );
+}
+
+#[test]
+fn failed_worker_and_unfinished_merge_keep_both_causes() {
+    let env = TestEnv::new();
+    diverge(&env, true);
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"missing-model","prompt":"Finish task"}]"#,
+    );
+    let record = run(&env, vec![]);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let detail = record["detail"].as_str().unwrap();
+    assert!(detail.contains("missing-model"), "{detail}");
+    assert!(detail.contains("merge remains in progress"), "{detail}");
+    assert_eq!(record["worker"]["outcome"], "failed", "{record}");
+}
+
+#[test]
+fn retained_task_alias_cannot_reuse_the_source_checkout() {
+    use std::os::unix::fs::symlink;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    git(&env, &project(&env), &["checkout", "-b", "agent/test"]);
+    let trees = env.work().join(".oxa-worktrees/project");
+    std::fs::create_dir_all(&trees).unwrap();
+    symlink(project(&env), trees.join("test")).unwrap();
+    let (record, requests) = run_observed(
+        &env,
+        vec![
+            ScriptTurn::tool(
+                "write",
+                "write",
+                r#"{"path":"source-escape","content":"escaped"}"#,
+            ),
+            ScriptTurn::text("done"),
+        ],
+        &["work", "../tasks.json"],
+        None,
+    );
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(requests.is_empty());
+    assert!(!project(&env).join("source-escape").exists());
+}
+
+#[test]
+fn automatic_merge_hooks_stay_inside_the_sandbox() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    diverge(&env, false);
+    let hook = env.write(
+        "work/project/.git/hooks/post-merge",
+        "#!/bin/sh\nprintf escaped > \"$HOME/continuation-hook-escape\" 2>/dev/null || true\nprintf ran > post-merge-ran\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert!(!env.home().join("continuation-hook-escape").exists(), "{record}");
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(tree(&record).join("post-merge-ran")).unwrap(),
+        "ran"
+    );
+    assert!(!project(&env).join("post-merge-ran").exists());
+}
+
+#[test]
+fn post_worker_merge_verification_does_not_run_clean_filters_on_the_host() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    trust(&env);
+    env.write("work/project/.gitattributes", "*.data filter=probe\n");
+    env.write("work/project/fixture.data", "before\n");
+    env.write("work/project/filter.sh", "cat\n");
+    git(&env, &project(&env), &["add", "."]);
+    git(&env, &project(&env), &["commit", "-m", "filter fixture"]);
+    git(
+        &env,
+        &project(&env),
+        &["config", "filter.probe.clean", "sh filter.sh"],
+    );
+    git(&env, &project(&env), &["config", "filter.probe.smudge", "cat"]);
+    git(&env, &project(&env), &["config", "filter.probe.required", "true"]);
+    let record = run(&env, vec![
+        ScriptTurn::tool("filter", "write", &serde_json::json!({"path":"filter.sh", "content":"printf escaped > \"$HOME/continuation-filter-escape\" 2>/dev/null || true\ncat\n"}).to_string()),
+        ScriptTurn::tool("payload", "write", r#"{"path":"fixture.data","content":"after\n"}"#),
+        ScriptTurn::text("done"),
+    ]);
+    assert!(
+        !env.home().join("continuation-filter-escape").exists(),
+        "{record}"
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+}
+
+#[test]
+fn large_conflicted_merge_has_a_bounded_worker_handoff() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let names: Vec<_> = (0..300)
+        .map(|i| format!("conflict-{i:03}-{}-file.txt", "x".repeat(80)))
+        .collect();
+    for name in &names {
+        env.write(&format!("work/project/{name}"), "original\n");
+    }
+    git(&env, &project(&env), &["add", "."]);
+    git(&env, &project(&env), &["commit", "-m", "many shared paths"]);
+    git(&env, &project(&env), &["checkout", "-b", "agent/test"]);
+    for name in &names {
+        env.write(&format!("work/project/{name}"), "task\n");
+    }
+    git(&env, &project(&env), &["add", "."]);
+    git(&env, &project(&env), &["commit", "-m", "task versions"]);
+    git(&env, &project(&env), &["checkout", "main"]);
+    for name in &names {
+        env.write(&format!("work/project/{name}"), "base\n");
+    }
+    git(&env, &project(&env), &["add", "."]);
+    git(&env, &project(&env), &["commit", "-m", "base versions"]);
+    let (record, requests) = run_observed(
+        &env,
+        vec![ScriptTurn::text("blocked")],
+        &["work", "../tasks.json"],
+        None,
+    );
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let prompt = requests
+        .iter()
+        .flat_map(|r| &r.messages)
+        .filter_map(|m| m.content.as_deref())
+        .find(|text| text.contains("There is a merge in progress"))
+        .expect("merge handoff reached worker");
+    assert!(
+        prompt.len() <= 16 * 1024,
+        "merge handoff retained {} bytes",
+        prompt.len()
     );
 }

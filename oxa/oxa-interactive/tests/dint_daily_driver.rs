@@ -872,6 +872,20 @@ fn dropped_image_path_is_attached() {
     assert!(sent.contains("[image"), "a placeholder on the wire: {sent}");
 }
 
+/// A paste while a list selector (no text field) is open is not dropped silently: a notice says so.
+#[test]
+fn paste_into_thinking_selector_shows_a_notice() {
+    let world = World::new(vec![ScriptTurn::text("OK.")]);
+    let steps = vec![
+        step("selector", &[], typed("/thinking", &["enter"])),
+        step("paste", &["off"], vec![InputEvent::Paste("hello".to_string())]),
+        step("notice", &["Paste ignored"], vec![key("escape")]),
+        step("exit", &[], typed("/exit", &["enter"])),
+    ];
+    let (code, _l, _t, _f) = run_app(&world, false, (90, 30), steps);
+    assert_eq!(code, 0);
+}
+
 // ---------------------------------------------------------------------------------------------
 // X5: controls follow the session; quit is a stop signal
 // ---------------------------------------------------------------------------------------------
@@ -894,6 +908,7 @@ fn controls_are_rebound_to_the_new_session() {
             ..FakeOpts::default()
         },
     );
+    let server = world.server.clone();
     let steps = vec![
         step("open", &["oxa v"], typed("first", &["enter"])),
         // A final content delta does not mean the worker is idle. The queued,
@@ -918,14 +933,20 @@ fn controls_are_rebound_to_the_new_session() {
             "running",
             &["slow question", "Working..."],
             typed("steer me", &["enter"]),
-        ),
+        )
+        .until(move || {
+            server
+                .requests()
+                .iter()
+                .any(|r| r.max_tokens > 0 && last_user(r) == "slow question")
+        }),
         // The message waits in the new session's queue, shown above the editor. Escape aborts
         // the run and brings the queued message back into the editor.
         step("steered", &["Steering: steer me"], vec![key("escape")]),
         // The aborted reply is a Shown block (never sent); the text is in the editor again.
         step(
             "aborted",
-            &["the prompt stays in the conversation", "steer me"],
+            &["partial reply dropped; your prompt stays", "steer me"],
             vec![key("ctrl+c")],
         ),
         step("cleared", &[], vec![key("ctrl+d")]),
@@ -1118,7 +1139,7 @@ fn aborted_stream_is_shown_not_a_reply() {
         step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
         step(
             "aborted",
-            &["aborted: cancelled; the prompt stays"],
+            &["aborted: partial reply dropped; your prompt stays"],
             typed("/session", &["enter"]),
         ),
         // The Shown block is not counted as an assistant message.
@@ -1151,14 +1172,50 @@ fn aborted_stream_is_shown_not_a_reply() {
     );
 }
 
-/// A stream cut by the engine mid-reply: `Shown { why: cut }`, shown with the warning.
+/// After Escape, one Ctrl+C on the empty editor arms the exit and the hint bar says so; a second
+/// Ctrl+C exits. Drives the real loop, so the `armed` wiring into the hint bar is covered.
+#[test]
+fn ctrl_c_after_abort_shows_the_exit_hint() {
+    let world = World::with(
+        vec![ScriptTurn {
+            chunk: 6,
+            ..ScriptTurn::text("PARTIAL words that arrived")
+        }],
+        FakeOpts {
+            done_gap_ms: 20_000,
+            ..FakeOpts::default()
+        },
+    );
+    let steps = vec![
+        step("open", &[], typed("go", &["enter"])),
+        step("streaming", &["PARTIAL words that arrived"], vec![key("escape")]),
+        step(
+            "aborted",
+            &["partial reply dropped; your prompt stays"],
+            vec![key("ctrl+c")],
+        ),
+        step("armed", &["ctrl+c exit"], vec![key("ctrl+c")]),
+    ];
+    // The hint bar belongs to the oxa skin; the other tests pin the plain one.
+    let mut opts = world.opts(false);
+    opts.env = vec![("OXA_SKIN".to_string(), "oxa".to_string())];
+    let session = Session::open(world.deps(), Open::New).expect("open the session");
+    let (code, _last, _term, _first) = run_with(&world, session, opts, (90, 30), steps);
+    assert_eq!(code, 0);
+}
+
+/// A stream cut by the engine mid-reply: `Shown { why: cut }`, shown with the warning, then
+/// the request is resent and the replayed reply completes the run (#456).
 #[test]
 fn cut_stream_is_shown_not_a_reply() {
-    let world = World::new(vec![ScriptTurn {
-        chunk: 8,
-        fault: Some(Fault::DropAt { bytes: 600 }),
-        ..ScriptTurn::text(&"CUTTEXT words keep coming and coming. ".repeat(40))
-    }]);
+    let world = World::new(vec![
+        ScriptTurn {
+            chunk: 8,
+            fault: Some(Fault::DropAt { bytes: 600 }),
+            ..ScriptTurn::text(&"CUTTEXT words keep coming and coming. ".repeat(40))
+        },
+        ScriptTurn::text("REPLAYED answer"),
+    ]);
     let steps = vec![
         step("open", &["oxa v"], typed("go", &["enter"])),
         step(
@@ -1166,26 +1223,23 @@ fn cut_stream_is_shown_not_a_reply() {
             &[
                 "CUTTEXT",
                 "cut: not sent to the model",
-                "The reply did not finish",
+                "the reply stream broke",
+                "REPLAYED answer",
             ],
             typed("/session", &["enter"]),
         ),
         step(
             "counted",
-            &["Messages: user 1, assistant 0, tool calls 0"],
+            &["Messages: user 1, assistant 1, tool calls 0"],
             vec![key("ctrl+d")],
         ),
     ];
-    let (code, last, _term, _first) = run_app(&world, false, (90, 40), steps);
+    let (code, _last, _term, _first) = run_app(&world, false, (90, 40), steps);
     assert_eq!(code, 0);
-    match last_entry(&world, &last) {
-        oxa_proto::EntryBody::Shown { why, .. } => assert_eq!(why, "cut"),
-        other => panic!("the core stored a Shown entry at the leaf, got {other:?}"),
-    }
     assert_eq!(
         world.requests().iter().filter(|r| r.max_tokens > 0).count(),
-        1,
-        "a cut reply is never resent"
+        2,
+        "the cut reply is resent once"
     );
 }
 
@@ -1318,8 +1372,25 @@ fn trust_question_before_the_session() {
         )],
     );
     assert_eq!(
-        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated),
+        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated)
+            .expect("trust dialog remains connected"),
         Some(TrustChoice::NoTrust)
+    );
+    // Terminal loss is distinct from dismissal and never yields a trust choice.
+    let mut closed = ScriptTerm::new(
+        100,
+        20,
+        vec![step(
+            "question",
+            &["Project trust"],
+            vec![InputEvent::TerminalClosed],
+        )],
+    );
+    assert_eq!(
+        ask_trust_on(&mut closed, &keymap, &theme, "/work/proj", &gated)
+            .unwrap_err()
+            .code,
+        oxa_proto::codes::TERMINAL_CLOSED
     );
     // Ctrl+C leaves it unanswered: untrusted for this run, asked again next time.
     let mut term = ScriptTerm::new(
@@ -1328,7 +1399,8 @@ fn trust_question_before_the_session() {
         vec![step("question", &["Project trust"], vec![key("ctrl+c")])],
     );
     assert_eq!(
-        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated),
+        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated)
+            .expect("trust dialog remains connected"),
         None
     );
 }

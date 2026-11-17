@@ -1,10 +1,11 @@
-"""The `gate` job in checks.yml covers every job and every classifier output; caches save only on main.
+"""The required gate covers every job/output; its caches save only on main, lane caches stay isolated.
 
 Parsed line by line (no YAML library) so it runs with a bare `python3 -I`.
 """
 import importlib.util
 from pathlib import Path
 import re
+import tomllib
 import unittest
 
 WORKFLOWS = Path(__file__).resolve().parents[3] / '.github' / 'workflows'
@@ -25,6 +26,38 @@ def job_block(text, name):
     return re.search(rf'^  {re.escape(name)}:\s*\n((?:(?:    .*|\s*)\n)*)', body + '\n', re.M).group(1)
 
 
+def lane_cache_problems(text):
+    """Owner-authorized lane caches cannot write the required workflows' main keys."""
+    found = []
+    block = job_block(text, 'test')
+    actions = re.findall(r'uses: ([^@\s]+)@([^\s]+)', text)
+    if any(not name.startswith('actions/') or not re.fullmatch('[a-f0-9]{40}', sha)
+           for name, sha in actions):
+        found.append('lane actions must be GitHub-owned and SHA-pinned')
+    condition = (
+        "success() && github.event_name != 'merge_group' && github.ref != 'refs/heads/main' && "
+        "(startsWith(github.ref, 'refs/heads/agent/') || startsWith(github.ref, 'refs/heads/codex/') || "
+        "startsWith(github.ref, 'refs/heads/air/') || startsWith(github.ref, 'refs/heads/runner/')) && "
+        "steps.cache.outputs.cache-hit != 'true'"
+    )
+    steps = re.findall(r'(?m)^      - uses: actions/cache/(restore|save)@[a-f0-9]{40}[^\n]*\n'
+                       r'((?:(?:        .*|\s*)\n)*)', block + '\n')
+    if sorted(kind for kind, _ in steps) != ['restore', 'save']:
+        found.append('expected one explicit cache restore/save pair in lane test job')
+    paths = ('          path: |\n'
+             '            ${{ env.CARGO_HOME }}/registry\n'
+             '            ${{ env.CARGO_HOME }}/git\n'
+             '            ${{ env.CARGO_TARGET_DIR }}\n')
+    for kind, step in steps:
+        if paths not in step or '          key: lane-${{ steps.rust-key.outputs.key }}' not in step:
+            found.append('lane cache paths/key must be explicit and lane-namespaced')
+        if kind == 'save' and f'        if: {condition}\n' not in step:
+            found.append('lane cache writes need success, a lane branch, and no main/queue access')
+        if kind == 'restore' and '          restore-keys: lane-${{ steps.rust-key.outputs.prefix }}' not in step:
+            found.append('lane cache fallback must stay in its namespace')
+    return found
+
+
 class Gate(unittest.TestCase):
     def setUp(self):
         self.checks = (WORKFLOWS / 'checks.yml').read_text()
@@ -34,6 +67,18 @@ class Gate(unittest.TestCase):
         needs = set(re.search(r'^    needs: \[(.*)\]', block, re.M).group(1).replace(' ', '').split(','))
         self.assertIn('if: always()', block)
         self.assertEqual(needs, set(jobs(self.checks)) - set(UNGATED))
+
+    def test_merge_group_always_selects_complete_oxa_workspace(self):
+        build = job_block(self.checks, 'build')
+        self.assertIn("oxa: ${{ github.event_name == 'merge_group' || needs.changes.outputs.oxa == 'true' }}", build)
+        reusable = (WORKFLOWS / 'build.yml').read_text()
+        archive = job_block(reusable, 'oxa-test-build')
+        shards = job_block(reusable, 'oxa-test-shards')
+        self.assertIn('if: inputs.heavy && inputs.oxa', archive)
+        self.assertIn('if: inputs.heavy && inputs.oxa', shards)
+        self.assertIn('cargo nextest archive --profile ci --cargo-profile ci --locked --workspace', archive)
+        self.assertIn('--partition hash:${{ matrix.shard }}/2', shards)
+        self.assertNotIn('changed_paths', archive + shards)
 
     def test_gate_checks_every_classifier_output(self):
         outputs = set(re.findall(r'^      ([a-z]+): \$\{\{ steps\.paths\.outputs\.\1 \}\}',
@@ -48,15 +93,105 @@ class Gate(unittest.TestCase):
         for name in ('changes', 'scans'):
             self.assertNotRegex(job_block(self.checks, name), r'(?m)^    if:', name)
 
+    def test_gateway_runs_isolated_native_tests_as_a_workspace_member(self):
+        root = WORKFLOWS.parents[1]
+        block = job_block(self.checks, 'gateway')
+        manifests = re.findall(r'--manifest-path (\S+)', block)
+        self.assertTrue(manifests)
+        self.assertEqual(set(manifests), {'oxa/Cargo.toml'})
+        self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features', block)
+        self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features -p oxa-engine', block)
+        self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxa-cli --test in_process_cloud', block)
+        self.assertIn('bwrap --unshare-user --unshare-net --cap-drop ALL', block)
+        self.assertIn('env -i ', block)
+        self.assertIn('sudo chown 65534:65534 "$gateway_owner_fixture"', block)
+        self.assertIn('OXC_SECRET_OWNER_PATH="$gateway_owner_fixture"', block)
+        self.assertNotIn('unittest discover', block)
+        self.assertNotIn('OXC_POLICY_CONTRACT', block)
+        workspace = tomllib.loads((root / 'oxa/Cargo.toml').read_text())['workspace']
+        self.assertIn('oxc-gateway', workspace['members'])
+        package = tomllib.loads((root / 'oxa/oxc-gateway/Cargo.toml').read_text())
+        self.assertNotIn('workspace', package)
+        self.assertFalse((root / 'oxa/oxc-gateway/Cargo.lock').exists())
+
     def test_caches_restore_only_and_save_only_on_main(self):
         for path in sorted(WORKFLOWS.glob('*.y*ml')):
             text = path.read_text()
             self.assertNotRegex(text, r'actions/cache@', path.name)
             for match in re.finditer(r'actions/cache/save@.*\n(?:\s+#.*\n)?\s+if: (.*)', text):
-                self.assertIn("github.ref == 'refs/heads/main'", match.group(1), path.name)
-                self.assertIn("github.event_name != 'merge_group'", match.group(1), path.name)
+                if path.name == 'lane.yml':
+                    self.assertFalse(lane_cache_problems(text), lane_cache_problems(text))
+                else:
+                    self.assertIn("github.ref == 'refs/heads/main'", match.group(1), path.name)
+                    self.assertIn("github.event_name != 'merge_group'", match.group(1), path.name)
             self.assertEqual(len(re.findall(r'actions/cache/save@', text)),
                              len(re.findall(r'actions/cache/restore@', text)), path.name)
+
+
+    def test_lane_cache_cannot_bypass_required_main_cache_policy(self):
+        text = (WORKFLOWS / 'lane.yml').read_text()
+        self.assertFalse(lane_cache_problems(text))
+        for changed in (
+            text.replace("github.ref != 'refs/heads/main'", "true"),
+            text.replace("github.event_name != 'merge_group'", "true"),
+            text.replace("if: success() &&", "if: always() &&"),
+            text.replace("startsWith(github.ref, 'refs/heads/agent/')", "true"),
+            text.replace('key: lane-${{', 'key: rust-${{'),
+            text.replace('restore-keys: lane-${{', 'restore-keys: rust-${{'),
+            text.replace('${{ env.CARGO_HOME }}/registry', '~/.config'),
+            text.replace('actions/cache/save@', 'other/cache/save@'),
+        ):
+            self.assertTrue(lane_cache_problems(changed))
+
+
+
+class LabShards(unittest.TestCase):
+    def setUp(self):
+        self.checks = (WORKFLOWS / 'checks.yml').read_text()
+
+    def test_three_shards_and_an_aggregate_with_the_old_name(self):
+        shards = job_block(self.checks, 'lab-shards')
+        self.assertRegex(shards, r'(?m)^        shard: \[1, 2, 3\]$')
+        self.assertIn('name: lab tests shard ${{ matrix.shard }}', shards)
+        # ci_test_shard.py numbers shards from 0; the check names count from 1
+        self.assertIn('LAB_TEST_SHARD="$((${{ matrix.shard }} - 1))/3"', shards)
+        self.assertIn('fail-fast: false', shards)
+        lab = job_block(self.checks, 'lab')
+        self.assertIn('name: lab tests, CLI, receipt scrub (x86_64)', lab)
+        self.assertRegex(lab, r'(?m)^    needs: \[changes, lab-shards\]$')
+        self.assertRegex(lab, r"(?m)^    if: always\(\) && needs\.changes\.outputs\.lab == 'true'")
+        self.assertIn("test '${{ needs.lab-shards.result }}' = success", lab)
+
+    def test_non_unit_steps_run_once(self):
+        shards, lab = job_block(self.checks, 'lab-shards'), job_block(self.checks, 'lab')
+        for step in ('CLI help (isolated HOME)', 'Report skipped tests'):
+            self.assertEqual((shards + lab).count(f'name: {step}'), 1, step)
+        self.assertIn('name: Report skipped tests', lab)
+        self.assertRegex(shards, r'(?m)CLI help.*\n        if: matrix\.shard == 1$')
+        self.assertRegex(shards, r"actions/cache/save@.*\n(?:\s+#.*\n)?\s+if: .*matrix\.shard == 1")
+
+
+class EngineNextest(unittest.TestCase):
+    def setUp(self):
+        self.engine = job_block((WORKFLOWS / 'build.yml').read_text(), 'engine')
+        self.config = (WORKFLOWS.parents[1] / 'engine' / '.config' / 'nextest.toml').read_text()
+
+    def test_engine_job_runs_nextest_doctests_and_counts(self):
+        self.assertIn('tools/ci/install_nextest.sh', self.engine)
+        self.assertIn('cargo nextest run --release --locked --no-fail-fast --workspace --exclude qwen4exp',
+                      self.engine)
+        self.assertIn('cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp --doc',
+                      self.engine)
+        self.assertIn('tools/ci/engine_test_count.py', self.engine)
+        self.assertNotRegex(self.engine, r'cargo test --release --locked --no-fail-fast --workspace --exclude qwen4exp\s*$')
+
+    def test_wall_clock_binaries_run_alone(self):
+        self.assertRegex(self.config, r'(?m)^\[test-groups\.wall-clock\]\nmax-threads = 1$')
+        override = re.search(r"\[\[profile\.default\.overrides\]\]\nfilter = '(.*)'\ntest-group = 'wall-clock'\n"
+                             r"threads-required = 'num-test-threads'", self.config)
+        self.assertIsNotNone(override)
+        for binary in ('binary_id(sched)', 'binary_id(server)'):
+            self.assertIn(binary, override.group(1))
 
 
 if __name__ == '__main__':

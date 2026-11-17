@@ -1,4 +1,4 @@
-//! A12: key and input-event types and the terminal input parser. Owner: task A12. Signatures below are frozen; bodies are yours.
+//! A12: key and input-event types and the terminal input parser.
 // ported from pi packages/tui/src/keys.ts and stdin-buffer.ts
 use oxa_proto::KeyId;
 
@@ -91,6 +91,8 @@ pub struct Mouse {
 /// Everything the terminal can send.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
+    /// The terminal hung up, or stdin reached EOF/a permanent read or poll error.
+    TerminalClosed,
     Key(Key),
     /// A complete bracketed paste (markers removed, `\r\n` and `\r` normalised to `\n`).
     Paste(String),

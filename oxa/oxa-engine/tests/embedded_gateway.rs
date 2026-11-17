@@ -1,7 +1,5 @@
 //! Socket-free Engine contracts for #289's in-process adapter.
-use oxa_engine::{
-    build_body_for, EmbeddedEngine, EmbeddedGateway, Flow, GatewayContext, GatewayDiscovery, SseEvent,
-};
+use oxa_engine::{EmbeddedEngine, EmbeddedGateway, Flow, GatewayContext, GatewayDiscovery, GatewayEvent};
 use oxa_proto::{
     codes, CancelToken, ChatRequest, Engine, Finish, FrozenPrefix, Hints, OxaError, StreamEvent,
     ThinkingLevel, TurnKind, WireMsg,
@@ -15,13 +13,14 @@ static POLICY: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct Capture {
     discovery: usize,
-    bodies: Vec<Vec<u8>>,
+    bodies: Vec<Vec<WireMsg>>,
+    identity: Vec<(usize, usize, String, u32, ThinkingLevel)>,
     contexts: Vec<(String, String, String)>,
     stopped: bool,
 }
 struct Script {
     capture: Arc<Mutex<Capture>>,
-    events: Vec<SseEvent>,
+    events: Vec<GatewayEvent>,
     error: Option<&'static str>,
 }
 impl EmbeddedGateway for Script {
@@ -37,14 +36,21 @@ impl EmbeddedGateway for Script {
     }
     fn chat(
         &self,
-        body: &[u8],
+        request: &ChatRequest<'_>,
         context: GatewayContext<'_>,
         _cancel: &CancelToken,
-        on: &mut dyn FnMut(SseEvent) -> Flow,
+        on: &mut dyn FnMut(GatewayEvent) -> Flow,
     ) -> Result<(), OxaError> {
         {
             let mut capture = self.capture.lock().unwrap();
-            capture.bodies.push(body.to_vec());
+            capture.bodies.push(request.messages.to_vec());
+            capture.identity.push((
+                request.prefix as *const _ as usize,
+                request.messages.as_ptr() as usize,
+                request.model.into(),
+                request.max_tokens,
+                request.effective_level(),
+            ));
             capture.contexts.push((
                 context.origin.to_string(),
                 context.session.to_string(),
@@ -62,7 +68,7 @@ impl EmbeddedGateway for Script {
         })
     }
 }
-fn engine(events: Vec<SseEvent>, error: Option<&'static str>) -> (EmbeddedEngine, Arc<Mutex<Capture>>) {
+fn engine(events: Vec<GatewayEvent>, error: Option<&'static str>) -> (EmbeddedEngine, Arc<Mutex<Capture>>) {
     let capture = Arc::new(Mutex::new(Capture::default()));
     let gateway = Script {
         capture: capture.clone(),
@@ -71,15 +77,15 @@ fn engine(events: Vec<SseEvent>, error: Option<&'static str>) -> (EmbeddedEngine
     };
     (EmbeddedEngine::new(Arc::new(gateway)), capture)
 }
-fn data(value: Value) -> SseEvent {
-    SseEvent::Data(value.to_string())
+fn data(value: Value) -> GatewayEvent {
+    GatewayEvent::Chunk(value)
 }
-fn complete() -> Vec<SseEvent> {
+fn complete() -> Vec<GatewayEvent> {
     vec![
         data(json!({"choices":[{"delta":{"content":"answer"}}]})),
         data(json!({"choices":[{"finish_reason":"stop","delta":{}}],
             "usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}})),
-        SseEvent::Done,
+        GatewayEvent::Done,
     ]
 }
 fn prefix() -> FrozenPrefix {
@@ -91,13 +97,9 @@ fn prefix() -> FrozenPrefix {
 }
 fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg]) -> ChatRequest<'a> {
     ChatRequest {
-        prefix,
-        messages,
-        model: "cloud-model",
         max_tokens: 64,
         thinking: true,
         preserve_thinking: true,
-        sampling: None,
         hints: Hints {
             session: "synthetic-session",
             idem_key: "synthetic-request-id",
@@ -105,11 +107,12 @@ fn request<'a>(prefix: &'a FrozenPrefix, messages: &'a [WireMsg]) -> ChatRequest
             background: false,
             snapshot_keep: true,
         },
+        ..ChatRequest::new(prefix, messages, "cloud-model")
     }
 }
 
 #[test]
-fn discovery_and_chat_reuse_the_existing_cloud_wire_contract() {
+fn discovery_and_chat_borrow_the_same_typed_request() {
     let _policy = POLICY.lock().unwrap();
     let (engine, capture) = engine(complete(), None);
     let info = engine.info(None).unwrap();
@@ -123,8 +126,6 @@ fn discovery_and_chat_reuse_the_existing_cloud_wire_contract() {
     let prefix = prefix();
     let messages = [WireMsg::user("hello")];
     let request = request(&prefix, &messages);
-    let mut expected = Vec::new();
-    build_body_for(&request, true, &mut expected);
     let mut events = Vec::new();
     let turn = engine
         .chat(&request, &CancelToken::new(), &mut |e| events.push(e))
@@ -137,7 +138,17 @@ fn discovery_and_chat_reuse_the_existing_cloud_wire_contract() {
     assert_eq!(turn.finish, Finish::Stop);
     assert_eq!(events, vec![StreamEvent::Text("answer".into())]);
     let capture = capture.lock().unwrap();
-    assert_eq!(capture.bodies, vec![expected]);
+    assert_eq!(capture.bodies, vec![messages.to_vec()]);
+    assert_eq!(
+        capture.identity,
+        vec![(
+            &prefix as *const _ as usize,
+            messages.as_ptr() as usize,
+            "cloud-model".into(),
+            64,
+            ThinkingLevel::Medium
+        )]
+    );
     assert_eq!(
         capture.contexts,
         vec![(
@@ -159,7 +170,7 @@ fn tool_calls_keep_raw_arguments_and_replay_with_the_tool_result() {
         data(json!({"choices":[{"delta":{"tool_calls":[{"index":0,
             "function":{"arguments":"\"sample\" }"}}]},"finish_reason":"tool_calls"}],
             "usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}})),
-        SseEvent::Done,
+        GatewayEvent::Done,
     ];
     let (engine, capture) = engine(events, None);
     let prefix = prefix();
@@ -175,13 +186,10 @@ fn tool_calls_keep_raw_arguments_and_replay_with_the_tool_result() {
         .chat(&request(&prefix, &messages), &CancelToken::new(), &mut |_| {})
         .unwrap();
     let capture = capture.lock().unwrap();
-    let replay: Value = serde_json::from_slice(&capture.bodies[1]).unwrap();
-    assert_eq!(
-        replay["messages"][2]["tool_calls"][0]["function"]["arguments"],
-        "{ \"name\": \"sample\" }"
-    );
-    assert_eq!(replay["messages"][3]["tool_call_id"], "call-1");
-    assert_eq!(replay["messages"][3]["content"], "found");
+    let replay = &capture.bodies[1];
+    assert_eq!(replay[1].tool_calls[0].args_raw, "{ \"name\": \"sample\" }");
+    assert_eq!(replay[2].tool_call_id.as_deref(), Some("call-1"));
+    assert_eq!(replay[2].content.as_deref(), Some("found"));
 }
 
 #[test]
@@ -191,17 +199,17 @@ fn incomplete_or_malformed_streams_never_return_an_assistant_turn() {
     for events in [
         vec![],
         complete()[..2].to_vec(),
-        vec![SseEvent::Done],
-        vec![SseEvent::Data("invalid JSON".into()), SseEvent::Done],
+        vec![GatewayEvent::Done],
+        vec![GatewayEvent::Chunk(json!("invalid object")), GatewayEvent::Done],
         vec![
             data(json!({"choices":[{"finish_reason":"stop"}]})),
-            SseEvent::Done,
+            GatewayEvent::Done,
         ],
         vec![
             data(json!({"usage":{"prompt_tokens":1,"completion_tokens":1}})),
-            SseEvent::Done,
+            GatewayEvent::Done,
         ],
-        [complete(), vec![SseEvent::Done]].concat(),
+        [complete(), vec![GatewayEvent::Done]].concat(),
     ] {
         let (engine, _) = engine(events, None);
         let error = engine
@@ -246,7 +254,7 @@ fn gateway_refusals_are_preserved_before_data_and_cut_after_data() {
         vec![
             data(json!({"error":{
         "code":"budget_exceeded","message":"synthetic daily limit"}})),
-            SseEvent::Done,
+            GatewayEvent::Done,
         ],
         None,
     );
@@ -287,24 +295,63 @@ fn cancellation_stops_delivery_and_cannot_commit_a_partial_reply() {
 }
 
 #[test]
-fn cancellation_during_the_final_buffer_flush_never_returns_a_turn() {
+fn cancellation_during_the_final_buffer_flush_keeps_the_settled_turn() {
     let _policy = POLICY.lock().unwrap();
     let prefix = prefix();
     let events = vec![
         data(json!({"choices":[{"delta":{"content":"<thi"}}]})),
         data(json!({"choices":[{"finish_reason":"stop","delta":{}}],
             "usage":{"prompt_tokens":1,"completion_tokens":1}})),
-        SseEvent::Done,
+        GatewayEvent::Done,
     ];
     let (engine, _) = engine(events, None);
     let cancel = CancelToken::new();
     let mut delivered = Vec::new();
-    let result = engine.chat(&request(&prefix, &[]), &cancel, &mut |event| {
-        delivered.push(event);
-        cancel.cancel();
-    });
+    let turn = engine
+        .chat(&request(&prefix, &[]), &cancel, &mut |event| {
+            delivered.push(event);
+            cancel.cancel();
+        })
+        .expect("the reply was already settled at [DONE]");
     assert_eq!(delivered, vec![StreamEvent::Text("<thi".into())]);
-    assert_eq!(result.unwrap_err().code, codes::ABORTED);
+    assert_eq!(turn.msg.content.as_deref(), Some("<thi"));
+}
+
+/// A gateway that settles the reply and only then sees the user's cancel.
+struct CancelAfterDone;
+impl EmbeddedGateway for CancelAfterDone {
+    fn discovery(&self) -> Result<GatewayDiscovery, OxaError> {
+        Script {
+            capture: Arc::default(),
+            events: Vec::new(),
+            error: None,
+        }
+        .discovery()
+    }
+    fn chat(
+        &self,
+        _request: &ChatRequest<'_>,
+        _context: GatewayContext<'_>,
+        cancel: &CancelToken,
+        on: &mut dyn FnMut(GatewayEvent) -> Flow,
+    ) -> Result<(), OxaError> {
+        for event in complete() {
+            on(event);
+        }
+        cancel.cancel();
+        Ok(())
+    }
+}
+
+#[test]
+fn cancel_after_done_keeps_the_settled_reply() {
+    let _policy = POLICY.lock().unwrap();
+    let prefix = prefix();
+    let engine = EmbeddedEngine::new(Arc::new(CancelAfterDone));
+    let turn = engine
+        .chat(&request(&prefix, &[]), &CancelToken::new(), &mut |_| {})
+        .expect("a reply finished and settled before the cancel is returned");
+    assert_eq!(turn.msg.content.as_deref(), Some("answer"));
 }
 
 #[test]
@@ -349,5 +396,29 @@ fn missing_idempotency_keys_are_generated_once_for_the_gateway_call() {
     assert_eq!(
         engine.count_tokens("text").unwrap_err().code,
         codes::UNSUPPORTED_IN_OXA
+    );
+}
+
+/// A malformed chunk after visible reply data is a cut reply that must not be replayed.
+#[test]
+fn malformed_chunk_after_data_is_marked_cut() {
+    let _policy = POLICY.lock().unwrap();
+    let prefix = prefix();
+    let (engine, _) = engine(
+        vec![
+            data(json!({"choices":[{"delta":{"content":"partial"}}]})),
+            GatewayEvent::Chunk(json!("invalid object")),
+            GatewayEvent::Done,
+        ],
+        None,
+    );
+    let error = engine
+        .chat(&request(&prefix, &[]), &CancelToken::new(), &mut |_| {})
+        .unwrap_err();
+    assert_eq!(error.code, codes::STREAM_BROKEN);
+    assert!(
+        error.message.starts_with(oxa_proto::CUT_BY_REFUSAL),
+        "{}",
+        error.message
     );
 }

@@ -1,4 +1,4 @@
-//! F8 acceptance tests: RPC extension UI and Rust client. Owner: task F8.
+//! F8 acceptance tests: RPC extension UI and Rust client.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -466,7 +466,11 @@ fn client_error_response_is_err() {
         .request(json!({"type": "get_state"}), 20_000)
         .expect("get_state answers");
     assert_eq!(ok["success"], true);
-    assert_eq!(client.close().expect("close"), 0);
+    assert_eq!(
+        client.close().expect("close"),
+        1,
+        "a rejected command remains a failed outcome"
+    );
 }
 
 /// notify, setStatus, setWidget, setTitle

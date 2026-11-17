@@ -1,4 +1,4 @@
-//! D1 acceptance tests: Main loop and regular mode. Owner: task D1.
+//! D1 acceptance tests: Main loop and regular mode.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -61,9 +61,18 @@ fn session(env: &TestEnv) -> Session {
 
 /// A session on the scripted engine with these turns.
 fn session_with(env: &TestEnv, turns: Vec<oxa_fake::ScriptTurn>) -> Session {
+    session_open(env, turns, Arc::new(MemStore::new()), Open::Ephemeral)
+}
+
+fn session_open(
+    env: &TestEnv,
+    turns: Vec<oxa_fake::ScriptTurn>,
+    store: Arc<dyn SessionStore>,
+    open: Open,
+) -> Session {
     let deps = Deps {
         engine: Arc::new(ScriptedEngine::new(turns)) as Arc<dyn Engine>,
-        store: Arc::new(MemStore::new()) as Arc<dyn SessionStore>,
+        store,
         tools: Vec::new(),
         hooks: Vec::new(),
         policy: Box::new(AllowAll),
@@ -79,7 +88,7 @@ fn session_with(env: &TestEnv, turns: Vec<oxa_fake::ScriptTurn>) -> Session {
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     };
-    Session::open(deps, Open::Ephemeral).expect("open the test session")
+    Session::open(deps, open).expect("open the test session")
 }
 
 fn interactive_opts(env: &TestEnv) -> InteractiveOpts {
@@ -200,6 +209,79 @@ fn conversation() -> Vec<AgentEvent> {
 
 // ---------------------------------------------------------------------------------------------
 // Acceptance
+
+/// A dirty frame must not sit behind the 250ms idle input wait (#791). Check the
+/// actual loop's requested waits rather than a machine-dependent wall-clock budget.
+#[test]
+fn first_prompt_renders_without_idle_wait_then_sleeps_when_clean() {
+    struct StartupTerminal {
+        term: TestTerminal,
+        waits: Vec<u64>,
+    }
+    impl oxa_tui::Terminal for StartupTerminal {
+        fn write(&mut self, bytes: &[u8]) {
+            self.term.write(bytes);
+        }
+        fn flush(&mut self) {
+            self.term.flush();
+        }
+        fn size(&self) -> (u16, u16) {
+            self.term.size()
+        }
+        fn caps(&self) -> TermCaps {
+            self.term.caps()
+        }
+        fn set_mode(&mut self, mode: oxa_tui::TermMode, on: bool) {
+            self.term.set_mode(mode, on);
+        }
+        fn suspend(&mut self) {
+            self.term.suspend();
+        }
+        fn resume(&mut self) {
+            self.term.resume();
+        }
+        fn poll(&mut self, ms: u64) -> Vec<InputEvent> {
+            self.waits.push(ms);
+            match self.waits.len() {
+                1 => Vec::new(), // No key or capability reply to wake startup.
+                2 => {
+                    let output = String::from_utf8_lossy(&self.term.out);
+                    assert!(output.contains("READY"), "prompt drawn before idle wait");
+                    vec![key("ctrl+d")]
+                }
+                _ => panic!("the empty editor should exit on Ctrl+D"),
+            }
+        }
+    }
+
+    for fullscreen in [false, true] {
+        let env = TestEnv::new();
+        let session = session(&env);
+        let mut opts = interactive_opts(&env);
+        opts.fullscreen = fullscreen;
+        let mut term = StartupTerminal {
+            term: TestTerminal::new(120, 36),
+            waits: Vec::new(),
+        };
+        let (cmd_tx, _cmd_rx) = mpsc::channel();
+        let (_msg_tx, msg_rx) = mpsc::channel();
+        let (_ui_tx, ui_rx) = mpsc::channel();
+        assert_eq!(
+            run_loop(
+                &mut term,
+                &mut opts,
+                session.handle(),
+                cmd_tx,
+                msg_rx,
+                ui_rx,
+                ViewModel::default(),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(term.waits, [0, 250], "fullscreen={fullscreen}");
+    }
+}
 
 /// snapshot
 #[test]
@@ -383,7 +465,10 @@ fn enter_steers_alt_enter_follows_up() {
         "Enter steers while a run is active"
     );
     assert_eq!(follow_up, vec!["y".to_string()], "Alt+Enter queues a follow-up");
-    assert!(d.cmds.is_empty(), "nothing is sent as a new prompt while running");
+    assert!(
+        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
+        "steering and follow-up share one bound wake, never a new prompt"
+    );
 }
 
 /// editor refilled
@@ -407,7 +492,10 @@ fn escape_aborts_and_restores_queue() {
         "the queued message is back in the editor and resubmitted"
     );
     assert!(follow_up.is_empty());
-    assert!(d.cmds.is_empty());
+    assert!(
+        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
+        "resubmitting restored input retains one consumer on its original handle"
+    );
 }
 
 /// ! and !!
@@ -465,7 +553,8 @@ fn reduce(events: &[AgentEvent]) -> ViewModel {
 }
 
 /// A stream cut after the first bytes: the core stores `Shown { why: cut }` with the partial
-/// text and sends NO `message_end`. The UI must end with that Shown block, not a normal reply.
+/// text, sends NO `message_end` for it and resends the request (#456). The UI shows the cut
+/// block, then the replayed reply as the one assistant reply.
 #[test]
 fn cut_stream_becomes_shown_block_from_the_real_event_sequence() {
     let env = TestEnv::new();
@@ -474,12 +563,21 @@ fn cut_stream_becomes_shown_block_from_the_real_event_sequence() {
         fault: Some(oxa_fake::Fault::DropAt { bytes: 12 }),
         ..oxa_fake::ScriptTurn::text("half a sentence that never ends")
     };
-    let events = real_run(&env, vec![turn], "go");
-    // The premise: the core's sequence has the Shown entry and no assistant message_end.
-    assert!(
-        !events.iter().any(|e| matches!(e, AgentEvent::MessageEnd { message } if message.msg.role == oxa_proto::Role::Assistant)),
-        "the core sends no message_end for a cut reply"
+    let events = real_run(
+        &env,
+        vec![turn, oxa_fake::ScriptTurn::text("the whole answer")],
+        "go",
     );
+    let ends: Vec<&str> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::MessageEnd { message } if message.msg.role == oxa_proto::Role::Assistant => {
+                message.msg.content.as_deref()
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ends, vec!["the whole answer"], "only the replay ends as a reply");
     let stored = events.iter().find_map(|e| match e {
         AgentEvent::EntryAppended { entry } => match &entry.body {
             EntryBody::Shown { text, why } => Some((text.clone(), *why)),
@@ -492,26 +590,33 @@ fn cut_stream_becomes_shown_block_from_the_real_event_sequence() {
 
     let vm = reduce(&events);
     assert_eq!(vm.status.activity, Activity::Idle);
-    assert!(
-        !vm.blocks.iter().any(|b| matches!(b, Block::Assistant { .. })),
-        "the cut reply is not shown as an ordinary assistant reply: {:?}",
+    let shown: Vec<_> = vm
+        .blocks
+        .iter()
+        .filter_map(|b| match b {
+            Block::Shown { text, why } => Some((text.clone(), why.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown.len(), 1, "{:?}", vm.blocks);
+    assert_eq!(shown[0].0, text, "the block shows what the core stored");
+    assert!(!text.is_empty() && "half a sentence that never ends".starts_with(text.as_str()));
+    assert_eq!(shown[0].1, "cut");
+    let assistants: Vec<_> = vm
+        .blocks
+        .iter()
+        .filter(|b| matches!(b, Block::Assistant { .. }))
+        .collect();
+    assert_eq!(
+        assistants.len(),
+        1,
+        "the cut partial is not an assistant reply: {:?}",
         vm.blocks
     );
-    match vm.blocks.last() {
-        Some(Block::Shown { text: shown, why }) => {
-            assert_eq!(shown, &text, "the block shows what the core stored");
-            assert!(!shown.is_empty() && "half a sentence that never ends".starts_with(shown.as_str()));
-            assert_eq!(why, "cut");
-        }
-        other => panic!("expected a Shown block, got {other:?}"),
-    }
-    // The resumed view (built from the stored entries) is the same as the live one.
-    assert_eq!(
+    assert!(
+        matches!(vm.blocks.last(), Some(Block::Assistant { .. })),
+        "{:?}",
         vm.blocks
-            .iter()
-            .filter(|b| matches!(b, Block::Shown { .. }))
-            .count(),
-        1
     );
 }
 
@@ -702,6 +807,7 @@ fn blocks_from_entries_attach_results_to_calls() {
             body: EntryBody::Msg {
                 wire: WireMsg::user("list files"),
                 parts: vec![Part::Text("list files".into())],
+                tool: None,
             },
         },
         Entry {
@@ -718,9 +824,11 @@ fn blocks_from_entries_attach_results_to_calls() {
                         name: "bash".into(),
                         args_raw: "{\"command\":\"ls\"}".into(),
                     }],
+                    provider_history: None,
                     tool_call_id: None,
                 },
                 parts: Vec::new(),
+                tool: None,
             },
         },
         Entry {
@@ -730,6 +838,7 @@ fn blocks_from_entries_attach_results_to_calls() {
             body: EntryBody::Msg {
                 wire: WireMsg::tool_result("call_1", "a\nb"),
                 parts: Vec::new(),
+                tool: None,
             },
         },
         Entry {
@@ -750,6 +859,60 @@ fn blocks_from_entries_attach_results_to_calls() {
             assert_eq!(t.name, "bash");
             assert_eq!(t.state, ToolState::Done);
             assert_eq!(t.result.as_ref().map(|r| r.text.as_str()), Some("a\nb"));
+        }
+        other => panic!("expected the tool block, got {other:?}"),
+    }
+}
+
+#[test]
+fn blocks_from_entries_keep_error_flag_and_ui_of_results() {
+    let ui = serde_json::json!({ "exit": 2 });
+    let entry = |id: &str, parent: Option<&str>, body| Entry {
+        id: id.into(),
+        parent: parent.map(Into::into),
+        ts_ms: 0,
+        body,
+    };
+    let call = WireMsg {
+        role: oxa_proto::Role::Assistant,
+        content: None,
+        reasoning: None,
+        tool_calls: vec![oxa_proto::ToolCall {
+            id: "call_1".into(),
+            name: "bash".into(),
+            args_raw: "{}".into(),
+        }],
+        provider_history: None,
+        tool_call_id: None,
+    };
+    let entries = vec![
+        entry(
+            "00000001",
+            None,
+            EntryBody::Msg {
+                wire: call,
+                parts: Vec::new(),
+                tool: None,
+            },
+        ),
+        entry(
+            "00000002",
+            Some("00000001"),
+            EntryBody::Msg {
+                wire: WireMsg::tool_result("call_1", "boom"),
+                parts: Vec::new(),
+                tool: Some(oxa_proto::ToolMeta {
+                    is_error: true,
+                    ui: ui.clone(),
+                }),
+            },
+        ),
+    ];
+    match &blocks_from_entries(&entries)[1] {
+        Block::Tool(t) => {
+            let r = t.result.as_ref().expect("result");
+            assert!(r.is_error, "a failed call stays failed after resume");
+            assert_eq!(r.ui, ui);
         }
         other => panic!("expected the tool block, got {other:?}"),
     }
@@ -837,4 +1000,422 @@ fn quit_with_ctrl_c_twice_on_empty_editor() {
     );
     assert_eq!(d.code, 0);
     assert!(d.cmds.is_empty());
+}
+
+/// Issue #344: Alt+Enter on an idle prompt inserts a newline instead of sending.
+#[test]
+fn alt_enter_idle_inserts_newline() {
+    let env = TestEnv::new();
+    let s = session(&env);
+    let d = drive(
+        &s,
+        &env,
+        vec![
+            vec![ch('a'), key("alt+enter"), ch('b'), key("enter")],
+            vec![key("ctrl+d")],
+        ],
+        vec![],
+    );
+    let prompts: Vec<String> = d
+        .cmds
+        .iter()
+        .filter_map(|c| match c {
+            SessionCmd::Prompt { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts, vec!["a\nb".to_string()]);
+}
+
+/// Deliver worker/UI messages between polls, like a run finishing after focus-out.
+struct NotificationTerminal {
+    term: TestTerminal,
+    worker: Sender<WorkerMsg>,
+    ui: Sender<UiRequest>,
+    steps: std::collections::VecDeque<(Vec<WorkerMsg>, Vec<UiRequest>)>,
+}
+
+impl oxa_tui::Terminal for NotificationTerminal {
+    fn write(&mut self, bytes: &[u8]) {
+        self.term.write(bytes);
+    }
+    fn flush(&mut self) {
+        self.term.flush();
+    }
+    fn size(&self) -> (u16, u16) {
+        self.term.size()
+    }
+    fn caps(&self) -> TermCaps {
+        self.term.caps()
+    }
+    fn set_mode(&mut self, mode: oxa_tui::TermMode, on: bool) {
+        self.term.set_mode(mode, on);
+    }
+    fn suspend(&mut self) {
+        self.term.suspend();
+    }
+    fn resume(&mut self) {
+        self.term.resume();
+    }
+    fn poll(&mut self, ms: u64) -> Vec<InputEvent> {
+        if let Some((events, requests)) = self.steps.pop_front() {
+            for event in events {
+                self.worker.send(event).unwrap();
+            }
+            for request in requests {
+                self.ui.send(request).unwrap();
+            }
+        }
+        self.term.poll(ms)
+    }
+}
+
+fn notification_output(
+    policy: Option<&str>,
+    fullscreen: bool,
+    focus: Vec<InputEvent>,
+) -> (String, TestTerminal) {
+    let env = TestEnv::new();
+    let session = session(&env);
+    let mut opts = interactive_opts(&env);
+    opts.fullscreen = fullscreen;
+    if let Some(policy) = policy {
+        opts.settings = Settings::from_values(
+            serde_json::json!({"ui": {"notify": policy}}),
+            serde_json::json!({}),
+        );
+    }
+    let (cmd_tx, _cmd_rx) = mpsc::channel();
+    let (msg_tx, msg_rx) = mpsc::channel();
+    let (ui_tx, ui_rx) = mpsc::channel();
+    let (reply, _answer) = mpsc::channel();
+    let mut term = TestTerminal::new(80, 24);
+    term.push_input(focus);
+    term.push_input(vec![]);
+    term.push_input(vec![]);
+    term.push_input(vec![key("escape")]);
+    term.push_input(vec![key("ctrl+d")]);
+    let mut term = NotificationTerminal {
+        term,
+        worker: msg_tx,
+        ui: ui_tx,
+        steps: [
+            (vec![WorkerMsg::Event(AgentEvent::AgentStart)], vec![]),
+            (
+                vec![
+                    WorkerMsg::Event(AgentEvent::AgentSettled { aborted: false }),
+                    WorkerMsg::Done(Ok(())),
+                ],
+                vec![],
+            ),
+            (
+                vec![],
+                vec![UiRequest::AskAccess {
+                    access: Access::Write(env.work().join("file")),
+                    reply,
+                }],
+            ),
+        ]
+        .into(),
+    };
+    assert_eq!(
+        run_loop(
+            &mut term,
+            &mut opts,
+            session.handle(),
+            cmd_tx,
+            msg_rx,
+            ui_rx,
+            ViewModel::default()
+        )
+        .unwrap(),
+        0
+    );
+    (term.term.take_output(), term.term)
+}
+
+#[test]
+fn terminal_notifications_follow_focus_and_policy_in_both_layouts() {
+    for fullscreen in [false, true] {
+        for (policy, focus, expected) in [
+            (None, vec![], 0),
+            (None, vec![InputEvent::FocusLost], 2),
+            (None, vec![InputEvent::FocusLost, InputEvent::FocusGained], 0),
+            (Some("off"), vec![InputEvent::FocusLost], 0),
+            (Some("always"), vec![], 2),
+        ] {
+            let (out, term) = notification_output(policy, fullscreen, focus);
+            assert_eq!(
+                out.matches("\x1b]9;").count(),
+                expected,
+                "policy={policy:?}, fullscreen={fullscreen}"
+            );
+            if expected != 0 {
+                assert!(out.contains("\x1b]9;oxa: Run finished\x07"));
+                assert!(out.contains("\x1b]9;oxa: Permission required\x07"));
+            }
+            if fullscreen {
+                assert_eq!(term.modes.first(), Some(&(oxa_tui::TermMode::AltScreen, true)));
+            }
+            assert!(term.modes.contains(&(oxa_tui::TermMode::FocusReporting, true)));
+            assert!(!term.mode_on(oxa_tui::TermMode::FocusReporting));
+        }
+    }
+}
+
+#[test]
+fn terminal_notifications_only_on_new_edges_not_focus_out_or_done() {
+    let env = TestEnv::new();
+    let session = session(&env);
+    let mut opts = interactive_opts(&env);
+    let (cmd_tx, _cmd_rx) = mpsc::channel();
+    let (msg_tx, msg_rx) = mpsc::channel();
+    let (ui_tx, ui_rx) = mpsc::channel();
+    let mut term = TestTerminal::new(80, 24);
+    // Settle while focused, then lose focus: the old completion must not replay.
+    term.push_input(vec![]);
+    term.push_input(vec![]);
+    term.push_input(vec![InputEvent::FocusLost]);
+    term.push_input(vec![]);
+    term.push_input(vec![]);
+    term.push_input(vec![key("ctrl+d")]);
+    let mut term = NotificationTerminal {
+        term,
+        worker: msg_tx,
+        ui: ui_tx,
+        steps: [
+            (
+                vec![WorkerMsg::Event(AgentEvent::AgentSettled { aborted: false })],
+                vec![],
+            ),
+            (vec![], vec![]),
+            (vec![WorkerMsg::Done(Ok(()))], vec![]),
+            (
+                vec![
+                    WorkerMsg::Event(AgentEvent::AgentSettled { aborted: true }),
+                    WorkerMsg::Done(Ok(())),
+                ],
+                vec![],
+            ),
+        ]
+        .into(),
+    };
+    assert_eq!(
+        run_loop(
+            &mut term,
+            &mut opts,
+            session.handle(),
+            cmd_tx,
+            msg_rx,
+            ui_rx,
+            ViewModel::default()
+        )
+        .unwrap(),
+        0
+    );
+    let out = term.term.take_output();
+    assert_eq!(out.matches("\x1b]9;").count(), 1);
+    // The OSC terminator alone is not a bell on terminals which ignore OSC 9.
+    assert!(out.contains("\x1b]9;oxa: Run finished\x07\x07"));
+}
+
+/// No keyboard input until both the startup backlog and a live file notification ran.
+struct InboxTerminal {
+    term: TestTerminal,
+    agent: std::path::PathBuf,
+    id: String,
+    sent_live: bool,
+    start: std::time::Instant,
+}
+
+impl oxa_tui::Terminal for InboxTerminal {
+    fn write(&mut self, bytes: &[u8]) {
+        self.term.out.extend_from_slice(bytes);
+    }
+    fn flush(&mut self) {}
+    fn size(&self) -> (u16, u16) {
+        (100, 30)
+    }
+    fn caps(&self) -> TermCaps {
+        TermCaps::BASIC
+    }
+    fn set_mode(&mut self, mode: oxa_tui::TermMode, on: bool) {
+        self.term.modes.push((mode, on));
+    }
+    fn suspend(&mut self) {}
+    fn resume(&mut self) {}
+    fn poll(&mut self, _: u64) -> Vec<InputEvent> {
+        let out = String::from_utf8_lossy(&self.term.out);
+        if out.contains("inbox-second-reply") || self.start.elapsed() > std::time::Duration::from_secs(3) {
+            return vec![key("ctrl+d")];
+        }
+        if !self.sent_live && out.contains("inbox-first-reply") {
+            self.sent_live = true;
+            oxa_session::send_inbox(&self.agent, &self.id, "live follow-up").unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        Vec::new()
+    }
+}
+
+#[test]
+fn inbox_wakes_the_real_tui_worker_when_idle() {
+    let env = TestEnv::new();
+    let s = session_with(
+        &env,
+        vec![
+            oxa_fake::ScriptTurn::text("inbox-first-reply"),
+            oxa_fake::ScriptTurn::text("inbox-second-reply"),
+        ],
+    );
+    let id = s.state().session_id;
+    let mut opts = interactive_opts(&env);
+    oxa_session::send_inbox(&opts.dirs.agent_dir, &id, "startup follow-up").unwrap();
+    let mut term = InboxTerminal {
+        term: TestTerminal::new(100, 30),
+        agent: opts.dirs.agent_dir.clone(),
+        id,
+        sent_live: false,
+        start: std::time::Instant::now(),
+    };
+    let (code, _) = oxa_interactive::run_session(&mut term, s, &mut opts);
+    assert_eq!(code, 0);
+    let out = String::from_utf8_lossy(&term.term.out);
+    assert!(
+        out.contains("inbox-first-reply"),
+        "startup inbox was not delivered: {out}"
+    );
+    assert!(
+        out.contains("inbox-second-reply"),
+        "live inbox did not wake idle TUI: {out}"
+    );
+}
+
+/// Keep the UI on the old session until its watcher has admitted a message.
+struct StaleInboxTerminal {
+    cmds: Receiver<SessionCmd>,
+    destination: String,
+    reopen: Option<(Sender<WorkerMsg>, oxa_core::Handle)>,
+}
+
+impl oxa_tui::Terminal for StaleInboxTerminal {
+    fn write(&mut self, _: &[u8]) {}
+    fn flush(&mut self) {}
+    fn size(&self) -> (u16, u16) {
+        (80, 24)
+    }
+    fn caps(&self) -> TermCaps {
+        TermCaps::BASIC
+    }
+    fn set_mode(&mut self, _: oxa_tui::TermMode, _: bool) {}
+    fn suspend(&mut self) {}
+    fn resume(&mut self) {}
+    fn poll(&mut self, _: u64) -> Vec<InputEvent> {
+        assert!(matches!(
+            self.cmds.recv_timeout(std::time::Duration::from_secs(3)),
+            Ok(SessionCmd::Inbox { session_id }) if session_id == self.destination
+        ));
+        if let Some((messages, handle)) = self.reopen.take() {
+            // Reopen creates a fresh Session/Shared, unlike core Session::switch.
+            messages.send(WorkerMsg::Rebind(handle)).unwrap();
+            messages
+                .send(WorkerMsg::Session(oxa_interactive::SessionInfo {
+                    id: self.destination.clone(),
+                    ..Default::default()
+                }))
+                .unwrap();
+            Vec::new()
+        } else {
+            vec![key("ctrl+d")]
+        }
+    }
+}
+
+#[test]
+fn stale_tui_inbox_callback_keeps_messages_with_original_session_after_clone_or_fork() {
+    for fork in [false, true] {
+        let env = TestEnv::new();
+        let mut s = session_with(&env, vec![oxa_fake::ScriptTurn::text("initial reply")]);
+        s.prompt(
+            "initial turn".into(),
+            Vec::new(),
+            &mut oxa_proto::VecSink::default(),
+            &mut oxa_proto::HeadlessUi::default(),
+        )
+        .unwrap();
+        let original = s.inner().sref.clone();
+        let handle = s.handle();
+        if fork {
+            let user = s
+                .inner()
+                .tree
+                .entries()
+                .iter()
+                .find(
+                    |e| matches!(&e.body, EntryBody::Msg { wire, .. } if wire.role == oxa_proto::Role::User),
+                )
+                .unwrap()
+                .id
+                .clone();
+            s.fork(&user).unwrap();
+        } else {
+            s.clone_session().unwrap();
+        }
+        assert_ne!(s.state().session_id, original.id);
+
+        // The worker has changed identity but the UI has not yet processed its Session
+        // notification. Its old watcher still owns this backlog and the shared handle.
+        let mut opts = interactive_opts(&env);
+        oxa_session::send_inbox(&opts.dirs.agent_dir, &original.id, "old destination only").unwrap();
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel();
+        let (_ui_tx, ui_rx) = mpsc::channel();
+        msg_tx
+            .send(WorkerMsg::Session(oxa_interactive::SessionInfo {
+                id: original.id.clone(),
+                ..Default::default()
+            }))
+            .unwrap();
+        let mut resumed = session_open(
+            &env,
+            vec![oxa_fake::ScriptTurn::text("resumed reply")],
+            s.inner().store.clone(),
+            Open::Resume(original.clone()),
+        );
+        let resumed_handle = resumed.handle();
+        let mut term = StaleInboxTerminal {
+            cmds: cmd_rx,
+            destination: original.id.clone(),
+            reopen: Some((msg_tx, resumed_handle.clone())),
+        };
+        assert_eq!(
+            run_loop(
+                &mut term,
+                &mut opts,
+                handle.clone(),
+                cmd_tx,
+                msg_rx,
+                ui_rx,
+                ViewModel::default()
+            )
+            .unwrap(),
+            0
+        );
+        assert!(
+            handle.queued().1.is_empty(),
+            "old inbox leaked across session transition"
+        );
+        assert_eq!(resumed_handle.queued().1, ["old destination only"]);
+        resumed
+            .run_queued(
+                &mut oxa_proto::VecSink::default(),
+                &mut oxa_proto::HeadlessUi::default(),
+            )
+            .unwrap();
+        assert!(resumed_handle.queued().1.is_empty());
+        assert!(resumed.inner().tree.entries().iter().any(|entry| {
+            matches!(&entry.body, EntryBody::Msg { wire, .. }
+                if wire.role == oxa_proto::Role::User && wire.content.as_deref() == Some("old destination only"))
+        }));
+    }
 }

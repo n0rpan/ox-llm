@@ -1,4 +1,4 @@
-//! E4: the `Host` implementation handed to hook sets. Owner: task E4. Signatures below are frozen; bodies are yours.
+//! E4: the `Host` implementation handed to hook sets.
 //!
 //! Timing (the rule on `HostAction`), as implemented here:
 //! * `IsIdle`, `Abort` and queue appends (`Steer` / `FollowUp`) are served from `Shared` at once.
@@ -833,9 +833,29 @@ fn apply(
             Ok(Value::String(st.prefix.system_text()))
         }
         HostAction::GetCommands => Ok(Value::Array(commands_json(st))),
+        HostAction::ModelInfo(model) => {
+            let remote = if model == st.model {
+                st.info.caps.remote
+            } else {
+                st.engine
+                    .info(Some(&model))
+                    .map(|i| i.caps.remote)
+                    .unwrap_or(false)
+            };
+            Ok(serde_json::json!({ "model": model, "remote": remote }))
+        }
+        HostAction::AccountRunTokens(tokens) => {
+            crate::Handle {
+                shared: st.shared.clone(),
+            }
+            .account_tokens(tokens);
+            Ok(Value::Null)
+        }
         HostAction::EngineLimits => Ok(serde_json::json!({
+            "remainingTokens": crate::Handle { shared: st.shared.clone() }.remaining_tokens(),
             "sessionId": st.sref.id,
             "model": st.model,
+            "remote": st.info.caps.remote,
             "contextWindow": st.info.n_ctx,
             "maxOutput": st.info.max_output,
             "compactAt": st.info.compact_at,
@@ -938,7 +958,8 @@ fn clear_engine_hint(st: &mut SessionState, hint: &str) -> Result<Value, OxaErro
             format!("{hint} is not a child session of this session"),
         ));
     }
-    if !st.info.caps.hint_clear {
+    // A remote parent may run a local child (#458), whose state the parent's caps don't describe.
+    if !st.info.caps.hint_clear && !st.info.caps.remote {
         return Ok(serde_json::json!({ "cleared": false }));
     }
     let end = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -955,15 +976,29 @@ fn clear_engine_hint(st: &mut SessionState, hint: &str) -> Result<Value, OxaErro
 
 /// Policy verdict for `a`; an `Ask` goes to the user, `Session` grants are remembered.
 fn gate(st: &mut SessionState, a: &Access, ui: &mut dyn Ui) -> Result<(), OxaError> {
-    match st.policy.decide(st.mode, a, &st.cwd) {
-        Decision::Allow => Ok(()),
+    gate_pinned(st, a, ui).map(|_| ())
+}
+
+/// [`gate`], returning the real location the verdict covers (#518, `Policy::decide_pinned`).
+fn gate_pinned(
+    st: &mut SessionState,
+    a: &Access,
+    ui: &mut dyn Ui,
+) -> Result<Option<std::path::PathBuf>, OxaError> {
+    let (decision, pin) = st.policy.decide_pinned(st.mode, a, &st.cwd);
+    match decision {
+        Decision::Allow => Ok(pin),
         Decision::Deny(reason) => Err(OxaError::new(codes::DENIED, reason)),
         Decision::Ask => match ui.ask_access(a) {
-            Answer::Once => Ok(()),
+            Answer::Once => Ok(pin),
             Answer::Session => {
                 st.policy.remember(a);
-                Ok(())
+                Ok(pin)
             }
+            Answer::Deny if !ui.interactive() => Err(OxaError::new(
+                codes::DENIED,
+                tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a)),
+            )),
             Answer::Deny => Err(OxaError::new(codes::DENIED, tool_errors::DENIED_BY_USER)),
         },
     }
@@ -1081,6 +1116,7 @@ fn call_tool(
     let accesses = {
         let cancel = st.shared.cancel.clone();
         let cx = ToolCtx {
+            checked: &[],
             cwd: &st.cwd,
             spill_dir: &st.spill_dir,
             sandbox: st.sandbox.as_ref(),
@@ -1088,14 +1124,18 @@ fn call_tool(
             cancel: &cancel,
             env: &st.tool_env,
             tune: st.tune,
+            hidden: st.policy.path_filter_for_mode(st.mode),
         };
         tool.access(args, &cx)
             .map_err(|m| OxaError::new(codes::INVALID, m))?
     };
+    let mut checked = Vec::new();
     for a in &accesses {
-        gate(st, a, ui)?;
+        if let (Access::Read(p) | Access::Write(p), Some(real)) = (a, gate_pinned(st, a, ui)?) {
+            checked.push((p.clone(), real));
+        }
     }
-    let out = crate::exec::run_tool(st, &tool, args, "", sink, ui, &mut |_, _| {});
+    let out = crate::exec::run_tool(st, &tool, args, "", &checked, sink, ui, &mut |_, _| {});
     let text = oxa_tools::shape(
         out.text.as_bytes(),
         crate::tune::output_cap(st),
@@ -1132,10 +1172,8 @@ fn tool_json(t: &Arc<dyn Tool>) -> Value {
 }
 
 fn state_json(st: &SessionState) -> Value {
-    let (steering, follow_up) = {
-        let q = st.shared.queue.lock().unwrap_or_else(|p| p.into_inner());
-        (q.steering.len(), q.follow_up.len())
-    };
+    let (steering, follow_up) = st.shared.snapshot();
+    let (steering, follow_up) = (steering.len(), follow_up.len());
     json!({
         "sessionId": st.sref.id,
         "model": st.model,
@@ -1281,6 +1319,8 @@ mod tests {
         let (host, rx) = CoreHost::new(shared.clone());
         let compact = crate::session::policy_for(&info, &settings);
         let st = SessionState {
+            goal: None,
+            output_schema: None,
             engine: Arc::new(engine),
             store,
             hooks: Vec::new(),
@@ -1362,6 +1402,38 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         handle.join().expect("caller thread")
+    }
+
+    /// #554 / #557: host writes use the same truthful unattended refusal as built-in tools,
+    /// without promising workarounds that Ask mode or protected paths would refuse too.
+    #[test]
+    fn host_unattended_write_requires_approval() {
+        let mut f = fixture();
+        for (mode, path) in [
+            (Mode::Ask, f.st.cwd.join("out.txt")),
+            (Mode::Workspace, f.st.cwd.join(".oxa/settings.json")),
+            (Mode::Workspace, f.env.tmp().join("scratch.txt")),
+        ] {
+            f.st.mode = mode;
+            let host = f.host.clone();
+            let target = path.clone();
+            let caller = std::thread::spawn(move || {
+                host.call(HostAction::WriteFile {
+                    path: target,
+                    data: "must not be written".into(),
+                })
+            });
+            let err = serve_until_done(&mut f, caller).expect_err("approval is unavailable");
+            assert_eq!(err.code, codes::DENIED);
+            assert_eq!(
+                err.message,
+                format!(
+                    "Permission denied: write {} needs approval, but this run cannot ask (non-interactive), so it was refused; nobody declined it.",
+                    path.display()
+                )
+            );
+            assert!(!path.exists(), "an unattended refusal must not write the file");
+        }
     }
 
     /// Queries answer during a run: the caller blocks until the next poll, which runs mid-run.

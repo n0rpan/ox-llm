@@ -1,4 +1,4 @@
-//! F10 acceptance tests: Example ports 2. Owner: task F10.
+//! F10 acceptance tests: Example ports 2.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -420,6 +420,7 @@ fn ask(host: &ExtensionHost, env: &TestEnv, ui: &mut ScriptUi, args: Value) -> (
     let cwd = env.work();
     let spill = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -427,6 +428,7 @@ fn ask(host: &ExtensionHost, env: &TestEnv, ui: &mut ScriptUi, args: Value) -> (
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let out = tool.run_with_ui(&args, &cx, &mut |_: &str| {}, ui);
     (out.text, out.ui)

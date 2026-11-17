@@ -1,4 +1,4 @@
-//! B3: one request and one tool batch. Owner: task B3. Signatures below are frozen; bodies are yours.
+//! B3: one request and one tool batch.
 // ported from pi packages/agent/src/agent-loop.ts (executeToolCalls) and stream-fn.ts
 use crate::agent_loop::persist;
 use crate::host::{fire_hook, pumped, serve_level, Serve};
@@ -53,10 +53,15 @@ pub fn request(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<AssistantTurn, OxaError> {
-    // OXA-LOCAL-FIRST F1: a tool-result prefill still running (a host request served while a
-    // tool runs, e.g. the park before a subagent) ends first: one request in flight at a time.
-    // Nothing is sent while it is still registered (deferred, then `engine_busy`).
+    // Settle any preceding prefill before charging all work at this request boundary.
     await_tool_prefill(st, opts.background, sink)?;
+    crate::goal::checkpoint(st, false, sink)?;
+    if crate::goal::terminal(st) {
+        return Err(OxaError::new(
+            codes::BUDGET_EXHAUSTED,
+            "The stored goal cannot make another request.",
+        ));
+    }
     if st.info.caps.remote && oxa_proto::offline() {
         return Err(oxa_proto::offline_error(&format!("the cloud model {}", st.model)));
     }
@@ -65,8 +70,7 @@ pub fn request(
     guard_hooks(st, HookPoint::ContextWithSystem, sink, ui)?;
     guard_hooks(st, HookPoint::BeforeProviderRequest, sink, ui)?;
 
-    let mut msgs: Vec<WireMsg> = st.transcript.wire().to_vec();
-    msgs.extend(opts.extra.iter().cloned());
+    let msgs = request_messages(&st.transcript.wire_shared(), &opts.extra);
     let idem = if opts.idem_key.is_empty() {
         new_idem_key(st)
     } else {
@@ -76,7 +80,7 @@ pub fn request(
     let thinking = opts
         .thinking
         .unwrap_or_else(|| crate::think::request_thinking(st, opts.kind));
-    let session = st.sref.id.clone();
+    let session = st.sref.clone();
     let engine = st.engine.clone();
     let cancel = if opts.background {
         st.shared.gate.bg_cancel.clone()
@@ -84,7 +88,7 @@ pub fn request(
         st.shared.cancel.clone()
     };
     let hints = Hints {
-        session: &session,
+        session: &session.id,
         idem_key: &idem,
         kind: opts.kind,
         background: opts.background,
@@ -92,12 +96,21 @@ pub fn request(
     };
     // Owned, so that the provider hooks can fire (with the state) while the reply streams.
     let (prefix, model) = (st.prefix.clone(), st.model.clone());
+    let output_schema = (st.info.caps.remote
+        && st.info.caps.response_format
+        && matches!(opts.kind, TurnKind::Chat)
+        && max_tokens > 0)
+        .then(|| st.output_schema.as_ref().map(|s| s.value().clone()))
+        .flatten();
     let req = ChatRequest {
+        output_schema: output_schema.as_ref(),
         prefix: &prefix,
         messages: &msgs,
         model: &model,
         max_tokens,
         thinking,
+        thinking_level: Some(st.thinking),
+        thinking_budget: crate::think::request_budget(st, thinking),
         // F8: never forced on a model that does not keep reasoning (Flash).
         preserve_thinking: st.info.caps.preserve_thinking != Some(false),
         sampling: match opts.kind {
@@ -106,13 +119,77 @@ pub fn request(
         },
         hints,
     };
+    // A cloud request can be billed even when its reply fails or is discarded. Until the
+    // engine exposes settlement amounts, never present this session's cost as known zero.
+    st.stats.cost_unknown |= st.info.caps.remote;
     let mut stream = StreamState::default();
     let mut hooks = crate::fire::StreamHooks::new(st, opts.events);
+    let progress = crate::progress::observer(st);
+    if let Some(progress) = &progress {
+        progress.notify(
+            &session,
+            crate::Progress::RequestStart {
+                kind: opts.kind,
+                remote: st.info.caps.remote,
+            },
+        );
+    }
+    let mut prefilled = 0;
+    let mut generated = false;
     let mut on = |ev: StreamEvent| {
+        generated |= match &ev {
+            StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
+            StreamEvent::ToolArgs { id, name, delta, .. } => {
+                id.is_some() || name.is_some() || !delta.is_empty()
+            }
+            _ => false,
+        };
+        if let Some(progress) = &progress {
+            let advanced = match &ev {
+                StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
+                StreamEvent::ToolArgs { name, delta, .. } => name.is_some() || !delta.is_empty(),
+                StreamEvent::Prefill { done, .. } if *done > prefilled => {
+                    prefilled = *done;
+                    true
+                }
+                _ => false,
+            };
+            if advanced {
+                progress.notify(&session, crate::Progress::Advanced);
+            }
+        }
         hooks.raw(st, &ev, sink, ui);
         stream.handle(ev, &mut hooks.sink(st, sink, ui), opts.events)
     };
-    let turn = engine.chat(&req, &cancel, &mut on)?;
+    let pre_cancelled = cancel.is_cancelled();
+    let turn = engine.chat(&req, &cancel, &mut on);
+    if let Some(progress) = &progress {
+        progress.notify(
+            &session,
+            crate::Progress::RequestEnd {
+                usage: turn.as_ref().ok().map(|turn| turn.usage),
+                remote: st.info.caps.remote,
+            },
+        );
+    }
+    let turn = match turn {
+        Ok(turn) => turn,
+        Err(error) => {
+            if crate::goal::uncertain(&error, generated, pre_cancelled) {
+                if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+                    goal.uncertain_request()?;
+                    crate::goal::checkpoint(st, false, sink)?;
+                }
+            }
+            return Err(error);
+        }
+    };
+    crate::Handle {
+        shared: st.shared.clone(),
+    }
+    .account_tokens(
+        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached)) + u64::from(turn.usage.completion),
+    );
     if opts.events {
         // The closing `*_end` records go through the same sink, so `message_update` sees them.
         stream.finish(&turn, &mut hooks.sink(st, sink, ui));
@@ -122,6 +199,18 @@ pub fn request(
         note_snapshot(st, &turn, opts.kind, sink);
     }
     Ok(turn)
+}
+
+/// The messages of one request: the wire itself (shared, not copied) when there is nothing to
+/// append, else a copy of it plus `extra`.
+fn request_messages(wire: &Arc<Vec<WireMsg>>, extra: &[WireMsg]) -> Arc<Vec<WireMsg>> {
+    if extra.is_empty() {
+        return Arc::clone(wire);
+    }
+    let mut v = Vec::with_capacity(wire.len() + extra.len());
+    v.extend(wire.iter().cloned());
+    v.extend(extra.iter().cloned());
+    Arc::new(v)
 }
 
 /// F11: what the engine did with an H4 hint. A kept checkpoint is recorded
@@ -177,6 +266,8 @@ pub(crate) struct CallResult {
     pub msg: WireMsg,
     pub tool_name: String,
     pub is_error: bool,
+    /// `ToolOutput::ui`, stored for display on resume.
+    pub ui: Value,
     /// The repeat guard asks to end the run after this batch (`repeat.rs`).
     pub stop: bool,
 }
@@ -198,6 +289,8 @@ struct Prepared {
     /// The lock keys of the call's `Access::Write` paths (`MutationQueue::keys`: canonical,
     /// sorted, unique): held in [`mutations`] while it runs.
     writes: Vec<std::path::PathBuf>,
+    /// #518: the real locations the permission check judged (`ToolCtx::checked`).
+    checked: Vec<(std::path::PathBuf, std::path::PathBuf)>,
 }
 
 /// The process-wide mutation queue: write-class calls on the same path never run at once, also
@@ -234,6 +327,7 @@ pub(crate) fn fail_truncated_calls(
                 msg: WireMsg::tool_result(call.id.clone(), output.text),
                 tool_name: call.name.clone(),
                 is_error: true,
+                ui: Value::Null,
                 stop: false,
             }
         })
@@ -278,6 +372,15 @@ pub(crate) fn run_calls(
     let mut prefilled = false;
     let mut i = 0;
     while i < n {
+        if crate::goal::terminal(st) {
+            if matches!(prepared[i].plan, Plan::Run { .. }) {
+                let p = &prepared[i];
+                crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
+            }
+            prepared[i].plan = Plan::Done(ToolOutput::error(
+                "Goal is no longer pursuing; call not executed.",
+            ));
+        }
         let mut j = i;
         while j < n && prepared[j].parallel_read() {
             j += 1;
@@ -289,7 +392,9 @@ pub(crate) fn run_calls(
             }
             i = j;
         } else {
-            let warming = !prefilled && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
+            let warming = !prefilled
+                && !(st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
+                && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
             outputs[i] = Some(run_one(st, &prepared[i], sink, ui));
@@ -303,7 +408,7 @@ pub(crate) fn run_calls(
     // Phase 3, in call order: the ToolResult hook, shape, end events.
     let mut out = Vec::with_capacity(n);
     // The repeat guard (`repeat.rs`): this batch's earlier calls and final result texts, in order.
-    let mut batch: Vec<(String, String, String)> = Vec::with_capacity(n);
+    let mut batch: Vec<(String, String, String, bool)> = Vec::with_capacity(n);
     for (((p, res), ahead), call) in prepared.iter().zip(outputs).zip(early).zip(calls) {
         let (mut output, dur) = res.unwrap_or((ToolOutput::error(tool_errors::ABORTED), Duration::ZERO));
         output = apply_result_hook(st, p, output, sink, ui);
@@ -317,10 +422,13 @@ pub(crate) fn run_calls(
         // answered with a notice (the call ran; only its result text changes).
         let mut stop = false;
         let ran = matches!(p.plan, Plan::Run { .. });
-        if ran {
-            let earlier: Vec<(&str, &str, &str)> = batch
+        // A successful native goal wait deliberately returns the same result on
+        // every scheduled wake. Other tools and failed waits keep the guard.
+        let completed_goal_wait = st.goal.is_some() && p.name == "wait" && !output.is_error;
+        if ran && !completed_goal_wait {
+            let earlier: Vec<(&str, &str, &str, bool)> = batch
                 .iter()
-                .map(|(n, a, t)| (n.as_str(), a.as_str(), t.as_str()))
+                .map(|(n, a, t, failed)| (n.as_str(), a.as_str(), t.as_str(), *failed))
                 .collect();
             match crate::repeat::judge(st, &p.name, &call.args_raw, &output.text, &earlier) {
                 crate::repeat::Verdict::Pass => {}
@@ -340,13 +448,20 @@ pub(crate) fn run_calls(
                 }
             }
         }
-        batch.push((p.name.clone(), call.args_raw.clone(), output.text.clone()));
+        // Retain failed writers too: they still count when the repeated call is that writer.
+        batch.push((
+            p.name.clone(),
+            call.args_raw.clone(),
+            output.text.clone(),
+            output.is_error,
+        ));
         let ms = Some(dur.as_millis() as u64);
         crate::fire::tool_end(st, &p.id, &p.name, &output, ms, sink, ui);
         out.push(CallResult {
             msg: WireMsg::tool_result(p.id.clone(), output.text.clone()),
             tool_name: p.name.clone(),
             is_error: output.is_error,
+            ui: output.ui.clone(),
             stop,
         });
     }
@@ -609,20 +724,34 @@ fn start_tool_prefill(
     let engine = st.engine.clone();
     let prefix = st.prefix.clone();
     let model = st.model.clone();
-    let session = st.sref.id.clone();
+    let session = st.sref.clone();
     let idem = new_idem_key(st);
     let thinking = crate::think::request_thinking(st, TurnKind::Prefill);
     let preserve_thinking = st.info.caps.preserve_thinking != Some(false);
     // F11: the hint whenever the engine keeps checkpoints, as the idle prefill sends it.
     let snapshot_keep = st.info.caps.snapshot_keep > 0;
+    let progress = crate::progress::observer(st);
     let user_abort = st.shared.cancel.clone();
+    let background_abort = st.shared.gate.bg_cancel.clone();
+    let goal = st.goal.clone().filter(|g| g.engaged());
+    let budget = crate::Handle {
+        shared: st.shared.clone(),
+    };
     let after = tool_prefill_after();
     let spawned = std::thread::Builder::new()
         .name("oxa-tool-prefill".to_string())
         .spawn(move || -> PrefillOutcome {
+            let stop = || {
+                cancel.is_cancelled()
+                    || user_abort.is_cancelled()
+                    || background_abort.is_cancelled()
+                    || goal
+                        .as_ref()
+                        .is_some_and(|goal| !goal.allows_request(budget.run_tokens_used()))
+            };
             let deadline = Instant::now() + after;
             loop {
-                if cancel.is_cancelled() || user_abort.is_cancelled() {
+                if stop() {
                     return Ok(false);
                 }
                 let now = Instant::now();
@@ -632,38 +761,88 @@ fn start_tool_prefill(
                 std::thread::sleep((deadline - now).min(Duration::from_millis(10)));
             }
             let req = ChatRequest {
+                output_schema: None,
                 prefix: &prefix,
                 messages: &msgs,
                 model: &model,
                 max_tokens: 0,
                 thinking,
+                thinking_level: None,
+                thinking_budget: None,
                 preserve_thinking,
                 sampling: None,
                 hints: Hints {
-                    session: &session,
+                    session: &session.id,
                     idem_key: &idem,
                     kind: TurnKind::Prefill,
                     background: true,
                     snapshot_keep,
                 },
             };
-            // The user's abort ends the request at once, not only when the tool returns.
+            // Abort, wrap-up and the stored goal deadline end inference while
+            // the tool still runs; the existing watcher owns cancellation.
             let done = std::sync::atomic::AtomicBool::new(false);
             std::thread::scope(|scope| {
-                let _ = std::thread::Builder::new()
+                let watcher = std::thread::Builder::new()
                     .name("oxa-tool-prefill-watch".to_string())
                     .spawn_scoped(scope, || {
                         while !done.load(Ordering::SeqCst) {
-                            if user_abort.is_cancelled() {
+                            if stop() {
                                 cancel.cancel();
                                 return;
                             }
                             std::thread::sleep(Duration::from_millis(5));
                         }
                     });
-                let res = engine.chat(&req, &cancel, &mut |_| {}).map(|_| true);
+                if watcher.is_err() || stop() {
+                    done.store(true, Ordering::SeqCst);
+                    return Ok(false);
+                }
+                if let Some(progress) = &progress {
+                    progress.notify(
+                        &session,
+                        crate::Progress::RequestStart {
+                            kind: TurnKind::Prefill,
+                            remote: false,
+                        },
+                    );
+                }
+                let mut prefilled = 0;
+                let pre_cancelled = cancel.is_cancelled();
+                let mut res = engine.chat(&req, &cancel, &mut |event| {
+                    if let (Some(progress), StreamEvent::Prefill { done, .. }) = (&progress, event) {
+                        if done > prefilled {
+                            prefilled = done;
+                            progress.notify(&session, crate::Progress::Advanced);
+                        }
+                    }
+                });
+                if let Some(progress) = &progress {
+                    progress.notify(
+                        &session,
+                        crate::Progress::RequestEnd {
+                            usage: res.as_ref().ok().map(|turn| turn.usage),
+                            remote: false,
+                        },
+                    );
+                }
+                if let Ok(turn) = &res {
+                    budget.account_tokens(
+                        u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
+                            + u64::from(turn.usage.completion),
+                    );
+                }
+                if let Err(error) = &res {
+                    if crate::goal::uncertain(error, false, pre_cancelled) {
+                        if let Some(goal) = &goal {
+                            if let Err(error) = goal.uncertain_request() {
+                                res = Err(error);
+                            }
+                        }
+                    }
+                }
                 done.store(true, Ordering::SeqCst);
-                res
+                res.map(|_| true)
             })
         });
     let Ok(handle) = spawned else {
@@ -707,6 +886,7 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
         exec,
         plan,
         writes: Vec::new(),
+        checked: Vec::new(),
     };
     let Some(tool) = st.active.get(&call.name).cloned() else {
         let text = tool_errors::UNKNOWN_TOOL.replace("{name}", &call.name);
@@ -717,7 +897,7 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
         return mk(
             Value::Null,
             exec,
-            Plan::Done(ToolOutput::error(tool_errors::BAD_JSON)),
+            Plan::Done(ToolOutput::error(bad_args_text(call))),
         );
     };
 
@@ -743,8 +923,13 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
             Err(msg) => return mk(args, exec, Plan::Done(ToolOutput::error(msg))),
         }
     };
+    let mut checked = Vec::new();
     for a in &accesses {
-        match st.policy.decide(st.mode, a, &st.cwd) {
+        let (decision, pin) = st.policy.decide_pinned(st.mode, a, &st.cwd);
+        if let (Access::Read(p) | Access::Write(p), Some(real)) = (a, pin) {
+            checked.push((p.clone(), real));
+        }
+        match decision {
             Decision::Allow => {}
             Decision::Deny(reason) => {
                 let text = format!("{}{}", tool_errors::DENIED_PREFIX, reason);
@@ -754,11 +939,13 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
                 Answer::Once => {}
                 Answer::Session => st.policy.remember(a),
                 Answer::Deny => {
-                    return mk(
-                        args,
-                        exec,
-                        Plan::Done(ToolOutput::error(tool_errors::DENIED_BY_USER)),
-                    );
+                    // #554: with no one to ask, nobody declined; say what was refused and why.
+                    let text = if ui.interactive() {
+                        tool_errors::DENIED_BY_USER.to_string()
+                    } else {
+                        tool_errors::DENIED_UNATTENDED.replace("{what}", &crate::fire::access_title(a))
+                    };
+                    return mk(args, exec, Plan::Done(ToolOutput::error(text)));
                 }
             },
         }
@@ -771,6 +958,7 @@ fn prepare(st: &mut SessionState, call: &ToolCall, sink: &mut dyn EventSink, ui:
     }));
     Prepared {
         writes,
+        checked,
         ..mk(args, exec, Plan::Run { tool })
     }
 }
@@ -788,10 +976,16 @@ struct OwnedCtx {
     cancel: oxa_proto::CancelToken,
     env: Vec<(String, String)>,
     tune: oxa_proto::ToolTune,
+    checked: Vec<(std::path::PathBuf, std::path::PathBuf)>,
+    hidden: Option<Arc<dyn oxa_proto::PathFilter>>,
 }
 
 impl OwnedCtx {
-    fn of(st: &SessionState, call_id: &str) -> OwnedCtx {
+    fn of(
+        st: &SessionState,
+        call_id: &str,
+        checked: &[(std::path::PathBuf, std::path::PathBuf)],
+    ) -> OwnedCtx {
         let mut env = st.tool_env.clone();
         if !call_id.is_empty() {
             env.push((TOOL_CALL_ID_ENV.to_string(), call_id.to_string()));
@@ -804,11 +998,14 @@ impl OwnedCtx {
             cancel: st.shared.cancel.clone(),
             env,
             tune: st.tune,
+            checked: checked.to_vec(),
+            hidden: st.policy.path_filter_for_mode(st.mode),
         }
     }
 
     fn cx(&self) -> ToolCtx<'_> {
         ToolCtx {
+            checked: &self.checked,
             cwd: &self.cwd,
             spill_dir: &self.spill_dir,
             sandbox: self.sandbox.as_ref(),
@@ -816,6 +1013,7 @@ impl OwnedCtx {
             cancel: &self.cancel,
             env: &self.env,
             tune: self.tune,
+            hidden: self.hidden.clone(),
         }
     }
 }
@@ -824,17 +1022,19 @@ impl OwnedCtx {
 /// thread while the session thread serves host requests (E-INT 2: an extension tool or a
 /// codemode script may call back into the session); its partial output reaches `live` on the
 /// session thread. Without a host it runs inline. `call_id` (may be empty) is passed to the
-/// tool as [`TOOL_CALL_ID_ENV`].
+/// tool as [`TOOL_CALL_ID_ENV`]; `checked` is what the permission check pinned (#518).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn run_tool(
     st: &mut SessionState,
     tool: &Arc<dyn Tool>,
     args: &Value,
     call_id: &str,
+    checked: &[(std::path::PathBuf, std::path::PathBuf)],
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
     live: &mut dyn FnMut(&mut dyn EventSink, &str),
 ) -> ToolOutput {
-    let owned = OwnedCtx::of(st, call_id);
+    let owned = OwnedCtx::of(st, call_id, checked);
     if st.host_rx.is_none() {
         let cx = owned.cx();
         let mut direct = |partial: &str| live(&mut *sink, partial);
@@ -897,7 +1097,14 @@ fn run_one(
     }
     let started = Instant::now();
     let hook_updates = crate::fire::wants(st, HookPoint::ToolExecutionUpdate);
+    let progress = crate::progress::observer(st);
+    let session = st.sref.clone();
     let mut live = |sink: &mut dyn EventSink, partial: &str| {
+        if !partial.is_empty() {
+            if let Some(progress) = &progress {
+                progress.notify(&session, crate::Progress::Advanced);
+            }
+        }
         sink.emit(&AgentEvent::ToolExecutionUpdate {
             tool_call_id: p.id.clone(),
             tool_name: p.name.clone(),
@@ -911,7 +1118,7 @@ fn run_one(
     };
     // C7: a call that writes holds its paths in the mutation queue while it runs.
     let out = with_writes(&p.writes, || {
-        run_tool(st, tool, &p.args, &p.id, sink, ui, &mut live)
+        run_tool(st, tool, &p.args, &p.id, &p.checked, sink, ui, &mut live)
     });
     crate::fire::drain(st, sink, ui);
     (out, started.elapsed())
@@ -926,10 +1133,15 @@ fn run_parallel(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Vec<(ToolOutput, Duration)> {
+    let progress = crate::progress::observer(st);
+    let session = st.sref.clone();
     for p in batch {
         crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
     }
-    let owned: Vec<OwnedCtx> = batch.iter().map(|p| OwnedCtx::of(st, &p.id)).collect();
+    let owned: Vec<OwnedCtx> = batch
+        .iter()
+        .map(|p| OwnedCtx::of(st, &p.id, &p.checked))
+        .collect();
     let cancelled = st.shared.cancel.is_cancelled();
     std::thread::scope(|scope| {
         let handles: Vec<_> = batch
@@ -940,12 +1152,20 @@ fn run_parallel(
                     unreachable!("a parallel batch holds runnable calls only")
                 };
                 let tool = Arc::clone(tool);
+                let progress = progress.clone();
+                let session = &session;
                 scope.spawn(move || {
                     if cancelled {
                         return (ToolOutput::error(tool_errors::ABORTED), Duration::ZERO);
                     }
                     let started = Instant::now();
-                    let mut none = |_: &str| {};
+                    let mut none = |partial: &str| {
+                        if !partial.is_empty() {
+                            if let Some(progress) = &progress {
+                                progress.notify(session, crate::Progress::Advanced);
+                            }
+                        }
+                    };
                     let out = contained_tool(&tool, || tool.run(&p.args, &owned.cx(), &mut none));
                     (out, started.elapsed())
                 })
@@ -1006,6 +1226,7 @@ fn apply_result_hook(
 
 fn tool_ctx(st: &SessionState) -> ToolCtx<'_> {
     ToolCtx {
+        checked: &[],
         cwd: &st.cwd,
         spill_dir: &st.spill_dir,
         sandbox: st.sandbox.as_ref(),
@@ -1013,6 +1234,21 @@ fn tool_ctx(st: &SessionState) -> ToolCtx<'_> {
         cancel: &st.shared.cancel,
         env: &st.tool_env,
         tune: st.tune,
+        hidden: st.policy.path_filter_for_mode(st.mode),
+    }
+}
+
+/// The error text for arguments that are not a JSON object; an empty string says so, so the
+/// model (and the progress line) can tell why and retry (#483).
+fn bad_args_text(call: &ToolCall) -> String {
+    if call.args_raw.trim().is_empty() {
+        format!(
+            "{} (empty arguments: call `{}` again with its arguments as a JSON object)",
+            tool_errors::BAD_JSON,
+            call.name
+        )
+    } else {
+        tool_errors::BAD_JSON.to_string()
     }
 }
 
@@ -1249,11 +1485,12 @@ fn guard_hooks(
 /// declared rebase (`None` = not declared: appends only).
 fn apply_rebase(
     st: &mut SessionState,
-    list: Vec<WireMsg>,
+    mut list: Vec<WireMsg>,
     declared_by: Option<&str>,
     point: HookPoint,
     sink: &mut dyn EventSink,
 ) -> Result<(), OxaError> {
+    st.transcript.prepare_rebase(&mut list);
     let wire = st.transcript.wire();
     if list.as_slice() == wire {
         return Ok(());
@@ -1393,5 +1630,52 @@ pub(crate) fn reply_event(turn: &AssistantTurn, ts_ms: u64) -> EventMessage {
         tool_name: None,
         is_error: false,
         error_message: None,
+    }
+}
+
+#[cfg(test)]
+mod request_messages_tests {
+    use super::*;
+
+    #[test]
+    fn no_extra_messages_share_the_wire() {
+        let wire = Arc::new(vec![WireMsg::user("a"), WireMsg::assistant("b")]);
+        let msgs = request_messages(&wire, &[]);
+        assert!(
+            Arc::ptr_eq(&wire, &msgs),
+            "an empty `extra` must not copy the wire"
+        );
+    }
+
+    #[test]
+    fn extra_messages_are_appended_without_touching_the_wire() {
+        let wire = Arc::new(vec![WireMsg::user("a")]);
+        let msgs = request_messages(&wire, &[WireMsg::user("draft")]);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[1], WireMsg::user("draft"));
+        assert_eq!(wire.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod bad_args_tests {
+    use super::*;
+
+    fn call(raw: &str) -> ToolCall {
+        ToolCall {
+            id: "c".into(),
+            name: "read".into(),
+            args_raw: raw.into(),
+        }
+    }
+
+    #[test]
+    fn empty_arguments_get_a_retry_hint() {
+        for raw in ["", "  \n"] {
+            let t = bad_args_text(&call(raw));
+            assert!(t.starts_with(tool_errors::BAD_JSON), "{t}");
+            assert!(t.contains("empty arguments") && t.contains("`read`"), "{t}");
+        }
+        assert_eq!(bad_args_text(&call("[1]")), tool_errors::BAD_JSON);
     }
 }

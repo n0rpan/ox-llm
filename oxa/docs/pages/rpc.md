@@ -104,11 +104,18 @@ Commands about the state:
 |---|---|
 | `get_state` | model, thinking level, permission mode, session id, name and file, whether a run or a compaction is going, and the queue sizes |
 | `get_messages` | the messages of the active branch |
-| `get_session_stats` | token totals, requests, cache counts, tool repairs |
+| `get_session_stats` | token totals, requests, cache counts, tool repairs, session cost |
 | `get_available_models` | the models the engine serves |
 | `set_model` | `modelId`: switch model (refused, with `Model not found`, for an unknown id) |
 | `cycle_model` | the next model in the scoped cycle |
 | `set_thinking_level`, `cycle_thinking_level`, `get_available_thinking_levels` | `level`: thinking level |
+
+`get_session_stats.data.cost` is `0` for local-only work. After a remote request is
+attempted it is `null` (unavailable), not a claim that the work was free: the engine
+chat interface does not yet expose authoritative settled cloud costs. This remains
+unavailable after switching back to a local model or using `new_session`, matching
+the process-local token totals.
+The private cloud ledger remains the source of settled costs. Token counts are unaffected.
 
 Commands about the session:
 

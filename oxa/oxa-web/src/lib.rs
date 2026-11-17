@@ -1,6 +1,6 @@
 //! # oxa-web: the `web_search` tool (wave H lane `search`, O-169 / O-170)
 //!
-//! A provider abstraction ([`SearchProvider`]) with one provider, Brave Search ([`Brave`]):
+//! Brave Search ([`Brave`]) uses
 //! its LLM Context endpoint first, its web search endpoint as the fallback for plans without
 //! LLM Context. The tool ([`WebSearchTool`]) is offered by a hook set ([`WebSearchHooks`]) that
 //! decides once per prefix epoch (W3) whether the tool is declared: only with a key and never
@@ -29,7 +29,7 @@ pub use brave::{Brave, BraveOpts, BraveShared, Endpoint, DEFAULT_BASE_URL, FALLB
 pub use hooks::{disabled_by_env, enabled, WebConfig, WebSearchHooks, STATUS_COMMAND};
 pub use key::{load_key, real_home, remove_key_from_process_env, ApiKey, KeyInputs, KeyOrigin, KeyStatus};
 pub use shape::{shape, strip_html, Budgets, Found};
-pub use tool::{parse_query, Query, SearchProvider, WebSearchTool, SOURCE};
+pub use tool::{parse_query, Query, WebSearchTool, SOURCE};
 
 /// The key's environment variable (wins over the file).
 pub const ENV_KEY: &str = "BRAVE_SEARCH_API_KEY";

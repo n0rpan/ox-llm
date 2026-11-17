@@ -1,4 +1,4 @@
-//! C10: the RPC server loop. Owner: task C10. Signatures below are frozen; bodies are yours.
+//! C10: the RPC server loop.
 // ported from pi packages/coding-agent/src/modes/rpc/rpc-mode.ts (docs: rpc.md)
 //
 // Threads: the calling thread reads stdin and answers the commands that must not wait for a
@@ -15,7 +15,7 @@
 // sends after reading any of those records therefore meets an idle session and fresh state.
 use crate::events::{event_to_json, state_to_json, write_record};
 use crate::{cmd_run, handle_session, Out, RpcCx, RpcUi, UiRouter};
-use oxa_core::{Handle, Session};
+use oxa_core::{Handle, RunOutcome, Session};
 use oxa_proto::{codes, AgentEvent, Level, OxaError, Value};
 use serde_json::{json, Map};
 use std::cell::RefCell;
@@ -134,17 +134,26 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// A command that needs the session, queued for the session thread. `reply` is false for a
 /// prompt: its response was written when it was accepted. `claimed` marks a prompt that took
 /// the run claim ([`Gate::claimed`]) when it was accepted.
-struct Job {
-    cmd: RpcCommand,
-    reply: bool,
-    claimed: bool,
+enum Job {
+    Command {
+        cmd: RpcCommand,
+        reply: bool,
+        claimed: bool,
+    },
+    /// Reader failures share the command FIFO so they cannot overtake an earlier run.
+    Outcome(RunOutcome),
+    /// A follow-up is already in Handle's queue; wake the session even with stdin idle.
+    Inbox(String),
+    Shutdown,
 }
 
 /// What the reader and the session thread decide together, under one lock.
 #[derive(Default)]
 struct Gate {
-    /// Jobs sent to the session thread and not yet finished.
+    /// Session commands sent to the worker and not finished (outcome-only jobs claim nothing).
     pending: usize,
+    /// EOF is ordered with inbox admission: leave later files for the next owner.
+    closed: bool,
     /// A prompt was answered `started` and its run has not settled yet. Set by the reader when
     /// it accepts the prompt (pi: the run is active once `started` is sent), cleared by the
     /// session thread before the run's `agent_settled` is written.
@@ -178,10 +187,27 @@ struct Front {
 impl Front {
     fn reply(&self, cmd: &RpcCommand, r: Result<Value, OxaError>) {
         let v = match r {
-            Ok(data) => response_ok(cmd, data),
-            Err(e) => response_err(cmd, &e),
+            Ok(data) => {
+                // A started prompt is only acknowledged here; its eventual turn (or
+                // hook interception) decides its outcome on the worker. Reader-handled
+                // controls have completed and must enter that same ordered aggregate.
+                if cmd.kind != "prompt" || data["disposition"] != "started" {
+                    let _ = self.tx.send(Job::Outcome(RunOutcome::Done));
+                }
+                response_ok(cmd, data)
+            }
+            Err(e) => {
+                self.record_error(&e);
+                response_err(cmd, &e)
+            }
         };
         write_out(&self.out, &v);
+    }
+
+    fn record_error(&self, error: &OxaError) {
+        // No session claim or gate lock: this can be called while a rejected command holds
+        // the gate. The worker folds the error after all earlier accepted commands.
+        let _ = self.tx.send(Job::Outcome(RunOutcome::from_error(error)));
     }
 
     /// After a queue change made here: the `queue_update` record, at once (pi emits it when the
@@ -198,7 +224,7 @@ impl Front {
     /// Queue a job (the caller holds the gate). `claimed` = the job carries the run claim.
     fn enqueue(&self, gate: &mut Gate, cmd: &RpcCommand, reply: bool, claimed: bool) {
         gate.pending += 1;
-        let job = Job {
+        let job = Job::Command {
             cmd: cmd.clone(),
             reply,
             claimed,
@@ -260,6 +286,7 @@ impl Front {
                     self.handle.abort_next();
                 }
                 self.handle.abort();
+                let _ = self.tx.send(Job::Outcome(RunOutcome::Done));
                 let response = response_ok(&cmd, Value::Null);
                 if gate.pending > 0 {
                     gate.after_jobs.push(response);
@@ -385,16 +412,128 @@ fn session_loop(
     cache: Arc<Mutex<Published>>,
     gate: Arc<Mutex<Gate>>,
     bash_running: Arc<AtomicBool>,
-) -> i32 {
-    while let Ok(Job { cmd, reply, claimed }) = rx.recv() {
+    tx: Sender<Job>,
+) -> RunOutcome {
+    let mut outcome = RunOutcome::NothingToDo;
+    let mut inbox = None;
+    let mut inbox_id = String::new();
+    loop {
+        let id = cx.session.inner().sref.id.clone();
+        if inbox_id != id || inbox.is_none() {
+            drop(inbox.take());
+            inbox_id = id.clone();
+            // A prior wake may have been discarded while this destination was inactive.
+            // Re-arm it on return even when its admitted files are already gone.
+            if cx.handle.has_inbox_input() && !cx.handle.wrap_up_requested() {
+                let mut g = lock(&gate);
+                if !g.closed && cx.handle.request_inbox_wake() {
+                    g.pending += 1;
+                    if tx.send(Job::Inbox(id.clone())).is_err() {
+                        g.pending -= 1;
+                    }
+                }
+            }
+            let handle = cx.handle.clone();
+            let sender = tx.clone();
+            let gate = gate.clone();
+            match oxa_session::Inbox::watch(&cx.dirs.agent_dir, &inbox_id, move |text| {
+                let mut gate = lock(&gate);
+                if gate.closed || handle.wrap_up_requested() {
+                    return false;
+                }
+                if !handle.follow_up_for(&id, text) {
+                    return false;
+                }
+                if !handle.request_inbox_wake() {
+                    return true;
+                }
+                gate.pending += 1;
+                if sender.send(Job::Inbox(id.clone())).is_err() {
+                    gate.pending -= 1;
+                    return false;
+                }
+                true
+            }) {
+                Ok(watch) => inbox = Some(watch),
+                Err(e) => write_out(
+                    &cx.out,
+                    &event_to_json(&AgentEvent::Notice {
+                        level: Level::Warning,
+                        text: format!("Session inbox unavailable: {e}"),
+                    }),
+                ),
+            }
+        }
+        let job = if (cx.handle.wrap_up_requested() || cx.handle.interrupted()) && lock(&gate).pending == 0 {
+            match rx.try_recv() {
+                Ok(job) => job,
+                Err(_) => {
+                    outcome.include(RunOutcome::Interrupted);
+                    break;
+                }
+            }
+        } else {
+            match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(job) => job,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        };
+        let inbox_wake = matches!(&job, Job::Inbox(_));
+        let (cmd, reply, claimed) = match job {
+            Job::Command { cmd, reply, claimed } => (cmd, reply, claimed),
+            Job::Outcome(next) => {
+                outcome.include(next);
+                continue;
+            }
+            Job::Inbox(id) => {
+                cx.handle.clear_inbox_wake();
+                (
+                    RpcCommand {
+                        id: None,
+                        kind: "inbox".into(),
+                        body: json!({"session_id": id}),
+                    },
+                    false,
+                    false,
+                )
+            }
+            Job::Shutdown => break,
+        };
+        // Join the old watcher before any explicit session transition. Already admitted
+        // follow-ups retain their destination in the core queue.
+        if matches!(
+            cmd.kind.as_str(),
+            "new_session" | "switch_session" | "fork" | "clone"
+        ) {
+            drop(inbox.take());
+        }
+        let _ = cx.session.take_outcome();
         let is_bash = cmd.kind == "bash";
         bash_running.store(is_bash, Ordering::SeqCst);
         hold_settled();
         // A1/A2: a panic in a command answers that command with an error; the session thread
         // and the session go on (a run's busy flag is released by its guard).
-        let result = oxa_proto::panic::contain(|| match cmd_run::handle(&mut cx, &cmd) {
-            Some(r) => Some(r),
-            None => handle_session(&mut cx, &cmd),
+        let result = oxa_proto::panic::contain(|| {
+            if inbox_wake {
+                if cmd.body["session_id"].as_str() == Some(&cx.session.inner().sref.id)
+                    || cx.handle.has_inbox_input()
+                {
+                    let mut sink = cmd_run::OutSink(cx.out.clone());
+                    let mut ui = RpcUi {
+                        out: cx.out.clone(),
+                        router: cx.ui.clone(),
+                    };
+                    Some(cx.session.run_queued(&mut sink, &mut ui).map(|_| Value::Null))
+                } else {
+                    Some(Ok(Value::Null))
+                }
+            } else {
+                match cmd_run::handle(&mut cx, &cmd) {
+                    Some(r) => Some(r),
+                    None => handle_session(&mut cx, &cmd),
+                }
+            }
         })
         .unwrap_or_else(|error| {
             Some(Err(OxaError::new(
@@ -403,11 +542,25 @@ fn session_loop(
             )))
         });
         let mut settled = release_settled();
+        if let Some(inbox) = &inbox {
+            inbox.retry();
+        }
         bash_running.store(false, Ordering::SeqCst);
         if claimed && settled.is_empty() {
             // The client was told `started`: it is owed the closing record even when the
             // session ran no turn for the prompt after all.
             settled.push(event_to_json(&AgentEvent::AgentSettled { aborted: false }));
+        }
+        let current = match &result {
+            Some(Err(error)) => RunOutcome::from_error(error),
+            None => RunOutcome::Failed(codes::INVALID),
+            Some(Ok(_)) if cmd.kind != "prompt" && settled.is_empty() => RunOutcome::Done,
+            _ => *cx.session.outcome(),
+        };
+        for record in &mut settled {
+            if let Some(fields) = record.as_object_mut() {
+                fields.insert("result".to_string(), current.record());
+            }
         }
         let record = match (result, reply) {
             (Some(Ok(data)), true) => Some(response_ok(&cmd, data)),
@@ -441,13 +594,28 @@ fn session_loop(
                 write_out(&out, &v);
             }
         }
+        if cx.handle.wrap_up_requested() || cx.handle.interrupted() {
+            // A real prompt failure precedes later reader errors. Cooperative
+            // interruption is deferred so it cannot hide an already-reported error.
+            if current != RunOutcome::Interrupted {
+                outcome.include(current);
+            }
+            for pending in rx.try_iter() {
+                if let Job::Outcome(next) = pending {
+                    outcome.include(next);
+                }
+            }
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
+        outcome.include(current);
     }
     let mut ui = RpcUi {
         out: cx.out.clone(),
         router: cx.ui.clone(),
     };
     cx.session.shutdown(&mut ui);
-    0
+    outcome
 }
 
 /// Reads commands until EOF, answering each one as the front does.
@@ -459,6 +627,7 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
             Ok(0) => break,
             Ok(_) => {}
             Err(e) => {
+                front.record_error(&OxaError::io("cannot read RPC commands", &e));
                 eprintln!("oxa rpc: cannot read commands: {e}");
                 break;
             }
@@ -467,6 +636,7 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
             Ok(t) => t,
             Err(e) => {
                 let err = OxaError::new(codes::INVALID, format!("the line is not UTF-8: {e}"));
+                front.record_error(&err);
                 write_out(&front.out, &parse_error(&err));
                 continue;
             }
@@ -477,7 +647,10 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
         }
         match parse_command(text) {
             Ok(cmd) => front.accept(cmd),
-            Err(e) => write_out(&front.out, &parse_error(&e)),
+            Err(e) => {
+                front.record_error(&e);
+                write_out(&front.out, &parse_error(&e));
+            }
         }
     }
 }
@@ -486,12 +659,12 @@ fn read_commands(mut input: Box<dyn BufRead + Send>, front: &Front) {
 /// extension-UI responses (`ext_ui`), `handle_run`, `handle_session`, else pi's
 /// unknown-command error. Events are written to `out` as records while prompts run. Returns
 /// the process exit code.
-pub fn serve(
+pub fn serve_outcome(
     session: Session,
     dirs: oxa_config::Dirs,
     input: Box<dyn BufRead + Send>,
     out: Out,
-) -> Result<i32, OxaError> {
+) -> Result<RunOutcome, OxaError> {
     let handle = session.handle();
     let router = Arc::new(UiRouter::new());
     let gate = Arc::new(Mutex::new(Gate::default()));
@@ -509,11 +682,14 @@ pub fn serve(
         let cache = cache.clone();
         let gate = gate.clone();
         let bash_flag = bash_running.clone();
+        let tx = tx.clone();
         thread::Builder::new()
             .name("oxa-rpc-session".to_string())
-            .spawn(move || session_loop(cx, rx, cache, gate, bash_flag))
+            .spawn(move || session_loop(cx, rx, cache, gate, bash_flag, tx))
             .map_err(|e| OxaError::io("cannot start the session thread", &e))?
     };
+    let control = handle.clone();
+    let shutdown_tx = tx.clone();
     let front = Front {
         handle,
         out,
@@ -523,11 +699,49 @@ pub fn serve(
         bash_running,
         tx,
     };
-    read_commands(input, &front);
-    // Stdin closed: no answer can arrive any more. Dialogs that wait now, and any opened
-    // later, resolve as cancelled; dropping the sender lets the session thread drain its
-    // queue and exit.
+    // A blocking stdin reader must not keep the process alive after soft termination. On
+    // EOF it closes dialogs and the job channel as before. If the caller terminates while
+    // stdin is open, the reader is detached until EOF (the CLI exits immediately afterwards).
+    let input_router = router.clone();
+    let reader = match thread::Builder::new()
+        .name("oxa-rpc-input".to_string())
+        .spawn(move || {
+            read_commands(input, &front);
+            input_router.close();
+            {
+                let mut gate = lock(&front.gate);
+                gate.closed = true;
+                let _ = front.tx.send(Job::Shutdown);
+            }
+            drop(front);
+        }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            router.close();
+            let _ = shutdown_tx.send(Job::Shutdown);
+            let _ = worker.join();
+            return Err(OxaError::io("cannot start the RPC input thread", &error));
+        }
+    };
+    while !worker.is_finished() {
+        if control.wrap_up_requested() || control.interrupted() {
+            router.close();
+        }
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
     router.close();
-    drop(front);
-    Ok(worker.join().unwrap_or(1))
+    if reader.is_finished() {
+        let _ = reader.join();
+    }
+    Ok(worker.join().unwrap_or(RunOutcome::Failed(codes::INTERNAL)))
+}
+
+/// Serve RPC commands through EOF and return the aggregate process exit code.
+pub fn serve(
+    session: Session,
+    dirs: oxa_config::Dirs,
+    input: Box<dyn BufRead + Send>,
+    out: Out,
+) -> Result<i32, OxaError> {
+    serve_outcome(session, dirs, input, out).map(|outcome| outcome.exit_code())
 }

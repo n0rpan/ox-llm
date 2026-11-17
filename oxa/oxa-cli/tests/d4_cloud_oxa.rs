@@ -55,18 +55,44 @@ fn a_remote_model_runs_a_tool_loop_without_local_only_wire_features() {
     assert_eq!(tool.role, oxa_proto::Role::Tool);
     assert_eq!(tool.content.as_deref(), Some("NOTE\n"));
 
-    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
-    assert!(!body.as_object().unwrap().contains_key("cache_prompt"), "{body}");
-    assert!(
-        !body.as_object().unwrap().contains_key("chat_template_kwargs"),
-        "{body}"
+    assert_eq!(
+        requests[0].session, requests[1].session,
+        "one session across tool turns"
     );
-    assert!(body.get("reasoning_effort").is_some(), "{body}");
-    let headers = &requests[0].headers;
-    assert!(
-        !headers.iter().any(|(name, _)| name.starts_with("x-oxe-")),
-        "no local hints reach a remote model: {headers:?}"
+    assert_ne!(
+        requests[0].idem_key, requests[1].idem_key,
+        "a key per logical request"
     );
+    for request in &requests {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).expect("request JSON");
+        assert!(!body.as_object().unwrap().contains_key("cache_prompt"), "{body}");
+        assert!(
+            !body.as_object().unwrap().contains_key("chat_template_kwargs"),
+            "{body}"
+        );
+        assert!(body.get("reasoning_effort").is_some(), "{body}");
+        assert!(
+            !request.session.is_empty(),
+            "oxc needs the session for correlation"
+        );
+        assert!(
+            !request.idem_key.is_empty(),
+            "oxc needs the request's idempotency key"
+        );
+        let headers = &request.headers;
+        assert!(
+            headers
+                .iter()
+                .any(|(name, value)| name == "x-session-id" && value == &request.session),
+            "both session headers reach oxc: {headers:?}"
+        );
+        assert!(
+            !headers
+                .iter()
+                .any(|(name, _)| name.starts_with("x-oxe-") && name != "x-oxe-session"),
+            "only the session correlation header, no local hints, reaches oxc: {headers:?}"
+        );
+    }
 }
 
 #[test]
@@ -80,6 +106,36 @@ fn the_context_size_comes_from_the_remote_capability_row() {
     assert!(stdout.contains("cloud-model"), "{stdout}");
     // FakeOpts has n_ctx 8000, but the model's capability row says 64000.
     assert!(stdout.contains("64K"), "the row's context wins: {stdout}");
+}
+
+/// Subscription models must be discoverable by provider, without guessing capabilities.
+#[test]
+fn list_models_chatgpt_provider_and_published_modalities() {
+    for omit_modality in [false, true] {
+        let env = TestEnv::new();
+        let server = FakeServer::start(
+            Vec::new(),
+            FakeOpts {
+                model: "chatgpt/subscription-model".to_string(),
+                remote: Some("chatgpt"),
+                omit_modality,
+                ..FakeOpts::default()
+            },
+        )
+        .expect("fake controller");
+        let out = run(&env, &server.url(), &["--list-models", "chatgpt"], &[]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "stdout: {stdout}\nstderr: {stderr}");
+        let rows: Vec<_> = stdout.lines().skip(1).collect();
+        assert_eq!(rows.len(), 1, "{stdout}");
+        let cells: Vec<_> = rows[0].split_whitespace().collect();
+        assert_eq!(cells[0], "chatgpt", "subscription provider: {stdout}");
+        assert_eq!(cells[1], "chatgpt/subscription-model");
+        let expected = if omit_modality { ["?", "?"] } else { ["yes", "no"] };
+        assert_eq!(cells[4..], expected, "published capabilities: {stdout}");
+        assert!(server.requests().is_empty(), "listing must not generate");
+    }
 }
 
 #[test]

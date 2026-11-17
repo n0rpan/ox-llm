@@ -1,4 +1,4 @@
-//! A9 acceptance tests: bwrap sandbox and bash tool. Owner: task A9.
+//! A9 acceptance tests: bwrap sandbox and bash tool.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -599,6 +599,7 @@ fn bash_tool_refuses_without_sandbox() {
     let cancel = CancelToken::new();
     let sb = oxa_sandbox::NoSandbox;
     let cx = oxa_proto::ToolCtx {
+        checked: &[],
         cwd: &home,
         spill_dir: &home,
         sandbox: &sb,
@@ -606,6 +607,7 @@ fn bash_tool_refuses_without_sandbox() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let marker = home.join("ran");
     let cmd = format!("touch {}", marker.display());
@@ -628,6 +630,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
     std::fs::create_dir_all(&cwd).unwrap();
     let cancel = CancelToken::new();
     let cx = oxa_proto::ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &cwd,
         sandbox: &sb,
@@ -635,6 +638,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let tool = oxa_tools::BashTool::new();
     let run = |args: serde_json::Value| tool.run(&args, &cx, &mut |_| {});
@@ -652,10 +656,38 @@ fn bash_tool_exit_code_and_timeout_lines() {
     assert_eq!(out.text, "(no output)");
 
     let notice = sb.persistence_notice().unwrap();
-    for command in ["echo TMPDIR", "echo /tmp"] {
+    // A successful command that only reads or mentions /tmp gets no notice (#532) ...
+    for command in [
+        "echo TMPDIR",
+        "echo /tmp",
+        "grep -n '\"/tmp\"' /dev/null || true",
+        "ls /tmp >/dev/null 2>&1; echo $TMPDIR",
+        "printf '%s\\n' x | grep -o x; echo /tmp",
+        "printf '%s\\n' '->' | grep -- '->'; echo /tmp",
+    ] {
         let out = run(serde_json::json!({ "command": command }));
         assert!(!out.is_error, "{}", out.text);
-        assert!(out.text.ends_with(notice), "{}", out.text);
+        assert!(!out.text.contains(notice), "{command}: {}", out.text);
+    }
+    // ... one that writes there does.
+    for command in [
+        "echo x > /tmp/oxa-532",
+        "mktemp -p /tmp oxa-532.XXXXXX",
+        "touch /tmp/oxa-532",
+        "cd /tmp && printf '%s\\n' x >oxa-532",
+        "TMPDIR=/tmp; cd $TMPDIR && mkdir oxa-532",
+        "printf x >/tmp/oxa-532; sed -i 's/x/y/' /tmp/oxa-532",
+        "printf x | sort -o/tmp/oxa-532",
+    ] {
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(!out.is_error, "{}", out.text);
+        assert!(out.text.ends_with(notice), "{command}: {}", out.text);
+    }
+    // A failing command also gets a notice, since the scratch lifetime may be the cause (#525).
+    for command in ["cat /tmp/oxa-525-missing", "echo TMPDIR; exit 1"] {
+        let out = run(serde_json::json!({ "command": command }));
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains(notice), "{}", out.text);
     }
     for error in [
         "Read-only file system",
@@ -682,7 +714,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
     );
     assert!(!out.is_error, "{}", out.text);
     assert_eq!(live, "scratch\n");
-    assert!(out.text.contains("discarded after each command"));
+    assert!(out.text.ends_with(notice), "{}", out.text);
     let out = run(serde_json::json!({ "command": "test ! -e /tmp/oxa-98-tool" }));
     assert!(!out.is_error, "{}", out.text);
     let out = run(serde_json::json!({ "command": "echo lost > ~/oxa-98-tool" }));
@@ -697,6 +729,42 @@ fn bash_tool_exit_code_and_timeout_lines() {
     assert_eq!(a.text, "a\n\n\nCommand timed out after 1 seconds");
     assert_eq!(a.text, b.text);
     assert_eq!(a.ui, serde_json::json!({ "exit": null, "timedOut": true }));
+}
+
+/// Failed reads still need the hint: per-command scratch vanished, not a permission error.
+#[test]
+fn bash_tool_explains_discarded_scratch() {
+    use oxa_proto::Tool;
+    let env = TestEnv::new();
+    let Some(sb) = sandbox_for(&env) else { return };
+    let cwd = env.home().join("work");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let cancel = CancelToken::new();
+    let cx = oxa_proto::ToolCtx {
+        checked: &[],
+        cwd: &cwd,
+        spill_dir: &cwd,
+        sandbox: &sb,
+        mode: oxa_proto::Mode::Workspace,
+        cancel: &cancel,
+        env: &[],
+        tune: Default::default(),
+        hidden: None,
+    };
+    let tool = oxa_tools::BashTool::new();
+    let run = |command: &str| tool.run(&serde_json::json!({ "command": command }), &cx, &mut |_| {});
+    assert!(!run("echo scratch > /tmp/oxa-532").is_error);
+    let notice = sb.persistence_notice().unwrap();
+    let out = run("cat /tmp/oxa-532");
+    assert!(out.is_error);
+    assert!(out.text.contains("No such file or directory"));
+    assert!(out.text.contains(notice));
+    // No output at all must work too, for both spellings of the scratch directory.
+    for command in ["test -f /tmp/oxa-532", "test -f $TMPDIR/oxa-532"] {
+        let out = run(command);
+        assert!(out.is_error);
+        assert!(out.text.contains(notice));
+    }
 }
 
 /// writable = false
