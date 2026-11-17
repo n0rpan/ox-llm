@@ -16,6 +16,7 @@ pub trait AssignmentMirror {
 
 /// `assignee` comes from authoritative core state, including None after lease end.
 /// None authority is default-off: it performs neither reads nor writes.
+/// The final worker ID component must fit GitHub's 50-character `worker:` label.
 /// On failure, retry from a fresh authoritative assignment and fresh observation.
 pub fn reconcile(
     number: u64,
@@ -29,8 +30,11 @@ pub fn reconcile(
     if number == 0 || assignee.is_some_and(|id| !valid_worker_id(id)) {
         return Err("invalid mirror item or assignee".into());
     }
+    if assignee.is_some_and(|id| id.rsplit([':', '/']).next().unwrap_or_default().len() > 43) {
+        return Err("mirror worker alias exceeds 43 characters".into());
+    }
     let observed = sink.observe(number)?;
-    let plan = MirrorPlan::derive(assignee, &observed)?;
+    let mut plan = MirrorPlan::derive(assignee, &observed)?;
     for label in &plan.remove_labels {
         sink.remove_worker_label(number, label)?;
     }
@@ -45,6 +49,8 @@ pub fn reconcile(
     if let Some(worker) = worker {
         if sink.project_worker(number)?.as_deref() != worker {
             sink.set_project_worker(number, worker)?;
+        } else {
+            plan.project_worker = ProjectWorker::Unchanged;
         }
     }
     Ok(Some(plan))

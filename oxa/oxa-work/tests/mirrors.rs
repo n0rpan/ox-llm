@@ -100,6 +100,12 @@ fn authoritative_reassignment_preserves_other_labels_and_is_idempotent() {
         ["release-pinned", "review:t3"].map(str::to_owned).into()
     );
     assert!(sink.worker.is_none());
+    let writes = sink.writes;
+    let plan = reconcile(42, None, Some(ManualAuthority::Lead), &mut sink)
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.project_worker, ProjectWorker::Unchanged);
+    assert_eq!(sink.writes, writes);
 }
 
 #[test]
@@ -124,4 +130,7 @@ fn overlong_mirror_alias_is_refused_before_io() {
     let id = format!("codex:fixture/{}", "a".repeat(44));
     assert!(reconcile(42, Some(&id), Some(ManualAuthority::Owner), &mut sink).is_err());
     assert_eq!((sink.reads, sink.writes), (0, 0));
+    let id = format!("codex:fixture/{}", "a".repeat(43));
+    reconcile(42, Some(&id), Some(ManualAuthority::Owner), &mut sink).unwrap();
+    assert_eq!(sink.labels.iter().next().unwrap().len(), 50);
 }
