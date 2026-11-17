@@ -6,14 +6,18 @@ use std::process::Command;
 const PTY_CLOSE: &str = r#"
 import os, pty, select, signal, subprocess, sys, time
 master, slave = pty.openpty()
-child = subprocess.Popen([sys.argv[1], '--yolo', '--model', 'fake-model', '--no-mcp',
-    '--no-extensions', '--no-skills', '--no-context-files'],
+args = [sys.argv[1], '--yolo', '--model', 'fake-model', '--no-mcp',
+    '--no-extensions', '--no-skills']
+if not sys.argv[2].startswith('trust-'):
+    args += ['--no-context-files']
+child = subprocess.Popen(args,
     stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
 try:
     output = b''
     deadline = time.monotonic() + 15
-    while b'READY' not in output:
+    ready = b'Project trust:' if sys.argv[2].startswith('trust-') else b'READY'
+    while ready not in output:
         assert child.poll() is None, 'interactive process exited before READY'
         assert time.monotonic() < deadline, 'interactive startup deadline'
         if select.select([master], [], [], .1)[0]:
@@ -26,7 +30,7 @@ try:
             assert time.monotonic() < deadline, 'tool admission deadline'
             if select.select([master], [], [], .1)[0]:
                 output += os.read(master, 65536)
-    if sys.argv[2] == 'signal':
+    if sys.argv[2] in ['signal', 'trust-signal']:
         child.send_signal(signal.SIGHUP)
     else:
         # No controlling terminal: closing the master isolates EOF/EIO from automatic SIGHUP.
@@ -47,6 +51,14 @@ finally:
 
 fn terminal_loss(case: &str) {
     let env = TestEnv::new();
+    if case.starts_with("trust-") {
+        std::fs::create_dir_all(env.work().join(".oxa")).unwrap();
+        std::fs::write(
+            env.work().join(".oxa/APPEND_SYSTEM.md"),
+            "synthetic gated context",
+        )
+        .unwrap();
+    }
     let turns = if case == "tool" {
         vec![ScriptTurn::tool(
             "sleeping",
@@ -85,7 +97,10 @@ fn terminal_loss(case: &str) {
         );
     }
     let sessions = FsStore::new(env.agent_dir().join("sessions")).list(None);
-    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions.len(), usize::from(!case.starts_with("trust-")));
+    if case.starts_with("trust-") {
+        assert!(!oxa_config::Dirs::under(env.root()).trust_file().exists());
+    }
 }
 
 #[test]
@@ -152,4 +167,14 @@ finally:
         );
         assert!(server.requests().is_empty());
     }
+}
+
+#[test]
+fn terminal_loss_during_project_trust_exits_without_approval() {
+    terminal_loss("trust-eof");
+}
+
+#[test]
+fn sighup_during_project_trust_exits_without_approval() {
+    terminal_loss("trust-signal");
 }
