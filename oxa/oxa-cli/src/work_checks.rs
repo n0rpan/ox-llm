@@ -78,6 +78,31 @@ pub(crate) fn run(
             }
             return Ok(i32::from(result.exit != Some(0)));
         }
+        // Only a fast-forward: the branch's own commits or the published head, never a
+        // rewrite. A tip that does not apply leaves the retained commits untouched.
+        SupervisorOperation::FastForward { tip } => {
+            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            let spec = ExecSpec {
+                command: format!(
+                    "git --no-replace-objects merge --ff-only --no-edit -- '{}'",
+                    tip.replace('\'', "'\\''")
+                ),
+                cwd: root,
+                writable: true,
+                net: sandbox.network(),
+                timeout_s: Some(600),
+                env: git_environment(),
+            };
+            let mut tail = Vec::new();
+            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+                keep_tail(&mut tail, bytes, 8192);
+            });
+            err.write_all(&tail).map_err(|e| e.to_string())?;
+            if result.timed_out || result.exit.is_none() {
+                return Err("sandboxed fast-forward did not complete; worktree retained".into());
+            }
+            return Ok(i32::from(result.exit != Some(0)));
+        }
         SupervisorOperation::Save { task_id } => {
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
             let message = format!("oxa work: save task {task_id}").replace('\'', "'\\''");

@@ -80,6 +80,84 @@ pub(crate) fn validate(policy: &RunPolicy, repo: &Path, tree: &Path, task: &Task
     Ok(())
 }
 
+/// A retained worktree that still sits on an older commit of the branch whose
+/// pushed head moved on would make the worker audit an obsolete tree. Start it
+/// at that published head, through the sandboxed supervisor and only as a
+/// fast-forward an ordinary merge performs. A tip that is not strictly ahead or
+/// a dangling tracking ref keeps the retained commits; the sandboxed
+/// fast-forward refuses the resume if it cannot apply.
+fn advance_retained(
+    repo: &Path,
+    tree: &Path,
+    branch: &str,
+    local: &str,
+    binary: &Path,
+    policy: &RunPolicy,
+    lock: &fs::File,
+) -> Result<()> {
+    let Some(tip) = pushed_head(policy, repo, branch, local)? else {
+        return Ok(());
+    };
+    let advanced = supervise(
+        binary,
+        tree,
+        SupervisorRequest {
+            source: repo.to_path_buf(),
+            operation: SupervisorOperation::FastForward { tip },
+        },
+        policy,
+        lock,
+    )?;
+    if advanced.status.success() {
+        return Ok(());
+    }
+    // A concurrent push can make the tip non-fast-forward; never rewrite then.
+    Err(format!(
+        "pushed head is no longer a fast-forward of the retained worktree: {}",
+        String::from_utf8_lossy(&advanced.stderr)
+    ))
+}
+
+/// The published task branch may have moved on since this worktree was retained.
+/// Return the lone remote-tracking tip of the same branch that strictly extends
+/// the local commit. No fetch or force update runs, and a tip that is not ahead,
+/// several diverging tips, or a dangling tracking ref keep the local commits.
+fn pushed_head(policy: &RunPolicy, repo: &Path, branch: &str, local: &str) -> Result<Option<String>> {
+    let pattern = format!("refs/remotes/*/{branch}");
+    let tracking = checked(git(
+        policy,
+        repo,
+        &["for-each-ref", "--format=%(refname)", &pattern],
+    ))?;
+    let mut ahead = Vec::new();
+    for name in tracking.lines().filter(|name| !name.ends_with("/HEAD")) {
+        // A stale or dangling tracking ref is ignored, not turned into a block.
+        let read = output(git(
+            policy,
+            repo,
+            &["rev-parse", "--verify", &format!("{name}^{{commit}}")],
+        ))?;
+        if !read.status.success() {
+            continue;
+        }
+        let tip = String::from_utf8_lossy(&read.stdout).trim().to_owned();
+        if tip != local
+            && output(git(policy, repo, &["merge-base", "--is-ancestor", local, &tip]))?
+                .status
+                .code()
+                == Some(0)
+        {
+            ahead.push(tip);
+        }
+    }
+    ahead.sort();
+    ahead.dedup();
+    Ok(match ahead.as_slice() {
+        [tip] => Some(tip.clone()),
+        _ => None,
+    })
+}
+
 pub(crate) fn prepare(
     repo: &Path,
     tree: &Path,
@@ -140,7 +218,7 @@ pub(crate) fn prepare(
             return Err(format!("retained worktree has {operation} in progress"));
         }
     }
-    let initial = checked(git(policy, tree, &["rev-parse", "HEAD"]))?;
+    let mut initial = checked(git(policy, tree, &["rev-parse", "HEAD"]))?;
     if merging(policy, tree)? {
         return Ok(Prepared {
             initial,
@@ -149,6 +227,11 @@ pub(crate) fn prepare(
     }
     if retained && dirty_worktree(binary, tree, repo, policy, lock)? {
         return Err("retained worktree has uncommitted changes; worker was not restarted".into());
+    }
+    if retained {
+        // A resumed PR must audit its published head, not the checkout an earlier run left.
+        advance_retained(repo, tree, &task.branch, &initial, binary, policy, lock)?;
+        initial = checked(git(policy, tree, &["rev-parse", "HEAD"]))?;
     }
     let merged = supervise(
         binary,

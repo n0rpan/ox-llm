@@ -147,8 +147,13 @@ change requires a new ID. Unsupported or corrupt checkpoints are preserved and
 refused. A matching linked worktree is reused; the
 source checkout is never used as the task worktree. An existing branch checked
 out elsewhere is blocked. Dirty retained work is preserved and saved before
-retrying. A clean retained branch gets an ordinary sandboxed
-merge of the captured base; no reset, stash, force checkout or automatic fetch runs.
+retrying. A clean retained branch whose pushed head strictly extends its local
+commit starts at that published head through a sandboxed fast-forward, so a
+resumed PR audits its current head instead of the checkout an earlier run left.
+A tip that is not ahead, several diverging tips or a dangling tracking ref keep
+the local commits. The captured base is then
+integrated with an ordinary sandboxed merge; no reset, stash, force checkout or
+automatic fetch runs.
 
 An unfinished merge is passed to the worker with its old pending commit, the
 captured current base and at most twenty conflicted paths. The worker must finish

@@ -315,6 +315,7 @@ pub struct SupervisorRequest {
 pub enum SupervisorOperation {
     Checkout { branch: String, create: bool },
     Merge { base: String },
+    FastForward { tip: String },
     Save { task_id: String },
     Checks { commands: Vec<String> },
     Inspect,

@@ -3,7 +3,7 @@
 mod work;
 use oxa_fake::{ScriptTurn, TestEnv};
 use std::path::{Path, PathBuf};
-use work::{git, run, run_observed, setup};
+use work::{git, run, run_args, run_observed, setup};
 
 fn project(env: &TestEnv) -> PathBuf {
     env.work().join("project")
@@ -27,6 +27,30 @@ fn diverge(env: &TestEnv, conflict: bool) {
 }
 fn tree(record: &serde_json::Value) -> &Path {
     Path::new(record["worktree"].as_str().unwrap())
+}
+/// Publish `agent/test` from a second clone and update the source checkout's
+/// remote-tracking ref, without touching the retained task worktree. With `from`
+/// the pushed branch starts there instead of at the local task branch.
+fn push_elsewhere(env: &TestEnv, from: Option<&str>, file: &str, content: &str) -> String {
+    let other = env.work().join("elsewhere");
+    git(env, &env.work(), &["clone", "remote.git", "elsewhere"]);
+    git(env, &other, &["config", "user.name", "Test"]);
+    git(env, &other, &["config", "user.email", "test@example.invalid"]);
+    match from {
+        Some(rev) => {
+            git(env, &other, &["checkout", "-b", "agent/test", rev]);
+        }
+        None => {
+            git(env, &project(env), &["push", "origin", "agent/test"]);
+            git(env, &other, &["checkout", "agent/test"]);
+        }
+    }
+    env.write(&format!("work/elsewhere/{file}"), content);
+    git(env, &other, &["add", file]);
+    git(env, &other, &["commit", "-m", "pushed elsewhere"]);
+    git(env, &other, &["push", "origin", "agent/test"]);
+    git(env, &project(env), &["fetch", "origin"]);
+    git(env, &other, &["rev-parse", "HEAD"])
 }
 fn merge_head(env: &TestEnv, root: &Path) -> PathBuf {
     PathBuf::from(git(
@@ -169,6 +193,66 @@ fn dirty_retained_worktree_is_blocked_without_dropping_edits() {
         "new retained edits"
     );
 }
+#[test]
+fn resumed_worktree_starts_at_the_pushed_pr_head() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    trust(&env);
+    let first = run(
+        &env,
+        vec![
+            ScriptTurn::tool("write", "write", r#"{"path":"local.txt","content":"own work"}"#),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(first["outcome"], "done", "{first}");
+    let local = git(&env, tree(&first), &["rev-parse", "HEAD"]);
+    let pushed = push_elsewhere(&env, None, "pushed.txt", "pushed elsewhere\n");
+    assert_ne!(local, pushed);
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("nothing new")],
+        &["work", "../tasks.json", "--rerun"],
+        None,
+    );
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), pushed);
+    assert!(tree(&record).join("pushed.txt").exists());
+    assert!(tree(&record).join("local.txt").exists());
+    assert!(!project(&env).join("pushed.txt").exists());
+}
+
+#[test]
+fn resumed_worktree_never_drops_a_local_commit_the_pushed_head_lacks() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    trust(&env);
+    let first = run(
+        &env,
+        vec![
+            ScriptTurn::tool("local", "write", r#"{"path":"local.txt","content":"own work"}"#),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(first["outcome"], "done", "{first}");
+    let local = git(&env, tree(&first), &["rev-parse", "HEAD"]);
+    push_elsewhere(&env, Some("origin/main"), "other.txt", "other work\n");
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("still nothing")],
+        &["work", "../tasks.json", "--rerun"],
+        None,
+    );
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), local);
+    assert_eq!(
+        git(&env, tree(&record), &["rev-list", "--parents", "-n", "1", "HEAD"])
+            .split_whitespace()
+            .count(),
+        2
+    );
+}
+
 #[test]
 fn continued_branch_cannot_replace_base_acceptance_commands() {
     let env = TestEnv::new();
