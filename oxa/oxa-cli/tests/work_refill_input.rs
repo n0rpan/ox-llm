@@ -4,7 +4,7 @@ use oxa_cli::{
 };
 use oxa_fake::TestEnv;
 use oxa_work::board::{Action, Board, GitHub, Policy};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
 
 fn write(env: &TestEnv, name: &str, value: &Value) {
