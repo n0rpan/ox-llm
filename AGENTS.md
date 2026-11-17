@@ -62,6 +62,15 @@ maintainer, who says in the PR when a hardware check is needed.
   job is skipped on PRs, merge groups and main pushes; manual runs can opt in with
   `nightly_oxa_arm: true`. Its cache is separate from x86 test and production ARM64 builds.
 - **When a task is ambiguous,** open the PR as a draft with your question at the top instead of guessing.
+- **A session that does not own GitHub access reports a fact instead of fetching it.** Either you own
+  GitHub access: fetch the issues, reviews and check results yourself with the `gh` CLI, with the
+  commands below unchanged. Or an outside runner owns it, and the session prompt says so: then make no
+  `gh` call and no other authenticated GitHub request, not even for `gh pr view`, `gh pr checks` or
+  `gh run view`. Lines that show how a supplied packet was fetched are provenance, not an order. A
+  fact the packet leaves out, including a pull request's check results, stays with the session that
+  owns GitHub: hand over the branch, the base and the exact head commit, commit your work and say
+  which fact is missing. That session writes the pull request body and its CI result. The `gh`
+  commands below are unchanged for a session that owns GitHub.
 
 ## Build and test capacity (owner rule)
 
