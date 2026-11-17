@@ -32,7 +32,8 @@ fn jobs_lists_stops_and_counts_in_the_hud() {
             ..RigOpts::default()
         },
     );
-    rig.pty.wait_for_text("ctrl+d exit").unwrap();
+    // The OXA skin's own status bar (its hint line drops the exit hint at this width).
+    rig.pty.wait_for_text("OXA │").unwrap();
     assert!(
         !rig.screen().contains("JOBS"),
         "no jobs at the start: {:?}",
