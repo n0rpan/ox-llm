@@ -6,6 +6,7 @@ The engine notes carry their measurements inline and have no public receipt of t
 
 | Note | Date | Outcome | Receipt |
 |---|---|---|---|
+| [IDLE-WAKE.md](IDLE-WAKE.md) | 2026-11-17 | Design only, no runtime change: replace the server's 50 ms SIGTERM flag poll with an async-signal-safe blocking wake, and qualify a state-dependent client watcher cadence. Needs an engine-owner go before any engine edit. | none (design) |
 | [M0.md](M0.md) | 2026-11-11 | Roofline probe for `oxe`: a timing-only runner for the static per-token plan (about 171 barriers); the design's kill test, superseded by M1. | none (in-note) |
 | [M0-FLASH.md](M0-FLASH.md) | 2026-11-11 | Flash timing prototype with real weights, a static plan and SSD expert streaming. Numerics were not checked; superseded by M1-FLASH. | none (in-note) |
 | [M1.md](M1.md) | 2026-11-11 | Real `qwen35moe` decode math: the gate passed on Ornith, with every traced tensor and logit row bit-identical to llama.cpp. | none (in-note) |
