@@ -31,6 +31,9 @@ pub enum Error {
     Unavailable,
     Corrupt,
     Full,
+    Busy,
+    RequestLimit,
+    TokenLimit,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -40,6 +43,9 @@ impl fmt::Display for Error {
             Self::Unavailable => "Guest key storage is unavailable.",
             Self::Corrupt => "Guest key registry is invalid.",
             Self::Full => "Guest key registry is full.",
+            Self::Busy => "Guest key storage is busy.",
+            Self::RequestLimit => "Guest daily request limit reached.",
+            Self::TokenLimit => "Guest daily token limit reached.",
         })
     }
 }
@@ -86,8 +92,9 @@ pub struct Created {
 }
 
 /// Binds an existing trusted private directory. No key bytes are retained here.
+#[derive(Clone)]
 pub struct Store {
-    directory: File,
+    directory: std::sync::Arc<File>,
 }
 impl fmt::Debug for Store {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -104,6 +111,16 @@ impl Store {
     /// The caller creates this absolute directory with mode 0700 outside repositories.
     /// Refuse parent links too: a trusted spelling must name the actual directory.
     pub fn open(directory: &Path) -> Result<Self, Error> {
+        Self::directory(directory, false)
+    }
+
+    /// Create missing private directories for an explicit owner key command.
+    /// Existing unsafe directories are refused, never chmodded or repaired.
+    pub fn initialize(directory: &Path) -> Result<Self, Error> {
+        Self::directory(directory, true)
+    }
+
+    fn directory(directory: &Path, create: bool) -> Result<Self, Error> {
         if !directory.is_absolute() {
             return Err(Error::Invalid);
         }
@@ -119,6 +136,15 @@ impl Store {
             match component {
                 Component::RootDir => continue,
                 Component::Normal(name) => {
+                    if create {
+                        match nix::sys::stat::mkdirat(&parent, name, Mode::S_IRWXU) {
+                            Ok(()) | Err(Errno::EEXIST) => (),
+                            Err(_) => return Err(Error::Unavailable),
+                        }
+                        // Also sync on retry: a prior mkdir may be visible even
+                        // though its parent sync failed before acknowledgement.
+                        parent.sync_all().map_err(|_| Error::Unavailable)?;
+                    }
                     parent = openat(
                         &parent,
                         name,
@@ -133,16 +159,29 @@ impl Store {
         }
         refuse_repository(&parent)?;
         check_directory(&parent)?;
-        Ok(Self { directory: parent })
+        Ok(Self {
+            directory: std::sync::Arc::new(parent),
+        })
     }
 
     /// Each operation takes the same stable lock, including readers, so revoked
     /// keys cannot be accepted from a cached registry. No lock crosses network I/O.
     fn lock(&self) -> Result<Flock<File>, Error> {
+        self.lock_with(FlockArg::LockExclusive)
+    }
+
+    pub(super) fn try_lock(&self) -> Result<Flock<File>, Error> {
+        self.lock_with(FlockArg::LockExclusiveNonblock)
+    }
+
+    fn lock_with(&self, mode: FlockArg) -> Result<Flock<File>, Error> {
         check_directory(&self.directory)?;
         let file = self.file("share-keys.lock", OFlag::O_RDWR | OFlag::O_CREAT)?;
         check_file(&file)?;
-        let lock = Flock::lock(file, FlockArg::LockExclusive).map_err(|_| Error::Unavailable)?;
+        let lock = Flock::lock(file, mode).map_err(|(_, e)| match e {
+            Errno::EWOULDBLOCK => Error::Busy,
+            _ => Error::Unavailable,
+        })?;
         check_file(&lock)?;
         check_directory(&self.directory)?;
         Ok(lock)
@@ -163,14 +202,19 @@ impl Store {
     }
 
     fn read(&self) -> Result<Vec<Record>, Error> {
+        self.read_bytes(REGISTRY)?
+            .map_or_else(|| Ok(Vec::new()), |bytes| decode(&bytes))
+    }
+
+    pub(super) fn read_bytes(&self, name: &str) -> Result<Option<Vec<u8>>, Error> {
         let file = match openat(
             &self.directory,
-            REGISTRY,
+            name,
             OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC | OFlag::O_NONBLOCK,
             Mode::empty(),
         ) {
             Ok(fd) => File::from(fd),
-            Err(Errno::ENOENT) => return Ok(Vec::new()),
+            Err(Errno::ENOENT) => return Ok(None),
             Err(Errno::ELOOP) => return Err(Error::Unsafe),
             Err(_) => return Err(Error::Unavailable),
         };
@@ -185,7 +229,7 @@ impl Store {
         if bytes.len() > MAX_BYTES {
             return Err(Error::Corrupt);
         }
-        decode(&bytes)
+        Ok(Some(bytes))
     }
 
     fn write(&self, records: &[Record]) -> Result<(), Error> {
@@ -202,6 +246,10 @@ impl Store {
             })
             .collect();
         let bytes = serde_json::to_vec(&json!({"version":1,"keys":rows})).map_err(|_| Error::Corrupt)?;
+        self.write_bytes(REGISTRY, &bytes)
+    }
+
+    pub(super) fn write_bytes(&self, destination: &str, bytes: &[u8]) -> Result<(), Error> {
         if bytes.len() > MAX_BYTES {
             return Err(Error::Full);
         }
@@ -211,9 +259,9 @@ impl Store {
         let mut file = self.file(&name, OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_EXCL)?;
         let result = (|| {
             check_file(&file)?;
-            file.write_all(&bytes).map_err(|_| Error::Unavailable)?;
+            file.write_all(bytes).map_err(|_| Error::Unavailable)?;
             file.sync_all().map_err(|_| Error::Unavailable)?;
-            renameat(&self.directory, name.as_str(), &self.directory, REGISTRY)
+            renameat(&self.directory, name.as_str(), &self.directory, destination)
                 .map_err(|_| Error::Unavailable)?;
             self.directory.sync_all().map_err(|_| Error::Unavailable)
         })();
@@ -284,10 +332,20 @@ impl Store {
     /// Verify fixed-size tags using the crypto library's constant-time primitive.
     /// Scan every record, avoiding an early exit based on the matching position.
     pub fn authenticate(&self, bearer: &str) -> Result<Option<KeyInfo>, Error> {
+        let _lock = self.lock()?;
+        self.find_key(bearer)
+    }
+
+    /// Listener admission never waits on another process's storage lock.
+    pub fn try_authenticate(&self, bearer: &str) -> Result<Option<KeyInfo>, Error> {
+        let _lock = self.try_lock()?;
+        self.find_key(bearer)
+    }
+
+    pub(super) fn find_key(&self, bearer: &str) -> Result<Option<KeyInfo>, Error> {
         if !valid_hex(bearer, 64) {
             return Ok(None);
         }
-        let _lock = self.lock()?;
         let mut found = None;
         for record in self.read()? {
             let mut mac = Digest::new_from_slice(DOMAIN).expect("HMAC accepts any key length");

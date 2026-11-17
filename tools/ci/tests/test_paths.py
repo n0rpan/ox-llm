@@ -19,6 +19,7 @@ class Paths(unittest.TestCase):
                                       ('conformance', {'cli'}),
                                       ('oxa/oxc-gateway', {'oxa', 'gateway'}),
                                       ('oxa/oxa-engine', {'oxa', 'gateway'}),
+                                      ('oxa/oxa-cli', {'oxa', 'gateway'}),
                                       ('oxa/oxa-proto', {'oxa', 'gateway'}),
                                       ('fuzz/oxa', {'oxa'}), ('fuzz/oxe', {'engine'})):
             for suffix in ('src/code.rs', 'tests/test_unit.py', 'Cargo.lock'):

@@ -1,9 +1,9 @@
 //! Opt-in, engine-independent cloud gateway building blocks.
 #![forbid(unsafe_code)]
 #[cfg(feature = "anthropic-gateway")]
-mod anthropic_replay;
-#[cfg(feature = "anthropic-gateway")]
 pub mod gateway;
+#[cfg(feature = "anthropic-gateway")]
+mod history;
 #[cfg(feature = "anthropic-gateway")]
 pub mod runtime;
 #[cfg(feature = "share")]
@@ -11,21 +11,23 @@ pub mod share;
 
 #[cfg(feature = "cloud-only")]
 pub mod catalog;
-pub mod discovery_cache;
 #[cfg(feature = "ledger")]
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]
 pub mod openai;
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+pub mod opencode;
 #[cfg(feature = "policy")]
 pub mod policy;
 #[cfg(feature = "pricing")]
 pub mod pricing;
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod rate_limits;
-pub mod refresh;
 
 #[cfg(feature = "accounting")]
 pub mod accounting;
+#[cfg(feature = "accounting")]
+pub mod billing;
 #[cfg(feature = "accounting")]
 mod reservations;
 #[cfg(feature = "accounting")]
@@ -43,8 +45,19 @@ pub mod anthropic_stream;
 
 #[cfg(feature = "anthropic-client")]
 pub mod anthropic_client;
+#[cfg(feature = "anthropic-client")]
+mod sse;
 
 #[cfg(all(feature = "anthropic-client", feature = "pricing"))]
 pub mod openrouter;
 #[cfg(all(feature = "anthropic-client", feature = "pricing"))]
 pub mod status;
+
+/// Private, opt-in trusted-terminal diagnostic facts.
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+pub mod diagnostics;
+
+#[cfg(all(test, any(feature = "upstream-openai", feature = "anthropic-gateway")))]
+#[allow(dead_code)]
+#[path = "../tests/common/openai.rs"]
+pub(crate) mod mock_openai;

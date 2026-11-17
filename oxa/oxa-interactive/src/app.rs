@@ -362,8 +362,9 @@ pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(50);
 ///
 /// Key rules (pi): Enter while a run is active = steer, Alt+Enter = follow-up
 /// (`Handle::steer` / `Handle::follow_up`); Escape = abort (`Handle::abort`), or
-/// `Handle::abort_retry` during a retry wait; Ctrl+C clears the editor, twice = quit; Ctrl+D on
-/// an empty editor = quit; `!cmd` and `!!cmd` become `SessionCmd::UserBash`.
+/// `Handle::abort_retry` during a retry wait; Ctrl+C aborts an active turn too. While idle,
+/// Ctrl+C clears the editor, or on empty input hints then quits on a second press within
+/// two seconds. Ctrl+D on an empty editor quits; `!cmd` / `!!cmd` become `SessionCmd::UserBash`.
 pub fn run_loop(
     term: &mut dyn Terminal,
     opts: &mut InteractiveOpts,
@@ -422,7 +423,16 @@ fn drive(
         lp.poll_asks();
 
         let animating = lp.animating();
-        let events = term.poll(if animating { 16 } else { 250 });
+        // A pending frame (including the first editable prompt) must not wait behind
+        // the idle input timeout. Still drain input first so it sees the latest state.
+        let wait_ms = if lp.dirty {
+            0
+        } else if animating {
+            16
+        } else {
+            250
+        };
+        let events = term.poll(wait_ms);
         for ev in events {
             lp.input(term, ev);
         }
@@ -1497,6 +1507,36 @@ fn execute(
     out: &Sender<WorkerMsg>,
 ) -> (Result<(), OxaError>, bool) {
     match cmd {
+        SessionCmd::QueuedInput(handle) => {
+            handle.clear_queued_wake();
+            let (steering, follow_up) = handle.queued();
+            // A failed/blocked/interrupted run retains queued input for explicit recovery.
+            // A wake may bridge successful completion, never override that stop boundary.
+            let can_continue = matches!(
+                s.outcome(),
+                oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo
+            );
+            let result = if handle.same_instance(&s.handle())
+                && can_continue
+                && (!steering.is_empty() || !follow_up.is_empty())
+            {
+                s.run_queued(sink, ui).map(|_| ())
+            } else {
+                Ok(())
+            };
+            (result, false)
+        }
+        SessionCmd::Inbox { session_id } => {
+            s.handle().clear_inbox_wake();
+            // A coalesced wake may carry an older destination. Only run the
+            // current session's bound input, never that destination's queue.
+            let result = if s.inner().sref.id == session_id || s.handle().has_inbox_input() {
+                s.run_queued(sink, ui).map(|_| ())
+            } else {
+                Ok(())
+            };
+            (result, false)
+        }
         SessionCmd::Prompt { text, parts } => (run_prompt(s, text, parts, sink, ui), false),
         SessionCmd::Compact { instructions } => {
             let mut watch = StartWatch {
@@ -2397,3 +2437,6 @@ mod toolcall_stream_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod steering_tests;

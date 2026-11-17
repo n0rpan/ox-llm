@@ -21,6 +21,8 @@ pub struct Request {
     pub method: String,
     pub target: String,
     pub body: Value,
+    #[allow(dead_code)] // Used by replay transport consumers of this shared fixture.
+    pub body_bytes: Vec<u8>,
     headers: BTreeMap<String, String>,
 }
 impl Request {
@@ -45,9 +47,40 @@ pub struct Reply {
     headers: Vec<(&'static str, String)>,
     bytes: Vec<u8>,
     fragment: usize,
+    pub truncate_transfer: bool,
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
+    #[allow(dead_code)] // Shared fixture constructor; not every consumer refreshes tokens.
+    pub fn json(value: Value) -> Self {
+        Self {
+            status: 200,
+            content_type: "application/json",
+            headers: vec![],
+            bytes: value.to_string().into_bytes(),
+            fragment: 7,
+            truncate_transfer: false,
+            gate: None,
+        }
+    }
+    #[allow(dead_code)] // Shared fixture constructor for transport boundary cases.
+    pub fn raw(
+        status: u16,
+        content_type: &'static str,
+        bytes: Vec<u8>,
+        headers: Vec<(&'static str, String)>,
+    ) -> Self {
+        Self {
+            status,
+            content_type,
+            bytes,
+            headers,
+            fragment: 1024,
+            truncate_transfer: false,
+            gate: None,
+        }
+    }
+
     /// Script native Responses events, fragmented across HTTP chunks.
     pub fn events(events: Vec<Value>) -> Self {
         let mut bytes = Vec::new();
@@ -62,6 +95,7 @@ impl Reply {
             headers: Vec::new(),
             bytes,
             fragment: 7,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -74,6 +108,7 @@ impl Reply {
                 .to_string()
                 .into_bytes(),
             fragment: 7,
+            truncate_transfer: false,
             gate: None,
         }
     }
@@ -83,6 +118,18 @@ impl Reply {
             headers: vec![("Retry-After", retry_after_seconds.to_string())],
             ..Self::error(429, "insufficient_quota", "synthetic quota exhausted")
         }
+    }
+    /// Synthetic private subscription usage reply; no credentials or live service.
+    #[allow(dead_code)] // Shared constructor; only usage-parser tests consume it.
+    pub fn chatgpt_usage() -> Self {
+        Self::json(json!({
+            "plan_type": "synthetic-plan",
+            "rate_limit": {
+                "primary_window": {"used_percent": 12.5, "reset_at": 1_800_000_000},
+                "secondary_window": {"used_percent": 75, "reset_at": 1_800_600_000}
+            },
+            "credits": {"has_credits": true, "unlimited": false, "balance": "42.50"}
+        }))
     }
     /// #450: three parallel calls with all arguments delivered as deltas.
     /// Completed output is empty; output_item.done is authoritative.
@@ -167,11 +214,52 @@ enum ArgumentDeltas {
     Partial,
 }
 
+// Closed test-only facts; never retain io::Error display text or request data.
+#[derive(Clone, Copy, Debug)]
+enum IoPhase {
+    Accept,
+    RequestRead,
+    ReplyGate,
+    ReplyWrite,
+    UnexpectedRequest,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReplyPart {
+    Headers,
+    HeaderEnd,
+    ChunkHeader,
+    ChunkPayload,
+    ChunkEnd,
+    Flush,
+    TransferEnd,
+}
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HealthFailure {
+    phase: IoPhase,
+    pub(super) kind: Option<io::ErrorKind>,
+    pub(super) part: Option<ReplyPart>,
+}
+impl HealthFailure {
+    fn io(phase: IoPhase, error: io::Error) -> Self {
+        Self {
+            phase,
+            kind: Some(error.kind()),
+            part: None,
+        }
+    }
+    fn reply(part: ReplyPart, error: io::Error) -> Self {
+        Self {
+            part: Some(part),
+            ..Self::io(IoPhase::ReplyWrite, error)
+        }
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     requests: Mutex<Vec<Request>>,
     changed: Condvar,
-    errors: Mutex<Vec<&'static str>>,
+    errors: Mutex<Vec<HealthFailure>>,
     stopping: AtomicBool,
 }
 pub struct MockOpenAi {
@@ -181,9 +269,14 @@ pub struct MockOpenAi {
 }
 impl MockOpenAi {
     pub fn start(replies: Vec<Reply>) -> Self {
+        Self::start_with(|_| replies)
+    }
+    /// Discovery fixtures advertise the exact already-bound loopback origin.
+    pub fn start_with(replies: impl FnOnce(&str) -> Vec<Reply>) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
+        let replies = replies(&format!("http://{address}"));
         let shared = Arc::new(Shared::default());
         let worker = shared.clone();
         let replies = Arc::new(Mutex::new(VecDeque::from(replies)));
@@ -195,22 +288,22 @@ impl MockOpenAi {
                         let shared = worker.clone();
                         let replies = replies.clone();
                         peers.push(thread::spawn(move || {
-                            if serve(stream, &shared, &replies).is_err()
-                                && !shared.stopping.load(Ordering::Acquire)
-                            {
-                                shared
-                                    .errors
-                                    .lock()
-                                    .unwrap()
-                                    .push("mock upstream connection failed");
+                            if let Err(failure) = serve(stream, &shared, &replies) {
+                                if !shared.stopping.load(Ordering::Acquire) {
+                                    shared.errors.lock().unwrap().push(failure);
+                                }
                             }
                         }));
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5))
                     }
-                    Err(_) => {
-                        worker.errors.lock().unwrap().push("mock upstream accept failed");
+                    Err(error) => {
+                        worker
+                            .errors
+                            .lock()
+                            .unwrap()
+                            .push(HealthFailure::io(IoPhase::Accept, error));
                         break;
                     }
                 }
@@ -249,9 +342,16 @@ impl MockOpenAi {
         requests.clone()
     }
     pub fn assert_healthy(&self) {
+        let (empty, first) = {
+            let errors = self.shared.errors.lock().unwrap();
+            (errors.is_empty(), errors.first().copied())
+        };
         assert!(
-            self.shared.errors.lock().unwrap().is_empty(),
-            "mock upstream reported a connection failure"
+            empty,
+            "mock upstream reported a connection failure phase={:?} kind={:?} part={:?}",
+            first.map(|failure| failure.phase),
+            first.and_then(|failure| failure.kind),
+            first.and_then(|failure| failure.part),
         );
     }
 }
@@ -311,6 +411,22 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
     }
     let body = if length == 0 {
         Value::Null
+    } else if headers
+        .get("content-type")
+        .is_some_and(|v| v.starts_with("application/x-www-form-urlencoded"))
+    {
+        #[cfg(feature = "transport")]
+        {
+            Value::Object(
+                url::form_urlencoded::parse(&bytes[end..end + length])
+                    .map(|(k, v)| (k.into_owned(), Value::String(v.into_owned())))
+                    .collect(),
+            )
+        }
+        #[cfg(not(feature = "transport"))]
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
     } else {
         serde_json::from_slice(&bytes[end..end + length]).map_err(|_| io::ErrorKind::InvalidData)?
     };
@@ -318,15 +434,25 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         method,
         target,
         body,
+        body_bytes: bytes[end..end + length].to_vec(),
         headers,
     })
 }
-fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>>) -> io::Result<()> {
-    let request = read_request(&mut stream)?;
+fn serve(
+    mut stream: TcpStream,
+    shared: &Shared,
+    replies: &Mutex<VecDeque<Reply>>,
+) -> Result<(), HealthFailure> {
+    let request =
+        read_request(&mut stream).map_err(|error| HealthFailure::io(IoPhase::RequestRead, error))?;
     let reply = {
         let mut requests = shared.requests.lock().unwrap();
         let reply = replies.lock().unwrap().pop_front().unwrap_or_else(|| {
-            shared.errors.lock().unwrap().push("unexpected upstream request");
+            shared.errors.lock().unwrap().push(HealthFailure {
+                phase: IoPhase::UnexpectedRequest,
+                kind: None,
+                part: None,
+            });
             Reply::error(500, "server_error", "unexpected synthetic request")
         });
         requests.push(request);
@@ -342,24 +468,49 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
             match gate.recv_timeout(Duration::from_millis(20)) {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(_) if start.elapsed() < DEADLINE => {}
-                Err(_) => return Err(io::ErrorKind::TimedOut.into()),
+                Err(_) => {
+                    return Err(HealthFailure::io(
+                        IoPhase::ReplyGate,
+                        io::ErrorKind::TimedOut.into(),
+                    ))
+                }
             }
         }
     }
+    write_reply(&mut stream, &reply)
+}
+pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), HealthFailure> {
     write!(
         stream,
         "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n",
         reply.status, reply.content_type
-    )?;
+    )
+    .map_err(|error| HealthFailure::reply(ReplyPart::Headers, error))?;
     for (name, value) in &reply.headers {
-        write!(stream, "{name}: {value}\r\n")?;
+        write!(stream, "{name}: {value}\r\n")
+            .map_err(|error| HealthFailure::reply(ReplyPart::Headers, error))?;
     }
-    stream.write_all(b"\r\n")?;
+    stream
+        .write_all(b"\r\n")
+        .map_err(|error| HealthFailure::reply(ReplyPart::HeaderEnd, error))?;
     for bytes in reply.bytes.chunks(reply.fragment) {
-        write!(stream, "{:x}\r\n", bytes.len())?;
-        stream.write_all(bytes)?;
-        stream.write_all(b"\r\n")?;
-        stream.flush()?;
+        write!(stream, "{:x}\r\n", bytes.len())
+            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkHeader, error))?;
+        stream
+            .write_all(bytes)
+            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkPayload, error))?;
+        stream
+            .write_all(b"\r\n")
+            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkEnd, error))?;
+        stream
+            .flush()
+            .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error))?;
     }
-    stream.write_all(b"0\r\n\r\n")
+    if reply.truncate_transfer {
+        Ok(())
+    } else {
+        stream
+            .write_all(b"0\r\n\r\n")
+            .map_err(|error| HealthFailure::reply(ReplyPart::TransferEnd, error))
+    }
 }

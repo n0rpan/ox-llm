@@ -29,14 +29,22 @@ mod info;
 mod sse;
 
 pub use chat::{build_body, build_body_for, HttpEngine, ReplyAssembler};
-pub use embedded::{EmbeddedEngine, EmbeddedGateway, GatewayContext, GatewayDiscovery, GatewayEvent};
+pub use embedded::{
+    EmbeddedEngine, EmbeddedGateway, GatewayContext, GatewayDiscovery, GatewayEvent, GatewayHistory,
+};
 pub use handshake::{handshake_warning, NEEDED_CAPABILITIES, PROTOCOL_UNDERSTOOD};
 pub use hints::{build_headers, new_idem_key};
 pub use http::{http_request, HttpRequest, HttpResponse, Url};
 pub use info::{count_tokens, fetch_info, fetch_info_for, parse_info, parse_info_for, DEFAULT_MAX_OUTPUT};
-pub use sse::{post_sse, Flow, SseEnd, SseEvent, SseParser, StreamOpts};
+pub use sse::{post_sse, post_sse_bounded, BoundedStreamOpts, Flow, SseEnd, SseEvent, SseParser, StreamOpts};
 
 pub use oxa_proto::{ChatRequest, Engine, EngineInfo, Hints};
+
+/// Classify an OpenAI-compatible status reply using the same rules as HttpEngine.
+/// This keeps owned local transports on the shared context/busy/refusal contract.
+pub fn normalize_http_error(status: u16, body: &[u8], retry_after: Option<u32>) -> oxa_proto::OxaError {
+    info::http_error_with(status, body, retry_after)
+}
 #[cfg(feature = "in-process-gateway")]
 pub use oxc_gateway::{
     gateway::Gateway,

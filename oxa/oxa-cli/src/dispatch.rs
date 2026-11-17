@@ -170,6 +170,44 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            #[cfg(feature = "share")]
+            Subcommand::Share(words) => {
+                // Env::get treats empty values as unset; owner-command policy
+                // refuses marker presence, including an empty value.
+                if env.pairs().iter().any(|(name, _)| {
+                    matches!(
+                        name.as_str(),
+                        "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+                    )
+                }) {
+                    return report(
+                        &mut *stderr,
+                        &OxaError::new(
+                            codes::INVALID,
+                            "Guest key commands require the owner outside an agent tool",
+                        ),
+                    );
+                }
+                oxc_gateway::share::command::run(&words, &dirs.home.join(".oxa/share"), &mut *stdout)
+                    .map(|()| 0)
+                    .map_err(|error| {
+                        let code = if matches!(error, oxc_gateway::share::command::Error::Usage) {
+                            codes::USAGE
+                        } else {
+                            codes::INVALID
+                        };
+                        OxaError::new(code, error.to_string())
+                    })
+            }
+            Subcommand::Login(logout, words) => crate::login_cmd::run(
+                logout,
+                &words.0,
+                &dirs,
+                &cwd,
+                env,
+                stdin_is_tty && stdout_is_tty,
+                &mut *stdout,
+            ),
             Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Work(words) => {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
@@ -177,6 +215,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
+            Subcommand::Send(words) => match words.as_slice() {
+                [id, text] if oxa_session::valid_inbox_id(id) => {
+                    oxa_session::send_inbox(&dirs.agent_dir, id, text)
+                        .map(|_| 0)
+                        .map_err(|e| OxaError::io("cannot send session message", &e))
+                }
+                _ => Err(OxaError::new(
+                    codes::USAGE,
+                    "Usage: oxa send <session-id> \"text\"",
+                )),
+            },
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
             Subcommand::ReportIssue(words) => crate::run_report_issue(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Wipe(words) => crate::run_wipe(
@@ -223,7 +272,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Ok(ep) => with_api_key(ep, &a),
             Err(e) => return report(&mut *stderr, &e),
         };
-        let engine = match engine_for(&endpoint) {
+        let user = Settings::load(&dirs, &cwd, false);
+        let engine = match crate::in_process::select(&user, &user, &dirs, || engine_for(&endpoint)) {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
@@ -264,6 +314,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
     // stdin (read byte by byte, so piped prompt text after it stays unread).
     let mut a = a;
+    let cloud_diagnostics = oxc_gateway::diagnostics::Diagnostics::default();
     let prepared = {
         let mut confirm = |notice: &str, question: &str| -> bool {
             if mode == RunMode::Rpc {
@@ -286,6 +337,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             stdin_is_tty,
             stdout_is_tty,
             &mut confirm,
+            cloud_diagnostics.clone(),
         )
     };
     let prep = match prepared {
@@ -298,7 +350,10 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 0
             };
         }
-        Err(e) => return report(&mut *stderr, &e),
+        Err(e) => {
+            crate::in_process::report_diagnostics(&cloud_diagnostics, &dirs, &mut *stderr);
+            return report(&mut *stderr, &e);
+        }
     };
     // Second pass (pi): the long flags the first pass did not know are parsed again with the
     // flags the loaded extensions registered; one that nobody registered is a usage error.
@@ -340,7 +395,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 Ok(p) => p,
                 Err(e) => return report(&mut *stderr, &e),
             };
-            if prompts.is_empty() {
+            if prompts.is_empty() && a.goal.is_none() && !a.continue_ && !a.resume {
                 let e = OxaError::new(codes::USAGE, "no prompt: give a message, an @file or piped stdin")
                     .with_hint(USAGE_HINT);
                 return report(&mut *stderr, &e);
@@ -369,6 +424,8 @@ struct Prep {
     /// CLI-024: `-n/--name`, trimmed and non-empty; written as a `session_info` entry once
     /// the session is open.
     name: Option<String>,
+    /// Explicit user continuation may resume a paused, unexhausted stored goal.
+    continue_goal: bool,
 }
 
 /// Startup warnings after opening the session, so restored/selected model limits are final.
@@ -419,6 +476,9 @@ fn open_named(
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
     session.set_output_schema(built.output_schema.clone());
+    if let Some(goal) = &built.goal {
+        session.set_goal(Some(goal.clone()), &mut oxa_proto::VecSink::default())?;
+    }
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
@@ -433,7 +493,9 @@ struct Built {
     status: Option<Arc<crate::status::StatusWriter>>,
     result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
+    goal: Option<oxa_session::Goal>,
     engine: Arc<dyn Engine>,
+    cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
     store: Arc<dyn SessionStore>,
     sandbox: Arc<dyn Sandbox>,
     settings: Settings,
@@ -544,7 +606,15 @@ fn prepare(
     stdin_is_tty: bool,
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
+    cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
 ) -> Result<Prep, OxaError> {
+    if a.goal.is_some() && !matches!(mode, RunMode::Print | RunMode::Json) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "--goal currently requires print or JSON mode.",
+        ));
+    }
+    let goal = crate::goal_cmd::load(a, cwd)?;
     let output_schema = a
         .output_schema
         .as_ref()
@@ -558,6 +628,7 @@ fn prepare(
         })
         .transpose()?;
     let mut notices: Vec<(Level, String)> = Vec::new();
+    let user_settings = Settings::load(dirs, cwd, false);
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -567,7 +638,9 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
-    notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    if !user_settings.bool(crate::in_process::SETTING, false) {
+        notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    }
 
     let gated = gated_resources(cwd);
     let trusted = project_trusted(
@@ -618,7 +691,13 @@ fn prepare(
     }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
-    let engine = child.wrap(engine_with_settings(&endpoint, &settings)?);
+    let engine = child.wrap(crate::in_process::select_observed(
+        &user_settings,
+        &settings,
+        dirs,
+        (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
+        || engine_with_settings(&endpoint, &settings),
+    )?);
 
     let opts = discover_opts(a, dirs, cwd, trusted)?;
     // O-152: the built-in skills' files, so the model can read their bodies (written only
@@ -834,7 +913,9 @@ fn prepare(
         status,
         result_facts,
         output_schema,
+        goal,
         engine,
+        cloud_diagnostics,
         store,
         sandbox,
         settings,
@@ -858,6 +939,7 @@ fn prepare(
         notices,
         gated,
         name,
+        continue_goal: a.continue_,
     })
 }
 
@@ -1165,12 +1247,63 @@ fn run_headless(
         session_id,
         mut notices,
         name,
+        continue_goal,
         ..
     } = prep;
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
+    if continue_goal {
+        if let Some(mut goal) = session
+            .goal()
+            .filter(|g| g.status == oxa_session::GoalStatus::Paused && !g.exhausted())
+        {
+            if let Err(error) = goal
+                .resume()
+                .and_then(|()| session.set_goal(Some(goal), &mut oxa_proto::VecSink::default()))
+            {
+                return finish_outcome_facts(Err(error), stderr, Some(&built.result_facts));
+            }
+        }
+    }
+    let mut prompts = prompts;
+    if let Some(goal) = session.goal() {
+        if goal.status == oxa_session::GoalStatus::Pursuing {
+            if built.goal.is_some() {
+                let start = oxa_core::prompt::goal_start(&goal.objective);
+                if let Some((text, _parts)) = prompts.first_mut() {
+                    *text = format!("{start}\n\n{text}");
+                } else {
+                    prompts.push((start, vec![]));
+                }
+            } else if prompts.is_empty() {
+                prompts.push((oxa_core::prompt::GOAL_CONTINUE.into(), vec![]));
+            }
+        }
+    }
+    if prompts.is_empty() {
+        if let Some(goal) = session.goal() {
+            let outcome = match goal.status {
+                oxa_session::GoalStatus::Done => oxa_core::RunOutcome::Done,
+                oxa_session::GoalStatus::Blocked => oxa_core::RunOutcome::Blocked("goal_blocked"),
+                oxa_session::GoalStatus::Paused => oxa_core::RunOutcome::Stalled,
+                oxa_session::GoalStatus::Pursuing => oxa_core::RunOutcome::NothingToDo,
+            };
+            built.result_facts.goal(Some(goal));
+            session.shutdown(&mut oxa_proto::HeadlessUi::default());
+            let result = built
+                .status
+                .as_ref()
+                .map_or(Ok(outcome), |status| status.finish(Ok(outcome), stderr));
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
+        }
+        return finish_outcome_facts(
+            Err(OxaError::new(codes::USAGE, "No prompt or pursuing stored goal.")),
+            stderr,
+            Some(&built.result_facts),
+        );
+    }
     notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     if mode == RunMode::Print {
@@ -1184,6 +1317,25 @@ fn run_headless(
             );
         }
     }
+    let goal = session
+        .goal()
+        .filter(|g| g.status == oxa_session::GoalStatus::Pursuing);
+    let goal_time = goal.as_ref().and_then(|g| {
+        g.budget
+            .max_time_ms
+            .map(|cap| std::time::Duration::from_millis(cap.saturating_sub(g.elapsed_ms)))
+    });
+    let goal_tokens = goal
+        .as_ref()
+        .and_then(|g| g.budget.max_tokens.map(|cap| cap.saturating_sub(g.tokens_used)));
+    let max_time = match (max_time, goal_time) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    let max_tokens = match (max_tokens, goal_tokens) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     let _limit = match crate::limits::LimitWatcher::start(
         session.handle(),
         max_time,
@@ -1203,6 +1355,7 @@ fn run_headless(
         RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
         _ => run_print_outcome(&mut session, prompts, stdout, stderr),
     };
+    built.result_facts.goal(session.goal());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
@@ -1219,6 +1372,13 @@ fn run_headless(
             "tokens": session.handle().run_tokens_used(),
         });
         let _ = writeln!(stdout, "{usage}");
+    }
+    // Child stderr can be captured as a tool result in the parent's history.
+    if matches!(
+        &result,
+        Err(_) | Ok(oxa_core::RunOutcome::Blocked(_) | oxa_core::RunOutcome::Failed(_))
+    ) {
+        crate::in_process::report_diagnostics(&built.cloud_diagnostics, &built.dirs, stderr);
     }
     finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
@@ -1293,6 +1453,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         mut notices,
         gated,
         name,
+        ..
     } = prep;
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
@@ -1414,12 +1575,7 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     const NO_LIMIT_MS: u64 = 365 * 24 * 3600 * 1000;
     // P3: the same remote-engine guard as `engine_for`.
     crate::netguard::check_endpoint(&endpoint.base_url)?;
-    let silence = settings
-        .provider_retry()
-        .timeout_ms
-        .filter(|ms| *ms > 0)
-        .or_else(|| settings.http_idle_timeout_ms())
-        .unwrap_or(NO_LIMIT_MS);
+    let silence = stream_silence_timeout(settings).unwrap_or(NO_LIMIT_MS);
     let opts = oxa_engine::StreamOpts {
         silence_limit_ms: silence,
         ..oxa_engine::StreamOpts::default()
@@ -1427,6 +1583,16 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     // The core owns session retries so every retry uses its backoff and visible notice.
     let engine = HttpEngine::new(&endpoint.base_url, endpoint.api_key.clone())?.with_opts(opts, 0);
     Ok(Arc::new(engine))
+}
+
+/// Shared by HTTP and native engines; project layers affect timeouts, while the
+/// native selector, catalog and credential locations remain user-only.
+pub(crate) fn stream_silence_timeout(settings: &Settings) -> Option<u64> {
+    settings
+        .provider_retry()
+        .timeout_ms
+        .filter(|ms| *ms > 0)
+        .or_else(|| settings.http_idle_timeout_ms())
 }
 
 /// The provider column: the controller's `remote_provider` (else `cloud`) for a cloud model,
@@ -2072,7 +2238,9 @@ mod session_scratch_tests {
             status: None,
             result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,
+            goal: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+            cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics::default(),
             store: Arc::new(MemStore::new()),
             sandbox: base.clone(),
             settings: Settings::default(),
