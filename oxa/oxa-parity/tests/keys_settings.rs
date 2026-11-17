@@ -670,6 +670,20 @@ mod tui {
             // sent into the still-working turn (it would be queued or swallowed under load).
             self.wait("the turn finished", |s| !s.contains("Working"));
         }
+        /// The read-only export is executed by the worker after the current run settles.
+        /// Reply text and a quiet frame alone do not acknowledge that boundary.
+        pub fn wait_worker_reply_end(&self, marker: &str) {
+            let chats = self.chats().len();
+            self.slash(&format!("/export {marker}"));
+            self.wait("worker completed the read-only export", |s| {
+                s.contains("Exported the session to") && s.contains(marker)
+            });
+            assert_eq!(
+                self.chats().len(),
+                chats,
+                "the witness must not make a model request"
+            );
+        }
         /// The user prompts the engine got (chat requests only), in order.
         pub fn prompts(&self) -> Vec<String> {
             self.server
@@ -1355,10 +1369,11 @@ fn set_017() {
         "a project-level defaultProjectTrust is ignored: {}",
         stderr(&out)
     );
-    // The lead defaults include ask and subagent, not the untrusted project's ["ls"].
+    // No agents are installed: the lead defaults include ask, but not subagent or the
+    // untrusted project's replacement ["ls"].
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "write"],
         "the project's defaultTools is not applied"
     );
 }
@@ -1366,10 +1381,18 @@ fn set_017() {
 /// SET-018: `defaultTools`: plain names replace the defaults, `+name` adds, `-name` removes.
 #[test]
 fn set_018() {
-    // invariant: the lead defaults include ask (oxa has no powershell) plus subagent
+    fn with_agent(args: &[&str]) -> Rig {
+        let rig = Rig::with_fake(&[text("ok")], args);
+        rig.env.write(
+            "home/.oxa/agent/agents/worker.md",
+            "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+        );
+        rig
+    }
+    // invariant: with an available agent, the lead defaults include ask plus subagent
     // where O-146 offers it (not on the Rust Flash engine, not below a 32K window); the selection
     // is resolved once per prefix epoch (W3), so it is visible on the first request.
-    let rig = Rig::new(&[text("ok")]);
+    let rig = with_agent(&[]);
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
@@ -1379,7 +1402,7 @@ fn set_018() {
     let flash = ["--model", "flash", "--model-row", "flash:65536:2048:flash"];
     let small = ["--n-ctx", "16384"];
     for (what, fake_args) in [("Flash", &flash[..]), ("below 32K", &small[..])] {
-        let rig = Rig::with_fake(&[text("ok")], fake_args);
+        let rig = with_agent(fake_args);
         ok(&rig.print(&[]));
         assert_eq!(
             tools(&rig.bodies()[0]),
@@ -1389,7 +1412,7 @@ fn set_018() {
     }
 
     // `-name` edits the default selection (which includes `subagent`).
-    let rig = Rig::new(&[text("ok")]);
+    let rig = with_agent(&[]);
     rig.user_settings(json!({ "defaultTools": ["-bash"] }));
     ok(&rig.print(&[]));
     assert_eq!(
@@ -1397,7 +1420,7 @@ fn set_018() {
         ["ask", "edit", "find", "grep", "ls", "read", "subagent", "write"],
         "-name removes"
     );
-    let rig = Rig::with_fake(&[text("ok")], &small);
+    let rig = with_agent(&small);
     rig.user_settings(json!({ "defaultTools": ["-bash"] }));
     ok(&rig.print(&[]));
     assert_eq!(
@@ -2685,6 +2708,10 @@ fn key_005() {
     // terminal sends a plain CR for it); ctrl+j works everywhere.
     let mut t = Setup::new()
         .profile(TermProfile::kitty())
+        .fake(tui::FakeOpts {
+            done_gap_ms: 2500,
+            ..tui::FakeOpts::default()
+        })
         .replies("got it", 2)
         .start();
     t.type_text("first line");
@@ -2696,6 +2723,7 @@ fn key_005() {
     t.key("enter");
     t.wait_text("got it");
     assert_eq!(t.prompts(), vec!["first line\nsecond line\nthird".to_string()]);
+    t.wait_worker_reply_end("key005-after-reply.html");
     // tab completes a slash command.
     t.type_text("/hotk");
     t.key("tab");
@@ -3128,6 +3156,7 @@ fn key_010() {
     t.wait_chats(1);
     t.key("escape");
     t.wait_text("late answer");
+    t.wait_worker_reply_end("key010-after-reply.html");
     t.type_text("slow two");
     t.key("enter");
     t.wait_text("after f9");

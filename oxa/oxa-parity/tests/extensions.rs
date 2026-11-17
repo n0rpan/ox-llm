@@ -1553,21 +1553,40 @@ fn ext_091() {
 }
 
 /// EXT-092 (A): the subagent example extension is oxa's `builtin:subagent`. O-146: its
-/// `subagent` tool is on by default on a large non-Flash model, off on the Rust Flash engine and
-/// below a 32K window; an explicit `oxa.subagent.enabled` wins (`true` on any model, `false`
-/// never). An extension of the session does not change that.
+/// `subagent` tool requires an available agent. With one installed it is on by default on a
+/// large non-Flash model, off on the Rust Flash engine and below a 32K window; an explicit
+/// `oxa.subagent.enabled` wins (`true` on any model, `false` never). An extension does not
+/// bypass the agent requirement.
 /// Invariant: E11 (child processes, parent parked; O-146 default; oxa.subagent.enabled).
 #[test]
 fn ext_092() {
     let declares = |r: &Run| r.req(0).tools_json.contains("\"subagent\"");
-    // An extension in the session; the fake's default model is large and not Flash.
-    let on = one("oxa.on('session_start', (e, ctx) => {});");
-    assert!(declares(&on), "on by default on a large non-Flash model");
+    // An extension alone cannot make subagent usable without an agent definition.
+    let body = "oxa.on('session_start', (e, ctx) => {});";
+    let empty = one(body);
+    assert_eq!(empty.code, Some(0), "{}", empty.err);
+    assert!(!declares(&empty), "no agents: do not offer subagent");
+    let on = go(
+        &[
+            agent_ext("e", body),
+            (
+                "home/.oxa/agent/agents/worker.md".into(),
+                "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n".into(),
+            ),
+        ],
+        text("ok"),
+        &["-p", "hi"],
+    );
+    assert!(declares(&on), "on by default with an available agent");
 
     // The same run against a Flash engine or a model below 32K, with the setting unset, `true`
     // or `false`.
     fn run_on(opts: FakeOpts, settings: Option<&str>) -> Run {
         let env = TestEnv::new();
+        env.write(
+            "home/.oxa/agent/agents/worker.md",
+            "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+        );
         if let Some(body) = settings {
             env.write("home/.oxa/agent/settings.json", body);
         }
