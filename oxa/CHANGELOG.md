@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Bash and the `done` checks now find an installed toolchain: the sandbox `PATH` keeps the caller's own entries and appends the toolchain `bin` directories under the home that exist (`~/.cargo/bin`, `~/.local/bin`, the mise, asdf, volta, go, pyenv, rbenv, bun and deno ones), after the system path so nothing the caller's `PATH` already finds is shadowed. A run started without a login shell's profile ran `cargo fmt --check` and the like as "command not found" although the toolchain was installed.
+
 ### Changed
 
 - Provider preconnect (#881): qualified as not implementable through the existing gateway pool. The pinned reqwest 0.12 transport has no preconnect or pool-insertion API, so warming the selected provider would need a real authenticated request after the first frame; no warm-up was added. The limitation and the owner's options are in [provider-preconnect.md](docs/design/provider-preconnect.md).

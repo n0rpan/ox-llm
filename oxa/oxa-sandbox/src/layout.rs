@@ -2,12 +2,15 @@
 //!
 //! * **Toolchains (B2).** The user's `PATH` is kept inside the sandbox (absolute entries that
 //!   exist as directories, in order; the base `/usr/local/bin:/usr/bin:/bin` is appended when
-//!   missing). Toolchain directories under `$HOME` are bound read-only and package caches
-//!   read-write ([`TOOLCHAIN_READ`], [`CACHE_WRITE`], each only when it exists; plus every
-//!   `PATH` entry under `$HOME`, read-only). The settings `oxa.sandbox.readPaths` /
-//!   `oxa.sandbox.writePaths` (user settings only) add more. The environment variables that
-//!   tell toolchains where they live ([`TOOLCHAIN_ENV`], `MISE_*`) are passed through when set,
-//!   never a variable whose name looks like a secret ([`is_secret_name`]).
+//!   missing; then the existing executable directories of toolchains installed under `$HOME`
+//!   ([`TOOLCHAIN_PATH`]), so a toolchain is usable when the environment oxa started from
+//!   never read a login shell's profile). Toolchain directories under `$HOME` are bound
+//!   read-only and package caches read-write ([`TOOLCHAIN_READ`], [`CACHE_WRITE`], each only
+//!   when it exists; plus every `PATH` entry under `$HOME`, read-only). The settings
+//!   `oxa.sandbox.readPaths` / `oxa.sandbox.writePaths` (user settings only) add more. The
+//!   environment variables that tell toolchains where they live ([`TOOLCHAIN_ENV`], `MISE_*`)
+//!   are passed through when set, never a variable whose name looks like a secret
+//!   ([`is_secret_name`]).
 //! * **Deny-list (B3).** [`sensitive_paths`] (keys, tokens, trust, the agent directory,
 //!   password stores, browser profiles) are masked after every bind: an empty read-only tmpfs
 //!   over a directory, `/dev/null` over a file. Whatever the cwd or the settings, they are
@@ -72,6 +75,24 @@ pub const TOOLCHAIN_READ: &[&str] = &[
     ".deno",
     ".gitconfig",
     ".config/git",
+];
+
+/// Executable directories of toolchains under `$HOME`, put on the sandbox `PATH` after the
+/// user's own when they exist (each is bound read-only through [`TOOLCHAIN_READ`] or because
+/// it lies under `$HOME`): an installed toolchain is usable even when the environment oxa
+/// started from never read a login shell's profile. Nothing here shadows a program the user's
+/// `PATH` already finds.
+pub const TOOLCHAIN_PATH: &[&str] = &[
+    ".cargo/bin",
+    ".local/bin",
+    ".local/share/mise/shims",
+    ".asdf/shims",
+    ".volta/bin",
+    "go/bin",
+    ".pyenv/shims",
+    ".rbenv/shims",
+    ".bun/bin",
+    ".deno/bin",
 ];
 
 /// Package caches under `$HOME` that tools must write to work, bound read-write when they
@@ -252,6 +273,22 @@ impl Layout {
         for base in BASE_PATH {
             if !path.iter().any(|x| x == base) {
                 path.push((*base).to_string());
+            }
+        }
+        // A toolchain installed under the home (rustup's `~/.cargo/bin`, `~/.local/bin`, the
+        // mise, asdf, volta, go, pyenv and similar `bin` directories) is bound read-only below,
+        // but only a login shell's profile puts it on PATH. A sandboxed command or an agent
+        // session that never reads that profile then ran `cargo` and the like as "command not
+        // found" although the toolchain was installed. The directories are appended after
+        // PATH and the base, so nothing the user's PATH already finds is shadowed.
+        for rel in TOOLCHAIN_PATH {
+            let dir = i.home.join(rel);
+            if !dir.is_dir() || denied(&dir, &deny) {
+                continue;
+            }
+            let shown = dir.display().to_string();
+            if !path.contains(&shown) {
+                path.push(shown);
             }
         }
         read.extend(TOOLCHAIN_READ.iter().map(|r| i.home.join(r)));
@@ -459,6 +496,77 @@ mod tests {
         assert!(!l.read.contains(&bin), "{:?}", l.read);
         assert!(l.env.iter().any(|(k, _)| k == "OXA_RUNNING_BIN"));
         assert!(!l.env.iter().any(|(k, _)| k == "OXA_BIN"));
+    }
+
+    /// The reported failure: the toolchain is installed under the home and bound read-only,
+    /// but the `PATH` oxa inherited lacks its `bin` directory (only a login shell's profile
+    /// adds it), so bash and the project's `done` check ran as `cargo: command not found`.
+    #[test]
+    fn installed_toolchain_directories_are_on_the_sandbox_path() {
+        let root = std::env::temp_dir().join(format!("oxa-toolpath-{}", std::process::id()));
+        let home = root.join("home");
+        let mut dirs = Vec::new();
+        for (rel, name) in [
+            (".cargo/bin", "cargo"),
+            (".local/share/mise/shims", "mise"),
+            ("go/bin", "gopls"),
+        ] {
+            std::fs::create_dir_all(home.join(rel)).unwrap();
+            std::fs::write(home.join(rel).join(name), "x").unwrap();
+            dirs.push(home.join(rel).display().to_string());
+        }
+        let Layout { path, read, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: "/usr/bin:/bin".into(),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        let base = path.iter().position(|p| p == "/usr/bin");
+        let base = base.expect("base PATH");
+        for dir in &dirs {
+            let at = path.iter().position(|p| p == dir);
+            assert!(at.is_some(), "{dir} is not on the sandbox PATH: {path:?}");
+            // An installed tool never shadows a program the path already finds.
+            assert!(at.unwrap() > base, "{dir} must come after /usr/bin: {path:?}");
+            assert_eq!(path.iter().filter(|p| *p == dir).count(), 1, "{path:?}");
+        }
+        // What the PATH names is what the argv binds read-only, so a command can run it.
+        assert!(read.contains(&home.join(".cargo/bin")), "{read:?}");
+        assert!(read.contains(&home.join(".local/share/mise")), "{read:?}");
+    }
+
+    #[test]
+    fn a_toolchain_directory_already_on_path_keeps_its_place() {
+        let root = std::env::temp_dir().join(format!("oxa-toolpath2-{}", std::process::id()));
+        let home = root.join("home");
+        let bin = home.join(".cargo/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("cargo"), "x").unwrap();
+        let Layout { path, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: format!("{}:/usr/bin:/bin", bin.display()),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        let shown = bin.display().to_string();
+        assert_eq!(path.first(), Some(&shown), "{path:?}");
+        let count = path.iter().filter(|p| **p == shown).count();
+        assert_eq!(count, 1, "the directory is added once: {path:?}");
+    }
+
+    #[test]
+    fn missing_toolchain_directories_are_not_added() {
+        let root = std::env::temp_dir().join(format!("oxa-toolpath3-{}", std::process::id()));
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let Layout { path, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: "/usr/bin:/bin".into(),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        let shown = home.display().to_string();
+        assert!(path.iter().all(|p| !p.starts_with(&shown)), "{path:?}");
     }
 
     #[test]
