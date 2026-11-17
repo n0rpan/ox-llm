@@ -70,9 +70,13 @@ and `cargo clippy -p <edited-crate> -- -D warnings`, niced, with `CARGO_BUILD_JO
 `cargo build`, `cargo test`, Python/unit/end-to-end tests, or whole-workspace compiler sweeps.
 Formatting and read-only source inspection do not build or run tests.
 
-Keep target directories and large scratch under your own clone or `~/.cache`; never put them under
-`/tmp` (it is RAM on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary
-files; preserve anything a running process of yours uses, and never clean another lane's files.
+Keep target directories and large scratch under your own clone. `~/.cache` is a second option on the
+host only: inside oxa's bash sandbox the home directory is read-only apart from the shared package
+caches, and `TMPDIR` and `XDG_CACHE_HOME` point at the session's scratch (`~/.cache/oxa/scratch/...`
+on disk), which is deleted when the session ends. So sandboxed scratch belongs in the clone; that
+scratch is fine for throwaway work, but never put durable scratch under the host's `/tmp` (it is RAM
+on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary files; preserve
+anything a running process of yours uses, and never clean another lane's files.
 
 Push the lane branch to start the `lane` workflow, or dispatch it explicitly:
 
