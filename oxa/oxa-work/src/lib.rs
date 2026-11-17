@@ -21,7 +21,7 @@ mod tree;
 pub use state::{CheckpointKind, CheckpointObserver, Step};
 mod worker;
 mod worker_wait;
-pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult};
+pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult, WorkerTokens};
 
 #[cfg(test)]
 #[path = "../tests/support/private_dir.rs"]
