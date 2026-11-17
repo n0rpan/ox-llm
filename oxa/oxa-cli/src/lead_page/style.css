@@ -38,7 +38,7 @@ nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;backgrou
   border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
 nav.tabs a{display:flex;flex:1;align-items:center;justify-content:center;min-width:0;min-height:var(--nav-height);
   padding:8px 4px;font-size:12px;font-weight:600;text-align:center;color:var(--muted)}
-nav.tabs a:hover,nav.tabs a:focus-visible{color:var(--accent);background:var(--accent-soft)}
+nav.tabs a[aria-current=page],nav.tabs a:hover,nav.tabs a:focus-visible{color:var(--accent);background:var(--accent-soft)}
 footer{padding:18px 0;font-size:13px;overflow-wrap:anywhere}
 @media(min-width:900px){
   body{padding-left:184px;padding-bottom:24px}main{max-width:1080px;padding:24px}
