@@ -20,7 +20,12 @@ pub(crate) fn process(
     let mut command = Command::new(program);
     command.args(args).current_dir(cwd);
     oxa_work::inherit_report_lease(&mut command, gate).ok()?;
-    oxa_work::command_runner_with_stdin(command, Some(1_048_576), Stdio::from(lock.try_clone().ok()?))
+    oxa_work::command_runner_with_stdin(
+        command,
+        Some(1_048_576),
+        Stdio::from(lock.try_clone().ok()?),
+        oxa_work::COMMAND_DEADLINE,
+    )
 }
 fn call(runner: Runner<'_>, args: &[String]) -> Result<String, String> {
     match runner("gh", args) {
