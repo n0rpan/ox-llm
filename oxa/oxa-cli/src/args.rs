@@ -452,6 +452,27 @@ fn usage(message: impl Into<String>) -> OxaError {
 
 /// The first word of a subcommand. `None` when the word is an ordinary prompt.
 fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaError> {
+    use oxa_interactive::command_registry::{parse_cli, COMMANDS};
+    let words: Vec<_> = std::iter::once(word.to_owned())
+        .chain(rest.iter().cloned())
+        .collect();
+    if let Some(invocation) = parse_cli(&words).filter(|i| registry_owned(i.command.id)) {
+        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
+            && !invocation.args.is_empty()
+        {
+            return Err(usage("registered command arguments are unavailable"));
+        }
+        return Ok(Some(Subcommand::Registered(
+            invocation.command.id,
+            RegistryArgs(invocation.args.to_vec()),
+        )));
+    }
+    if COMMANDS
+        .iter()
+        .any(|entry| registry_owned(entry.id) && entry.path.first() == Some(&word))
+    {
+        return Err(usage("registered command is unavailable on this surface"));
+    }
     Ok(Some(match word {
         "login" => Subcommand::Login(false, LoginArgs(rest.to_vec())),
         "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
@@ -581,8 +602,21 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
         let arg = argv[i].as_str();
         i += 1;
         if !stop && i == 1 && arg == "lead" {
-            a.lead = true;
-            continue;
+            let reserved_child = oxa_interactive::command_registry::COMMANDS.iter().any(|entry| {
+                entry.path.first() == Some(&arg)
+                    && entry
+                        .path
+                        .get(1)
+                        .is_some_and(|part| argv.get(i).map(String::as_str) == Some(*part))
+            });
+            if !reserved_child
+                && argv[i..]
+                    .iter()
+                    .any(|word| word.split('=').next() == Some("--shadow"))
+            {
+                a.lead = true;
+                continue;
+            }
         }
         // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
         // another option or `--` appears, later words retain their positional meaning.
