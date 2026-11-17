@@ -218,6 +218,8 @@ summaries, without raw assistant output or acceptance logs.
 
 
 Queue mode watches a directory of regular, non-hidden `*.json` task files.
+Each file may contain up to 128 tasks and occupy up to 1 MiB. Split larger
+batches across files.
 After adding task files, run
 `oxa work --queue ./tasks --max 2 --min-free-mib 1024`.
 

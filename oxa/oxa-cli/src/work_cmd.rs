@@ -419,14 +419,14 @@ impl Context {
                 &policy,
                 &|_: &oxa_work::Record| Ok(()),
                 &mut |note, lock, offline| {
-                    let mut runner = |program: &str, args: &[String]| {
+                    let runner = |program: &str, args: &[String], gate: &std::fs::File| {
                         let executable = crate::netguard::trusted_executable_for(
                             program,
                             Some(policy.host_path.as_os_str()),
                             Some(&root),
                             Some(&dirs.home),
                         )?;
-                        crate::work_reports::process(&executable.to_string_lossy(), args, &root, lock)
+                        crate::work_reports::process(&executable.to_string_lossy(), args, &root, lock, gate)
                     };
                     crate::work_reports::report(
                         note,
@@ -435,7 +435,7 @@ impl Context {
                         &ctx,
                         offline,
                         &mut crate::report_cmd::tty_confirm(env),
-                        &mut runner,
+                        runner,
                     )
                 },
             )?;

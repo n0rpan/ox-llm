@@ -15,7 +15,7 @@ mod notes;
 mod publish;
 mod queue;
 pub use notes::{ProblemNote, ReportRecord};
-pub use publish::{publish, report_notes};
+pub use publish::{inherit_report_lease, publish, report_notes};
 pub use queue::{run_queue, QueueEvent, QueueOptions, QueueStatus};
 pub mod mirrors;
 pub mod shadow;
@@ -269,10 +269,12 @@ pub fn metadata_git(binary: &Path, path: &std::ffi::OsStr, repo: &Path, args: &[
 }
 
 pub fn read_tasks(path: &Path) -> Result<Vec<Task>> {
-    parse_tasks(&fs::read(path).map_err(|e| e.to_string())?)
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    let tasks = serde_json::from_slice(&bytes).map_err(|e| format!("task file: {e}"))?;
+    validate_tasks(tasks)
 }
-pub(crate) fn parse_tasks(bytes: &[u8]) -> Result<Vec<Task>> {
-    let tasks: Vec<Task> = serde_json::from_slice(bytes).map_err(|e| format!("task file: {e}"))?;
+
+fn validate_tasks(tasks: Vec<Task>) -> Result<Vec<Task>> {
     if tasks.is_empty() {
         return Err("task file is empty".into());
     }

@@ -1,7 +1,10 @@
 //! Explicit publishing of the accepted commit; existing queued PRs are never pushed.
 use super::{checked, state, tree, CheckpointObserver, Outcome, Record, Result, RunPolicy, Task};
 use state::Step;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::{
+    fd::AsRawFd,
+    unix::{fs::OpenOptionsExt, process::CommandExt},
+};
 use std::{
     fs::File,
     path::{Path, PathBuf},
@@ -346,6 +349,22 @@ pub fn publish(
     }
     Ok(value.record)
 }
+/// Keep a report's per-user lease held if the controller dies during a host command.
+pub fn inherit_report_lease(command: &mut Command, gate: &File) -> std::io::Result<()> {
+    let gate = gate.try_clone()?;
+    // SAFETY: the closure owns the descriptor, and only changes its flags
+    // in this child. fcntl is async-signal-safe.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(gate.as_raw_fd(), libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 pub fn report_notes(
     task: &Task,
     policy: &RunPolicy,

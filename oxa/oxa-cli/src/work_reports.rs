@@ -12,10 +12,17 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(crate) fn process(program: &str, args: &[String], cwd: &Path, lock: &File) -> Option<(i32, String)> {
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(cwd)
+pub(crate) fn process(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    lock: &File,
+    gate: &File,
+) -> Option<(i32, String)> {
+    let mut command = Command::new(program);
+    command.args(args).current_dir(cwd);
+    oxa_work::inherit_report_lease(&mut command, gate).ok()?;
+    let mut child = command
         .stdin(Stdio::from(lock.try_clone().ok()?))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -111,7 +118,7 @@ pub(crate) fn report(
     ctx: &ScrubCtx,
     offline: bool,
     confirm: Confirm<'_>,
-    runner: Runner<'_>,
+    mut run: impl FnMut(&str, &[String], &File) -> Option<(i32, String)>,
 ) -> Result<ReportRecord, String> {
     // Retain the queue's per-user reporting lease across every effect.
     use std::os::unix::fs::OpenOptionsExt;
@@ -125,6 +132,7 @@ pub(crate) fn report(
         .open(dirs.agent_dir.join("work-report.lock"))
         .map_err(|e| e.to_string())?;
     gate.lock().map_err(|e| e.to_string())?;
+    let runner: Runner<'_> = &mut |program, args| run(program, args, &gate);
     let note = &ProblemNote {
         title: visible(&note.title),
         notes: visible(&note.notes),

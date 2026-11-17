@@ -1,10 +1,14 @@
 //! Directory queue: oldest regular JSON files first, with bounded independent workers.
 use super::{blocked_record, checked, state, Record, Result, RunPolicy, Task};
-use serde::Serialize;
-use std::os::unix::fs::DirBuilderExt;
+use serde::{
+    de::{Error, IgnoredAny, SeqAccess, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
     collections::{HashMap, HashSet},
     fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     process::Command,
     sync::{mpsc, Arc},
@@ -101,6 +105,71 @@ fn free_space(repo: &Path, common: &Path, queue: &Path, df: &Path, policy: &RunP
         .min(available(queue, df, policy)?)
         .min(available(tree_volume, df, policy)?))
 }
+const MAX_INPUT_BYTES: u64 = 1024 * 1024;
+const MAX_INPUT_TASKS: usize = 128;
+
+struct QueueTasks(Vec<Task>);
+impl<'de> Deserialize<'de> for QueueTasks {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        struct TasksVisitor;
+        impl<'de> Visitor<'de> for TasksVisitor {
+            type Value = QueueTasks;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, "an array of at most {MAX_INPUT_TASKS} tasks")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> std::result::Result<QueueTasks, A::Error> {
+                let mut tasks = Vec::new();
+                while tasks.len() < MAX_INPUT_TASKS {
+                    let Some(task) = seq.next_element()? else {
+                        return Ok(QueueTasks(tasks));
+                    };
+                    tasks.push(task);
+                }
+                if seq.next_element::<IgnoredAny>()?.is_some() {
+                    return Err(A::Error::custom(format!(
+                        "task file exceeds {MAX_INPUT_TASKS} tasks"
+                    )));
+                }
+                Ok(QueueTasks(tasks))
+            }
+        }
+        deserializer.deserialize_seq(TasksVisitor)
+    }
+}
+
+fn read_input(path: &Path) -> Result<Option<Vec<Task>>> {
+    // A queued file may be replaced after the directory scan. Open the final
+    // component without following links or blocking on a substituted FIFO.
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.to_string()),
+    };
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("queue input must be a regular file".into());
+    }
+    let too_large = || format!("task file exceeds {MAX_INPUT_BYTES} bytes");
+    if meta.len() > MAX_INPUT_BYTES {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_INPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_INPUT_BYTES {
+        return Err(too_large());
+    }
+    let QueueTasks(tasks) = serde_json::from_slice(&bytes).map_err(|e| format!("task file: {e}"))?;
+    super::validate_tasks(tasks).map(Some)
+}
+
 fn input_file(entry: fs::DirEntry) -> Result<Option<(PathBuf, SystemTime, u64)>> {
     let path = entry.path();
     if path
@@ -164,10 +233,10 @@ fn scan(
         if inputs.files.get(&file) == Some(&(modified, len)) && !inputs.errors.contains_key(&file) {
             continue;
         }
-        let tasks = match fs::read(&file) {
-            Ok(bytes) => super::parse_tasks(&bytes),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => Err(error.to_string()),
+        let tasks = match read_input(&file) {
+            Ok(Some(tasks)) => Ok(tasks),
+            Ok(None) => continue,
+            Err(error) => Err(error),
         };
         let previous = inputs.errors.remove(&file);
         let mut problems = vec![];
