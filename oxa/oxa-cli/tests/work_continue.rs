@@ -440,16 +440,7 @@ fn local_base_branch_checked_out_elsewhere_is_never_moved() {
 fn base_branch_fast_forward_runs_no_repository_hook_on_the_host() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
-    // The source checkout pulled `main` while its local branch stayed behind,
-    // and it works on its own branch, so `main` is not checked out.
-    let stale = git(&env, &project(&env), &["rev-parse", "main"]);
-    commit_file(&env, "fetched.txt", "fetched base\n");
-    git(&env, &project(&env), &["push", "origin", "main"]);
-    git(&env, &project(&env), &["reset", "--hard", "HEAD~1"]);
-    git(&env, &project(&env), &["checkout", "-b", "source"]);
-    let fetched = git(&env, &project(&env), &["rev-parse", "origin/main"]);
-    assert_ne!(fetched, stale);
+    let (_, fetched) = lagging_base(&env);
     // Install the hook only now: the fixture's own commits and pushes are
     // expected to run it, the runner's host metadata is not.
     let hook = env.write(
@@ -457,12 +448,13 @@ fn base_branch_fast_forward_runs_no_repository_hook_on_the_host() {
         "#!/bin/sh\ncat >/dev/null\nprintf escaped > \"$HOME/branch-advance-escape\"\nprintf ran > branch-advance-ran\n",
     );
     std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    env.write(
-        "work/tasks.json",
-        r#"[{"id":"test","branch":"agent/test","model":"fake","base":"origin/main","prompt":"Finish task"}]"#,
-    );
     let record = run(&env, vec![ScriptTurn::text("nothing")]);
-    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    // Sandboxed branch creation already runs this hook and saves its task-local marker.
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(tree(&record).join("branch-advance-ran")).unwrap(),
+        "ran"
+    );
     assert_eq!(
         git(&env, &project(&env), &["rev-parse", "main"]),
         fetched,
