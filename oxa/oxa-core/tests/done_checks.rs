@@ -245,28 +245,83 @@ fn unstartable_check_is_reported_as_not_run_and_not_retried() {
     assert_eq!(engine.remaining(), 1, "no repair round: {checks:?}");
 }
 
-/// The other POSIX code for a command that did not start: a file that is not executable (126).
-/// It is the same environment problem, reported the same way.
+/// A missing execute bit on a project script is repairable, not an unavailable toolchain.
 #[test]
-fn non_executable_check_is_reported_as_not_run() {
+fn non_executable_project_check_is_repaired() {
     let env = TestEnv::new();
-    // No executable bit: the shell refuses to start it.
     std::fs::write(env.work().join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
     let (rec, engine, failed) = run_state(
         &env,
         json!(["./check.sh"]),
-        vec![write("c1", "a.txt"), ScriptTurn::text("done")],
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            ScriptTurn::tool("fix", "bash", r#"{"command":"chmod +x check.sh"}"#),
+            ScriptTurn::text("repaired"),
+        ],
+        Arc::new(Direct),
+    );
+    let checks = rec.checks();
+    assert_eq!(checks.len(), 2, "{checks:?}");
+    assert!(checks[0].contains("FAILED (exit 126)"), "{checks:?}");
+    assert!(checks[0].contains("Permission denied"), "{checks:?}");
+    assert!(checks[1].ends_with("ok"), "{checks:?}");
+    assert!(!failed, "repair must actually verify the source");
+    assert_eq!(engine.requests().len(), 4);
+    assert_eq!(engine.remaining(), 0);
+}
+
+/// A check that started can propagate either code from a repairable project helper.
+#[test]
+fn started_project_checks_with_126_or_127_keep_their_repair_round() {
+    for code in [126, 127] {
+        let env = TestEnv::new();
+        std::fs::write(env.work().join("check.sh"), format!("exit {code}\n")).unwrap();
+        let (rec, engine, failed) = run_state(
+            &env,
+            json!(["sh ./check.sh"]),
+            vec![
+                write("c1", "a.txt"),
+                ScriptTurn::text("done"),
+                ScriptTurn::tool("fix", "write", r#"{"path":"check.sh","content":"exit 0\n"}"#),
+                ScriptTurn::text("repaired"),
+            ],
+            Arc::new(Direct),
+        );
+        let checks = rec.checks();
+        assert_eq!(checks.len(), 2, "exit {code}: {checks:?}");
+        assert!(checks[0].contains(&format!("FAILED (exit {code})")), "{checks:?}");
+        assert!(checks[1].ends_with("ok"), "{checks:?}");
+        assert!(!failed, "exit {code}: repaired source was verified");
+        assert_eq!(engine.requests().len(), 4);
+        assert_eq!(engine.remaining(), 0);
+    }
+}
+
+/// An independently confirmed non-executable external command remains not run, once.
+#[test]
+fn non_executable_external_check_is_reported_as_not_run() {
+    let env = TestEnv::new();
+    let external = env.root().join("external-check.sh");
+    std::fs::write(&external, "#!/bin/sh\nexit 0\n").unwrap();
+    let entry = external.to_str().unwrap();
+    let (rec, engine, failed) = run_state(
+        &env,
+        json!([entry]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            ScriptTurn::text("unused"),
+        ],
         Arc::new(Direct),
     );
     let checks = rec.checks();
     assert_eq!(checks.len(), 1, "{checks:?}");
-    assert!(
-        checks[0].starts_with("done check: ./check.sh FAILED (not run)"),
-        "{checks:?}"
-    );
+    assert!(checks[0].contains("FAILED (not run)"), "{checks:?}");
     assert!(checks[0].contains("Permission denied"), "{checks:?}");
-    assert!(failed, "a check that did not run is not a pass");
-    assert_eq!(engine.requests().len(), 2, "no repair round: {checks:?}");
+    assert!(failed);
+    assert_eq!(engine.requests().len(), 2);
+    assert_eq!(engine.remaining(), 1);
 }
 
 /// A real failure in the same list keeps its repair round; the entry that cannot start is not
