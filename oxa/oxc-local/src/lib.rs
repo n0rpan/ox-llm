@@ -211,6 +211,7 @@ impl Supervisor {
     }
     pub(crate) fn release(&mut self) -> io::Result<()> {
         use std::io::Write;
+        platform::before_startup_deadline(self.deadline)?;
         if let Some(pipe) = self.child.as_mut().and_then(|child| child.stdin.take()) {
             let mut pipe = pipe;
             pipe.write_all(&[0xa7])
@@ -315,7 +316,16 @@ impl Supervisor {
 }
 
 fn gate_command() -> io::Result<Command> {
-    Ok(Command::new(std::env::current_exe()?))
+    #[cfg(target_os = "linux")]
+    {
+        // Resolve in the forked child while it still runs this image. Never turn
+        // this kernel reference back into a replaceable workspace pathname.
+        Ok(Command::new("/proc/self/exe"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(platform::refused("Linux executable-image scope gate available"))
+    }
 }
 
 impl Drop for Supervisor {

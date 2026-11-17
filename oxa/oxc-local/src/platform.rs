@@ -82,9 +82,10 @@ impl LinuxLauncher {
         &self,
         pid: u32,
         gated: bool,
-        _deadline: Instant,
+        deadline: Instant,
         start: impl FnOnce(u32, &str) -> io::Result<()>,
     ) -> io::Result<Attachment> {
+        before_startup_deadline(deadline)?;
         if !gated {
             return no_swap(self.0.sample_child(pid)?).map(|sample| Attachment { sample, scope: None });
         }
@@ -99,18 +100,20 @@ impl LinuxLauncher {
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
         start(pid, &unit)?;
-        let until = Instant::now() + Duration::from_secs(3);
+        let deadline = deadline.min(Instant::now() + Duration::from_secs(3));
         loop {
+            before_startup_deadline(deadline)?;
             if self.0.child_in_scope(pid, &unit)? {
-                return no_swap(self.0.sample_child(pid)?).map(|sample| Attachment {
+                let sample = no_swap(self.0.sample_child(pid)?)?;
+                before_startup_deadline(deadline)?;
+                return Ok(Attachment {
                     sample,
                     scope: Some(unit),
                 });
             }
-            if Instant::now() >= until {
-                return Err(refused("engine child attached to requested no-swap scope"));
-            }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(
+                Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
     }
 }
@@ -124,20 +127,65 @@ impl PlatformLauncher for LinuxLauncher {
     }
     fn attach(&self, pid: u32, gated: bool, deadline: Instant) -> io::Result<Attachment> {
         self.attach_with(pid, gated, deadline, |pid, unit| {
-            use zbus::zvariant::Value;
-            let bus = user_bus()?;
-            let properties = scope_properties(pid);
-            let auxiliary: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
-            bus.call_method(
-                Some("org.freedesktop.systemd1"),
-                "/org/freedesktop/systemd1",
-                Some("org.freedesktop.systemd1.Manager"),
-                "StartTransientUnit",
-                &(unit, "fail", properties, auxiliary),
-            )
-            .map_err(|_| refused("systemd StartTransientUnit with delegated MemorySwapMax=0"))?;
-            Ok(())
+            let deadline = deadline.min(Instant::now() + std::time::Duration::from_secs(3));
+            within_startup(deadline, async {
+                use zbus::zvariant::Value;
+                let address = format!("unix:path=/run/user/{}/bus", nix::unistd::geteuid());
+                let bus = zbus::connection::Builder::address(address.as_str())
+                    .map_err(|_| bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir()))?
+                    .auth_mechanism(zbus::connection::AuthMechanism::External)
+                    .method_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .build()
+                    .await
+                    .map_err(|_| bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir()))?;
+                let properties = scope_properties(pid);
+                let auxiliary: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
+                bus.call_method(
+                    Some("org.freedesktop.systemd1"),
+                    "/org/freedesktop/systemd1",
+                    Some("org.freedesktop.systemd1.Manager"),
+                    "StartTransientUnit",
+                    &(unit, "fail", properties, auxiliary),
+                )
+                .await
+                .map_err(|_| refused("systemd StartTransientUnit with delegated MemorySwapMax=0"))?;
+                Ok(())
+            })
         })
+    }
+}
+
+/// One deadline covers user-bus connection/authentication and StartTransientUnit.
+#[cfg(target_os = "linux")]
+fn within_startup<T>(
+    deadline: Instant,
+    work: impl std::future::Future<Output = io::Result<T>>,
+) -> io::Result<T> {
+    before_startup_deadline(deadline)?;
+    async_io::block_on(futures_lite::future::or(
+        async {
+            async_io::Timer::at(deadline).await;
+            Err(startup_timeout())
+        },
+        work,
+    ))
+}
+
+fn startup_timeout() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        Predicate(
+            "engine child scope startup deadline not exceeded",
+            "inspect the user manager or increase the user-only local startup timeout",
+        ),
+    )
+}
+
+pub(crate) fn before_startup_deadline(deadline: Instant) -> io::Result<()> {
+    if Instant::now() >= deadline {
+        Err(startup_timeout())
+    } else {
+        Ok(())
     }
 }
 
@@ -239,6 +287,17 @@ mod tests {
         }
         let source = MemorySource::test_roots(env.work().join("proc"), env.work().join("cgroup"));
         (env, LinuxLauncher(source))
+    }
+    #[test]
+    fn startup_timeout_bounds_an_unresponsive_bus_future() {
+        let until = Instant::now() + std::time::Duration::from_millis(1);
+        let error = within_startup::<()>(until, std::future::pending()).unwrap_err();
+        assert!(error.to_string().contains("startup deadline"));
+        assert!(Instant::now() >= until);
+        assert_eq!(
+            within_startup(until + std::time::Duration::from_secs(10), async { Ok(42) }).unwrap(),
+            42
+        );
     }
     #[test]
     fn expired_startup_deadline_refuses_before_direct_or_scope_attachment() {

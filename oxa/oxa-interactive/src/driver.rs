@@ -2931,6 +2931,13 @@ impl<'a> Loop<'a> {
         } else {
             lines.extend(render_footer(&self.vm, width, &self.theme));
         }
+        // Regular mode commits its splash once; policy changes belong in the live
+        // region so a cold load, switch or idle unload remains observable.
+        if !self.fullscreen {
+            if let Some(policy) = self.session.memory_policy {
+                lines.push(self.theme.dim(&format!("Memory: {policy}")));
+            }
+        }
         (lines, cursor)
     }
 

@@ -407,12 +407,12 @@ impl Lifecycle {
                 .and_then(|()| platform.attach(pid, gated, self.supervisor.as_ref().unwrap().deadline))
                 .and_then(|attached| {
                     crate::platform::no_swap(attached.sample)?;
+                    self.supervisor.as_mut().unwrap().release()?;
                     Ok(attached)
                 }) {
                 Ok(attached) => {
                     self.guard = Some(Guard::new(attached.sample, now));
                     self.scope = attached.scope;
-                    self.supervisor.as_mut().unwrap().release()?;
                     self.launcher_micros = self
                         .supervisor
                         .as_ref()
