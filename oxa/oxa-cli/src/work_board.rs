@@ -257,7 +257,10 @@ impl GitHub for Reader<'_> {
         let expected: BTreeMap<_, _> = numbers.iter().zip(nodes(&list["pullRequests"])?).collect();
         let mut details = serde_json::json!({});
         let review_fields = if self.review_rows.is_some() {
-            "baseRefOid isCrossRepository authorAssociation comments(first:100){totalCount nodes{body author{login} lastEditedAt}} reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
+            "baseRefOid isCrossRepository authorAssociation
+             comments(first:100){totalCount nodes{body updatedAt lastEditedAt
+                author{login ... on Bot{databaseId}} editor{... on Bot{databaseId}}}}
+             reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
         } else {
             ""
         };

@@ -87,6 +87,12 @@ impl crate::Session {
                 "The goal revision advanced. Confirm durability before acknowledging the transition.",
             )
         })?;
+        crate::progress::notify(
+            state,
+            crate::Progress::GoalControlCommitted {
+                revision: applied_revision,
+            },
+        );
         result.map_err(|error| {
             OxaError::new("goal_applied_prefix_failed", error.message)
                 .with_hint("The goal transition was saved. Refresh the session prefix before running again.")

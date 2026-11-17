@@ -166,6 +166,7 @@ const BASE: &[Entry] = &[
         usage: &[
             "oxa work <taskfile> [--rerun]",
             "oxa work --issue N --model MODEL [--rerun]",
+            "oxa work --pr N --model MODEL [--rerun]",
             "oxa work status [--json]",
             "oxa work board --shadow --repo OWNER/REPO --once",
         ],
