@@ -1,6 +1,6 @@
 # Selected-provider preconnect through the existing gateway pool
 
-Status: qualification only (#881, parent #864, owner O-383 / O-386). No runtime change; merging this note
+Status: qualification only (#881, parent #864). No runtime change; merging this note
 adds no warm-up. The transport limitation below needs an owner choice.
 
 ## Question
