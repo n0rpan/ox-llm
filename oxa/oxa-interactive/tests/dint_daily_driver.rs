@@ -8,7 +8,7 @@
 use oxa_config::{Dirs, Keymap, Settings};
 use oxa_core::{Deps, Handle, Open, Session, ToolSelection};
 use oxa_engine::HttpEngine;
-use oxa_fake::{check_all, FakeOpts, FakeServer, Fault, Recorded, ScriptTurn, TestEnv};
+use oxa_fake::{check_all, FakeModel, FakeOpts, FakeServer, Fault, Recorded, ScriptTurn, TestEnv};
 use oxa_interactive::{run_session, InteractiveOpts, Reopen, SessionInfo};
 use oxa_proto::{
     Access, CancelToken, Decision, Engine, ExecResult, ExecSpec, Mode, OxaError, Policy, Role, Sandbox,
@@ -958,9 +958,17 @@ fn setter_persistence_notices_and_settings_writes() {
         step(
             "model saved",
             &["saved to user settings"],
-            typed("/yolo on --save", &["enter"]),
+            typed("/yolo on", &["enter"]),
         )
         .until(gate("defaultModel", Some("fake-model"))),
+        // #870: `/yolo on` without `--save` says where the change lives like every setter;
+        // the yolo warning banner does not swallow it.
+        step(
+            "yolo session only",
+            &["Mode: yolo", "this session only"],
+            typed("/yolo on --save", &["enter"]),
+        )
+        .until(gate("permissions.defaultMode", Some("auto"))),
         step(
             "yolo saved",
             &["Mode: yolo", "saved to user settings"],
@@ -968,7 +976,7 @@ fn setter_persistence_notices_and_settings_writes() {
         )
         .until(gate("permissions.defaultMode", Some("yolo"))),
         step(
-            "yolo session only",
+            "yolo off session only",
             &["this session only"],
             typed("/exit", &["enter"]),
         )
@@ -1000,6 +1008,56 @@ fn setter_persistence_notices_and_settings_writes() {
     assert_eq!(loaded.string("permissions.defaultMode").as_deref(), Some("yolo"));
     assert_eq!(loaded.string("defaultThinkingLevel").as_deref(), Some("high"));
     assert_eq!(loaded.string("defaultModel").as_deref(), Some("fake-model"));
+}
+
+/// #870: a model switch the user cancels (the over-cap dialog) writes nothing and announces
+/// nothing. The persistence report of `/model` waits for the switch to land, so a cancelled
+/// switch cannot leave the rejected target as the saved default.
+#[test]
+fn cancelled_model_switch_writes_nothing() {
+    // A conversation long enough that the switch to `small` is over its (1024-token) cap: the
+    // fake reports one prompt token per byte.
+    let long = "a".repeat(2000);
+    let world = World::with(
+        vec![
+            ScriptTurn::text("ALPHA answer."),
+            ScriptTurn::text("BETA answer."),
+        ],
+        FakeOpts {
+            models: vec![
+                FakeModel::moe("fake-model", 131_072),
+                FakeModel::moe("small", 1024),
+            ],
+            ..FakeOpts::default()
+        },
+    );
+    let dirs = Dirs::under(world.env.root());
+    let settings_file = dirs.settings_file();
+    let steps = vec![
+        step("open", &["oxa v"], typed(&long, &["enter"])),
+        step(
+            "first answer",
+            &["ALPHA answer."],
+            typed("/model small --save", &["enter"]),
+        ),
+        // The over-cap question: Escape cancels it, so the model never changes.
+        step("over-cap question", &["Compact first"], vec![key("escape")]),
+        // A second turn proves the worker finished the cancelled switch command.
+        step("second prompt", &[], typed("second", &["enter"])),
+        step("second answer", &["BETA answer."], typed("/exit", &["enter"])),
+    ];
+    let session = Session::open(world.deps(), Open::New).expect("open the first session");
+    let (code, _last, term, _first) = run_with(&world, session, world.opts(false), (200, 30), steps);
+    assert_eq!(code, 0);
+    assert_eq!(
+        setting_str(&settings_file, "defaultModel"),
+        None,
+        "a cancelled switch must not write the default model"
+    );
+    assert!(
+        !term.all_text().contains("Model: small"),
+        "a cancelled switch must not announce the model as the change that lives"
+    );
 }
 
 // ---------------------------------------------------------------------------------------------

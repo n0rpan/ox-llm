@@ -656,10 +656,13 @@ pub enum AppAction {
     },
     /// #870: report where a setter's change lives, and write it when asked. `keys` are the
     /// settings keys the choice is written to (empty = the change lasts for this session only);
-    /// `what` names the change in the notice (`"Model: qwen"`).
+    /// `what` names the change in the notice (`"Model: qwen"`). `switch_model` is the model a
+    /// `/model` report waits for: the worker's status must show the switch landed before
+    /// anything is written or announced (a cancelled over-cap dialog changes nothing).
     Persist {
         what: String,
         keys: Vec<(String, Value)>,
+        switch_model: Option<String>,
     },
     /// Show a notice block.
     Notify {

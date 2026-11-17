@@ -183,6 +183,7 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
                         persist(
                             format!("Thinking: {}", level.as_str()),
                             save_key(save, "defaultThinkingLevel", level.as_str()),
+                            None,
                         ),
                     ]),
                     None => usage(THINKING_USAGE),
@@ -500,14 +501,16 @@ fn save_key(save: bool, key: &str, value: &str) -> Vec<(String, String)> {
 }
 
 /// #870: the persistence report of a setter. Empty `keys` = the change lasts for this session
-/// only; otherwise the driver writes them and says where the change lives.
-fn persist(what: String, keys: Vec<(String, String)>) -> AppAction {
+/// only; otherwise the driver writes them and says where the change lives. `switch_model` names
+/// the model a `/model` report waits for before it writes or says anything.
+fn persist(what: String, keys: Vec<(String, String)>, switch_model: Option<String>) -> AppAction {
     AppAction::Persist {
         what,
         keys: keys
             .into_iter()
             .map(|(k, v)| (k, serde_json::Value::String(v)))
             .collect(),
+        switch_model,
     }
 }
 
@@ -525,7 +528,7 @@ fn model_action(cx: &SlashCx, pattern: &str, save: bool) -> AppAction {
                 None => format!("Model: {id}"),
             };
             let keys = if save {
-                let mut keys = vec![("defaultModel".to_string(), id)];
+                let mut keys = vec![("defaultModel".to_string(), id.clone())];
                 if let Some(level) = level {
                     keys.push(("defaultThinkingLevel".to_string(), level.as_str().to_string()));
                 }
@@ -533,7 +536,9 @@ fn model_action(cx: &SlashCx, pattern: &str, save: bool) -> AppAction {
             } else {
                 Vec::new()
             };
-            actions.push(persist(what, keys));
+            // #870: the report waits for the switch to land (the driver defers it to the
+            // worker's status): a cancelled over-cap dialog or a failed switch writes nothing.
+            actions.push(persist(what, keys, Some(id)));
             AppAction::Many(actions)
         }
         Err(e) => notify(Level::Error, e.to_string()),

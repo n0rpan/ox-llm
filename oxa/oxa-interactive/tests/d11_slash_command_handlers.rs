@@ -442,6 +442,16 @@ fn setters_report_their_persistence() {
             .collect();
         assert_eq!(got, want, "{line}");
     }
+    // #870: a `/model` report names the model whose switch must land before it writes or says
+    // anything; `/thinking` applies at once and has no such gate.
+    for (line, want) in [("/model qwen --save", Some("qwen")), ("/thinking high", None)] {
+        match report(expect_some(line, fx.run(line))) {
+            AppAction::Persist { switch_model, .. } => {
+                assert_eq!(switch_model.as_deref(), want, "{line}")
+            }
+            _ => panic!("{line}: no persistence report"),
+        }
+    }
     // `/yolo` carries the flag on the action itself (the mode it lands on is only known then).
     for (line, want, save) in [
         ("/yolo", None, false),

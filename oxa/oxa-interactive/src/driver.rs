@@ -214,6 +214,18 @@ impl BlockCache {
     }
 }
 
+/// #870: a `/model` persistence report that waits for its switch to land. `to` is the model
+/// that was asked for and `from` the one in place before the switch: the report runs when the
+/// switch really landed (`ModelSelect`, or a status that shows the model is `to`); a status
+/// that still shows `from` after the worker answered means the switch was cancelled or refused,
+/// and then nothing is written or announced.
+struct PendingPersist {
+    what: String,
+    keys: Vec<(String, Value)>,
+    from: String,
+    to: String,
+}
+
 pub(crate) struct Loop<'a> {
     opts: &'a mut InteractiveOpts,
     handle: Handle,
@@ -258,6 +270,8 @@ pub(crate) struct Loop<'a> {
     model_pending: Option<String>,
     /// The worker has answered a command since `model_pending` was set (its Status settles it).
     model_answered: bool,
+    /// #870: a `/model` persistence report waiting for its switch to land (`None` = none).
+    pending_persist: Option<PendingPersist>,
     session: SessionInfo,
     inbox: Option<oxa_session::Inbox>,
     files: Option<FileIndex>,
@@ -407,6 +421,7 @@ impl<'a> Loop<'a> {
             scope_from_settings: true,
             model_pending: None,
             model_answered: false,
+            pending_persist: None,
             session: SessionInfo::default(),
             inbox: None,
             files: None,
@@ -672,18 +687,18 @@ impl<'a> Loop<'a> {
         });
         self.sync_yolo();
         // #870: the save comes first, so the notice can say where the change actually lives.
+        // The notice is not suppressed when yolo's warning banner is up: it is the only place
+        // that says whether the change survives a restart.
         let saved = save && self.persist_setting("permissions.defaultMode", mode.as_str());
-        if save || !(mode == PermissionMode::Yolo && self.yolo_noticed && self.yolo_banner_until > now_ms()) {
-            self.push_notice(
-                Level::Info,
-                format!(
-                    "Mode: {} ({}) — {}",
-                    mode.as_str(),
-                    mode.describe(),
-                    persistence_note(saved)
-                ),
-            );
-        }
+        self.push_notice(
+            Level::Info,
+            format!(
+                "Mode: {} ({}) — {}",
+                mode.as_str(),
+                mode.describe(),
+                persistence_note(saved)
+            ),
+        );
     }
 
     /// #870: write one settings key for a setter. `true` = the value is in the user settings
@@ -697,6 +712,44 @@ impl<'a> Loop<'a> {
             Err(e) => {
                 self.push_notice(Level::Error, e.to_string());
                 false
+            }
+        }
+    }
+
+    /// #870: write a setter's settings keys, then say where the change lives. The write comes
+    /// first, so a failed save is an error and is never announced as a save.
+    fn persist_and_report(&mut self, what: String, keys: Vec<(String, Value)>) {
+        let cwd = self.cwd();
+        let mut saved = !keys.is_empty();
+        for (key, value) in keys {
+            if let Err(e) = self.opts.settings.set(&self.opts.dirs, &cwd, &key, value, false) {
+                self.push_notice(Level::Error, e.to_string());
+                saved = false;
+                break;
+            }
+        }
+        if saved {
+            let tools_expanded = self.view.tools_expanded;
+            self.view = view_settings(&*self.opts, &self.caps);
+            self.view.tools_expanded = tools_expanded;
+            self.viewport.scrollbar = ScrollbarMode::parse(&self.view.scrollbar);
+            self.viewport.wheel_lines = self.view.wheel_lines;
+            self.wheel = wheel_accel(&self.opts.settings, &self.opts.env);
+        }
+        self.push_notice(Level::Info, format!("{what} — {}", persistence_note(saved)));
+    }
+
+    /// #870: the switch a deferred `/model` report waits for landed. The core emits this only
+    /// after the model really changed, so a cancelled or refused switch never gets here.
+    fn model_landed(&mut self, e: &AgentEvent) {
+        let AgentEvent::ModelSelect { model, .. } = e else {
+            return;
+        };
+        if let Some(p) = self.pending_persist.take() {
+            if &p.to == model {
+                self.persist_and_report(p.what, p.keys);
+            } else {
+                self.pending_persist = Some(p);
             }
         }
     }
@@ -765,6 +818,8 @@ impl<'a> Loop<'a> {
                     self.run_finished = true;
                 }
                 apply_event(&mut self.vm, &e);
+                // #870: the deferred `/model` report runs when its switch really landed.
+                self.model_landed(&e);
             }
             WorkerMsg::Done(result) => {
                 // The wire may have changed: the same draft is a new prefill.
@@ -801,10 +856,24 @@ impl<'a> Loop<'a> {
             }
             WorkerMsg::Status(s) => {
                 refresh_status(&mut self.vm.status, s);
-                if std::mem::take(&mut self.model_answered)
-                    || self.model_pending.as_ref() == Some(&self.vm.status.model)
-                {
+                let answered = std::mem::take(&mut self.model_answered);
+                if answered || self.model_pending.as_ref() == Some(&self.vm.status.model) {
                     self.model_pending = None;
+                }
+                // #870: the fallback for the deferred `/model` report, when its `ModelSelect`
+                // did not settle it. The model is the one asked for: the switch landed. It
+                // moved somewhere else: another switch did, ours is still queued behind it, so
+                // keep waiting. It is still `from` after the worker answered: the switch was
+                // cancelled (the over-cap dialog) or refused — write nothing, say nothing.
+                if let Some(p) = self.pending_persist.take() {
+                    if self.vm.status.model == p.to {
+                        self.persist_and_report(p.what, p.keys);
+                    } else if self.vm.status.model == p.from && answered {
+                        // The switch was cancelled (the over-cap dialog) or refused: nothing
+                        // is written and nothing says it was.
+                    } else {
+                        self.pending_persist = Some(p);
+                    }
                 }
             }
             WorkerMsg::Session(info) => self.set_session(info),
@@ -2450,28 +2519,26 @@ impl<'a> Loop<'a> {
             AppAction::Notify { level, text } => self.push_notice(level, text),
             AppAction::Yolo { want, save } => self.set_yolo(want, save),
             AppAction::SetPermissionMode { mode, save } => self.set_permission_mode(mode, save),
-            AppAction::Persist { what, keys } => {
-                // #870: write first, then say where the change lives. A failed write shows the
-                // error and never claims a save.
-                let cwd = self.cwd();
-                let mut saved = !keys.is_empty();
-                for (key, value) in keys {
-                    if let Err(e) = self.opts.settings.set(&self.opts.dirs, &cwd, &key, value, false) {
-                        self.push_notice(Level::Error, e.to_string());
-                        saved = false;
-                        break;
-                    }
+            AppAction::Persist {
+                what,
+                keys,
+                switch_model,
+            } => match switch_model {
+                // #870: the switch is asynchronous, and the user can still cancel it (the
+                // over-cap dialog) or the switch can fail. The report waits for the worker's
+                // status to show the switch landed, so nothing is written or announced for a
+                // model that never became active.
+                Some(model) => {
+                    self.model_pending = Some(model.clone());
+                    self.pending_persist = Some(PendingPersist {
+                        what,
+                        keys,
+                        from: self.vm.status.model.clone(),
+                        to: model,
+                    });
                 }
-                if saved {
-                    let tools_expanded = self.view.tools_expanded;
-                    self.view = view_settings(&*self.opts, &self.caps);
-                    self.view.tools_expanded = tools_expanded;
-                    self.viewport.scrollbar = ScrollbarMode::parse(&self.view.scrollbar);
-                    self.viewport.wheel_lines = self.view.wheel_lines;
-                    self.wheel = wheel_accel(&self.opts.settings, &self.opts.env);
-                }
-                self.push_notice(Level::Info, format!("{what} — {}", persistence_note(saved)));
-            }
+                None => self.persist_and_report(what, keys),
+            },
             AppAction::ShowLines(lines) => {
                 for line in lines {
                     self.push_notice(Level::Info, line);
