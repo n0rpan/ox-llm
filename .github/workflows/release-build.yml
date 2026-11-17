@@ -334,6 +334,7 @@ jobs:
               printf 'SCOPE-SETUP-REFUSAL: %s\n' "$predicate" | tee -a "$setup_receipt" >&2
               if [[ -n ${uid:-} ]]; then
                 sudo systemctl show "user@$uid.service" -p ActiveState -p SubState | tee -a "$setup_receipt" || true
+                sudo systemctl --user --machine=ox-proof-scope@.host --no-pager --lines=0 status dbus.socket | tee -a "$setup_receipt" || true
               fi
               exit 1
             fi
@@ -363,10 +364,17 @@ jobs:
           require_setup sudo loginctl enable-linger ox-proof-scope
           require_setup sudo systemctl start "user@$uid.service"
           predicate='positive fixture user manager must start its bus socket'
-          require_setup sudo runuser -u ox-proof-scope -- env -i PATH=/usr/bin:/bin \
-            XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user start dbus.socket
-          predicate='positive canonical user bus must be a socket'
-          require_setup sudo runuser -u ox-proof-scope -- test -S "/run/user/$uid/bus"
+          require_setup sudo systemctl --user --machine=ox-proof-scope@.host start dbus.socket
+          predicate='positive canonical user bus must become a socket within the bounded setup wait'
+          socket_ready=0
+          for attempt in {1..50}; do
+            if sudo runuser -u ox-proof-scope -- test -S "/run/user/$uid/bus"; then
+              socket_ready=1
+              break
+            fi
+            sleep 0.1
+          done
+          require_setup test "$socket_ready" = 1
           predicate='negative fixture canonical user bus must be absent'
           require_setup sudo runuser -u ox-proof-nobus -- test ! -e "/run/user/$(id -u ox-proof-nobus)/bus"
           printf 'scope_setup=ready positive_bus=socket negative_bus=absent\n' | tee -a "$setup_receipt"
