@@ -125,11 +125,6 @@ jobs:
             echo 'CLI share-key controls: no affected share paths.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          if [ ! -f oxa/oxa-cli/tests/share_keys.rs ] &&
-            ! git cat-file -e "$base:oxa/oxa-cli/tests/share_keys.rs" 2>/dev/null; then
-            echo 'CLI share-key controls: suite not introduced on this branch or its base.' >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           share_home=$(mktemp -d "$TMPDIR/share-keys.XXXXXX")
           trap 'rm -rf -- "$share_home"' EXIT
           mkdir -p "$share_home"/{config,data,state,cache,runtime,tmp}
