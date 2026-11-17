@@ -337,20 +337,24 @@ fn write_reply(stream: &mut impl Write, reply: &Reply) -> io::Result<()> {
         .windows(b"event: message_stop\n".len())
         .position(|part| part == b"event: message_stop\n")
         .unwrap_or(reply.bytes.len());
-    // A reply without a semantic terminal event is read to EOF, so its final payload and the
-    // HTTP tail leave in one write: a client that stops at its own terminal event (an
-    // OpenAI-style `data: [DONE]`, which has no `message_stop`) returns as soon as it sees
-    // that byte and closes the peer, and a later tail write would be a false failure.
-    let tail: &[u8] = if reply.terminal { b"" } else { b"\r\n0\r\n\r\n" };
-    write_fragments(stream, &reply.bytes[..split], reply.fragment, false, tail)?;
+    // A reply without a semantic terminal event is read to EOF, so its final
+    // payload and the HTTP last-chunk leave in one write: a client that stops at
+    // its own terminal event (an OpenAI-style `[DONE]`) closes the peer as soon
+    // as it sees that byte, and a later tail write would be a false failure.
+    let tail: &[u8] = if reply.terminal { b"" } else { b"0\r\n\r\n" };
+    let (head, rest) = reply.bytes.split_at(split);
+    // The last-chunk belongs to whichever part carries the final body byte.
+    let head_tail = if rest.is_empty() { tail } else { b"" };
+    write_fragments(stream, head, reply.fragment, false, head_tail)?;
     if reply.stop_delay >= DEADLINE {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     thread::sleep(reply.stop_delay);
-    write_fragments(stream, &reply.bytes[split..], reply.fragment, reply.terminal, b"")
+    let rest_tail = if rest.is_empty() { b"" } else { tail };
+    write_fragments(stream, rest, reply.fragment, reply.terminal, rest_tail)
 }
-/// `tail` is appended to the final chunk in the same write, so a client that stops at its
-/// own semantic terminal cannot close the peer before the message is complete.
+/// `tail` is appended to the final chunk in the same write, so a client that
+/// stops at its own semantic terminal cannot race a later tail write.
 fn write_fragments(
     stream: &mut impl Write,
     bytes: &[u8],
@@ -358,22 +362,22 @@ fn write_fragments(
     terminal: bool,
     tail: &[u8],
 ) -> io::Result<()> {
-    debug_assert!(tail.is_empty() || tail.starts_with(b"\r\n0\r\n\r\n"));
     let mut chunks = bytes.chunks(fragment).peekable();
     if chunks.peek().is_none() {
-        // No payload chunk: the leading CRLF belongs to a last chunk's framing, so an empty
-        // body is just the zero chunk, as before.
         return if tail.is_empty() {
             Ok(())
         } else {
-            stream.write_all(&tail[b"\r\n".len()..])
+            stream.write_all(tail)
         };
     }
     while let Some(bytes) = chunks.next() {
         write!(stream, "{:x}\r\n", bytes.len())?;
         if chunks.peek().is_none() && !tail.is_empty() {
-            let mut complete = Vec::with_capacity(bytes.len() + tail.len());
+            // The final data chunk still needs its terminating CRLF before the
+            // last-chunk that `tail` carries; both leave in this one write.
+            let mut complete = Vec::with_capacity(bytes.len() + 2 + tail.len());
             complete.extend_from_slice(bytes);
+            complete.extend_from_slice(b"\r\n");
             complete.extend_from_slice(tail);
             stream.write_all(&complete)?;
             return stream.flush();
@@ -478,146 +482,6 @@ mod mock_health {
                 }
             }
         }
-    }
-
-    /// An OpenAI-style `data: [DONE]` SSE body, the reply a client stops at without a
-    /// `message_stop`; `Reply::wire` of it is what the OpenRouter cloud tests use.
-    const DONE_BODY: &[u8] = b"data: [DONE]\n\n";
-
-    /// A peer that reads the body the way a client does - the chunk framing the mock adds is
-    /// invisible to it - and closes after the flush that completed its semantic terminal
-    /// event (`data: [DONE]`). Comparing the de-chunked payload matters: the mock sends
-    /// seven-byte chunks, so `data: [` and `DONE]` reach the peer in separate writes and a
-    /// search over the framed stream would never match.
-    #[derive(Default)]
-    struct CloseOnDoneFlush {
-        /// Everything the mock wrote, framing included.
-        bytes: Vec<u8>,
-        /// Body bytes not de-chunked yet.
-        pending: Vec<u8>,
-        /// The body a client reads after de-chunking.
-        payload: Vec<u8>,
-        /// First body byte inside `bytes`, once the response head is complete.
-        body_start: Option<usize>,
-        /// How many of `bytes` have been handed to `pending`.
-        fed: usize,
-        /// The zero chunk (the end of the body) arrived.
-        terminated: bool,
-        closed: bool,
-    }
-    impl CloseOnDoneFlush {
-        /// Move the new body bytes into `pending`, skipping the response head.
-        fn absorb(&mut self) {
-            if self.body_start.is_none() {
-                self.body_start = self
-                    .bytes
-                    .windows(4)
-                    .position(|part| part == b"\r\n\r\n")
-                    .map(|at| at + 4);
-            }
-            let Some(start) = self.body_start else {
-                return;
-            };
-            let from = self.fed.max(start);
-            if self.bytes.len() > from {
-                self.pending.extend_from_slice(&self.bytes[from..]);
-            }
-            self.fed = self.bytes.len();
-        }
-
-        /// A data chunk is `hex\r\n<bytes>\r\n`; the zero chunk ends the body. An incomplete
-        /// chunk stays in `pending` for the next write.
-        fn dechunk(&mut self) {
-            loop {
-                let Some(end) = self.pending.windows(2).position(|part| part == b"\r\n") else {
-                    return;
-                };
-                let size = std::str::from_utf8(&self.pending[..end])
-                    .ok()
-                    .and_then(|text| usize::from_str_radix(text, 16).ok());
-                let Some(size) = size else {
-                    return;
-                };
-                if size == 0 {
-                    // The zero chunk ends the body; its trailer line may have arrived in the
-                    // same write (`\r\n0\r\n\r\n`).
-                    self.pending.drain(..end + 2);
-                    if self.pending.starts_with(b"\r\n") {
-                        self.pending.drain(..2);
-                    }
-                    self.terminated = true;
-                    return;
-                }
-                let end_of_chunk = end + 2 + size + 2;
-                if self.pending.len() < end_of_chunk {
-                    return;
-                }
-                self.payload
-                    .extend_from_slice(&self.pending[end + 2..end + 2 + size]);
-                self.pending.drain(..end_of_chunk);
-            }
-        }
-    }
-    impl Write for CloseOnDoneFlush {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if self.closed {
-                return Err(io::ErrorKind::BrokenPipe.into());
-            }
-            self.bytes.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            self.absorb();
-            self.dechunk();
-            // A write that carried the final payload and the tail leaves no partial chunk
-            // behind; any other write leaves one and is not a client-side close point.
-            self.closed |= self.pending.is_empty() && self.payload.ends_with(DONE_BODY);
-            Ok(())
-        }
-    }
-
-    /// An OpenAI-style `[DONE]` reply has no `message_stop`, so the client stops at that byte
-    /// and closes. The HTTP tail must already be on the wire. Seven-byte chunks split the
-    /// sentinel, so the control (de-chunking, like a client) sees it only at the final flush.
-    #[test]
-    fn final_payload_and_http_tail_leave_in_one_write() {
-        let reply = Reply::wire("text/event-stream", DONE_BODY);
-        let mut peer = CloseOnDoneFlush::default();
-        write_reply(&mut peer, &reply).expect("the HTTP message is complete at the final flush");
-        assert!(
-            peer.closed,
-            "the control must close the peer at the semantic terminal"
-        );
-        assert_eq!(peer.payload, DONE_BODY);
-        assert!(peer.bytes.ends_with(b"\r\n0\r\n\r\n"));
-        assert!(peer.terminated, "the body ended with the zero chunk");
-    }
-
-    /// A write of the HTTP tail after the semantic flush fails once the peer is gone: the
-    /// shape this mock had, kept so the case above is not a vacuous pass.
-    #[test]
-    fn a_tail_write_after_the_semantic_flush_fails() {
-        let mut reply = Reply::wire("text/event-stream", DONE_BODY);
-        reply.fragment = usize::MAX;
-        let mut peer = CloseOnDoneFlush::default();
-        peer.write_all(b"HTTP/1.1 200 Synthetic\r\nTransfer-Encoding: chunked\r\n\r\n")
-            .unwrap();
-        // The response head and the final payload reach the peer and close it...
-        write_fragments(&mut peer, &reply.bytes, reply.fragment, false, b"").unwrap();
-        assert!(peer.closed, "the control closed at the semantic flush");
-        // ...so a tail written afterwards is a broken pipe.
-        let error = peer.write_all(b"\r\n0\r\n\r\n").unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
-    }
-
-    /// A close before later payload chunks is still a failure.
-    #[test]
-    fn close_before_later_payload_chunks_is_still_a_failure() {
-        let mut body = DONE_BODY.to_vec();
-        body.extend_from_slice(&[b'x'; 2048]);
-        let reply = Reply::wire("text/event-stream", &body);
-        let error = write_reply(&mut CloseOnDoneFlush::default(), &reply).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 
     #[test]
@@ -748,6 +612,177 @@ mod mock_health {
             !shared.errors.lock().unwrap().is_empty(),
             "shutdown hid a peer read failure"
         );
+    }
+
+    /// An OpenAI-style `[DONE]` SSE body, the reply a client stops at without a `message_stop`.
+    const DONE_BODY: &[u8] = b"data: [DONE]\n\n";
+
+    /// A peer that reads the body the way a client does - the chunk framing the
+    /// mock adds is invisible to it - and closes after the flush that completed
+    /// its semantic terminal event (`data: [DONE]`), before any later HTTP-tail
+    /// write. Comparing the de-chunked payload, rather than the framed stream,
+    /// matters: the mock sends seven-byte chunks, so `data: [` and `DONE]` reach
+    /// the peer in separate writes and a sentinel search over framing never matches.
+    #[derive(Default)]
+    struct CloseOnDoneFlush {
+        /// Everything the mock wrote, framing included.
+        bytes: Vec<u8>,
+        /// Body bytes not de-chunked yet.
+        pending: Vec<u8>,
+        /// The body a client reads after de-chunking.
+        payload: Vec<u8>,
+        /// First body byte inside `bytes`, once the response head is complete.
+        body_start: Option<usize>,
+        /// How many of `bytes` have been handed to `pending`.
+        fed: usize,
+        /// The zero chunk (the end of the body) arrived.
+        terminated: bool,
+        closed: bool,
+    }
+    impl CloseOnDoneFlush {
+        /// Move the new body bytes into `pending`, skipping the response head.
+        fn absorb(&mut self) {
+            if self.body_start.is_none() {
+                self.body_start = self
+                    .bytes
+                    .windows(4)
+                    .position(|part| part == b"\r\n\r\n")
+                    .map(|at| at + 4);
+            }
+            let Some(start) = self.body_start else {
+                return;
+            };
+            let from = self.fed.max(start);
+            if self.bytes.len() > from {
+                self.pending.extend_from_slice(&self.bytes[from..]);
+                self.fed = self.bytes.len();
+            }
+        }
+
+        /// A data chunk is `hex\r\n<bytes>\r\n`; the zero chunk ends the body. An
+        /// incomplete chunk stays in `pending` for the next write.
+        fn dechunk(&mut self) {
+            loop {
+                let Some(end) = self.pending.windows(2).position(|part| part == b"\r\n") else {
+                    return;
+                };
+                let Some(size) = std::str::from_utf8(&self.pending[..end])
+                    .ok()
+                    .and_then(|text| usize::from_str_radix(text, 16).ok())
+                else {
+                    return;
+                };
+                if size == 0 {
+                    // The zero chunk ends the body; its empty trailer line may
+                    // have arrived in the same write (`\r\n0\r\n\r\n`).
+                    self.pending.drain(..end + 2);
+                    if self.pending.starts_with(b"\r\n") {
+                        self.pending.drain(..2);
+                    }
+                    self.terminated = true;
+                    return;
+                }
+                let end_of_chunk = end + 2 + size + 2;
+                if self.pending.len() < end_of_chunk {
+                    return;
+                }
+                self.payload
+                    .extend_from_slice(&self.pending[end + 2..end + 2 + size]);
+                self.pending.drain(..end_of_chunk);
+            }
+        }
+    }
+    impl Write for CloseOnDoneFlush {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.closed {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.absorb();
+            self.dechunk();
+            // A write that carried the final payload and the tail leaves no
+            // partial chunk behind; any other write leaves one and is not a
+            // client-side close point.
+            self.closed |= self.pending.is_empty() && self.payload.ends_with(DONE_BODY);
+            Ok(())
+        }
+    }
+    impl CloseOnDoneFlush {
+        /// Everything after the response head: the chunked body framing.
+        fn wire(&self) -> &[u8] {
+            let head = self
+                .bytes
+                .windows(4)
+                .position(|part| part == b"\r\n\r\n")
+                .expect("the mock must write a response head");
+            &self.bytes[head + 4..]
+        }
+    }
+
+    /// An OpenAI-style `[DONE]` reply has no `message_stop`, so the client stops
+    /// at that byte and closes. The HTTP message must be complete before that
+    /// flush, including the data chunk's CRLF and the empty last-chunk.
+    #[test]
+    fn final_payload_and_http_tail_leave_in_one_write() {
+        let reply = Reply::wire("text/event-stream", DONE_BODY);
+        let mut peer = CloseOnDoneFlush::default();
+        write_reply(&mut peer, &reply).expect("the HTTP message must be complete at the final flush");
+        assert!(
+            peer.closed,
+            "the control must close the peer at the semantic terminal"
+        );
+        assert_eq!(peer.payload, DONE_BODY);
+        assert!(peer.terminated, "the body ended with the zero chunk");
+        // Seven-byte chunks split the sentinel, so the wire framing is exact.
+        assert_eq!(peer.wire(), b"7\r\ndata: [\r\n7\r\nDONE]\n\n\r\n0\r\n\r\n");
+    }
+
+    /// Unlike a body, an empty reply is read to EOF: the empty last-chunk is
+    /// delivered as the very last fragment, after which the peer may close.
+    #[test]
+    fn empty_reply_ends_with_the_last_chunk_after_the_final_flush() {
+        let reply = Reply::wire("text/event-stream", b"");
+        let mut peer = CloseOnDoneFlush::default();
+        write_reply(&mut peer, &reply).expect("an empty body still ends with a zero chunk");
+        assert!(!peer.closed, "nothing was sent: the control closed early");
+        assert_eq!(peer.wire(), b"0\r\n\r\n");
+
+        let mut closed = CloseOnDoneFlush {
+            closed: true,
+            ..Default::default()
+        };
+        let error = write_reply(&mut closed, &reply).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    /// A write of the HTTP tail after the semantic flush fails once the peer is
+    /// gone: the shape #830 fixed, kept so the test above is not a vacuous pass.
+    #[test]
+    fn a_tail_write_after_the_semantic_flush_fails() {
+        let mut reply = Reply::wire("text/event-stream", DONE_BODY);
+        reply.fragment = usize::MAX;
+        let mut peer = CloseOnDoneFlush::default();
+        peer.write_all(b"HTTP/1.1 200 Synthetic\r\nTransfer-Encoding: chunked\r\n\r\n")
+            .unwrap();
+        // The response head and the final payload reach the peer and close it...
+        write_fragments(&mut peer, &reply.bytes, reply.fragment, false, b"").unwrap();
+        assert!(peer.closed, "the control closed at the semantic flush");
+        // ...so the tail a later write delivered is a broken pipe.
+        let error = peer.write_all(b"0\r\n\r\n").unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    /// A close before later payload chunks is still a failure.
+    #[test]
+    fn close_before_later_payload_chunks_is_still_a_failure() {
+        let mut body = DONE_BODY.to_vec();
+        body.extend_from_slice(&[b'x'; 2048]);
+        let reply = Reply::wire("text/event-stream", &body);
+        let error = write_reply(&mut CloseOnDoneFlush::default(), &reply).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 
     #[test]
