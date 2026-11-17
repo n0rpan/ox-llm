@@ -322,3 +322,62 @@ impl Drop for Supervisor {
         }
     }
 }
+
+#[cfg(test)]
+mod platform_retry_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    struct Policy(AtomicBool);
+    impl platform::PlatformLauncher for Policy {
+        fn requires_scope(&self) -> io::Result<bool> {
+            if self.0.load(Ordering::SeqCst) {
+                Err(platform::refused("child policy metadata readable"))
+            } else {
+                Ok(false)
+            }
+        }
+        fn attach(&self, _: u32, _: bool) -> io::Result<platform::Attachment> {
+            panic!("no child may be attached after launch refusal")
+        }
+    }
+
+    #[test]
+    fn policy_lookup_failure_exhausts_backoff_instead_of_looping_forever() {
+        let env = oxa_fake::TestEnv::new();
+        let now = Instant::now();
+        let backoff = Duration::from_secs(1);
+        let mut s = Supervisor::new(Config {
+            executable: env.work().join("nonexistent-engine"),
+            arguments: Vec::new(),
+            environment: Default::default(),
+            startup_timeout: Duration::from_secs(1),
+            health_interval: Duration::from_secs(1),
+            unhealthy_limit: 1,
+            term_grace: Duration::ZERO,
+            restart_backoff: backoff,
+            max_restarts: 1,
+        })
+        .unwrap();
+        let policy = Arc::new(Policy(AtomicBool::new(false)));
+        s.platform = Some(policy.clone());
+        // The ordinary spawn-error path enters bounded backoff.
+        assert!(s.start(now).is_err());
+        assert_eq!(s.state(), State::Backoff);
+        policy.0.store(true, Ordering::SeqCst);
+        assert_eq!(s.poll(now, || panic!("no live engine")).unwrap(), State::Backoff);
+        let error = s.poll(now + backoff, || panic!("no live engine")).unwrap_err();
+        assert!(error.to_string().contains("child policy metadata readable"));
+        assert_eq!(s.state(), State::Failed);
+        assert_eq!(s.last_failure(), Some(Failure::Spawn));
+        assert!(!s.wanted);
+        assert_eq!(s.pid(), None);
+        assert_eq!(
+            s.poll(now + backoff * 2, || panic!("no live engine")).unwrap(),
+            State::Failed
+        );
+    }
+}
