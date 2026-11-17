@@ -3,11 +3,11 @@
 //! * **Toolchains (B2).** The user's `PATH` is kept inside the sandbox (absolute entries that
 //!   exist as directories, in order; the base `/usr/local/bin:/usr/bin:/bin` is appended when
 //!   missing; then the existing executable directories of toolchains installed under `$HOME`
-//!   ([`TOOLCHAIN_PATH`], and the toolchains of the rustup home `RUSTUP_HOME` names), or - when
-//!   none of them holds a `cargo` - the `bin` of a toolchain the sandbox already shows read-only
-//!   (a rustup toolchain under `~/.rustup/toolchains` or `RUSTUP_HOME`, and a toolchain exposed
-//!   with `oxa.sandbox.readPaths`), so a toolchain works when the environment oxa started from
-//!   never read a login shell's profile). Toolchain directories under `$HOME` are bound
+//!   ([`TOOLCHAIN_PATH`], and the toolchains of a `RUSTUP_HOME` rustup home), or - when none of
+//!   them holds a `cargo` - the `bin` of a toolchain the sandbox already shows read-only (a
+//!   rustup toolchain under `~/.rustup/toolchains`, and a toolchain exposed with
+//!   `oxa.sandbox.readPaths`), so a toolchain works when the environment oxa started from never
+//!   read a login shell's profile). Toolchain directories under `$HOME` are bound
 //!   read-only and package caches read-write ([`TOOLCHAIN_READ`], [`CACHE_WRITE`], each only
 //!   when it exists; plus every `PATH` entry under `$HOME`, read-only). The settings
 //!   `oxa.sandbox.readPaths` / `oxa.sandbox.writePaths` (user settings only) add more. The
@@ -245,6 +245,11 @@ fn denied(p: &Path, deny: &[PathBuf]) -> bool {
     deny.iter().any(|d| p.starts_with(d))
 }
 
+/// The rustup home under the user's home, which [`TOOLCHAIN_READ`] binds read-only.
+fn home_rustup(home: &Path) -> PathBuf {
+    home.join(".rustup")
+}
+
 /// Push the `bin` of every toolchain below a rustup home's `toolchains`.
 fn toolchain_bins(bins: &mut Vec<PathBuf>, toolchains: &Path) {
     if let Ok(entries) = std::fs::read_dir(toolchains) {
@@ -255,15 +260,16 @@ fn toolchain_bins(bins: &mut Vec<PathBuf>, toolchains: &Path) {
 }
 
 /// The directories that hold a `cargo` and that the sandbox shows read-only anyway: the
-/// toolchains of `~/.rustup` (and of the rustup home a `RUSTUP_HOME` variable names), and -
-/// for every kept `oxa.sandbox.readPaths` entry - the path, its `bin` and the toolchains
-/// below it. Sorted. A toolchain stays usable when a run never read a login shell's profile
-/// (rustup writes its shims to `~/.cargo/bin`) or when only the toolchain is installed.
+/// toolchains of `~/.rustup`, and - for every kept `oxa.sandbox.readPaths` entry - the path,
+/// its `bin` and the toolchains below it. A `RUSTUP_HOME` rustup home counts only when it is
+/// part of one of those (otherwise its toolchain is not visible in the sandbox). Sorted. A
+/// toolchain stays usable when a run never read a login shell's profile (rustup writes its
+/// shims to `~/.cargo/bin`) or when only the toolchain is installed.
 fn cargo_bins_shown(home: &Path, exposed: &[PathBuf], rustup_home: Option<&Path>) -> Vec<String> {
     let mut bins: Vec<PathBuf> = Vec::new();
-    toolchain_bins(&mut bins, &home.join(".rustup/toolchains"));
-    if let Some(rustup) = rustup_home {
-        toolchain_bins(&mut bins, &rustup.join("toolchains"));
+    toolchain_bins(&mut bins, &home_rustup(home).join("toolchains"));
+    if let Some(configured) = rustup_home {
+        toolchain_bins(&mut bins, &configured.join("toolchains"));
     }
     for path in exposed {
         bins.push(path.clone());
@@ -314,15 +320,21 @@ impl Layout {
         // but only a login shell's profile puts it on PATH. A sandboxed command in a session
         // that never read that profile then ran `cargo` and the like as "command not found"
         // although the toolchain was installed. Appended after PATH and the base one, so
-        // nothing the user's PATH already finds is shadowed.
+        // nothing the user's PATH already finds is shadowed. The toolchains of the rustup home
+        // `RUSTUP_HOME` names come first, and only from a rustup home the sandbox binds.
+        let rustup = home_rustup(&i.home);
+        let rustup_home = i
+            .env
+            .iter()
+            .rev()
+            .find(|(k, _)| k == "RUSTUP_HOME")
+            .map(|(_, v)| Path::new(v.as_str()))
+            .filter(|v| v.is_absolute() && !denied(v, &deny));
         let mut toolchain_dirs: Vec<PathBuf> = Vec::new();
-        if let Some((_, v)) = i.env.iter().find(|(k, _)| k == "RUSTUP_HOME") {
-            if v.starts_with('/') && !denied(Path::new(v), &deny) {
-                let mut bins = Vec::new();
-                toolchain_bins(&mut bins, &Path::new(v).join("toolchains"));
-                toolchain_dirs.extend(bins.into_iter().filter(|b| b.join("cargo").is_file()));
-            }
+        if let Some(configured) = rustup_home.filter(|v| v.starts_with(&rustup)) {
+            toolchain_bins(&mut toolchain_dirs, &configured.join("toolchains"));
         }
+        toolchain_dirs.retain(|b| b.join("cargo").is_file());
         toolchain_dirs.extend(TOOLCHAIN_PATH.iter().map(|rel| i.home.join(rel)));
         for dir in toolchain_dirs {
             if !dir.is_dir() || denied(&dir, &deny) {
@@ -335,9 +347,9 @@ impl Layout {
         }
         // Still no `cargo` on the PATH: rustup's shims are missing, or the run inherits a PATH
         // without them. Use the toolchain directories the sandbox shows read-only anyway
-        // (`~/.rustup/toolchains`, a `RUSTUP_HOME` rustup home, and a toolchain the user
-        // exposed with `oxa.sandbox.readPaths`), so a `done` check such as `cargo fmt --check`
-        // runs instead of reporting "command not found". A cargo PATH finds keeps its place.
+        // (`~/.rustup/toolchains`, and a toolchain the user exposed with
+        // `oxa.sandbox.readPaths`), so a `done` check such as `cargo fmt --check` runs instead
+        // of reporting "command not found". A cargo the PATH finds keeps its place.
         if !path.iter().any(|dir| Path::new(dir).join("cargo").is_file()) {
             let exposed: Vec<PathBuf> = i
                 .read_extra
@@ -345,13 +357,9 @@ impl Layout {
                 .filter(|extra| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), extra))
                 .cloned()
                 .collect();
-            let rustup_home = i
-                .env
-                .iter()
-                .rev()
-                .find(|(k, _)| k == "RUSTUP_HOME")
-                .map(|(_, v)| Path::new(v));
-            for bin in cargo_bins_shown(&i.home, &exposed, rustup_home) {
+            let configured =
+                rustup_home.filter(|v| v.starts_with(&rustup) || exposed.iter().any(|e| v.starts_with(e)));
+            for bin in cargo_bins_shown(&i.home, &exposed, configured) {
                 if !path.contains(&bin) {
                     path.push(bin);
                 }
@@ -910,6 +918,27 @@ mod tests {
     /// A toolchain installed under the home (`~/.cargo/bin`, mise's shims, `~/.local/bin`) is
     /// appended after the user's own `PATH`, each directory once, so it cannot shadow a
     /// program the user's shell already finds.
+    /// A `RUSTUP_HOME` outside every read-only bind is not put on the PATH: the sandbox does
+    /// not show that toolchain, so naming it would only cost a failed lookup.
+    #[test]
+    fn a_rustup_home_the_sandbox_does_not_show_is_not_named() {
+        let env = oxa_fake::TestEnv::new();
+        let outside = env.root().join("data/rustup/toolchains/pinned/bin");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("cargo"), "x").unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: env.home(),
+            agent_dir: Some(env.agent_dir()),
+            path_var: "/usr/bin:/bin".into(),
+            env: vec![(
+                "RUSTUP_HOME".into(),
+                env.root().join("data/rustup").display().to_string(),
+            )],
+            ..Default::default()
+        });
+        assert!(!l.path.contains(&outside.display().to_string()), "{:?}", l.path);
+    }
+
     #[test]
     fn an_installed_toolchain_directory_is_appended_after_the_users_path() {
         let env = oxa_fake::TestEnv::new();
@@ -964,6 +993,27 @@ mod tests {
             "no second cargo: {:?}",
             l.path
         );
+    }
+
+    /// A `RUSTUP_HOME` inside `~/.rustup` (where the sandbox binds it read-only) keeps its
+    /// toolchain reachable by name even when no shims exist.
+    #[test]
+    fn a_rustup_home_below_the_home_rustup_is_on_the_sandbox_path() {
+        let env = oxa_fake::TestEnv::new();
+        let rustup = env.home().join(".rustup");
+        let bin = rustup.join("toolchains/pinned/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("cargo"), "x").unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: env.home(),
+            agent_dir: Some(env.agent_dir()),
+            path_var: "/usr/bin:/bin".into(),
+            env: vec![("RUSTUP_HOME".into(), rustup.display().to_string())],
+            ..Default::default()
+        });
+        let shown = bin.display().to_string();
+        assert!(l.path.contains(&shown), "{:?}", l.path);
+        assert_eq!(l.path.iter().filter(|p| **p == shown).count(), 1, "{:?}", l.path);
     }
 
     /// A session home of its own holds no toolchain; the user exposes the installed one with
