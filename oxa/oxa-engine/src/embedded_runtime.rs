@@ -69,6 +69,7 @@ fn normalize(error: Error) -> OxaError {
         refusal.code,
         "region_blocked"
             | "subscription_limit_reached"
+            | "subscription_limit_exceeded"
             | "subscription_limits_not_configured"
             | "subscription_private"
     ) {
