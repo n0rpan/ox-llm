@@ -90,6 +90,7 @@ jobs:
           { rustc --version; cargo --version; cc --version; c++ --version; ld --version; rpm -q glibc libstdc++; } \
             > "$GITHUB_WORKSPACE/dist/TOOLCHAIN.txt"
       - name: No-Python proof on the exact release tarball binary
+        id: native_proof
         working-directory: /build/first
         run: |
           set -euo pipefail
@@ -117,6 +118,48 @@ jobs:
             OXA_TEST_REQUIRE_RELEASE_ARTIFACT=1 \
             cargo test --profile ci --locked -p oxa-cli --test no_python_in_path -- --nocapture \
             2>&1 | tee -a "$receipt"
+      - name: Diagnose native memory admission failure (read only)
+        if: failure() && steps.native_proof.outcome == 'failure'
+        run: |
+          python3 -I - <<'PY'
+          import json, pathlib, re
+          proc = pathlib.Path('/proc')
+          report = {}
+          def read(path):
+              try:
+                  return path.read_text()
+              except OSError:
+                  return ''
+          def field(name, text, key=None):
+              if key is not None:
+                  rows = [line.split()[1:] for line in text.splitlines()
+                          if line.split() and line.split()[0] == key]
+                  text = rows[0][0] if len(rows) == 1 and rows[0] else ''
+              text = text.strip()
+              report[name] = text if re.fullmatch(r'[0-9]+(?:\.[0-9]+)?|max', text) else 'missing-or-invalid'
+          membership = [line[3:] for line in read(proc / 'self/cgroup').splitlines()
+                        if line.startswith('0::')]
+          relative = membership[0] if len(membership) == 1 else ''
+          parts = relative.split('/')[1:]
+          valid = relative.startswith('/') and all(p not in ('.', '..') for p in parts)
+          # Classify membership without emitting runner-specific cgroup names.
+          report['membership'] = 'root' if relative == '/' else 'nested' if valid else 'invalid'
+          if valid:
+              group = pathlib.Path('/sys/fs/cgroup') / relative.lstrip('/')
+              for name in ('memory.swap.max', 'memory.swap.current'):
+                  field(name, read(group / name))
+              for key in ('oom', 'oom_kill', 'oom_group_kill'):
+                  field('memory.events.' + key, read(group / 'memory.events'), key)
+              field('pids.events.max', read(group / 'pids.events'), 'max')
+          for key in ('MemAvailable:', 'SwapFree:'):
+              field(key.rstrip(':') + '_kib', read(proc / 'meminfo'), key)
+          field('vmstat.oom_kill', read(proc / 'vmstat'), 'oom_kill')
+          pressure = read(proc / 'pressure/memory')
+          full = [line for line in pressure.splitlines() if line.startswith('full ')]
+          avg = re.findall(r'(?:^| )avg10=([^ ]+)', full[0]) if len(full) == 1 else []
+          field('psi.full.avg10', avg[0] if len(avg) == 1 else '')
+          print('NATIVE-MEMORY-DIAGNOSTIC ' + json.dumps(report, sort_keys=True))
+          PY
       - name: Model-free source tests
         working-directory: /build/first
         run: packaging/release/check.sh
