@@ -203,7 +203,7 @@ mod tests {
     #[test]
     fn proves_an_ipv4_client_of_a_dual_stack_listener() {
         use std::os::unix::fs::MetadataExt;
-        let bindv6only = std::fs::read_to_string("/proc/sys/net/ipv6/bindv6only");
+        let bindv6only = std::fs::read_to_string("/proc/sys/net/ipv6/bindv6only").ok();
         assert_eq!(bindv6only.as_deref().map(str::trim), Some("0"));
         let uid = std::fs::metadata("/proc/self").unwrap().uid();
         let listener = std::net::TcpListener::bind("[::]:0").unwrap();
