@@ -76,8 +76,8 @@ fn path_tiers_ignore_routine_tests_and_include_both_paths_of_renames() {
         decide(&input),
         Decision::Review {
             tier: Tier::DocsAndTests,
-            request: vec![],
-            outstanding: vec![],
+            request: vec![Reviewer::Codex],
+            outstanding: vec![Reviewer::Codex],
         }
     );
     input.two_review = true;
@@ -102,6 +102,53 @@ fn path_tiers_ignore_routine_tests_and_include_both_paths_of_renames() {
             outstanding: vec![Reviewer::Codex, Reviewer::Security, Reviewer::Owner],
         }
     );
+}
+
+#[test]
+fn docs_need_codex_and_agent_instructions_are_at_least_product() {
+    for (path, previous_path, tier) in [
+        ("docs/guide.md", None, Tier::DocsAndTests),
+        ("AGENTS.md", None, Tier::Product),
+        ("docs/tools/AGENTS.md", None, Tier::Product),
+        ("skills/check/SKILL.md", None, Tier::Product),
+        (
+            "oxa/oxa-resources/builtin-skills/review/SKILL.md",
+            None,
+            Tier::Product,
+        ),
+        ("docs/old-guide.md", Some("docs/tools/AGENTS.md"), Tier::Product),
+    ] {
+        let changes = [Change {
+            path,
+            previous_path,
+            kind: ChangeKind::Documentation,
+            ..SOURCE
+        }];
+        let mut input = facts(&changes);
+        assert_eq!(
+            decide(&input),
+            Decision::Review {
+                tier,
+                request: vec![Reviewer::Codex],
+                outstanding: vec![Reviewer::Codex],
+            },
+            "{path}"
+        );
+        input.approvals = &[Approval {
+            reviewer: Reviewer::Codex,
+            head: "new-head",
+            patch_id: PATCH,
+        }];
+        assert_eq!(
+            decide(&input),
+            Decision::Review {
+                tier,
+                request: vec![],
+                outstanding: vec![]
+            },
+            "{path}"
+        );
+    }
 }
 
 #[test]
