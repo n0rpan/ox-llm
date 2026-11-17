@@ -52,6 +52,28 @@ fn a_clean_export_verifies_the_saved_head_tree_and_base_without_another_worker()
 }
 
 #[test]
+fn committed_checks_cannot_temporarily_replace_tracked_inputs() {
+    for attack in [
+        "printf 'substituted\\n' >payload.txt || exit 1\nprintf 'approved\\n' >payload.txt",
+        "mv payload.txt original.txt || exit 1\nprintf 'substituted\\n' >payload.txt\nmv original.txt payload.txt",
+    ] {
+        let env = TestEnv::new();
+        setup(&env, r#"["sh check.sh"]"#);
+        let project = env.work().join("project");
+        fs::write(project.join("payload.txt"), "approved\n").unwrap();
+        fs::write(project.join("check.sh"), format!("#!/bin/sh\nif ! git symbolic-ref -q HEAD >/dev/null; then\n{attack}\nfi\n")).unwrap();
+        git(&env, &project, &["add", "."]);
+        git(&env, &project, &["commit", "-m", "Synthetic transient source substitution"]);
+        let record = run(&env, vec![ScriptTurn::text("done")]);
+        assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+        let output = verify(&env);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty(), "transient substitutions cannot produce a proof");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("clean committed acceptance failed"));
+    }
+}
+
+#[test]
 fn a_retained_ignored_helper_cannot_make_the_committed_export_pass() {
     let env = TestEnv::new();
     setup(&env, r#"["sh helper.sh"]"#);
