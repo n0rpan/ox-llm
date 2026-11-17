@@ -234,6 +234,87 @@ fn mock_read_failure_diagnostics_are_finite_and_health_remains_strict() {
     }
 }
 
+#[test]
+fn mock_terminal_framing_disconnect_is_healthy_only_after_the_last_semantic_event() {
+    use openai::write_reply;
+    use std::io::{self, Write};
+    /// Deterministically model a client closing after any particular wire byte.
+    struct DisconnectAfter {
+        remaining: usize,
+        kind: io::ErrorKind,
+    }
+    impl Write for DisconnectAfter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(self.kind.into());
+            }
+            let count = bytes.len().min(self.remaining);
+            self.remaining -= count;
+            Ok(count)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    fn done() -> Value {
+        json!({"type":"response.completed","response":{"status":"completed","output":[]}})
+    }
+    fn created() -> Value {
+        json!({"type":"response.created","response":{"id":"resp_synthetic"}})
+    }
+    fn chat_done() -> Vec<u8> {
+        let finish = json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]});
+        format!("data: {finish}\r\n\r\ndata: [DONE]\r\n\r\n").into_bytes()
+    }
+    // Every stop boundary the live consumers use: `[DONE]` for chat completions,
+    // and the four terminal Responses events. The last two are not stop points:
+    // a stream still open after response.created, and a plain JSON body (never
+    // an event stream, even when its object is a terminal event).
+    let replies = [
+        (true, Reply::raw(200, "text/event-stream", chat_done(), vec![])),
+        (true, Reply::events(vec![done()])),
+        (true, Reply::events(vec![created(), done()])),
+        (
+            true,
+            Reply::events(vec![json!({"type":"response.incomplete","response":{}})]),
+        ),
+        (
+            true,
+            Reply::events(vec![json!({"type":"response.failed","response":{}})]),
+        ),
+        (true, Reply::events(vec![json!({"type":"error"})])),
+        (false, Reply::events(vec![created()])),
+        (
+            false,
+            Reply::raw(200, "application/json", done().to_string().into_bytes(), vec![]),
+        ),
+    ];
+    for (stops_at_last_event, reply) in replies {
+        let mut wire = Vec::new();
+        write_reply(&mut wire, &reply).unwrap();
+        // Every payload byte precedes the last chunk's CRLF and the zero chunk.
+        let payload_end = wire.len() - 7;
+        for kind in [
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::TimedOut,
+        ] {
+            for remaining in [0, payload_end - 1, payload_end, payload_end + 1, wire.len() - 1] {
+                let result = write_reply(&mut DisconnectAfter { remaining, kind }, &reply);
+                // A hang-up before the last payload byte is a real truncation;
+                // a timeout is never excused.
+                let expected =
+                    stops_at_last_event && remaining >= payload_end && kind != io::ErrorKind::TimedOut;
+                assert_eq!(
+                    result.is_ok(),
+                    expected,
+                    "terminal={stops_at_last_event}, byte={remaining}, error={kind:?}"
+                );
+            }
+        }
+    }
+}
+
 /// Fail a chosen existing write/flush boundary without sockets or timing races.
 struct FailingReplyWriter {
     fail_at: usize,

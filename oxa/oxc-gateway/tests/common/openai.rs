@@ -493,24 +493,91 @@ pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), 
     stream
         .write_all(b"\r\n")
         .map_err(|error| HealthFailure::reply(ReplyPart::HeaderEnd, error))?;
+    let terminal = ends_at_terminal_event(&reply.bytes);
+    let mut offset = 0;
     for bytes in reply.bytes.chunks(reply.fragment) {
         write!(stream, "{:x}\r\n", bytes.len())
             .map_err(|error| HealthFailure::reply(ReplyPart::ChunkHeader, error))?;
         stream
             .write_all(bytes)
             .map_err(|error| HealthFailure::reply(ReplyPart::ChunkPayload, error))?;
-        stream
-            .write_all(b"\r\n")
-            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkEnd, error))?;
-        stream
-            .flush()
-            .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error))?;
+        offset += bytes.len();
+        // Both consumers return at their last semantic event without waiting
+        // for HTTP EOF: chat completions stop at `data: [DONE]`, the Responses
+        // reader at response.completed/incomplete/failed/error. Once every
+        // payload byte of such a reply is delivered, only chunk framing is
+        // left, so a client that already returned may legitimately be gone.
+        let framing = terminal && offset == reply.bytes.len();
+        write_framing(&mut *stream, b"\r\n", framing, ReplyPart::ChunkEnd)?;
+        flush_framing(&mut *stream, framing, ReplyPart::Flush)?;
     }
     if reply.truncate_transfer {
-        Ok(())
-    } else {
-        stream
-            .write_all(b"0\r\n\r\n")
-            .map_err(|error| HealthFailure::reply(ReplyPart::TransferEnd, error))
+        return Ok(());
     }
+    write_framing(&mut *stream, b"0\r\n\r\n", terminal, ReplyPart::TransferEnd)
+}
+
+/// Framing writes carry no payload, so a hang-up is only excused after the
+/// whole payload of a terminal-event reply was delivered.
+fn write_framing(
+    stream: &mut impl Write,
+    bytes: &[u8],
+    after_payload: bool,
+    part: ReplyPart,
+) -> Result<(), HealthFailure> {
+    match stream.write_all(bytes) {
+        Ok(()) => Ok(()),
+        Err(error) if after_payload && disconnected(&error) => Ok(()),
+        Err(error) => Err(HealthFailure::reply(part, error)),
+    }
+}
+
+fn flush_framing(stream: &mut impl Write, after_payload: bool, part: ReplyPart) -> Result<(), HealthFailure> {
+    match stream.flush() {
+        Ok(()) => Ok(()),
+        Err(error) if after_payload && disconnected(&error) => Ok(()),
+        Err(error) => Err(HealthFailure::reply(part, error)),
+    }
+}
+
+fn disconnected(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+    )
+}
+
+/// Whether an event stream payload ends on a complete event the clients stop
+/// at, so only the HTTP chunk framing is left to deliver. Line endings are
+/// normalised first: fixtures use both `\n\n` and `\r\n\r\n` framing.
+fn ends_at_terminal_event(bytes: &[u8]) -> bool {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return false;
+    };
+    let text = text.replace("\r\n", "\n");
+    // A frame reaches the client only once its blank-line terminator arrives.
+    if !text.ends_with("\n\n") {
+        return false;
+    }
+    let Some(last) = text
+        .split("\n\n")
+        .map(str::trim)
+        .filter(|frame| !frame.is_empty())
+        .next_back()
+    else {
+        return false;
+    };
+    if last == "data: [DONE]" {
+        return true;
+    }
+    last.lines()
+        .filter_map(|line| line.trim().strip_prefix("data: "))
+        .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+        .last()
+        .is_some_and(|value| {
+            matches!(
+                value["type"].as_str(),
+                Some("response.completed" | "response.incomplete" | "response.failed" | "error")
+            )
+        })
 }
