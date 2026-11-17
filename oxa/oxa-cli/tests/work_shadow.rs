@@ -507,4 +507,61 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
     );
     assert_eq!(plan["requests"][0]["key"]["reviewer"], "security");
     assert_eq!(plan["requests"][0]["head"], head);
+
+    let receipt = format!(
+        "<!-- codex-review-receipt:v1 -->\n\nCodex Review: Didn't find any major issues. :rocket:\n\n**Reviewed commit:** `{}`",
+        &head[..10]
+    );
+    for (actor, edited, attached, outstanding) in [
+        (
+            "outside",
+            serde_json::Value::Null,
+            true,
+            serde_json::json!(["codex", "security"]),
+        ),
+        (
+            "code-reviewer",
+            serde_json::json!("2026-01-01T00:00:00Z"),
+            true,
+            serde_json::json!(["codex", "security"]),
+        ),
+        (
+            "code-reviewer",
+            serde_json::Value::Null,
+            false,
+            serde_json::json!(["codex", "security"]),
+        ),
+        (
+            "code-reviewer",
+            serde_json::Value::Null,
+            true,
+            serde_json::json!(["security"]),
+        ),
+    ] {
+        let row = &mut detail["data"]["repository"]["p42"];
+        row["latestOpinionatedReviews"] = serde_json::json!({"totalCount":0,"nodes":[]});
+        row["comments"] = serde_json::json!({"totalCount":1,"nodes":[{
+            "body":receipt,"author":{"login":actor},"lastEditedAt":edited
+        }]});
+        row["reviews"] = if attached {
+            serde_json::json!({"totalCount":1,"nodes":[{
+                "state":"COMMENTED","body":receipt,"author":{"login":actor},
+                "lastEditedAt":edited,"commit":{"oid":head}
+            }]})
+        } else {
+            serde_json::json!({"totalCount":0,"nodes":[]})
+        };
+        fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+        let out = invoke(
+            &env,
+            "work board --shadow --repo example/repo --once --review-policy ../home/review.json",
+        );
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let log = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+        let sample: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert_eq!(
+            sample["reviews"]["42"]["decision"]["review"]["outstanding"],
+            outstanding
+        );
+    }
 }

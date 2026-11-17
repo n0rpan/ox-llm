@@ -182,7 +182,7 @@ impl GitHub for Reader<'_> {
         let expected = ids(&list["pullRequests"])?;
         let mut details = serde_json::json!({});
         let review_fields = if self.review_rows.is_some() {
-            "baseRefOid isCrossRepository authorAssociation comments(first:100){totalCount nodes{body author{login}}}"
+            "baseRefOid isCrossRepository authorAssociation comments(first:100){totalCount nodes{body author{login} lastEditedAt}} reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
         } else {
             ""
         };

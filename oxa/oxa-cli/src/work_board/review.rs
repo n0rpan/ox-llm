@@ -109,6 +109,28 @@ fn kind(path: &str) -> ChangeKind {
     }
 }
 
+fn codex_clean_receipt(body: &str) -> Option<&str> {
+    let mut lines = body.lines().filter(|line| !line.trim().is_empty());
+    if lines.next()? != "<!-- codex-review-receipt:v1 -->"
+        || !matches!(
+            lines.next()?,
+            "Codex Review: Didn't find any major issues."
+                | "Codex Review: Didn't find any major issues. :rocket:"
+        )
+    {
+        return None;
+    }
+    let sha = lines
+        .next()?
+        .strip_prefix("**Reviewed commit:** `")?
+        .strip_suffix('`')?;
+    (matches!(sha.len(), 10..=40 | 64)
+        && sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')))
+    .then_some(sha)
+}
+
 struct Evidence<'a> {
     git: GitDiff,
     head: &'a str,
@@ -134,7 +156,7 @@ impl<'a> Evidence<'a> {
                     row["authorAssociation"].as_str(),
                     Some("OWNER" | "MEMBER" | "COLLABORATOR")
                 ));
-        let approvals = nodes(&row["latestOpinionatedReviews"])
+        let mut approvals: Vec<_> = nodes(&row["latestOpinionatedReviews"])
             .ok()?
             .iter()
             .filter(|opinion| opinion["state"] == "APPROVED")
@@ -145,9 +167,10 @@ impl<'a> Evidence<'a> {
                 ))
             })
             .collect();
-        let receipts = nodes(&row["comments"])
-            .ok()?
+        let comments = nodes(&row["comments"]).ok()?;
+        let receipts = comments
             .iter()
+            .filter(|comment| comment["lastEditedAt"].is_null())
             .filter_map(|comment| {
                 GitHubRequestReceipt::from_comment(
                     &settings.requester,
@@ -156,6 +179,18 @@ impl<'a> Evidence<'a> {
                 )
             })
             .collect();
+        if let Ok(reviews) = nodes(&row["reviews"]) {
+            approvals.extend(reviews.iter().filter_map(|review| {
+                let actor = review["author"]["login"].as_str()?;
+                let commit = review["commit"]["oid"].as_str()?;
+                let receipt = codex_clean_receipt(review["body"].as_str()?)?;
+                (review["state"] == "COMMENTED"
+                    && review["lastEditedAt"].is_null()
+                    && settings.reviewer(actor) == Some(Reviewer::Codex)
+                    && commit.starts_with(receipt))
+                .then_some((Reviewer::Codex, commit))
+            }));
+        }
         Some(Self {
             git,
             head,
