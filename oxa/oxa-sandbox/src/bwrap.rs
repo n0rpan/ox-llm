@@ -35,8 +35,9 @@ pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
 /// `--dev /dev`, `--proc /proc`, `--tmpfs /tmp` (or `--bind <session dir> /tmp`, #457), `--tmpfs <home>`, the cwd (`--bind`, or
 /// `--ro-bind` when not writable or when cwd is `$HOME` / `/` / a parent of `$HOME`, B3; in a
 /// home workspace (O-199, [`cwd_mode`]) followed by `--bind` of each of
-/// [`home_workspace_entries`]), the layout's binds sorted by path (read-only toolchains, read-write
-/// caches, B2; a bind that holds the cwd is left out), the git data outside the cwd (sbx-git:
+/// [`home_workspace_entries`]), a session's own `$HOME/.cache` (#1002), the layout's binds sorted
+/// by path (read-only toolchains, read-write caches, B2; a bind that holds the cwd is left out),
+/// the git data outside the cwd (sbx-git:
 /// read-write dirs (read-only when one of them has a protected entry that is not plain,
 /// sbx-gitsym), read-only alternates, then the protected entries: read-only when they exist,
 /// masked when missing in a writable sandbox), the protected project files of a writable cwd
@@ -126,6 +127,27 @@ pub(crate) fn bwrap_args_homes(
     // Pins and layout mounts share parent-first order: a cache bind cannot hide a pin,
     // and a pin cannot hide a read-only descendant. The cwd is already a mount point.
     let hook_pins = hook_parent_pins(&hooks, &mounts);
+    // #1002: `$HOME/.cache` is the path tools hardcode (`CARGO_TARGET_DIR=$HOME/.cache/...`,
+    // `touch ~/.cache/x`, a git hook's log). The host cache home is read-only inside and a
+    // cache directory that did not exist when the layout was built is not bound at all, so a
+    // session's own empty directory is bound there: those writes land in the session and are
+    // deleted with it. The read-write bound caches keep their own binds under
+    // `$HOME/.cache/<name>` (sorted after this parent) and stay shared. A workspace inside the
+    // cache home keeps the workspace bind, and a user bind of the cache home (or one above it)
+    // keeps its own access; without a session directory nothing changes.
+    let home_cache = home_c.join(".cache");
+    let mirrored_cache = layout.scratch.as_ref().map(|sc| sc.cache_home_dir()).filter(|_| {
+        !cwd_path.starts_with(&home_cache)
+            && !layout.read.iter().chain(layout.write.iter()).any(|b| {
+                let b = b.canonicalize().unwrap_or_else(|_| b.clone());
+                home_cache == b || home_cache.starts_with(&b)
+            })
+    });
+    if let Some(dir) = &mirrored_cache {
+        let dir = dir.to_string_lossy();
+        let cache = home_cache.to_string_lossy();
+        push(&mut a, &["--bind", &dir, &cache]);
+    }
     // B2: toolchains read-only, caches read-write, in path order (a parent before its child).
     let mut binds: Vec<(&Path, bool)> = layout
         .read

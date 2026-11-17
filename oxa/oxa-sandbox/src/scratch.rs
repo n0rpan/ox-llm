@@ -9,6 +9,13 @@
 //! (directly or through a bound parent) is linked from `/tmp/.cache/<name>`, so it stays the
 //! cache of the user's own builds. Everything else a tool caches goes to the session.
 //!
+//! #1002: a tool that hardcodes the cache home path (instead of reading `$XDG_CACHE_HOME`) -
+//! `CARGO_TARGET_DIR=$HOME/.cache/...`, `touch ~/.cache/x`, a git hook writing its log there -
+//! would meet the empty read-only home inside the sandbox. The session directory therefore
+//! holds an empty `.cache-home`, and the argv binds it at `$HOME/.cache` for the session: those
+//! writes land in the session directory and are deleted with it, while the read-write bound
+//! caches keep their own binds under `$HOME/.cache/<name>` and stay the user's.
+//!
 //! It lives at `~/.cache/oxa/scratch/<pid>-<n>` (mode 0700, never under the agent directory).
 //! Each session gets its own (`Bwrap::session`, when a session starts, at `/new`, `/resume`,
 //! fork and clone); it is deleted when that session ends: when it is replaced by another one
@@ -54,6 +61,8 @@ impl Scratch {
         std::fs::DirBuilder::new().mode(0o700).create(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
         std::fs::create_dir(path.join(".cache"))?;
+        // #1002: the sandbox's `$HOME/.cache` (see `cache_home_dir`).
+        std::fs::create_dir(path.join(CACHE_HOME_DIR))?;
         Ok(Scratch { path })
     }
 
@@ -79,7 +88,18 @@ impl Scratch {
             }
         }
     }
+
+    /// #1002: the session's own `$HOME/.cache`, bound at the host cache home path by the
+    /// sandbox argv: the directory every otherwise-unbound cache write goes to, since the host
+    /// cache home itself is not writable inside. The read-write bound caches keep their own
+    /// binds under `$HOME/.cache/<name>` and stay shared.
+    pub fn cache_home_dir(&self) -> PathBuf {
+        self.path.join(CACHE_HOME_DIR)
+    }
 }
+
+/// The session directory's name for the host cache home path (`$HOME/.cache`; #1002).
+pub(crate) const CACHE_HOME_DIR: &str = ".cache-home";
 
 impl Drop for Scratch {
     fn drop(&mut self) {

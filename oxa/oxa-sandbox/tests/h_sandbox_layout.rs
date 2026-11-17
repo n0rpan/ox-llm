@@ -1060,6 +1060,20 @@ fn golden_session_dir_is_bound_at_tmp_before_every_mask() {
     assert_eq!(shown(&a, &env)[..HEAD.len()], strs(HEAD)[..]);
 }
 
+/// A `Bwrap` for `layout` with a session directory ([`Bwrap::for_session`]): the argv then
+/// carries the session's `/tmp` and `$HOME/.cache` (#1002) binds.
+fn session_layout(layout: &Layout, env: &TestEnv) -> Bwrap {
+    let b = Bwrap {
+        bwrap: PathBuf::from("/usr/bin/bwrap"),
+        home: env.home(),
+        layout: Layout {
+            scratch_root: Some(oxa_sandbox::scratch_root(&env.home())),
+            ..layout.clone()
+        },
+    };
+    b.session()
+}
+
 /// The links `with_scratch` made in the session directory, as (name, target).
 fn cache_links(dir: &Path) -> Vec<(String, PathBuf)> {
     let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(dir.join(".cache"))
@@ -1156,6 +1170,62 @@ fn user_cache_home_keeps_its_read_write_caches() {
         Vec::new(),
     );
     assert_eq!(l.cache_home, home.join(".cache"));
+}
+
+/// #1002: `$HOME/.cache` is the path tools hardcode (`CARGO_TARGET_DIR=$HOME/.cache/...`, a git
+/// hook's log), and it stays the read-only home tmpfs without a session. A session binds its own
+/// directory there, before the read-write cache binds under it (which stay shared), and leaves
+/// it out when the workspace lives inside the cache home or a user setting already binds it.
+#[test]
+fn the_session_cache_home_is_bound_and_shared_caches_follow_it() {
+    let env = TestEnv::new();
+    let home = env.home();
+    for d in [".cache/pip", ".cache/project"] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
+    let cache = home.join(".cache").display().to_string();
+    let cache_bind = |a: &[String]| {
+        a.windows(3)
+            .position(|w| w[0] == "--bind" && w[1].ends_with(".cache-home") && w[2] == cache)
+    };
+    // The process sandbox (no session directory): unchanged, the read-only home tmpfs shows.
+    let plain = bwrap_args_with(&spec("true", &env.work(), true), &home, &machine(&env));
+    assert!(cache_bind(&plain).is_none(), "{plain:?}");
+    // A session: the session's cache directory, parent-first, before the shared pip cache.
+    let b = session_layout(&machine(&env), &env);
+    let a = bwrap_args_with(&spec("true", &env.work(), true), &home, &b.layout);
+    let mirror = cache_bind(&a).expect("the session cache home");
+    let pip = a
+        .windows(3)
+        .position(|w| w[0] == "--bind" && w[2] == home.join(".cache/pip").display().to_string())
+        .expect("the shared cache");
+    assert!(mirror < pip, "{a:?}");
+    // The scratch contains the bound directory, so the argv cannot dangle.
+    let dir = b.layout.scratch.as_ref().unwrap().cache_home_dir();
+    assert_eq!(dir, b.layout.scratch.as_ref().unwrap().path().join(".cache-home"));
+    assert!(dir.is_dir());
+    // A workspace inside the cache home keeps the workspace bind.
+    let a = bwrap_args_with(
+        &spec("true", &home.join(".cache/project"), true),
+        &home,
+        &b.layout,
+    );
+    assert!(cache_bind(&a).is_none(), "{a:?}");
+    // A user setting that binds the cache home keeps its own access, read-only or writable.
+    for (read, write) in [(false, true), (true, false)] {
+        let mut l = machine(&env);
+        if read {
+            l.read.push(home.join(".cache"));
+        } else {
+            l.write.push(home.join(".cache"));
+        }
+        let b = session_layout(&l, &env);
+        let a = bwrap_args_with(&spec("true", &env.work(), true), &home, &b.layout);
+        assert!(
+            cache_bind(&a).is_none(),
+            "a user bind keeps its own access: {a:?}"
+        );
+    }
 }
 
 /// #457 review: each session of one `Bwrap` gets its own directory at `/tmp`, removed when

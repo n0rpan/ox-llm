@@ -196,6 +196,51 @@ fn cache_home_is_writable_and_shared_caches_stay_shared() {
     }
 }
 
+/// #1002: tools hardcode the cache home path `~/.cache` (`CARGO_TARGET_DIR=$HOME/.cache/...`,
+/// `touch ~/.cache/x`, a git hook's log), which is not `$XDG_CACHE_HOME`. The host cache home
+/// is read-only inside, so the session's own directory is bound there: the writes work, land in
+/// the session directory and are deleted with it, while a shared package cache under
+/// `~/.cache` stays the user's. Another session's directory is not exposed through it.
+#[test]
+fn home_cache_path_is_writable_in_the_session_without_touching_the_host() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(home_file(&env, ".cache/sccache")).unwrap();
+    let Some((sb, dir)) = session(&env) else {
+        return;
+    };
+    let (exit, out) = run(
+        &sb,
+        &env.work(),
+        "mkdir -p \"$HOME/.cache/oxa-target-1002\" && echo target > \"$HOME/.cache/oxa-target-1002/f\" \
+         && touch \"$HOME/.cache/.wtest\" && touch \"$HOME/.cache/sccache/shared\" && echo written",
+        true,
+        false,
+    );
+    assert_ok(exit, &out, "home cache");
+    assert!(out.contains("written"), "{out}");
+    // The build output and the marker are the session's, not the host cache home's.
+    assert!(dir.join(".cache-home/oxa-target-1002/f").is_file(), "{dir:?}");
+    assert!(!home_file(&env, ".cache/oxa-target-1002").exists());
+    assert!(!home_file(&env, ".cache/.wtest").exists());
+    // A read-write bound package cache under `~/.cache` still stays shared.
+    assert!(
+        home_file(&env, ".cache/sccache/shared").exists(),
+        "the shared cache was not the user's"
+    );
+    // The scratch root (other sessions' directories) is not shown through the cache home.
+    let (exit, out) = run(
+        &sb,
+        &env.work(),
+        "test ! -e \"$HOME/.cache/oxa\" && echo absent",
+        true,
+        false,
+    );
+    assert_ok(exit, &out, "scratch root");
+    assert!(out.contains("absent"), "{out}");
+    drop(sb);
+    assert!(!dir.exists(), "the session directory outlived the session");
+}
+
 /// #530 / PR #539: custom cache paths must not expose other checkouts, but builds must
 /// still get a writable cache (also on a fresh home, for wrappers with any name).
 #[test]

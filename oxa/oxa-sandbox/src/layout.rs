@@ -404,7 +404,8 @@ impl Layout {
 
     /// #457: mount `scratch` at `/tmp` for every command, and link the read-write bound
     /// caches of the user's cache home ([`Layout::cache_home`]) from its `.cache` (see
-    /// `scratch.rs`).
+    /// `scratch.rs`). #1002: the argv also binds the session's `$HOME/.cache`
+    /// ([`crate::Scratch::cache_home_dir`]) at the host cache home path.
     pub fn with_scratch(mut self, scratch: Scratch) -> Layout {
         scratch.link_caches(&self.cache_home, &self.write);
         self.scratch = Some(std::sync::Arc::new(scratch));
@@ -779,6 +780,43 @@ mod tests {
             assert!(!hit, "{} must not be writable", bad.display());
         }
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// #1002: the session directory carries an empty `$HOME/.cache` of its own (bound by the
+    /// argv) and links only the read-write bound caches into it, never another entry — the
+    /// host cache home itself stays read-only.
+    #[test]
+    fn the_session_cache_home_is_empty_and_the_host_cache_home_is_read_only() {
+        let env = oxa_fake::TestEnv::new();
+        let home = env.home();
+        for d in [".cache/pip", ".cache/oxa/scratch", ".cache/plain"] {
+            std::fs::create_dir_all(home.join(d)).unwrap();
+        }
+        let l = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            env: vec![("XDG_CACHE_HOME".into(), home.join(".cache").display().to_string())],
+            ..Default::default()
+        });
+        assert!(
+            !l.write.contains(&home.join(".cache")),
+            "the host cache home itself is read-only"
+        );
+        let sc = crate::Scratch::create(&crate::scratch_root(&home)).expect("scratch");
+        let dir = sc.path().to_path_buf();
+        let cache_home = sc.cache_home_dir();
+        let _l = l.with_scratch(sc);
+        assert!(cache_home.is_dir());
+        assert_eq!(
+            std::fs::read_dir(&cache_home).unwrap().count(),
+            0,
+            "nothing is mirrored"
+        );
+        let linked: Vec<String> = std::fs::read_dir(dir.join(".cache"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(linked, ["pip"], "{linked:?}");
     }
 
     #[test]
