@@ -2,7 +2,7 @@
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use std::{
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 fn storage(env: &TestEnv) -> PathBuf {
@@ -243,15 +243,32 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
-    let record = run_args(
-        &env,
-        vec![ScriptTurn::text("done")],
-        &["work", "--issue", "42", "--model", "fake"],
-        Some(path),
-    );
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    command
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .stdin(Stdio::null())
+        .env("PATH", path);
+    let out = command.output().unwrap();
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(record["id"], "issue-42");
     assert_eq!(record["branch"], "agent/42-work");
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    // The child receives the issue text as its task packet and the runner-owned GitHub rule, so it
+    // does not look the issue up again or guess what the prompt leaves out.
+    let requests = server.requests();
+    let user = requests
+        .first()
+        .and_then(|request| request.messages.last())
+        .and_then(|message| message.content.as_deref())
+        .unwrap_or_default();
+    assert!(user.contains("Synthetic task"), "{user}");
+    assert!(user.contains("Fix the test fixture"), "{user}");
+    assert!(user.contains("the task packet"), "{user}");
+    assert!(user.contains("do not call `gh`"), "{user}");
 }
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {

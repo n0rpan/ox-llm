@@ -62,6 +62,12 @@ maintainer, who says in the PR when a hardware check is needed.
   job is skipped on PRs, merge groups and main pushes; manual runs can opt in with
   `nightly_oxa_arm: true`. Its cache is separate from x86 test and production ARM64 builds.
 - **When a task is ambiguous,** open the PR as a draft with your question at the top instead of guessing.
+- **Session kind.** Either you fetch the issues and reviews yourself through the authenticated
+  `gh` CLI, or an outside runner does that before you start and owns every GitHub API call. When the
+  session prompt says GitHub belongs to the runner, make no GitHub call at all: the issue text and
+  reviews it supplies are your task packet, and a fact the packet lacks is reported as missing
+  instead of fetched. The two cases never overlap, so both the repository instructions and the
+  session prompt agree.
 
 ## Build and test capacity (owner rule)
 

@@ -31,6 +31,10 @@ seconds after that allowance, the runner sends SIGTERM, then SIGKILL after anoth
 available as a trusted executable outside the project; status reads do not need it.
 IDs and branches must be unique within one file. Existing task branches can be
 continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.
+The issue title and body are passed to the worker as the one task packet, with a
+closing line that the runner fetched them and owns GitHub access: the worker stays
+inside its worktree, calls no GitHub host tool, and reports a fact the prompt does
+not carry instead of fetching it.
 This explicitly invokes your installed,
 authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
 when the environment or user settings enable offline mode.

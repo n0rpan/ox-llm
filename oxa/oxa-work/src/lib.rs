@@ -272,9 +272,20 @@ pub fn issue_task(
         model,
         branch: format!("agent/{number}-work"),
         base: default_base(),
-        prompt: format!("Implement issue #{number}: {title}\n\n{body}"),
+        prompt: issue_prompt(number, title, body),
         max_time: default_max_time(),
     })
+}
+
+/// The issue text is the whole task packet and the runner owns GitHub access, so the child session
+/// does not look the issue up again or guess the facts the prompt leaves out.
+fn issue_prompt(number: u64, title: &str, body: &str) -> String {
+    let issued = format!("Implement issue #{number}: {title}\n\n{body}");
+    format!(
+        "{issued}\n\nThe runner fetched this issue: its text above is the task packet. GitHub access \
+         belongs to the runner, so call neither `gh` nor any other authenticated GitHub API here, \
+         work only in this checkout, and report a fact the prompt does not carry instead of fetching it."
+    )
 }
 
 /// Freeze acceptance before checkout filters or hooks can edit project settings.
@@ -623,4 +634,18 @@ pub fn run_task_with_observer(
         .save(&mut state, Step::Finished, observer)
         .map_err(RunError::Checkpoint)?;
     Ok(state.record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn issue_prompt_keeps_the_text_and_names_the_runner_as_the_github_owner() {
+        let prompt = issue_prompt(42, "Synthetic title", "Synthetic body");
+        assert!(prompt.starts_with("Implement issue #42: Synthetic title\n\nSynthetic body\n\n"));
+        assert!(prompt.contains("the task packet"));
+        assert!(prompt.contains("do not call `gh`"));
+        assert!(prompt.contains("report a needed fact that the prompt does not carry"));
+    }
 }
