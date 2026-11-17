@@ -15,8 +15,13 @@ pub fn native_task(binding: &board::NativeBinding, mut task: Task) -> Result<Tas
         return Err("prepared task does not own the bound native attempt".into());
     }
     task.id.clone_from(&binding.native_task_id);
-    if !task.prompt.starts_with(crate::ISSUE_RUNNER_GUIDANCE) {
-        task.prompt.insert_str(0, crate::ISSUE_RUNNER_GUIDANCE);
+    if !task.runner_owns_github() {
+        let kind = if task.base == task.branch {
+            "pull request"
+        } else {
+            "issue"
+        };
+        task.prompt.insert_str(0, &crate::github_runner_guidance(kind));
     }
     validate(&task)?;
     Ok(task)
