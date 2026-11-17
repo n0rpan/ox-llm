@@ -1,6 +1,6 @@
 //! Bounded, read-only access to existing board samples and typed runner situation exports.
 //! These functions return facts, never raw file content or input-bearing diagnostics.
-use oxa_proto::work::{Snapshot, MAX_ITEMS, MAX_SNAPSHOT_BYTES};
+use oxa_proto::work::{MAX_ITEMS, MAX_SNAPSHOT_BYTES, Snapshot};
 use oxa_work::board::Board;
 use std::{
     fs::{self, File},
@@ -14,7 +14,7 @@ type Result<T> = std::result::Result<T, &'static str>;
 
 /// The caller supplies the owner's uid from its user configuration, never project metadata.
 /// Sources must have private parent directories; producers may atomically replace files.
-fn open(path: &Path, uid: u32) -> Result<File> {
+pub(crate) fn open(path: &Path, uid: u32) -> Result<File> {
     let parent = path.parent().ok_or("missing input directory")?;
     let directory = fs::symlink_metadata(parent).map_err(|_| "input directory unavailable")?;
     if !directory.is_dir() || directory.uid() != uid || directory.mode() & 0o077 != 0 {
@@ -89,7 +89,7 @@ pub fn situation(path: &Path, uid: u32) -> Result<Snapshot> {
 mod tests {
     use super::*;
     use oxa_fake::TestEnv;
-    use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     fn fixture(env: &TestEnv, content: &[u8]) -> (std::path::PathBuf, u32) {
         let path = env.agent_dir().join("inputs/board.jsonl");
