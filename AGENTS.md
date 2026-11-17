@@ -38,6 +38,12 @@ maintainer, who says in the PR when a hardware check is needed.
   - **T3:** the sandbox, data deletion, publishing, secret or key handling, CI/workflow security.
 
   Expect one review round for T2 and more for T3.
+- **GitHub access follows the session's rules.** Some sessions run under a runner that performs every
+  GitHub read and write itself: the issue text, the review findings and the CI result arrive with the
+  task, and `gh` or authenticated GitHub HTTP from tools and pushes are refused there. In such a session
+  do not fetch the issue or the pull request with `gh`; report the exact head, the selected crates and the
+  action you need, and let that runner make the call. A session that permits `gh` and pushes uses the
+  commands below directly.
 - **CI is the judge:** `.github/workflows/checks.yml` on GitHub-hosted runners (x86_64 + aarch64). If a
   workflow does not start on your PR (fork PRs wait for a maintainer's approval), say so in the PR; don't
   work around it.
@@ -74,7 +80,8 @@ Keep target directories and large scratch under your own clone or `~/.cache`; ne
 `/tmp` (it is RAM on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary
 files; preserve anything a running process of yours uses, and never clean another lane's files.
 
-Push the lane branch to start the `lane` workflow, or dispatch it explicitly:
+In a session that permits pushing, push the lane branch to start the `lane` workflow, or dispatch it
+explicitly:
 
 ```sh
 gh workflow run lane --ref <branch>
@@ -93,8 +100,9 @@ workflow does not replace or change the merge queue's required checks. Start ful
 release CI only when the change is close to done. Each started job records its queue delay in its
 GitHub job summary so capacity decisions use measurements.
 
-Wait with **one blocking `gh run watch --exit-status`**, or continue an independent piece and read the
-result once later. Never spend repeated model turns or API/status polls waiting for CI, and never
+When you may call `gh`, wait with **one blocking `gh run watch --exit-status`**, or continue an
+independent piece and read the result once later; when the runner owns GitHub, it reads the result.
+Never spend repeated model turns or API/status polls waiting for CI, and never
 post “still waiting” updates. On failure, read only the failed job's tail:
 
 ```sh
