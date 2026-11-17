@@ -37,17 +37,15 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
            'XDG_STATE_HOME': sandbox + '/state', 'XDG_CACHE_HOME': sandbox + '/cache',
            'XDG_DATA_HOME': sandbox + '/data', 'XDG_RUNTIME_DIR': sandbox + '/runtime',
            'PYTHONDONTWRITEBYTECODE': '1'}
-    subprocess.run(['/usr/bin/python3', '-B', '-c',
-        "import sys; sys.path.insert(0, '/usr/share/ox-llm/oxc/src'); "
-        "from oxc import bootstrap; "
-        "from oxc.runtime import controller; "
-        "assert bootstrap.asset_plan(bootstrap.project_root()); assert controller.Manager"],
-        env=env, check=True)
-    for binary in ('oxc', 'oxa', 'oxe'):
+    for retired in ('/usr/share/ox-llm/oxc', '/usr/bin/oxc', '/usr/bin/oxc-diagnostics'):
+        assert not os.path.lexists(retired), f'Legacy Python payload installed: {retired}'
+    for binary in ('oxa', 'oxe'):
         result = subprocess.run([binary, '--version'], env=env, text=True, capture_output=True, check=True)
         assert '0.2.0' in result.stdout, (binary, result.stdout)
         print(result.stdout.strip())
-    for binary in ('oxc', 'oxa', 'oxe-server', 'oxc-diagnostics'):
+    for binary in ('oxa', 'oxe', 'oxe-server', 'local-ai-memlat-boot'):
+        with Path('/usr/bin', binary).open('rb') as executable:
+            assert executable.read(4) == b'\x7fELF', f'Expected a native Linux executable: {binary}'
         subprocess.run([binary, '--help'], env=env, stdout=subprocess.DEVNULL, check=True)
     # This validates argument parsing without loading model weights.
     subprocess.run(['oxe', 'gen', '--model', 'absent.gguf', '--tokens', '1', '--check-args'],

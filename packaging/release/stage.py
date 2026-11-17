@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage a standard /usr tree, including the source layout the bootstrap installer needs."""
+"""Stage the native /usr payload using Python as a build-time tool."""
 import argparse
 import json
 import os
@@ -27,19 +27,6 @@ for workspace in ('oxc', 'oxc-rs'):
                 if target.exists():
                     raise SystemExit('duplicate binary: ' + binary.name)
                 shutil.copy2(binary, target)
-controller = dest / 'usr/share/ox-llm/oxc'
-shutil.copytree(root / 'oxc', controller, ignore=shutil.ignore_patterns(
-    '__pycache__', '*.pyc', '*.egg-info', '.venv', 'build', 'dist',
-    'tests', 'tools', 'benchmarks', 'experiments'))
-# Preserve the runtime script and sibling Python modules exactly as the bootstrap
-# installer consumes them. Alias the command without renaming product modules.
-wrapper = dest / 'usr/bin/oxc'
-if not wrapper.exists():
-    wrapper.write_text('#!/bin/sh\nexec /usr/bin/python3 -B /usr/share/ox-llm/oxc/src/oxc/runtime/oxc "$@"\n')
-    wrapper.chmod(0o755)
-wrapper = dest / 'usr/bin/oxc-diagnostics'
-wrapper.write_text('#!/bin/sh\nPYTHONPATH=/usr/share/ox-llm/oxc/src exec /usr/bin/python3 -B -m oxc "$@"\n')
-wrapper.chmod(0o755)
 licenses = dest / 'usr/share/licenses/ox-llm'
 licenses.mkdir(parents=True)
 for product in ('engine', 'oxa', 'oxc'):
