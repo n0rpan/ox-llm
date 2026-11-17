@@ -8,6 +8,7 @@ use crate::{
 };
 mod auth;
 pub use crate::billing::Billing;
+pub use crate::history::HistorySeal;
 use auth::Credential;
 pub use auth::{OpenAiAuthHandle, Subscription};
 use serde_json::{json, Value};
@@ -38,6 +39,7 @@ impl Default for Options {
     }
 }
 pub struct Runtime {
+    diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
     go_models: BTreeMap<String, crate::opencode::Model>,
@@ -114,6 +116,20 @@ fn unpaid(model: &Model, billing: Option<&Billing>) -> Value {
     fields
 }
 impl Runtime {
+    /// Install only for a trusted terminal caller, before discovery/requests.
+    pub fn with_diagnostics(mut self, diagnostics: crate::diagnostics::Diagnostics) -> Self {
+        self.diagnostics = Some(diagnostics);
+        self
+    }
+    pub(crate) fn diagnostics(&self) -> Option<&crate::diagnostics::Diagnostics> {
+        self.diagnostics.as_ref()
+    }
+    fn credential_error(&self) -> Refusal {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.local();
+        }
+        Refusal::credentials()
+    }
     /// Trusted, typed configuration. Preparing a path reads no key bytes;
     /// construction/discovery open no ledger and start no provider/runtime.
     pub fn new(
@@ -124,7 +140,7 @@ impl Runtime {
     ) -> Result<Self, Refusal> {
         if let Some(config) = &options.subscription {
             if config.client_id.is_empty()
-                || config.client_id.len() > 1024
+                || config.client_id.len() > 128
                 || config.client_id.chars().any(char::is_control)
                 || config.timeout.is_zero()
                 || std::time::Instant::now().checked_add(config.timeout).is_none()
@@ -161,6 +177,7 @@ impl Runtime {
             .ok_or_else(Refusal::credentials)?
             .join("chatgpt-auth.json");
         Ok(Self {
+            diagnostics: None,
             catalog,
             billings,
             go_models: BTreeMap::new(),
@@ -202,6 +219,9 @@ impl Runtime {
         timeout: std::time::Duration,
     ) -> Result<(), crate::opencode::client::Error> {
         use crate::opencode::client::Error;
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.clear();
+        }
         if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
             return Err(Error::Request);
         }
@@ -211,12 +231,24 @@ impl Runtime {
         let key = self
             .key_file
             .as_ref()
-            .map_err(|_| Error::Refused(crate::opencode::Refusal::Unauthenticated))?
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })?
             .read("opencode")
-            .map_err(|_| Error::Refused(crate::opencode::Refusal::Unauthenticated))?;
-        let discovered =
-            crate::opencode::client::models(client, base, &key, timeout, &oxa_proto::CancelToken::new())
-                .await?;
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })?;
+        let discovered = crate::opencode::client::models_observed(
+            client,
+            base,
+            &key,
+            timeout,
+            &oxa_proto::CancelToken::new(),
+            self.diagnostics.as_ref(),
+        )
+        .await?;
         let mut models: Vec<_> = self
             .catalog
             .models()
@@ -251,7 +283,11 @@ impl Runtime {
         Ok(())
     }
     pub fn begin(&self, payload: &Value, context: Context<'_>) -> Result<Call<'_>, Refusal> {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.clear();
+        }
         let owner_origin = matches!(context.origin, crate::ledger::Origin::Oxa);
+        let shared = context.guest_key_name.is_some();
         let alias = payload["model"].as_str().ok_or_else(|| invalid("model"))?;
         if matches!(self.catalog.resolve(Some(alias)), Err(catalog::Error::Disabled)) {
             return Err(catalog_error(catalog::Error::Disabled));
@@ -272,6 +308,8 @@ impl Runtime {
                     message: "This cloud provider is not available in this build.",
                 });
             }
+            let billing = self.billings.get(alias);
+            policy::before_credentials(payload, shared, false, billing.is_some())?;
             if model.info().provider == Provider::OpenCode && !owner_origin {
                 return Err(Refusal {
                     status: 403,
@@ -280,8 +318,6 @@ impl Runtime {
                     message: "This subscription provider is available only to the owner agent.",
                 });
             }
-            let billing = self.billings.get(alias);
-            policy::before_credentials(payload, false, false, billing.is_some())?;
             let billing = billing.expect("policy validated billing");
             let mut output = u64::from(model.info().max_output);
             for field in ["max_tokens", "max_completion_tokens", "n_predict"] {
@@ -305,9 +341,9 @@ impl Runtime {
                 Provider::Anthropic | Provider::OpenAi | Provider::OpenCode => Credential::ApiKey(Arc::new(
                     self.key_file
                         .as_ref()
-                        .map_err(|_| Refusal::credentials())?
+                        .map_err(|_| self.credential_error())?
                         .read(model.info().provider.as_str())
-                        .map_err(|_| Refusal::credentials())?,
+                        .map_err(|_| self.credential_error())?,
                 )),
                 #[cfg(feature = "upstream-openai")]
                 Provider::ChatGpt => {
@@ -433,6 +469,23 @@ impl<'a> Call<'a> {
     pub fn metered_usage(&mut self, usage: Usage) {
         self.usage = usage;
     }
+    pub fn prepare_history(
+        &self,
+        request: &oxa_proto::ChatRequest<'_>,
+        items: Arc<[Value]>,
+    ) -> Result<HistorySeal, Refusal> {
+        if items.iter().any(|item| self.credential.contains_secret(item)) {
+            return Err(crate::history::invalid_output());
+        }
+        HistorySeal::prepare(
+            self.entry.as_ref().ok_or_else(Refusal::ledger)?.ledger(),
+            self.model,
+            &self.provider_account_scope(),
+            request.prefix,
+            request.messages,
+            items,
+        )
+    }
     pub fn verify_history(&self, request: &oxa_proto::ChatRequest<'_>) -> Result<(), Refusal> {
         self.entry
             .as_ref()
@@ -443,25 +496,6 @@ impl<'a> Call<'a> {
                 &self.provider_account_scope(),
                 request.prefix,
                 request.messages,
-            )
-    }
-    pub fn seal_history(
-        &self,
-        request: &oxa_proto::ChatRequest<'_>,
-        assistant: &oxa_proto::WireMsg,
-        items: Vec<Value>,
-    ) -> Result<oxa_proto::ProviderHistory, Refusal> {
-        self.entry
-            .as_ref()
-            .ok_or_else(Refusal::ledger)?
-            .ledger()
-            .seal_provider_history(
-                self.model,
-                &self.provider_account_scope(),
-                request.prefix,
-                request.messages,
-                assistant,
-                items,
             )
     }
     pub fn mark_forwarded(&mut self) {

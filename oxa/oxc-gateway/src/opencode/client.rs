@@ -75,6 +75,16 @@ pub async fn models(
     timeout: Duration,
     cancel: &CancelToken,
 ) -> Result<Vec<Model>, Error> {
+    models_observed(client, base, key, timeout, cancel, None).await
+}
+pub(crate) async fn models_observed(
+    client: &Client,
+    base: &str,
+    key: &Key,
+    timeout: Duration,
+    cancel: &CancelToken,
+    diagnostics: Option<&crate::diagnostics::Diagnostics>,
+) -> Result<Vec<Model>, Error> {
     let mut url = super::endpoint(base).map_err(|_| Error::Endpoint)?;
     url.path_segments_mut()
         .map_err(|_| Error::Endpoint)?
@@ -88,9 +98,19 @@ pub async fn models(
             .header(AUTHORIZATION, bearer(key)?);
         let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|Error::Transport)?, };
         let status = response.status().as_u16();
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.http(
+                crate::diagnostics::Stage::DiscoveryHttp,
+                status,
+                response.headers(),
+            );
+        }
         let bytes = bounded(response, MAX_DISCOVERY, cancel).await?;
         if status != 200 {
             let value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            if let Some(diagnostics) = diagnostics {
+                diagnostics.error_code(&value);
+            }
             return Err(Error::Refused(super::refusal(status, &value)));
         }
         let mut value: Value =
@@ -128,6 +148,19 @@ pub async fn stream<F>(
 where
     F: FnMut(Event) -> Control + ?Sized,
 {
+    stream_observed(client, chat, cancel, on, terminal_usage, None).await
+}
+pub(crate) async fn stream_observed<F>(
+    client: &Client,
+    chat: Chat<'_>,
+    cancel: &CancelToken,
+    on: &mut F,
+    terminal_usage: &mut Option<Usage>,
+    diagnostics: Option<&crate::diagnostics::Diagnostics>,
+) -> Result<Completed, Error>
+where
+    F: FnMut(Event) -> Control + ?Sized,
+{
     *terminal_usage = None;
     let Chat {
         model,
@@ -154,9 +187,15 @@ where
         .body(body);
     let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|Error::Transport)?, };
     let status = response.status().as_u16();
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.http(crate::diagnostics::Stage::ChatHttp, status, response.headers());
+    }
     if status != 200 {
         let bytes = bounded(response, 64 * 1024, cancel).await?;
         let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.error_code(&value);
+        }
         return Err(Error::Refused(super::refusal(status, &value)));
     }
     if !response
@@ -216,6 +255,9 @@ where
             let mut chunk: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
             drop(data);
             if !chunk.is_object() || chunk.get("error").is_some() {
+                if let Some(diagnostics) = diagnostics {
+                    diagnostics.error_code(&chunk);
+                }
                 return Err(Error::Protocol);
             }
             let choices = chunk["choices"].as_array().ok_or(Error::Protocol)?;

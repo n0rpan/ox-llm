@@ -8,6 +8,7 @@ use oxa_proto::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::io::{self, Write};
+use std::sync::Arc;
 
 fn mismatch() -> Refusal {
     Refusal {
@@ -17,7 +18,7 @@ fn mismatch() -> Refusal {
         message: "Saved provider history does not match this request.",
     }
 }
-fn invalid_output() -> Refusal {
+pub(crate) fn invalid_output() -> Refusal {
     Refusal {
         status: 502,
         code: "cloud_upstream_history_invalid",
@@ -29,9 +30,64 @@ fn frame(hash: &mut Sha256, bytes: &[u8]) {
     hash.update((bytes.len() as u64).to_be_bytes());
     hash.update(bytes);
 }
+#[derive(Clone)]
 struct Visible {
     hash: Sha256,
     buffer: Vec<u8>,
+}
+
+/// Completion authority for one admitted request. It retains only the rolling
+/// visible-prefix digest, route/account scope and shared native output, so the
+/// engine can bind the exact assembled message without another assembler/cache.
+pub struct HistorySeal {
+    ledger: Ledger,
+    scope: [u8; 32],
+    visible: Visible,
+    items: Arc<[Value]>,
+}
+impl std::fmt::Debug for HistorySeal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HistorySeal([redacted])")
+    }
+}
+impl HistorySeal {
+    pub(crate) fn prepare(
+        ledger: &Ledger,
+        model: &Model,
+        account: &[u8; 32],
+        prefix: &FrozenPrefix,
+        messages: &[WireMsg],
+        items: Arc<[Value]>,
+    ) -> Result<Self, Refusal> {
+        let scope = scope(ledger, model, account).finalize().into_bytes().into();
+        ProviderHistory::from_shared_items(scope, [0; 32], Arc::clone(&items))
+            .map_err(|_| invalid_output())?;
+        let mut visible = Visible::new(prefix);
+        for message in messages {
+            visible.append(message);
+        }
+        // Retain no prompt/message copy in a completion handle.
+        visible.buffer = Vec::new();
+        Ok(Self {
+            ledger: ledger.clone(),
+            scope,
+            visible,
+            items,
+        })
+    }
+    pub fn seal(&self, assistant: &WireMsg) -> Result<ProviderHistory, Refusal> {
+        if assistant.role != Role::Assistant || assistant.provider_history.is_some() {
+            return Err(invalid_output());
+        }
+        let mut visible = self.visible.clone();
+        visible.append(assistant);
+        let signature = prefix_mac(&self.ledger, &self.scope, &visible, &self.items)?
+            .finalize()
+            .into_bytes()
+            .into();
+        ProviderHistory::from_shared_items(self.scope, signature, Arc::clone(&self.items))
+            .map_err(|_| invalid_output())
+    }
 }
 impl Visible {
     fn new(prefix: &FrozenPrefix) -> Self {

@@ -15,7 +15,7 @@ in-process-gateway = ["dep:oxc-gateway", "dep:tokio"]
 [dependencies]
 oxa-proto.workspace = true
 serde_json.workspace = true
-oxc-gateway = { path = "../oxc-gateway", default-features = false, features = ["anthropic-gateway"], optional = true }
+oxc-gateway = { path = "../oxc-gateway", default-features = false, features = ["anthropic-gateway", "upstream-openai"], optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"], optional = true }
 
 [dev-dependencies]
