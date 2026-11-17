@@ -127,8 +127,10 @@ pub(super) fn run(
             .split_ascii_whitespace()
             .collect();
         let branch = text(row, "branch")?;
+        let task_id = format!("{}{number}", if action == Action::BuildIssue { "i" } else { "c" });
         if task.len() > 65_536
             || !matches!(header.len(), 3 | 4)
+            || header[0] != task_id
             || header[2] != branch
             || header.get(3).copied().unwrap_or("main")
                 != if action == Action::BuildIssue {
@@ -137,7 +139,7 @@ pub(super) fn run(
                     branch
                 }
         {
-            return Err("prepared taskfile branch/base mismatch".into());
+            return Err("prepared taskfile ref/branch/base mismatch".into());
         }
         packets.push(Prepared {
             number,
@@ -155,14 +157,8 @@ pub(super) fn run(
     let gh =
         crate::netguard::trusted_executable_for("gh", Some(&policy.host_path), Some(root), Some(&dirs.home))
             .ok_or("no trusted gh executable")?;
-    let mut source = Input::new(
-        &gh,
-        &policy.host_path,
-        repo,
-        &token,
-        &packets,
-        value["intake"] == true,
-    );
+    let intake = value["intake"] == true;
+    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|_| "invalid system clock")?
