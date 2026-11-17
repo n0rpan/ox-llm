@@ -23,6 +23,7 @@ struct Occurrence<'a> {
     worker: &'a str,
     run: &'a str,
     observed: &'a str,
+    description: &'a str,
     path: &'a str,
     line: usize,
 }
@@ -44,7 +45,7 @@ impl<'a> Occurrence<'a> {
         let valid_char = |ch: char| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.');
         if !path
             .split('/')
-            .all(|part| !part.starts_with('.') && !part.is_empty() && part.chars().all(valid_char))
+            .all(|part| !matches!(part, "" | "." | "..") && part.chars().all(valid_char))
         {
             return None;
         }
@@ -53,6 +54,7 @@ impl<'a> Occurrence<'a> {
             worker: field("Worker: ")?,
             run: field("Run: ")?,
             observed: field("Observed: ")?,
+            description: notes,
             path,
             line: line.parse().ok()?,
         };
@@ -295,6 +297,7 @@ pub(super) fn plan(
     let input = json!({
         "title": clean_notes(title, ctx),
         "observation": note.observed,
+        "description": clean_notes(note.description, ctx),
         "current_main": {"sha": sha, "path": note.path, "line": note.line, "source": scrub(&cap(&excerpt.join("\n")), ctx)},
         "candidates": candidates,
     });
@@ -398,11 +401,21 @@ fn decision(value: &Value, candidates: &[Value]) -> Option<Option<u64>> {
 pub(super) fn judge(input: &str, dirs: &Dirs, settings: &Settings, env: &Env) -> Option<String> {
     let (models, _) = ModelsConfig::load(dirs, env);
     let endpoint = crate::dispatch::default_endpoint(&models).ok()?;
-    let engine = crate::in_process::select(settings, settings, dirs, None, || {
+    let requested = settings
+        .string("defaultModel")
+        .filter(|model| !model.trim().is_empty());
+    let engine = crate::in_process::select(settings, settings, dirs, requested.as_deref(), || {
         crate::dispatch::engine_for(&endpoint)
     })
     .ok()?;
-    let model = engine.info(None).ok()?.model;
+    let info = engine.info(None).ok()?;
+    let model = match requested {
+        Some(model) => {
+            let available = crate::dispatch::engine_model_refs(info, &endpoint.name);
+            oxa_config::resolve_model(&model, None, &available).ok()?.model
+        }
+        None => info.model,
+    };
     if model.is_empty() {
         return None;
     }
