@@ -259,9 +259,12 @@ fn gated_prompt_with_cancel(
         assert!(window == Window::AfterExplicitAbort);
         release_tx.send(()).unwrap();
         let session = worker.take().unwrap().join().unwrap();
+        let mut settled_observed = false;
         for message in out_rx.try_iter() {
+            settled_observed |= matches!(&message, WorkerMsg::Event(AgentEvent::AgentSettled { .. }));
             lp.worker_msg(message);
         }
+        assert!(settled_observed, "observe real settlement before submitting");
         Some(session)
     } else {
         None
@@ -273,6 +276,13 @@ fn gated_prompt_with_cancel(
         &mut terminal,
         InputEvent::Key(Key::press(if follow_up { "alt+enter" } else { "enter" })),
     );
+    if settle_before_submit && follow_up {
+        assert!(cmd_rx.try_recv().is_err(), "idle Alt+Enter must not submit");
+        let (reply, rx) = mpsc::channel();
+        lp.ui_req(UiRequest::EditorText { reply });
+        assert_eq!(rx.recv_timeout(GATE_TIMEOUT).unwrap(), "third\n");
+        lp.input(&mut terminal, InputEvent::Key(Key::press("enter")));
+    }
     let commands: Vec<_> = cmd_rx.try_iter().collect();
     let mut session = settled.unwrap_or_else(|| {
         release_tx.send(()).unwrap();
@@ -285,6 +295,14 @@ fn gated_prompt_with_cancel(
     );
     let before_wake = server.requests().iter().filter(|r| r.max_tokens > 0).count();
     if window == Window::AfterExplicitAbort {
+        if settle_before_submit {
+            assert!(matches!(commands.as_slice(), [SessionCmd::Prompt { .. }]));
+        } else {
+            assert!(
+                matches!(commands.as_slice(), [SessionCmd::RecoveryPrompt { handle, .. }]
+                if handle.same_instance(&control))
+            );
+        }
         assert_eq!(*session.outcome(), oxa_core::RunOutcome::Interrupted);
     } else {
         assert_eq!(before_wake, 3);
@@ -464,19 +482,35 @@ fn explicit_follow_up_after_ctrl_c_is_not_stranded_before_settlement() {
 }
 
 #[test]
-fn escape_and_ctrl_c_recover_next_input_on_both_sides_of_settlement() {
-    for cancel_key in ["ctrl+c", "escape"] {
-        for settle_before_submit in [false, true] {
-            for follow_up in [false, true] {
-                gated_prompt_with_cancel(
-                    Window::AfterExplicitAbort,
-                    None,
-                    follow_up,
-                    false,
-                    cancel_key,
-                    settle_before_submit,
-                );
-            }
+fn cancel_keys_recover_explicit_input_before_settlement() {
+    for cancel_key in ["escape", "ctrl+c"] {
+        for follow_up in [false, true] {
+            eprintln!("cancel_key={cancel_key} settled=false follow_up={follow_up}");
+            gated_prompt_with_cancel(
+                Window::AfterExplicitAbort,
+                None,
+                follow_up,
+                false,
+                cancel_key,
+                false,
+            );
+        }
+    }
+}
+
+#[test]
+fn cancel_keys_preserve_idle_submit_and_newline_after_settlement() {
+    for cancel_key in ["escape", "ctrl+c"] {
+        for follow_up in [false, true] {
+            eprintln!("cancel_key={cancel_key} settled=true follow_up={follow_up}");
+            gated_prompt_with_cancel(
+                Window::AfterExplicitAbort,
+                None,
+                follow_up,
+                false,
+                cancel_key,
+                true,
+            );
         }
     }
 }
