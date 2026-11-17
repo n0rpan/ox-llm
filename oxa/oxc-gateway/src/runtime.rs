@@ -38,6 +38,7 @@ impl Default for Options {
     }
 }
 pub struct Runtime {
+    diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
     go_models: BTreeMap<String, crate::opencode::Model>,
@@ -114,6 +115,20 @@ fn unpaid(model: &Model, billing: Option<&Billing>) -> Value {
     fields
 }
 impl Runtime {
+    /// Install only for a trusted terminal caller, before discovery/requests.
+    pub fn with_diagnostics(mut self, diagnostics: crate::diagnostics::Diagnostics) -> Self {
+        self.diagnostics = Some(diagnostics);
+        self
+    }
+    pub(crate) fn diagnostics(&self) -> Option<&crate::diagnostics::Diagnostics> {
+        self.diagnostics.as_ref()
+    }
+    fn credential_error(&self) -> Refusal {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.local();
+        }
+        Refusal::credentials()
+    }
     /// Trusted, typed configuration. Preparing a path reads no key bytes;
     /// construction/discovery open no ledger and start no provider/runtime.
     pub fn new(
@@ -161,6 +176,7 @@ impl Runtime {
             .ok_or_else(Refusal::credentials)?
             .join("chatgpt-auth.json");
         Ok(Self {
+            diagnostics: None,
             catalog,
             billings,
             go_models: BTreeMap::new(),
@@ -202,6 +218,9 @@ impl Runtime {
         timeout: std::time::Duration,
     ) -> Result<(), crate::opencode::client::Error> {
         use crate::opencode::client::Error;
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.clear();
+        }
         if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
             return Err(Error::Request);
         }
@@ -211,12 +230,24 @@ impl Runtime {
         let key = self
             .key_file
             .as_ref()
-            .map_err(|_| Error::Refused(crate::opencode::Refusal::Unauthenticated))?
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })?
             .read("opencode")
-            .map_err(|_| Error::Refused(crate::opencode::Refusal::Unauthenticated))?;
-        let discovered =
-            crate::opencode::client::models(client, base, &key, timeout, &oxa_proto::CancelToken::new())
-                .await?;
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })?;
+        let discovered = crate::opencode::client::models_observed(
+            client,
+            base,
+            &key,
+            timeout,
+            &oxa_proto::CancelToken::new(),
+            self.diagnostics.as_ref(),
+        )
+        .await?;
         let mut models: Vec<_> = self
             .catalog
             .models()
@@ -251,6 +282,9 @@ impl Runtime {
         Ok(())
     }
     pub fn begin(&self, payload: &Value, context: Context<'_>) -> Result<Call<'_>, Refusal> {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.clear();
+        }
         let owner_origin = matches!(context.origin, crate::ledger::Origin::Oxa);
         let alias = payload["model"].as_str().ok_or_else(|| invalid("model"))?;
         if matches!(self.catalog.resolve(Some(alias)), Err(catalog::Error::Disabled)) {
@@ -305,9 +339,9 @@ impl Runtime {
                 Provider::Anthropic | Provider::OpenAi | Provider::OpenCode => Credential::ApiKey(Arc::new(
                     self.key_file
                         .as_ref()
-                        .map_err(|_| Refusal::credentials())?
+                        .map_err(|_| self.credential_error())?
                         .read(model.info().provider.as_str())
-                        .map_err(|_| Refusal::credentials())?,
+                        .map_err(|_| self.credential_error())?,
                 )),
                 #[cfg(feature = "upstream-openai")]
                 Provider::ChatGpt => {

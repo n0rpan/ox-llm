@@ -18,28 +18,43 @@ pub(crate) fn credential_path(dirs: &Dirs) -> std::path::PathBuf {
     dirs.home.join(".config/oxc/llm/cloud-secrets.json")
 }
 
-/// Terminal-only context for the native reader's local refusal. Never enrich an
-/// engine error: those also reach session history, JSON/RPC events and API callers.
-/// Native upstream authentication failures have a different typed error class.
-pub(crate) fn report_credentials(
-    result: &Result<oxa_core::RunOutcome, OxaError>,
-    native_cloud: bool,
+/// Consume private facts only at a trusted terminal failure boundary.
+pub(crate) fn report_diagnostics(
+    diagnostics: &oxc_gateway::diagnostics::Diagnostics,
     dirs: &Dirs,
     stderr: &mut dyn std::io::Write,
 ) {
-    let local_refusal = match result {
-        Ok(oxa_core::RunOutcome::Blocked("cloud_credentials_unavailable")) => true,
-        Err(error) => error.code == "cloud_credentials_unavailable",
-        _ => false,
+    use oxc_gateway::diagnostics::Stage;
+    let Some(snapshot) = diagnostics.take() else {
+        return;
     };
-    if native_cloud && local_refusal {
-        // Debug quoting keeps unusual HOME characters on one diagnostic line.
-        let _ = writeln!(
-            stderr,
+    if snapshot.stage == Stage::LocalCredentialRead {
+        let _ = writeln!(stderr,
             "Local cloud credentials unavailable; attempted protected store: {:?}. Check the provider entry and file protections.",
-            credential_path(dirs),
-        );
+            credential_path(dirs));
+        return;
     }
+    let stage = match snapshot.stage {
+        Stage::DiscoveryHttp => "discovery_http",
+        Stage::ChatHttp => "chat_http",
+        Stage::LocalCredentialRead => unreachable!(),
+    };
+    let _ = write!(stderr, "oxa native diagnostic: stage={stage}");
+    if let Some(status) = snapshot.status {
+        let _ = write!(stderr, " status={status}");
+    }
+    if let Some(code) = snapshot.code {
+        let _ = write!(stderr, " code={code}");
+    }
+    for (name, value) in ["retry_after", "rate_limit", "rate_remaining", "rate_reset"]
+        .into_iter()
+        .zip(snapshot.rate)
+    {
+        if let Some(value) = value {
+            let _ = write!(stderr, " {name}={value}");
+        }
+    }
+    let _ = writeln!(stderr);
 }
 
 fn invalid() -> OxaError {
@@ -64,16 +79,31 @@ pub(crate) fn select(
     dirs: &Dirs,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
+    select_observed(user, effective, dirs, None, http)
+}
+
+pub(crate) fn select_observed(
+    user: &Settings,
+    effective: &Settings,
+    dirs: &Dirs,
+    diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
+    http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
+) -> Result<Arc<dyn Engine>, OxaError> {
     if !user.bool(SETTING, false) {
         return http();
     }
     if oxa_proto::offline() {
         return Err(oxa_proto::offline_error("the in-process cloud gateway"));
     }
-    open(user, effective, dirs)
+    open(user, effective, dirs, diagnostics)
 }
 
-fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn Engine>, OxaError> {
+fn open(
+    user: &Settings,
+    effective: &Settings,
+    dirs: &Dirs,
+    diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
+) -> Result<Arc<dyn Engine>, OxaError> {
     let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
     let go_enabled = cloud.pointer("/opencode/enabled") == Some(&Value::Bool(true));
     let empty = serde_json::Map::new();
@@ -124,7 +154,7 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
     } else {
         None
     };
-    let runtime = Runtime::new(
+    let mut runtime = Runtime::new(
         routes,
         credential_path(dirs),
         dirs.agent_dir.join("cloud-ledger"),
@@ -137,6 +167,9 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
         },
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;
+    if let Some(diagnostics) = diagnostics {
+        runtime = runtime.with_diagnostics(diagnostics);
+    }
     let timeout = crate::dispatch::stream_silence_timeout(effective).map(Duration::from_millis);
     let mut gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
         let refusal = e.refusal();

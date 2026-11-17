@@ -54,3 +54,6 @@ mod sse;
 pub mod openrouter;
 #[cfg(all(feature = "anthropic-client", feature = "pricing"))]
 pub mod status;
+
+/// Private, opt-in trusted-terminal diagnostic facts.
+pub mod diagnostics;

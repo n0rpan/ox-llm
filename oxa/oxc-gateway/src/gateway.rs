@@ -100,6 +100,11 @@ impl Gateway {
             .map_err(|_| Error::OpenCode(crate::opencode::client::Error::Transport))?;
         let result = driver.block_on(self.runtime.discover_go(self.client.transport(), base, timeout));
         driver.shutdown_timeout(Duration::from_secs(1));
+        if result.is_ok() {
+            if let Some(diagnostics) = self.runtime.diagnostics() {
+                diagnostics.clear();
+            }
+        }
         result.map_err(Error::OpenCode)
     }
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
@@ -274,7 +279,7 @@ impl Gateway {
         let mut payload = payload.clone();
         payload["max_tokens"] = call.max_output().into();
         let mut usage = None;
-        let result = client::stream(
+        let result = client::stream_observed(
             self.client.transport(),
             client::Chat {
                 model,
@@ -298,9 +303,16 @@ impl Gateway {
                 }
             },
             &mut usage,
+            self.runtime.diagnostics(),
         )
         .await;
-        self.finish_go(call, result, usage, on)
+        let result = self.finish_go(call, result, usage, on);
+        if result.is_ok() {
+            if let Some(diagnostics) = self.runtime.diagnostics() {
+                diagnostics.clear();
+            }
+        }
+        result
     }
     fn finish_go<F>(
         &self,

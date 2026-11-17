@@ -276,6 +276,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
     // stdin (read byte by byte, so piped prompt text after it stays unread).
     let mut a = a;
+    let cloud_diagnostics = oxc_gateway::diagnostics::Diagnostics::default();
     let prepared = {
         let mut confirm = |notice: &str, question: &str| -> bool {
             if mode == RunMode::Rpc {
@@ -298,6 +299,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             stdin_is_tty,
             stdout_is_tty,
             &mut confirm,
+            cloud_diagnostics.clone(),
         )
     };
     let prep = match prepared {
@@ -310,7 +312,10 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 0
             };
         }
-        Err(e) => return report(&mut *stderr, &e),
+        Err(e) => {
+            crate::in_process::report_diagnostics(&cloud_diagnostics, &dirs, &mut *stderr);
+            return report(&mut *stderr, &e);
+        }
     };
     // Second pass (pi): the long flags the first pass did not know are parsed again with the
     // flags the loaded extensions registered; one that nobody registered is a usage error.
@@ -446,8 +451,7 @@ struct Built {
     result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
     engine: Arc<dyn Engine>,
-    /// Selected from user-only settings, never from project settings or an API error.
-    native_cloud: bool,
+    cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
     store: Arc<dyn SessionStore>,
     sandbox: Arc<dyn Sandbox>,
     settings: Settings,
@@ -558,6 +562,7 @@ fn prepare(
     stdin_is_tty: bool,
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
+    cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
 ) -> Result<Prep, OxaError> {
     let output_schema = a
         .output_schema
@@ -635,10 +640,11 @@ fn prepare(
     }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
-    let engine = child.wrap(crate::in_process::select(
+    let engine = child.wrap(crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
+        (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         || engine_with_settings(&endpoint, &settings),
     )?);
 
@@ -857,7 +863,7 @@ fn prepare(
         result_facts,
         output_schema,
         engine,
-        native_cloud: user_settings.bool(crate::in_process::SETTING, false),
+        cloud_diagnostics,
         store,
         sandbox,
         settings,
@@ -1244,8 +1250,11 @@ fn run_headless(
         let _ = writeln!(stdout, "{usage}");
     }
     // Child stderr can be captured as a tool result in the parent's history.
-    if !built.supervised_child {
-        crate::in_process::report_credentials(&result, built.native_cloud, &built.dirs, stderr);
+    if matches!(
+        &result,
+        Err(_) | Ok(oxa_core::RunOutcome::Blocked(_) | oxa_core::RunOutcome::Failed(_))
+    ) {
+        crate::in_process::report_diagnostics(&built.cloud_diagnostics, &built.dirs, stderr);
     }
     finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
@@ -2105,7 +2114,7 @@ mod session_scratch_tests {
             result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
-            native_cloud: false,
+            cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics::default(),
             store: Arc::new(MemStore::new()),
             sandbox: base.clone(),
             settings: Settings::default(),

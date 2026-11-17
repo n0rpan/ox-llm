@@ -584,6 +584,10 @@ fn go_discovery_401_keeps_the_public_error_without_claiming_a_local_store_failur
     assert_eq!(mock.requests()[0].method, "GET");
     assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stage=discovery_http status=401 code=invalid_request_error"),
+        "{stderr}"
+    );
     assert!(!stderr.contains("attempted protected store"));
     assert!(!stderr.contains(CREDENTIAL));
     assert!(!stderr.contains(
@@ -626,4 +630,176 @@ fn go_chat_401_keeps_the_public_error_without_claiming_a_local_store_failure() {
             .unwrap()
     ));
     mock.assert_healthy();
+}
+
+#[test]
+fn go_protocol_failure_retains_only_private_finite_http_facts() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::raw(
+                200,
+                "text/event-stream",
+                b"data: invalid\n\n".to_vec(),
+                vec![
+                    ("Retry-After", "7".into()),
+                    ("X-RateLimit-Limit", "3000".into()),
+                    ("X-RateLimit-Remaining", "0".into()),
+                    ("X-RateLimit-Reset", "1234".into()),
+                    ("X-Private-Account", CREDENTIAL.into()),
+                ],
+            ),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-tools", "--mode", "json", "-p", "Synthetic request"]);
+    assert!(!output.status.success());
+    assert_eq!(terminal(&output)["error_class"], "stream_broken");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "stage=chat_http status=200 retry_after=7 rate_limit=3000 rate_remaining=0 rate_reset=1234"
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("attempted protected store"));
+    assert!(!stderr.contains(CREDENTIAL));
+    assert!(!stderr.contains("invalid\n"));
+    assert_eq!(mock.requests().len(), 2);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 502);
+    assert_eq!(ledger[0]["settled"], "reserved");
+    assert_eq!(ledger[0]["usage_missing"], true);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("native diagnostic"));
+    assert!(!stdout.contains("retry_after"));
+    let files = session_files(&env.home().join(".oxa/agent/sessions"));
+    assert!(!files.is_empty(), "actual session history must exist");
+    for path in files {
+        let history = fs::read_to_string(path).unwrap();
+        assert!(!history.contains("native diagnostic"));
+        assert!(!history.contains("rate_reset"));
+        assert!(!history.contains(CREDENTIAL));
+    }
+    mock.assert_healthy();
+}
+
+fn session_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files.extend(session_files(&path));
+            } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+#[test]
+fn go_http_diagnostic_rejects_unknown_codes_and_non_numeric_or_duplicate_headers() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::raw(
+                429,
+                "application/json",
+                json!({"error":{"type":CREDENTIAL,"message":CREDENTIAL}})
+                    .to_string()
+                    .into_bytes(),
+                vec![
+                    ("Retry-After", "7".into()),
+                    ("Retry-After", "8".into()),
+                    ("X-RateLimit-Limit", "4294967296".into()),
+                    ("X-RateLimit-Remaining", CREDENTIAL.into()),
+                    ("X-RateLimit-Reset", "1234,1235".into()),
+                ],
+            ),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("oxa native diagnostic: stage=chat_http status=429\n"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("retry_after="));
+    assert!(!stderr.contains("rate_limit="));
+    assert!(!stderr.contains("rate_remaining="));
+    assert!(!stderr.contains("rate_reset="));
+    assert!(!stderr.contains(CREDENTIAL));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("native diagnostic"));
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
+fn go_in_stream_error_records_known_code_without_publishing_its_body() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::raw(
+                200,
+                "text/event-stream",
+                format!(
+                    "data: {}\n\n",
+                    json!({"error":{"type":"inference_failed","message":CREDENTIAL,"account":CREDENTIAL}})
+                )
+                .into_bytes(),
+                vec![],
+            ),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(terminal(&output)["error_class"], "stream_broken");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stage=chat_http status=200 code=inference_failed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(CREDENTIAL));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("inference_failed"));
+    assert!(!stdout.contains(CREDENTIAL));
+    assert_eq!(mock.requests().len(), 2);
+    assert_eq!(rows(&env)[0]["error"], "cloud_upstream_stream_broken");
+    mock.assert_healthy();
+}
+
+#[test]
+fn go_private_discovery_diagnostic_is_absent_for_rpc_and_supervised_children() {
+    for child in [false, true] {
+        let env = go_diagnostic_env();
+        let mock = MockOpenAi::start(vec![Reply::error(401, "authentication_error", CREDENTIAL)]);
+        setup(&env, &format!("http://{}", mock.address()));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
+        cmd.current_dir(env.work())
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:9"));
+        if child {
+            cmd.env("OXA_SUBAGENT_DEPTH", "1")
+                .args(["-p", "Synthetic request"]);
+        } else {
+            cmd.args(["--mode", "rpc"]);
+        }
+        let output = cmd.stdin(Stdio::null()).output().unwrap();
+        assert!(!output.status.success());
+        for bytes in [&output.stdout, &output.stderr] {
+            let text = String::from_utf8_lossy(bytes);
+            assert!(!text.contains("native diagnostic"), "{text}");
+            assert!(!text.contains("attempted protected store"));
+            assert!(!text.contains(CREDENTIAL));
+        }
+        assert_eq!(mock.requests().len(), 1);
+        mock.assert_healthy();
+    }
 }
