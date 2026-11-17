@@ -223,16 +223,34 @@ enum IoPhase {
     ReplyWrite,
     UnexpectedRequest,
 }
-#[derive(Clone, Copy)]
-struct HealthFailure {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReplyPart {
+    Headers,
+    HeaderEnd,
+    ChunkHeader,
+    ChunkPayload,
+    ChunkEnd,
+    Flush,
+    TransferEnd,
+}
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HealthFailure {
     phase: IoPhase,
-    kind: Option<io::ErrorKind>,
+    pub(super) kind: Option<io::ErrorKind>,
+    pub(super) part: Option<ReplyPart>,
 }
 impl HealthFailure {
     fn io(phase: IoPhase, error: io::Error) -> Self {
         Self {
             phase,
             kind: Some(error.kind()),
+            part: None,
+        }
+    }
+    fn reply(part: ReplyPart, error: io::Error) -> Self {
+        Self {
+            part: Some(part),
+            ..Self::io(IoPhase::ReplyWrite, error)
         }
     }
 }
@@ -330,9 +348,10 @@ impl MockOpenAi {
         };
         assert!(
             empty,
-            "mock upstream reported a connection failure phase={:?} kind={:?}",
+            "mock upstream reported a connection failure phase={:?} kind={:?} part={:?}",
             first.map(|failure| failure.phase),
             first.and_then(|failure| failure.kind),
+            first.and_then(|failure| failure.part),
         );
     }
 }
@@ -432,6 +451,7 @@ fn serve(
             shared.errors.lock().unwrap().push(HealthFailure {
                 phase: IoPhase::UnexpectedRequest,
                 kind: None,
+                part: None,
             });
             Reply::error(500, "server_error", "unexpected synthetic request")
         });
@@ -457,27 +477,40 @@ fn serve(
             }
         }
     }
-    write_reply(&mut stream, &reply).map_err(|error| HealthFailure::io(IoPhase::ReplyWrite, error))
+    write_reply(&mut stream, &reply)
 }
-fn write_reply(stream: &mut TcpStream, reply: &Reply) -> io::Result<()> {
+pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), HealthFailure> {
     write!(
         stream,
         "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n",
         reply.status, reply.content_type
-    )?;
+    )
+    .map_err(|error| HealthFailure::reply(ReplyPart::Headers, error))?;
     for (name, value) in &reply.headers {
-        write!(stream, "{name}: {value}\r\n")?;
+        write!(stream, "{name}: {value}\r\n")
+            .map_err(|error| HealthFailure::reply(ReplyPart::Headers, error))?;
     }
-    stream.write_all(b"\r\n")?;
+    stream
+        .write_all(b"\r\n")
+        .map_err(|error| HealthFailure::reply(ReplyPart::HeaderEnd, error))?;
     for bytes in reply.bytes.chunks(reply.fragment) {
-        write!(stream, "{:x}\r\n", bytes.len())?;
-        stream.write_all(bytes)?;
-        stream.write_all(b"\r\n")?;
-        stream.flush()?;
+        write!(stream, "{:x}\r\n", bytes.len())
+            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkHeader, error))?;
+        stream
+            .write_all(bytes)
+            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkPayload, error))?;
+        stream
+            .write_all(b"\r\n")
+            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkEnd, error))?;
+        stream
+            .flush()
+            .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error))?;
     }
     if reply.truncate_transfer {
         Ok(())
     } else {
-        stream.write_all(b"0\r\n\r\n")
+        stream
+            .write_all(b"0\r\n\r\n")
+            .map_err(|error| HealthFailure::reply(ReplyPart::TransferEnd, error))
     }
 }
