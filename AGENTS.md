@@ -120,12 +120,13 @@ GitHub job summary so capacity decisions use measurements.
 When you may call `gh`, wait with **one blocking `gh run watch --exit-status`**, or continue an
 independent piece and read the result once later; when the runner owns GitHub, it reads the result.
 Never spend repeated model turns or API/status polls waiting for CI, and never
-post “still waiting” updates. On failure, read the failed jobs one at a time: a short `--log-failed`
+post “still waiting” updates. On failure, read the failed jobs one at a time: a short `gh run view <run-id> --log-failed`
 excerpt collects lines from every failed job (both architectures, every shard) that ran at the same
 time, and a fixed tail can end inside one test's output, so neither names the failing test. Name the
 failed job, then take only its failure lines:
 
 ```sh
+gh run view <run-id> --log-failed | grep -nE '(FAILED|panicked at|error\[|^error: )' | head -n 40
 gh run view <run-id> --json jobs --jq '.jobs[] | select(.conclusion=="failure") | "\(.databaseId) \(.name)"'
 gh run view <run-id> --job <job-id> --log | grep -nE '(FAILED|panicked at|error\[|^error: )' | head -n 40
 ```
