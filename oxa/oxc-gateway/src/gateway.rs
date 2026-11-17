@@ -1,5 +1,8 @@
 //! One admission/stream/settlement path, with Done only after a durable row.
 #[cfg(test)]
+#[path = "../tests/common/openrouter_cases.rs"]
+mod openrouter_tests;
+#[cfg(test)]
 #[path = "../tests/common/gateway_cases.rs"]
 mod tests;
 use crate::{
