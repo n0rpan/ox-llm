@@ -131,6 +131,7 @@ fn open(
     for (alias, value) in models {
         let (provider, default_endpoint) = match text(value, "provider")? {
             "anthropic" => (Provider::Anthropic, "https://api.anthropic.com"),
+            "openrouter" => (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
             "openai" => (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
             "chatgpt" => (Provider::ChatGpt, oxc_gateway::openai::client::SUBSCRIPTION_BASE),
             _ => return Err(OxaError::unsupported("this in-process cloud provider")),

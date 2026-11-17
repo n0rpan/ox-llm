@@ -1,9 +1,9 @@
 use super::*;
 #[allow(dead_code)]
 #[path = "anthropic.rs"]
-mod anthropic;
+pub(super) mod anthropic;
 #[path = "skeleton.rs"]
-mod skeleton;
+pub(super) mod skeleton;
 use crate::{
     catalog::{Access, Model, Provider},
     pricing::Price,

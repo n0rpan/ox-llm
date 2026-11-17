@@ -92,8 +92,10 @@ fn catalog_error(error: catalog::Error) -> Refusal {
     }
 }
 fn supported(provider: Provider) -> bool {
-    matches!(provider, Provider::Anthropic | Provider::OpenCode)
-        || (cfg!(feature = "upstream-openai") && matches!(provider, Provider::OpenAi | Provider::ChatGpt))
+    matches!(
+        provider,
+        Provider::Anthropic | Provider::OpenCode | Provider::OpenRouter
+    ) || (cfg!(feature = "upstream-openai") && matches!(provider, Provider::OpenAi | Provider::ChatGpt))
 }
 fn invalid_billing() -> Refusal {
     Refusal {
@@ -338,13 +340,15 @@ impl Runtime {
                 return Err(Refusal::ledger());
             }
             credential = Some(match model.info().provider {
-                Provider::Anthropic | Provider::OpenAi | Provider::OpenCode => Credential::ApiKey(Arc::new(
-                    self.key_file
-                        .as_ref()
-                        .map_err(|_| self.credential_error())?
-                        .read(model.info().provider.as_str())
-                        .map_err(|_| self.credential_error())?,
-                )),
+                Provider::Anthropic | Provider::OpenAi | Provider::OpenCode | Provider::OpenRouter => {
+                    Credential::ApiKey(Arc::new(
+                        self.key_file
+                            .as_ref()
+                            .map_err(|_| self.credential_error())?
+                            .read(model.info().provider.as_str())
+                            .map_err(|_| self.credential_error())?,
+                    ))
+                }
                 #[cfg(feature = "upstream-openai")]
                 Provider::ChatGpt => {
                     self.key_file.as_ref().map_err(|_| Refusal::credentials())?;
@@ -353,7 +357,8 @@ impl Runtime {
                             .map_err(|_| Refusal::credentials())?,
                     )
                 }
-                _ => return Err(Refusal::credentials()),
+                #[cfg(not(feature = "upstream-openai"))]
+                Provider::ChatGpt => return Err(Refusal::credentials()),
             });
             let (daily, _) = audit
                 .as_ref()
@@ -526,6 +531,10 @@ impl<'a> Call<'a> {
         self.usage.output = Some(usage.output_tokens);
         self.usage.cache_read = Some(usage.cache_read_input_tokens);
         self.usage.cache_write = Some(usage.cache_creation_input_tokens);
+    }
+    /// Private terminal metering only, never caller-supplied request fields.
+    pub(crate) fn metered_cost(&mut self, cost: Option<f64>) {
+        self.usage.reported_cost = cost.filter(|cost| cost.is_finite() && *cost >= 0.0);
     }
     pub fn finish(
         mut self,
