@@ -757,7 +757,11 @@ fn deliver_steering(
         push_user(st, text, sink, ui, run_msgs)?;
     }
     if let Some(request) = st.shared.take_goal_steering() {
-        appended |= request.deliver(st, |state, text| push_user(state, text, sink, ui, run_msgs))?;
+        // The assignment guard covers the write, then releases before events or hooks.
+        if let Some(entry) = request.deliver(st, append_user_entry)? {
+            announce_user_entry(st, entry, sink, ui, run_msgs);
+            appended = true;
+        }
     }
     Ok(appended)
 }
@@ -770,10 +774,35 @@ pub(crate) fn push_user(
     ui: &mut dyn Ui,
     run_msgs: &mut Vec<EventMessage>,
 ) -> Result<(), OxaError> {
-    let wire = WireMsg::user(text.clone());
+    let entry = append_user_entry(st, text)?;
+    announce_user_entry(st, entry, sink, ui, run_msgs);
+    Ok(())
+}
+
+fn append_user_entry(st: &mut SessionState, text: String) -> Result<Entry, OxaError> {
+    append_entry(
+        st,
+        EntryBody::Msg {
+            wire: WireMsg::user(text.clone()),
+            parts: vec![Part::Text(text)],
+            tool: None,
+        },
+    )
+}
+
+fn announce_user_entry(
+    st: &mut SessionState,
+    entry: Entry,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    run_msgs: &mut Vec<EventMessage>,
+) {
+    let EntryBody::Msg { wire, .. } = &entry.body else {
+        unreachable!("the user append only creates messages");
+    };
     let msg = EventMessage {
         msg: wire.clone(),
-        ts_ms: now_ms(),
+        ts_ms: entry.ts_ms,
         stop: None,
         usage: None,
         model: None,
@@ -782,18 +811,9 @@ pub(crate) fn push_user(
         error_message: None,
     };
     run_msgs.push(msg.clone());
-    persist(
-        st,
-        EntryBody::Msg {
-            wire,
-            parts: vec![Part::Text(text)],
-            tool: None,
-        },
-        sink,
-    )?;
+    sink.emit(&AgentEvent::EntryAppended { entry });
     crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
     crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
-    Ok(())
 }
 
 /// Take steering messages from the shared queue (`Shared::take_steering` applies the mode)

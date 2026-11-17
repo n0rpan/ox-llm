@@ -104,11 +104,11 @@ impl GoalSteering {
         (self.receipt)(Err(STEER_STALE));
     }
 
-    pub(crate) fn deliver(
+    pub(crate) fn deliver<T>(
         self,
         owner: &mut crate::SessionState,
-        append: impl FnOnce(&mut crate::SessionState, String) -> Result<(), oxa_proto::OxaError>,
-    ) -> Result<bool, oxa_proto::OxaError> {
+        append: impl FnOnce(&mut crate::SessionState, String) -> Result<T, oxa_proto::OxaError>,
+    ) -> Result<Option<T>, oxa_proto::OxaError> {
         let Self {
             binding,
             text,
@@ -126,8 +126,8 @@ impl GoalSteering {
         });
         receipt(result.as_ref().map(|_| ()).map_err(|error| error.code));
         match result {
-            Ok(()) => Ok(true),
-            Err(error) if error.code == STEER_STALE => Ok(false),
+            Ok(entry) => Ok(Some(entry)),
+            Err(error) if error.code == STEER_STALE => Ok(None),
             Err(error) => Err(error),
         }
     }
