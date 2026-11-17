@@ -366,7 +366,8 @@ pub const CONTENT_FRAME_MS: u64 = 33;
 /// must be drawn, at most 16 ms while something animates, never more than
 /// [`CONTENT_FRAME_MS`] while streaming content waits for its frame, else 250 ms), route input
 /// (dialog > selector > editor > global `app.*` keys), carry out actions, and draw one frame
-/// if anything changed.
+/// if anything changed. A frame drawn for anything other than streaming text shows the stream as
+/// it is at that moment, so it counts as the content frame of its slot.
 ///
 /// Key rules (pi): Enter while a run is active = steer, Alt+Enter = follow-up
 /// (`Handle::steer` / `Handle::follow_up`); Escape = abort (`Handle::abort`), or

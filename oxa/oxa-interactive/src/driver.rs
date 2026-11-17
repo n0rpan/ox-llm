@@ -221,7 +221,10 @@ impl BlockCache {
 /// overdue content frame counts as drawn by it, so the budget starts over instead of two full
 /// renders following each other.
 ///
-/// The clock is passed in, so the loop's decisions are exercised with a fake one in tests.
+/// The clock is the loop's (`now_ms`, the wall clock) and is passed in, so the decisions are
+/// exercised with a fake one in tests. A slot is never further away than one budget, which is also
+/// how a clock that stepped backwards is noticed instead of stalling the stream (see
+/// [`ContentFrames::clock_stepped_back`]).
 #[derive(Debug, Default)]
 pub(crate) struct ContentFrames {
     /// When the next streaming content frame may be drawn.
@@ -229,28 +232,37 @@ pub(crate) struct ContentFrames {
 }
 
 impl ContentFrames {
-    /// Anything but streaming content changed: it is drawn now, and the budget starts over.
-    fn immediate(&mut self, now: u64) {
-        if now >= self.next_ms {
+    /// A frame was drawn at `now`. Every frame renders the streaming block, so this one counts
+    /// whether it carried streaming content or anything else (a key's echo, a dialog, a notice).
+    ///
+    /// A frame drawn while the slot still runs keeps the schedule, so a key typed during a stream
+    /// never pushes the next content frame back. A frame drawn after the slot ran out starts the
+    /// next one here, so two full renders never follow each other inside one slot.
+    fn drawn(&mut self, now: u64) {
+        if now >= self.next_ms || self.clock_stepped_back(now) {
             self.next_ms = now.saturating_add(crate::app::CONTENT_FRAME_MS);
         }
     }
 
-    /// A frame carrying streaming content was drawn now.
-    fn drawn(&mut self, now: u64) {
-        if now >= self.next_ms {
-            self.next_ms = now.saturating_add(crate::app::CONTENT_FRAME_MS);
-        }
+    /// A slot is at most one budget away, so a stored time further away than that was set before
+    /// the wall clock stepped backwards (an NTP correction or a manual change). `now_ms` is
+    /// `SystemTime`, not a monotonic clock: without this check the loop would wait for the length
+    /// of the step on every turn and the streamed reply would stop advancing until the clock
+    /// caught up.
+    fn clock_stepped_back(&self, now: u64) -> bool {
+        self.next_ms.saturating_sub(now) > crate::app::CONTENT_FRAME_MS
     }
 
     /// The loop's decision for this turn: `None` when nothing is dirty, `Some(0)` when the frame
     /// is drawn now, `Some(ms)` when the sole pending change is streaming content and its frame
-    /// is `ms` away.
+    /// is `ms` away. Never more than one budget, so the loop's input wait stays bounded.
     fn frame_due_in(&self, dirty: bool, immediate: bool, content_only: bool, now: u64) -> Option<u64> {
         if !dirty {
             return None;
         }
-        if immediate || !content_only {
+        // A slot from before a backwards clock step cannot be trusted: draw now and let
+        // `drawn` rebuild the schedule from `now`.
+        if immediate || !content_only || self.clock_stepped_back(now) {
             return Some(0);
         }
         Some(self.next_ms.saturating_sub(now))
@@ -791,16 +803,15 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// #875: a change that is not streaming content was seen: its frame is drawn at once and
-    /// the content budget starts over, so the next content frame cannot follow it immediately.
+    /// #875: a change that is not streaming content was seen: its frame is drawn at once, even
+    /// while a content frame is still waiting for its slot.
     pub(crate) fn content_is_immediate(&mut self) {
-        self.content.immediate(now_ms());
         self.repaint = true;
     }
 
     /// #875: whether the next frame is drawn this turn, and how long the loop may wait first.
     /// `Some(0)` is the pre-#875 behaviour (nothing to wait for); `Some(ms)` only when the sole
-    /// pending change is streaming content, whose frame is `ms` away.
+    /// pending change is streaming content, whose frame is `ms` away (never more than a budget).
     pub(crate) fn frame_due_in(&self) -> Option<u64> {
         self.content
             .frame_due_in(self.dirty, self.repaint, self.only_streaming_text(), now_ms())
@@ -809,6 +820,12 @@ impl<'a> Loop<'a> {
     /// #875: whether a frame is drawn this turn.
     pub(crate) fn frame_wanted(&self) -> bool {
         self.dirty && !matches!(self.frame_due_in(), Some(ms) if ms > 0)
+    }
+
+    /// A frame is on the terminal: nothing is pending any more.
+    fn frame_drawn(&mut self) {
+        self.dirty = false;
+        self.repaint = false;
     }
 
     fn cwd(&self) -> PathBuf {
@@ -1147,11 +1164,12 @@ impl<'a> Loop<'a> {
     }
 
     pub(crate) fn tick(&mut self, animating: bool) {
-        // #875: a tick's frame (the armed hint, a dialog's countdown, an animation step, the
-        // scrollbar) is never a streaming content frame; it is drawn at once.
-        let before = self.dirty;
+        // #875: a tick's frame (the armed hint, a dialog's countdown, an animation step) is drawn
+        // at once. Only the hidden scrollbar and a settled desktop theme plan a frame of their
+        // own: they do not push the next streaming content frame back, so they wait for it.
+        let before = (self.dirty, self.repaint);
         self.tick_steps(animating);
-        if self.dirty && !before {
+        if self.dirty && !before.1 && self.repaint {
             self.content_is_immediate();
         }
     }
@@ -2988,13 +3006,10 @@ impl<'a> Loop<'a> {
 
     /// Draw one frame in the active layout.
     pub(crate) fn draw(&mut self, term: &mut dyn Terminal) {
-        if self.only_streaming_text() {
-            // #875: this frame carried the streaming content; its slot starts now (inside a
-            // slot, an immediate frame is that slot's frame and keeps the schedule).
-            self.content.drawn(now_ms());
-        }
-        self.dirty = false;
-        self.repaint = false;
+        // #875: every frame renders the streaming block, so this one counts as the slot's frame
+        // whether it carried streaming content or anything that had to be drawn at once.
+        self.content.drawn(now_ms());
+        self.frame_drawn();
         // Consume edges even when notifications are disabled/focused: never replay them
         // later on focus-out. Input was polled first, so pending focus reports are current.
         let finished = std::mem::take(&mut self.run_finished);
@@ -3654,17 +3669,36 @@ mod content_frames_tests {
     }
 
     /// A frame that carries a key echo, a dialog or the end of the run is drawn at once: content
-    /// never delays it, and inside a slot it does not restart the schedule.
+    /// never delays it, and because it rendered the stream too it counts as the slot's frame, so
+    /// the next content frame cannot follow it within one slot.
     #[test]
     fn input_and_other_frames_are_immediate() {
         let mut slot = ContentFrames::default();
         slot.drawn(1_000);
         assert_eq!(slot.frame_due_in(true, false, true, 1_000), Some(33));
-        // Typing a key 5 ms after the last content frame: drawn now.
-        slot.immediate(1_005);
+        // Typing a key 5 ms after the last content frame: drawn now, without a wait.
         assert_eq!(slot.frame_due_in(true, true, true, 1_005), Some(0));
-        // The key frame did not restart the slot: content is due at its normal time.
-        assert_eq!(slot.frame_due_in(true, false, true, 1_010), Some(23));
+        slot.drawn(1_005);
+        // The key frame showed the stream as it was then: the next content frame is due one slot
+        // after it, so no two full renders follow each other inside 33 ms.
+        assert_eq!(slot.frame_due_in(true, false, true, 1_005), Some(33));
+        assert_eq!(slot.frame_due_in(true, false, true, 1_038), Some(0));
+    }
+
+    /// A stream whose deltas keep arriving must not slip a frame: the slot keeps its start, so
+    /// 30 Hz drawing keys off the last draw, not off the next delta.
+    #[test]
+    fn the_frame_is_drawn_at_the_end_of_each_slot() {
+        let mut slot = ContentFrames::default();
+        assert_eq!(slot.frame_due_in(true, false, true, 1_000), Some(0));
+        slot.drawn(1_000);
+        // A delta arrives every millisecond. None of them may hold a frame back.
+        for at in 1_001..1_033 {
+            assert_eq!(slot.frame_due_in(true, false, true, at), Some(1_033 - at));
+        }
+        assert_eq!(slot.frame_due_in(true, false, true, 1_033), Some(0));
+        slot.drawn(1_033);
+        assert_eq!(slot.frame_due_in(true, false, true, 1_034), Some(32));
     }
 
     /// A dirty screen that is not streaming content (a new block, a tool's end, a resize) is
@@ -3688,10 +3722,49 @@ mod content_frames_tests {
         let mut slot = ContentFrames::default();
         slot.drawn(1_000);
         // The loop idled for 200 ms, then an immediate change came with fresh content.
-        slot.immediate(1_200);
+        assert_eq!(slot.frame_due_in(true, false, false, 1_200), Some(0));
+        slot.drawn(1_200);
         assert_eq!(slot.frame_due_in(true, false, true, 1_200), Some(33));
         slot.drawn(1_233);
         assert_eq!(slot.frame_due_in(true, false, true, 1_233), Some(33));
+    }
+
+    /// `now_ms` is the wall clock, which NTP or a user can step backwards. A slot stored before
+    /// the step must not hold the stream until the clock catches up: the frame is drawn now and
+    /// the schedule restarts from the new time.
+    #[test]
+    fn a_backwards_clock_step_never_stalls_the_stream() {
+        let mut slot = ContentFrames::default();
+        slot.drawn(60_000);
+        assert_eq!(slot.frame_due_in(true, false, true, 60_000), Some(33));
+        // The clock jumps back an hour mid-stream.
+        let now = 60_000 - 3_600_000;
+        assert_eq!(
+            slot.frame_due_in(true, false, true, now),
+            Some(0),
+            "never a wait longer than one frame"
+        );
+        assert_eq!(slot.frame_due_in(true, false, false, now), Some(0));
+        slot.drawn(now);
+        // The rebuilt schedule is the normal one, one budget after the new time.
+        assert_eq!(slot.frame_due_in(true, false, true, now), Some(FRAME));
+        assert_eq!(slot.frame_due_in(true, false, true, now + 10), Some(23));
+    }
+
+    /// The loop's input wait is bounded by the budget in every decision, including the one taken
+    /// after a clock step: the idle 250 ms wait is only for a screen that is not dirty.
+    #[test]
+    fn the_wait_is_never_longer_than_one_frame_while_content_waits() {
+        let mut slot = ContentFrames::default();
+        for now in [0_u64, 1, 1_000, 5_000, u32::MAX as u64] {
+            slot.drawn(now);
+            for at in [now, now + 1, now + FRAME, now.saturating_sub(1)] {
+                if let Some(ms) = slot.frame_due_in(true, false, true, at) {
+                    assert!(ms <= FRAME, "wait {ms} ms at {at} (drawn at {now})");
+                }
+            }
+            assert_eq!(slot.frame_due_in(false, false, true, now), None);
+        }
     }
 
     /// About 30 frames a second, and never the idle input wait: a content frame is a cap, not a
