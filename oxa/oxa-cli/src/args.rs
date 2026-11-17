@@ -14,6 +14,8 @@ pub enum ModeArg {
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    /// Explicit, default-off owner web endpoint.
+    LeadServe(Vec<String>),
     #[cfg(feature = "share")]
     Share(Vec<String>),
     /// Read the live snapshot of a saved session.
@@ -535,6 +537,16 @@ fn positional(a: &mut Args, word: &str) {
 /// parsing. `@file` is collected into `files`. Omitted pi commands (`auth`) =
 /// `unsupported_in_oxa`.
 pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaError> {
+    let leading_offline = usize::from(argv.first().is_some_and(|s| s == "--offline"));
+    if argv.get(leading_offline).is_some_and(|s| s == "lead")
+        && argv.get(leading_offline + 1).is_some_and(|s| s == "serve")
+    {
+        return Ok(Args {
+            subcommand: Some(Subcommand::LeadServe(argv[leading_offline + 2..].to_vec())),
+            offline: leading_offline != 0,
+            ..Args::default()
+        });
+    }
     let mut a = Args::default();
     let mut i = 0;
     let mut stop = false;
