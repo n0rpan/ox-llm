@@ -1,4 +1,5 @@
 //! Explicitly opted-in, read-only GitHub sampling. Never invokes a worker or mutation.
+pub mod refill_input;
 use oxa_work::board::{Board, GitHub, Mergeability, Policy, PullRequest, RequiredCi};
 use serde_json::Value;
 use std::{
@@ -95,7 +96,7 @@ impl<'a> Reader<'a> {
             }
             let connection = &page["pullRequests"];
             let total = connection["totalCount"].as_u64().ok_or("missing PR count")?;
-            if total > 1000
+            if total > oxa_work::board::MAX_OPEN_PULL_REQUESTS as u64
                 || connection["totalCount"] != result["pullRequests"]["totalCount"]
                 || page["mergeQueue"] != result["mergeQueue"]
             {
@@ -168,9 +169,10 @@ impl<'a> Reader<'a> {
                 "-f",
                 &format!("query={query}"),
             ]);
-        let (code, text) = crate::report_cmd::command_runner(command, Some(MAX_RESPONSE)).ok_or(invalid(
-            "GitHub read failed, exceeded its byte limit or timed out",
-        ))?;
+        let (code, text) = oxa_work::command_runner(command, Some(MAX_RESPONSE), oxa_work::COMMAND_DEADLINE)
+            .ok_or(invalid(
+                "GitHub read failed, exceeded its byte limit or timed out",
+            ))?;
         let (headers, body) = text
             .split_once("\r\n\r\n")
             .or_else(|| text.split_once("\n\n"))

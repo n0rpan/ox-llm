@@ -478,7 +478,7 @@ pub(crate) fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     }
 }
 
-pub(crate) use oxa_work::command_runner;
+use oxa_work::{command_runner, COMMAND_DEADLINE};
 
 /// The real runner: the program's stdout, killed after 30 s. The program is resolved through
 /// the trusted host-tool lookup (`PATH` from `env`, never inside `cwd` or a group- or
@@ -498,7 +498,7 @@ pub fn process_runner<'a>(
         };
         let mut command = std::process::Command::new(exe);
         command.args(args);
-        command_runner(command, None)
+        command_runner(command, None, COMMAND_DEADLINE)
     }
 }
 
@@ -584,7 +584,7 @@ pub fn run_report_issue(
                         .args(args)
                         .current_dir(&dirs.home)
                         .env("GH_HOST", "github.com");
-                    command_runner(command, Some(1_048_576))
+                    command_runner(command, Some(1_048_576), COMMAND_DEADLINE)
                 } else {
                     runner(program, args)
                 }
