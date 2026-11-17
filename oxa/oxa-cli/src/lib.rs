@@ -48,6 +48,7 @@ mod status;
 mod themes;
 mod wipe_cmd;
 mod work_board;
+pub use work_board::refill_input;
 mod work_checks;
 mod work_cmd;
 pub mod work_refill;
