@@ -42,6 +42,11 @@ fn result(output: &std::process::Output) -> Value {
 fn goal_file_needs_no_positional_prompt_and_reports_terminal_evidence() {
     for (status, outcome, code) in [("complete", "done", 0), ("blocked", "blocked", 8)] {
         let env = TestEnv::new();
+        // This fixture exercises the loopback HTTP controller, not the native factories.
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}}}"#,
+        );
         env.write("work/goal.txt", "Finish synthetic work.");
         let mut complete = ScriptTurn::tool(
             "done",
@@ -77,7 +82,10 @@ fn goal_file_needs_no_positional_prompt_and_reports_terminal_evidence() {
 #[test]
 fn continue_restores_a_pursuing_goal_without_rereading_the_objective_file() {
     let env = TestEnv::new();
-    env.write("home/.oxa/agent/settings.json", r#"{"retry":{"enabled":false}}"#);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"retry":{"enabled":false},"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}}}"#,
+    );
     env.write("work/goal.txt", "Finish synthetic work after restart.");
     let first = FakeServer::start(
         vec![ScriptTurn::fault(Fault::Http {
@@ -123,7 +131,7 @@ fn broken_request_usage_survives_restart_without_granting_another_goal_allowance
     let env = TestEnv::new();
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+        r#"{"retry":{"enabled":false},"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false},"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
     );
     env.write("work/goal.txt", "Finish synthetic work.");
     let mut cut = ScriptTurn::text(&"synthetic partial output ".repeat(100));
@@ -160,7 +168,7 @@ fn pre_admission_refusal_does_not_turn_the_goal_budget_into_unknown_spend() {
         let env = TestEnv::new();
         env.write(
             "home/.oxa/agent/settings.json",
-            r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+            r#"{"retry":{"enabled":false},"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false},"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
         );
         env.write("work/goal.txt", "Finish synthetic work.");
         let refused = FakeServer::start(vec![ScriptTurn::fault(Fault::Http { status, body: serde_json::json!({"error":{"type":"cloud_error","code":code,"message":"Synthetic pre-admission refusal"}}).to_string() })], FakeOpts::default()).unwrap();
@@ -191,7 +199,7 @@ fn bounded_goal_env() -> TestEnv {
     let env = TestEnv::new();
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+        r#"{"retry":{"enabled":false},"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false},"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
     );
     env.write("work/goal.txt", "Finish synthetic work.");
     env
@@ -304,6 +312,11 @@ fn goal_and_output_schema_require_a_valid_final_answer_after_goal_done() {
         (Some(r#"{"done":true}"#), None, true),
     ] {
         let env = TestEnv::new();
+        // This fixture exercises the loopback HTTP controller, not the native factories.
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}}}"#,
+        );
         env.write("work/goal.txt", "Finish synthetic work with a structured answer.");
         env.write(
             "work/answer.schema.json",
@@ -360,7 +373,7 @@ fn explicit_continue_resumes_a_paused_goal_without_resetting_its_budget_or_objec
         let env = TestEnv::new();
         env.write(
             "home/.oxa/agent/settings.json",
-            r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+            r#"{"retry":{"enabled":false},"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false},"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
         );
         env.write(
             "work/goal.txt",
