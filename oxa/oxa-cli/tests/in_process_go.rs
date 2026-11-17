@@ -1145,8 +1145,17 @@ fn check_private_stream_cause(cause: &str, reply: Reply) {
 }
 fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) {
     let env = go_diagnostic_env();
-    let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base)), reply]);
+    let mock = MockOpenAi::start_with(|base| {
+        let mut replies = vec![Reply::json(discovery(base)), reply];
+        if check.is_some() {
+            replies.push(Reply::json(discovery(base)));
+        }
+        replies
+    });
     setup(&env, &format!("http://{}", mock.address()));
+    if check.is_some() {
+        set_one_request_token_cap(&env);
+    }
     let output = run(&env, &["--no-tools", "--mode", "json", "-p", "Synthetic request"]);
     assert!(!output.status.success());
     assert_eq!(
@@ -1185,6 +1194,17 @@ fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) 
         assert!(!history.contains(CREDENTIAL));
     }
     assert_eq!(mock.requests().len(), 2);
+    if check.is_some() {
+        let continued = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic continuation"],
+        );
+        assert!(!continued.status.success());
+        assert!(String::from_utf8_lossy(&continued.stderr).contains("subscription_limit_exceeded"));
+        assert_eq!(mock.requests().len(), 3, "discovery only; no second chat");
+        assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+        assert_eq!(rows(&env)[0]["subscription_tokens"], 33280);
+    }
     mock.assert_healthy();
 }
 fn cause_reply(bytes: &[u8]) -> Reply {
@@ -1232,7 +1252,7 @@ fn go_private_stream_cause_tool_arguments() {
 }
 #[test]
 fn go_private_stream_cause_terminal_usage() {
-    check_private_stream_cause("terminal_usage",cause_reply(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
+    check_private_stream_details("terminal_usage",Some("done_without_usage"),cause_reply(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
 }
 
 fn terminal_frames(frames: &[Value], done: bool) -> Reply {
@@ -1303,11 +1323,53 @@ fn go_private_terminal_usage_before_finish() {
 }
 #[test]
 fn go_private_terminal_usage_record_invalid() {
-    let mut invalid = usage();
-    invalid["opencode"]["billing_source"] = json!("synthetic-private-frame");
-    check_private_stream_details(
-        "terminal_usage",
-        Some("usage_record_invalid"),
-        terminal_frames(&[terminal_finish(), json!({"choices":[],"usage":invalid})], true),
-    );
+    let mut invalids = Vec::new();
+    for mutation in 0..6 {
+        let mut invalid = usage();
+        match mutation {
+            0 => invalid["opencode"]["billing_source"] = json!("synthetic-private-frame"),
+            1 => invalid["cost"] = json!(1),
+            2 => invalid["opencode"]["allowance"] = json!("synthetic-private-frame"),
+            3 => {
+                invalid.as_object_mut().unwrap().remove("prompt_tokens");
+            }
+            4 => {
+                invalid["prompt_tokens"] = json!(u64::MAX);
+                invalid["completion_tokens"] = json!(1);
+            }
+            _ => invalid["prompt_tokens_details"] = json!([]),
+        }
+        invalids.push(invalid);
+    }
+    for invalid in invalids {
+        check_private_stream_details(
+            "terminal_usage",
+            Some("usage_record_invalid"),
+            terminal_frames(&[terminal_finish(), json!({"choices":[],"usage":invalid})], true),
+        );
+    }
+}
+
+#[test]
+fn go_private_terminal_valid_usage_has_no_diagnostic_and_settles_exactly() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic success"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("native diagnostic"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("terminal_check="));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 200);
+    assert_eq!(ledger[0]["subscription_tokens"], 105);
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert!(ledger[0].get("usage_missing").is_none());
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
 }

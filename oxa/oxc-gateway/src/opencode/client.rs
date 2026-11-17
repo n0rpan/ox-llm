@@ -165,10 +165,16 @@ pub(crate) async fn stream_observed<F>(
 where
     F: FnMut(Event) -> Control + ?Sized,
 {
-    use crate::diagnostics::StreamCause;
+    use crate::diagnostics::{StreamCause, TerminalCheck};
     let protocol = |cause| {
         if let Some(diagnostics) = diagnostics {
             diagnostics.stream_cause(cause);
+        }
+        Error::Protocol
+    };
+    let terminal = |check| {
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.terminal_check(check);
         }
         Error::Protocol
     };
@@ -256,9 +262,9 @@ where
         for byte in bytes {
             let Some(data) = decoder.push(byte) else { continue };
             if data == b"[DONE]" {
-                let finish_reason = finish.ok_or_else(|| protocol(StreamCause::TerminalUsage))?;
+                let finish_reason = finish.ok_or_else(|| terminal(TerminalCheck::DoneWithoutFinish))?;
                 if terminal_usage.is_none() {
-                    return Err(protocol(StreamCause::TerminalUsage));
+                    return Err(terminal(TerminalCheck::DoneWithoutUsage));
                 }
                 let calls: Vec<Value> = tool_slots.into_values().collect();
                 return Ok(Completed {
@@ -271,7 +277,7 @@ where
             // Final usage must be the last semantic frame before [DONE]. A
             // conflicting/later frame invalidates its authority for settlement.
             if terminal_usage.take().is_some() {
-                return Err(protocol(StreamCause::TerminalUsage));
+                return Err(terminal(TerminalCheck::FrameAfterUsage));
             }
             let mut chunk: Value =
                 serde_json::from_slice(&data).map_err(|_| protocol(StreamCause::FrameShape))?;
@@ -292,7 +298,7 @@ where
                 return Err(protocol(StreamCause::FrameShape));
             }
             if finish.is_some() && !choices.is_empty() {
-                return Err(protocol(StreamCause::TerminalUsage));
+                return Err(terminal(TerminalCheck::ChoicesAfterFinish));
             }
             let ending = chunk["choices"][0]["finish_reason"]
                 .as_str()
@@ -379,10 +385,10 @@ where
                 // Accept a separate final usage frame or usage on a validated
                 // finish frame, never an interim record during generation.
                 if finish.is_none() && ending.is_none() {
-                    return Err(protocol(StreamCause::TerminalUsage));
+                    return Err(terminal(TerminalCheck::UsageBeforeFinish));
                 }
                 *terminal_usage =
-                    Some(Usage::parse(value).map_err(|_| protocol(StreamCause::TerminalUsage))?);
+                    Some(Usage::parse(value).map_err(|_| terminal(TerminalCheck::UsageRecordInvalid))?);
             }
             if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                 return Err(Error::Cancelled);
