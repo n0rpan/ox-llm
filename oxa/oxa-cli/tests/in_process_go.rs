@@ -165,9 +165,9 @@ fn native_go_review_skill_schema_and_tool_loop_settle_subscription_rows() {
     mock.assert_healthy();
 }
 #[test]
-fn region_and_allowance_refusals_stay_typed_without_retry_or_paid_fallback() {
+fn region_and_rate_refusals_stay_typed_without_paid_fallback() {
     for (status,message,expected) in [(400,"Model is hosted outside Europe and the United States; https://example.invalid/workspaces/synthetic","region_blocked"),
-        (429,"Synthetic subscription allowance exhausted","subscription_limit_reached")] {
+        (429,"Synthetic subscription allowance exhausted","cloud_rate_limited")] {
         let env = TestEnv::new();
         let mock = MockOpenAi::start_with(|base|vec![Reply::json(discovery(base)),Reply::error(status,"invalid_request_error",message)]);
         setup(&env,&format!("http://{}",mock.address()));
@@ -181,6 +181,335 @@ fn region_and_allowance_refusals_stay_typed_without_retry_or_paid_fallback() {
         mock.assert_healthy();
     }
 }
+
+#[test]
+fn native_go_401_keeps_public_credentials_error_and_a_valid_refusal_receipt() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::error(401, "authentication_error", CREDENTIAL),
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic recovery"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let first = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(
+        first.status.code(),
+        Some(5),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(terminal(&first)["error_class"], "cloud_credentials_unavailable");
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 401);
+    assert_eq!(ledger[0]["error"], "cloud_credentials_unavailable");
+    assert_eq!(ledger[0]["settled"], "refused");
+    assert_eq!(ledger[0]["subscription_requests"], 1);
+    assert_eq!(ledger[0]["subscription_tokens"], 0);
+    let second = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic recovery request"],
+    );
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert_eq!(rows(&env).len(), 2);
+    assert_eq!(mock.requests().len(), 4);
+    for output in [first, second] {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+    }
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_all_429_bodies_are_retryable_and_numeric_retry_after_is_bounded() {
+    for (kind, headers, delay) in [
+        ("RateLimit.Exceeded", vec![("Retry-After", "7".into())], Some(7)),
+        (
+            "inference_failed",
+            vec![("Retry-After", "4294967296".into())],
+            None,
+        ),
+        ("unknown", vec![("Retry-After", CREDENTIAL.into())], None),
+        (
+            "unknown",
+            vec![("Retry-After", "7".into()), ("Retry-After", "8".into())],
+            None,
+        ),
+    ] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                Reply::raw(
+                    429,
+                    "application/json",
+                    json!({"error":{"type":kind,"message":CREDENTIAL}})
+                        .to_string()
+                        .into_bytes(),
+                    headers,
+                ),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+        assert_eq!(terminal(&output)["error_class"], "cloud_rate_limited");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Some(delay) = delay {
+            assert!(stderr.contains(&format!("retry after {delay} s")), "{stderr}");
+        } else {
+            assert!(!stderr.contains("retry after "), "{stderr}");
+        }
+        assert!(!stderr.contains("subscription_limit_reached"));
+        assert!(!stderr.contains(CREDENTIAL));
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["status"], 429);
+        assert_eq!(ledger[0]["error"], "cloud_rate_limited");
+        assert_eq!(ledger[0]["subscription_tokens"], 0);
+        assert_eq!(ledger[0]["settled"], "refused");
+        assert_eq!(mock.requests().len(), 2);
+        mock.assert_healthy();
+    }
+}
+
+fn enable_one_fast_retry(env: &TestEnv) {
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    settings["retry"] = json!({"enabled":true,"maxRetries":1,"baseDelayMs":1,"maxAgentDelayMs":1});
+    fs::write(path, settings.to_string()).unwrap();
+}
+
+#[test]
+fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::raw(
+                429,
+                "application/json",
+                b"not JSON".to_vec(),
+                vec![("Retry-After", "7".into())],
+            ),
+            stream(json!({"content":"Synthetic after rate wait"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    enable_one_fast_retry(&env);
+    let output = run(
+        &env,
+        &[
+            "--no-session",
+            "--no-tools",
+            "--mode",
+            "json",
+            "-p",
+            "Synthetic request",
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events: Vec<Value> = output
+        .stdout
+        .split(|b| *b == b'\n')
+        .filter_map(|line| serde_json::from_slice(line).ok())
+        .collect();
+    let retries: Vec<_> = events
+        .iter()
+        .filter(|event| event["type"] == "auto_retry_start")
+        .collect();
+    assert_eq!(retries.len(), 1);
+    assert_eq!(retries[0]["delayMs"], 1);
+    assert!(retries[0]["errorMessage"]
+        .as_str()
+        .unwrap()
+        .contains("retry after 7 s"));
+    assert_eq!(mock.requests().len(), 3);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    assert!(ledger
+        .iter()
+        .any(|row| row["status"] == 429 && row["settled"] == "refused"));
+    assert!(ledger
+        .iter()
+        .any(|row| row["status"] == 200 && row["settled"] == "usage"));
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_inference_failed_is_a_request_error_without_a_retry_or_allowance_claim() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::error(400, "inference_failed", CREDENTIAL),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    enable_one_fast_retry(&env);
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(terminal(&output)["error_class"], "engine_http");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("HTTP 400"), "{stderr}");
+    assert!(!stderr.contains("subscription_limit"));
+    assert!(!stderr.contains(CREDENTIAL));
+    assert_eq!(mock.requests().len(), 2);
+    assert_eq!(rows(&env)[0]["status"], 400);
+    mock.assert_healthy();
+}
+fn set_one_request_token_cap(env: &TestEnv) {
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    // Exactly one discovered context+output window can be reserved at a time.
+    settings["oxa"]["cloud"]["subscription_limits"]["daily_tokens"] = json!(32768 + 512);
+    fs::write(path, settings.to_string()).unwrap();
+}
+
+#[test]
+fn native_go_rejected_requests_release_tokens_before_the_next_valid_request() {
+    for status in [400, 404, 413] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                Reply::error(status, "inference_failed", CREDENTIAL),
+                Reply::json(discovery(base)),
+                stream(json!({"content":"Synthetic valid request"}), "stop"),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        set_one_request_token_cap(&env);
+        let rejected = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic rejected request"],
+        );
+        assert_eq!(terminal(&rejected)["error_class"], "engine_http");
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["status"], status);
+        assert_eq!(ledger[0]["settled"], "refused", "HTTP{status}");
+        assert_eq!(ledger[0]["subscription_requests"], 1);
+        assert_eq!(ledger[0]["subscription_tokens"], 0);
+        let valid = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic valid request"],
+        );
+        assert_eq!(
+            valid.status.code(),
+            Some(0),
+            "HTTP{status}: {}",
+            String::from_utf8_lossy(&valid.stderr)
+        );
+        assert_eq!(rows(&env).len(), 2);
+        assert_eq!(mock.requests().len(), 4);
+        assert!(!String::from_utf8_lossy(&rejected.stderr).contains(CREDENTIAL));
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn native_go_5xx_usage_stays_reserved_and_the_token_cap_still_refuses() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::error(500, "inference_failed", CREDENTIAL),
+            Reply::json(discovery(base)),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    set_one_request_token_cap(&env);
+    let failed = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic failed request"],
+    );
+    assert_eq!(terminal(&failed)["error_class"], "engine_http");
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["settled"], "reserved");
+    assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
+    assert_eq!(ledger[0]["usage_missing"], true);
+    let blocked = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic next request"],
+    );
+    assert_eq!(terminal(&blocked)["error_class"], "budget_exhausted");
+    assert_eq!(mock.requests().len(), 3, "cap must refuse before another chat");
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_text_deltas_allow_null_or_empty_tool_calls_and_keep_final_usage() {
+    for calls in [Value::Null, json!([])] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                stream(
+                    json!({"content":"Synthetic nullable text", "tool_calls":calls}),
+                    "stop",
+                ),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic nullable text"));
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["settled"], "usage");
+        assert_eq!(ledger[0]["subscription_tokens"], 105);
+        assert!(ledger[0].get("usage_missing").is_none());
+        assert_eq!(mock.requests().len(), 2);
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
+    for calls in [json!({}), json!(CREDENTIAL), json!(0), json!(false)] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                stream(
+                    json!({"content":"Synthetic invalid shape", "tool_calls":calls}),
+                    "stop",
+                ),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+        assert_eq!(terminal(&output)["error_class"], "stream_broken");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("Synthetic invalid shape"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["settled"], "reserved");
+        assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
+        assert_eq!(ledger[0]["usage_missing"], true);
+        assert_eq!(mock.requests().len(), 2);
+        mock.assert_healthy();
+    }
+}
+
 #[test]
 fn live_discovery_lists_chat_models_only_and_offline_precedes_credentials() {
     let env = TestEnv::new();
@@ -223,7 +552,7 @@ fn non_json_discovery_refusals_keep_http_classification_without_exposing_body() 
     for (status, expected) in [
         (401, "cloud_credentials_unavailable"),
         (403, "cloud_forbidden"),
-        (429, "subscription_limit_reached"),
+        (429, "cloud_rate_limited"),
     ] {
         let env = TestEnv::new();
         let mock = MockOpenAi::start(vec![Reply::raw(
@@ -515,5 +844,93 @@ fn encoded_credentials_in_streamed_tool_arguments_never_execute() {
         assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
         assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
         mock.assert_healthy();
+    }
+}
+
+#[test]
+fn dynamic_go_startup_errors_keep_provider_ownership_with_usable_local() {
+    for (mode, expected, hits) in [
+        ("offline", "offline", 0),
+        ("missing-key", "cloud_credentials_unavailable", 0),
+        ("discovery-401", "cloud_credentials_unavailable", 1),
+        ("discovery-json", "cloud_discovery_invalid", 1),
+    ] {
+        for explicit in [false, true] {
+            let replies = match mode {
+                "discovery-401" => vec![Reply::error(401, "invalid_request_error", "Synthetic refusal")],
+                "discovery-json" => vec![Reply::raw(
+                    200,
+                    "application/json",
+                    b"invalid synthetic JSON".to_vec(),
+                    vec![],
+                )],
+                _ => vec![],
+            };
+            let mock = MockOpenAi::start(replies);
+            let env = TestEnv::new();
+            setup(&env, &format!("http://{}", mock.address()));
+            let path = env.home().join(".oxa/agent/settings.json");
+            let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            settings["oxa"]["engine"]["inProcessLocal"] = json!(true);
+            settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+                "models":{"synthetic-local":{"model":"/synthetic/model.gguf"}},
+                "limits":{"synthetic-local":{"context_window":4096,"max_output":64,
+                    "required_available_bytes":1048576}}});
+            if explicit {
+                settings["defaultModel"] = json!("synthetic-local");
+            }
+            fs::write(path, settings.to_string()).unwrap();
+            if mode == "missing-key" {
+                fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
+            }
+            let mut args = vec![];
+            if mode == "offline" {
+                args.push("--offline");
+            }
+            if explicit {
+                args.extend(["--model", MODEL]);
+            }
+            args.extend(["--no-session", "--no-tools", "-p", "Synthetic Go routing"]);
+            let output = run(&env, &args);
+            assert_eq!(
+                terminal(&output)["error_class"],
+                expected,
+                "mode={mode}, explicit={explicit}, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!output.status.success());
+            assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+            assert!(!env.home().join(".oxa/agent/local-engine").exists());
+            assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+            let local = run(&env, &["--offline", "--list-models"]);
+            assert!(
+                local.status.success(),
+                "{}",
+                String::from_utf8_lossy(&local.stderr)
+            );
+            assert!(String::from_utf8_lossy(&local.stdout).contains("synthetic-local"));
+            if mode == "offline" && !explicit {
+                let scoped = run(
+                    &env,
+                    &[
+                        "--offline",
+                        "--models",
+                        "synthetic-local",
+                        "--no-session",
+                        "--no-tools",
+                        "-p",
+                        "Synthetic local scope",
+                    ],
+                );
+                // The explicitly scoped local backend reaches its missing-weight
+                // guard, without an unused Go default hijacking the request.
+                assert_eq!(terminal(&scoped)["error_class"], "not_found");
+                assert!(String::from_utf8_lossy(&scoped.stderr).contains("Local weights are missing"));
+            }
+            assert_eq!(mock.requests().len(), hits);
+            assert!(mock.requests().iter().all(|request| request.method == "GET"));
+            mock.assert_healthy();
+        }
     }
 }

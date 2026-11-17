@@ -36,6 +36,7 @@ pub(crate) fn select(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
+    requested: Option<&str>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
     if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
@@ -62,9 +63,10 @@ pub(crate) fn select(
             },
             local_models: aliases("oxa.local.models"),
             cloud_models: aliases("oxa.cloud.models"),
+            dynamic_go: user.get("oxa.cloud.opencode.enabled") == Some(&Value::Bool(true)),
             default: effective.string("defaultModel"),
         }
-        .into_engine();
+        .into_engine(requested);
     }
     if user.bool(oxc_local::LOCAL_SETTING, false) {
         return oxc_local::configured_engine(
@@ -156,7 +158,7 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
     let timeout = crate::dispatch::stream_silence_timeout(effective).map(Duration::from_millis);
     let mut gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
         let refusal = e.refusal();
-        OxaError::new(refusal.code, refusal.message)
+        OxaError::new(refusal.code, e.to_string())
     })?;
     if go_enabled {
         let base = cloud
@@ -167,7 +169,7 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
             .discover_opencode(base, Duration::from_secs(30))
             .map_err(|e| {
                 let refusal = e.refusal();
-                OxaError::new(refusal.code, refusal.message)
+                OxaError::new(refusal.code, e.to_string())
             })?;
     }
     Ok(Arc::new(EmbeddedEngine::from_gateway(gateway)))
