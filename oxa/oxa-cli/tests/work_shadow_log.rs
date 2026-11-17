@@ -64,3 +64,70 @@ fn sampling_appends_and_waits_five_minutes_and_stops_on_read_error() {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(oxa_work::shadow::open_log(&path).is_err());
 }
+
+#[test]
+fn review_git_evidence_keeps_an_unchanged_main_merge_and_rejects_a_changed_patch() {
+    use oxa_work::{board::review::GitDiff, RunPolicy};
+    use std::process::Command;
+
+    let env = TestEnv::new();
+    let repo = env.work();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&repo)
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:1"))
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+            .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "-b", "main"]);
+    git(&["commit", "--allow-empty", "-m", "initial"]);
+    let old_main = git(&["rev-parse", "HEAD"]);
+    git(&["switch", "-c", "review"]);
+    env.write("work/protected.rs", "fn check() {}\n");
+    git(&["add", "protected.rs"]);
+    git(&["commit", "-m", "reviewed change"]);
+    let reviewed = git(&["rev-parse", "HEAD"]);
+    git(&["switch", "main"]);
+    env.write("work/README.md", "new base\n");
+    git(&["add", "README.md"]);
+    git(&["commit", "-m", "unrelated main change"]);
+    let main = git(&["rev-parse", "HEAD"]);
+    git(&["switch", "review"]);
+    git(&["merge", "--no-edit", "main"]);
+    let merged = git(&["rev-parse", "HEAD"]);
+
+    let host_path = std::env::var_os("PATH").unwrap();
+    let git_binary = std::env::split_paths(&host_path)
+        .map(|directory| directory.join("git"))
+        .find(|path| path.is_absolute() && path.is_file())
+        .unwrap();
+    let policy = RunPolicy {
+        git_binary,
+        host_path,
+        offline: true,
+        terminate_binary: None,
+        storage: env.tmp(),
+    };
+    let read = |base: &str, head: &str| GitDiff::read(&policy, &repo, base, head).unwrap().unwrap();
+    let original = read(&old_main, &reviewed);
+    let carried = read(&main, &merged);
+    assert_eq!(carried.patch_id, original.patch_id);
+    assert_eq!(carried.main_merge_predecessors, [reviewed]);
+
+    env.write("work/protected.rs", "fn check() { }\n");
+    git(&["add", "protected.rs"]);
+    git(&["commit", "-m", "adjust protected change"]);
+    let edited = git(&["rev-parse", "HEAD"]);
+    let current = read(&main, &edited);
+    assert_ne!(current.patch_id, carried.patch_id);
+    assert!(current.main_merge_predecessors.is_empty());
+    assert!(GitDiff::read(&policy, &repo, &main, "HEAD").is_err());
+}

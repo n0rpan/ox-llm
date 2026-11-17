@@ -3,6 +3,9 @@
 
 use super::RequiredCi;
 
+mod git;
+pub use git::GitDiff;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
     DocsAndTests,
