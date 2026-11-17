@@ -183,7 +183,7 @@ impl Hooks for TestHooks {
 }
 
 struct Worker {
-    cmds: Sender<SessionCmd>,
+    cmds: Arc<Sender<SessionCmd>>,
     msgs: Receiver<WorkerMsg>,
     _ui: Receiver<UiRequest>,
     done: Receiver<Option<SessionInfo>>,
@@ -201,7 +201,8 @@ fn spawn_worker(session: Session, reopen: ReopenFn) -> Worker {
     let (done_tx, done_rx) = mpsc::channel();
     let stop = WorkerStop::new();
     let worker_stop = stop.clone();
-    let wake = cmd_tx.clone();
+    let cmd_tx = Arc::new(cmd_tx);
+    let wake = Arc::downgrade(&cmd_tx);
     std::thread::spawn(move || {
         let last = worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, wake);
         let _ = done_tx.send(last);

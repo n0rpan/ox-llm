@@ -21,7 +21,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -154,6 +154,7 @@ pub fn run_session(
     vm.status = status_from(&state, &stats, &prev);
 
     let (cmd_tx, cmd_rx) = mpsc::channel::<SessionCmd>();
+    let cmd_tx = Arc::new(cmd_tx);
     let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
     let (ui_tx, ui_rx) = mpsc::channel::<UiRequest>();
     let handle = session.handle();
@@ -182,10 +183,9 @@ pub fn run_session(
     );
     let stop = WorkerStop::new();
     let worker_stop = stop.clone();
-    // The worker's own wake sender: the session's attention waker sends `SessionCmd::Wake`
-    // through it (see `install_wake`), so a host request posted while the worker waits is
-    // served at once instead of at the next idle tick.
-    let wake = cmd_tx.clone();
+    // The front end owns the wake sender. The worker keeps only a weak reference, so
+    // dropping all front-end senders still disconnects its receiver.
+    let wake = Arc::downgrade(&cmd_tx);
     let spawned = thread::Builder::new()
         .name("oxa-worker".to_string())
         .spawn(move || worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, wake));
@@ -198,7 +198,7 @@ pub fn run_session(
         term,
         opts,
         handle,
-        cmd_tx.clone(),
+        cmd_tx.as_ref().clone(),
         &msg_rx,
         &ui_rx,
         vm,
@@ -368,12 +368,14 @@ pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(250);
 /// request), and one coalesced [`SessionCmd::Wake`] is sent so the host is served at once
 /// instead of at the next idle tick. One wake in flight is enough: the worker clears the flag
 /// when it serves.
-fn install_wake(handle: &Handle, wake: &Sender<SessionCmd>, pending: &Arc<AtomicBool>) {
+fn install_wake(handle: &Handle, wake: &Weak<Sender<SessionCmd>>, pending: &Arc<AtomicBool>) {
     let tx = wake.clone();
     let pending = pending.clone();
     handle.set_attention_waker(Arc::new(move || {
         if !pending.swap(true, Ordering::SeqCst) {
-            let _ = tx.send(SessionCmd::Wake);
+            if let Some(tx) = tx.upgrade() {
+                let _ = tx.send(SessionCmd::Wake);
+            }
         }
     }));
 }
@@ -488,7 +490,7 @@ pub fn worker_loop(
     cmds: Receiver<SessionCmd>,
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
-    wake: Sender<SessionCmd>,
+    wake: Weak<Sender<SessionCmd>>,
 ) -> Option<SessionInfo> {
     worker_loop_with(session, reopen, cmds, out, ui, WorkerStop::new(), wake)
 }
@@ -497,7 +499,7 @@ pub fn worker_loop(
 /// worker waits at most [`WORKER_IDLE_TICK`] and then serves the session's host, so host
 /// requests made while idle are answered and a turn an extension triggered runs, its events
 /// reaching the UI like a prompt's. `wake` is a sender on the same channel as `cmds`, used to
-/// send the worker its own [`SessionCmd::Wake`] when a host request arrives (see
+/// weakly borrow the front-end sender for [`SessionCmd::Wake`] when a host request arrives (see
 /// [`install_wake`]): the tick is the deadline, not the only wake.
 pub fn worker_loop_with(
     session: Session,
