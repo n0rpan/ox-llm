@@ -405,6 +405,7 @@ pub fn run_queue(
             df,
         },
         None,
+        None,
         QueueWorker::Manual(worker),
         emit,
     )
@@ -426,19 +427,49 @@ impl QueueRun<'_> {
         worker: Arc<NativeWorkerFn>,
         emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
     ) -> Result<QueueStatus> {
+        self.run_native_with(owner, None, worker, emit)
+    }
+
+    /// Consume one protected spool packet in memory using the existing queue and worker lifecycle.
+    pub fn run_native_packet(
+        self,
+        owner: &NativeQueueOwner<'_>,
+        binding: &board::NativeBinding,
+        worker: Arc<NativeWorkerFn>,
+        emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
+    ) -> Result<QueueStatus> {
+        if !self.options.once {
+            return Err("native packet execution requires a one-shot queue".into());
+        }
+        if binding.lease.holder != owner.worker_id {
+            return Err("native packet belongs to a different worker".into());
+        }
+        let packet = crate::helper_queue::take_native_packet(self.directory, binding)?;
+        let task = native::from_packet(binding, &packet)?;
+        self.run_native_with(owner, Some(task), worker, emit)
+    }
+
+    fn run_native_with(
+        self,
+        owner: &NativeQueueOwner<'_>,
+        prepared: Option<Task>,
+        worker: Arc<NativeWorkerFn>,
+        emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
+    ) -> Result<QueueStatus> {
         let worker = QueueWorker::Native(Arc::new(NativeWorker {
             claims: owner.claims.clone(),
             worker_id: owner.worker_id.into(),
             policy: self.policy.clone(),
             run: worker,
         }));
-        run_queue_inner(self, Some(owner), worker, emit)
+        run_queue_inner(self, Some(owner), prepared, worker, emit)
     }
 }
 
 fn run_queue_inner(
     queue: QueueRun<'_>,
     native: Option<&NativeQueueOwner<'_>>,
+    prepared: Option<Task>,
     worker: QueueWorker,
     emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
 ) -> Result<QueueStatus> {
@@ -470,10 +501,23 @@ fn run_queue_inner(
         .map_err(|e| e.to_string())?;
     let (tx, rx) = mpsc::channel();
     let mut active = Workers::default();
-    let (mut pending, mut external, mut inputs) = (vec![], vec![], Inputs::default());
+    let read_directory = prepared.is_none();
+    let mut pending: Vec<_> = prepared
+        .into_iter()
+        .map(|task| Job {
+            task,
+            modified: SystemTime::UNIX_EPOCH,
+            file: directory.clone(),
+            index: 0,
+            binding: None,
+        })
+        .collect();
+    let (mut external, mut inputs) = (vec![], Inputs::default());
     let (mut finished, mut failed, mut last) = (0, 0, None);
     loop {
-        scan(&directory, &mut pending, &mut inputs, emit)?;
+        if read_directory {
+            scan(&directory, &mut pending, &mut inputs, emit)?;
+        }
         // Surviving workers from a dead controller still count toward the concurrency cap.
         let mut waiting = vec![];
         for job in external.drain(..) {

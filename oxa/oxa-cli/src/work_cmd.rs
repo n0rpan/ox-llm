@@ -3,6 +3,9 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[path = "work_cmd/native_queue.rs"]
+mod native_queue;
+
 pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String> {
     crate::dispatch::project_trusted(
         &crate::Args::default(),
@@ -236,6 +239,18 @@ pub(crate) fn run(
             publish,
             reports,
         });
+        if task_args.first().is_some_and(|word| word == "--native-queue") {
+            if !is_trusted {
+                return Err("source project is not trusted; approve it before unattended work".into());
+            }
+            let [_, flag, config] = task_args else {
+                return Err("usage: oxa work --native-queue --config PATH".into());
+            };
+            if flag != "--config" || rerun || publish {
+                return Err("invalid native queue options".into());
+            }
+            return native_queue::run(context, &common, &cwd.join(config), out);
+        }
         if task_args.first().is_some_and(|word| word == "--queue") {
             if !is_trusted {
                 return Err("source project is not trusted; approve it before unattended work".into());
@@ -362,21 +377,24 @@ struct Context {
 }
 impl Context {
     fn planned(&self, plan: &oxa_work::PlannedTask) -> Result<oxa_work::Record, String> {
+        let mut locked = match oxa_work::LockedTask::acquire(plan.task(), &self.policy) {
+            Ok(locked) => locked,
+            Err(error) => return Ok(blocked_plan(plan, error)),
+        };
+        self.planned_locked(plan, &mut locked)
+    }
+
+    fn planned_locked(
+        &self,
+        plan: &oxa_work::PlannedTask,
+        locked: &mut oxa_work::LockedTask<'_>,
+    ) -> Result<oxa_work::Record, String> {
         let root = &self.cwd;
         let binary = &self.binary;
         let policy = &self.policy;
         let dirs = &self.dirs;
         let env = &self.env;
         let (rerun, publish, reports) = (self.rerun, self.publish, self.reports);
-        let blocked = |detail| {
-            let mut record = oxa_work::blocked_record(plan.task(), detail);
-            record.base_sha = Some(plan.base_sha().to_owned());
-            record
-        };
-        let mut locked = match oxa_work::LockedTask::acquire(plan.task(), policy) {
-            Ok(locked) => locked,
-            Err(error) => return Ok(blocked(error)),
-        };
         let cached = if (publish || reports) && !rerun {
             oxa_work::action_record(policy, plan.task())?
         } else {
@@ -395,7 +413,7 @@ impl Context {
                 &|note| crate::work_reports::scrub_note(note, &ctx),
             ) {
                 Ok(record) => record,
-                Err(oxa_work::RunError::Blocked(detail)) => blocked(detail),
+                Err(oxa_work::RunError::Blocked(detail)) => blocked_plan(plan, detail),
                 Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),
             }
         };
@@ -442,6 +460,12 @@ impl Context {
         Ok(record)
     }
 }
+fn blocked_plan(plan: &oxa_work::PlannedTask, detail: String) -> oxa_work::Record {
+    let mut record = oxa_work::blocked_record(plan.task(), detail);
+    record.base_sha = Some(plan.base_sha().to_owned());
+    record
+}
+
 fn queue_options(args: &[String], cwd: &Path) -> Result<(PathBuf, oxa_work::QueueOptions), String> {
     let directory = cwd.join(args.get(1).ok_or("--queue needs a directory")?);
     let mut options = oxa_work::QueueOptions::default();

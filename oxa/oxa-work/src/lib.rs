@@ -143,6 +143,10 @@ impl PlannedTask {
 }
 
 pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedTask> {
+    plan_new_task(repo, task, policy, false)
+}
+
+fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> Result<PlannedTask> {
     validate(&task)?;
     let branch = checked(git(policy, repo, &["check-ref-format", "--branch", &task.branch]))?;
     if branch != task.branch {
@@ -159,9 +163,9 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
         repo,
         &["rev-parse", "--symbolic-full-name", &task.base],
     ))?;
-    if base_ref == format!("refs/heads/{}", task.branch)
-        || base_ref == format!("refs/remotes/origin/{}", task.branch)
-    {
+    let local_branch = base_ref == format!("refs/heads/{}", task.branch);
+    let remote_branch = base_ref == format!("refs/remotes/origin/{}", task.branch);
+    if (local_branch && !native) || remote_branch {
         return Err("task branch must differ from its base branch".into());
     }
     Ok(PlannedTask {
@@ -175,7 +179,7 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
 /// Recover immutable inputs before consulting today's mutable base/settings.
 /// New attempts still freeze a fresh plan before any worker in the batch runs.
 pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: bool) -> Result<PlannedTask> {
-    plan_task_mode(repo, task, policy, rerun, false)
+    plan_task_mode(repo, task, policy, rerun, false, false)
 }
 
 /// Explicit actions reuse completed execution inputs, including red results,
@@ -186,7 +190,7 @@ pub fn plan_task_for_actions(
     policy: &RunPolicy,
     rerun: bool,
 ) -> Result<PlannedTask> {
-    plan_task_mode(repo, task, policy, rerun, true)
+    plan_task_mode(repo, task, policy, rerun, true, false)
 }
 
 fn completed_execution(step: Step) -> bool {
@@ -199,10 +203,11 @@ fn plan_task_mode(
     policy: &RunPolicy,
     rerun: bool,
     actions: bool,
+    native: bool,
 ) -> Result<PlannedTask> {
     validate(&task)?;
     let Some(saved) = load_task_checkpoint(policy, &task.id)? else {
-        return plan_task(repo, task, policy);
+        return plan_new_task(repo, task, policy, native);
     };
     if saved.task != task {
         return Err("task specification changed; use a new task id".into());
@@ -222,7 +227,7 @@ fn plan_task_mode(
             checkpoint_revision: Some(saved.record.checkpoint_revision),
         });
     }
-    plan_task(repo, task, policy)
+    plan_new_task(repo, task, policy, native)
 }
 
 fn load_task_checkpoint(policy: &RunPolicy, id: &str) -> Result<Option<state::State>> {
@@ -916,6 +921,14 @@ impl<'a> LockedTask<'a> {
         lock.try_lock()
             .map_err(|e| format!("task {} is already running: {e}", task.id))?;
         Ok(Self { task, policy, lock })
+    }
+
+    /// Plan the task admitted by the native queue while retaining its lock.
+    pub fn plan_native(&self, repo: &Path, actions: bool) -> Result<PlannedTask> {
+        if !self.task.id.starts_with("board-") || !self.task.runner_owns_github() {
+            return Err("native planning requires an admitted board task".into());
+        }
+        plan_task_mode(repo, self.task.clone(), self.policy, false, actions, true)
     }
 
     pub fn run_with_notes(

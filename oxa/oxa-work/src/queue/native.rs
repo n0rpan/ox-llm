@@ -22,6 +22,38 @@ pub fn native_task(binding: &board::NativeBinding, mut task: Task) -> Result<Tas
     Ok(task)
 }
 
+pub(super) fn from_packet(binding: &board::NativeBinding, packet: &str) -> Result<Task> {
+    let (header, body) = packet.split_once('\n').ok_or("native task packet has no body")?;
+    let mut fields = header.split_ascii_whitespace();
+    let id = fields.next().ok_or("native task packet has no source id")?;
+    let model = fields.next().ok_or("native task packet has no model")?;
+    let branch = fields.next().ok_or("native task packet has no branch")?;
+    let base = fields.next().unwrap_or("main");
+    let issue = id == format!("i{}", binding.number);
+    let change = id == format!("c{}", binding.number);
+    if fields.next().is_some()
+        || branch != binding.branch
+        || !(issue && base == "main" || change && base == branch)
+        || packet.len() > crate::helper_queue::MAX_TASK_BYTES
+        || packet.contains('\0')
+        || body.trim().is_empty()
+        || body.lines().any(|line| line.trim() == "---")
+    {
+        return Err("native task packet disagrees with its bound source".into());
+    }
+    native_task(
+        binding,
+        Task {
+            id: id.into(),
+            model: model.into(),
+            branch: branch.into(),
+            base: base.into(),
+            prompt: body.into(),
+            max_time: crate::default_max_time(),
+        },
+    )
+}
+
 impl NativeQueueOwner<'_> {
     pub(super) fn admit(&self, task: &Task) -> Result<board::NativeBinding> {
         let binding = self

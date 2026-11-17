@@ -1,11 +1,11 @@
 //! Atomic publication only. The caller must reserve a core claim and authorize the target first.
 use crate::{board::Policy, Result};
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-const MAX_TASK_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_TASK_BYTES: usize = 64 * 1024;
 
 fn io<T>(value: std::io::Result<T>) -> Result<T> {
     value.map_err(|e| format!("board queue storage: {:?}", e.kind()))
@@ -83,7 +83,11 @@ pub fn publish_reserved(
     for prefix in ["board-", "p1-board-"] {
         let name = format!("{prefix}{key}.txt");
         // Check pending before started: the consumer's one-way rename cannot hide both.
-        for path in [queue.join(&name), started.join(&name)] {
+        for path in [
+            queue.join(&name),
+            started.join(&name),
+            started.join(format!("native-{name}")),
+        ] {
             match fs::symlink_metadata(path) {
                 Ok(metadata) => {
                     if !metadata.is_file() || metadata.mode() & 0o077 != 0 {
@@ -120,4 +124,65 @@ pub fn publish_reserved(
     drop(temporary);
     io(lock.sync_all())?;
     Ok(true)
+}
+
+/// Take the admitted packet into the existing started directory. The native name
+/// keeps retries distinguishable from packets already started by another consumer.
+pub fn take_native_packet(queue: &Path, binding: &crate::board::NativeBinding) -> Result<String> {
+    if crate::board::NativeBinding::new(binding.number, &binding.key, &binding.lease, &binding.branch)?
+        != *binding
+    {
+        return Err("invalid native queue binding".into());
+    }
+    directory(queue)?;
+    let started = queue.join("started");
+    directory(&started)?;
+    let lock = io(File::open(queue))?;
+    io(lock.lock())?;
+    let mut found = None;
+    for prefix in ["board-", "p1-board-"] {
+        let name = format!("{prefix}{}.txt", binding.key);
+        let ready = queue.join(&name);
+        let active = started.join(format!("native-{name}"));
+        // A started packet belonging to another consumer is never adopted.
+        match fs::symlink_metadata(started.join(&name)) {
+            Ok(_) => return Err("board packet is already started by another consumer".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return io(Err(error)),
+        }
+        for (path, renamed) in [(&ready, false), (&active, true)] {
+            let file = match OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(path)
+            {
+                Ok(file) => file,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return io(Err(error)),
+            };
+            let metadata = io(file.metadata())?;
+            if !metadata.is_file()
+                || metadata.uid() != io(lock.metadata())?.uid()
+                || metadata.nlink() != 1
+                || metadata.mode() & 0o077 != 0
+                || metadata.len() > MAX_TASK_BYTES as u64
+                || found.is_some()
+            {
+                return Err("unsafe or ambiguous native queue packet".into());
+            }
+            found = Some((file, ready.clone(), active.clone(), renamed));
+        }
+    }
+    let (file, ready, active, renamed) = found.ok_or("native queue packet unavailable")?;
+    let mut packet = String::new();
+    io(file.take(MAX_TASK_BYTES as u64 + 1).read_to_string(&mut packet))?;
+    if packet.len() > MAX_TASK_BYTES {
+        return Err("native queue packet exceeds capacity".into());
+    }
+    if !renamed {
+        io(fs::rename(ready, active))?;
+        io(io(File::open(started))?.sync_all())?;
+        io(lock.sync_all())?;
+    }
+    Ok(packet)
 }
