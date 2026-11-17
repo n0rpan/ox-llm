@@ -119,6 +119,7 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
         ("SUCCESS", "synthetic-head", "engine.c"),
         ("SUCCESS", "synthetic-head", "view.qml"),
         ("SUCCESS", "synthetic-head", "header.hpp"),
+        ("SUCCESS", "synthetic-head", "kernel.inc"),
     ] {
         let row = &mut detail["data"]["repository"]["p42"];
         row["mergeable"] = "MERGEABLE".into();
@@ -154,6 +155,7 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
             "fix_required_ci",
             "wait_review",
             "ready",
+            "add_removes",
             "add_removes",
             "add_removes",
             "add_removes"

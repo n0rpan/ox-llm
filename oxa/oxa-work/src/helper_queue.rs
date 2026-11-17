@@ -50,6 +50,7 @@ pub fn publish(queue: &Path, key: &str, task: &str, pinned: bool, policy: &Polic
         || task.len() > MAX_TASK_BYTES
         || task.contains('\0')
         || body.trim().is_empty()
+        || body.lines().any(|line| line.trim() == "---")
         || !matches!(fields.len(), 3 | 4)
         || !fields[0].bytes().all(|b| b.is_ascii_alphanumeric())
     {
