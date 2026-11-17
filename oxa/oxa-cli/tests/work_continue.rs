@@ -28,10 +28,14 @@ fn diverge(env: &TestEnv, conflict: bool) {
 fn tree(record: &serde_json::Value) -> &Path {
     Path::new(record["worktree"].as_str().unwrap())
 }
-/// Publish `agent/test` from a second clone and update the source checkout's
+/// Publish `agent/test` from the source checkout first (oxa itself never pushes),
+/// then extend it in a second clone and update the source checkout's
 /// remote-tracking ref, without touching the retained task worktree. With `from`
-/// the pushed branch starts there instead of at the local task branch.
+/// the pushed branch starts there instead of at the source checkout's task branch.
 fn push_elsewhere(env: &TestEnv, from: Option<&str>, file: &str, content: &str) -> String {
+    if from.is_none() {
+        git(env, &project(env), &["push", "origin", "agent/test"]);
+    }
     let other = env.work().join("elsewhere");
     git(env, &env.work(), &["clone", "remote.git", "elsewhere"]);
     git(env, &other, &["config", "user.name", "Test"]);
@@ -41,8 +45,13 @@ fn push_elsewhere(env: &TestEnv, from: Option<&str>, file: &str, content: &str) 
             git(env, &other, &["checkout", "-b", "agent/test", rev]);
         }
         None => {
-            git(env, &project(env), &["push", "origin", "agent/test"]);
-            git(env, &other, &["checkout", "agent/test"]);
+            // The bare remote's default branch is absent, so the clone checks out
+            // nothing; start the branch from the published tip explicitly.
+            git(
+                env,
+                &other,
+                &["checkout", "-b", "agent/test", "origin/agent/test"],
+            );
         }
     }
     env.write(&format!("work/elsewhere/{file}"), content);
