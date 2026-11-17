@@ -1029,6 +1029,34 @@ fn cache_home_and_tmpdir_are_the_session_tmp() {
     assert!(!home.join(".cache/gh").exists(), "build must not touch the host");
 }
 
+/// #979: project instructions written for the host name `~/.cache` as scratch space, so the
+/// sandbox must keep that option honest: the cache home and every entry below it that is not
+/// one of the listed package caches stays read-only, and no writable bind is or contains the
+/// cache home. Only an explicit user `writePaths` may open more, and `/tmp` (the session's
+/// directory) is the writable cache home inside.
+#[test]
+fn the_cache_home_and_its_plain_entries_stay_read_only() {
+    let env = TestEnv::new();
+    let home = env.home();
+    let cache = home.join(".cache");
+    for d in ["sccache", "pip", "build-tools"] {
+        std::fs::create_dir_all(cache.join(d)).unwrap();
+    }
+    let l = cache_layout(&env, Vec::new(), Vec::new());
+    assert!(l.write.contains(&cache.join("sccache")), "{:?}", l.write);
+    assert!(l.write.contains(&cache.join("pip")), "{:?}", l.write);
+    // An unbound entry stays read-only, and nothing is writable at or above the cache home.
+    assert!(!l.write.contains(&cache.join("build-tools")), "{:?}", l.write);
+    assert!(!l.write.iter().any(|w| cache.starts_with(w)), "{:?}", l.write);
+    assert!(!l.read.contains(&cache), "{:?}", l.read);
+    assert!(!l.read.contains(&cache.join("build-tools")), "{:?}", l.read);
+    assert!(
+        l.env.contains(&("XDG_CACHE_HOME".into(), "/tmp/.cache".into())),
+        "{:?}",
+        l.env
+    );
+}
+
 /// #457, N28: the session directory replaces `--tmpfs /tmp` at the same place, before the
 /// home tmpfs and before every credential mask, so no mask can be covered by it.
 #[test]
