@@ -2,7 +2,9 @@
 //! A run that edited files (`edit` / `write` succeeded, or a `bash`, sub-agent, MCP or extension
 //! tool call changed the work folder) and is about to stop runs them in the session sandbox; a failure goes back to the model as a user
 //! message, at most [`MAX_ROUNDS`] times. An entry `in <dir>: <command>` runs in `<dir>`, a folder
-//! of the session folder, instead of in the session folder itself.
+//! of the session folder, instead of in the session folder itself. Offline mode runs nothing from
+//! the list: a check may need the network, so its failure is not the model's to fix (issue #1054);
+//! the front end prints the one notice.
 use crate::exec::CallResult;
 use crate::SessionState;
 use oxa_proto::{shown_why, AgentEvent, EntryBody, EventMessage, EventSink, ExecSpec, Level, OxaError, Ui};
@@ -167,7 +169,7 @@ impl DoneState {
 
     /// Start of a run: remember the tree, so a later `bash` change can be told apart.
     pub(crate) fn begin(&mut self, st: &SessionState) {
-        if !st.settings.done_commands().is_empty() {
+        if !runnable_done_commands(st).is_empty() {
             self.tree = tree_fingerprint(&st.cwd);
         }
     }
@@ -190,6 +192,17 @@ impl DoneState {
     }
 }
 
+/// The `done` list this session runs. Offline it is empty: a check may need the network (a module
+/// test that fetches its dependencies) so it cannot pass, and its failure is not the model's to
+/// fix (issue #1054). The front end prints one notice for the skipped list.
+fn runnable_done_commands(st: &SessionState) -> Vec<String> {
+    if oxa_proto::offline() {
+        Vec::new()
+    } else {
+        st.settings.done_commands()
+    }
+}
+
 /// Run the checks when due. `Some(text)` = a failure to send to the model for another round.
 pub(crate) fn check(
     st: &mut SessionState,
@@ -197,7 +210,7 @@ pub(crate) fn check(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Option<String> {
-    let cmds = st.settings.done_commands();
+    let cmds = runnable_done_commands(st);
     if cmds.is_empty() || !state.dirty || st.shared.cancel.is_cancelled() {
         return None;
     }

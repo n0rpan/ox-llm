@@ -1035,8 +1035,23 @@ pub(crate) fn project_trusted(
             Level::Warning,
             "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
         ));
+    } else if oxa_proto::offline() && offline_cancels_done(dirs, cwd, &user_settings, trusted) {
+        // Offline the list is not run at all (a check may need the network): one notice, so
+        // the checks are skipped knowingly (issue #1054). An untrusted project's list is
+        // never merged, so it reports the trust notice instead.
+        notices.push((
+            Level::Warning,
+            "done checks were not run: offline mode is on".to_string(),
+        ));
     }
     Ok(trusted)
+}
+
+/// `true` when offline mode drops a non-empty `done` list, so the one notice (`done checks were
+/// not run: offline mode is on`) is printed (issue #1054). A user-level list always applies; a
+/// project's only when it is trusted, since an untrusted project merges none.
+fn offline_cancels_done(dirs: &Dirs, cwd: &Path, user: &Settings, trusted: bool) -> bool {
+    !user.done_commands().is_empty() || (trusted && Settings::project_declares_done(dirs, cwd))
 }
 
 fn discover_opts(a: &Args, dirs: &Dirs, cwd: &Path, trusted: bool) -> Result<DiscoverOpts, OxaError> {

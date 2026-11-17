@@ -187,6 +187,7 @@ This matters because the model can be steered by text it reads. A steered model 
 - extension `exec` with `net: true` runs without network;
 - `!cmd` commands and stdio MCP servers are started through `bubblewrap` with the network unshared. If `bubblewrap` is missing or unusable, the command is refused, and it never runs with network;
 - subagent children inherit the switch;
+- the project's `done` checks are not run, with one start-up notice: a check may need the network, so its failure would not be the model's to fix;
 - the local engine keeps working.
 
 Offline mode is about the network only. It does not limit what those programs read or write. A `!cmd` command or a stdio MCP server, when started offline, sees your files as you do: it is not under the deny-list masks, and it can write anywhere your account can write. Exec hooks have never had network. Programs you start yourself, outside oxa, are not affected by oxa at all.
