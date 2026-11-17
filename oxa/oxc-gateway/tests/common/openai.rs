@@ -1,10 +1,13 @@
 //! Scripted loopback OpenAI Responses upstream for tests only.
 //! Never consults credentials, sign-ins, the environment, or an external service.
+#[path = "http_request.rs"]
+mod http_request;
+
 use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, VecDeque},
     fmt,
-    io::{self, Read, Write},
+    io::{self, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -307,51 +310,8 @@ impl Drop for MockOpenAi {
 }
 
 fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
-    stream.set_read_timeout(Some(DEADLINE))?;
-    stream.set_write_timeout(Some(DEADLINE))?;
-    let mut bytes = vec![];
-    let end = loop {
-        if let Some(end) = bytes.windows(4).position(|b| b == b"\r\n\r\n") {
-            break end + 4;
-        }
-        if bytes.len() >= 32 * 1024 {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        let mut next = [0; 1024];
-        let n = stream.read(&mut next)?;
-        if n == 0 {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        bytes.extend_from_slice(&next[..n]);
-    };
-    let head = std::str::from_utf8(&bytes[..end]).map_err(|_| io::ErrorKind::InvalidData)?;
-    let mut lines = head.split("\r\n");
-    let mut first = lines.next().unwrap_or_default().split_whitespace();
-    let method = first.next().ok_or(io::ErrorKind::InvalidData)?.to_owned();
-    let target = first.next().ok_or(io::ErrorKind::InvalidData)?.to_owned();
-    let mut headers = BTreeMap::new();
-    for line in lines.filter(|line| !line.is_empty()) {
-        let (name, value) = line.split_once(':').ok_or(io::ErrorKind::InvalidData)?;
-        headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
-    }
-    let length: usize = headers
-        .get("content-length")
-        .map(String::as_str)
-        .unwrap_or("0")
-        .parse()
-        .map_err(|_| io::ErrorKind::InvalidData)?;
-    if length > 1024 * 1024 || headers.contains_key("transfer-encoding") {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    while bytes.len() < end + length {
-        let mut next = [0; 4096];
-        let n = stream.read(&mut next)?;
-        if n == 0 {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        bytes.extend_from_slice(&next[..n]);
-    }
-    let body = if length == 0 {
+    let (method, target, headers, bytes) = http_request::read_request(stream, DEADLINE)?;
+    let body = if bytes.is_empty() {
         Value::Null
     } else if headers
         .get("content-type")
@@ -360,7 +320,7 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         #[cfg(feature = "transport")]
         {
             Value::Object(
-                url::form_urlencoded::parse(&bytes[end..end + length])
+                url::form_urlencoded::parse(&bytes)
                     .map(|(k, v)| (k.into_owned(), Value::String(v.into_owned())))
                     .collect(),
             )
@@ -370,13 +330,13 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
             return Err(io::ErrorKind::InvalidData.into());
         }
     } else {
-        serde_json::from_slice(&bytes[end..end + length]).map_err(|_| io::ErrorKind::InvalidData)?
+        serde_json::from_slice(&bytes).map_err(|_| io::ErrorKind::InvalidData)?
     };
     Ok(Request {
         method,
         target,
         body,
-        body_bytes: bytes[end..end + length].to_vec(),
+        body_bytes: bytes,
         headers,
     })
 }
