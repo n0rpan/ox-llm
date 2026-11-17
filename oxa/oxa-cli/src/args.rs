@@ -589,11 +589,12 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
             a.lead = true;
             continue;
         }
-        // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
-        // another option or `--` appears, later words retain their positional meaning.
+        // These commands accept leading offline switches so their own guards
+        // can report the refusal. A prompt, another option or `--` ends that prefix.
         if !stop
             && (i == 1
-                || (matches!(arg, "send" | "work") && argv[..i - 1].iter().all(|word| word == "--offline")))
+                || (matches!(arg, "send" | "work" | "share")
+                    && argv[..i - 1].iter().all(|word| word == "--offline")))
         {
             if let Some(sub) = subcommand(arg, &argv[i..])? {
                 a.subcommand = Some(sub);

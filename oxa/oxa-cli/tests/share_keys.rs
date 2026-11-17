@@ -346,7 +346,11 @@ fn serving_refuses_agent_and_offline_before_opening_guest_storage() {
 
     let offline = home.run(&["--offline", "share", "serve", "--model", "synthetic-model"]);
     assert!(!offline.status.success());
-    assert!(String::from_utf8_lossy(&offline.stderr).contains("offline"));
+    assert!(String::from_utf8_lossy(&offline.stderr).contains("offline mode is on"));
+
+    let offline_env = home.marked(&serve, "OXA_OFFLINE", "1");
+    assert!(!offline_env.status.success());
+    assert!(String::from_utf8_lossy(&offline_env.stderr).contains("offline mode is on"));
     assert!(!home.0.join(".oxa/share").exists());
 }
 
