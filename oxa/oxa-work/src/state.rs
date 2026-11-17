@@ -1,10 +1,10 @@
 //! Private durable task checkpoints. Observers never receive or mutate State.
 use crate::{checkpoint, Outcome, Record, Result, Task};
+pub(crate) use oxa_proto::time::now_ms;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const VERSION: u64 = 1;
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
@@ -78,15 +78,6 @@ impl State {
             deadline_at_ms,
         }
     }
-}
-
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

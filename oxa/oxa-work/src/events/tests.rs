@@ -55,6 +55,97 @@ fn reserve(facts: &Facts, fact: Fact) -> Event {
 }
 
 #[test]
+fn a_crashed_preparation_keeps_its_projection_capacity_and_commits_once() {
+    const CHILD: &str = "OXA_FACTS_PREPARATION_CHILD";
+    let observation = || {
+        Fact::StandingChanged(StandingChanged {
+            revision: 1,
+            goal: None,
+            ask_opened: Some(Ask {
+                id: "prepared-ask".into(),
+                subject: Subject::Repository,
+                question: "Choose an option".into(),
+            }),
+            ask_closed: None,
+            incident: None,
+        })
+    };
+    if let Some(root) = std::env::var_os(CHILD) {
+        let facts = Facts::open(Path::new(&root).join("facts").as_path()).unwrap();
+        let policy = Root::open(Path::new(&root), false).unwrap();
+        facts
+            .append_prepared(checkpoint("standing", 1), 500, observation(), |event| {
+                policy.atomic("prepared.json", &event.to_json().unwrap()).unwrap();
+                std::process::exit(73);
+            })
+            .unwrap();
+        panic!("preparation did not reach its crash boundary");
+    }
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    for revision in 1..=127 {
+        facts
+            .append(
+                checkpoint("runner", revision),
+                revision,
+                Fact::TaskStarted(task(revision as usize)),
+            )
+            .unwrap();
+    }
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .env_clear()
+        .env(CHILD, fixture.0.path())
+        .args([
+            "--exact",
+            "events::tests::a_crashed_preparation_keeps_its_projection_capacity_and_commits_once",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        child.status.code(),
+        Some(73),
+        "{}",
+        String::from_utf8_lossy(&child.stderr)
+    );
+    let recovered = Facts::open(&fixture.root()).unwrap();
+    assert_eq!(recovered.situation().unwrap().as_of_seq, 127);
+    assert!(recovered
+        .append(checkpoint("runner", 128), 600, Fact::TaskStarted(task(128)))
+        .is_err());
+    assert_eq!(recovered.events_after(127, 64).unwrap().events.len(), 0);
+    let committed = recovered
+        .append_prepared(checkpoint("standing", 1), 500, observation(), |event| {
+            assert_eq!(
+                fs::read(fixture.0.path().join("prepared.json")).unwrap(),
+                event.to_json().unwrap()
+            );
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(committed.seq, 128);
+    assert_eq!(recovered.situation().unwrap().asks.len(), 1);
+    let again = recovered
+        .append_prepared(checkpoint("standing", 1), 500, observation(), |_| {
+            panic!("prepared twice")
+        })
+        .unwrap();
+    assert_eq!(again, committed);
+    recovered
+        .append(
+            checkpoint("cleanup", 1),
+            700,
+            Fact::AskClosed(AskClosed {
+                id: "prepared-ask".into(),
+            }),
+        )
+        .unwrap();
+    recovered
+        .append(checkpoint("runner", 128), 800, Fact::TaskStarted(task(128)))
+        .unwrap();
+    assert_eq!(recovered.situation().unwrap().running.len(), 128);
+}
+
+#[test]
 fn lifecycle_facts_do_not_turn_worker_success_into_landed_work() {
     let env = Fixture::new();
     let facts = env.facts();
@@ -331,6 +422,85 @@ fn rotation_is_bounded_and_cursor_gaps_are_explicit_without_resetting_sequences(
 }
 
 #[test]
+fn large_valid_events_page_by_bytes_and_keep_advancing_across_retention_gaps() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let observation = |revision| {
+        Fact::StandingChanged(StandingChanged {
+            revision,
+            goal: Some("\"".repeat(1024)),
+            ask_opened: Some(Ask {
+                id: "ask".repeat(32),
+                subject: Subject::Repository,
+                question: "\"".repeat(512),
+            }),
+            ask_closed: None,
+            incident: Some(Incident {
+                id: "incident".repeat(32),
+                subject: Subject::Task("t".repeat(128)),
+                kind: IncidentKind::RuleReminder,
+                evidence: Some(Evidence {
+                    kind: EvidenceKind::LocalCheck,
+                    id: "e".repeat(256),
+                }),
+            }),
+        })
+    };
+    for revision in 1..=64 {
+        let event = facts
+            .append_prepared(
+                checkpoint("standing", revision),
+                revision,
+                observation(revision),
+                |_| Ok(()),
+            )
+            .unwrap();
+        assert!(event.to_json().unwrap().len() <= MAX_EVENT_BYTES);
+    }
+    let first = facts
+        .events_after(0, 64)
+        .expect("healthy large events must return a usable bounded page");
+    assert!(!first.gap);
+    assert!(!first.events.is_empty() && first.events.len() < 64);
+    let mut cursor = 0;
+    let mut seen = Vec::new();
+    while cursor < 64 {
+        let page = facts.events_after(cursor, 64).unwrap();
+        assert!(page.to_json().unwrap().len() <= oxa_proto::work::MAX_PAGE_BYTES);
+        assert_eq!(page.next, page.events.last().unwrap().seq);
+        assert!(page.next > cursor);
+        seen.extend(page.events.iter().map(|event| event.seq));
+        cursor = page.next;
+    }
+    assert_eq!(seen, (1..=64).collect::<Vec<_>>());
+    for revision in 65..=180 {
+        facts
+            .append_prepared(
+                checkpoint("standing", revision),
+                revision,
+                observation(revision),
+                |_| Ok(()),
+            )
+            .unwrap();
+    }
+    let page = facts.events_after(0, 64).unwrap();
+    assert!(page.gap && page.first_available > 1);
+    let first_retained = page.first_available;
+    cursor = first_retained - 1;
+    seen.clear();
+    while cursor < 180 {
+        let page = facts.events_after(cursor, 64).unwrap();
+        assert!(page.to_json().unwrap().len() <= oxa_proto::work::MAX_PAGE_BYTES);
+        assert!(page.next > cursor);
+        assert_eq!(page.next, page.events.last().unwrap().seq);
+        seen.extend(page.events.iter().map(|event| event.seq));
+        cursor = page.next;
+    }
+    assert_eq!(seen, (first_retained..=180).collect::<Vec<_>>());
+    assert!(facts.events_after(180, 64).unwrap().events.is_empty());
+}
+
+#[test]
 fn concurrent_sources_get_unique_contiguous_repository_sequences() {
     let env = Fixture::new();
     let facts = env.facts();
@@ -484,6 +654,45 @@ fn parent_directory_sync_error_blocks_initialization() {
     let output = child.output();
     fs::set_permissions(env.0.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let output = output.unwrap();
+    assert!(
+        output.status.success(),
+        "child failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn retry_must_sync_a_visible_standing_reservation() {
+    const CHILD_ROOT: &str = "OXA_FACTS_TEST_STANDING_RESERVATION";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = Path::new(&root);
+        let facts = Facts::initialize(root).unwrap();
+        fs::set_permissions(root, fs::Permissions::from_mode(0o300)).unwrap();
+        let first = facts.reserve_standing().expect_err("directory sync must fail");
+        assert!(first.contains("directory"), "{first}");
+        let visible: State = serde_json::from_slice(&facts.root.read(STATE, STATE_BYTES).unwrap()).unwrap();
+        assert!(visible.standing_reserved, "rename must precede the sync failure");
+        let retry = facts.reserve_standing();
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+        let retry = retry.expect_err("retry must finish syncing the reservation");
+        assert!(retry.contains("directory"), "{retry}");
+        facts.reserve_standing().unwrap();
+        return;
+    }
+    let env = Fixture::new();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child.env_clear().env(CHILD_ROOT, env.root()).args([
+        "--exact",
+        "events::tests::retry_must_sync_a_visible_standing_reservation",
+    ]);
+    // SAFETY: geteuid has no arguments, pointers or failure mode.
+    if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::process::CommandExt;
+        std::os::unix::fs::chown(env.0.path(), Some(65534), Some(65534)).unwrap();
+        child.uid(65534).gid(65534);
+    }
+    let output = child.output().unwrap();
     assert!(
         output.status.success(),
         "child failed: {}{}",
