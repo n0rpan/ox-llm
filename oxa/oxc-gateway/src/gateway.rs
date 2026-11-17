@@ -9,6 +9,7 @@ use crate::{
     accounting::{Outcome, Usage},
     anthropic_client::{self, Cancellation, Chat, Client, Control},
     catalog::Provider,
+    catalog_discovery::{Source, Status},
     ledger::Context,
     policy::Refusal,
     runtime::{Call, HistorySeal, Runtime},
@@ -162,6 +163,63 @@ impl Gateway {
         let result = driver.block_on(self.runtime.refresh_go(self.client.transport(), base, timeout));
         driver.shutdown_timeout(Duration::from_secs(1));
         result.map_err(Error::OpenCode)
+    }
+    /// Owner-requested catalog discovery, using the established provider pool.
+    /// Missing credentials leave the configured fallback catalog in place.
+    pub fn discover_cloud(&mut self, source: &Source, timeout: Duration) -> Result<Option<Status>, Error> {
+        let Some(key) = self
+            .runtime
+            .catalog_key(source.provider())
+            .map_err(Error::Refused)?
+        else {
+            return Ok(None);
+        };
+        let directory = self.runtime.catalog_cache_dir();
+        let (state, offers) = match source.load(directory, &key) {
+            Some(cached) => cached,
+            None => (
+                crate::catalog_cache::State::Fresh,
+                self.fetch_catalog(source, &key, timeout)?,
+            ),
+        };
+        let (missing_price, missing_limits) = self
+            .runtime
+            .apply_provider_catalog(source, offers)
+            .map_err(Error::Refused)?;
+        Ok(Some(Status {
+            state,
+            missing_price,
+            missing_limits,
+        }))
+    }
+    /// Replace only the private cache on a stale refresh.
+    pub fn refresh_cloud(&self, source: &Source, timeout: Duration) -> Result<(), Error> {
+        if let Some(key) = self
+            .runtime
+            .catalog_key(source.provider())
+            .map_err(Error::Refused)?
+        {
+            self.fetch_catalog(source, &key, timeout)?;
+        }
+        Ok(())
+    }
+    fn fetch_catalog(
+        &self,
+        source: &Source,
+        key: &crate::secrets::Key,
+        timeout: Duration,
+    ) -> Result<Vec<crate::catalog_discovery::Offer>, Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(Error::Upstream(anthropic_client::Error::Request("discovery")));
+        }
+        let driver = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| Error::Upstream(anthropic_client::Error::Setup))?;
+        let result =
+            driver.block_on(source.fetch(&self.client, key, timeout, self.runtime.catalog_cache_dir()));
+        driver.shutdown_timeout(Duration::from_secs(1));
+        result.map_err(Error::Upstream)
     }
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
         self.runtime.discovery()

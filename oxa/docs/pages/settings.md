@@ -190,6 +190,19 @@ gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
+Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
+configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
+OpenCode model cache when that provider is configured. A fresh cached catalog
+avoids a discovery request. A stale catalog can be shown while a bounded
+refresh updates the cache for later starts. A failed live lookup uses the
+configured catalog and reports the failure. Discovery stays off in offline mode.
+
+OpenRouter supplies model limits and token prices. Keep entries under
+`oxa.cloud.models` for limits or prices the provider omits. Models without
+enough metadata to enforce the usage budget are reported and omitted. When
+the same provider has several configured base URLs, select the discovery
+endpoint with `oxa.cloud.discovery.<provider>.base_url`.
+
 Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes
 under `oxa.cloud.models`, keyed by the model name used
 with `--model`. Supply the upstream model, context/output limits and current

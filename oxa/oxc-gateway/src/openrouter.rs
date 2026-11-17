@@ -74,6 +74,24 @@ impl Client {
     /// HTTP is allowed only on loopback, for tests. The deadline bounds each GET,
     /// including its body, rather than just waiting for response headers.
     pub fn new(base: &str, timeout: Duration) -> Result<Self, Failure> {
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| Error::Setup)?;
+        Self::with_transport(base, timeout, http)
+    }
+
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn from_messages_transport(
+        base: &str,
+        timeout: Duration,
+        client: &crate::anthropic_client::Client,
+    ) -> Result<Self, Failure> {
+        Self::with_transport(base, timeout, client.transport().clone())
+    }
+
+    fn with_transport(base: &str, timeout: Duration, http: reqwest::Client) -> Result<Self, Failure> {
         let mut base = reqwest::Url::parse(base).map_err(|_| Error::Endpoint)?;
         let loopback = match base.host() {
             Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
@@ -96,11 +114,6 @@ impl Client {
         if !base.path().ends_with('/') {
             base.set_path(&format!("{}/", base.path()));
         }
-        let http = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| Error::Setup)?;
         Ok(Self { http, base, timeout })
     }
 
@@ -134,9 +147,16 @@ impl Client {
             .map(|model| {
                 let pricing = &model["pricing"];
                 // Prices are decimal strings in this API, never binary floats.
-                let prompt = pricing["prompt"].as_str().ok_or(Error::Protocol)?;
-                let completion = pricing["completion"].as_str().ok_or(Error::Protocol)?;
-                let parameters = model["supported_parameters"].as_array().ok_or(Error::Protocol)?;
+                let rate = |value: &serde_json::Value| match value {
+                    serde_json::Value::Null => Ok(None),
+                    serde_json::Value::String(text) => parse_price(text),
+                    _ => Err(Error::Protocol.into()),
+                };
+                let parameters = match &model["supported_parameters"] {
+                    serde_json::Value::Null => &[][..],
+                    serde_json::Value::Array(parameters) => parameters.as_slice(),
+                    _ => return Err(Error::Protocol.into()),
+                };
                 if parameters.iter().any(|parameter| !parameter.is_string()) {
                     return Err(Error::Protocol.into());
                 }
@@ -151,8 +171,8 @@ impl Client {
                         serde_json::Value::Null => None,
                         value => Some(value.as_u64().ok_or(Error::Protocol)?),
                     },
-                    prompt_price_per_token: parse_price(prompt)?,
-                    completion_price_per_token: parse_price(completion)?,
+                    prompt_price_per_token: rate(&pricing["prompt"])?,
+                    completion_price_per_token: rate(&pricing["completion"])?,
                     tools: parameters
                         .iter()
                         .any(|parameter| parameter.as_str() == Some("tools")),

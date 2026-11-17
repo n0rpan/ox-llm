@@ -5,6 +5,7 @@ use oxa_proto::{codes, Engine, OxaError};
 use oxc_gateway::{
     billing::SubscriptionLimits,
     catalog::{Access, Model, Provider},
+    catalog_discovery::{Source, State},
     gateway::Gateway,
     pricing::Price,
     runtime::{Billing, Options, Runtime, Subscription},
@@ -169,13 +170,14 @@ fn open(
 ) -> Result<Selected, OxaError> {
     let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
     let go_enabled = cloud.pointer("/opencode/enabled") == Some(&Value::Bool(true));
+    let discover = cloud.get("discover_models") == Some(&Value::Bool(true));
     let empty = serde_json::Map::new();
     let models = match cloud.get("models") {
-        None | Some(Value::Null) if go_enabled => &empty,
+        None | Some(Value::Null) if go_enabled || discover => &empty,
         Some(value) => value.as_object().ok_or_else(invalid)?,
         None => return Err(invalid()),
     };
-    if models.is_empty() && !go_enabled {
+    if models.is_empty() && !go_enabled && !discover {
         return Err(invalid());
     }
     let mut routes = Vec::with_capacity(models.len());
@@ -217,6 +219,29 @@ fn open(
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
     };
+    let mut sources = Vec::new();
+    if discover {
+        for (provider, default) in [
+            (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
+            (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
+            (Provider::Anthropic, "https://api.anthropic.com"),
+        ] {
+            let mut configured = routes.iter().filter_map(|(model, _)| {
+                (model.info().provider == provider).then_some(model.endpoint().as_str())
+            });
+            let base = match cloud.pointer(&format!("/discovery/{}/base_url", provider.as_str())) {
+                Some(base) => base.as_str().ok_or_else(invalid)?,
+                None => {
+                    let first = configured.next().unwrap_or(default);
+                    if configured.any(|other| other != first) {
+                        continue;
+                    }
+                    first
+                }
+            };
+            sources.extend(Source::new(provider, base));
+        }
+    }
     // These existing private locations are denied to both file tools and bash.
     // Configured-route discovery reads no key or ledger. Explicit Go discovery
     // uses the existing protected key reader and this same gateway HTTP pool.
@@ -233,7 +258,7 @@ fn open(
         },
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;
-    if cloud.get("discover_models") == Some(&Value::Bool(true)) {
+    if discover {
         runtime = runtime.with_catalog_cache();
     }
     if let Some(diagnostics) = diagnostics {
@@ -245,6 +270,30 @@ fn open(
         OxaError::new(refusal.code, e.to_string())
     })?;
     let mut refresh_go = None;
+    let mut refresh_cloud = Vec::new();
+    let mut notices = Vec::new();
+    let discovery_timeout = Duration::from_secs(15);
+    for source in sources {
+        let provider = source.provider().as_str();
+        match gateway.discover_cloud(&source, discovery_timeout) {
+            Ok(Some(status)) => {
+                if status.state == State::Stale {
+                    notices.push(format!("Using a stale {provider} model catalog."));
+                    refresh_cloud.push(source);
+                }
+                if status.missing_price + status.missing_limits > 0 {
+                    notices.push(format!(
+                        "{provider} catalog omitted {} offers with unknown pricing and {} with unknown limits.",
+                        status.missing_price, status.missing_limits,
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(_) => notices.push(format!(
+                "{provider} catalog refresh failed. Using configured models."
+            )),
+        }
+    }
     if go_enabled {
         let base = cloud
             .pointer("/opencode/base_url")
@@ -256,17 +305,21 @@ fn open(
                 let refusal = e.refusal();
                 OxaError::new(refusal.code, e.to_string())
             })?;
-        if state == oxc_gateway::opencode::cache::State::Stale {
+        if state == State::Stale {
             refresh_go = Some(base.to_owned());
+            notices.push("Using a stale OpenCode model catalog.".into());
         }
     }
     let gateway = Arc::new(gateway);
-    let mut notices = Vec::new();
-    if let Some(base) = refresh_go {
-        notices.push("Using a stale OpenCode model catalog.".into());
+    if refresh_go.is_some() || !refresh_cloud.is_empty() {
         let refresh = gateway.clone();
         let _ = std::thread::Builder::new().spawn(move || {
-            let _ = refresh.refresh_opencode(&base, Duration::from_secs(30));
+            if let Some(base) = refresh_go {
+                let _ = refresh.refresh_opencode(&base, Duration::from_secs(30));
+            }
+            for source in refresh_cloud {
+                let _ = refresh.refresh_cloud(&source, discovery_timeout);
+            }
         });
     }
     Ok((Arc::new(EmbeddedEngine::from_shared_gateway(gateway)), notices))

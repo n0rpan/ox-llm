@@ -13,6 +13,8 @@ pub mod share;
 pub mod catalog;
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 mod catalog_cache;
+#[cfg(feature = "anthropic-gateway")]
+pub mod catalog_discovery;
 #[cfg(feature = "ledger")]
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]

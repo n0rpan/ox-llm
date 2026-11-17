@@ -2,6 +2,7 @@
 use crate::{
     accounting::{self, Hold, Outcome, Usage},
     catalog::{self, Access, Catalog, Model, ModelInfo, Provider},
+    catalog_discovery::{Offer, Source},
     ledger::{Context, Daily, Entry, Ledger},
     policy::{self, Refusal},
     secrets::{Key, KeyFile},
@@ -205,8 +206,7 @@ impl Runtime {
     }
     /// Enable catalog writes only for the owner-selected discovery setting.
     pub fn with_catalog_cache(mut self) -> Self {
-        let directory = self.ledger_dir.parent().unwrap_or(self.ledger_dir.as_path());
-        self.go_cache = Some(crate::opencode::cache::Cache::new(directory));
+        self.go_cache = Some(crate::opencode::cache::Cache::new(self.catalog_cache_dir()));
         self
     }
     fn audit(&self, model: &str, context: Context<'_>) -> Result<(Daily, Entry), Refusal> {
@@ -224,6 +224,112 @@ impl Runtime {
     }
     pub(crate) fn go_model(&self, alias: &str) -> Option<&crate::opencode::Model> {
         self.go_models.get(alias)
+    }
+
+    pub(crate) fn catalog_cache_dir(&self) -> &std::path::Path {
+        self.ledger_dir.parent().unwrap_or(self.ledger_dir.as_path())
+    }
+
+    pub(crate) fn catalog_key(&self, provider: Provider) -> Result<Option<Key>, Refusal> {
+        if let Err(error @ (catalog::Error::Disabled | catalog::Error::Offline)) = self.catalog.resolve(None)
+        {
+            return Err(catalog_error(error));
+        }
+        Ok(self
+            .key_file
+            .as_ref()
+            .ok()
+            .and_then(|file| file.read(provider.as_str()).ok()))
+    }
+
+    pub(crate) fn apply_provider_catalog(
+        &mut self,
+        source: &Source,
+        offers: Vec<Offer>,
+    ) -> Result<(usize, usize), Refusal> {
+        let same_source = |model: &Model| {
+            model.info().provider == source.provider()
+                && model.endpoint().as_str().trim_end_matches('/') == source.base().trim_end_matches('/')
+        };
+        let (configured, mut routes): (Vec<_>, Vec<_>) = self
+            .catalog
+            .models()
+            .filter_map(|info| self.catalog.configured(info.id).cloned())
+            .partition(same_source);
+        let mut billings = self.billings.clone();
+        for model in &configured {
+            billings.remove(model.info().id);
+        }
+        let mut missing_price = 0;
+        let mut missing_limits = 0;
+        for offer in offers {
+            let explicit: Vec<_> = configured
+                .iter()
+                .filter(|model| model.upstream() == offer.id)
+                .collect();
+            let generated;
+            let ids: Vec<&str> = if explicit.is_empty() {
+                generated = format!("{}/{}", source.provider().as_str(), &offer.id);
+                vec![generated.as_str()]
+            } else {
+                explicit.iter().map(|model| model.info().id).collect()
+            };
+            for alias in ids {
+                let existing = self.catalog.configured(alias);
+                let fallback = existing.filter(|model| same_source(model) && model.upstream() == offer.id);
+                if fallback.is_none() && existing.is_some() {
+                    // Discovery never shadows another registered route.
+                    continue;
+                }
+                let fallback_info = fallback.map(Model::info);
+                let context = offer
+                    .context
+                    .or_else(|| fallback_info.map(|info| info.context_window));
+                let max_output = offer
+                    .max_output
+                    .or_else(|| fallback_info.map(|info| info.max_output));
+                let Some((context, output)) = context
+                    .zip(max_output)
+                    .filter(|(context, output)| output <= context)
+                else {
+                    missing_limits += 1;
+                    continue;
+                };
+                let price = offer.price.clone().or_else(|| match self.billings.get(alias) {
+                    Some(Billing::Metered(price)) => Some(price.clone()),
+                    _ => None,
+                });
+                let Some(price) = price.filter(|price| {
+                    price
+                        .reservation(
+                            source.provider().as_str(),
+                            &offer.id,
+                            u64::from(context),
+                            u64::from(output),
+                        )
+                        .is_some_and(f64::is_finite)
+                }) else {
+                    missing_price += 1;
+                    continue;
+                };
+                let Ok(model) = Model::new(
+                    alias,
+                    source.provider(),
+                    &offer.id,
+                    source.base(),
+                    context,
+                    output,
+                ) else {
+                    continue;
+                };
+                billings.insert(alias.into(), Billing::Metered(price));
+                routes.push(model);
+            }
+        }
+        let catalog = Catalog::new(Access::Enabled, routes).map_err(catalog_error)?;
+        self.catalog = catalog;
+        self.billings = billings;
+        Ok((missing_price, missing_limits))
     }
     /// Consume the bounded stale-aware cache before any network call, then fall
     /// back to live discovery exactly as before. A cache hit is re-validated by
