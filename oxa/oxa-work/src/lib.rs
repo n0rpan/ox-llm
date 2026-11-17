@@ -245,23 +245,20 @@ fn capture_command(
     let stdout = read_output(child.stdout.take().expect("piped stdout"), limit);
     let stderr = child.stderr.take().map(|pipe| read_output(pipe, limit));
     let status = loop {
-        match child.try_wait() {
-            // The child can exit while a process in its group still holds a pipe.
-            Ok(Some(status))
-                if stdout.is_finished() && stderr.as_ref().is_none_or(|pipe| pipe.is_finished()) =>
-            {
-                break Ok(status);
+        // A descendant can keep a pipe open after the leader exits. Keep the
+        // leader unreaped until then so its PID cannot be reused before cleanup.
+        if stdout.is_finished() && stderr.as_ref().is_none_or(|pipe| pipe.is_finished()) {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => (),
+                Err(error) => break Err(error),
             }
-            Ok(_) if start.elapsed() < deadline => {
-                std::thread::sleep(
-                    deadline
-                        .saturating_sub(start.elapsed())
-                        .min(Duration::from_millis(2)),
-                );
-            }
-            Ok(_) => break Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out")),
-            Err(error) => break Err(error),
         }
+        let remaining = deadline.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            break Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(2)));
     };
     if status.is_err() {
         // SAFETY: process_group(0) places the child in its own group, identified by its PID.
