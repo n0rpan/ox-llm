@@ -306,12 +306,12 @@ fn new_process_chatgpt_continuation_is_pinned_to_the_saved_account() {
     let peer = mock::MockOpenAi::start(vec![reply("First pinned answer"), reply("Same account answer")]);
     settings(&env, &peer.base_url(), true);
     let token = env.home().join(".config/oxc/llm/chatgpt-auth.json");
-    let record = |account: &str| {
-        json!({"access_token":KEY,
+    let record = |account: &str, access: &str| {
+        json!({"access_token":access,
         "refresh_token":"synthetic-refresh","account_id":account,"expires_at":2_000_000_000})
         .to_string()
     };
-    private_file(&token, &record("synthetic-account-a"));
+    private_file(&token, &record("synthetic-account-a", KEY));
     let args = [
         "-p",
         "--no-tools",
@@ -327,6 +327,10 @@ fn new_process_chatgpt_continuation_is_pinned_to_the_saved_account() {
     success(&first);
     let session = terminal(&first)["session_id"].as_str().unwrap().to_owned();
     let continuation = format!("--continue={session}");
+    // A persisted refresh may rotate the access token. Replay belongs to the
+    // account, not to one access-token generation.
+    let rotated = "synthetic-rotated-access";
+    private_file(&token, &record("synthetic-account-a", rotated));
     let same = run(
         &env,
         &[
@@ -347,10 +351,18 @@ fn new_process_chatgpt_continuation_is_pinned_to_the_saved_account() {
         .requests()
         .iter()
         .all(|request| request.header("chatgpt-account-id") == Some("synthetic-account-a")));
+    assert_eq!(
+        peer.requests()[0].header("authorization"),
+        Some(format!("Bearer {KEY}").as_str())
+    );
+    assert_eq!(
+        peer.requests()[1].header("authorization"),
+        Some(format!("Bearer {rotated}").as_str())
+    );
 
     // A third allowance remains: this must be a history/account refusal, not
     // the exhausted-budget negative control in the existing composition test.
-    private_file(&token, &record("synthetic-account-b"));
+    private_file(&token, &record("synthetic-account-b", rotated));
     let before = fs::read(&token).unwrap();
     let changed = run(
         &env,
@@ -386,6 +398,7 @@ fn new_process_chatgpt_continuation_is_pinned_to_the_saved_account() {
         );
         for private in [
             KEY,
+            rotated,
             "synthetic-account-a",
             "synthetic-account-b",
             "opaque-account-pin-fixture",
