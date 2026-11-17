@@ -3,9 +3,9 @@
 //! * **Toolchains (B2).** The user's `PATH` is kept inside the sandbox (absolute entries that
 //!   exist as directories, in order; the base `/usr/local/bin:/usr/bin:/bin` is appended when
 //!   missing; then the existing executable directories of toolchains installed under `$HOME`
-//!   ([`TOOLCHAIN_PATH`], and the toolchains of a `RUSTUP_HOME` rustup home), or - when none of
-//!   them holds a `cargo` - the `bin` of a toolchain the sandbox already shows read-only (a
-//!   rustup toolchain under `~/.rustup/toolchains`, and a toolchain exposed with
+//!   ([`TOOLCHAIN_PATH`], and the toolchains of a `RUSTUP_HOME` rustup home the sandbox shows),
+//!   or - when none of them holds a `cargo` - the `bin` of a toolchain the sandbox already shows
+//!   read-only (a rustup toolchain under `~/.rustup/toolchains`, and a toolchain exposed with
 //!   `oxa.sandbox.readPaths`), so a toolchain works when the environment oxa started from never
 //!   read a login shell's profile). Toolchain directories under `$HOME` are bound
 //!   read-only and package caches read-write ([`TOOLCHAIN_READ`], [`CACHE_WRITE`], each only
@@ -267,7 +267,9 @@ fn toolchain_bins(bins: &mut Vec<PathBuf>, toolchains: &Path) {
 /// shims to `~/.cargo/bin`) or when only the toolchain is installed.
 fn cargo_bins_shown(home: &Path, exposed: &[PathBuf], rustup_home: Option<&Path>) -> Vec<String> {
     let mut bins: Vec<PathBuf> = Vec::new();
-    toolchain_bins(&mut bins, &home_rustup(home).join("toolchains"));
+    if home.is_absolute() {
+        toolchain_bins(&mut bins, &home_rustup(home).join("toolchains"));
+    }
     if let Some(configured) = rustup_home {
         toolchain_bins(&mut bins, &configured.join("toolchains"));
     }
@@ -276,7 +278,7 @@ fn cargo_bins_shown(home: &Path, exposed: &[PathBuf], rustup_home: Option<&Path>
         bins.push(path.join("bin"));
         toolchain_bins(&mut bins, &path.join("toolchains"));
     }
-    bins.retain(|bin| bin.join("cargo").is_file());
+    bins.retain(|bin| bin.is_absolute() && bin.join("cargo").is_file());
     bins.sort();
     bins.dedup();
     bins.iter().map(|bin| bin.display().to_string()).collect()
@@ -334,10 +336,14 @@ impl Layout {
         if let Some(configured) = rustup_home.filter(|v| v.starts_with(&rustup)) {
             toolchain_bins(&mut toolchain_dirs, &configured.join("toolchains"));
         }
-        toolchain_dirs.retain(|b| b.join("cargo").is_file());
+        toolchain_dirs.retain(|b| b.is_absolute() && b.join("cargo").is_file());
+        toolchain_dirs.sort();
+        toolchain_dirs.dedup();
         toolchain_dirs.extend(TOOLCHAIN_PATH.iter().map(|rel| i.home.join(rel)));
         for dir in toolchain_dirs {
-            if !dir.is_dir() || denied(&dir, &deny) {
+            // A relative entry would resolve against the workspace a command runs in, where a
+            // project could plant a `cargo`; only absolute directories go on the PATH.
+            if !dir.is_absolute() || !dir.is_dir() || denied(&dir, &deny) {
                 continue;
             }
             let shown = dir.display().to_string();
@@ -354,7 +360,7 @@ impl Layout {
             let exposed: Vec<PathBuf> = i
                 .read_extra
                 .iter()
-                .filter(|extra| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), extra))
+                .filter(|extra| Layout::keeps_extra(&i.home, i.agent_dir.as_deref(), extra.as_path()))
                 .cloned()
                 .collect();
             let configured =
@@ -993,6 +999,18 @@ mod tests {
             "no second cargo: {:?}",
             l.path
         );
+    }
+
+    /// A layout without a home cannot name a toolchain: no relative directory may reach the
+    /// PATH, where it would resolve against the workspace a command runs in.
+    #[test]
+    fn a_layout_without_a_home_adds_no_relative_toolchain_path() {
+        let l = Layout::build(&LayoutInputs {
+            path_var: "/usr/bin:/bin".into(),
+            ..Default::default()
+        });
+        assert!(l.path.iter().all(|p| Path::new(p).is_absolute()), "{:?}", l.path);
+        assert_eq!(l.path_value(), "/usr/bin:/bin:/usr/local/bin");
     }
 
     /// A `RUSTUP_HOME` inside `~/.rustup` (where the sandbox binds it read-only) keeps its
