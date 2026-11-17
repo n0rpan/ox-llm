@@ -808,40 +808,86 @@ pub fn run_task_with_notes(
     observer: &dyn CheckpointObserver,
     scrub_note: &(dyn Fn(&ProblemNote) -> Option<ProblemNote> + Sync),
 ) -> std::result::Result<Record, RunError> {
-    let task = &planned.task;
-    validate(task)?;
+    LockedTask::acquire(planned.task(), policy)?
+        .run_with_notes(repo, binary, planned, rerun, observer, scrub_note)
+}
+
+/// Own the existing task lock across execution and its explicit terminal actions.
+pub struct LockedTask<'a> {
+    task: &'a Task,
+    policy: &'a RunPolicy,
+    lock: fs::File,
+}
+
+impl<'a> LockedTask<'a> {
+    pub fn acquire(task: &'a Task, policy: &'a RunPolicy) -> Result<Self> {
+        Self::open(task, policy, true)
+    }
+
+    fn open(task: &'a Task, policy: &'a RunPolicy, create: bool) -> Result<Self> {
+        validate(task)?;
+        if create {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&policy.storage)
+                .map_err(|error| format!("task storage: {error}"))?;
+        }
+        verify_task_storage(&policy.storage).map_err(|error| format!("task storage: {error}"))?;
+        let lock_path = policy.storage.join(format!("{}.lock", task.id));
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(shadow::OWNER_FILE_FLAGS)
+            .create(create)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
+        let lock_metadata = lock
+            .metadata()
+            .map_err(|e| format!("cannot inspect task lock: {e}"))?;
+        // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+        if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
+            return Err("cannot lock task: lock must be an owner-controlled regular file".into());
+        }
+        lock.try_lock()
+            .map_err(|e| format!("task {} is already running: {e}", task.id))?;
+        Ok(Self { task, policy, lock })
+    }
+
+    pub fn run_with_notes(
+        &mut self,
+        repo: &Path,
+        binary: &Path,
+        planned: &PlannedTask,
+        rerun: bool,
+        observer: &dyn CheckpointObserver,
+        scrub_note: &(dyn Fn(&ProblemNote) -> Option<ProblemNote> + Sync),
+    ) -> std::result::Result<Record, RunError> {
+        run_locked(repo, binary, planned, self, rerun, observer, scrub_note)
+    }
+}
+
+fn run_locked(
+    repo: &Path,
+    binary: &Path,
+    planned: &PlannedTask,
+    locked: &LockedTask<'_>,
+    rerun: bool,
+    observer: &dyn CheckpointObserver,
+    scrub_note: &(dyn Fn(&ProblemNote) -> Option<ProblemNote> + Sync),
+) -> std::result::Result<Record, RunError> {
+    let (task, policy, lock_file) = (locked.task, locked.policy, &locked.lock);
+    if task != &planned.task {
+        return Err("task specification changed".into());
+    }
     let root = PathBuf::from(checked(git(policy, repo, &["rev-parse", "--show-toplevel"]))?);
     let common = PathBuf::from(checked(git(
         policy,
         &root,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ))?);
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&policy.storage)
-        .and_then(|()| verify_task_storage(&policy.storage))
-        .map_err(|error| format!("task storage: {error}"))?;
-    let lock_path = policy.storage.join(format!("{}.lock", task.id));
-    let lock_file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .custom_flags(shadow::OWNER_FILE_FLAGS)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
-    let lock_metadata = lock_file
-        .metadata()
-        .map_err(|e| format!("cannot inspect task lock: {e}"))?;
-    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
-    if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
-        return Err("cannot lock task: lock must be an owner-controlled regular file".into());
-    }
-    lock_file
-        .try_lock()
-        .map_err(|e| format!("task {} is already running: {e}", task.id))?;
     // The inherited lock retains its inode; status never tries to acquire it.
     let receipt = policy.storage.join(format!("{}.json", task.id));
     let replacing = receipt.exists();
@@ -926,7 +972,7 @@ pub fn run_task_with_notes(
         repo: &root,
         binary,
         policy: &policy,
-        lock: &lock_file,
+        lock: lock_file,
         writer: &mut writer,
         observer,
         scrub_note,
@@ -957,7 +1003,7 @@ pub fn run_task_with_notes(
     writer
         .save(&mut state, Step::Saving, observer)
         .map_err(RunError::Checkpoint)?;
-    if let Err(error) = execute::save_work(&root, binary, task, &policy, &lock_file, &mut state.record) {
+    if let Err(error) = execute::save_work(&root, binary, task, &policy, lock_file, &mut state.record) {
         if state.record.outcome != Outcome::Interrupted {
             state.record.outcome = Outcome::Blocked;
         }
@@ -987,7 +1033,7 @@ pub fn run_task_with_notes(
     if recover_accepted_save {
         // A failed or interrupted save can leave a worktree that changed since
         // acceptance. Qualify the exact recovered commit before restoring success.
-        match committed::verify_commit(&root, binary, &policy, &state, &lock_file) {
+        match committed::verify_commit(&root, binary, &policy, &state, lock_file) {
             Ok(_) => {
                 let initial = state.execution.as_ref().and_then(|point| point.initial.as_ref());
                 state.record.outcome = if state.record.head_sha.as_ref() == initial {
