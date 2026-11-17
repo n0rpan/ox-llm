@@ -40,7 +40,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_ENGINE_URL",
         pi_name: None,
-        description: "engine endpoint for the default models.json entry; default http://127.0.0.1:8092 (the oxc controller)",
+        description: "HTTP endpoint used only with both native switches explicitly disabled; compatibility default http://127.0.0.1:8092",
         supported: true,
     },
     // Shell tool session environment, set per run (never on the wire, W3).

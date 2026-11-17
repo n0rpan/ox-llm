@@ -244,7 +244,7 @@ Variables that oxa reads. Variables marked *set* are set by oxa for the bash too
 
 | Variable | Meaning |
 |---|---|
-| `OXA_ENGINE_URL` | engine endpoint for the default model entry. Default `http://127.0.0.1:8092` |
+| `OXA_ENGINE_URL` | HTTP endpoint when both native switches are explicitly disabled; compatibility default `http://127.0.0.1:8092` |
 | `OXA_AGENT_DIR` | agent directory. Default `~/.oxa/agent`; `~` is expanded |
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
 | `OXA_PACKAGE_DIR` | package directory, for Nix or Guix store paths |

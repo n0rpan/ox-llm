@@ -5,7 +5,7 @@ This page gets `oxa` running against a local engine and sends a first prompt. Fo
 ## Requirements
 
 - A Rust toolchain; hosted checks pin Rust 1.99.1.
-- A running engine that speaks the OpenAI-compatible HTTP API. In an ox-llm install this is the controller (`oxc`) on `http://127.0.0.1:8092`.
+- For native local models: a matched `oxe-server` binary beside `oxa` and an existing GGUF configured in user settings. Native local and cloud routing are enabled by default; no Python controller is required. See the [native install guide](../../../docs/NATIVE-INSTALL.md).
 - For the bash tool: Linux with `bubblewrap` (`bwrap`) installed and unprivileged user namespaces enabled. Without a usable `bwrap` the bash tool is disabled and oxa says so at startup.
 
 ## Build
@@ -21,19 +21,18 @@ The binary is `target/release/oxa`. Copy it somewhere on your `PATH`, or run it 
 
 ## Point oxa at the engine
 
-oxa reads the engine address from `OXA_ENGINE_URL`. When the variable is not set and no `models.json` names an endpoint, oxa uses the default `http://127.0.0.1:8092`.
+The Rust-only defaults select the in-process gateway and local engine. Configure
+local model paths and limits in the user-only `oxa.local` object, or cloud model
+catalog and budget in `oxa.cloud`; choose a configured model with `--model` or
+`defaultModel`. See [native local configuration](../../oxc-local/CONFIGURATION.md)
+and [settings.md](settings.md). Missing weights or invalid native settings produce
+an error; they never silently select a controller on port 8092.
 
-```console
-$ export OXA_ENGINE_URL=http://127.0.0.1:8092
-```
-
-If the engine is not reachable, oxa stops with one line and exit code 2:
-
-```text
-Error: cannot reach the engine at 127.0.0.1:9: Connection refused (os error 111) (start the engine or set OXA_ENGINE_URL)
-```
-
-Several endpoints, or a per-model setup, go in `~/.oxa/agent/models.json`. See [settings.md](settings.md) for the settings that choose a model.
+For an intentionally external OpenAI-compatible HTTP engine, explicitly set both
+`oxa.engine.inProcessCloud` and `oxa.engine.inProcessLocal` to `false` in user
+settings, then select its address with `OXA_ENGINE_URL` or `models.json`.
+The legacy `http://127.0.0.1:8092` address is only this opt-out transport's
+compatibility default. Project settings cannot switch the user transport.
 
 oxa is tuned to the models the ox-llm engine serves. [tools-context.md](tools-context.md) lists the tool formats and the context defaults, and the settings that change them.
 

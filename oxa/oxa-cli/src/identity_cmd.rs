@@ -1,6 +1,6 @@
 //! O-152: `oxa identity` (architect-owned). Writes `<agent dir>/identity.md`, the identity
 //! section of the frozen prefix, and the built-in skills. Run by the ox-llm install and update.
-use oxa_config::{Dirs, Env, ModelsConfig};
+use oxa_config::{Dirs, Env, ModelsConfig, Settings};
 use oxa_core::prompt::{identity_text, IdentityFacts, IdentityModel, IDENTITY_FALLBACK};
 use oxa_proto::{codes, Engine, OxaError};
 use oxa_resources::{identity_path, install_builtin_skills, read_identity, write_atomic};
@@ -71,7 +71,8 @@ pub fn write_identity(dirs: &Dirs, facts: &IdentityFacts) -> Result<bool, OxaErr
 fn endpoint_engine(dirs: &Dirs, env: &Env) -> Option<std::sync::Arc<dyn Engine>> {
     let (models, _) = ModelsConfig::load(dirs, env);
     let ep = crate::dispatch::default_endpoint(&models).ok()?;
-    crate::dispatch::engine_for(&ep).ok()
+    let user = Settings::load(dirs, Path::new("/"), false);
+    crate::in_process::select(&user, &user, dirs, None, || crate::dispatch::engine_for(&ep)).ok()
 }
 
 /// What this machine and the engine say about themselves. `root` is the file system root the

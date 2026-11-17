@@ -156,7 +156,7 @@ In `standard` and `auto`, the model cannot write `.oxa/**` or `.agents/skills/**
 
 ## Network
 
-The harness connects to one place by default: the engine, on loopback (`127.0.0.1:8092`). It has no telemetry, no version check and no upload of sessions, exports or reports. The model talks only to the engine. Its tools may use the network, as the table shows.
+The defaults select the in-process gateway and local engine. Native local inference uses an owned engine on private loopback; configured cloud models use their provider endpoints through the gateway. There is no default controller connection on port 8092. oxa has no telemetry or automatic upload of sessions, exports or reports. Its tools may use the network, as the table shows.
 
 | Source | Network | In `ask` mode |
 |---|---|---|
@@ -193,7 +193,7 @@ Offline mode is about the network only. It does not limit what those programs re
 
 ### Remote engine
 
-oxa refuses to send prompts to an engine on another host. The check is on the engine address (`OXA_ENGINE_URL` or `models.json`). Loopback addresses (`localhost`, `127.0.0.0/8`, `::1`) are always allowed. For any other host, set `oxa.engine.allowRemote: true` in the user settings. A project file cannot set it. oxa prints a warning at start-up while it is on.
+For the explicit HTTP transport opt-out (both native switches false), oxa refuses to send prompts to an engine on another host. The check is on the engine address (`OXA_ENGINE_URL` or `models.json`). Loopback addresses (`localhost`, `127.0.0.0/8`, `::1`) are always allowed. For any other host, set `oxa.engine.allowRemote: true` in the user settings. A project file cannot set it. oxa prints a warning at start-up while it is on.
 
 ## Extensions, hooks and MCP
 
