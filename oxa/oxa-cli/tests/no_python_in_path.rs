@@ -507,11 +507,81 @@ fn tokenizer_fixture(path: &Path) {
 // The shipped engine's existing stub is model-free. This is not a fake-child
 // replacement and does not qualify weights, numerics or a real local-model task.
 // Called only in required-release mode: omit enable switches to prove its default.
+// This runs in the proof's real inherited kernel context, never a synthetic
+// MemorySource. It is a prerequisite, not a substitute for the traced task.
+fn native_memory_preflight(required: u64) {
+    let membership = fs::read_to_string("/proc/self/cgroup").expect("preflight: cgroup membership");
+    let relative = membership
+        .lines()
+        .find_map(|line| line.strip_prefix("0::/"))
+        .expect("preflight: unified absolute cgroup membership");
+    assert!(
+        Path::new(relative)
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_))),
+        "preflight: invalid cgroup membership components"
+    );
+    eprintln!("NATIVE-MEMORY membership_root={}", relative.is_empty());
+    let group = Path::new("/sys/fs/cgroup").join(relative);
+    for (path, label, keys) in [
+        (
+            PathBuf::from("/proc/meminfo"),
+            "meminfo",
+            &["MemAvailable:", "SwapFree:"][..],
+        ),
+        (PathBuf::from("/proc/pressure/memory"), "pressure", &["full"][..]),
+        (PathBuf::from("/proc/vmstat"), "vmstat", &["oom_kill"][..]),
+        (
+            group.join("memory.events"),
+            "memory.events",
+            &["oom", "oom_kill", "oom_group_kill"][..],
+        ),
+        (group.join("pids.events"), "pids.events", &["max"][..]),
+        (group.join("memory.swap.max"), "memory.swap.max", &[][..]),
+        (group.join("memory.swap.current"), "memory.swap.current", &[][..]),
+    ] {
+        let file = File::open(path).unwrap_or_else(|e| panic!("preflight: read {label}: {e}"));
+        let mut text = String::new();
+        file.take(65537)
+            .read_to_string(&mut text)
+            .unwrap_or_else(|e| panic!("preflight: decode {label}: {e}"));
+        assert!(text.len() <= 65536, "preflight: oversized {label}");
+        for line in text
+            .lines()
+            .filter(|line| {
+                keys.is_empty()
+                    || line
+                        .split_whitespace()
+                        .next()
+                        .is_some_and(|key| keys.contains(&key))
+            })
+            .take(8)
+        {
+            eprintln!("NATIVE-MEMORY {label} {line:.256}");
+        }
+    }
+    let sample = oxc_local::memory::MemorySource::default()
+        .sample()
+        .expect("preflight: production MemorySource rejected real kernel metadata");
+    eprintln!("NATIVE-MEMORY sample={sample:?} required_bytes={required}");
+    assert!(required > 0, "preflight: allocation must be positive");
+    assert!(
+        sample.available_bytes >= required,
+        "preflight: insufficient MemAvailable"
+    );
+    assert!(sample.swap_limit_zero, "preflight: memory.swap.max must be zero");
+    assert_eq!(
+        sample.swap_current_bytes, 0,
+        "preflight: memory.swap.current must be zero"
+    );
+}
+
 fn native_local_release_pair(binary: &Path, engine: &Path, missing_weights: bool) {
     let env = TestEnv::new();
     let model = env.work().join("tokenizer-only.gguf");
     if !missing_weights {
         tokenizer_fixture(&model);
+        native_memory_preflight(fs::metadata(&model).unwrap().len().checked_add(1048576).unwrap());
     }
     let controller = TcpListener::bind("127.0.0.1:0").expect("owned controller trap");
     controller.set_nonblocking(true).unwrap();
