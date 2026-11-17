@@ -289,7 +289,9 @@ pub fn read_cpu_tree(root: &Path) -> std::io::Result<Vec<CpuData>> {
         let name = name.to_string_lossy();
         if let Some(rest) = name.strip_prefix("cpu") {
             if let Ok(id) = rest.parse::<usize>() {
-                out.push(read_cpu_dir(id, &entry.path()));
+                if entry.file_type()?.is_dir() {
+                    out.push(read_cpu_dir(id, &entry.path()));
+                }
             }
         }
     }
