@@ -527,16 +527,17 @@ fn no_tool_aliases_are_exclude_tools_and_pick_the_same_tools() {
 /// add to it rather than replace it.
 #[test]
 fn mixed_tool_exclusions_remain_disabled_in_either_order() {
-    for words in [
-        vec!["--no-bash", "--exclude-tools", "read"],
-        vec!["--exclude-tools", "read", "--no-bash"],
-        vec!["-xt", "bash", "--exclude-tools", "read"],
+    // Each case also pins the parsed list: both spellings append in the order given, so a
+    // later exclusion never replaces the earlier one.
+    for (words, expected) in [
+        (vec!["--no-bash", "--exclude-tools", "read"], ["bash", "read"]),
+        (vec!["--exclude-tools", "read", "--no-bash"], ["read", "bash"]),
+        (vec!["-xt", "bash", "--exclude-tools", "read"], ["bash", "read"]),
     ] {
         let args = parse(&words);
         let (tools, warnings) = oxa_core::resolve_toolset(&oxa_tools::builtin_tools(), &selection(&args));
         assert!(warnings.is_empty(), "{words:?}: {warnings:?}");
-        // Both spellings land in one list, so later words cannot re-enable an earlier one.
-        assert_eq!(args.exclude_tools, ["bash", "read"], "{words:?}");
+        assert_eq!(args.exclude_tools, expected, "{words:?}");
         let names: Vec<_> = tools.specs().into_iter().map(|s| s.name).collect();
         assert!(
             !names.iter().any(|name| name == "bash"),
