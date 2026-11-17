@@ -1,10 +1,99 @@
 //! Session-local goal controls; no worker, timer thread or external scheduler.
 use oxa_proto::{Access, Exposure, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
-use oxa_session::{Goal, GoalStatus};
+use oxa_session::{Goal, GoalStatus, SessionRef};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Wake, Waker};
 use std::time::{Duration, Instant};
+
+/// Lifecycle requests from an already-authorized session frontend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GoalControl {
+    Pause,
+    Resume,
+    Cancel,
+}
+
+/// Goal status and revision, bound to the owner's full session reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GoalObservation<'a> {
+    /// Frontend-private identity. Exclude it from shared summaries.
+    pub session: &'a SessionRef,
+    pub revision: u64,
+    pub status: Option<GoalStatus>,
+}
+
+impl crate::Session {
+    /// The saved goal revision, scoped to the owner's current session reference.
+    pub fn goal_revision(&self) -> u64 {
+        Goal::revision(self.inner().tree.entries())
+    }
+
+    /// Read status and revision together without copying objective or evidence text.
+    /// Use the full reference when comparing observations or requesting a control.
+    pub fn goal_observation(&self) -> GoalObservation<'_> {
+        GoalObservation {
+            session: &self.inner().sref,
+            revision: self.goal_revision(),
+            status: self.inner().goal.as_ref().map(|goal| goal.status()),
+        }
+    }
+
+    /// Apply a lifecycle request on the idle session owner. The frontend
+    /// authenticates the sender and keeps the full session reference it bound
+    /// at admission private. Two files can share an ID and revision.
+    ///
+    /// Success means the store sync succeeded. If the goal revision advanced
+    /// before a later step failed, the error distinguishes an unconfirmed sync
+    /// from a saved transition that still needs a prefix refresh.
+    pub fn control_goal(
+        &mut self,
+        bound_session: &SessionRef,
+        revision: u64,
+        control: GoalControl,
+        sink: &mut dyn oxa_proto::EventSink,
+    ) -> Result<u64, oxa_proto::OxaError> {
+        use oxa_proto::{codes, OxaError};
+        if &self.inner().sref != bound_session || self.goal_revision() != revision {
+            return Err(OxaError::new(
+                "goal_revision_conflict",
+                "The session or goal revision changed.",
+            ));
+        }
+        let mut goal = self
+            .goal()
+            .ok_or_else(|| OxaError::new(codes::NOT_FOUND, "The session has no goal."))?;
+        match control {
+            GoalControl::Pause if goal.status == GoalStatus::Pursuing => goal.pause(),
+            GoalControl::Resume if matches!(goal.status, GoalStatus::Paused | GoalStatus::Blocked) => {
+                goal.resume()?;
+            }
+            GoalControl::Cancel => goal.cancel()?,
+            _ => {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "The goal cannot make that transition.",
+                ))
+            }
+        }
+        let result = self.set_goal(Some(goal), sink);
+        let applied_revision = self.goal_revision();
+        if applied_revision == revision {
+            return result.map(|()| applied_revision);
+        }
+        let state = self.inner();
+        state.store.sync(&state.sref).map_err(|error| {
+            OxaError::new("goal_sync_failed", error.message).with_hint(
+                "The goal revision advanced. Confirm durability before acknowledging the transition.",
+            )
+        })?;
+        result.map_err(|error| {
+            OxaError::new("goal_applied_prefix_failed", error.message)
+                .with_hint("The goal transition was saved. Refresh the session prefix before running again.")
+        })?;
+        Ok(applied_revision)
+    }
+}
 
 pub struct GoalRuntime(Mutex<Inner>);
 struct Inner {
@@ -29,7 +118,10 @@ impl GoalRuntime {
         self.lock().goal.clone()
     }
     pub fn pursuing(&self) -> bool {
-        self.lock().goal.status == GoalStatus::Pursuing
+        self.status() == GoalStatus::Pursuing
+    }
+    fn status(&self) -> GoalStatus {
+        self.lock().goal.status
     }
     pub(crate) fn begin(&self, tokens: u64) {
         let mut state = self.lock();

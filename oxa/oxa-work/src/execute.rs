@@ -45,6 +45,7 @@ impl Runner<'_> {
                     self.advance(state, Step::Worker)?;
                 }
                 Step::Worker | Step::Repair => {
+                    tree::verify_objects(self.policy, self.repo, &point(state)?.base)?;
                     tree::validate(self.policy, self.repo, &tree, &state.task)?;
                     let step = state.record.step;
                     let remaining = std::time::Duration::from_millis(

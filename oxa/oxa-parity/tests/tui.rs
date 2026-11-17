@@ -855,6 +855,30 @@ fn tui_006() {
     );
 }
 
+/// A streamed assistant response mixes a table with labelled Python code, not raw fences.
+#[test]
+fn code_fences_in_assistant_transcript() {
+    let mut turn = ScriptTurn::text(
+        "| name | value |\n|---|---|\n| answer | 42 |\n\n```python\ndef hello():\n    return 1\n```\n\nCode complete.",
+    );
+    turn.chunk = 3;
+    let rig = Rig::start(vec![turn], RigOpts::default());
+    rig.prompt("show a table and a function", "Code complete.");
+    let s = rig.screen();
+    assert!(!s.contains("```"), "{s:?}");
+    assert!(s.contains("┌─ python "), "{s:?}");
+    assert!(s.contains("│  def hello():"), "{s:?}");
+    assert!(s.contains("│      return 1"), "{s:?}");
+    assert!(
+        s.contains("answer") && s.contains("42") && s.contains("┬"),
+        "{s:?}"
+    );
+    assert!(
+        s.rows().iter().any(|r| r.contains('└') && r.contains('┘')),
+        "{s:?}"
+    );
+}
+
 /// Mermaid diagrams
 #[test]
 fn tui_007() {
@@ -868,14 +892,14 @@ fn tui_007() {
         s.contains("graph TD") && s.contains("A-->B"),
         "the source as a code block\n{s:?}"
     );
-    // A code block: the fence with its language, the source indented by codeBlockIndent.
+    // Fences are consumed; the labelled frame contains the indented source.
+    assert!(!s.contains("```"), "{s:?}");
+    assert!(s.rows().iter().any(|r| r.contains("┌─ mermaid ")), "{s:?}");
+    assert!(s.rows().iter().any(|r| r.contains("│  graph TD")), "{s:?}");
     assert!(
-        s.rows()
-            .iter()
-            .any(|r| r.split_whitespace().next() == Some("```mermaid")),
+        s.rows().iter().any(|r| r.contains('└') && r.contains('┘')),
         "{s:?}"
     );
-    assert!(s.rows().iter().any(|r| r.starts_with("   graph TD")), "{s:?}");
 }
 
 /// LaTeX rendering
