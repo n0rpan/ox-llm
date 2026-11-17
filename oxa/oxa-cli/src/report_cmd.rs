@@ -421,13 +421,13 @@ fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     }
 }
 
-pub(crate) use oxa_work::command_runner;
+use oxa_work::{command_runner, COMMAND_DEADLINE};
 
 /// The real runner: the program's stdout, killed after 30 s.
 fn process_runner(program: &str, args: &[String]) -> Option<(i32, String)> {
     let mut command = std::process::Command::new(program);
     command.args(args);
-    command_runner(command, None)
+    command_runner(command, None, COMMAND_DEADLINE)
 }
 
 /// `oxa report-issue draft|submit ..`. Returns the exit code.
