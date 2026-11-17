@@ -1055,13 +1055,18 @@ fn the_cache_home_and_its_plain_entries_stay_read_only() {
         "{:?}",
         l.env
     );
-    // Nothing of that home is linked into the session's cache: the session's empty `.cache`
-    // is the writable cache inside.
+    // Only the two read-write bound caches are linked into the session's cache; the unbound
+    // `build-tools` is not, so a plain entry under the cache home never becomes writable.
     let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&home)).expect("scratch");
     let dir = sc.path().to_path_buf();
     let _l = l.with_scratch(sc);
-    let links = cache_links(&dir);
-    assert!(links.is_empty(), "{links:?}");
+    assert_eq!(
+        cache_links(&dir),
+        vec![
+            ("pip".to_string(), cache.join("pip")),
+            ("sccache".to_string(), cache.join("sccache")),
+        ]
+    );
 }
 
 /// #457, N28: the session directory replaces `--tmpfs /tmp` at the same place, before the
