@@ -48,6 +48,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container:
       image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
+      options: --memory=8g --memory-swap=8g --cgroupns=private
     timeout-minutes: 180
     outputs:
       source_commit: ${{ steps.source.outputs.commit }}
@@ -60,6 +61,12 @@ jobs:
           persist-credentials: false
       - name: GCC 16 and pinned Rust 1.99.1
         run: packaging/release/setup.sh
+      - name: Verify inherited native no-swap policy
+        run: |
+          set -euo pipefail
+          test "$(awk -F: '$1 == "0" && $2 == "" { print $3 }' /proc/self/cgroup)" = /
+          test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
+          test "$(cat /sys/fs/cgroup/memory.swap.current)" = 0
       - name: Immutable source archive
         id: source
         run: |
@@ -209,7 +216,7 @@ jobs:
       - name: Fresh Arch container (official image is x86_64 only)
         run: |
           mkdir packages
-          docker run --rm \
+          docker run --rm --memory=8g --memory-swap=8g --cgroupns=private \
             -e VERSION -e SOURCE_DATE_EPOCH -e OX_SOURCE_COMMIT \
             -v "$GITHUB_WORKSPACE/artifacts:/artifacts:ro" \
             -v "$GITHUB_WORKSPACE/packages:/packages" \
