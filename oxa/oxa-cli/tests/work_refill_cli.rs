@@ -13,7 +13,11 @@ fn invoke(env: &TestEnv, config: &Path, token: &str, offline: bool) -> std::proc
     command
         .current_dir(env.work())
         .env_clear()
-        .envs(env.envs("http://127.0.0.1:1"));
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env(
+            "PATH",
+            format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
+        );
     if offline {
         command.arg("--offline");
     }
@@ -37,8 +41,7 @@ fn invoke(env: &TestEnv, config: &Path, token: &str, offline: bool) -> std::proc
     child.wait_with_output().unwrap()
 }
 
-#[test]
-fn refill_startup_retains_pause_and_refuses_worker_writable_authority() {
+fn fixture() -> (TestEnv, std::path::PathBuf) {
     let env = TestEnv::new();
     assert!(
         Command::new("git")
@@ -56,6 +59,12 @@ fn refill_startup_retains_pause_and_refuses_worker_writable_authority() {
     fs::create_dir(&controls).unwrap();
     fs::set_permissions(&controls, fs::Permissions::from_mode(0o700)).unwrap();
     fs::set_permissions(env.tmp(), fs::Permissions::from_mode(0o700)).unwrap();
+    (env, controls)
+}
+
+#[test]
+fn refill_startup_retains_pause_and_refuses_worker_writable_authority() {
+    let (env, controls) = fixture();
     let config = controls.join("refill.json");
     let pause = controls.join("paused");
     let queue = controls.join("queue");
@@ -89,4 +98,89 @@ fn refill_startup_retains_pause_and_refuses_worker_writable_authority() {
     fs::write(&outside, b"{\"enabled\":false}").unwrap();
     fs::set_permissions(&outside, fs::Permissions::from_mode(0o600)).unwrap();
     assert_eq!(invoke(&env, &outside, "", false).status.code(), Some(2));
+}
+
+#[test]
+fn private_token_and_exact_task_ref_precede_one_durable_publication() {
+    use oxa_work::board::{AttemptState, Claims, ImportState, assignment::ManualAuthority};
+    use std::collections::BTreeMap;
+    let (env, controls) = fixture();
+    let queue = controls.join("queue");
+    let root = controls.join("claims");
+    for path in [&queue, &root] {
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let claims = Claims::open(&root).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    claims
+        .import_snapshot(
+            Some(ManualAuthority::Owner),
+            &BTreeMap::from([(
+                44,
+                ImportState {
+                    state: AttemptState::default(),
+                    excluded: false,
+                },
+            )]),
+            now,
+        )
+        .unwrap();
+    let task = controls.join("task.txt");
+    fs::write(
+        &task,
+        b"i46 local/fake agent/44 main\nSynthetic prepared packet.\n",
+    )
+    .unwrap();
+    fs::set_permissions(&task, fs::Permissions::from_mode(0o600)).unwrap();
+    let config = controls.join("refill.json");
+    fs::write(&config, json!({"enabled":true,"intake":true,"queue":queue,"claims":root,
+        "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
+        "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
+        "partition":{"modulus":22,"residues":[0]},
+        "packets":[{"number":44,"revision":"revision","action":"build_issue","branch":"agent/44","taskfile":task}]
+    }).to_string()).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    let gh = env.write(
+        "tmp/gh",
+        r#"#!/bin/sh
+[ "$GH_TOKEN" = synthetic ] || exit 93
+printf 'read\n' >> "$0.calls"
+printf 'HTTP/2.0 200 OK\r\n\r\n'
+cat "$0.reply"
+"#,
+    );
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(env.tmp().join("gh.reply"), json!({"data":{"repository":{
+        "mergeQueue":null,"pullRequests":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
+        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"}
+    }}}).to_string()).unwrap();
+    let missing = invoke(&env, &config, "", false);
+    assert_eq!(missing.status.code(), Some(2));
+    assert!(!env.tmp().join("gh.calls").exists());
+    let mismatch = invoke(&env, &config, "synthetic\n", false);
+    assert_eq!(mismatch.status.code(), Some(2));
+    assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
+    assert_eq!(fs::read_dir(&queue).unwrap().count(), 0);
+    let valid = "i44 local/fake agent/44 main\nSynthetic prepared packet.\n";
+    fs::write(&task, valid).unwrap();
+    let result = invoke(&env, &config, "synthetic\n", false);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let tasks: Vec<_> = fs::read_dir(&queue)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.is_file())
+        .collect();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(fs::read_to_string(&tasks[0]).unwrap(), valid);
+    assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
+    assert!(invoke(&env, &config, "synthetic\n", false).status.success());
+    assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
 }
