@@ -821,3 +821,38 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_older_review() {
     assert_eq!(empty["landing_main"], main);
     assert!(empty["landing"]["42"].get("queue").is_none());
 }
+
+#[test]
+fn landing_shadow_refuses_an_incomplete_queue_connection() {
+    let (env, mut detail) = fixture();
+    detail["data"]["repository"]["p42"]["comments"] = serde_json::json!({"totalCount": 0, "nodes": []});
+    fs::write(env.work().join("review.json"), detail.to_string()).unwrap();
+    env.write(
+        "work/queue.json",
+        r#"{"data":{"repository":{"mergeQueue":null}}}"#,
+    );
+    let nodes: Vec<_> = (1..=100)
+        .map(|number| {
+            serde_json::json!({
+                "pullRequest": {"number": number, "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+                "enqueuedAt": "2026-01-01T00:00:00Z"
+            })
+        })
+        .collect();
+    let partial = serde_json::json!({"data":{"repository":{
+        "mergeQueue":{"entries":{"totalCount":101,"nodes":nodes}}
+    }}});
+    fs::write(env.work().join("queue-state.json"), partial.to_string()).unwrap();
+
+    let result = invoke(
+        &env,
+        "work board --shadow --repo example/repo --once --landing-shadow",
+    );
+    assert_eq!(result.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("refusing a partial board"),
+        "unexpected result: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(fs::metadata(log_for(&env, "example/repo")).unwrap().len(), 0);
+}
