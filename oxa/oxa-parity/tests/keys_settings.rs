@@ -2907,9 +2907,12 @@ fn key_007() {
         half_shift > 0 && half_shift < page_shift,
         "half-page movement must be positive and smaller than a page: {half_shift}/{page_shift}\n{s:?}"
     );
-    assert!(
-        (2 * half_shift - page_shift).abs() <= 1,
-        "half-page movement must be half a page, rounded to a row: {half_shift}/{page_shift}\n{s:?}"
+    // Page Up keeps four overlapping rows; Half Page Up is half the full viewport,
+    // rounded down, rather than half the Page Up distance.
+    assert_eq!(
+        half_shift,
+        (page_shift + 4) / 2,
+        "half-page movement must be half the viewport: {half_shift}/{page_shift}\n{s:?}"
     );
     t.key("f8");
     t.wait("half a page down", |s| row_of(s, "R70") == Some(r70));
