@@ -72,13 +72,10 @@ fn testenv_explicit_parent_is_isolated_and_cleaned_up() {
         for dir in [first.home(), first.agent_dir(), first.tmp(), first.work()] {
             assert!(dir.is_dir() && dir.starts_with(&root));
         }
-        for (name, value) in first.envs("http://127.0.0.1:1") {
-            if matches!(
-                name.as_str(),
-                "HOME" | "OXA_AGENT_DIR" | "TMPDIR" | "XDG_CONFIG_HOME"
-            ) {
-                assert!(Path::new(&value).starts_with(&root));
-            }
+        let envs = first.envs("http://127.0.0.1:1");
+        for key in ["HOME", "OXA_AGENT_DIR", "TMPDIR", "XDG_CONFIG_HOME"] {
+            let (_, value) = envs.iter().find(|(name, _)| name == key).unwrap();
+            assert!(Path::new(value).starts_with(&root));
         }
         assert!(first.write("work/synthetic.txt", "synthetic content").is_file());
     }
