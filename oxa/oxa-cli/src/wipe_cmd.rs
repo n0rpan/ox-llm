@@ -1,6 +1,6 @@
 //! P6: `oxa wipe` (privacy). Removes what oxa stored about one session (`--session <id>`) or
-//! about every session (`--all`): the session files, the spill directories under
-//! `<agent dir>/tmp`, and with `--engine` the engine's state for the session hint.
+//! about every session (`--all`): the session files, queued prompts under `<agent dir>/inbox`,
+//! the spill directories under `<agent dir>/tmp`, and with `--engine` the engine's session state.
 //! Never touches `settings.json`, `models.json`, `trust.json`, `mcp.json`, the OAuth token file
 //! or the identity file. Session files are unlinked, not moved to the trash.
 //!
@@ -11,7 +11,7 @@ use crate::dispatch::{default_endpoint, engine_for};
 use oxa_config::{dirs_from_env, Dirs, Env, ModelsConfig, Settings};
 use oxa_proto::{codes, Engine, OxaError};
 use oxa_session::{
-    purge_session_file, remove_all_spill, remove_spill_dir, session_files_under, SessionHeader,
+    purge_session_file, remove_all_spill, remove_inbox, remove_spill_dir, session_files_under, SessionHeader,
 };
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -167,6 +167,8 @@ fn wipe_one(
         .filter(|(_, h)| h.as_ref().is_some_and(|h| h.id == id))
         .map(|(p, _)| p.clone())
         .collect();
+    let inbox_files = remove_inbox(&dirs.agent_dir, Some(&id))?;
+    let _ = writeln!(out, "removed {inbox_files} inbox file(s) for session {id}");
     for path in &files {
         purge_session_file(path)?;
         let _ = writeln!(out, "removed session file {}", path.display());
@@ -230,13 +232,13 @@ fn wipe_all(plan: &Plan, dirs: &Dirs, sessions: &Path, env: &Env, io: WipeIo<'_>
         if !stdin_is_tty {
             let _ = writeln!(
                 err,
-                "Error: `oxa wipe --all` removes every session and its spill files. Run it in a terminal to confirm, or pass --yes. Nothing was removed."
+                "Error: `oxa wipe --all` removes every session, queued inbox prompt and spill file. Run it in a terminal to confirm, or pass --yes. Nothing was removed."
             );
             return Ok(2);
         }
         let _ = write!(
             out,
-            "This removes {} session file(s) under {} and every spill file under {}.\nType yes to continue: ",
+            "This removes {} session file(s) under {}, every queued inbox prompt and every spill file under {}.\nType yes to continue: ",
             sessions_found.len(),
             sessions.display(),
             tmp.display()
@@ -250,6 +252,8 @@ fn wipe_all(plan: &Plan, dirs: &Dirs, sessions: &Path, env: &Env, io: WipeIo<'_>
         }
     }
 
+    let inbox_files = remove_inbox(&dirs.agent_dir, None)?;
+    let _ = writeln!(out, "removed {inbox_files} inbox file(s)");
     let mut ids = Vec::new();
     let mut parents = BTreeSet::new();
     for (path, header) in &sessions_found {

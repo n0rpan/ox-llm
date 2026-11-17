@@ -17,8 +17,9 @@ impl TestEnv {
     pub fn new() -> TestEnv {
         Self::new_in(std::env::temp_dir())
     }
-    /// Use an explicit temporary parent, e.g. for credentials/ledgers that must
-    /// live outside repositories even when the runner's TMPDIR is in a checkout.
+    /// Create the same isolated layout below an explicit temporary parent, e.g. for
+    /// credentials/ledgers that must live outside repositories even when the runner's
+    /// TMPDIR is in a checkout.
     pub fn new_in(parent: impl AsRef<Path>) -> TestEnv {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let nanos = std::time::SystemTime::now()

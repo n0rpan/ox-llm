@@ -46,10 +46,12 @@ def entries(text):
         paths = re.findall(r'^\s*path\s*:\s*(\S+)\s*$', body, re.M | re.I)
         protocol = re.findall(r'^\s*protocol\s*:\s*(\S+)\s*$', body, re.M | re.I)
         cmdlines = re.findall(r'^[ \t]*cmdline[ \t]*:[ \t]*(.*?)[ \t]*$', body, re.M | re.I)
+        comments = re.findall(r'^[ \t]*comment[ \t]*:[ \t]*(.*?)[ \t]*$', body, re.M | re.I)
         if len(cmdlines) > 1:
             raise ValueError('duplicate entry command lines need manual review')
         result[key] = {'index': i + 1, 'path': paths[0] if len(paths) == 1 else None,
-                       'efi': protocol == ['efi'], 'cmdline': cmdlines[0] if cmdlines else None}
+                       'efi': protocol == ['efi'], 'cmdline': cmdlines[0] if cmdlines else None,
+                       'top': depth == 1, 'comment': comments[0] if len(comments) == 1 else None}
     return result
 
 
@@ -107,13 +109,36 @@ def replace(path, before, after):
             temporary.unlink(missing_ok=True)
 
 
+AUTO_PREFIX = 'Local AI memlat ('
+AUTO_COMMENT = 'Auto-rebuilt Yoga MEMLAT; stock fallback Omarchy/linux-omarchy'
+
+
+def auto_entries(menu, policy):
+    """Top-level entries in the exact shape rebuild() writes.
+
+    /etc (policy) is per snapshot while the ESP menu is shared, so after a
+    snapshot boot or rollback the policy can predate the auto entry that is
+    the default. Recognise our own entries by their generated shape: name,
+    comment and an image inside the MEMLAT image directory. A user's own
+    entries never match and are never changed.
+    """
+    directory = Path(policy.get('image_directory', '/boot/EFI/LocalAI'))
+    relative = directory.relative_to(policy.get('boot_root', '/boot')).as_posix()
+    prefix = 'boot():/' + ('' if relative == '.' else relative + '/') + 'omarchy-memlat-'
+    return [name for name, entry in menu.items()
+            if entry['top'] and name.startswith(AUTO_PREFIX) and name.endswith(')')
+            and entry['comment'] == AUTO_COMMENT and entry['efi']
+            and entry['path'] and entry['path'].startswith(prefix) and '/' not in entry['path'][len(prefix):]]
+
+
 def apply(policy, action):
     config = Path(policy['config'])
     before = config.read_text()
     menu = entries(before)
     current = selected(before, menu)
     own, stock = policy['memlat_entry'], policy['stock_entry']
-    if action not in ('enable',) and current != own:
+    adopted = current != own and current in auto_entries(menu, policy)
+    if action not in ('enable',) and current != own and not adopted:
         return {'action': action, 'changed': False, 'default': current}
     verify_entry(menu, stock, Path(policy['stock_image']))
     if action == 'enable':
@@ -123,7 +148,9 @@ def apply(policy, action):
         verify_entry(menu, stock, Path(policy['stock_image']), policy['stock_sha256'])
         target = own
     elif action == 'check':
-        valid = (Path(policy['modules']).is_dir() and
+        # An adopted entry was qualified under a policy this root no longer
+        # has; it cannot be verified here, so check selects stock.
+        valid = (not adopted and Path(policy['modules']).is_dir() and
                  sha256(Path(policy['stock_image'])) == policy['stock_sha256'])
         try:
             verify_entry(menu, own, Path(policy['memlat_image']), policy['memlat_sha256'])
@@ -191,7 +218,26 @@ def notify_failure(policy, error):
         pass
 
 
+def remove_block(text, name):
+    headers = list(re.finditer(r'^\s*(/+)([^/\r\n][^\r\n]*)$', text, re.M))
+    matches = [i for i, h in enumerate(headers) if h[1] == '/' and h[2] == name]
+    if len(matches) != 1:
+        raise ValueError('automatic menu entry missing or duplicated')
+    index = matches[0]
+    end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
+    return text[:headers[index].start()] + text[end:]
+
+
 def remove_owned_block(text, policy):
+    text = remove_policy_block(text, policy)
+    # Auto entries the restored policy does not know (written under a later
+    # policy that a snapshot boot or rollback discarded) are ours as well.
+    for name in auto_entries(entries(text), policy):
+        text = remove_block(text, name)
+    return text
+
+
+def remove_policy_block(text, policy):
     expected = policy.get('automatic_entry_block', '')
     if not expected:
         return text
@@ -202,8 +248,11 @@ def remove_owned_block(text, policy):
     name = policy['memlat_entry']
     headers = list(re.finditer(r'^\s*(/+)([^/\r\n][^\r\n]*)$', text, re.M))
     matches = [(i, h) for i, h in enumerate(headers) if h[1] == '/' and h[2] == name]
+    if not matches:
+        # Already gone (e.g. a rollback restored an older menu); nothing to replace.
+        return text
     if len(matches) != 1:
-        raise ValueError('owned automatic menu entry missing or duplicated')
+        raise ValueError('owned automatic menu entry duplicated')
     index, header = matches[0]
     end = headers[index + 1].start() if index + 1 < len(headers) else len(text)
     actual = text[header.start():end]
@@ -262,13 +311,13 @@ def rebuild(policy_path, policy, *, dry_run=False, force=False):
                     os.replace(temporary, destination)
                 finally:
                     temporary.unlink(missing_ok=True)
-            name = 'Local AI memlat (' + evidence['kernel'] + ')'
+            name = AUTO_PREFIX + evidence['kernel'] + ')'
             # Keep the original tested entry/image as rollback. Replace only our
             # exact earlier auto-generated block, never arbitrary menu sections.
             body = remove_owned_block(before, policy)
             if name in entries(body):
                 raise ValueError('new automatic entry name already exists')
-            entry = ('\n/' + name + '\ncomment: Auto-rebuilt Yoga MEMLAT; stock fallback Omarchy/linux-omarchy\n'
+            entry = ('\n/' + name + '\ncomment: ' + AUTO_COMMENT + '\n'
                 'protocol: efi\npath: boot():/' + destination.relative_to(policy.get('boot_root', '/boot')).as_posix() + '#' +
                 hashlib.blake2b(image.read_bytes()).hexdigest() + '\n')
             # Preserve the STOCK entry's outer command line too. It may override
