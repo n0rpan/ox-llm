@@ -1,22 +1,18 @@
+#[path = "support/private_dir.rs"]
+mod test_dir;
 use oxa_work::board::assignment::{Control, ManualAuthority, Pin, Role, Worker, WorkerKind};
 use oxa_work::board::*;
 use std::slice::from_ref;
-use std::{collections::BTreeMap, fs, os::unix::fs::DirBuilderExt, path::PathBuf};
+use std::{collections::BTreeMap, fs};
+use test_dir::PrivateDir;
 
-struct Fixture(PathBuf);
+struct Fixture(PrivateDir);
 impl Fixture {
     fn new() -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "oxa-board-controls-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
-        Self(path.canonicalize().unwrap())
+        Self(PrivateDir::new("board-controls"))
     }
     fn store(&self) -> Claims {
-        Claims::open(&self.0).unwrap()
+        Claims::open(self.0.path()).unwrap()
     }
     fn establish(&self, numbers: impl IntoIterator<Item = u64>) {
         let incoming = numbers
@@ -36,11 +32,7 @@ impl Fixture {
             .unwrap();
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
-    }
-}
+
 struct FakeGitHub(usize);
 impl GitHub for FakeGitHub {
     fn open_pull_requests(&mut self) -> oxa_work::Result<Vec<PullRequest>> {
@@ -89,12 +81,12 @@ fn controls_require_authority_and_compare_revision_after_reopen() {
         .store()
         .control(3, None, 0, Control::OwnerOnly(true))
         .is_err());
-    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(fixture.0.path()).unwrap().count(), 0);
     fixture
         .store()
         .control(3, Some(ManualAuthority::Lead), 0, Control::OwnerOnly(true))
         .unwrap();
-    let witness = fixture.0.join("3.board-claim.created");
+    let witness = fixture.0.path().join("3.board-claim.created");
     fs::remove_file(&witness).unwrap();
     assert!(fixture
         .store()
@@ -106,8 +98,8 @@ fn controls_require_authority_and_compare_revision_after_reopen() {
     assert!(rows[&3].data.policy.as_ref().unwrap().owner_only);
     assert_eq!(rows[&3].state.attempts, 0);
     assert_eq!(rows[&3].assignee(10), None);
-    fs::remove_file(fixture.0.join("3.board-claim.json")).unwrap();
-    fs::remove_file(fixture.0.join("3.board-claim.lock")).unwrap();
+    fs::remove_file(fixture.0.path().join("3.board-claim.json")).unwrap();
+    fs::remove_file(fixture.0.path().join("3.board-claim.lock")).unwrap();
     assert!(fixture.store().assignments().is_err());
 }
 
@@ -291,7 +283,7 @@ fn import_resumes_without_resetting_attempts_or_admitting_preserved_jobs() {
     ]
     .into();
     assert!(store.import_snapshot(None, &incoming, 11).is_err());
-    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(fixture.0.path()).unwrap().count(), 0);
     let first = [(3, incoming[&3].clone())].into();
     store
         .import_snapshot(Some(ManualAuthority::Owner), &first, 11)
@@ -364,13 +356,13 @@ fn invalid_or_conflicting_import_is_preflighted_before_any_state_write() {
     assert!(store
         .import_snapshot(Some(ManualAuthority::Owner), &incoming, 11)
         .is_err());
-    assert!(!fixture.0.join("2.board-claim.json").exists());
+    assert!(!fixture.0.path().join("2.board-claim.json").exists());
     incoming.remove(&3);
     incoming.get_mut(&2).unwrap().state.utc_day = 1;
     assert!(store
         .import_snapshot(Some(ManualAuthority::Owner), &incoming, 11)
         .is_err());
-    assert!(!fixture.0.join("2.board-claim.json").exists());
+    assert!(!fixture.0.path().join("2.board-claim.json").exists());
     assert_eq!(store.snapshot().unwrap()[&3].attempts, 1);
 }
 
@@ -382,7 +374,7 @@ fn manual_assignment_and_unassignment_share_revision_fencing_and_attempts() {
     let second = worker("slot-2");
     let entry = entry();
     assert!(store.assign(&entry, &policy(), None, 0, &first, 10, 10).is_err());
-    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(fixture.0.path()).unwrap().count(), 0);
     assert!(store
         .assign(
             &entry,
@@ -395,7 +387,7 @@ fn manual_assignment_and_unassignment_share_revision_fencing_and_attempts() {
         )
         .unwrap()
         .is_none());
-    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(fixture.0.path()).unwrap().count(), 0);
     let lease = store
         .assign(&entry, &policy(), Some(ManualAuthority::Lead), 0, &first, 10, 10)
         .unwrap()
@@ -530,11 +522,11 @@ fn releases_validate_reasons_and_repair_witnesses_without_refunding() {
         assert!(store.release_for(3, &worker.id, &lease, 11, reason).is_err());
     }
     assert!(store.release_for(3, &worker.id, &lease, 9, "backwards").is_err());
-    fs::remove_file(fixture.0.join("3.board-claim.created")).unwrap();
+    fs::remove_file(fixture.0.path().join("3.board-claim.created")).unwrap();
     assert!(store.release_for(3, &worker.id, &lease, 11, "finished").unwrap());
     assert_eq!(store.snapshot().unwrap()[&3].attempts, 1);
-    fs::remove_file(fixture.0.join("3.board-claim.json")).unwrap();
-    fs::remove_file(fixture.0.join("3.board-claim.lock")).unwrap();
+    fs::remove_file(fixture.0.path().join("3.board-claim.json")).unwrap();
+    fs::remove_file(fixture.0.path().join("3.board-claim.lock")).unwrap();
     assert!(store.snapshot().is_err());
 }
 
@@ -545,7 +537,7 @@ fn records_without_release_metadata_remain_readable() {
     store
         .claim_for(&entry(), &policy(), &worker("slot-1"), 10, 10)
         .unwrap();
-    let path = fixture.0.join("3.board-claim.json");
+    let path = fixture.0.path().join("3.board-claim.json");
     let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     saved["data"].as_object_mut().unwrap().remove("last_release");
     fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
@@ -694,7 +686,7 @@ fn idle_claims_preserve_expired_work_until_fenced_completion() {
         .claim_idle_for(&next, &Policy::default(), &worker, 10, 10)
         .unwrap()
         .is_none());
-    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(fixture.0.path()).unwrap().count(), 0);
     fixture.establish([1, 2, 6]);
     let lease = store
         .claim_for(&first, &policy(), &worker, 10, 10)
@@ -730,13 +722,16 @@ fn idle_claims_preserve_expired_work_until_fenced_completion() {
     assert_eq!(rows[&2].state.lease, Some(next_lease));
     assert!(rows[&3].state.lease.is_none());
     // Losing another worker's established state must fail the complete idle check closed.
-    fs::remove_file(fixture.0.join("1.board-claim.json")).unwrap();
+    fs::remove_file(fixture.0.path().join("1.board-claim.json")).unwrap();
     next.number = 6;
-    let untouched = fs::read(fixture.0.join("6.board-claim.json")).unwrap();
+    let untouched = fs::read(fixture.0.path().join("6.board-claim.json")).unwrap();
     assert!(store
         .claim_idle_for(&next, &policy(), &crate::worker("slot-3"), 21, 10)
         .is_err());
-    assert_eq!(fs::read(fixture.0.join("6.board-claim.json")).unwrap(), untouched);
+    assert_eq!(
+        fs::read(fixture.0.path().join("6.board-claim.json")).unwrap(),
+        untouched
+    );
 }
 
 #[test]
@@ -787,13 +782,13 @@ fn idle_claims_require_saved_state_not_a_denied_claim_marker() {
         .claim_for(&candidate, &policy(), &reviewer, 10, 10)
         .unwrap()
         .is_none());
-    assert!(fixture.0.join("44.board-claim.lock").exists());
-    assert!(!fixture.0.join("44.board-claim.json").exists());
+    assert!(fixture.0.path().join("44.board-claim.lock").exists());
+    assert!(!fixture.0.path().join("44.board-claim.json").exists());
     assert!(store
         .claim_idle_for(&candidate, &policy(), &builder, 10, 10)
         .unwrap()
         .is_none());
-    assert!(!fixture.0.join("44.board-claim.json").exists());
+    assert!(!fixture.0.path().join("44.board-claim.json").exists());
     fixture.establish([44]);
     assert!(store
         .claim_idle_for(&candidate, &policy(), &reviewer, 10, 10)
