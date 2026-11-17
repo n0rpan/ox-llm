@@ -15,6 +15,15 @@ class FmtCheck(unittest.TestCase):
         self.assertIn('in oxa: ../tools/ci/fmt_check.sh', done)
         self.assertNotIn('in oxa: cargo fmt --check', done)
 
+    def test_repo_done_assertion_names_the_declared_entry(self):
+        # The oxa test that checks this repository's own settings must assert the entry the
+        # settings declare; a mismatch fails the oxa workspace suite.
+        done = json.loads((ROOT / '.oxa/settings.json').read_text())['done']
+        source = (ROOT / 'oxa/oxa-config/tests/repo_done_checks.rs').read_text()
+        self.assertTrue(done, done)
+        for entry in done:
+            self.assertIn(entry, source, f"{entry!r} is declared but not asserted")
+
     def test_root_member_and_linked_checkout_use_oxa_workspace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
