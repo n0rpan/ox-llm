@@ -62,6 +62,9 @@ pub const READ: ToolText = ToolText {
     guidelines: &["Use read to examine files instead of cat or sed."],
 };
 
+/// #670: process lifetime is distinct from the persistence of the session's scratch files.
+pub const BASH_PROCESS_LIFETIME: &str = "Sandboxed Bash commands have separate PID namespaces: detached children (including tmux new-session -d and nohup) are stopped when the owning command exits. For a tmux live check, run the entire drive in one call, or use background: true and keep the command alive after starting the server (for example: while tmux -S /tmp/live.sock has-session -t live 2>/dev/null; do sleep 1; done). Later calls can drive that server through the same explicit socket path. background: true alone does not keep a daemon alive after its launching command exits. Stop the job when finished.";
+
 /// ADAPTED: pi says "truncated to last 2000 lines or 50KB ... saved to a temp file".
 pub const BASH: ToolText = ToolText {
     name: "bash",
@@ -71,6 +74,7 @@ pub const BASH: ToolText = ToolText {
     prompt_snippet: "Execute bash commands (ls, grep, find, etc.)",
     guidelines: &[
         "You can inspect OXA_* environment variables for current model and session details.",
+        BASH_PROCESS_LIFETIME,
         "Bash sandbox persistence: workspace writes persist except protected paths; configured writable binds, package caches and permitted git data also persist. Other paths are read-only or hidden. /tmp is this session's private scratch (TMPDIR and XDG_CACHE_HOME point into it): it persists between commands of this session and is deleted when the session ends (/new, /resume, fork, clone, switching session or quitting oxa); a resumed session starts with an empty /tmp. Save deliverables in the working directory, never claim a scratch file was saved on the host, and report write failures instead of claiming success. Plan mode keeps workspace files read-only.",
     ],
 };

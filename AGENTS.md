@@ -7,6 +7,25 @@ You have **no access to the maintainer's Snapdragon laptop, its NPU or its model
 code, tests, CI and docs. Hardware validation (speed, memory, long runs) is done separately by the
 maintainer, who says in the PR when a hardware check is needed.
 
+## Review guidelines
+
+- Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
+  use synthetic fixtures. Do not open real credential files during review.
+- Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
+  authority and login/token paths user-only. A project file must never override these decisions.
+- Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
+- Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
+  owner-selected yolo deliberately disables the permission floor.
+- Preserve durable ledger/usage settlement, uncertainty reservations and budget caps across
+  retries, cancellation, concurrent processes and restarts; never admit unaccounted spend.
+- Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
+  while validating numeric type, sign, range and finiteness before accounting or execution.
+- v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
+- Never expose secrets to fork PRs or execute PR code with review credentials. Never use
+  `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
+- Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
+  introduced, actionable defects with a failure scenario; skip style and speculative risks.
+
 ## How to work
 
 - **One PR per task**, base `main`, branch `agent/<task-id>-<slug>`. Small PRs; resolve real text conflicts

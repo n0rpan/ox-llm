@@ -40,3 +40,20 @@ isolated cargo nextest run --profile ci --cargo-profile ci --locked --workspace 
   --failure-output immediate-final --no-output-indent
 python3 -I "$repo_root/tools/ci/check_oxa_report.py" --expected "$report_dir/inventory.json" \
   "$repo_root/oxa/target/nextest/ci/junit.xml"
+# The seven-row felt-speed scorecard. Every row records both boundaries, and a boundary
+# that was not measured says so instead of borrowing the other one's number. Measurement
+# files are optional: a row without one is reported as unmeasured, never as zero.
+measurements=()
+for file in "$report_dir"/felt-speed-measurements*.json; do
+  if [ -e "$file" ]; then
+    measurements+=(--measurements "$file")
+  fi
+done
+isolated python3 -I "$repo_root/tools/ci/felt_speed.py" \
+  --rows "$repo_root/tools/ci/felt_speed_rows.json" \
+  --source-sha "${GITHUB_SHA:-$(git -C "$repo_root" rev-parse HEAD)}" \
+  --profile ci \
+  --runner-label "${RUNNER_LABEL:-hosted}" \
+  --binary "$target_dir/ci/oxa" \
+  "${measurements[@]}" \
+  --out "$report_dir/felt-speed.json"
