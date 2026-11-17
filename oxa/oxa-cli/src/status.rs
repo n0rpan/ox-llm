@@ -159,6 +159,7 @@ impl StatusWriter {
         let outcome = match &result {
             Ok(0) => RunOutcome::Done,
             Ok(130) => RunOutcome::Interrupted,
+            Ok(129) => RunOutcome::Failed(oxa_proto::codes::TERMINAL_CLOSED),
             Ok(_) => RunOutcome::Failed("interactive_exit"),
             Err(e) => RunOutcome::from_error(e),
         };
@@ -447,6 +448,27 @@ mod tests {
     use super::*;
     use oxa_fake::TestEnv;
     use oxa_proto::Usage;
+
+    #[test]
+    fn interactive_terminal_loss_records_the_process_exit() {
+        let env = TestEnv::new();
+        let session = SessionRef {
+            id: "one".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let writer = StatusWriter::new(None);
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        assert_eq!(writer.finish_interactive(Ok(129), &mut Vec::new()).unwrap(), 129);
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert_eq!(record["phase"], "finished");
+        assert_eq!(record["outcome"]["error_class"], "terminal_closed");
+        assert_eq!(record["outcome"]["exit_code"], 129);
+    }
 
     #[test]
     fn stream_updates_coalesce_and_the_final_snapshot_includes_all_usage() {

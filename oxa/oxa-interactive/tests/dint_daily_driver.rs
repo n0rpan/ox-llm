@@ -1365,8 +1365,25 @@ fn trust_question_before_the_session() {
         )],
     );
     assert_eq!(
-        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated),
+        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated)
+            .expect("trust dialog remains connected"),
         Some(TrustChoice::NoTrust)
+    );
+    // Terminal loss is distinct from dismissal and never yields a trust choice.
+    let mut closed = ScriptTerm::new(
+        100,
+        20,
+        vec![step(
+            "question",
+            &["Project trust"],
+            vec![InputEvent::TerminalClosed],
+        )],
+    );
+    assert_eq!(
+        ask_trust_on(&mut closed, &keymap, &theme, "/work/proj", &gated)
+            .unwrap_err()
+            .code,
+        oxa_proto::codes::TERMINAL_CLOSED
     );
     // Ctrl+C leaves it unanswered: untrusted for this run, asked again next time.
     let mut term = ScriptTerm::new(
@@ -1375,7 +1392,8 @@ fn trust_question_before_the_session() {
         vec![step("question", &["Project trust"], vec![key("ctrl+c")])],
     );
     assert_eq!(
-        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated),
+        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated)
+            .expect("trust dialog remains connected"),
         None
     );
 }

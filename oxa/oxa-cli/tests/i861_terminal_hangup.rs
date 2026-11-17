@@ -100,6 +100,14 @@ fn terminal_loss(case: &str) {
     assert_eq!(sessions.len(), usize::from(!case.starts_with("trust-")));
     if case.starts_with("trust-") {
         assert!(!oxa_config::Dirs::under(env.root()).trust_file().exists());
+    } else {
+        let status: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(sessions[0].sref.path.with_extension("status.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(status["phase"], "finished");
+        assert_eq!(status["outcome"]["error_class"], "terminal_closed");
+        assert_eq!(status["outcome"]["exit_code"], 129);
     }
 }
 
