@@ -52,6 +52,7 @@ fn state(env: &TestEnv, turns: Vec<ScriptTurn>, settings: Settings) -> (SessionS
     });
     let tools = tools();
     let st = SessionState {
+        goal: None,
         output_schema: None,
         engine,
         store,

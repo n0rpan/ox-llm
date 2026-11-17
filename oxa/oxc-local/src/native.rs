@@ -3,7 +3,7 @@ use crate::child_auth::ChildAuth;
 use crate::lifecycle::{Lifecycle, MemorySample, Model, Policy, RequestGate, RequestLease, StopReason};
 use crate::memory::MemorySource;
 use crate::transport::{Monitor, Transport};
-use crate::{Config, State};
+use crate::State;
 use oxa_engine::{http_request, HttpRequest, StreamOpts, Url};
 use oxa_proto::{
     codes, AssistantTurn, CancelToken, ChatRequest, Engine, EngineCaps, EngineInfo, OxaError, StreamEvent,
@@ -21,15 +21,14 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-pub type Launch = Arc<dyn Fn(u16) -> Result<Config, OxaError> + Send + Sync>;
+pub type Launch = Arc<dyn Fn(u16) -> Result<Model, OxaError> + Send + Sync>;
 pub struct LocalModel {
     pub alias: String,
     pub context_window: u32,
     pub max_output: u32,
-    pub required_available_bytes: u64,
     pub thinking: Option<bool>,
     pub images: Option<bool>,
-    /// Pure, trusted launch resolution for the selected ephemeral loopback port.
+    /// Trusted cold-launch resolution, including the current full-resident weights size.
     pub launch: Launch,
 }
 #[derive(Clone, Debug)]
@@ -76,9 +75,10 @@ struct Endpoint {
     auth: ChildAuth,
     transport: Transport,
     agent: ureq::Agent,
+    version_mismatch: AtomicBool,
 }
 impl Endpoint {
-    fn health(&self, pid: Option<u32>) -> io::Result<bool> {
+    fn health(&self, pid: Option<u32>, verify_version: bool) -> io::Result<bool> {
         if !pid.is_some_and(|pid| owns_port(pid, self.address)) {
             return Ok(false);
         }
@@ -94,7 +94,28 @@ impl Endpoint {
             .limit(4096)
             .read_to_string()
             .map_err(|_| io::Error::other("invalid local health reply"))?;
-        Ok(serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| v["status"] == "ok"))
+        if !serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| v["status"] == "ok") {
+            return Ok(false);
+        }
+        if verify_version {
+            let mut response = self
+                .agent
+                .get(format!("http://{}/props", self.address))
+                .header("Authorization", format!("Bearer {}", self.auth.token()))
+                .call()
+                .map_err(|_| io::Error::other("local version probe failed"))?;
+            let text = response
+                .body_mut()
+                .with_config()
+                .limit(1024 * 1024)
+                .read_to_string()
+                .map_err(|_| io::Error::other("invalid local version reply"))?;
+            let matches = serde_json::from_str::<serde_json::Value>(&text)
+                .is_ok_and(|v| v["build_info"] == concat!("oxe-", env!("CARGO_PKG_VERSION")));
+            self.version_mismatch.store(!matches, Ordering::Release);
+            return Ok(matches);
+        }
+        Ok(true)
     }
 }
 impl LocalEngine {
@@ -134,7 +155,6 @@ impl LocalEngine {
                 || model.context_window == 0
                 || model.max_output == 0
                 || model.max_output > model.context_window
-                || model.required_available_bytes == 0
             {
                 return Err(invalid());
             }
@@ -203,7 +223,11 @@ impl LocalEngine {
         let address = TcpListener::bind("127.0.0.1:0")
             .and_then(|listener| listener.local_addr())
             .map_err(|_| down())?;
-        let mut config = (model.launch)(address.port())?;
+        let mut launch = (model.launch)(address.port())?;
+        if launch.name != model.alias || launch.required_available_bytes == 0 {
+            return Err(invalid());
+        }
+        let config = &mut launch.config;
         if config.arguments.iter().any(|a| {
             a.to_str()
                 .is_some_and(|a| matches!(a.split('=').next().unwrap_or(""), "--api-key" | "--api-key-file"))
@@ -236,12 +260,9 @@ impl LocalEngine {
                 auth,
                 transport,
                 agent,
+                version_mismatch: AtomicBool::new(false),
             },
-            Model {
-                name: model.alias.clone(),
-                config,
-                required_available_bytes: model.required_available_bytes,
-            },
+            launch,
         ))
     }
 }
@@ -336,12 +357,8 @@ impl Engine for LocalEngine {
         let launch = if state.lifecycle.status().model == Some(model.alias.as_str())
             && state.lifecycle.status().state == State::Ready
         {
-            // Reuse the frozen execution snapshot; this value is ignored on Ready.
-            Model {
-                name: model.alias.clone(),
-                config: (model.launch)(state.endpoints[&model.alias].address.port())?,
-                required_available_bytes: model.required_available_bytes,
-            }
+            // Keep the admitted launch snapshot even if files change while resident.
+            state.lifecycle.loaded_model().ok_or_else(down)?
         } else {
             let (endpoint, launch) = self.endpoint(model)?;
             state.endpoints.insert(model.alias.clone(), endpoint);
@@ -351,7 +368,16 @@ impl Engine for LocalEngine {
         let loading = state
             .lifecycle
             .load_reserved(operation, launch, Instant::now(), memory)
-            .map_err(|_| down());
+            .map_err(|error| {
+                if let Some(refusal) = error
+                    .get_ref()
+                    .and_then(|e| e.downcast_ref::<crate::lifecycle::AdmissionRefusal>())
+                {
+                    OxaError::new(codes::ENGINE_DOWN, refusal.to_string())
+                } else {
+                    down()
+                }
+            });
         publish(&self.inner, &state.lifecycle);
         if let Err(error) = loading {
             if state.lifecycle.status().state != State::Backoff {
@@ -369,11 +395,24 @@ impl Engine for LocalEngine {
                 publish(&self.inner, &state.lifecycle);
                 return Err(aborted());
             }
-            if advance(&self.inner, &mut state).is_err() && state.lifecycle.status().state != State::Backoff {
-                let _ = state.lifecycle.unload(Instant::now());
-                state.target = None;
-                publish(&self.inner, &state.lifecycle);
-                return Err(down());
+            if let Err(error) = advance(&self.inner, &mut state) {
+                if state.lifecycle.status().state != State::Backoff {
+                    let _ = state.lifecycle.unload(Instant::now());
+                    state.target = None;
+                    publish(&self.inner, &state.lifecycle);
+                    return Err(if error.kind() == io::ErrorKind::Unsupported {
+                        OxaError::new(
+                            codes::ENGINE_DOWN,
+                            concat!(
+                                "Local engine version mismatch; install matching oxe-server ",
+                                env!("CARGO_PKG_VERSION"),
+                                " beside oxa or set oxa.local.binary."
+                            ),
+                        )
+                    } else {
+                        down()
+                    });
+                }
             }
             if state.lifecycle.status().state == State::Ready {
                 break;
@@ -397,7 +436,7 @@ impl Engine for LocalEngine {
             &mut Monitor {
                 cancel,
                 memory: &mut || self.inner.source.sample(),
-                healthy: &mut || endpoint.health(pid),
+                healthy: &mut || endpoint.health(pid, false),
             },
             on,
         );
@@ -444,11 +483,13 @@ fn advance(inner: &Inner, state: &mut RuntimeState) -> io::Result<()> {
     let status = lifecycle.status();
     let endpoint = status.model.and_then(|alias| endpoints.get(alias));
     let pid = status.pid;
+    let starting = status.state == State::Starting;
     let result = lifecycle
         .poll(Instant::now(), inner.source.sample(), || {
-            endpoint.map_or(Ok(false), |e| e.health(pid))
+            endpoint.map_or(Ok(false), |e| e.health(pid, starting))
         })
         .map(|_| ());
+    let version_mismatch = endpoint.is_some_and(|e| e.version_mismatch.load(Ordering::Acquire));
     publish(inner, lifecycle);
     if lifecycle.status().pid.is_none() && matches!(lifecycle.status().state, State::Stopped | State::Failed)
     {
@@ -456,7 +497,14 @@ fn advance(inner: &Inner, state: &mut RuntimeState) -> io::Result<()> {
     }
     let current = lifecycle.status().model.map(str::to_owned);
     endpoints.retain(|alias, _| current.as_ref() == Some(alias) || state.target.as_ref() == Some(alias));
-    result
+    if version_mismatch {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "local engine version mismatch",
+        ))
+    } else {
+        result
+    }
 }
 fn snapshot(lifecycle: &Lifecycle) -> LocalStatus {
     let status = lifecycle.status();
@@ -555,6 +603,7 @@ fn redact(mut error: OxaError, token: &str) -> OxaError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Config;
     use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
     use oxa_proto::{Finish, FrozenPrefix, WireMsg};
     struct Memory {
@@ -578,37 +627,46 @@ mod tests {
         }
     }
     fn engine(env: &TestEnv, policy: Policy) -> LocalEngine {
+        engine_with_version(env, policy, concat!("oxe-", env!("CARGO_PKG_VERSION")))
+    }
+    fn engine_with_version(env: &TestEnv, policy: Policy, version: &str) -> LocalEngine {
+        let version = version.to_owned();
         let models = ["fake-model", "other-model"]
             .into_iter()
             .map(|alias| {
                 let alias_owned = alias.to_owned();
+                let version = version.clone();
                 LocalModel {
                     alias: alias.into(),
                     context_window: 1048576,
                     max_output: 1024,
-                    required_available_bytes: 4096,
                     thinking: None,
                     images: Some(false),
                     launch: Arc::new(move |port| {
-                        Ok(Config {
-                            executable: std::env::current_exe().map_err(|_| down())?,
-                            arguments: vec![
-                                "--exact".into(),
-                                "native::tests::owned_fake_child_streams_and_unloads".into(),
-                                "--nocapture".into(),
-                            ],
-                            environment: [
-                                ("SYNTHETIC_LOCAL_CHILD".into(), "1".into()),
-                                ("SYNTHETIC_LOCAL_PORT".into(), port.to_string().into()),
-                                ("SYNTHETIC_LOCAL_ALIAS".into(), alias_owned.clone().into()),
-                            ]
-                            .into(),
-                            startup_timeout: Duration::from_secs(5),
-                            health_interval: Duration::from_millis(50),
-                            unhealthy_limit: 2,
-                            term_grace: Duration::from_millis(100),
-                            restart_backoff: Duration::from_millis(100),
-                            max_restarts: 0,
+                        Ok(Model {
+                            name: alias_owned.clone(),
+                            required_available_bytes: 4096,
+                            config: Config {
+                                executable: std::env::current_exe().map_err(|_| down())?,
+                                arguments: vec![
+                                    "--exact".into(),
+                                    "native::tests::owned_fake_child_streams_and_unloads".into(),
+                                    "--nocapture".into(),
+                                ],
+                                environment: [
+                                    ("SYNTHETIC_LOCAL_CHILD".into(), "1".into()),
+                                    ("SYNTHETIC_LOCAL_PORT".into(), port.to_string().into()),
+                                    ("SYNTHETIC_LOCAL_ALIAS".into(), alias_owned.clone().into()),
+                                    ("SYNTHETIC_LOCAL_BUILD".into(), version.clone().into()),
+                                ]
+                                .into(),
+                                startup_timeout: Duration::from_secs(5),
+                                health_interval: Duration::from_millis(50),
+                                unhealthy_limit: 2,
+                                term_grace: Duration::from_millis(100),
+                                restart_backoff: Duration::from_millis(100),
+                                max_restarts: 0,
+                            },
                         })
                     }),
                 }
@@ -627,6 +685,29 @@ mod tests {
             }),
         )
         .unwrap()
+    }
+    #[test]
+    fn admission_refusal_reaches_caller_with_numbers_and_never_spawns() {
+        let env = TestEnv::new();
+        let mut engine = engine(&env, Policy::default());
+        let model = engine.models.get_mut("fake-model").unwrap();
+        let launch = model.launch.clone();
+        model.launch = Arc::new(move |port| {
+            let mut admitted = launch(port)?;
+            admitted.required_available_bytes = 8589934593;
+            Ok(admitted)
+        });
+        let error = engine
+            .chat(
+                &ChatRequest::new(&prefix(), &[], "fake-model"),
+                &CancelToken::new(),
+                &mut |_| panic!("unadmitted generation"),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, codes::ENGINE_DOWN);
+        assert!(error.message.contains("available=8589934592"));
+        assert!(error.message.contains("required=8589934593"));
+        assert_eq!(engine.status().pid, None);
     }
     fn prefix() -> FrozenPrefix {
         FrozenPrefix {
@@ -656,6 +737,9 @@ mod tests {
                     port,
                     model,
                     controller: false,
+                    build_info: std::env::var("SYNTHETIC_LOCAL_BUILD")
+                        .ok()
+                        .filter(|s| !s.is_empty()),
                     ..FakeOpts::default()
                 },
             )
@@ -744,6 +828,55 @@ mod tests {
         assert_ne!(engine.status().pid, Some(interrupted_pid));
         drop(engine);
         assert_eq!(std::fs::read_dir(env.work().join("private")).unwrap().count(), 0);
+    }
+    #[test]
+    fn resident_model_reuses_the_frozen_launch_description() {
+        use std::sync::atomic::AtomicUsize;
+        let env = TestEnv::new();
+        let mut engine = engine(&env, Policy::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let model = engine.models.get_mut("fake-model").unwrap();
+        let launch = model.launch.clone();
+        let count = calls.clone();
+        model.launch = Arc::new(move |port| {
+            count.fetch_add(1, Ordering::SeqCst);
+            launch(port)
+        });
+        let prefix = prefix();
+        for _ in 0..2 {
+            engine
+                .chat(
+                    &ChatRequest::new(&prefix, &[], "fake-model"),
+                    &CancelToken::new(),
+                    &mut |_| {},
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "resident work must not recheck changed launch files"
+        );
+    }
+    #[test]
+    fn unversioned_or_mismatched_child_is_refused_before_generation() {
+        for version in ["", "oxe-incompatible"] {
+            let env = TestEnv::new();
+            let engine = engine_with_version(&env, Policy::default(), version);
+            let prefix = prefix();
+            let error = engine
+                .chat(
+                    &ChatRequest::new(&prefix, &[], "fake-model"),
+                    &CancelToken::new(),
+                    &mut |_| panic!("incompatible engine emitted generation"),
+                )
+                .expect_err("incompatible engine must be refused");
+            assert_eq!(error.code, codes::ENGINE_DOWN);
+            assert!(error.message.contains("version"));
+            until(&engine, State::Stopped);
+            drop(engine);
+            assert_eq!(std::fs::read_dir(env.work().join("private")).unwrap().count(), 0);
+        }
     }
     #[test]
     fn model_switch_reaps_the_previous_child_and_engine_drop_reaps_the_last() {

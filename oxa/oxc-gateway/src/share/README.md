@@ -1,9 +1,9 @@
 # Guest sharing (opt-in foundations)
 
 The `share` feature is off by default. It supplies private keys, durable guest
-admission and an explicit HTTP listener. There is no CLI command or real gateway
-adapter yet. Importing it creates no files, sockets or threads. The CLI and real
-gateway integration follow after the native controller seams.
+admission and an explicit HTTP listener. The CLI's opt-in share feature adds
+owner key commands. Importing it creates no files, sockets or threads. Real
+gateway integration follows after the native controller seams.
 
 `keys::Store::open` binds an existing mode-0700 directory outside repositories.
 Every path component is opened without following links. Registry and lock files
@@ -13,7 +13,7 @@ new private file, sync it, rename it and sync the directory. The store retains a
 directory descriptor, not a bearer or cached registry.
 
 `create(name, limits)` returns metadata and a new random 256-bit bearer, which
-the eventual owner command presents once. Only a domain-separated HMAC-SHA256
+the owner command presents once. Only a domain-separated HMAC-SHA256
 digest is persisted; the domain is public, and security depends on the random
 bearer's entropy. Authentication verifies tags with HMAC's constant-time
 primitive and scans the complete bounded registry. `list` exposes metadata only;
@@ -23,7 +23,7 @@ No automatic repair or recovery of malformed registries enables a key.
 
 Names are bounded printable ASCII, ids are random, and both daily request and
 token limits must be positive. At most 64 records (including revoked records)
-fit in a registry of at most 64 KiB. This module stores limits; the later
+fit in a registry of at most 64 KiB. This module stores limits; the
 listener reserves and enforces them before forwarding.
 
 `Store::admit` verifies fresh credentials under the same lock as quota updates.
@@ -76,13 +76,36 @@ connections accept one request and treat client EOF/pipelining as cancellation.
 Cancel and await `serve` for orderly shutdown; do not detach it or its backend.
 
 Real gateway routing, owner-priority local leases, native request-ledger rows,
-CLI key commands and owner status-surface wiring are
+and owner status-surface wiring are
 subsequent work. The counters here are quota authority, not a second copy of
 cloud billing or a complete request ledger. TLS can terminate at `tailscale
 serve`; direct certificate support is not implemented in this slice.
 
 Tests use only generated synthetic bearers and private throwaway directories,
 including concurrent child processes. No real credential store is consulted.
+
+## Owner key commands
+
+Build the CLI with its opt-in `share` feature. Its existing native gateway
+dependency enables sharing only with that feature; the default build refuses
+`share` without creating guest key storage.
+
+```sh
+oxa share key add Tablet --daily-requests 100 --daily-tokens 100000
+oxa share key list
+oxa share key revoke <id>
+```
+
+Commands emit JSON. `add` prints the new `api_key` once, after durable storage;
+copy it privately into the other device's client. Listing and revocation expose
+metadata only. If stdout fails after creation, list the id and revoke it before
+creating a replacement; the bearer cannot be recovered. Both limits are required
+positive integers. Storage is `~/.oxa/share`, independent of project settings and
+`OXA_AGENT_DIR`. Missing directories are created privately through anchored
+no-follow descriptors, with parent syncs on creation and retry. Existing unsafe
+permissions, symlinks and repository paths are refused without repair. No model,
+provider credentials or listener are opened by these commands. Serving still
+requires the separately coordinated native gateway/owner-priority integration.
 
 ## Owner live activity
 
@@ -106,6 +129,7 @@ These are live activity counts, not daily usage. `Store::guest_usage` remains
 the durable per-key quota authority. Joining those counters into the existing
 owner status surface, and adding guest rows through the gateway's shared ledger,
 remain part of coordinated native host wiring; this handle starts neither.
+
 
 ## Linux tailnet identity adapter
 

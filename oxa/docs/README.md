@@ -4,13 +4,14 @@
 
 ## Quickstart
 
-Build the binary from the repository root and point it at a running engine:
+Build from the `oxa/` directory of the checkout and point it at a running engine:
 
 ```console
-$ cargo build --release -p oxa-cli
+$ cargo build --release --locked -p oxa-cli
+$ export PATH="$PWD/target/release:$PATH"
 $ export OXA_ENGINE_URL=http://127.0.0.1:8092
-$ cd ~/src/my-project
-$ ./target/release/oxa
+$ cd ~/project
+$ oxa
 ```
 
 Type a request in the editor and press Enter. Escape stops a turn, Ctrl+C clears the editor, and Ctrl+D exits when it is empty. For a single answer in a script, use print mode:
