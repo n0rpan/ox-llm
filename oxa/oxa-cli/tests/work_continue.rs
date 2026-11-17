@@ -75,6 +75,99 @@ fn existing_branch_fast_forwards_to_base_before_agent() {
     );
 }
 #[test]
+fn existing_task_branch_starts_at_its_pushed_head() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    git(&env, &project(&env), &["checkout", "-b", "agent/test"]);
+    commit_file(&env, "old.txt", "old version\n");
+    let published = git(&env, &project(&env), &["rev-parse", "HEAD"]);
+    commit_file(&env, "pushed.txt", "pushed version\n");
+    let pushed = git(&env, &project(&env), &["rev-parse", "HEAD"]);
+    git(&env, &project(&env), &["push", "--quiet", "origin", "agent/test"]);
+    // The fetched tracking tip holds the newest pushed work while the local ref
+    // still names the commit an earlier checkout had.
+    git(
+        &env,
+        &project(&env),
+        &["reset", "--quiet", "--hard", &published],
+    );
+    git(&env, &project(&env), &["checkout", "--quiet", "main"]);
+    let stale = git(&env, &project(&env), &["rev-parse", "agent/test"]);
+    assert_ne!(stale, pushed);
+
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(tree(&record).join("pushed.txt")).unwrap(),
+        "pushed version\n"
+    );
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), pushed);
+    let advanced = git(&env, &project(&env), &["rev-parse", "agent/test"]);
+    assert_eq!(advanced, pushed);
+}
+#[test]
+fn a_local_commit_off_the_pushed_head_keeps_its_own_tip() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    git(&env, &project(&env), &["checkout", "-b", "agent/test"]);
+    commit_file(&env, "old.txt", "old version\n");
+    let published = git(&env, &project(&env), &["rev-parse", "HEAD"]);
+    commit_file(&env, "pushed.txt", "pushed version\n");
+    git(&env, &project(&env), &["push", "--quiet", "origin", "agent/test"]);
+    git(
+        &env,
+        &project(&env),
+        &["reset", "--quiet", "--hard", &published],
+    );
+    // Neither side contains the other: the pushed tip omits this local commit.
+    commit_file(&env, "local.txt", "local version\n");
+    let local = git(&env, &project(&env), &["rev-parse", "HEAD"]);
+    git(&env, &project(&env), &["checkout", "--quiet", "main"]);
+
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), local);
+    assert!(tree(&record).join("local.txt").exists());
+    assert!(!tree(&record).join("pushed.txt").exists());
+}
+#[test]
+fn several_ahead_tracking_tips_keep_the_local_tip() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    git(&env, &project(&env), &["checkout", "-b", "agent/test"]);
+    commit_file(&env, "old.txt", "old version\n");
+    let published = git(&env, &project(&env), &["rev-parse", "HEAD"]);
+    commit_file(&env, "pushed.txt", "pushed version\n");
+    git(&env, &project(&env), &["push", "--quiet", "origin", "agent/test"]);
+    // A second tracking ref names a different commit that also extends the
+    // published one, so no single tip is provably the pushed head.
+    git(
+        &env,
+        &project(&env),
+        &["checkout", "--quiet", "--detach", &published],
+    );
+    commit_file(&env, "other.txt", "other version\n");
+    let other = git(&env, &project(&env), &["rev-parse", "HEAD"]);
+    git(
+        &env,
+        &project(&env),
+        &["update-ref", "refs/remotes/other/agent/test", &other],
+    );
+    git(
+        &env,
+        &project(&env),
+        &["reset", "--quiet", "--hard", &published],
+    );
+    git(&env, &project(&env), &["checkout", "--quiet", "main"]);
+
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), published);
+    assert!(tree(&record).join("old.txt").exists());
+    assert!(!tree(&record).join("pushed.txt").exists());
+    assert!(!tree(&record).join("other.txt").exists());
+}
+#[test]
 fn divergent_branch_gets_normal_merge_without_losing_task_commit() {
     let env = TestEnv::new();
     diverge(&env, false);

@@ -120,7 +120,12 @@ Finished successful work is returned without another worker or check run; add
 change requires a new ID. Unsupported or corrupt checkpoints are preserved and
 refused. A matching linked worktree is reused; the
 source checkout is never used as the task worktree. An existing branch checked
-out elsewhere is blocked. Dirty retained work is preserved and saved before
+out elsewhere is blocked. When an existing task branch lags the remote-tracking
+tip of the same branch name by strict ancestry, the branch starts at that pushed
+head, so the worker never audits the stale tree an earlier checkout left. No
+fetch, reset or force update runs; a tracking tip that is not ahead, several
+diverging tips, a local commit the tip lacks, or a branch checked out in another
+worktree keeps the local tip. Dirty retained work is preserved and saved before
 retrying. A clean retained branch gets an ordinary sandboxed
 merge of the captured base; no reset, stash, force checkout or automatic fetch runs.
 

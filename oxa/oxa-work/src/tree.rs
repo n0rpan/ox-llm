@@ -80,6 +80,79 @@ pub(crate) fn validate(policy: &RunPolicy, repo: &Path, tree: &Path, task: &Task
     Ok(())
 }
 
+/// The task branch may already be published, and the local ref then lags the
+/// fetched tracking ref that carries the newest pushed commits. Start the task
+/// at that head instead of auditing a stale tree. Only a lone remote-tracking
+/// tip that strictly extends the local commit qualifies: no fetch, reset or
+/// force update runs, a branch checked out in another worktree keeps its tip,
+/// and any other divergence preserves the local commits.
+fn advance_to_pushed_head(policy: &RunPolicy, repo: &Path, branch: &str) -> Result<()> {
+    let local_ref = format!("refs/heads/{branch}");
+    let Ok(local) = checked(git(
+        policy,
+        repo,
+        &["rev-parse", "--verify", &format!("{local_ref}^{{commit}}")],
+    )) else {
+        return Ok(());
+    };
+    let pattern = format!("refs/remotes/*/{branch}");
+    let tracking = checked(git(
+        policy,
+        repo,
+        &["for-each-ref", "--format=%(refname)", &pattern],
+    ))?;
+    let mut ahead = Vec::new();
+    for name in tracking.lines().filter(|name| !name.ends_with("/HEAD")) {
+        // A stale or dangling tracking ref is ignored, not turned into a block.
+        let read = output(git(
+            policy,
+            repo,
+            &["rev-parse", "--verify", &format!("{name}^{{commit}}")],
+        ))?;
+        if !read.status.success() {
+            continue;
+        }
+        let tip = String::from_utf8_lossy(&read.stdout).trim().to_owned();
+        if tip != local
+            && output(git(policy, repo, &["merge-base", "--is-ancestor", &local, &tip]))?
+                .status
+                .code()
+                == Some(0)
+        {
+            ahead.push(tip);
+        }
+    }
+    ahead.sort();
+    ahead.dedup();
+    let [tip] = ahead.as_slice() else {
+        return Ok(());
+    };
+    let holder = format!("branch {local_ref}");
+    let checked_out = checked(git(policy, repo, &["worktree", "list", "--porcelain"]))?
+        .lines()
+        .any(|line| line == holder.as_str());
+    if checked_out {
+        return Ok(());
+    }
+    // Compare-and-swap: a branch that moved concurrently keeps its own new tip.
+    let updated = output(git(
+        policy,
+        repo,
+        &[
+            "update-ref",
+            "-m",
+            "oxa work: start the task branch at its pushed head",
+            local_ref.as_str(),
+            tip.as_str(),
+            local.as_str(),
+        ],
+    ))?;
+    if !updated.status.success() {
+        return Err(String::from_utf8_lossy(&updated.stderr).into());
+    }
+    Ok(())
+}
+
 pub(crate) fn prepare(
     repo: &Path,
     tree: &Path,
@@ -98,6 +171,9 @@ pub(crate) fn prepare(
             Some(1) => true,
             _ => return Err(String::from_utf8_lossy(&exists.stderr).into()),
         };
+        if !create {
+            advance_to_pushed_head(policy, repo, &task.branch)?;
+        }
         let tree_arg = tree.to_str().ok_or("non-UTF8 worktree path")?;
         let mut args = vec![
             "-c",
