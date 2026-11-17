@@ -61,6 +61,7 @@ fn state_with(
         gate: Default::default(),
     });
     let st = SessionState {
+        goal: None,
         output_schema: None,
         engine,
         store,
@@ -441,6 +442,42 @@ fn hook_before_tree_cancel_and_summary() {
         _ => unreachable!(),
     }
     assert!(eng.requests().iter().all(|r| r.kind != "branch_summary"));
+}
+
+/// #703: a changed fork head invalidates active usage, but a clone keeps it.
+#[test]
+fn fork_invalidates_context_usage_but_clone_preserves_it() {
+    let env = TestEnv::new();
+    let (mut st, _eng, _store) = state_with(
+        &env,
+        vec![ScriptTurn::text("two"), ScriptTurn::text("four")],
+        Vec::new(),
+    );
+    say(&mut st, "one");
+    run(&mut st);
+    let second = say(&mut st, "three");
+    run(&mut st);
+    let before = st.stats;
+    assert!(before.context_tokens > 0);
+    assert!(st.last_usage.is_some());
+    let mut ui = HeadlessUi::default();
+    clone_current(&mut st, &mut ui).expect("clone");
+    assert_eq!(st.stats.context_tokens, before.context_tokens);
+    assert!(st.last_usage.is_some(), "clone has the same active context");
+
+    fork_at(&mut st, &second, &mut ui).expect("fork before second prompt");
+    assert_eq!(st.transcript.wire().len(), 2, "first exchange is retained");
+    assert_eq!(st.stats.context_tokens, st.transcript.context());
+    assert_eq!(
+        st.stats.context_tokens, 0,
+        "context is unknown until the next request"
+    );
+    assert!(
+        st.last_usage.is_none(),
+        "old head's cache usage is no longer applicable"
+    );
+    assert_eq!(st.stats.prompt_tokens, before.prompt_tokens);
+    assert_eq!(st.stats.completion_tokens, before.completion_tokens);
 }
 
 /// W3 across fork
