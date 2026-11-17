@@ -1456,6 +1456,12 @@ fn regular_renderer_refreshes_live_policy_after_load_and_unload() {
                 0 => Some("scope"),
                 1 => Some("inherited"),
                 2 => None,
+                // Worker messages drain before poll, then the frame is drawn after
+                // poll. Capture the unload frame on the following iteration.
+                3 => {
+                    self.phase += 1;
+                    return Vec::new();
+                }
                 _ => return vec![key("ctrl+d")],
             };
             self.messages
@@ -1494,20 +1500,20 @@ fn regular_renderer_refreshes_live_policy_after_load_and_unload() {
         .unwrap(),
         0
     );
-    assert!(!term.frames[0].contains("Memory: scope"));
+    assert!(!term.frames[1].contains("Memory: scope"));
     assert!(
-        term.frames[1].contains("Memory: scope"),
+        term.frames[2].contains("Memory: scope"),
         "regular live load: {:?}",
-        term.frames[1]
-    );
-    assert!(
-        term.frames[2].contains("Memory: inherited"),
-        "regular live switch: {:?}",
         term.frames[2]
     );
-    assert!(!term.frames[3].contains("Memory: scope") && !term.frames[3].contains("Memory: inherited"));
     assert!(
-        term.frames[3].contains("\x1b[K"),
+        term.frames[3].contains("Memory: inherited"),
+        "regular live switch: {:?}",
+        term.frames[3]
+    );
+    assert!(!term.frames[4].contains("Memory: scope") && !term.frames[4].contains("Memory: inherited"));
+    assert!(
+        term.frames[4].contains("\x1b[K"),
         "unload clears the former live line"
     );
 }
