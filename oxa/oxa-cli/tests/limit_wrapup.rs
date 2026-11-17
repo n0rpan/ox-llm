@@ -428,13 +428,12 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
 #[test]
 fn a_failed_final_request_retains_the_session_and_typed_failure() {
     let env = fixture();
+    let held_tool = format!(
+        r#"{{"command":"printf draft > change.txt; sleep {TOOL_HOLD}; printf finished > tool-finished"}}"#
+    );
     let server = FakeServer::start(
         vec![
-            ScriptTurn::tool(
-                "edit",
-                "bash",
-                r#"{"command":"printf draft > change.txt; sleep 0.5; printf finished > tool-finished"}"#,
-            ),
+            ScriptTurn::tool("edit", "bash", &held_tool),
             ScriptTurn::fault(oxa_fake::Fault::Http {
                 status: 429,
                 body:
@@ -445,8 +444,8 @@ fn a_failed_final_request_retains_the_session_and_typed_failure() {
         FakeOpts::default(),
     )
     .unwrap();
-    // The budget refusal ends the run, so no time limit is needed to reach the final turn.
-    let mut child = start(&env, &server, "print");
+    // The held tool spans the deadline, so the refusal comes from the bounded wrap-up turn.
+    let mut child = start_with_max_time(&env, &server, "print", Some(TIME_LIMIT));
     let _input = child.stdin.take();
     let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
