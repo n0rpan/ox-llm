@@ -15,6 +15,8 @@ pub struct AssignmentData {
     pub import_hold: bool,
     #[serde(default)]
     pub last_release: Option<ReleaseRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_binding: Option<NativeBinding>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

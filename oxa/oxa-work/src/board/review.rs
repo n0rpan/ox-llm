@@ -334,11 +334,23 @@ pub struct Comment<'a> {
 /// A newer summary replaces an older one, even if it refers to another head.
 /// Conflicting summaries with the same update time cannot authorize landing.
 pub fn latest_findings(comments: Option<&[Comment<'_>]>) -> Findings {
-    let Some(comments) = comments else {
-        return Findings::Unknown;
-    };
+    latest_summary(comments).map_or(Findings::Unknown, |summary| summary.findings)
+}
+
+/// The full commit reviewed by Codex when the latest trusted summary has no
+/// code findings. The caller must still match it against the PR's own diff.
+pub fn latest_code_approval(comments: Option<&[Comment<'_>]>) -> Option<String> {
+    latest_summary(comments)?.code_approval
+}
+
+struct Summary {
+    findings: Findings,
+    code_approval: Option<String>,
+}
+
+fn latest_summary(comments: Option<&[Comment<'_>]>) -> Option<Summary> {
     let mut latest = None;
-    for comment in comments {
+    for comment in comments? {
         if comment.bot_id != Some(CONNECTOR_BOT_ID) {
             continue;
         }
@@ -346,10 +358,11 @@ pub fn latest_findings(comments: Option<&[Comment<'_>]>) -> Findings {
         if lines.next() != Some(SUMMARY) {
             continue;
         }
-        let Some(updated_at) = comment.updated_at else {
-            return Findings::Unknown;
-        };
-        let state = state_line(lines.next());
+        let updated_at = comment.updated_at?;
+        let state = state_line(lines.next()).unwrap_or(Summary {
+            findings: Findings::Unknown,
+            code_approval: None,
+        });
         match latest {
             Some((time, _)) if time > updated_at => {}
             Some((time, previous)) if time == updated_at => {
@@ -358,37 +371,52 @@ pub fn latest_findings(comments: Option<&[Comment<'_>]>) -> Findings {
             _ => latest = Some((updated_at, state)),
         }
     }
-    latest.map_or(Findings::Unknown, |(_, state)| state)
+    latest.map(|(_, state)| state)
 }
 
-fn combine_tied(left: Findings, right: Findings) -> Findings {
-    if left == Findings::Unresolved || right == Findings::Unresolved {
+fn combine_tied(left: Summary, right: Summary) -> Summary {
+    let findings = if left.findings == Findings::Unresolved || right.findings == Findings::Unresolved {
         Findings::Unresolved
-    } else if left == right {
-        left
+    } else if left.findings == right.findings {
+        left.findings
     } else {
         Findings::Unknown
+    };
+    Summary {
+        findings,
+        code_approval: left
+            .code_approval
+            .filter(|head| left.findings == right.findings && right.code_approval.as_ref() == Some(head)),
     }
 }
 
-fn state_line(line: Option<&str>) -> Findings {
-    let Some(state) = line
-        .and_then(|line| line.strip_prefix(STATE_PREFIX))
+fn state_line(line: Option<&str>) -> Option<Summary> {
+    let state = line?
+        .strip_prefix(STATE_PREFIX)
         .and_then(|line| line.strip_suffix(STATE_SUFFIX))
         .filter(|json| json.len() <= MAX_STATE_BYTES)
-        .and_then(|json| serde_json::from_str::<Value>(json).ok())
-    else {
-        return Findings::Unknown;
-    };
-    let code = review(&state["code_review"]);
+        .and_then(|json| serde_json::from_str::<Value>(json).ok())?;
+    let code = &state["code_review"];
+    let code_review = review(code);
     let security = &state["security_review"];
-    let security_review = review(security);
-    match (code, security_review) {
+    let findings = match (code_review, review(security)) {
         (Findings::Unresolved, _) | (_, Findings::Unresolved) => Findings::Unresolved,
         (Findings::Clear, Findings::Clear) => Findings::Clear,
         (Findings::Clear, _) if no_review(security) => Findings::Clear,
         _ => Findings::Unknown,
-    }
+    };
+    let code_approval = code["commit_sha"]
+        .as_str()
+        .filter(|_| {
+            code_review == Findings::Clear
+                && code["has_any_findings"] == false
+                && findings != Findings::Unresolved
+        })
+        .map(str::to_owned);
+    Some(Summary {
+        findings,
+        code_approval,
+    })
 }
 
 fn no_review(status: &Value) -> bool {
@@ -403,12 +431,7 @@ fn no_review(status: &Value) -> bool {
 }
 
 fn review(value: &Value) -> Findings {
-    let valid_head = value["commit_sha"].as_str().is_some_and(|sha| {
-        matches!(sha.len(), 40 | 64)
-            && sha
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    });
+    let valid_head = value["commit_sha"].as_str().is_some_and(git::object_id);
     if !valid_head {
         return Findings::Unknown;
     }

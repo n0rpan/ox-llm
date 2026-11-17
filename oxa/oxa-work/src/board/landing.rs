@@ -23,15 +23,32 @@ pub enum RejectionCause<'a> {
     FailedTests(&'a [&'a str]),
 }
 
+impl RejectionCause<'_> {
+    fn known(self) -> bool {
+        !matches!(self, Self::Unknown | Self::FailedTests([]))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Retry<'a> {
+    Unused,
+    /// Durable retry receipt for this PR head. Group identities come from the
+    /// queue observations before and after retry admission.
+    Consumed {
+        first_rejected_group: &'a str,
+        admitted_group: Option<&'a str>,
+    },
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Rejection<'a> {
     pub head: &'a str,
     pub main: &'a str,
+    pub merge_group_head: &'a str,
     /// Failed test names must come from the rejected merge-group run.
     pub cause: RejectionCause<'a>,
     pub notified: bool,
-    /// The caller retains the retry receipt across subsequent rejections.
-    pub retry_used: bool,
+    pub retry: Retry<'a>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -78,6 +95,7 @@ pub struct Plan<'a> {
     pub next: Next,
     pub notify_rejection: Option<Notice<'a>>,
     pub queue_alarm: bool,
+    pub repeat_rejection_alarm: bool,
 }
 
 impl Board {
@@ -127,14 +145,35 @@ impl Policy {
                 next: Next::Disabled,
                 notify_rejection: None,
                 queue_alarm: false,
+                repeat_rejection_alarm: false,
             };
         }
         let notify_rejection = match queue {
-            Queue::Rejected(r) if !r.notified && !r.head.is_empty() => match r.cause {
-                RejectionCause::Unknown | RejectionCause::FailedTests([]) => None,
-                cause => Some(Notice { head: r.head, cause }),
-            },
+            Queue::Rejected(r) if !r.notified && !r.head.is_empty() && r.cause.known() => Some(Notice {
+                head: r.head,
+                cause: r.cause,
+            }),
             _ => None,
+        };
+        let repeat_rejection_alarm = match queue {
+            Queue::Rejected(Rejection {
+                head,
+                merge_group_head,
+                retry:
+                    Retry::Consumed {
+                        first_rejected_group,
+                        admitted_group: Some(retry_group),
+                    },
+                ..
+            }) => {
+                !head.is_empty()
+                    && head == entry.head
+                    && !first_rejected_group.is_empty()
+                    && !retry_group.is_empty()
+                    && retry_group != first_rejected_group
+                    && retry_group == merge_group_head
+            }
+            _ => false,
         };
         let next = match (reviews, queue) {
             (LatestReviews::Unresolved, _) => Next::HoldFindings,
@@ -150,13 +189,8 @@ impl Policy {
             {
                 Next::WaitReconciliation
             }
-            (_, Queue::Rejected(r))
-                if !r.notified
-                    || matches!(r.cause, RejectionCause::Unknown | RejectionCause::FailedTests([])) =>
-            {
-                Next::WaitNotification
-            }
-            (_, Queue::Rejected(r)) if r.retry_used => Next::RetryExhausted,
+            (_, Queue::Rejected(r)) if !r.notified || !r.cause.known() => Next::WaitNotification,
+            (_, Queue::Rejected(r)) if matches!(r.retry, Retry::Consumed { .. }) => Next::RetryExhausted,
             (_, Queue::Rejected(r)) if r.main == main => Next::WaitMain,
             (_, Queue::Rejected(_)) => Next::Retry,
         };
@@ -164,6 +198,7 @@ impl Policy {
             next,
             notify_rejection,
             queue_alarm: matches!(queue, Queue::Queued { since } if now.saturating_sub(since) > 45 * 60),
+            repeat_rejection_alarm,
         }
     }
 }

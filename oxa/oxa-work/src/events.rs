@@ -8,6 +8,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::Path;
 
+mod digest;
+pub use digest::{Digest, DigestChanges, DigestGap};
+
 const CURRENT: &str = "events.jsonl";
 const PREVIOUS: &str = "events.previous.jsonl";
 const STATE: &str = "facts.json";
@@ -300,11 +303,14 @@ impl Facts {
         self.recover().map(|(_, snapshot, _)| snapshot)
     }
     pub fn events_after(&self, after: u64, limit: usize) -> Result<EventPage> {
+        self.read_window(after, limit).map(|(_, page)| page)
+    }
+    fn read_window(&self, after: u64, limit: usize) -> Result<(Snapshot, EventPage)> {
         if !(1..=64).contains(&limit) {
             return Err("event page limit must be between 1 and 64".into());
         }
         let _lock = self.root.lock(LOCK)?;
-        let (state, _, journal) = self.recover()?;
+        let (state, snapshot, journal) = self.recover()?;
         if after > state.last_seq {
             return Err("event cursor is ahead of the journal".into());
         }
@@ -343,7 +349,7 @@ impl Facts {
             page.events.push(event);
         }
         page.to_json().map_err(|error| error.to_string())?;
-        Ok(page)
+        Ok((snapshot, page))
     }
     fn journal(&self, pending: bool) -> Result<Journal> {
         // The only allowed missing current file is an interrupted, durably reserved rotation.

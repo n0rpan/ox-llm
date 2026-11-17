@@ -380,7 +380,7 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
             ScriptTurn::tool(
                 "edit",
                 "bash",
-                r#"{"command":"printf draft > change.txt; sleep 0.5; printf finished > tool-finished"}"#,
+                r#"{"command":"printf draft > change.txt; printf finished > tool-finished"}"#,
             ),
             ScriptTurn::text("Work retained; continue this session."),
         ],
@@ -397,8 +397,8 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
             "-p",
             "first instruction",
             "later instruction",
-            "--max-time",
-            "0.2",
+            "--max-tokens",
+            "1",
         ])
         .output()
         .unwrap();
@@ -410,7 +410,23 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
         "{}",
         diagnostics()
     );
-    assert_eq!(server.requests().len(), 2, "{}", diagnostics());
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2, "{}", diagnostics());
+    let has_wrap_up = |index: usize| {
+        requests[index].messages.iter().any(|message| {
+            message
+                .content
+                .as_deref()
+                .is_some_and(|text| text.contains("Wrap up now: this run is ending."))
+        })
+    };
+    assert!(!has_wrap_up(0), "{}", diagnostics());
+    assert!(has_wrap_up(1), "{}", diagnostics());
+    assert!(
+        requests[1].max_tokens <= 1024 && !requests[1].thinking,
+        "{}",
+        diagnostics()
+    );
     assert_eq!(
         std::fs::read_to_string(env.work().join("tool-finished"))
             .unwrap_or_else(|_| panic!("tool marker unreadable: {}", diagnostics())),
@@ -419,7 +435,7 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
         diagnostics()
     );
     assert!(
-        !format!("{:?}", server.requests()).contains("later instruction"),
+        !format!("{requests:?}").contains("later instruction"),
         "{}",
         diagnostics()
     );
