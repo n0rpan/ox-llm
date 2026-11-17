@@ -93,7 +93,7 @@ pub(crate) fn select(
     requested: Option<&str>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
-    select_observed(user, effective, dirs, requested, None, http)
+    select_observed(user, effective, dirs, requested, None, None, http)
 }
 
 pub(crate) fn select_observed(
@@ -102,8 +102,21 @@ pub(crate) fn select_observed(
     dirs: &Dirs,
     requested: Option<&str>,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
+    shared_local: Option<Arc<oxc_local::native::LocalEngine>>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
+    let local_engine = || match shared_local {
+        Some(engine) => Ok(engine as Arc<dyn Engine>),
+        None => oxc_local::configured_engine(
+            user.get("oxa.local"),
+            dirs.agent_dir.join("local-engine"),
+            oxa_engine::StreamOpts {
+                silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
+                    .unwrap_or(365 * 24 * 3600 * 1000),
+                ..oxa_engine::StreamOpts::default()
+            },
+        ),
+    };
     if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
         let aliases = |path| {
             user.get(path)
@@ -112,15 +125,7 @@ pub(crate) fn select_observed(
                 .unwrap_or_default()
         };
         return routing::Routed {
-            local: oxc_local::configured_engine(
-                user.get("oxa.local"),
-                dirs.agent_dir.join("local-engine"),
-                oxa_engine::StreamOpts {
-                    silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
-                        .unwrap_or(365 * 24 * 3600 * 1000),
-                    ..oxa_engine::StreamOpts::default()
-                },
-            ),
+            local: local_engine(),
             cloud: if oxa_proto::offline() {
                 Err(oxa_proto::offline_error("the in-process cloud gateway"))
             } else {
@@ -134,15 +139,7 @@ pub(crate) fn select_observed(
         .into_engine(requested);
     }
     if user.bool(oxc_local::LOCAL_SETTING, false) {
-        return oxc_local::configured_engine(
-            user.get("oxa.local"),
-            dirs.agent_dir.join("local-engine"),
-            oxa_engine::StreamOpts {
-                silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
-                    .unwrap_or(365 * 24 * 3600 * 1000),
-                ..oxa_engine::StreamOpts::default()
-            },
-        );
+        return local_engine();
     }
     if !user.bool(SETTING, false) {
         return http();
