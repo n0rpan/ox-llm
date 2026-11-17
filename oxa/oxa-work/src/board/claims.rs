@@ -193,6 +193,9 @@ impl Claims {
         }
         let _lock = self.lock(entry.number)?;
         let mut state = self.load(entry.number)?;
+        if self.established(entry.number)? {
+            self.mark(entry.number)?;
+        }
         let day = now / 86_400;
         if state.utc_day > day {
             return Err("board claim clock moved backwards".into());
