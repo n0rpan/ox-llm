@@ -710,4 +710,5 @@ mod tests_affinity;
 mod tests_cli;
 #[cfg(test)]
 mod tests_decode_team;
+#[cfg(test)]
 mod tests_placement;
