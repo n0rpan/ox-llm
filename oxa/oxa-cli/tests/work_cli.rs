@@ -358,38 +358,45 @@ fn child_can_create_a_commit_with_the_real_sandbox() {
     assert_eq!(String::from_utf8_lossy(&subject.stdout).trim(), "task");
 }
 #[test]
-fn offline_issue_input_never_spawns_gh() {
+fn offline_github_lookup_never_spawns_gh() {
     use std::os::unix::fs::PermissionsExt;
-    for setting in [false, true] {
-        let env = TestEnv::new();
-        setup(&env, "[]");
-        let gh = env.write(
-            "tmp/gh",
-            "#!/bin/sh\nprintf invoked > \"$HOME/gh-invoked\"\nexit 7\n",
-        );
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-        if setting {
-            env.write("home/.oxa/agent/settings.json", r#"{"oxa":{"offline":true}}"#);
-        }
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
-        cmd.args(["work", "--issue", "42", "--model", "fake"])
-            .current_dir(env.work().join("project"))
-            .env_clear()
-            .envs(env.envs("http://127.0.0.1:1"))
-            .env(
-                "PATH",
-                format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
+    // Both GitHub inputs share one refusal: an offline run never spawns even a trusted gh,
+    // whether the flag or the user setting turns offline on.
+    for input in ["--issue", "--pr"] {
+        for setting in [false, true] {
+            let env = TestEnv::new();
+            setup(&env, "[]");
+            let gh = env.write(
+                "tmp/gh",
+                "#!/bin/sh\nprintf invoked > \"$HOME/gh-invoked\"\nexit 7\n",
             );
-        if !setting {
-            cmd.env("OXA_OFFLINE", "1");
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+            if setting {
+                env.write("home/.oxa/agent/settings.json", r#"{"oxa":{"offline":true}}"#);
+            }
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
+            cmd.args(["work", input, "42", "--model", "fake"])
+                .current_dir(env.work().join("project"))
+                .env_clear()
+                .envs(env.envs("http://127.0.0.1:1"))
+                .env(
+                    "PATH",
+                    format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
+                );
+            if !setting {
+                cmd.env("OXA_OFFLINE", "1");
+            }
+            let out = cmd.output().unwrap();
+            assert_eq!(out.status.code(), Some(2));
+            assert!(
+                !env.home().join("gh-invoked").exists(),
+                "offline lookup ran gh, input={input}, setting={setting}"
+            );
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains("offline"),
+                "input={input}, setting={setting}"
+            );
         }
-        let out = cmd.output().unwrap();
-        assert_eq!(out.status.code(), Some(2));
-        assert!(
-            !env.home().join("gh-invoked").exists(),
-            "offline lookup ran gh, setting={setting}"
-        );
-        assert!(String::from_utf8_lossy(&out.stderr).contains("offline"));
     }
 }
 
