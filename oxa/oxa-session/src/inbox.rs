@@ -99,7 +99,13 @@ fn durable_agent_directory(path: &Path) -> io::Result<()> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
             let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or(e)?;
             durable_agent_directory(parent)?;
-            return durable_agent_directory(path);
+            // Retry mkdir once. An existing but dangling parent link must return an
+            // error rather than recurse on this same path indefinitely.
+            match DirBuilder::new().mode(0o700).create(path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
         }
         Err(e) => return Err(e),
     }
@@ -207,6 +213,14 @@ mod durability_tests {
         let result = operation();
         FAILED_DIRECTORY.with(|target| target.set(None));
         result
+    }
+
+    #[test]
+    fn missing_parent_link_refuses_publication() {
+        let env = oxa_fake::TestEnv::new();
+        std::os::unix::fs::symlink("missing", env.work().join("link")).unwrap();
+        assert!(send_inbox(&env.work().join("link/agent"), "session", "pending").is_err());
+        assert!(!env.work().join("missing").exists());
     }
 
     #[test]
