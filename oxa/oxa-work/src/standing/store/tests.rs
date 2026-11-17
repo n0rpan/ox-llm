@@ -258,40 +258,28 @@ fn verify_refuses_released_and_retired_rules() {
     let released = standing
         .rule(1, Authority::Owner, 2, hold(false, Some(&held.id)))
         .unwrap();
-    let note = standing
-        .rule(
-            2,
-            Authority::Owner,
-            3,
-            Rule {
-                kind: Kind::Note,
-                scope: Scope::Repository,
-                value: Value::Text("Keep notes brief".into()),
-                said: "Keep notes brief".into(),
-                source: super::super::Source::Command {
-                    command: "note".into(),
-                },
-                supersedes: None,
-            },
-        )
-        .unwrap();
-    let retired = standing
-        .rule(
-            3,
-            Authority::Owner,
-            4,
-            Rule {
-                kind: Kind::Note,
-                scope: Scope::Repository,
-                value: Value::Retired,
-                said: "Retire the note".into(),
-                source: super::super::Source::Command {
-                    command: "retire".into(),
-                },
-                supersedes: Some(note.id.clone()),
-            },
-        )
-        .unwrap();
+    let request = Rule {
+        kind: Kind::Note,
+        scope: Scope::Repository,
+        value: Value::Text("Keep notes brief".into()),
+        said: "Keep notes brief".into(),
+        source: super::super::Source::Command {
+            command: "note".into(),
+        },
+        supersedes: None,
+    };
+    let note = standing.rule(2, Authority::Owner, 3, request).unwrap();
+    let request = Rule {
+        kind: Kind::Note,
+        scope: Scope::Repository,
+        value: Value::Retired,
+        said: "Retire the note".into(),
+        source: super::super::Source::Command {
+            command: "retire".into(),
+        },
+        supersedes: Some(note.id.clone()),
+    };
+    let retired = standing.rule(3, Authority::Owner, 4, request).unwrap();
     assert!(!released.is_live() && !retired.is_live());
     for entry in [&released, &retired] {
         let result = standing.verify(4, &entry.id, |entry: &Entry| {
