@@ -829,3 +829,36 @@ fn invalid_enabled_factory_refuses_without_http_fallback() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("Invalid user cloud configuration"));
     assert!(http.requests().is_empty());
 }
+
+#[test]
+fn composed_factory_lists_all_configured_providers_without_credentials_or_http() {
+    let env = TestEnv::new();
+    let mut models = serde_json::Map::new();
+    for provider in ["anthropic", "openrouter", "openai", "chatgpt"] {
+        models.insert(
+            format!("synthetic-{provider}"),
+            json!({"provider":provider,"upstream_model":"synthetic-model",
+                "context_window":32768,"max_output":64,"pricing":{
+                    "input_per_million":1,"output_per_million":2}}),
+        );
+    }
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &json!({"oxa":{"engine":{"inProcessCloud":true,"inProcessLocal":false},
+            "cloud":{"models":models,"daily_budget_usd":1,
+                "subscription_limits":{"daily_requests":3,"daily_tokens":100000}}}})
+        .to_string(),
+    );
+    let http = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let result = run_to(&env, &http.url(), &["--list-models"], None);
+    success(&result);
+    let output = String::from_utf8_lossy(&result.stdout);
+    for provider in ["anthropic", "openrouter", "openai", "chatgpt"] {
+        assert!(output.contains(&format!("synthetic-{provider}")), "{output}");
+    }
+    assert_eq!(http.hits("GET", "/v1/models"), 0);
+    assert!(http.requests().is_empty());
+    assert!(!key_path(&env).exists());
+    assert!(!env.home().join(".config/oxc/llm/chatgpt-auth.json").exists());
+    assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+}
