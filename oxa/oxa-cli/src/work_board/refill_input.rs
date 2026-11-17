@@ -40,20 +40,64 @@ impl<'a> Input<'a> {
 impl GitHub for Input<'_> {
     fn snapshot(&mut self) -> Result<Snapshot, String> {
         let pull_requests = self.reader.open_pull_requests()?;
-        let mut fields = "pullRequests(first:100,states:OPEN){totalCount nodes{number headRefOid headRefName closingIssuesReferences(first:100){totalCount nodes{number}}}}".to_owned();
+        let mut issue_fields = String::new();
         for packet in self.packets.iter().filter(|p| p.action == Action::BuildIssue) {
-            fields.push_str(&format!(
+            issue_fields.push_str(&format!(
                 " i{}:issue(number:{}){{number state updatedAt}}",
                 packet.number, packet.number
             ));
         }
-        let (metadata, _) = self.reader.repository_read(&fields)?;
+        let (mut metadata, mut rows, mut cursor, mut cursors) =
+            (Value::Null, vec![], String::new(), BTreeSet::new());
+        // Retained normalized facts and all metadata pages share one bounded budget.
+        let mut bytes = serde_json::to_vec(&pull_requests)
+            .map_err(|_| "cannot bound board facts")?
+            .len();
+        loop {
+            let fields = format!(
+                "pullRequests(first:100,states:OPEN{cursor}){{totalCount nodes{{number headRefOid headRefName closingIssuesReferences(first:100){{totalCount nodes{{number}}}}}} pageInfo{{hasNextPage endCursor}}}}{issue_fields}"
+            );
+            let (page, read) = self.reader.repository_read(&fields)?;
+            super::charge(&mut bytes, read)?;
+            let connection = &page["pullRequests"];
+            if connection["totalCount"].as_u64() != Some(pull_requests.len() as u64) {
+                return Err("board membership changed; retry later".into());
+            }
+            let batch = connection["nodes"].as_array().ok_or("missing metadata page")?;
+            if batch.len() > 100 {
+                return Err("oversized metadata page".into());
+            }
+            rows.extend(batch.iter().cloned());
+            if rows.len() > pull_requests.len() {
+                return Err("oversized metadata snapshot".into());
+            }
+            if metadata.is_null() {
+                metadata = page.clone();
+            }
+            if !connection["pageInfo"]["hasNextPage"]
+                .as_bool()
+                .ok_or("missing metadata pagination")?
+            {
+                break;
+            }
+            let next = connection["pageInfo"]["endCursor"]
+                .as_str()
+                .filter(|c| !c.is_empty())
+                .ok_or("missing metadata cursor")?;
+            if batch.is_empty() || !cursors.insert(next.to_owned()) {
+                return Err("invalid metadata pagination progress".into());
+            }
+            cursor = format!(",after:{next:?}");
+            issue_fields.clear();
+        }
+        metadata["pullRequests"]["nodes"] = rows.into();
         let rows = nodes(&metadata["pullRequests"])?;
         let heads: BTreeMap<_, _> = rows
             .iter()
             .map(|p| (p["number"].as_u64(), p["headRefOid"].as_str()))
             .collect();
-        if heads.len() != pull_requests.len()
+        if heads.len() != rows.len()
+            || heads.len() != pull_requests.len()
             || pull_requests
                 .iter()
                 .any(|p| heads.get(&Some(p.number)) != Some(&Some(p.head.as_str())))
