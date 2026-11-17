@@ -111,6 +111,8 @@ fn docs_need_codex_and_agent_instructions_are_at_least_product() {
         ("AGENTS.md", None, Tier::Product),
         ("docs/tools/AGENTS.md", None, Tier::Product),
         ("skills/check/SKILL.md", None, Tier::Product),
+        ("skills/check/checklist.md", None, Tier::Product),
+        ("oxa/oxa-resources/prompts/default.md", None, Tier::Product),
         (
             "oxa/oxa-resources/builtin-skills/review/SKILL.md",
             None,
