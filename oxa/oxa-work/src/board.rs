@@ -152,12 +152,35 @@ impl Board {
         state: &BTreeMap<u64, AttemptState>,
         now: u64,
     ) -> crate::Result<Self> {
+        Self::read_with_review_policy(
+            github,
+            policy,
+            state,
+            now,
+            &review::Policy::default(),
+            &BTreeMap::new(),
+        )
+        .map(|(board, _)| board)
+    }
+
+    /// The caller supplies trusted evidence for this repository, keyed by PR number.
+    /// Evidence from a different head cannot qualify a PR or produce a review request.
+    /// The returned plans are read-only. Dispatch requires a durable request reservation.
+    pub fn read_with_review_policy(
+        github: &mut impl GitHub,
+        policy: &Policy,
+        state: &BTreeMap<u64, AttemptState>,
+        now: u64,
+        review_policy: &review::Policy<'_>,
+        evidence: &BTreeMap<u64, review::Facts<'_>>,
+    ) -> crate::Result<(Self, BTreeMap<u64, review::Decision>)> {
         let mut board = Self {
             observed_at: now,
             entries: vec![],
         };
+        let mut review_plans = BTreeMap::new();
         if !policy.enabled {
-            return Ok(board);
+            return Ok((board, review_plans));
         }
         let mut seen = BTreeSet::new();
         let snapshot = github.snapshot()?;
@@ -165,25 +188,56 @@ impl Board {
             if pr.number == 0 || pr.head.is_empty() || !seen.insert(pr.number) {
                 return Err("invalid or duplicate pull request in board snapshot".into());
             }
+            let facts = evidence.get(&pr.number).filter(|facts| facts.head == pr.head);
+            let review = review_policy.enabled.then(|| {
+                let Some(facts) = facts else {
+                    return review::Decision::Wait;
+                };
+                let mut decision = review_policy.decide(&review::Facts {
+                    required_ci: pr.required_ci,
+                    draft: pr.draft,
+                    unresolved_findings: pr.findings,
+                    body: &pr.body,
+                    ..*facts
+                });
+                if pr.mergeability != Mergeability::Mergeable {
+                    if let review::Decision::Review { request, .. } = &mut decision {
+                        request.clear();
+                    }
+                }
+                decision
+            });
             let action = if pr.findings {
                 Action::FixFindings
             } else if pr.required_ci == RequiredCi::Failed {
                 Action::FixRequiredCi
             } else if pr.mergeability == Mergeability::Conflicting {
                 Action::ResolveConflict
-            } else if pr.removes_source && !review::has_removes_note(&pr.body) {
+            } else if matches!(review, Some(review::Decision::AddRemoves))
+                || (review.is_none() && pr.removes_source && !review::has_removes_note(&pr.body))
+            {
                 Action::AddRemoves
             } else if pr.required_ci != RequiredCi::Passed {
                 Action::WaitRequiredCi
             } else if pr.mergeability == Mergeability::Unknown {
                 Action::WaitMergeability
-            } else if pr.draft {
+            } else if pr.draft
+                && (!review_policy.enabled
+                    || facts.is_some_and(|facts| {
+                        !facts.changes.is_empty() && facts.patch_id.is_some_and(|id| !id.is_empty())
+                    }))
+            {
                 Action::PromoteDraft
-            } else if pr.reviewed {
+            } else if matches!(&review, Some(review::Decision::Review { outstanding, .. }) if outstanding.is_empty())
+                || (review.is_none() && pr.reviewed)
+            {
                 Action::Ready
             } else {
                 Action::WaitReview
             };
+            if let Some(decision) = review {
+                review_plans.insert(pr.number, decision);
+            }
             board.entries.push(intake::entry(
                 pr.number,
                 pr.head,
@@ -216,6 +270,6 @@ impl Board {
         board
             .entries
             .sort_by_key(|e| (!e.release_pinned, e.action, e.number));
-        Ok(board)
+        Ok((board, review_plans))
     }
 }

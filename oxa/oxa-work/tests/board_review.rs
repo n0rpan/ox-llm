@@ -181,3 +181,83 @@ fn removals_count_source_lines_in_aggregate_and_any_deleted_file() {
     }];
     assert_eq!(decide(&facts(&deleted_doc)), Decision::AddRemoves);
 }
+
+#[test]
+fn board_holds_stale_evidence_and_uses_current_pull_request_facts() {
+    use oxa_work::board::{Action, Board, GitHub, Mergeability, PullRequest};
+    use std::collections::BTreeMap;
+
+    struct Snapshot(PullRequest);
+    impl GitHub for Snapshot {
+        fn open_pull_requests(&mut self) -> oxa_work::Result<Vec<PullRequest>> {
+            Ok(vec![self.0.clone()])
+        }
+    }
+
+    let changes = [Change {
+        deleted_lines: 61,
+        ..SOURCE
+    }];
+    let mut evidence = facts(&changes);
+    let mut github = Snapshot(PullRequest {
+        number: 23,
+        head: "new-head".into(),
+        release_pinned: false,
+        findings: false,
+        required_ci: RequiredCi::Passed,
+        mergeability: Mergeability::Mergeable,
+        body: String::new(),
+        removes_source: false,
+        draft: false,
+        reviewed: true,
+    });
+    let read = |github: &mut Snapshot, evidence| {
+        let (board, plans) = Board::read_with_review_policy(
+            github,
+            &oxa_work::board::Policy {
+                enabled: true,
+                ..Default::default()
+            },
+            &BTreeMap::new(),
+            0,
+            &Policy {
+                enabled: true,
+                paths: PATHS,
+            },
+            &BTreeMap::from([(23, evidence)]),
+        )
+        .unwrap();
+        (board.entries[0].action, plans.into_values().next().unwrap())
+    };
+
+    assert_eq!(
+        read(&mut github, evidence),
+        (Action::AddRemoves, Decision::AddRemoves)
+    );
+    github.0.body = "Removes: obsolete fallback".into();
+    github.0.required_ci = RequiredCi::Pending;
+    assert_eq!(
+        read(&mut github, evidence),
+        (Action::WaitRequiredCi, Decision::Wait)
+    );
+    github.0.required_ci = RequiredCi::Passed;
+    evidence.head = "old-head";
+    assert_eq!(read(&mut github, evidence), (Action::WaitReview, Decision::Wait));
+    evidence.head = "new-head";
+    evidence.approvals = &[Approval {
+        reviewer: Reviewer::Codex,
+        head: "new-head",
+        patch_id: "own-patch",
+    }];
+    assert_eq!(
+        read(&mut github, evidence),
+        (
+            Action::Ready,
+            Decision::Review {
+                tier: Tier::Product,
+                request: vec![],
+                outstanding: vec![],
+            }
+        )
+    );
+}

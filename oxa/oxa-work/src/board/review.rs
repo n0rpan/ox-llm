@@ -29,6 +29,8 @@ pub enum ChangeKind {
 pub struct Change<'a> {
     pub path: &'a str,
     pub previous_path: Option<&'a str>,
+    /// For a rename, Source if either side is source and Other if either side
+    /// is unclassified. Filter as documentation or test only if both sides qualify.
     pub kind: ChangeKind,
     pub deleted_lines: u64,
     pub deleted_file: bool,
@@ -45,6 +47,7 @@ pub struct Approval<'a> {
     pub patch_id: &'a str,
 }
 
+#[derive(Clone, Copy)]
 pub struct Facts<'a> {
     pub changes: &'a [Change<'a>],
     pub two_review: bool,
