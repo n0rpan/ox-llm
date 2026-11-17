@@ -58,7 +58,7 @@ under every option below. No option changes what a row contains or who may read 
 | C3 | Existing append (name already durable), between the row `fdatasync` and the directory `fsync` | the name from an earlier successful directory `fsync`; the row's data and size from `fdatasync` | row durable, hold still present | I1, I2, I4 hold | the directory `fsync` adds no durability for this row; it is redundant *if* name durability is already established and provable |
 | C4 | Torn write, mid `write_all` of a row or of the snapshot | the previous complete rows and the previous snapshot | row: an unfinished final line without `\n`, not counted by the reader ([spend.rs:84](../../oxc-gateway/src/spend.rs#L84)) and repaired before the next append ([spend.rs:201](../../oxc-gateway/src/spend.rs#L201)); snapshot: partial JSON, so the next open fails closed ([reservations.rs:111](../../oxc-gateway/src/reservations.rs#L111)) | I1, I2, I4 hold | fail-closed; no unlogged spend |
 | C5 | Directory creation and first `.holds` initialization | nothing | crash before the ancestor syncs: the `.holds` name may be absent, but no hold was ever admitted, because admission returns only after `save` succeeds ([accounting.rs:192](../../oxc-gateway/src/accounting.rs#L192)); crash after them but before the snapshot `fdatasync`: an empty or partial body, which the next open rejects | I1, I2, I4 hold | no admission is possible before the snapshot is durable; a failed sync leaves the file untrusted, as the comment at [reservations.rs:198](../../oxc-gateway/src/reservations.rs#L198) states |
-| C6 | Name replacement or same-inode rewrite | the previous rows | `SpendReader` resets on a `(dev, ino)` change or a shorter file ([spend.rs:52](../../oxc-gateway/src/spend.rs#L52)) and on a changed 64-byte tail ([spend.rs:59](../../oxc-gateway/src/spend.rs#L59)); a replacement that loses rows under-counts spend, holds are unaffected | I1, I2, I4 hold | pre-existing, not a sync-ordering issue; an elision must invalidate its name witness on identity change |
+| C6 | Name replacement or same-inode rewrite | the previous rows | `SpendReader` resets on a `(dev, ino)` change or a shorter file ([spend.rs:52](../../oxc-gateway/src/spend.rs#L52)) and on a changed 64-byte tail ([spend.rs:59](../../oxc-gateway/src/spend.rs#L59)); the reader's own `fdatasync` ordering is unchanged here, but a replacement that keeps the length and the tail is recounted or trusted on a stale tail, so spend is under-counted until the next row. Today the hold and the next append bound that window (section 4) | I1, I2, I4 hold | not a sync-ordering window in A; becomes one under B, whose witness must be invalidated on identity change and whose storage must not be the rewrite-in-place snapshot |
 | C7 | Process death after forwarding, before settlement | the hold snapshot | no `Drop` runs, the hold stays, `failed` is not set; other processes count it in `reserved()` ([reservations.rs:147](../../oxc-gateway/src/reservations.rs#L147)) | I1, I2, I4 hold | conservative and deliberate: no timeout or PID-based release of possibly paid work |
 | C8 | Sync error at any of the four points | the previous state | row or directory sync error: `finish` sets `failed` on both the process state and the snapshot, keeps the hold, and later admissions refuse ([accounting.rs:438](../../oxc-gateway/src/accounting.rs#L438)); snapshot sync error: `state.failed` and a ledger refusal ([accounting.rs:445](../../oxc-gateway/src/accounting.rs#L445)); ancestor sync error on the fresh path: the empty file stays untrusted | I1, I2, I4 hold | fail-closed; covered by the injected-EIO test |
 | C9 | Concurrent processes | the daily flock | every admission and settlement state change happens under the flock ([reservations.rs:92](../../oxc-gateway/src/reservations.rs#L92)); the row append takes the same lock and the writer mutex ([ledger.rs:418](../../oxc-gateway/src/ledger.rs#L418)) | I1–I4 hold | a directory `fsync` by one process is not observable by another, so cross-process name-durability evidence needs a durable witness |
@@ -86,6 +86,21 @@ Two consequences follow.
    path. The witness must be invalidated when the identity changes or the file is missing, and it
    must be durable before the first hold removal that relies on it.
 
+   `save` cannot carry that witness as it stands: it rewrites every snapshot with
+   `set_len(0)` then `write_all` under the daily lock ([reservations.rs:208-211](../../oxc-gateway/src/reservations.rs#L208)),
+   so a crash inside a rewrite truncates the snapshot to its first partial bytes, and the ledger
+   directory is never synced for it. Before the first witness this is harmless — the truncated body
+   refuses replay (C4) and the holds it held stay conservative in the refused state. From the first
+   witness on it is not: `SpendReader` resets on a shorter file
+   ([spend.rs:52](../../oxc-gateway/src/spend.rs#L52)) and on a changed 64-byte tail
+   ([spend.rs:59](../../oxc-gateway/src/spend.rs#L59)), so a replacement that keeps a length and a
+   tail is counted from offset zero or trusted on a stale tail, and spend is then under-counted
+   until a row is appended. Holds cap the window for as long as they exist, which is why the current
+   contract holds; an elision that removes the directory `fsync` must not widen that window. B
+   therefore needs the witness in a file that is only ever appended to or replaced atomically
+   (rename), not in the rewrite-in-place snapshot, and C6 is in B's scope rather than adjacent to
+   it.
+
 The directory `fsync` also flushes the other names in that directory (`.holds`, `.budget-lock`,
 `.salt`). Removing it does not remove the fresh-path ancestor syncs, which are what establish those
 names.
@@ -109,11 +124,11 @@ not affect spend, holds or caps. This packet does not propose a change for it.
 | Risk | the measured cost | a wrong witness turns C1 into unlogged spend, the exact failure the `fsync` prevents | largest change; recovery correctness is the whole contract |
 | Tier | — | T2/T3 | T3 |
 
-Option B is a bounded change: the witness can live in the existing snapshot, so no new file and no
-extra sync are needed, but `append_private` is a public function used by the ledger and by tests, so
-its signature or its caller changes. Option C removes the per-request snapshot rewrite, which is the
-part that scales with the number of open holds, but it replaces the recovery contract that the
-current fail-closed rules and their tests encode.
+Option B is a bounded change: no new sync is needed, but the witness needs a home whose durability
+does not depend on the rewrite-in-place snapshot (section 4), and `append_private` is a public
+function used by the ledger and by tests, so its signature or its caller changes. Option C removes
+the per-request snapshot rewrite, which is the part that scales with the number of open holds, but
+it replaces the recovery contract that the current fail-closed rules and their tests encode.
 
 ## 6. The orchestrator decision question
 
@@ -142,17 +157,33 @@ already asserts that the directory `fsync` sits between the row's `fdatasync` an
 
 The implementation PR adds, without touching production code:
 
-1. **Crash points.** Model a crash at a sync boundary with strace
-   `-e inject=fsync:signal=SIGKILL:when=N` or `-e inject=fdatasync:signal=SIGKILL:when=N`: the
-   syscall never runs and the process dies, so the on-disk state is exactly "crash at that
-   boundary". A crash anywhere between two syncs is modelled by killing at the later one, because
-   no other durable state changes in between. The sync-error window uses the same injection with
-   `error=EIO` instead of `signal=`, which is what the existing test already does. A test-only exit
-   inside the write callback covers the boundaries that are not syscalls (mid-row, mid-snapshot).
-2. **Windows.** One case per row of the table: W1 = C1, W2 = C2, W3 = C3, W4 = C4 (row and
+1. **Three mechanisms, three different claims.** They do not substitute for one another:
+   - *Ordering*: the strace trace of `fsync,fdatasync,ftruncate`. This is the only mechanism that
+     proves the ordering invariant, and it proves nothing about what survives a crash.
+   - *Sync error*: `-e inject=fsync:error=EIO:when=N` fails one sync while the process stays alive,
+     which exercises the fail-closed paths of C8. This is what the existing test at line 584 does.
+   - *Process death*: `-e inject=fsync:signal=SIGKILL:when=N` / `fdatasync:signal=SIGKILL:when=N`
+     kills the worker at a sync boundary, and the recovery assertions run in a fresh process. A
+     test-only exit inside the write callback covers the boundaries that are not syscalls (mid-row,
+     mid-snapshot).
+2. **What process death cannot prove, and why B needs more.** A SIGKILL is not a power loss: the
+   skipped sync leaves the bytes already written dirty in the page cache, and the kernel writes
+   them back afterwards, directory entries included. So a kill at a sync boundary leaves the
+   *post-sync* on-disk state, not the pre-sync one, and no SIGKILL can produce the C1 state ("row
+   bytes present, the row file's name absent"). "Either a row or a hold survives" therefore passes
+   trivially under SIGKILL and says nothing about C1 or C3; the kill cases are real tests of hold
+   retention, refusal and recovery (C2, C4, C7, C9), not of durability ordering. Discarding
+   unsynced writes needs a layer below the filesystem (a VM whose write cache is dropped on power
+   off, or a block-device fault layer); none exists in CI today and this packet does not add one.
+   Consequence for the decision: A's ordering is provable now, while B's own risk — a wrong name
+   witness turning C1 into unlogged spend — is not provable by the current harness, so B must bring
+   that harness first.
+3. **Windows.** One case per row of the table: W1 = C1, W2 = C2, W3 = C3, W4 = C4 (row and
    snapshot), W5 = C5, W6 = C6, W7 = C7, W8 = C8 at each of the four sync points, W9 = C9 with the
-   crash injected in one of eight concurrent workers.
-3. **Assertions after each window**, in a fresh process:
+   crash injected in one of eight concurrent workers. W1, W3 and W5 are asserted by the trace, and
+   their crash form is marked as requiring the write-cache layer of item 2 rather than claimed as
+   covered by a kill.
+4. **Assertions after each window**, in a fresh process:
    - no unlogged spend: for every request a worker reported as forwarded, either a complete row is
      in the ledger or its hold id is still in the snapshot; concretely, the sum of complete row
      costs plus `reserved()` of the snapshot is at least the sum of the reservations the workers
@@ -165,12 +196,16 @@ The implementation PR adds, without touching production code:
    - no overspend: after recovery, the existing eight-worker cap test
      ([process_budget.rs:277](../../oxc-gateway/tests/process_budget.rs#L277)) admits no more
      requests than the cap allows.
-4. **Preserved tests.** Every existing test in `tests/accounting.rs`, `tests/process_budget.rs` and
+5. **Preserved tests.** Every existing test in `tests/accounting.rs`, `tests/process_budget.rs` and
    the library suites stays, unweakened. The ordering assertion stays meaningful: under B it becomes
    "the witness is durable before the hold removal", under C "the journal record is durable before
    the hold removal".
-5. **Environment.** Isolated HOME/XDG, synthetic loopback mock upstream, no real keys and no
+6. **Environment.** Isolated HOME/XDG, synthetic loopback mock upstream, no real keys and no
    provider traffic, CI only, `CARGO_BUILD_JOBS=3`.
+
+No Rust or Python test is added by this packet: the source tree is unchanged, so there is no
+behaviour to pin. The first executable artifact is the ordering and kill harness of this section,
+in the implementation PR, and it must fail before the change it guards passes.
 
 ## 8. Measurement plan
 
