@@ -469,5 +469,220 @@ class FakeBinaryEndToEndTests(unittest.TestCase):
         self.assertEqual(cell["evidence"]["class"], "S")
 
 
+# Pretty-printed like the real `oxe bench` / `oxe prefill-bench` stdout, not one JSON line.
+OXE_DECODE_STDOUT = json.dumps({
+    "engine": "oxe", "engine_commit": "local-build", "cpus": [0, 1, 2, 3], "threads": 8,
+    "prompt_tokens": 512, "warmup": 16, "tokens": 128, "n_ctx": 4096, "tok_s": 30.5,
+    "ms_per_token": {"median": 32.79, "mean": 33.0, "min": 30.0, "p90": 40.0},
+    "generated_ids": [1, 2, 3], "generated_hash": "0123456789abcdef",
+}, indent=2)
+OXE_PREFILL_STDOUT = json.dumps({
+    "prompt_len": [512], "ubatch": 256, "reps": 1, "prefix_len": 0, "threads": 8, "n_ctx": 4096,
+    "arms": [{"prompt_tokens": 512, "prefix_tokens": 0, "tok_s_median": 120.5,
+              "ms_per_token_median": 4.25, "seconds": [4.25], "first_token": 7,
+              "prefill_attention": {"kernel": "tiled", "cutoff": 2048},
+              "pf_tiles": 0, "pf_group": 1}],
+}, indent=2)
+
+
+class OxeArmTests(unittest.TestCase):
+    """The CPU-only oxe arm: argv, plan, staged adapter and model-free stub receipts."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="mroxe-")
+        self.models = os.path.join(self.tmp, "models")
+        os.makedirs(self.models)
+        self.model = os.path.join(self.models, "model.gguf")
+        with open(self.model, "wb") as fh:
+            fh.write(b"gguf")
+        self.work = os.path.join(self.tmp, "work")
+        os.makedirs(self.work)
+        self.oxe = os.path.join(self.tmp, "oxe")
+        self._write_oxe_stub(self.oxe, OXE_DECODE_STDOUT, OXE_PREFILL_STDOUT)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_oxe_stub(self, path, bench_json, prefill_json):
+        out = os.path.join(self.tmp, "stub")
+        os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, "bench.json"), "w", encoding="utf-8") as fh:
+            fh.write(bench_json + "\n")
+        with open(os.path.join(out, "prefill.json"), "w", encoding="utf-8") as fh:
+            fh.write(prefill_json + "\n")
+        body = (
+            "#!/bin/sh\n"
+            "case \"$1\" in\n"
+            "  bench) cat '%s/bench.json' ;;\n"
+            "  prefill-bench) cat '%s/prefill.json' ;;\n"
+            "  *) exit 9 ;;\n"
+            "esac\n" % (out, out))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        os.chmod(path, 0o755)
+
+    def _ids(self):
+        return mr.oxe_prompt_ids()
+
+    def test_argv_is_cpu_only_and_explicit(self):
+        ids = self._ids()
+        decode = mr.oxe_decode_argv(self.oxe, self.model, 8, ids)
+        prefill = mr.oxe_prefill_argv(self.oxe, self.model, 8, ids)
+        self.assertEqual(decode[0], self.oxe)
+        self.assertEqual(decode[1], "bench")
+        self.assertEqual(prefill[1], "prefill-bench")
+        for argv in (decode, prefill):
+            self.assertIn("--model", argv)
+            self.assertIn(self.model, argv)
+            self.assertIn("--threads", argv)
+            self.assertEqual(argv[argv.index("--threads") + 1], "8")
+            self.assertEqual(argv[argv.index("--ctx") + 1], str(mr.CTX))
+            self.assertNotIn("-ngl", argv)
+            self.assertFalse(any(a.startswith("--npu") for a in argv))
+            self.assertNotIn("--pf-tiles", argv)
+            self.assertNotIn("--pf-group", argv)
+        self.assertEqual(decode[decode.index("--tokens") + 1], str(mr.BENCH_DECODE_TOKENS))
+        self.assertEqual(decode[decode.index("--prompt-len") + 1], str(len(ids)))
+        self.assertEqual(decode[decode.index("--prompt-ids") + 1], ",".join(str(i) for i in ids))
+        self.assertEqual(prefill[prefill.index("--tokens") + 1], ",".join(str(i) for i in ids))
+        self.assertEqual(prefill[prefill.index("--prompt-len") + 1], str(len(ids)))
+        self.assertEqual(prefill[prefill.index("--reps") + 1], "1")
+
+    def test_plan_lists_the_oxe_arm_and_runs_nothing(self):
+        buf = io.StringIO()
+        with mock.patch.object(mr.subprocess, "run", side_effect=AssertionError("plan ran a command")):
+            with contextlib.redirect_stdout(buf):
+                rc = mr.main(["plan", "--stacks", "oxe-cpu"])
+        out = buf.getvalue()
+        self.assertEqual(rc, 0)
+        self.assertIn("oxe-cpu", out)
+        self.assertIn("<oxe-bin>", out)
+        self.assertIn("prefill-bench", out)
+        self.assertIn("<models-dir>", out)
+        self.assertNotIn("/home/", out)
+        self.assertNotIn(self.tmp, out)
+
+    def test_adapter_arm_is_staged_and_never_invoked(self):
+        buf = io.StringIO()
+        with mock.patch.object(mr.subprocess, "run", side_effect=AssertionError("plan ran a command")):
+            with contextlib.redirect_stdout(buf):
+                self.assertEqual(mr.main(["plan", "--stacks", "oxe-adapter"]), 0)
+        self.assertIn("not available", buf.getvalue())
+        out_dir = os.path.join(self.tmp, "out")
+        err = io.StringIO()
+        with mock.patch.object(mr.subprocess, "run", side_effect=AssertionError("run started a command")):
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = mr.main(["run", "--stacks", "oxe-adapter", "--models-dir", self.models,
+                              "--out", out_dir])
+        self.assertEqual(rc, 2)
+        self.assertIn("N4", err.getvalue())
+        self.assertFalse(os.path.exists(out_dir))
+
+    def test_oxe_cpu_is_staged_before_platform_probes_or_execution(self):
+        out_dir = os.path.join(self.tmp, "out")
+        err = io.StringIO()
+        with mock.patch.object(mr.subprocess, "run", side_effect=AssertionError("started a command")), \
+             mock.patch.object(mr, "collect_hardware", side_effect=AssertionError("probed hardware")), \
+             mock.patch.object(mr, "_load_prompts", side_effect=AssertionError("read fixtures")):
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = mr.main(["run", "--stacks", "oxe-cpu", "--models-dir", self.models,
+                              "--oxe-bin", self.oxe, "--out", out_dir])
+        self.assertEqual(rc, 2)
+        self.assertIn("not available", err.getvalue())
+        self.assertIn("Linux affinity/futex", err.getvalue())
+        self.assertFalse(os.path.exists(out_dir))
+
+    def test_missing_oxe_bin_fails_before_any_side_effect(self):
+        out_dir = os.path.join(self.tmp, "out")
+        err = io.StringIO()
+        with mock.patch.object(mr.subprocess, "run", side_effect=AssertionError("run started a command")):
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = mr.main(["run", "--stacks", "oxe-cpu", "--models-dir", self.models,
+                              "--out", out_dir])
+        self.assertEqual(rc, 2)
+        self.assertIn("--oxe-bin", err.getvalue())
+        self.assertFalse(os.path.exists(out_dir))
+
+    def test_unusable_oxe_bin_fails_clearly(self):
+        not_exec = os.path.join(self.tmp, "not-executable")
+        with open(not_exec, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\n")
+        out_dir = os.path.join(self.tmp, "out")
+        err = io.StringIO()
+        with mock.patch.object(mr.subprocess, "run", side_effect=AssertionError("run started a command")):
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+                rc = mr.main(["run", "--stacks", "oxe-cpu", "--models-dir", self.models,
+                              "--oxe-bin", not_exec, "--out", out_dir])
+        self.assertEqual(rc, 2)
+        self.assertIn("not executable", err.getvalue())
+        self.assertFalse(os.path.exists(out_dir))
+
+    def _run_cell(self):
+        cell = mr.new_cell("ornith", "oxe-cpu", mr.collect_hardware(system="Linux"))
+        path_map = {self.oxe: "<oxe-bin>", self.model: "<models-dir>"}
+        status = mr.run_oxe_cell(cell, self.oxe, self.model, "oxe-cpu", 8, 3, self.work, path_map)
+        return cell, status
+
+    def test_receipt_separates_phases_and_scrubs(self):
+        cell, status = self._run_cell()
+        self.assertEqual(status, "ok")
+        mr.finalize_cell(cell, status)
+        decode = [r for r in cell["runs"] if r["test"] == "oxe-decode"]
+        prefill = [r for r in cell["runs"] if r["test"] == "oxe-prefill"]
+        self.assertEqual(len(decode), 4)
+        self.assertEqual(len(prefill), 4)
+        self.assertTrue(decode[0]["dropped_warmup"])
+        self.assertEqual(sum(1 for r in decode if not r["dropped_warmup"]), 3)
+        self.assertEqual(decode[1]["prompt_tokens"], 512)
+        self.assertEqual(decode[1]["generated_tokens"], 128)
+        self.assertEqual(decode[1]["decode_tok_s"], 30.5)
+        self.assertIsNone(decode[1]["prefill_tok_s"])
+        self.assertEqual(decode[1]["generated_ids_hash"], "0123456789abcdef")
+        self.assertIsNone(prefill[1]["decode_tok_s"])
+        self.assertEqual(prefill[1]["prefill_tok_s"], 120.5)
+        self.assertEqual(prefill[1]["prompt_tokens"], 512)
+        summary = {(s["test"], s["metric"]): s for s in cell["summary"]}
+        self.assertEqual(summary[("oxe-decode", "decode_tok_s")]["median"], 30.5)
+        self.assertEqual(summary[("oxe-prefill", "prefill_tok_s")]["median"], 120.5)
+        self.assertEqual(cell["evidence"], {"class": "M", "n": 3})
+        self.assertEqual(len(cell["engine"]["binaries"][0]["sha256"]), 64)
+        self.assertEqual(cell["engine"]["version"], "oxe local-build")
+        self.assertEqual(cell["engine"]["input"]["kind"], "synthetic-token-ids")
+        self.assertEqual(cell["engine"]["input"]["token_count"], 512)
+        self.assertEqual(len(cell["engine"]["input"]["sha256"]), 64)
+        self.assertFalse(cell["engine"]["input"]["fixture_prompts_used"])
+        self.assertTrue(cell["format"]["unmatched_format"])
+        self.assertTrue(cell["format"]["same_quant_file"])
+        self.assertFalse(cell["format"]["same_prompt_ids"])
+        self.assertEqual(cell["engine"]["prefill_attention"]["kernel"], "tiled")
+        self.assertEqual(cell["engine"]["pf_group"], 1)
+        self.assertEqual(decode[1]["argv"][0], "<oxe-bin>")
+        self.assertIn("<models-dir>/model.gguf", decode[1]["argv"])
+        self.assertIn("<synthetic-ids:512>", decode[1]["argv"])
+        blob = json.dumps(cell)
+        self.assertNotIn(self.tmp, blob)
+        self.assertNotIn("/home/", blob)
+        self.assertEqual(mr.scan_public(blob), [])
+
+    def test_unparsable_output_is_never_a_success_row(self):
+        self._write_oxe_stub(self.oxe, "{\"engine\": \"oxe\"}", OXE_PREFILL_STDOUT)
+        cell, status = self._run_cell()
+        self.assertEqual(status, "failed")
+        mr.finalize_cell(cell, status)
+        self.assertEqual(cell["evidence"]["class"], "S")
+        self.assertTrue(cell["notes"])
+        self.assertFalse(any(r["decode_tok_s"] is not None for r in cell["runs"]))
+
+    def test_nonzero_exit_marks_cell_failed(self):
+        with open(self.oxe, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 3\n")
+        os.chmod(self.oxe, 0o755)
+        cell, status = self._run_cell()
+        self.assertEqual(status, "failed")
+        self.assertEqual(cell["runs"][0]["returncode"], 3)
+        mr.finalize_cell(cell, status)
+        self.assertEqual(cell["evidence"]["class"], "S")
+
+
 if __name__ == "__main__":
     unittest.main()

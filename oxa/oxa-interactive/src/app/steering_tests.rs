@@ -38,6 +38,7 @@ enum Window {
     BeforeDoneObserved,
     DoneObserved,
     FailingPrompt,
+    AfterExplicitAbort,
 }
 const GATE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -93,6 +94,17 @@ fn deps(env: &TestEnv, engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>, se
 }
 
 fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, rebind: bool) {
+    gated_prompt_with_cancel(window, instructions, follow_up, rebind, "ctrl+c", false);
+}
+
+fn gated_prompt_with_cancel(
+    window: Window,
+    instructions: Option<String>,
+    follow_up: bool,
+    rebind: bool,
+    cancel_key: &str,
+    settle_before_submit: bool,
+) {
     let env = TestEnv::new();
     let mut turns: Vec<_> = ["one", "two", "summary text", "three"]
         .into_iter()
@@ -168,16 +180,19 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
     let worker_ui = ui_tx.clone();
     let worker = thread::spawn(move || {
         let mut release = Some(release_rx);
-        if matches!(window, Window::AfterEmptyTake | Window::FailingPrompt) {
+        if matches!(
+            window,
+            Window::AfterEmptyTake | Window::FailingPrompt | Window::AfterExplicitAbort
+        ) {
             session.set_progress_observer(Arc::new(OperationGate {
-                at_request: window == Window::FailingPrompt,
+                at_request: matches!(window, Window::FailingPrompt | Window::AfterExplicitAbort),
                 pause: Mutex::new(Some((reached_tx.clone(), release.take().unwrap()))),
             }));
         }
         let mut sink = ChanSink(worker_out.clone());
         let (result, _) = execute(
             &mut session,
-            if window == Window::FailingPrompt {
+            if matches!(window, Window::FailingPrompt | Window::AfterExplicitAbort) {
                 SessionCmd::Prompt {
                     text: "failing primary".into(),
                     parts: Vec::new(),
@@ -223,7 +238,10 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
     }
     assert_eq!(
         control.is_busy(),
-        matches!(window, Window::AfterEmptyTake | Window::FailingPrompt)
+        matches!(
+            window,
+            Window::AfterEmptyTake | Window::FailingPrompt | Window::AfterExplicitAbort
+        )
     );
     if window == Window::BeforeDoneObserved {
         assert_eq!(held_done.len(), 1);
@@ -233,6 +251,24 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
             "the UI must still hold real prefill activity"
         );
     }
+    if window == Window::AfterExplicitAbort {
+        lp.input(&mut terminal, InputEvent::Key(Key::press(cancel_key)));
+    }
+    let mut worker = Some(worker);
+    let settled = if settle_before_submit {
+        assert!(window == Window::AfterExplicitAbort);
+        release_tx.send(()).unwrap();
+        let session = worker.take().unwrap().join().unwrap();
+        let mut settled_observed = false;
+        for message in out_rx.try_iter() {
+            settled_observed |= matches!(&message, WorkerMsg::Event(AgentEvent::AgentSettled { .. }));
+            lp.worker_msg(message);
+        }
+        assert!(settled_observed, "observe real settlement before submitting");
+        Some(session)
+    } else {
+        None
+    };
     for c in "third".chars() {
         lp.input(&mut terminal, InputEvent::Key(Key::char(c)));
     }
@@ -240,23 +276,71 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         &mut terminal,
         InputEvent::Key(Key::press(if follow_up { "alt+enter" } else { "enter" })),
     );
+    if settle_before_submit && follow_up {
+        assert!(cmd_rx.try_recv().is_err(), "idle Alt+Enter must not submit");
+        let (reply, rx) = mpsc::channel();
+        lp.ui_req(UiRequest::EditorText { reply });
+        assert_eq!(rx.recv_timeout(GATE_TIMEOUT).unwrap(), "third\n");
+        lp.input(&mut terminal, InputEvent::Key(Key::press("enter")));
+    }
     let commands: Vec<_> = cmd_rx.try_iter().collect();
-    release_tx.send(()).unwrap();
-    let mut session = worker.join().unwrap();
+    let mut session = settled.unwrap_or_else(|| {
+        release_tx.send(()).unwrap();
+        worker.take().unwrap().join().unwrap()
+    });
     assert_eq!(
         commands.len(),
         1,
         "admitted input must retain one worker consumer after the final empty take"
     );
-    assert_eq!(server.requests().iter().filter(|r| r.max_tokens > 0).count(), 3);
+    let before_wake = server.requests().iter().filter(|r| r.max_tokens > 0).count();
+    if window == Window::AfterExplicitAbort {
+        // The recovered text must reach the session unchanged, whichever side of the
+        // settlement the explicit input lands on: a bound recovery prompt while the
+        // canceled operation still holds the session, an ordinary prompt after it. An idle
+        // Alt+Enter leaves its newline in the editor and submission strips it, so both
+        // admit forms carry exactly the typed prompt.
+        let recovered = match commands.as_slice() {
+            [SessionCmd::RecoveryPrompt { handle, text, parts }] if !settle_before_submit => {
+                assert!(handle.same_instance(&control), "recovery keeps its destination");
+                assert!(parts.is_empty(), "recovery keeps its parts");
+                text
+            }
+            [SessionCmd::Prompt { text, parts }] if settle_before_submit => {
+                assert!(parts.is_empty(), "recovery keeps its parts");
+                text
+            }
+            _ => panic!("explicit input after a cancel key must be one admit"),
+        };
+        assert_eq!(recovered.trim(), "third", "the recovered text must not be lost");
+        assert_eq!(*session.outcome(), oxa_core::RunOutcome::Interrupted);
+    } else {
+        assert_eq!(before_wake, 3);
+    }
     if rebind {
         let mut replacement = Session::open(deps(&env, engine, store, settings), Open::Ephemeral).unwrap();
         replacement.handle().steer("replacement-only".into());
         lp.worker_msg(WorkerMsg::Rebind(replacement.handle()));
-        let (reply, rx) = mpsc::channel();
-        lp.ui_req(UiRequest::EditorText { reply });
-        assert_eq!(rx.recv_timeout(GATE_TIMEOUT).unwrap(), "third");
-        for command in commands {
+        if window != Window::AfterExplicitAbort {
+            let (reply, rx) = mpsc::channel();
+            lp.ui_req(UiRequest::EditorText { reply });
+            assert_eq!(rx.recv_timeout(GATE_TIMEOUT).unwrap(), "third");
+        }
+        for mut command in commands {
+            if window == Window::AfterExplicitAbort {
+                let SessionCmd::RecoveryPrompt { handle, text, parts } = &mut command else {
+                    panic!("explicit recovery must retain its destination");
+                };
+                assert!(handle.same_instance(&control));
+                assert_eq!(text, "third");
+                parts.push(oxa_proto::Part::Image {
+                    path: "synthetic.png".into(),
+                    mime: "image/png".into(),
+                    sha256: [0; 32],
+                    w: 1,
+                    h: 1,
+                });
+            }
             execute(
                 &mut replacement,
                 command,
@@ -268,10 +352,28 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
             .0
             .unwrap();
         }
+        if window == Window::AfterExplicitAbort {
+            let mut unsent = out_rx
+                .try_iter()
+                .filter(|message| matches!(message, WorkerMsg::UnsentPrompt { .. }));
+            let message = unsent.next().expect("return unsent recovery");
+            assert!(unsent.next().is_none(), "return recovery exactly once");
+            assert!(matches!(&message, WorkerMsg::UnsentPrompt { text, parts }
+                if text == "third" && matches!(parts.as_slice(), [oxa_proto::Part::Image { w: 1, h: 1, .. }])));
+            lp.worker_msg(message);
+            let (reply, rx) = mpsc::channel();
+            lp.ui_req(UiRequest::EditorText { reply });
+            assert_eq!(rx.recv_timeout(GATE_TIMEOUT).unwrap(), "third");
+            lp.worker_msg(WorkerMsg::Event(AgentEvent::AgentSettled { aborted: false }));
+            lp.input(&mut terminal, InputEvent::Key(Key::press("enter")));
+            assert!(matches!(cmd_rx.recv_timeout(GATE_TIMEOUT).unwrap(),
+                SessionCmd::Prompt { text, parts }
+                if text == "third" && matches!(parts.as_slice(), [oxa_proto::Part::Image { w: 1, h: 1, .. }])));
+        }
         assert_eq!(replacement.handle().queued().0, ["replacement-only"]);
         assert_eq!(
             server.requests().iter().filter(|r| r.max_tokens > 0).count(),
-            3,
+            before_wake,
             "a stale wake cannot run another destination"
         );
         return;
@@ -310,8 +412,8 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         );
         return;
     }
-    assert_eq!(requests.len(), 4, "exactly one next chat request");
-    assert!(requests[3]
+    assert_eq!(requests.len(), before_wake + 1, "exactly one next chat request");
+    assert!(requests[before_wake]
         .messages
         .iter()
         .any(|m| m.role == Role::User && m.content.as_deref() == Some("third")));
@@ -324,11 +426,16 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
     for event in reply.0 {
         apply_event(&mut rendered, &event);
     }
+    let expected_reply = if window == Window::AfterExplicitAbort && before_wake == 2 {
+        "summary text"
+    } else {
+        "three"
+    };
     assert!(
         rendered
             .blocks
             .iter()
-            .any(|b| matches!(b, Block::Assistant { text, .. } if text == "three")),
+            .any(|b| matches!(b, Block::Assistant { text, .. } if text == expected_reply)),
         "next reply is shown"
     );
 }
@@ -367,4 +474,53 @@ fn failed_prompt_retains_follow_up_without_automatic_retry() {
 #[test]
 fn failed_prompt_retains_steering_without_automatic_retry() {
     gated_prompt(Window::FailingPrompt, None, false, false);
+}
+
+#[test]
+fn explicit_prompt_after_ctrl_c_is_not_stranded_before_settlement() {
+    gated_prompt(Window::AfterExplicitAbort, None, false, false);
+}
+
+#[test]
+fn explicit_recovery_overtaken_by_rebind_returns_text_and_attachments() {
+    gated_prompt(Window::AfterExplicitAbort, None, false, true);
+}
+
+#[test]
+fn explicit_follow_up_after_ctrl_c_is_not_stranded_before_settlement() {
+    gated_prompt(Window::AfterExplicitAbort, None, true, false);
+}
+
+#[test]
+fn cancel_keys_recover_explicit_input_before_settlement() {
+    for cancel_key in ["escape", "ctrl+c"] {
+        for follow_up in [false, true] {
+            eprintln!("cancel_key={cancel_key} settled=false follow_up={follow_up}");
+            gated_prompt_with_cancel(
+                Window::AfterExplicitAbort,
+                None,
+                follow_up,
+                false,
+                cancel_key,
+                false,
+            );
+        }
+    }
+}
+
+#[test]
+fn cancel_keys_preserve_idle_submit_and_newline_after_settlement() {
+    for cancel_key in ["escape", "ctrl+c"] {
+        for follow_up in [false, true] {
+            eprintln!("cancel_key={cancel_key} settled=true follow_up={follow_up}");
+            gated_prompt_with_cancel(
+                Window::AfterExplicitAbort,
+                None,
+                follow_up,
+                false,
+                cancel_key,
+                true,
+            );
+        }
+    }
 }

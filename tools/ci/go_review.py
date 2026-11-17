@@ -124,7 +124,7 @@ def reviewed(comments, sha, diff_hash):
                 receipt = json.loads(match[1])
             except ValueError:
                 continue
-            if (isinstance(receipt, dict) and receipt.get('verdict') in ('CLEAR', 'REVISE')
+            if (isinstance(receipt, dict) and receipt.get('verdict') in ('OK', 'CLEAR', 'REVISE')
                     and (receipt.get('diff_hash') == diff_hash
                          or 'diff_hash' not in receipt and receipt.get('sha') == sha)):
                 return True
@@ -326,10 +326,11 @@ def main():
     # A synchronize/cancel or rerun must not turn a stale result into a current-head receipt.
     if not eligible(request(pull, headers), sha) or already_reviewed(diff_hash):
         return
-    verdict = 'REVISE' if rows else 'CLEAR'
+    verdict = 'REVISE' if rows else 'OK'
     body = f'First-pass Go review of `{sha}` ({", ".join(models)}; diff only; advisory, no approval).\n\n'
     body += '\n\n'.join(rows) if rows else 'No concrete findings supported by the bounded diff.'
-    body += '\n\n<!-- go-review:v1 ' + json.dumps({'sha': sha, 'diff_hash': diff_hash, 'verdict': verdict}, separators=(',', ':')) + ' -->'
+    body += '\n\n<!-- go-review:v1 ' + json.dumps({'sha': sha, 'model': ','.join(models), 'verdict': verdict,
+                                                           'findings': len(rows), 'diff_hash': diff_hash}, separators=(',', ':')) + ' -->'
     request(comments_url, headers, json.dumps({'body': body}).encode())
 
 

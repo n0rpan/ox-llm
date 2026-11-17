@@ -299,6 +299,7 @@ fn go_uses_only_its_api_key_and_persists_zero_usd_with_shared_subscription_caps(
     call.metered_usage(Usage {
         prompt: Some(10),
         output: Some(5),
+        reported_cost: Some(0.0),
         ..Usage::default()
     });
     let row = call.finish(Outcome::Complete, 200, None).unwrap();

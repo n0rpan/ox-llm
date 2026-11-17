@@ -11,6 +11,30 @@ pub enum ModeArg {
     Rpc,
 }
 
+/// The `--no-<tool>` aliases (UX/DX review item 5): each is sugar for `--exclude-tools <tool>`,
+/// so one exclusion precedence (`resolve_toolset`) covers both spellings and the effective tool
+/// selection is identical. A denylist has no replacement meaning: every spelling appends to
+/// `Args::exclude_tools`, in the order given. `--no-web-search` and `--no-mcp` are not here:
+/// they also skip building the web-search hook set and the MCP manager.
+pub const NO_TOOL_ALIASES: [(&str, &str); 8] = [
+    ("--no-read", "read"),
+    ("--no-bash", "bash"),
+    ("--no-edit", "edit"),
+    ("--no-write", "write"),
+    ("--no-grep", "grep"),
+    ("--no-find", "find"),
+    ("--no-ls", "ls"),
+    ("--no-subagent", "subagent"),
+];
+
+/// The tool a `--no-<tool>` alias excludes, when `flag` is one of [`NO_TOOL_ALIASES`].
+pub fn no_tool_alias(flag: &str) -> Option<&'static str> {
+    NO_TOOL_ALIASES
+        .iter()
+        .find(|(name, _)| *name == flag)
+        .map(|(_, tool)| *tool)
+}
+
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
@@ -70,6 +94,8 @@ pub struct Args {
     pub print: bool,
     /// `--output-schema FILE`: validate final text as JSON, with one repair turn.
     pub output_schema: Option<String>,
+    /// Stored goal objective from a UTF-8 file (print/JSON).
+    pub goal: Option<String>,
     /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
     /// Flag a saved active session after this long without progress.
@@ -117,7 +143,8 @@ pub struct Args {
     pub name: Option<String>,
     /// `--tools <list>` / `-t`.
     pub tools: Option<Vec<String>>,
-    /// `--exclude-tools <list>` / `-xt`.
+    /// `--exclude-tools <list>` / `-xt`, plus every `--no-<tool>` alias (see
+    /// [`NO_TOOL_ALIASES`]).
     pub exclude_tools: Vec<String>,
     /// `-nbt`, `--no-builtin-tools`.
     pub no_builtin_tools: bool,
@@ -127,6 +154,8 @@ pub struct Args {
     pub no_mcp: bool,
     /// `--no-web-search` (oxa, O-170): the `web_search` tool is off for this run.
     pub no_web_search: bool,
+    /// `--animation <mode>`: `ui.animation` for this run (over the setting, in memory only).
+    pub animation: Option<String>,
     /// `-e`, `--extension <path>` (repeatable).
     pub extensions: Vec<String>,
     /// `-ne`, `--no-extensions`.
@@ -229,7 +258,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
     ),
     (
-        "oxa work <taskfile> | --issue N --model MODEL",
+        "oxa work <taskfile> | --issue N --model MODEL | board --shadow --repo OWNER/REPO --once",
         "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (
@@ -278,6 +307,7 @@ const OPTIONS: &[(&str, &str)] = &[
         "--continue [id], -c",
         "Continue the named session, or the most recent session when no id is given",
     ),
+    ("--goal <file>", "Pursue and persist this goal until complete, blocked, stalled or interrupted"),
     (
         "--max-time <seconds>",
         "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
@@ -313,6 +343,14 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--exclude-tools, -xt <list>",
         "Comma-separated denylist of tool names or patterns (*)",
+    ),
+    (
+        "--no-<tool>",
+        "Disable one tool: read, bash, edit, write, grep, find, ls or subagent (same as --exclude-tools <tool>)",
+    ),
+    (
+        "--animation <mode>",
+        "Animation of the oxa skin for this run: arcade, minimal or off (over ui.animation)",
     ),
     (
         "--no-builtin-tools, -nbt",
@@ -624,6 +662,7 @@ fn parse_flag(
             no_value(inline, flag)?;
             a.resume = true;
         }
+        "--goal" => a.goal = Some(value(argv, i, inline, flag, "a goal file")?),
         "--max-time" => {
             let text = value(argv, i, inline, flag, "a positive number of seconds")?;
             let seconds = text
@@ -695,8 +734,17 @@ fn parse_flag(
             check_tool_list(flag, &entries)?;
             a.tools = Some(entries);
         }
+        // Repeated `-xt` / `--exclude-tools` lists accumulate, so a later exclusion never
+        // undoes an earlier explicit one (a denylist has no replacement meaning, unlike the
+        // `--tools` allowlist). `--no-<tool>` appends to the same list, in the order given.
         "-xt" | "--exclude-tools" => {
-            a.exclude_tools = list(&value(argv, i, inline, flag, "a comma-separated list")?)
+            a.exclude_tools
+                .extend(list(&value(argv, i, inline, flag, "a comma-separated list")?))
+        }
+        _ if no_tool_alias(flag).is_some() => {
+            no_value(inline, flag)?;
+            a.exclude_tools
+                .push(no_tool_alias(flag).unwrap_or_default().to_string());
         }
         "--thinking" => {
             let v = value(argv, i, inline, flag, "a thinking level")?;
@@ -755,6 +803,16 @@ fn parse_flag(
                 )));
             }
             a.tui_mode = Some(v);
+        }
+        "--animation" => {
+            let v = value(argv, i, inline, flag, "arcade, minimal, or off")?;
+            if !oxa_interactive::skin::Animation::ALL.contains(&v.as_str()) {
+                return Err(usage(format!(
+                    "Invalid animation \"{v}\". Valid values: {}",
+                    oxa_interactive::skin::Animation::ALL.join(", ")
+                )));
+            }
+            a.animation = Some(v);
         }
         "--permission-mode" => {
             let v = value(

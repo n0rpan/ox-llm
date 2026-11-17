@@ -15,7 +15,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// a message followed by tool calls and one line per tool call go to `err`, the final reply of
 /// the last prompt goes to `out`; every write is flushed at once, so a killed run leaves a log.
 struct PrintSink<'a> {
-    wrap_up: Option<oxa_core::Handle>,
     out: &'a mut dyn Write,
     err: &'a mut dyn Write,
     /// The last assistant message of the current prompt.
@@ -31,8 +30,8 @@ struct PrintSink<'a> {
     local_model: bool,
     pending_length: bool,
     continued: Option<String>,
-    /// The final reply of the last prompt, set at `AgentEnd`; written to `out` by `run_print`
-    /// once it knows the run did not fail or abort.
+    /// Completed candidate selected at `AgentEnd` or successful goal settlement; choose stdout or progress after
+    /// settlement, once it knows whether another prompt is admitted or the run failed.
     final_text: Option<String>,
     notes: Vec<String>,
     started: HashMap<String, Instant>,
@@ -57,6 +56,10 @@ impl PrintSink<'_> {
     }
 
     fn next_turn(&mut self) {
+        // A new turn proves the preceding completed candidate is progress.
+        if let Some(text) = self.final_text.take() {
+            self.progress(&text);
+        }
         if self.local_model && self.pending_length {
             self.pending_length = false;
             if let Some(text) = self.pending.take() {
@@ -138,16 +141,9 @@ impl EventSink for PrintSink<'_> {
             }
             AgentEvent::TurnStart => self.next_turn(),
             AgentEvent::AgentEnd { .. } => {
-                if self.is_last_prompt
-                    || self
-                        .wrap_up
-                        .as_ref()
-                        .is_some_and(|handle| handle.wrap_up_requested())
-                {
-                    self.final_text = self.pending.take();
-                } else {
-                    self.flush_pending();
-                }
+                // Settlement hooks may still stop the invocation. Keep the
+                // completed candidate until the driver decides its destination.
+                self.final_text = self.pending.take();
             }
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
@@ -206,7 +202,6 @@ pub fn run_print_outcome(
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
     let mut sink = PrintSink {
-        wrap_up: Some(session.handle()),
         out,
         err,
         last: None,
@@ -272,17 +267,40 @@ pub fn run_print_outcome(
         // included); print only says why on stderr.
         let settled = session.take_outcome();
         outcome.include(settled);
-        // A failed or aborted run prints no reply (only known after the run).
-        if !failed {
-            if let Some(t) = sink.final_text.clone() {
-                sink.write_reply(&t);
-                if let Some(e) = sink.io_error.take() {
-                    return output_failure(outcome, e, sink.err);
+        // goal_done can settle the run on the tool-call message itself. Its
+        // content is final only after goal, schema and project checks succeed.
+        if sink.is_last_prompt
+            && settled == RunOutcome::Done
+            && sink.final_text.is_none()
+            && session
+                .goal()
+                .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Done)
+        {
+            sink.final_text = sink
+                .last
+                .as_ref()
+                .filter(|message| message.msg.tool_calls.iter().any(|call| call.name == "goal_done"))
+                .and_then(|message| message.msg.content.clone());
+        }
+        // Decide once after settlement, retaining failure precedence and progress
+        // routing for an intermediate prompt whose next prompt will be admitted.
+        let stopping = session.handle().wrap_up_requested() || session.handle().interrupted();
+        if let Some(t) = sink.final_text.clone() {
+            if sink.is_last_prompt || stopping {
+                // A failed or aborted run prints no final reply.
+                if !failed {
+                    sink.write_reply(&t);
+                    if let Some(e) = sink.io_error.take() {
+                        return output_failure(outcome, e, sink.err);
+                    }
                 }
+            } else {
+                sink.progress(&t);
+                sink.final_text = None;
             }
         }
         explain_outcome(settled, &mut *sink.err);
-        if session.handle().wrap_up_requested() || session.handle().interrupted() {
+        if stopping {
             outcome.include(RunOutcome::Interrupted);
             break;
         }
@@ -556,7 +574,6 @@ mod tests {
     fn failed_tool_line_carries_the_reason() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut sink = PrintSink {
-            wrap_up: None,
             out: &mut out,
             err: &mut err,
             last: None,
@@ -609,7 +626,6 @@ mod tests {
     fn reply_followed_by_another_turn_is_progress_not_the_final_reply() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut sink = PrintSink {
-            wrap_up: None,
             out: &mut out,
             err: &mut err,
             last: None,

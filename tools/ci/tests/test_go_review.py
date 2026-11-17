@@ -97,7 +97,19 @@ class GoReview(unittest.TestCase):
         marker = review.MARKER.findall(posted[0])
         self.assertEqual(len(marker), 1)
         self.assertEqual(json.loads(marker[0]),
-                         {'sha': SHA, 'diff_hash': review.own_diff_hash(FILES), 'verdict': 'REVISE'})
+                         {'sha': SHA, 'model': review.MODEL, 'verdict': 'REVISE',
+                          'findings': 1, 'diff_hash': review.own_diff_hash(FILES)})
+
+    def test_clean_comment_has_required_machine_readable_marker_on_its_own_line(self):
+        _, posted, _ = self.run_review()
+        marker_line = posted[0].splitlines()[-1]
+        match = review.MARKER.fullmatch(marker_line)
+        self.assertIsNotNone(match)
+        receipt = json.loads(match[1])
+        self.assertEqual(receipt, {'sha': SHA, 'model': review.MODEL, 'verdict': 'OK',
+                                  'findings': 0, 'diff_hash': review.own_diff_hash(FILES)})
+        comments = [{'user': {'login': 'github-actions[bot]'}, 'body': posted[0]}]
+        self.assertEqual(self.run_review(comments=comments)[1:], ([], 0))
 
     def test_second_model_is_explicitly_enabled_and_scope_limited(self):
         models = json.dumps([review.MODEL, review.ARGON])
