@@ -497,6 +497,13 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
     task_file(&env, "input", "active", 1);
     let finished = Arc::new(AtomicBool::new(false));
     let observed = finished.clone();
+    let policy = oxa_work::RunPolicy {
+        git_binary: "/usr/bin/git".into(),
+        host_path: "/usr/bin:/bin".into(),
+        terminate_binary: None,
+        offline: true,
+        storage: env.agent_dir().join("work/monitor-fixture"),
+    };
     let result = oxa_work::run_queue(
         &env.work().join("project"),
         &env.work().join("queue"),
@@ -505,10 +512,12 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
             min_free_bytes: 0,
             once: true,
         },
+        &policy,
+        std::path::Path::new("/usr/bin/df"),
         Arc::new(move |task| {
             std::thread::sleep(Duration::from_millis(100));
             observed.store(true, Ordering::Release);
-            oxa_work::blocked_record(task, "synthetic worker result".into())
+            Ok(oxa_work::blocked_record(task, "synthetic worker result".into()))
         }),
         &mut |_| Err("synthetic monitor failure".into()),
     );
