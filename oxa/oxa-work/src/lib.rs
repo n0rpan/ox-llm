@@ -8,6 +8,7 @@ use std::process::{Command, Output, Stdio};
 pub mod board;
 mod checkpoint;
 mod execute;
+pub mod queue;
 pub mod shadow;
 mod state;
 mod status;
