@@ -16,7 +16,6 @@ use sha2::{Digest, Sha256};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
 
 const USAGE: &str =
     "usage: oxa report-issue draft --title TITLE [--notes-file FILE | --notes TEXT] | oxa report-issue submit DRAFT";
@@ -422,50 +421,13 @@ fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     }
 }
 
+pub(crate) use oxa_work::command_runner;
+
 /// The real runner: the program's stdout, killed after 30 s.
 fn process_runner(program: &str, args: &[String]) -> Option<(i32, String)> {
     let mut command = std::process::Command::new(program);
     command.args(args);
     command_runner(command, None)
-}
-
-pub(crate) fn command_runner(
-    mut command: std::process::Command,
-    limit: Option<usize>,
-) -> Option<(i32, String)> {
-    let mut child = command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let ceiling = limit.map_or(u64::MAX, |limit| limit.saturating_add(1) as u64);
-        let mut limited = std::io::Read::take(stdout, ceiling);
-        std::io::Read::read_to_end(&mut limited, &mut bytes).ok()?;
-        if limit.is_some_and(|limit| bytes.len() > limit) {
-            return None;
-        }
-        String::from_utf8(bytes).ok()
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if start.elapsed() < Duration::from_secs(30) => {
-                std::thread::sleep(Duration::from_millis(50))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
-    let out = reader.join().ok()??;
-    Some((status.code().unwrap_or(1), out))
 }
 
 /// `oxa report-issue draft|submit ..`. Returns the exit code.

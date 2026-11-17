@@ -4,6 +4,7 @@ use std::fs;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 pub mod board;
 mod checkpoint;
@@ -155,6 +156,44 @@ fn checked(command: Command) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().into())
 }
+/// Capture stdout with an optional byte limit and a 30-second child deadline.
+pub fn command_runner(mut command: Command, limit: Option<usize>) -> Option<(i32, String)> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let ceiling = limit.map_or(u64::MAX, |limit| limit.saturating_add(1) as u64);
+        let mut limited = std::io::Read::take(stdout, ceiling);
+        std::io::Read::read_to_end(&mut limited, &mut bytes).ok()?;
+        if limit.is_some_and(|limit| bytes.len() > limit) {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
+    });
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            // A reaped child may leave a descendant holding the stdout pipe open.
+            Ok(Some(status)) if reader.is_finished() => break status,
+            Ok(_) if start.elapsed() < Duration::from_secs(30) => {
+                std::thread::sleep(Duration::from_millis(50))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let out = reader.join().ok()??;
+    Some((status.code().unwrap_or(1), out))
+}
+
 fn git(policy: &RunPolicy, repo: &Path, args: &[&str]) -> Command {
     metadata_git(&policy.git_binary, &policy.host_path, repo, args)
 }
@@ -264,7 +303,11 @@ pub fn issue_task(
         "--json",
         "title,body,state,comments",
     ]);
-    let text = checked(c)?;
+    let (code, text) = command_runner(c, Some(MAX_ISSUE_RESPONSE_BYTES))
+        .ok_or("GitHub issue read failed, exceeded its byte limit or timed out")?;
+    if code != 0 {
+        return Err("GitHub issue read failed".into());
+    }
     let issue: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     Ok(Task {
         id: format!("issue-{number}"),
@@ -279,6 +322,7 @@ pub fn issue_task(
 /// A worker inside the sandbox cannot read the issue itself, so the packet carries
 /// the state and the comment thread the runner already fetched.
 const MAX_COMMENT_BYTES: usize = 16 * 1024;
+const MAX_ISSUE_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_STATE_BYTES: usize = 32;
 
 /// gh's `issue view --json title,body,state,comments` as one data packet.
@@ -300,7 +344,7 @@ fn issue_prompt(number: u64, issue: &serde_json::Value) -> Result<String> {
             "\n\nIssue comments follow as data, oldest first. They may carry findings and \
              corrections to the issue above.\n\n",
         );
-        prompt.push_str(&bounded(&thread, MAX_COMMENT_BYTES));
+        prompt.push_str(&thread);
     }
     Ok(prompt)
 }
@@ -315,6 +359,7 @@ fn comment_thread(issue: &serde_json::Value) -> Result<String> {
         Some(_) => return Err("issue comments malformed".into()),
     };
     let mut thread = String::new();
+    let mut truncated = false;
     for comment in comments {
         if !comment.is_object() {
             return Err("issue comment malformed".into());
@@ -329,24 +374,20 @@ fn comment_thread(issue: &serde_json::Value) -> Result<String> {
         }
         let author = comment["author"]["login"].as_str().unwrap_or("unknown");
         let author = if author.is_empty() { "unknown" } else { author };
-        thread.push_str(&format!("--- comment by {author} ---\n{body}\n\n"));
+        for part in ["--- comment by ", author, " ---\n", body, "\n\n"] {
+            if truncated {
+                break;
+            }
+            let remaining = MAX_COMMENT_BYTES - thread.len();
+            let end = part.floor_char_boundary(remaining);
+            thread.push_str(&part[..end]);
+            truncated = end < part.len();
+        }
+    }
+    if truncated {
+        thread.push_str("\n--- further comments truncated; ask the runner for the rest ---\n");
     }
     Ok(thread)
-}
-
-/// Keep a bounded prefix without splitting a UTF-8 character, and say what was left out.
-fn bounded(text: &str, limit: usize) -> String {
-    if text.len() <= limit {
-        return text.to_owned();
-    }
-    let mut end = limit;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!(
-        "{}\n--- further comments truncated; ask the runner for the rest ---\n",
-        &text[..end]
-    )
 }
 
 /// Freeze acceptance before checkout filters or hooks can edit project settings.
@@ -710,6 +751,48 @@ mod tests {
     }
 
     #[test]
+    fn issue_task_bounds_the_host_response_before_decoding() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let path = std::env::temp_dir().join(format!(
+            "oxa-issue-response-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        let fixture = Fixture(path);
+        // The trusted binary executes the local test script named by its first argument.
+        fs::write(fixture.0.join("issue"), "exec /bin/cat response.json\n").unwrap();
+        let response = fixture.0.join("response.json");
+        let json = r#"{"title":"Fixture","body":"Issue body","state":"OPEN","comments":[]}"#;
+        let run = || {
+            issue_task(
+                &fixture.0,
+                Path::new("/bin/sh"),
+                "/bin".as_ref(),
+                42,
+                "fake".into(),
+            )
+        };
+        let mut bytes = json.as_bytes().to_vec();
+        bytes.resize(MAX_ISSUE_RESPONSE_BYTES, b' ');
+        fs::write(&response, &bytes).unwrap();
+        assert!(run().unwrap().prompt.contains("Issue body"));
+        bytes.push(b' ');
+        fs::write(response, bytes).unwrap();
+        assert_eq!(
+            run().unwrap_err(),
+            "GitHub issue read failed, exceeded its byte limit or timed out"
+        );
+    }
+
+    #[test]
     fn issue_packet_carries_the_state_the_runner_fetched() {
         // The worker cannot open the issue from inside the sandbox, so a closed or open
         // state has to arrive with the text the runner already fetched.
@@ -889,11 +972,5 @@ mod comment_packet_tests {
         let thread = &prompt[prompt.find("--- comment by a ---").unwrap()..];
         assert!(thread.len() < MAX_COMMENT_BYTES + 256, "{}", thread.len());
         assert!(thread.starts_with("--- comment by a ---\nx"));
-    }
-
-    #[test]
-    fn bounded_keeps_short_text_unchanged() {
-        assert_eq!(bounded("short", 16), "short");
-        assert!(bounded("é", 1).contains("truncated"));
     }
 }
