@@ -27,7 +27,7 @@ fn token_line(input: &mut dyn BufRead) -> Result<String, String> {
     Ok(token.to_owned())
 }
 
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     gh: &'a Path,
     path: &'a std::ffi::OsStr,
     repo: &'a str,
@@ -61,15 +61,30 @@ impl QueryError {
     }
 }
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
+    /// Callers must enforce trust/offline policy and supply an explicit App credential.
+    pub(crate) fn new(gh: &'a Path, path: &'a std::ffi::OsStr, repo: &'a str, token: &'a str) -> Self {
+        Self {
+            gh,
+            path,
+            repo,
+            token,
+        }
+    }
+
+    /// Fixed repository fields from native callers share the bounded, redacted transport.
+    /// The byte count lets callers enforce an aggregate snapshot budget across queries.
+    pub(crate) fn repository_read(&self, fields: &str) -> Result<(Value, usize), String> {
+        self.query(fields).map_err(QueryError::message)
+    }
+
     fn listing(&self, bytes: &mut usize) -> Result<(Value, Value), String> {
         let (mut fields, mut rows, mut seen, mut cursors) =
             (LIST.to_owned(), vec![], BTreeSet::new(), BTreeSet::new());
         let mut result = Value::Null;
         loop {
-            let (page, read) = self
-                .query(&format!("{fields} mergeQueue(branch:\"main\"){{id}}"))
-                .map_err(QueryError::message)?;
+            let (page, read) =
+                self.repository_read(&format!("{fields} mergeQueue(branch:\"main\"){{id}}"))?;
             charge(bytes, read)?;
             if result.is_null() {
                 result = page.clone();
@@ -455,12 +470,7 @@ pub(crate) fn run(
             } else {
                 inherited.ok_or("missing App token")?.to_owned()
             };
-            let mut reader = Reader {
-                gh: &gh,
-                path: &policy.host_path,
-                repo,
-                token: &token,
-            };
+            let mut reader = Reader::new(&gh, &policy.host_path, repo, &token);
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map_err(|_| "invalid system clock")?
