@@ -152,7 +152,7 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/web-search` | show the `web_search` status (only when a key is configured) |
 | `/quit`, `/exit` | quit |
 
-Skills (`/skill:name`), prompt templates and extension commands are also typed with a slash. They are listed by autocomplete with the built-ins. `/login`, `/logout` and `/share` are not available in oxa and report an error.
+Skills (`/skill:name`), prompt templates and extension commands are also typed with a slash. They are listed by autocomplete with the built-ins. `/login`, `/logout` and `/share` are unavailable as built-in slash commands and report an error. For ChatGPT sign-in or sign-out, use the standalone shell commands `oxa login chatgpt --experimental` and `oxa logout chatgpt`. `/share` transcript upload is unavailable; the separate `oxa share key <add|list|revoke>` commands manage private guest keys and daily limits, without uploading the conversation.
 
 ## Footer
 
