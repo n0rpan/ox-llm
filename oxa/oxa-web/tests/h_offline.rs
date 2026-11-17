@@ -6,7 +6,7 @@ mod common;
 use common::*;
 use oxa_fake::TestEnv;
 use oxa_proto::{CancelToken, Hooks, Mode, Tool};
-use oxa_web::{Brave, KeyInputs, SearchProvider, WebConfig, WebSearchHooks, WebSearchTool};
+use oxa_web::{Brave, KeyInputs, WebConfig, WebSearchHooks, WebSearchTool};
 use serde_json::json;
 use std::sync::Arc;
 

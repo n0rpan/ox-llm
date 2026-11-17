@@ -1,5 +1,5 @@
 //! Catalog pricing and full-window reservation bounds. Actual charges use
-//! decimal arithmetic; reservation math retains the reference's conservative
+//! decimal arithmetic; reservation math retains a conservative
 //! floating-point bound. Neither operation admits or forwards a request.
 use bigdecimal::BigDecimal;
 use num_traits::ToPrimitive;
@@ -124,7 +124,7 @@ impl Price {
         ((input_cost + BigDecimal::from(output) * decimal(out)) / BigDecimal::from(1_000_000)).to_f64()
     }
     /// Bound input by the entire catalog window, across every pricing tier and
-    /// cache-write rate. OpenRouter adds the reference's 25% routing headroom.
+    /// cache-write rate. OpenRouter adds 25% routing headroom.
     pub fn reservation(&self, provider: &str, upstream: &str, context: u64, output: u64) -> Option<f64> {
         if context > 100_000_000 || output > 10_000_000 {
             return None;

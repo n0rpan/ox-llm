@@ -67,6 +67,8 @@ pub fn run_loop(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    crate::goal::ensure_begin(st);
+    crate::goal::checkpoint(st, false, sink)?;
     sink.emit(&AgentEvent::AgentStart);
     observe_hooks(st, HookPoint::AgentStart, &Value::Null, sink, ui);
     let mut run_msgs: Vec<EventMessage> = Vec::new();
@@ -74,6 +76,7 @@ pub fn run_loop(
     // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
+    crate::goal::checkpoint(st, false, sink)?;
     crate::think::end_run(st, ui);
     sink.emit(&AgentEvent::AgentEnd {
         messages: run_msgs.clone(),
@@ -92,6 +95,8 @@ fn run_inner(
     opening: &[EventMessage],
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
+    let mut schema_repaired = None;
+    let mut pending_completion = None;
     let mut done = crate::done::DoneState::default();
     done.begin(st);
     let mut wrapping_up = false;
@@ -100,6 +105,9 @@ fn run_inner(
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
+        if crate::goal::terminal(st) {
+            return Ok(RunEnd::Stopped);
+        }
         if max_turns > 0 && turn_index >= max_turns && !wrapping_up {
             let e = crate::repeat::turn_limit_error(max_turns);
             persist(
@@ -162,7 +170,20 @@ fn run_inner(
             thinking: wrapping_up.then_some(false),
             background: false,
             snapshot_keep: false,
-            extra: Vec::new(),
+            // The contract (including repair feedback) belongs to this run, not the
+            // persisted conversation. Repeat it for tool/continuation requests too.
+            extra: st
+                .output_schema
+                .as_ref()
+                .map(|schema| {
+                    let instruction = if let Some(error) = &schema_repaired {
+                        format!("Your final answer did not match the output schema: {error}. Return only valid JSON matching this schema:")
+                    } else {
+                        "Your final answer must be JSON matching this schema:".to_owned()
+                    };
+                    vec![WireMsg::user(format!("{instruction}\n{}", schema.value()))]
+                })
+                .unwrap_or_default(),
             events: true,
             idem_key: String::new(),
         };
@@ -465,6 +486,7 @@ fn run_inner(
         run_msgs.push(reply.clone());
         account_reply(st, turn.timings, usage);
         st.last_usage = Some(usage);
+        crate::goal::checkpoint(st, true, sink)?;
         // F4: capabilities that only a loaded engine reports (`/props` `oxe_hints`): re-read
         // once after the first reply while `prefill_only` is still false, and after a request
         // that recovered from a model load or restart. Never per request otherwise.
@@ -480,6 +502,9 @@ fn run_inner(
 
         let calls = turn.msg.tool_calls.clone();
         if !calls.is_empty() {
+            if let Some(goal) = &st.goal {
+                goal.note_tools();
+            }
             // A reply cut by the output limit may carry truncated arguments: fail, never run.
             let results = if turn.finish == Finish::Length {
                 fail_truncated_calls(st, &calls, sink, ui)
@@ -534,6 +559,34 @@ fn run_inner(
                 (turn_index, &reply_entry, &tool_entries),
             );
             turn_index += 1;
+
+            crate::goal::account(st, false)?;
+            if crate::goal::terminal(st) {
+                let _ = crate::done::check(st, &mut done, sink, ui);
+                if st.stats.done_failed {
+                    if let Some(goal) = &st.goal {
+                        goal.reject_completion();
+                    }
+                }
+                if let Some(goal) = st
+                    .goal
+                    .clone()
+                    .filter(|goal| goal.snapshot().status == oxa_session::GoalStatus::Done)
+                {
+                    match crate::repair::schema_repair_turn(st, &turn, &mut schema_repaired, sink) {
+                        Ok(false) => {}
+                        repair => {
+                            pending_completion = goal.defer_completion();
+                            crate::goal::checkpoint(st, false, sink)?;
+                            repair?;
+                            continue;
+                        }
+                    }
+                }
+                crate::goal::checkpoint(st, false, sink)?;
+                return Ok(RunEnd::Stopped);
+            }
+            crate::goal::checkpoint(st, false, sink)?;
 
             if st.shared.cancel.is_cancelled() || wrapping_up {
                 return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
@@ -625,6 +678,25 @@ fn run_inner(
         }
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             continue;
+        }
+        if crate::repair::schema_repair_turn(st, &turn, &mut schema_repaired, sink)? {
+            continue;
+        }
+        if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+            crate::goal::checkpoint(st, false, sink)?;
+            if let Some(evidence) = pending_completion.take() {
+                if goal.pursuing() {
+                    goal.finish_completion(evidence)?;
+                }
+                crate::goal::checkpoint(st, false, sink)?;
+                return Ok(RunEnd::Stopped);
+            }
+            let snapshot = goal.stopped();
+            persist(st, snapshot.body(), sink)?;
+            if goal.pursuing() {
+                push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
+                continue;
+            }
         }
         return Ok(RunEnd::Stopped);
     }
