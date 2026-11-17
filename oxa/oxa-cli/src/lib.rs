@@ -58,7 +58,7 @@ pub use identity_cmd::{identity_facts, run_identity, write_identity};
 pub use mcp_cmd::run_mcp;
 pub use pkg_cmd::run_pkg;
 pub use report_cmd::{
-    clean_notes, parse_draft, report_repo, run_report_issue, save_draft, scrub, submit, Confirm, Runner,
-    ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED, SETTING_REPORT_REPO,
+    clean_notes, parse_draft, process_runner, report_repo, run_report_issue, save_draft, scrub, submit,
+    Confirm, Runner, ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED, SETTING_REPORT_REPO,
 };
 pub use wipe_cmd::{run_wipe, WipeIo};
