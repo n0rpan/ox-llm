@@ -497,6 +497,50 @@ jobs:
           echo "skipped: $(grep -cE ' \.\.\. skipped ' unittest.log || true)" >> "$GITHUB_STEP_SUMMARY"
           grep -h '^lab shard' unittest-*.log >> "$GITHUB_STEP_SUMMARY" || true
 
+  panel-preview:
+    # Unlike the optional legacy lab run, widget qualification must run on drafts too.
+    # This uses the existing offscreen fixtures, never the installed shell/controller.
+    name: widget offscreen qualification (aarch64)
+    needs: changes
+    if: needs.changes.outputs.lab == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Qt Quick offscreen runtime
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qml-qt6 qml6-module-qtquick qml6-module-qtqml-workerscript fonts-dejavu-core
+      - name: Every widget state and the shared THP setting, without skips
+        run: |
+          set -o pipefail
+          root="$RUNNER_TEMP/panel-preview"
+          mkdir -p "$root"/{home,config,cache,data,state,runtime,tmp,bin,images}
+          chmod 700 "$root/runtime"
+          # Ubuntu may install Qt's runner without the qml6 convenience name.
+          if ! command -v qml6 >/dev/null; then
+            test -x /usr/lib/qt6/bin/qml
+            ln -s /usr/lib/qt6/bin/qml "$root/bin/qml6"
+          fi
+          export PATH="$root/bin:$PATH"
+          command -v qml6
+          env -i PATH="$PATH" HOME="$root/home" XDG_CONFIG_HOME="$root/config" \
+            XDG_CACHE_HOME="$root/cache" XDG_DATA_HOME="$root/data" XDG_STATE_HOME="$root/state" \
+            XDG_RUNTIME_DIR="$root/runtime" TMPDIR="$root/tmp" QT_QUICK_BACKEND=software \
+            OXC_PANEL_PREVIEW_DIR="$root/images" \
+            python3 -I tools/ci/panel_preview.py 2>&1 | tee "$root/qualification.log"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: panel-preview-qualification
+          path: |
+            ${{ runner.temp }}/panel-preview/qualification.log
+            ${{ runner.temp }}/panel-preview/images
+          if-no-files-found: error
+          retention-days: 7
+
   scans:
     name: secret scan, SDK-material check, product isolation
     # Never path-gated: runs on every event and every change.
@@ -616,7 +660,7 @@ jobs:
     # the scans must succeed; every classifier output must be literally 'true' or 'false'.
     name: gate
     if: always()
-    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, native-controller-cli, fuzz-oxa, fuzz-oxe, lab-shards, lab, build, gateway]
+    needs: [changes, scans, links, rustfmt, clippy, x86-64-stub, native-controller-cli, fuzz-oxa, fuzz-oxe, lab-shards, lab, panel-preview, build, gateway]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:
@@ -632,6 +676,8 @@ jobs:
           flags = needs['changes'].get('outputs', {})
           for k in ('engine', 'oxa', 'lab', 'cli', 'gateway', 'docs', 'md', 'full'):
               if flags.get(k) not in ('true', 'false'): bad['changes.' + k] = repr(flags.get(k))
+          if flags.get('lab') == 'true' and needs['panel-preview']['result'] != 'success':
+              bad['panel-preview'] = needs['panel-preview']['result']
           print(json.dumps({k: v['result'] for k, v in needs.items()}, indent=1)); print('bad:', bad)
           sys.exit(1 if bad else 0)
           PY
