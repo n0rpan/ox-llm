@@ -1,5 +1,6 @@
 //! Incremental daily spend. An unfinished final line is not a committed row.
 //! Complete malformed rows fail closed. Replacement/truncation resets the cache.
+use crate::billing::Counts;
 use serde_json::Value;
 use std::{
     fs::OpenOptions,
@@ -14,12 +15,16 @@ pub struct SpendReader {
     identity: Option<(u64, u64)>,
     offset: u64,
     total: f64,
+    subscription: Counts,
     tail: Vec<u8>,
     bytes_read: u64,
 }
 impl SpendReader {
     pub fn bytes_read(&self) -> u64 {
         self.bytes_read
+    }
+    pub(crate) fn subscription(&self) -> Counts {
+        self.subscription
     }
     pub fn read(&mut self, path: &Path) -> io::Result<f64> {
         let mut file = match OpenOptions::new()
@@ -32,6 +37,7 @@ impl SpendReader {
                 self.identity = None;
                 self.offset = 0;
                 self.total = 0.0;
+                self.subscription = Counts::default();
                 self.tail.clear();
                 self.path = path.into();
                 return Ok(0.0);
@@ -48,6 +54,7 @@ impl SpendReader {
             self.identity = Some(identity);
             self.offset = 0;
             self.total = 0.0;
+            self.subscription = Counts::default();
             self.tail.clear();
         } else if self.offset > 0 {
             // A same-inode rewrite can be at least as long as the cached file.
@@ -59,6 +66,7 @@ impl SpendReader {
             if tail != self.tail {
                 self.offset = 0;
                 self.total = 0.0;
+                self.subscription = Counts::default();
                 self.tail.clear();
             }
         }
@@ -66,6 +74,7 @@ impl SpendReader {
         reader.seek(SeekFrom::Start(self.offset))?;
         let mut offset = self.offset;
         let mut total = self.total;
+        let mut subscription = self.subscription;
         let mut tail = self.tail.clone();
         let mut line = Vec::new();
         loop {
@@ -95,6 +104,51 @@ impl SpendReader {
                 .as_f64()
                 .filter(|cost| cost.is_finite() && *cost >= 0.0)
                 .ok_or(io::ErrorKind::InvalidData)?;
+            match row.get("billing") {
+                None => {
+                    if matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                        || row.get("subscription_requests").is_some()
+                        || row.get("subscription_tokens").is_some()
+                    {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                }
+                Some(value) if value == "metered" => {
+                    if matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                        || row.get("subscription_requests").is_some()
+                        || row.get("subscription_tokens").is_some()
+                    {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                }
+                Some(value) if value == "subscription" => {
+                    if cost != 0.0 || !matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                    {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                    let requests = row["subscription_requests"]
+                        .as_u64()
+                        .filter(|n| *n <= 1)
+                        .ok_or(io::ErrorKind::InvalidData)?;
+                    let tokens = row["subscription_tokens"]
+                        .as_u64()
+                        .ok_or(io::ErrorKind::InvalidData)?;
+                    let not_forwarded = row["settled"] == "not_forwarded";
+                    let settled = row["settled"]
+                        .as_str()
+                        .filter(|v| ["usage", "reserved", "not_forwarded", "refused"].contains(v))
+                        .ok_or(io::ErrorKind::InvalidData)?;
+                    if (requests == 0) != not_forwarded
+                        || (matches!(settled, "not_forwarded" | "refused") && tokens != 0)
+                    {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                    subscription = subscription
+                        .add(Counts { requests, tokens })
+                        .map_err(|_| io::ErrorKind::InvalidData)?;
+                }
+                _ => return Err(io::ErrorKind::InvalidData.into()),
+            }
             total += cost;
             if !total.is_finite() {
                 return Err(io::ErrorKind::InvalidData.into());
@@ -103,6 +157,7 @@ impl SpendReader {
         // Commit the cursor/total together only after every complete row passed.
         self.offset = offset;
         self.total = total;
+        self.subscription = subscription;
         self.tail = tail;
         Ok(if total < f64::MAX / 1e8 {
             (total * 1e8).round_ties_even() / 1e8
@@ -112,8 +167,8 @@ impl SpendReader {
     }
 }
 
-/// Append one private ledger record. Callers serialize writers (Budget does so
-/// while settling), and the reader independently tolerates a partial last write.
+/// Serialize complete private rows across processes. Durable append must precede
+/// releasing a persisted reservation. Readers tolerate an unfinished last write.
 pub fn append_private(path: &Path, row: &Value) -> io::Result<()> {
     use std::{
         fs::{self, OpenOptions},
@@ -123,7 +178,8 @@ pub fn append_private(path: &Path, row: &Value) -> io::Result<()> {
     let parent = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
     fs::create_dir_all(parent)?;
     fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
+        .read(true)
         .append(true)
         .create(true)
         .mode(0o600)
@@ -134,7 +190,23 @@ pub fn append_private(path: &Path, row: &Value) -> io::Result<()> {
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    let mut file = nix::fcntl::Flock::lock(file, nix::fcntl::FlockArg::LockExclusive)
+        .map_err(|(_, error)| io::Error::from(error))?;
+    // A failed/dead writer may have left an unfinished row. Preserve those
+    // bytes, but keep this healthy settlement on its own parseable line.
+    if file.metadata()?.len() > 0 {
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0];
+        file.read_exact(&mut last)?;
+        if last != *b"\n" {
+            file.write_all(b"\n")?;
+        }
+    }
     let mut bytes = serde_json::to_vec(row)?;
     bytes.push(b'\n');
-    file.write_all(&bytes)
+    file.write_all(&bytes)?;
+    file.sync_data()?;
+    // The first row's name must survive as well as its contents before the
+    // accounting transaction can durably remove the corresponding hold.
+    fs::File::open(parent)?.sync_all()
 }

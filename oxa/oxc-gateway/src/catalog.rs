@@ -3,13 +3,15 @@
 //! Construct once from trusted user settings. No engine, runtime, credential
 //! file or provider connection is needed to list models or read their limits.
 use std::fmt;
-use url::Url;
+use url::{Host, Url};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Provider {
     Anthropic,
     OpenRouter,
     OpenAi,
+    ChatGpt,
+    OpenCode,
 }
 impl Provider {
     pub fn as_str(self) -> &'static str {
@@ -17,6 +19,8 @@ impl Provider {
             Self::Anthropic => "anthropic",
             Self::OpenRouter => "openrouter",
             Self::OpenAi => "openai",
+            Self::ChatGpt => "chatgpt",
+            Self::OpenCode => "opencode",
         }
     }
 }
@@ -91,7 +95,15 @@ impl Model {
             return Err(Error::InvalidLimits);
         }
         let endpoint = Url::parse(endpoint).map_err(|_| Error::InvalidEndpoint)?;
-        if !matches!(endpoint.scheme(), "http" | "https")
+        let loopback = match endpoint.host() {
+            Some(Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(Host::Ipv6(ip)) => {
+                ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
+            }
+            Some(Host::Domain(host)) => host == "localhost",
+            None => false,
+        };
+        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
             || endpoint.host_str().is_none()
             || !endpoint.username().is_empty()
             || endpoint.password().is_some()
@@ -133,6 +145,13 @@ pub struct Catalog {
     models: Vec<Model>,
 }
 impl Catalog {
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn configured(&self, id: &str) -> Option<&Model> {
+        self.models
+            .binary_search_by(|model| model.id.as_str().cmp(id))
+            .ok()
+            .map(|index| &self.models[index])
+    }
     pub fn new(access: Access, models: impl IntoIterator<Item = Model>) -> Result<Self, Error> {
         let mut models: Vec<_> = models.into_iter().collect();
         models.sort_unstable_by(|a, b| a.id.cmp(&b.id));

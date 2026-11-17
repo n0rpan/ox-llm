@@ -37,6 +37,7 @@ fn call_raw(tool: &dyn Tool, env: &TestEnv, cwd: &Path, args: Value) -> ToolOutp
     let cancel = CancelToken::new();
     let spill = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd,
         spill_dir: &spill,
         sandbox: &NoSandbox,
@@ -44,6 +45,7 @@ fn call_raw(tool: &dyn Tool, env: &TestEnv, cwd: &Path, args: Value) -> ToolOutp
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     tool.run(&args, &cx, &mut |_: &str| {})
 }
@@ -443,6 +445,7 @@ fn no_matches_text_and_access_is_the_search_root() {
     let cancel = CancelToken::new();
     let spill = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &work,
         spill_dir: &spill,
         sandbox: &NoSandbox,
@@ -450,6 +453,7 @@ fn no_matches_text_and_access_is_the_search_root() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let access = GrepTool::new()
         .access(&json!({"pattern": "x", "path": "a.txt"}), &cx)

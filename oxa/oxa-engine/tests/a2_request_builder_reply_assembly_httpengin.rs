@@ -40,12 +40,14 @@ fn hints<'a>(session: &'a str, key: &'a str) -> Hints<'a> {
 
 fn request<'a>(p: &'a FrozenPrefix, msgs: &'a [WireMsg], max_tokens: u32, h: Hints<'a>) -> ChatRequest<'a> {
     ChatRequest {
+        output_schema: None,
         prefix: p,
         messages: msgs,
         model: "fake-model",
         max_tokens,
         thinking: false,
         thinking_budget: None,
+        thinking_level: None,
         preserve_thinking: true,
         sampling: None,
         hints: h,
@@ -110,6 +112,40 @@ fn sse_response(events: &[&str]) -> Vec<u8> {
 }
 
 // ---------- acceptance tests ----------
+
+#[test]
+fn private_provider_history_is_absent_from_local_and_http_cloud_request_bodies() {
+    let p = prefix("SYS", "[]");
+    let mut message = WireMsg::assistant("visible reply");
+    let mut before = Vec::new();
+    oxa_engine::build_body_for(
+        &request(&p, std::slice::from_ref(&message), 16, hints("s1", KEY)),
+        false,
+        &mut before,
+    );
+    message.provider_history = Some(
+        oxa_proto::ProviderHistory::new(
+            [1; 32],
+            [2; 32],
+            vec![serde_json::json!({"type":"reasoning","encrypted_content":"synthetic-private-blob"})],
+        )
+        .unwrap(),
+    );
+    let r = request(&p, std::slice::from_ref(&message), 16, hints("s1", KEY));
+    let mut local = Vec::new();
+    oxa_engine::build_body_for(&r, false, &mut local);
+    assert_eq!(local, before);
+    let mut remote = Vec::new();
+    oxa_engine::build_body_for(&r, true, &mut remote);
+    let body: Value = serde_json::from_slice(&remote).unwrap();
+    assert_eq!(
+        body["messages"][1],
+        serde_json::json!({"role":"assistant","content":"visible reply"})
+    );
+    assert!(!String::from_utf8(remote)
+        .unwrap()
+        .contains("synthetic-private-blob"));
+}
 
 /// tool-call argument deltas concatenate verbatim, incl. odd whitespace
 #[test]
@@ -235,6 +271,7 @@ fn body_bytes_golden() {
     let r = ChatRequest {
         thinking: true,
         thinking_budget: None,
+        thinking_level: None,
         ..request(&p, &msgs, 128, hints("", ""))
     };
     let expected = r#"{"model":"fake-model","messages":[{"role":"system","content":"SYS"},{"role":"user","content":"hi"},{"role":"assistant","content":"ok"}],"tools":[{"type":"function","function":{"name":"read"}}],"stream":true,"stream_options":{"include_usage":true},"temperature":0,"cache_prompt":true,"max_tokens":128,"chat_template_kwargs":{"preserve_thinking":true,"enable_thinking":true}}"#;

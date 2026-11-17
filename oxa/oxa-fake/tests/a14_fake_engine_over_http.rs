@@ -307,12 +307,14 @@ fn cache_model_matches_scripted_engine() {
     ];
     for (msgs, max_tokens) in requests {
         let cr = ChatRequest {
+            output_schema: None,
             prefix: &p,
             messages: &msgs,
             model: "fake-model",
             max_tokens,
             thinking: false,
             thinking_budget: None,
+            thinking_level: None,
             preserve_thinking: true,
             sampling: None,
             hints: Hints {
@@ -589,6 +591,7 @@ fn record_keeps_raw_tools_and_args() {
             name: "read".to_string(),
             args_raw: "{ \"path\" :  \"a\" }".to_string(),
         }],
+        provider_history: None,
         tool_call_id: None,
     };
     let msgs = vec![

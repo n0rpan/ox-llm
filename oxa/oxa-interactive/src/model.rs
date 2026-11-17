@@ -314,6 +314,26 @@ pub struct StatusModel {
     /// set by the UI loop from the process's `YoloSwitch`.
     pub yolo: bool,
     pub yolo_approved: u64,
+    /// #202: the process's autonomy level (standard, auto or yolo); with `mode` it gives the
+    /// permission mode the status bar shows.
+    pub autonomy: oxa_proto::Autonomy,
+}
+
+impl StatusModel {
+    /// #202: the permission mode as the status bar shows it, with its theme token: `plan` and
+    /// `ask` from the session mode, else the autonomy level (`standard`, `auto`, `yolo`).
+    pub fn mode_label(&self) -> Option<(&'static str, &'static str)> {
+        use oxa_proto::Autonomy;
+        Some(match self.mode? {
+            Mode::Plan => ("plan", "modePlan"),
+            Mode::Ask => ("ask", "modeAsk"),
+            Mode::Workspace => match self.autonomy {
+                Autonomy::Standard => ("standard", "modeWorkspace"),
+                Autonomy::Auto => ("auto", "modeWorkspace"),
+                Autonomy::Yolo => ("yolo", "error"),
+            },
+        })
+    }
 }
 
 /// The look of the interactive UI. `Oxa` is OXA's own look (frames, HUD line, hint bar;
@@ -422,6 +442,13 @@ pub type ReopenFn =
 /// One request to the worker thread that owns the `Session`. Each maps to one
 /// `oxa_core::Session` call; the results come back as `AgentEvent`s and [`WorkerMsg`]s.
 pub enum SessionCmd {
+    /// Coalesced wake for editor input. The handle binds it to the original ordinary queues;
+    /// a wake left behind by a session rebind must not run the replacement's input.
+    QueuedInput(oxa_core::Handle),
+    /// Event-driven inbox wake. The id makes a wake queued before a swap harmless.
+    Inbox {
+        session_id: String,
+    },
     /// `Session::prompt`. Slash commands that are templates, `/skill:name` or extension
     /// commands are sent as a prompt and expanded by the core.
     Prompt {
@@ -607,6 +634,8 @@ pub enum SelectorKind {
     Mcp,
     Trust,
     Hotkeys,
+    /// #202: the permission-mode picker (`/mode` without an argument).
+    Mode,
 }
 
 /// Everything that can happen as the result of user input. Produced by the slash dispatcher
@@ -618,6 +647,12 @@ pub enum AppAction {
     Open(SelectorKind),
     /// O-182: switch YOLO on or off (`None` = toggle).
     Yolo(Option<bool>),
+    /// #202: set the permission mode (`/mode <name>`, `/auto`, the picker); `save` also writes
+    /// it as `permissions.defaultMode`.
+    SetPermissionMode {
+        mode: oxa_proto::PermissionMode,
+        save: bool,
+    },
     /// Show a notice block.
     Notify {
         level: Level,

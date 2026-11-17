@@ -25,8 +25,14 @@ struct PrintSink<'a> {
     /// Text of a message without tool calls that may still turn out to be the final reply: a
     /// `done` check or a steering message can start another turn after it.
     pending: Option<String>,
-    /// The final reply of the last prompt, set at `AgentEnd`; written to `out` by `run_print`
-    /// once it knows the run did not fail or abort.
+    /// A local length recovery continues this same answer, byte for byte. Cloud retries
+    /// regenerate a complete answer instead; tool work starts a different final reply.
+    /// With an output schema, only the last message is validated: never prepend chunks.
+    local_model: bool,
+    pending_length: bool,
+    continued: Option<String>,
+    /// The final reply of the last prompt, selected at `AgentEnd` or successful goal
+    /// settlement; written to `out` only once the run did not fail or abort.
     final_text: Option<String>,
     notes: Vec<String>,
     started: HashMap<String, Instant>,
@@ -44,8 +50,24 @@ impl PrintSink<'_> {
 
     /// Another turn follows: the buffered text was not the final reply, so it is progress.
     fn flush_pending(&mut self) {
+        self.pending_length = false;
         if let Some(t) = self.pending.take() {
             self.progress(&t);
+        }
+    }
+
+    fn next_turn(&mut self) {
+        if self.local_model && self.pending_length {
+            self.pending_length = false;
+            if let Some(text) = self.pending.take() {
+                self.progress(&text);
+                match &mut self.continued {
+                    Some(prefix) => prefix.push_str(&text),
+                    None => self.continued = Some(text),
+                }
+            }
+        } else {
+            self.flush_pending();
         }
     }
 
@@ -98,14 +120,23 @@ impl EventSink for PrintSink<'_> {
                 self.last = Some(message.clone());
                 let text = message.msg.content.as_deref().filter(|t| !t.is_empty());
                 if !message.msg.tool_calls.is_empty() {
+                    self.continued = None;
                     if let Some(t) = text {
                         self.progress(t);
                     }
+                } else if self.local_model && message.stop == Some(StopReason::Stop) {
+                    if let Some(mut prefix) = self.continued.take() {
+                        prefix.push_str(text.unwrap_or_default());
+                        self.pending = Some(prefix);
+                    } else {
+                        self.pending = text.map(str::to_string);
+                    }
                 } else if let Some(t) = text {
                     self.pending = Some(t.to_string());
+                    self.pending_length = self.local_model && message.stop == Some(StopReason::Length);
                 }
             }
-            AgentEvent::TurnStart => self.flush_pending(),
+            AgentEvent::TurnStart => self.next_turn(),
             AgentEvent::AgentEnd { .. } => {
                 if self.is_last_prompt
                     || self
@@ -123,6 +154,7 @@ impl EventSink for PrintSink<'_> {
                 tool_name,
                 args,
             } => {
+                self.continued = None;
                 self.flush_pending();
                 self.started.insert(tool_call_id.clone(), Instant::now());
                 self.progress(&tool_start_line(tool_name, args));
@@ -180,6 +212,9 @@ pub fn run_print_outcome(
         last: None,
         is_last_prompt: false,
         pending: None,
+        local_model: !session.inner().info.caps.remote && session.inner().output_schema.is_none(),
+        pending_length: false,
+        continued: None,
         final_text: None,
         notes: Vec::new(),
         started: HashMap::new(),
@@ -190,8 +225,15 @@ pub fn run_print_outcome(
     let mut outcome = RunOutcome::NothingToDo;
     let n = prompts.len();
     for (i, (text, parts)) in prompts.into_iter().enumerate() {
+        if session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
         sink.last = None;
         sink.pending = None;
+        sink.pending_length = false;
+        sink.continued = None;
+        sink.local_model = !session.inner().info.caps.remote && session.inner().output_schema.is_none();
         sink.final_text = None;
         sink.is_last_prompt = i + 1 == n;
         let _ = session.take_outcome();
@@ -226,7 +268,25 @@ pub fn run_print_outcome(
             }
         }
         failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err);
-        outcome.include(*session.outcome());
+        // The session already settled this prompt's outcome (done checks, output limit
+        // included); print only says why on stderr.
+        let settled = session.take_outcome();
+        outcome.include(settled);
+        // goal_done can settle the run on the tool-call message itself. Its
+        // content is final only after goal, schema and project checks succeed.
+        if sink.is_last_prompt
+            && settled == RunOutcome::Done
+            && sink.final_text.is_none()
+            && session
+                .goal()
+                .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Done)
+        {
+            sink.final_text = sink
+                .last
+                .as_ref()
+                .filter(|message| message.msg.tool_calls.iter().any(|call| call.name == "goal_done"))
+                .and_then(|message| message.msg.content.clone());
+        }
         // A failed or aborted run prints no reply (only known after the run).
         if !failed {
             if let Some(t) = sink.final_text.clone() {
@@ -236,32 +296,20 @@ pub fn run_print_outcome(
                 }
             }
         }
-        if session.handle().wrap_up_requested() {
+        explain_outcome(settled, &mut *sink.err);
+        if session.handle().wrap_up_requested() || session.handle().interrupted() {
             outcome.include(RunOutcome::Interrupted);
             break;
         }
     }
 
-    if done_failed(session, &mut *sink.err) {
-        outcome.include(RunOutcome::Failed("done_checks_failed"));
-    }
     if !failed {
-        // The reply is already printed; a length stop still needs a failed result.
-        if let Some(m) = sink.last.clone() {
-            if let Some(text) = sink.final_text.take() {
-                if session.inner().active.direct.is_empty() && has_tool_markup(&text) {
-                    let _ = writeln!(
+        if let Some(text) = sink.final_text.take() {
+            if session.inner().active.direct.is_empty() && has_tool_markup(&text) {
+                let _ = writeln!(
                     sink.err,
                     "warning: the model answered with tool-call markup but no tools are available (--no-tools); the answer may be unusable"
                 );
-                }
-            }
-            if m.stop == Some(StopReason::Length) {
-                let _ = writeln!(
-                    sink.err,
-                    "Response was truncated: the model reached its output token limit."
-                );
-                outcome.include(RunOutcome::Failed("output_limit"));
             }
         }
     }
@@ -294,7 +342,13 @@ pub fn run_json_outcome(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
-    write_record(out, &session_header_record(&session_header(session)))?;
+    let mut header = session_header_record(&session_header(session));
+    header["statusFile"] = session
+        .state()
+        .status_file
+        .map(|p| p.to_string_lossy().into_owned())
+        .into();
+    write_record(out, &header)?;
     let mut ui = HeadlessUi::default();
     let mut sink = JsonSink {
         out: &mut *out,
@@ -302,6 +356,10 @@ pub fn run_json_outcome(
     };
     let mut outcome = RunOutcome::NothingToDo;
     for (text, parts) in prompts {
+        if session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
         let _ = session.take_outcome();
         let before = session.inner().tree.leaf().to_string();
         match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
@@ -325,31 +383,38 @@ pub fn run_json_outcome(
         }
         // Event writes cannot interrupt the request: retain its completed result
         // before classifying a concurrent output failure.
-        outcome.include(*session.outcome());
+        let settled = session.take_outcome();
+        outcome.include(settled);
         if let Some(e) = sink.error.take() {
             let _ = writeln!(err, "{e}");
             outcome.include(RunOutcome::from_error(&e));
             return Ok(outcome);
         }
         after_run(session, &before, &mut ui, &mut Vec::new(), err);
-        if session.handle().wrap_up_requested() {
+        explain_outcome(settled, err);
+        if session.handle().wrap_up_requested() || session.handle().interrupted() {
             outcome.include(RunOutcome::Interrupted);
             break;
         }
     }
-    if done_failed(session, err) {
-        outcome.include(RunOutcome::Failed("done_checks_failed"));
-    }
     Ok(outcome)
 }
 
-/// Whether the `done` checks still failed after the repair rounds; says so on `err` once.
-fn done_failed(session: &Session, err: &mut dyn Write) -> bool {
-    let failed = session.inner().stats.done_failed;
-    if failed {
-        let _ = writeln!(err, "done checks failed: the project's done commands still fail");
+/// The stderr line for a settled outcome the session classified from the run's state; the
+/// outcome itself is the session's, never worked out again here.
+fn explain_outcome(settled: RunOutcome, err: &mut dyn Write) {
+    match settled {
+        RunOutcome::Failed("done_checks_failed") => {
+            let _ = writeln!(err, "done checks failed: the project's done commands still fail");
+        }
+        RunOutcome::Failed("output_limit") => {
+            let _ = writeln!(
+                err,
+                "Response was truncated: the model reached its output token limit."
+            );
+        }
+        _ => {}
     }
-    failed
 }
 
 /// The header of the session in use: the stored one, or one built from the session state when
@@ -499,6 +564,7 @@ pub fn run_json(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_proto::StopReason;
 
     /// #483: a failed call says why on the progress line.
     #[test]
@@ -511,6 +577,9 @@ mod tests {
             last: None,
             is_last_prompt: true,
             pending: None,
+            local_model: true,
+            pending_length: false,
+            continued: None,
             final_text: None,
             notes: Vec::new(),
             started: HashMap::new(),
@@ -536,6 +605,7 @@ mod tests {
                 content: Some(text.to_string()),
                 reasoning: None,
                 tool_calls: Vec::new(),
+                provider_history: None,
                 tool_call_id: None,
             },
             ts_ms: 0,
@@ -560,6 +630,9 @@ mod tests {
             last: None,
             is_last_prompt: true,
             pending: None,
+            local_model: true,
+            pending_length: false,
+            continued: None,
             final_text: None,
             notes: Vec::new(),
             started: HashMap::new(),

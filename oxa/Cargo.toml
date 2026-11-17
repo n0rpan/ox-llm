@@ -13,9 +13,11 @@ members = [
     "oxa-core",
     "oxa-tui",
     "oxa-interactive", "oxa-rpc", "oxa-export",
-    "oxa-cli",
+    "oxa-cli", "oxa-work",
     "oxa-fake", "oxa-parity",
     "oxc-gateway",
+    "oxc-local",
+    "oxc-memlat",
 ]
 
 [workspace.package]
@@ -29,6 +31,8 @@ publish = false
 # internal
 oxa-proto = { path = "oxa-proto" }
 oxa-engine = { path = "oxa-engine" }
+oxc-gateway = { path = "oxc-gateway", default-features = false }
+oxc-local = { path = "oxc-local" }
 oxa-session = { path = "oxa-session" }
 oxa-tools = { path = "oxa-tools" }
 oxa-sandbox = { path = "oxa-sandbox" }
@@ -47,6 +51,7 @@ oxa-interactive = { path = "oxa-interactive" }
 oxa-rpc = { path = "oxa-rpc" }
 oxa-export = { path = "oxa-export" }
 oxa-cli = { path = "oxa-cli" }
+oxa-work = { path = "oxa-work" }
 oxa-fake = { path = "oxa-fake" }
 # Shared oxa dependencies; the optional cloud transport is owned by the gateway.
 serde = { version = "1", features = ["derive"] }

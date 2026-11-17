@@ -192,6 +192,7 @@ fn run_tool(hooks: &CodemodeHooks, code: &str) -> ToolOutput {
     let cancel = CancelToken::new();
     let envs: Vec<(String, String)> = Vec::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -199,6 +200,7 @@ fn run_tool(hooks: &CodemodeHooks, code: &str) -> ToolOutput {
         cancel: &cancel,
         env: &envs,
         tune: Default::default(),
+        hidden: None,
     };
     tool.run(&json!({ "code": code }), &cx, &mut |_| {})
 }

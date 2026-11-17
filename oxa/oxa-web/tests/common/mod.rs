@@ -264,6 +264,7 @@ impl Sandbox for NoSandbox {
 
 pub fn ctx<'a>(cwd: &'a Path, sb: &'a NoSandbox, mode: Mode, cancel: &'a CancelToken) -> ToolCtx<'a> {
     ToolCtx {
+        checked: &[],
         cwd,
         spill_dir: cwd,
         sandbox: sb,
@@ -271,6 +272,7 @@ pub fn ctx<'a>(cwd: &'a Path, sb: &'a NoSandbox, mode: Mode, cancel: &'a CancelT
         cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     }
 }
 

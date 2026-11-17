@@ -128,17 +128,23 @@ fn tail(cwd: &str, path: &str) -> Vec<String> {
         "CARGO_HOME",
         "<root>/home/.cargo",
         "--setenv",
-        "GH_CACHE_DIR",
-        "/tmp/gh-cache",
-        "--setenv",
-        "MISE_CACHE_DIR",
-        "/tmp/mise-cache",
-        "--setenv",
         "MISE_DATA_DIR",
         "<root>/home/.local/share/mise",
         "--setenv",
         "MISE_STATE_DIR",
         "/tmp/mise-state",
+        "--setenv",
+        "SCCACHE_DIR",
+        "/tmp/.cache/sccache",
+        "--setenv",
+        "SCCACHE_SERVER_UDS",
+        "/tmp/.sccache.sock",
+        "--setenv",
+        "TMPDIR",
+        "/tmp",
+        "--setenv",
+        "XDG_CACHE_HOME",
+        "/tmp/.cache",
         "--",
         "bash",
         "-c",
@@ -178,10 +184,12 @@ fn layout_keeps_path_binds_toolchains_and_strips_secrets() {
         names,
         vec![
             "CARGO_HOME",
-            "GH_CACHE_DIR",
-            "MISE_CACHE_DIR",
             "MISE_DATA_DIR",
             "MISE_STATE_DIR",
+            "SCCACHE_DIR",
+            "SCCACHE_SERVER_UDS",
+            "TMPDIR",
+            "XDG_CACHE_HOME"
         ],
         "no token, no key, nothing unlisted"
     );
@@ -504,6 +512,74 @@ fn real_denied_files_are_neither_readable_nor_writable() {
         "machine example.com password hunter2"
     );
     assert!(!home.join(".oxa/agent/planted").exists());
+}
+
+/// #544: credentials (or their `llm` directory) may be symlinks into an exposed workspace.
+fn symlinked_oxc_credentials(link_directory: bool) -> (TestEnv, Layout) {
+    let env = TestEnv::new();
+    let llm = env.home().join(".config/oxc/llm");
+    let credentials = env.work().join("credentials");
+    let names = ["cloud-secrets.json", "chatgpt-auth.json"];
+    for name in names {
+        env.write(&format!("work/credentials/{name}"), "synthetic credential");
+    }
+    if link_directory {
+        std::fs::create_dir_all(llm.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&credentials, &llm).unwrap();
+    } else {
+        std::fs::create_dir_all(&llm).unwrap();
+        for name in names {
+            std::os::unix::fs::symlink(credentials.join(name), llm.join(name)).unwrap();
+        }
+    }
+    let layout = machine(&env);
+    (env, layout)
+}
+
+#[test]
+fn golden_symlinked_oxc_credentials_targets_are_masked() {
+    for link_directory in [false, true] {
+        let (env, layout) = symlinked_oxc_credentials(link_directory);
+        let args = bwrap_args_with(&spec("true", &env.work(), true), &env.home(), &layout);
+        for name in ["cloud-secrets.json", "chatgpt-auth.json"] {
+            let target = env.work().join("credentials").join(name).display().to_string();
+            assert!(
+                args.windows(3).any(|w| w == ["--ro-bind", "/dev/null", &target]),
+                "directory link={link_directory}: missing mask for {target}"
+            );
+        }
+    }
+}
+
+#[test]
+fn real_symlinked_oxc_credentials_stay_hidden() {
+    for link_directory in [false, true] {
+        let (env, layout) = symlinked_oxc_credentials(link_directory);
+        let Some(b) = real(&env, layout) else { return };
+        let (exit, out) = run(
+            &b,
+            "cat credentials/cloud-secrets.json credentials/chatgpt-auth.json 2>/dev/null; echo done; echo ok > credentials/notes.txt",
+            &env.work(),
+        );
+        assert_eq!(exit, Some(0), "{out}");
+        assert_eq!(out, "done\n", "directory link={link_directory}");
+        let (_, out) = run(
+            &b,
+            "echo changed > credentials/cloud-secrets.json; echo changed > credentials/chatgpt-auth.json; echo done",
+            &env.work(),
+        );
+        assert!(out.contains("done"), "{out}");
+        for name in ["cloud-secrets.json", "chatgpt-auth.json"] {
+            assert_eq!(
+                std::fs::read_to_string(env.work().join("credentials").join(name)).unwrap(),
+                "synthetic credential"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(env.work().join("credentials/notes.txt")).unwrap(),
+            "ok\n"
+        );
+    }
 }
 
 /// O-199: started in `$HOME` and confirmed (or the setting): the home's folders are the
@@ -921,35 +997,224 @@ fn mise_cache_and_state_are_writable() {
     assert!(!l.write.iter().any(|w| trusted.starts_with(w)), "{:?}", l.write);
 }
 
-/// #362: `gh` writes its cache to `GH_CACHE_DIR`; point it at the sandbox /tmp, never bind the
-/// real `~/.cache/gh`, never create host directories, and leave `XDG_CACHE_HOME` alone.
+/// #457 (supersedes #362): every tool gets one writable cache home, the session directory at
+/// `/tmp`: `XDG_CACHE_HOME` and `TMPDIR` point there even when the user set them to a host
+/// path (read-only inside); no bind of the real `~/.cache/gh`, no host directory created.
 #[test]
-fn gh_cache_dir_is_sandbox_tmp_and_host_untouched() {
+fn cache_home_and_tmpdir_are_the_session_tmp() {
     let env = TestEnv::new();
     let home = env.home();
-    let mk = |env: Vec<(String, String)>| {
-        Layout::build(&LayoutInputs {
-            home: home.clone(),
-            agent_dir: Some(env_agent(&env)),
-            path_var: "/usr/bin".into(),
-            env,
-            read_extra: Vec::new(),
-            write_extra: Vec::new(),
-            allow_home_write: false,
-            exe: None,
-            exe_in_workspace: false,
-        })
-    };
-    fn env_agent(_: &[(String, String)]) -> PathBuf {
-        PathBuf::from("/nonexistent-agent")
-    }
-    let l = mk(Vec::new());
+    let l = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(PathBuf::from("/nonexistent-agent")),
+        path_var: "/usr/bin".into(),
+        env: vec![
+            ("XDG_CACHE_HOME".into(), home.join(".cache").display().to_string()),
+            ("TMPDIR".into(), "/var/tmp/host".into()),
+        ],
+        ..LayoutInputs::default()
+    });
     assert!(
-        l.env.contains(&("GH_CACHE_DIR".into(), "/tmp/gh-cache".into())),
+        l.env.contains(&("XDG_CACHE_HOME".into(), "/tmp/.cache".into())),
         "{:?}",
         l.env
     );
-    assert!(!l.env.iter().any(|(k, _)| k == "XDG_CACHE_HOME"));
+    assert!(l.env.contains(&("TMPDIR".into(), "/tmp".into())), "{:?}", l.env);
+    assert_eq!(l.env.iter().filter(|(k, _)| k == "XDG_CACHE_HOME").count(), 1);
+    assert!(!l
+        .env
+        .iter()
+        .any(|(k, _)| k == "GH_CACHE_DIR" || k == "MISE_CACHE_DIR"));
     assert!(!l.write.contains(&home.join(".cache/gh")));
     assert!(!home.join(".cache/gh").exists(), "build must not touch the host");
+}
+
+/// #457, N28: the session directory replaces `--tmpfs /tmp` at the same place, before the
+/// home tmpfs and before every credential mask, so no mask can be covered by it.
+#[test]
+fn golden_session_dir_is_bound_at_tmp_before_every_mask() {
+    let env = TestEnv::new();
+    let l = machine(&env);
+    let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&env.home())).expect("scratch");
+    let dir = sc.path().to_path_buf();
+    let l = l.with_scratch(sc);
+    let a =
+        oxa_sandbox::without_account_home(bwrap_args_with(&spec("true", &env.work(), true), &env.home(), &l));
+    let s = shown(&a, &env);
+    let mut head = strs(HEAD);
+    head[12] = "--bind".into();
+    head[13] = dir
+        .display()
+        .to_string()
+        .replace(&env.root().display().to_string(), "<root>");
+    head.insert(14, "/tmp".into());
+    assert_eq!(s[..head.len()], head[..], "{s:?}");
+    assert!(!s.windows(2).any(|w| w == ["--tmpfs", "/tmp"]), "{s:?}");
+    // The home tmpfs, the binds and the masks all follow it (the prefix above).
+    // Without a session directory nothing changes.
+    let a = oxa_sandbox::without_account_home(bwrap_args_with(
+        &spec("true", &env.work(), true),
+        &env.home(),
+        &machine(&env),
+    ));
+    assert_eq!(shown(&a, &env)[..HEAD.len()], strs(HEAD)[..]);
+}
+
+/// The links `with_scratch` made in the session directory, as (name, target).
+fn cache_links(dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut v: Vec<(String, PathBuf)> = std::fs::read_dir(dir.join(".cache"))
+        .unwrap()
+        .flatten()
+        .map(|e| {
+            let t = std::fs::read_link(e.path()).expect("only links in .cache");
+            (e.file_name().to_string_lossy().into_owned(), t)
+        })
+        .collect();
+    v.sort();
+    v
+}
+
+fn cache_layout(env: &TestEnv, user_env: Vec<(String, String)>, write_extra: Vec<PathBuf>) -> Layout {
+    Layout::build(&LayoutInputs {
+        home: env.home(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin".into(),
+        env: user_env,
+        write_extra,
+        ..LayoutInputs::default()
+    })
+}
+
+/// #457: without `XDG_CACHE_HOME` the user's cache home is `~/.cache`: each read-write bound
+/// cache in it is linked from `/tmp/.cache/<name>`; an unbound one (`~/.cache/gh`) is not.
+#[test]
+fn default_cache_home_links_its_read_write_caches() {
+    let env = TestEnv::new();
+    let home = env.home();
+    for d in [".cache/sccache", ".cache/pip", ".cache/gh"] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
+    let l = cache_layout(&env, Vec::new(), Vec::new());
+    assert_eq!(l.cache_home, home.join(".cache"));
+    let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&home)).expect("scratch");
+    let dir = sc.path().to_path_buf();
+    let _l = l.with_scratch(sc);
+    assert_eq!(
+        cache_links(&dir),
+        vec![
+            ("pip".to_string(), home.join(".cache/pip")),
+            ("sccache".to_string(), home.join(".cache/sccache")),
+        ]
+    );
+}
+
+/// #457 review: a user-set `XDG_CACHE_HOME` keeps its shared caches. The rule: the shared
+/// caches are the read-write bound entries of the user's cache home (`$XDG_CACHE_HOME`, else
+/// `~/.cache`), linked from `/tmp/.cache/<name>`; everything else caches in the session.
+/// `~/.cache/pip` is not the user's pip cache here, so it is not linked; an entry under a
+/// bound cache home is (the whole home bound by `writePaths`).
+#[test]
+fn user_cache_home_keeps_its_read_write_caches() {
+    let env = TestEnv::new();
+    let home = env.home();
+    let xdg = env.root().join("data/cache");
+    for d in ["sccache", "pip", "unbound"] {
+        std::fs::create_dir_all(xdg.join(d)).unwrap();
+    }
+    std::fs::create_dir_all(home.join(".cache/pip")).unwrap();
+    let user = vec![("XDG_CACHE_HOME".to_string(), xdg.display().to_string())];
+    let l = cache_layout(&env, user.clone(), vec![xdg.join("sccache"), xdg.join("pip")]);
+    assert_eq!(l.cache_home, xdg);
+    // Inside, the cache home is still the session's, never the read-only host path.
+    assert!(
+        l.env.contains(&("XDG_CACHE_HOME".into(), "/tmp/.cache".into())),
+        "{:?}",
+        l.env
+    );
+    let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&home)).expect("scratch");
+    let dir = sc.path().to_path_buf();
+    let _l = l.with_scratch(sc);
+    assert_eq!(
+        cache_links(&dir),
+        vec![
+            ("pip".to_string(), xdg.join("pip")),
+            ("sccache".to_string(), xdg.join("sccache")),
+        ]
+    );
+
+    // The whole cache home bound read-write: every entry in it is shared.
+    let l = cache_layout(&env, user, vec![xdg.clone()]);
+    let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&home)).expect("scratch");
+    let dir = sc.path().to_path_buf();
+    let _l = l.with_scratch(sc);
+    assert_eq!(cache_links(&dir).len(), 3, "{:?}", cache_links(&dir));
+
+    // A relative `XDG_CACHE_HOME` is ignored, as the XDG rule says: `~/.cache` again.
+    let l = cache_layout(
+        &env,
+        vec![("XDG_CACHE_HOME".into(), "rel/cache".into())],
+        Vec::new(),
+    );
+    assert_eq!(l.cache_home, home.join(".cache"));
+}
+
+/// #457 review: each session of one `Bwrap` gets its own directory at `/tmp`, removed when
+/// that session's sandbox is dropped; the process sandbox keeps a per-command tmpfs. When no
+/// directory can be made, the session falls back to the tmpfs and its notice says so.
+#[test]
+fn every_session_has_its_own_scratch() {
+    let env = TestEnv::new();
+    let home = env.home();
+    let root = oxa_sandbox::scratch_root(&home);
+    let base = Bwrap {
+        bwrap: PathBuf::from("/usr/bin/bwrap"),
+        home: home.clone(),
+        layout: Layout {
+            scratch_root: Some(root.clone()),
+            ..Layout::default()
+        },
+    };
+    let tmp = |b: &dyn Sandbox| {
+        let a = b.bwrap_args(&spec("true", &env.work(), true));
+        a.windows(3)
+            .find(|w| w[0] == "--bind" && w[2] == "/tmp")
+            .map(|w| PathBuf::from(&w[1]))
+    };
+    assert_eq!(tmp(&base), None, "the process sandbox has no session directory");
+    let one = base.for_session().expect("a session sandbox");
+    let two = base.for_session().expect("a session sandbox");
+    let (a, b) = (tmp(one.as_ref()).unwrap(), tmp(two.as_ref()).unwrap());
+    assert_ne!(a, b);
+    assert!(a.is_dir() && b.is_dir() && a.starts_with(&root));
+    assert_eq!(one.persistence_notice(), Some(oxa_sandbox::SCRATCH_NOTICE));
+    let clone = one.clone();
+    drop(one);
+    assert!(a.is_dir(), "removed while the session still holds it");
+    drop(clone);
+    assert!(!a.exists(), "the session directory outlived its session");
+    assert!(b.is_dir());
+    drop(two);
+    assert!(!b.exists());
+
+    // No root: no session sandbox of its own.
+    let plain = Bwrap {
+        layout: Layout::default(),
+        ..base.clone()
+    };
+    assert!(plain.for_session().is_none());
+    // A root that cannot be created (a file is in the way): the per-command tmpfs.
+    std::fs::write(env.root().join("blocker"), "").unwrap();
+    let blocked = Bwrap {
+        layout: Layout {
+            scratch_root: Some(env.root().join("blocker/scratch")),
+            ..Layout::default()
+        },
+        ..base
+    };
+    let s = blocked.for_session().expect("a session sandbox");
+    assert_eq!(tmp(s.as_ref()), None);
+    assert!(s
+        .persistence_notice()
+        .unwrap()
+        .contains("discarded after each command"));
 }

@@ -34,6 +34,7 @@ fn assistant() -> WireMsg {
             name: "read".into(),
             args_raw: "{ \"path\" :\"a\"}".into(),
         }],
+        provider_history: None,
         tool_call_id: None,
     }
 }
