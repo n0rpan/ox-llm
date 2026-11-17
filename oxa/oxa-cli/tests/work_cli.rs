@@ -237,8 +237,8 @@ fn github_issue_input_uses_mock_gh() {
     let gh = env.write(
         "tmp/trusted-tools/gh",
         r##"#!/bin/sh
-[ "$*" = 'issue view 42 --json title,body,comments' ] || exit 9
-printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","comments":[]}'
+[ "$*" = 'issue view 42 --json title,body' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
 "##,
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -285,7 +285,6 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","headRefNam
     assert!(prompt.contains("checks / oxa"), "{prompt}");
     assert!(!prompt.contains("checks / docs"), "{prompt}");
 }
-#[test]
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
     let env = TestEnv::new();
