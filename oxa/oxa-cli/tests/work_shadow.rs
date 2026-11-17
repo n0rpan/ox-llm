@@ -60,6 +60,9 @@ esac
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
     let detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]},"mergeQueue":null,"p42":{"number":42,"headRefOid":"synthetic-head","baseRefName":"main","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"CLEAN","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
     let mut detail = detail;
+    detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = "synthetic-head".into();
+    detail["data"]["repository"]["pullRequests"]["pageInfo"] =
+        serde_json::json!({"hasNextPage":false,"endCursor":"synthetic-end"});
     detail["data"]["repository"]["p42"]["baseRef"] = serde_json::json!({
         "refUpdateRule":{"requiredStatusCheckContexts":["ci"]},
         "rules":{"totalCount":0,"nodes":[]}
@@ -307,9 +310,23 @@ fn unreported_classic_and_ruleset_requirements_are_pending() {
 
 fn batched_fixture(count: u64, limit: usize, failure: u16) -> TestEnv {
     let (env, detail) = fixture();
-    let connection = serde_json::json!({"totalCount":count,"nodes":(1..=count)
-        .map(|number| serde_json::json!({"number":number})).collect::<Vec<_>>()});
-    fs::write(env.work().join("list.json"), connection.to_string()).unwrap();
+    fs::create_dir(env.work().join("pages")).unwrap();
+    for start in (0..count.max(1)).step_by(100) {
+        let end = count.min(start + 100);
+        let connection = serde_json::json!({"totalCount":count,"nodes":(start+1..=end)
+            .map(|number| serde_json::json!({"number":number,"headRefOid":"synthetic-head"})).collect::<Vec<_>>(),
+            "pageInfo":{"hasNextPage":end<count,"endCursor":format!("c{end}")}});
+        let cursor = if start == 0 {
+            "first".into()
+        } else {
+            format!("c{start}")
+        };
+        fs::write(
+            env.work().join(format!("pages/{cursor}.json")),
+            connection.to_string(),
+        )
+        .unwrap();
+    }
     fs::create_dir(env.work().join("rows")).unwrap();
     for number in 1..=count {
         let mut row = detail["data"]["repository"]["p42"].clone();
@@ -321,19 +338,21 @@ fn batched_fixture(count: u64, limit: usize, failure: u16) -> TestEnv {
     let gh = env.write("tmp/gh", r#"#!/bin/sh
 include=false
 case " $* " in *' --include '*) include=true ;; esac
+cursor=$(printf '%s\n' "$*" | sed -n 's/.*after:"\([^"]*\)".*/\1/p')
 numbers=$(printf '%s\n' "$*" | grep -oE 'p[0-9]+:pullRequest\(number:[0-9]+\)' | sed -E 's/.*number:([0-9]+)\)/\1/')
 set -- $numbers
 printf '%s\n' "$#" >> batch-sizes
 status=200
 if [ "$#" -gt "$(cat limit)" ]; then status=$(cat failure); fi
 if [ -e fail-after ] && [ "$(wc -l < batch-sizes)" -gt "$(cat fail-after)" ]; then status=403; fi
+if [ -e fail-page ] && [ "$cursor" = "$(cat fail-page)" ]; then status=403; fi
 if "$include"; then printf 'HTTP/2.0 %s Synthetic\r\n\r\n' "$status"; fi
 if [ "$status" != 200 ]; then
   printf '{"message":"synthetic-private-response-marker"}'
   exit 1
 fi
 printf '{"data":{"repository":{"pullRequests":'
-cat list.json
+cat "pages/${cursor:-first}.json"
 printf ',"mergeQueue":null'
 for number in "$@"; do
   printf ',"p%s":' "$number"
@@ -360,7 +379,10 @@ fn ninety_pr_details_are_read_in_small_batches_without_losing_rows() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let sizes = batch_sizes(&env);
     assert_eq!(sizes[0], 0);
-    assert!(sizes[1..].iter().all(|size| *size > 0 && *size <= 15));
+    assert_eq!(sizes.last(), Some(&0));
+    assert!(sizes[1..sizes.len() - 1]
+        .iter()
+        .all(|size| *size > 0 && *size <= 15));
     assert_eq!(sizes.iter().sum::<usize>(), 90);
     let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
     let sample: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
@@ -381,7 +403,10 @@ fn repeated_gateway_failures_retry_then_reduce_the_detail_batch() {
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let sizes = batch_sizes(&env);
         assert_eq!(&sizes[..5], &[0, 15, 15, 15, 7]);
-        assert!(sizes[4..].iter().all(|size| *size > 0 && *size <= 7));
+        assert_eq!(sizes.last(), Some(&0));
+        assert!(sizes[4..sizes.len() - 1]
+            .iter()
+            .all(|size| *size > 0 && *size <= 7));
     }
 }
 
@@ -408,6 +433,60 @@ fn terminal_http_failures_are_bounded_named_and_do_not_publish_a_partial_board()
     assert!(fs::read_to_string(log_for(&env, "example/repo"))
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn complete_paginated_boards_include_every_pr_up_to_the_limit() {
+    for count in [101, 1000] {
+        let env = batched_fixture(count, 15, 504);
+        let out = invoke(&env, "work board --shadow --repo example/repo --once");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+        let sample: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        let numbers: Vec<_> = sample["board"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["number"].as_u64().unwrap())
+            .collect();
+        assert_eq!(numbers, (1..=count).collect::<Vec<_>>());
+        assert_eq!(batch_sizes(&env).iter().sum::<usize>(), count as usize);
+    }
+}
+
+#[test]
+fn later_page_failures_and_changed_heads_never_publish_partial_boards() {
+    for fault in ["http", "late-http", "duplicate", "head", "cursor", "identity"] {
+        let env = batched_fixture(101, 15, 504);
+        if fault == "http" {
+            fs::write(env.work().join("fail-page"), "c100").unwrap();
+        } else if fault == "late-http" {
+            fs::write(env.work().join("fail-after"), "10").unwrap();
+        } else if matches!(fault, "duplicate" | "cursor" | "identity") {
+            let path = env.work().join("pages/c100.json");
+            let mut page: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            match fault {
+                "duplicate" => page["nodes"][0]["number"] = 1.into(),
+                "cursor" => page["pageInfo"]["hasNextPage"] = true.into(),
+                _ => page["nodes"][0]["headRefOid"] = serde_json::Value::Null,
+            }
+            fs::write(path, page.to_string()).unwrap();
+        } else {
+            let path = env.work().join("rows/101.json");
+            let mut row: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            row["headRefOid"] = "changed-head".into();
+            fs::write(path, row.to_string()).unwrap();
+        }
+        let out = invoke(&env, "work board --shadow --repo example/repo --once");
+        assert!(!out.status.success(), "{fault}");
+        if fault == "late-http" {
+            assert!(String::from_utf8_lossy(&out.stderr).contains("HTTP 403"));
+            assert_eq!(batch_sizes(&env).iter().sum::<usize>(), 101);
+        }
+        assert!(fs::read_to_string(log_for(&env, "example/repo"))
+            .unwrap()
+            .is_empty());
+    }
 }
 
 #[test]

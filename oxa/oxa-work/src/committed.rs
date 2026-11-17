@@ -1,0 +1,647 @@
+//! Verify a saved task from an independent, clean, hash-checked Git export.
+use crate::{
+    acceptance_result, checked, dirty_worktree, git, state, supervise, tree, valid_task_id, Outcome, Record,
+    Result, RunPolicy, Step, SupervisorOperation, SupervisorRequest,
+};
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// Owns the task lock and the exact object graph that passed acceptance.
+/// Publication must consume this value, never reconstruct it from a saved verdict.
+pub struct VerifiedTask {
+    pub(crate) record: Record,
+    pub(crate) export: Export,
+    _lock: File,
+    checked_at_ms: u64,
+}
+impl VerifiedTask {
+    pub fn record(&self) -> &Record {
+        &self.record
+    }
+    pub fn checked_at_ms(&self) -> u64 {
+        self.checked_at_ms
+    }
+
+    /// Check the sealed object graph again immediately before publication.
+    pub fn revalidate(&self, policy: &RunPolicy) -> Result<()> {
+        self.export.verify(
+            policy,
+            self.record
+                .head_sha
+                .as_deref()
+                .ok_or("verified head is unavailable")?,
+            self.record
+                .base_sha
+                .as_deref()
+                .ok_or("verified base is unavailable")?,
+        )
+    }
+}
+
+/// Recheck a finished task against its saved commands, with no retained ignored helpers.
+/// This does not push, create a PR, or change the task's checkpoint.
+pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &str) -> Result<VerifiedTask> {
+    if !valid_task_id(id) {
+        return Err("invalid task identity".into());
+    }
+    let lock = File::options()
+        .read(true)
+        .write(true)
+        .open(policy.storage.join(format!("{id}.lock")))
+        .map_err(|_| "cannot open saved task lock")?;
+    lock.try_lock().map_err(|_| "task is already running")?;
+    let saved = state::load(&policy.storage.join(format!("{id}.json")))?;
+    let record = saved.record;
+    if saved.task.id != id
+        || record.step != Step::Finished
+        || !matches!(record.outcome, Outcome::Done | Outcome::NothingToDo)
+    {
+        return Err("only finished successful work can be verified for publication".into());
+    }
+    // An explicit later online publication never relaxes the saved check policy.
+    let verification_policy = RunPolicy {
+        offline: saved.offline || policy.offline,
+        ..policy.clone()
+    };
+    let policy = &verification_policy;
+    let execution = saved
+        .execution
+        .ok_or("saved acceptance commands are unavailable")?;
+    let head = record.head_sha.as_deref().ok_or("saved head is unavailable")?;
+    let tree_id = record.tree_sha.as_deref().ok_or("saved tree is unavailable")?;
+    let base = record.base_sha.as_deref().ok_or("saved base is unavailable")?;
+    if execution.base != base {
+        return Err("saved acceptance base disagrees with the task record".into());
+    }
+    tree::validate(policy, repo, &record.worktree, &saved.task)?;
+    tree::ensure_merged(policy, &record.worktree, base, &saved.task.branch)?;
+    same_saved_commit(policy, &record.worktree, head, tree_id)?;
+    if dirty_worktree(binary, &record.worktree, repo, policy, &lock)? {
+        return Err("saved task has uncommitted changes".into());
+    }
+    let export = Export::create(policy, &record.worktree, head, tree_id, base)?;
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(export.root.join(".committed-output"))
+        .map_err(|_| "cannot create private committed-check outputs")?;
+    if crate::done_commands(policy, &export.store, base)? != execution.commands {
+        return Err("saved checks disagree with their captured base".into());
+    }
+    let checkout = supervise(
+        binary,
+        &export.tree,
+        SupervisorRequest {
+            source: repo.into(),
+            operation: SupervisorOperation::Checkout {
+                branch: saved.task.branch,
+                create: false,
+            },
+        },
+        policy,
+        &lock,
+    )?;
+    if !checkout.status.success() {
+        return Err("clean acceptance checkout failed; saved work is retained".into());
+    }
+    same_saved_commit(policy, &export.tree, head, tree_id)?;
+    if dirty_worktree(binary, &export.tree, repo, policy, &lock)? {
+        return Err("clean acceptance checkout is dirty".into());
+    }
+    // This fresh index comes from the verified commit and lives outside both
+    // writable sandbox binds (checkout and Git metadata). Checks cannot hide
+    // changes by setting assume-unchanged/skip-worktree or replacing their index.
+    let index = export.root.join(".committed-index");
+    let mut prepare_index = private_git(
+        policy,
+        &export.tree,
+        &[
+            "-c",
+            "core.sparseCheckout=false",
+            "-c",
+            "index.sparse=false",
+            "read-tree",
+            "--reset",
+            head,
+        ],
+    );
+    prepare_index.env("GIT_INDEX_FILE", &index);
+    checked(prepare_index)?;
+    // read-tree alone has zeroed stat entries: diff-files would report even
+    // untouched files as changed. Refresh before the index becomes read-only.
+    let mut refresh_index = private_git(policy, &export.tree, &["update-index", "--refresh"]);
+    refresh_index.env("GIT_INDEX_FILE", &index);
+    checked(refresh_index)?;
+    let failed = acceptance_result(supervise(
+        binary,
+        &export.tree,
+        SupervisorRequest {
+            source: repo.into(),
+            operation: SupervisorOperation::CommittedChecks {
+                commands: execution.commands,
+                index: index.clone(),
+            },
+        },
+        policy,
+        &lock,
+    )?)?;
+    if !failed.is_empty() {
+        return Err(format!("clean committed acceptance failed: {failed}"));
+    }
+    same_saved_commit(policy, &export.tree, head, tree_id)?;
+    if dirty_worktree(binary, &export.tree, repo, policy, &lock)? {
+        return Err("acceptance changed committed source files".into());
+    }
+    let inspected = supervise(
+        binary,
+        &export.tree,
+        SupervisorRequest {
+            source: repo.into(),
+            operation: SupervisorOperation::InspectCommitted { index },
+        },
+        policy,
+        &lock,
+    )?;
+    if !inspected.status.success() {
+        return Err("acceptance changed committed source files or could not be inspected".into());
+    }
+    export.verify(policy, head, base)?;
+    same_saved_commit(policy, &record.worktree, head, tree_id)?;
+    if dirty_worktree(binary, &record.worktree, repo, policy, &lock)? {
+        return Err("saved work changed during committed acceptance".into());
+    }
+    Ok(VerifiedTask {
+        record,
+        export,
+        _lock: lock,
+        checked_at_ms: crate::state::now_ms(),
+    })
+}
+
+fn same_saved_commit(policy: &RunPolicy, tree: &Path, head: &str, tree_id: &str) -> Result<()> {
+    if checked(git(policy, tree, &["rev-parse", "HEAD"]))? != head
+        || checked(git(policy, tree, &["rev-parse", "HEAD^{tree}"]))? != tree_id
+    {
+        return Err("saved head or tree changed".into());
+    }
+    Ok(())
+}
+
+/// Every export has its own object store, no alternate or shared object links.
+/// Only this generated subtree is removed when the proof leaves scope.
+pub(crate) struct Export {
+    root: PathBuf,
+    pub(crate) store: PathBuf,
+    pub(crate) tree: PathBuf,
+    shallow: Option<Vec<u8>>,
+}
+impl Drop for Export {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+impl Export {
+    fn create(policy: &RunPolicy, source: &Path, head: &str, tree: &str, base: &str) -> Result<Self> {
+        for oid in [head, tree, base] {
+            if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err("acceptance requires full object identities".into());
+            }
+        }
+        let parent = source
+            .parent()
+            .ok_or("saved worktree has no parent")?
+            .join(".oxa-acceptance");
+        match fs::DirBuilder::new().mode(0o700).create(&parent) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err("cannot create private acceptance root".into()),
+        }
+        let metadata = fs::symlink_metadata(&parent).map_err(|_| "cannot inspect acceptance root")?;
+        if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+            return Err("unsafe acceptance root".into());
+        }
+        let root = parent.join(format!(
+            "{}-{}-{}",
+            std::process::id(),
+            state::now_ms(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&root)
+            .map_err(|_| "cannot create fresh acceptance export")?;
+        let mut export = Self {
+            store: root.join("objects.git"),
+            tree: root.join("tree"),
+            root,
+            shallow: None,
+        };
+        let format = checked(git(policy, source, &["rev-parse", "--show-object-format"]))?;
+        if !matches!(format.as_str(), "sha1" | "sha256") {
+            return Err("unsupported object format".into());
+        }
+        checked(private_git(
+            policy,
+            source,
+            &[
+                "init",
+                "--bare",
+                "--template=",
+                &format!("--object-format={format}"),
+                export.store.to_str().ok_or("invalid acceptance path")?,
+            ],
+        ))?;
+        // A shallow source intentionally omits ancestors. Preserve only its
+        // reachable declared boundaries; strict import/fsck still validate every
+        // exported object, without fetching or borrowing the source object store.
+        let shallow_path = checked(git(
+            policy,
+            source,
+            &["rev-parse", "--path-format=absolute", "--git-path", "shallow"],
+        ))?;
+        match File::open(shallow_path) {
+            Ok(file) => {
+                const LIMIT: u64 = 1024 * 1024;
+                let mut bytes = vec![];
+                file.take(LIMIT + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "cannot read shallow boundaries")?;
+                if bytes.len() as u64 > LIMIT {
+                    return Err("shallow boundaries exceed export limit".into());
+                }
+                let text = std::str::from_utf8(&bytes).map_err(|_| "invalid shallow boundaries")?;
+                let width = if format == "sha1" { 40 } else { 64 };
+                let boundaries: std::collections::HashSet<_> = text.lines().collect();
+                if boundaries
+                    .iter()
+                    .any(|id| id.len() != width || !id.bytes().all(|b| b.is_ascii_hexdigit()))
+                {
+                    return Err("invalid shallow boundary identity".into());
+                }
+                let roots = checked(git(policy, source, &["rev-list", "--max-parents=0", head, base]))?;
+                let mut selected = Vec::new();
+                for id in roots.lines().filter(|id| boundaries.contains(id)) {
+                    writeln!(selected, "{id}").map_err(|_| "cannot capture shallow boundary")?;
+                }
+                if !selected.is_empty() {
+                    private_file(&export.store.join("shallow"))?
+                        .write_all(&selected)
+                        .map_err(|_| "cannot write export boundaries")?;
+                    export.shallow = Some(selected);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("cannot open shallow boundaries".into()),
+        }
+        let revisions = export.root.join("revisions");
+        let mut input = private_file(&revisions)?;
+        writeln!(input, "{head}\n{base}").map_err(|_| "cannot write export identities")?;
+        drop(input);
+        let pack = export.root.join("objects.pack");
+        let mut produce = git(
+            policy,
+            source,
+            &[
+                "-c",
+                "pack.threads=1",
+                "-c",
+                "core.alternateRefsCommand=:",
+                "-c",
+                "core.commitGraph=false",
+                "pack-objects",
+                "--stdout",
+                "--revs",
+                "--no-reuse-delta",
+                "--no-reuse-object",
+                "--no-use-bitmap-index",
+            ],
+        );
+        produce
+            .stdin(File::open(&revisions).map_err(|_| "cannot read export identities")?)
+            .stdout(private_file(&pack)?)
+            .stderr(Stdio::null());
+        if !produce
+            .status()
+            .map_err(|_| "cannot export saved objects")?
+            .success()
+        {
+            return Err("saved object export failed".into());
+        }
+        let mut import = private_git(policy, &export.store, &["index-pack", "--stdin", "--strict"]);
+        import
+            .stdin(File::open(&pack).map_err(|_| "cannot read exported objects")?)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if !import
+            .status()
+            .map_err(|_| "cannot validate exported objects")?
+            .success()
+        {
+            return Err("exported object integrity failed".into());
+        }
+        fs::remove_file(&pack).map_err(|_| "cannot retire temporary object pack")?;
+        fs::remove_file(&revisions).map_err(|_| "cannot retire temporary identities")?;
+        export.verify(policy, head, base)?;
+        checked(private_git(
+            policy,
+            &export.store,
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "worktree",
+                "add",
+                "--no-checkout",
+                "--detach",
+                export.tree.to_str().ok_or("invalid acceptance path")?,
+                head,
+            ],
+        ))?;
+        same_saved_commit(policy, &export.tree, head, tree)?;
+        Ok(export)
+    }
+
+    fn verify(&self, policy: &RunPolicy, head: &str, base: &str) -> Result<()> {
+        match (fs::read(self.store.join("shallow")), &self.shallow) {
+            (Ok(actual), Some(expected)) if actual == *expected => {}
+            (Err(error), None) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err("acceptance shallow boundary changed".into()),
+        }
+        for leaf in ["objects/info/alternates", "objects/info/http-alternates"] {
+            match fs::symlink_metadata(self.store.join(leaf)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err("acceptance object store has an alternate".into()),
+            }
+        }
+        let result = private_git(
+            policy,
+            &self.store,
+            &[
+                "-c",
+                "fsck.skipList=/dev/null",
+                "-c",
+                "core.alternateRefsCommand=:",
+                "-c",
+                "core.commitGraph=false",
+                "fsck",
+                "--full",
+                "--strict",
+                "--no-reflogs",
+                "--no-dangling",
+                head,
+                base,
+            ],
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|_| "cannot verify acceptance objects")?;
+        if !result.success() {
+            return Err("acceptance object integrity failed".into());
+        }
+        Ok(())
+    }
+}
+
+fn private_file(path: &Path) -> Result<File> {
+    File::options()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(|_| "cannot create private export file".into())
+}
+fn private_git(policy: &RunPolicy, cwd: &Path, args: &[&str]) -> Command {
+    let mut command = git(policy, cwd, args);
+    command
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixture {
+        root: PathBuf,
+        source: PathBuf,
+        policy: RunPolicy,
+        head: String,
+        tree: String,
+        blob: String,
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+    impl Fixture {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "oxa-committed-{}-{}-{}",
+                std::process::id(),
+                state::now_ms(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+            let source = root.join("source");
+            let storage = root.join("private");
+            fs::DirBuilder::new().mode(0o700).create(&storage).unwrap();
+            let policy = RunPolicy {
+                git_binary: "/usr/bin/git".into(),
+                host_path: "/usr/bin:/bin".into(),
+                terminate_binary: None,
+                offline: true,
+                storage,
+            };
+            checked(private_git(
+                &policy,
+                &root,
+                &["init", "--template=", "-b", "main", source.to_str().unwrap()],
+            ))
+            .unwrap();
+            checked(private_git(&policy, &source, &["config", "user.name", "Test"])).unwrap();
+            checked(private_git(
+                &policy,
+                &source,
+                &["config", "user.email", "test@example.invalid"],
+            ))
+            .unwrap();
+            fs::write(source.join("payload.txt"), "approved\n").unwrap();
+            fs::write(source.join(".gitignore"), "helper.sh\n").unwrap();
+            checked(private_git(&policy, &source, &["add", "."])).unwrap();
+            checked(private_git(
+                &policy,
+                &source,
+                &["commit", "-m", "Synthetic fixture"],
+            ))
+            .unwrap();
+            fs::write(source.join("helper.sh"), "exit 0\n").unwrap();
+            let head = checked(private_git(&policy, &source, &["rev-parse", "HEAD"])).unwrap();
+            let tree = checked(private_git(&policy, &source, &["rev-parse", "HEAD^{tree}"])).unwrap();
+            let blob = checked(private_git(&policy, &source, &["rev-parse", "HEAD:payload.txt"])).unwrap();
+            Self {
+                root,
+                source,
+                policy,
+                head,
+                tree,
+                blob,
+            }
+        }
+        fn export(&self) -> Result<Export> {
+            Export::create(&self.policy, &self.source, &self.head, &self.tree, &self.head)
+        }
+        fn corrupt(&self, store: &Path) {
+            let data = self.root.join("forged.txt");
+            fs::write(&data, "forged\n").unwrap();
+            let other = checked(private_git(
+                &self.policy,
+                store,
+                &["hash-object", "-w", "--no-filters", data.to_str().unwrap()],
+            ))
+            .unwrap();
+            let object_root = if store == self.source {
+                store.join(".git/objects")
+            } else {
+                store.join("objects")
+            };
+            let original = object_root.join(&self.blob[..2]).join(&self.blob[2..]);
+            // Imported objects are packed; materialize a loose shadow with the wrong content.
+            fs::create_dir_all(original.parent().unwrap()).unwrap();
+            if original.exists() {
+                fs::set_permissions(&original, fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            fs::copy(object_root.join(&other[..2]).join(&other[2..]), original).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_clean_export_has_no_retained_ignored_helper_and_no_shared_objects() {
+        let fixture = Fixture::new();
+        let export = fixture.export().unwrap();
+        checked(private_git(
+            &fixture.policy,
+            &export.tree,
+            &["checkout", "HEAD", "--", "."],
+        ))
+        .unwrap();
+        assert_eq!(fs::read(export.tree.join("payload.txt")).unwrap(), b"approved\n");
+        assert!(fixture.source.join("helper.sh").exists());
+        assert!(!export.tree.join("helper.sh").exists());
+        fixture.corrupt(&fixture.source);
+        assert_eq!(
+            checked(private_git(
+                &fixture.policy,
+                &fixture.source,
+                &["cat-file", "blob", &fixture.blob]
+            ))
+            .unwrap(),
+            "forged"
+        );
+        assert_eq!(
+            checked(private_git(
+                &fixture.policy,
+                &export.store,
+                &["cat-file", "blob", &fixture.blob]
+            ))
+            .unwrap(),
+            "approved"
+        );
+        export
+            .verify(&fixture.policy, &fixture.head, &fixture.head)
+            .unwrap();
+        assert!(
+            fixture.export().is_err(),
+            "a fresh export must reject the forged source object"
+        );
+        let private = export.root.clone();
+        drop(export);
+        assert!(!private.exists());
+        assert!(fixture.source.join("helper.sh").exists());
+    }
+
+    #[test]
+    fn acceptance_cannot_introduce_a_new_shallow_boundary() {
+        let fixture = Fixture::new();
+        let export = fixture.export().unwrap();
+        fs::write(export.store.join("shallow"), format!("{}\n", fixture.head)).unwrap();
+        assert!(export
+            .verify(&fixture.policy, &fixture.head, &fixture.head)
+            .is_err());
+    }
+
+    #[test]
+    fn post_acceptance_object_tampering_is_rejected_even_with_a_skip_list() {
+        let fixture = Fixture::new();
+        let export = fixture.export().unwrap();
+        fixture.corrupt(&export.store);
+        let skip = fixture.root.join("skip-list");
+        fs::write(&skip, format!("{}\n", fixture.blob)).unwrap();
+        checked(private_git(
+            &fixture.policy,
+            &export.store,
+            &["config", "fsck.skipList", skip.to_str().unwrap()],
+        ))
+        .unwrap();
+        assert!(export
+            .verify(&fixture.policy, &fixture.head, &fixture.head)
+            .is_err());
+    }
+
+    #[test]
+    fn alternates_are_refused_instead_of_reopening_shared_object_access() {
+        let fixture = Fixture::new();
+        let export = fixture.export().unwrap();
+        fs::write(
+            export.store.join("objects/info/alternates"),
+            fixture.source.join(".git/objects").as_os_str().as_encoded_bytes(),
+        )
+        .unwrap();
+        assert!(export
+            .verify(&fixture.policy, &fixture.head, &fixture.head)
+            .is_err());
+    }
+    #[test]
+    fn a_forged_base_is_rejected_before_creating_a_worktree_or_child() {
+        let fixture = Fixture::new();
+        fixture.corrupt(&fixture.source);
+        let skip = fixture.root.join("skip-list");
+        fs::write(&skip, format!("{}\n", fixture.blob)).unwrap();
+        checked(private_git(
+            &fixture.policy,
+            &fixture.source,
+            &["config", "fsck.skipList", skip.to_str().unwrap()],
+        ))
+        .unwrap();
+        let retained = fixture.root.join("task");
+        let lock = private_file(&fixture.root.join("task.lock")).unwrap();
+        let task = crate::Task {
+            id: "test".into(),
+            branch: "agent/test".into(),
+            base: "main".into(),
+            model: "fake".into(),
+            prompt: "Synthetic task".into(),
+            max_time: 2700,
+        };
+        assert!(tree::prepare(
+            &fixture.source,
+            &retained,
+            &task,
+            &fixture.head,
+            &fixture.root.join("unavailable-worker"),
+            &fixture.policy,
+            &lock,
+        )
+        .is_err());
+        assert!(
+            !retained.exists(),
+            "corrupt base objects must block before worktree creation"
+        );
+    }
+}
