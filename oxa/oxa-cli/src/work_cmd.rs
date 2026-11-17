@@ -229,7 +229,7 @@ pub(crate) fn run(
         }
         let task_args = &args[..end];
         let is_trusted = trusted(&root, env, dirs)?;
-        let context = std::sync::Arc::new(Context {
+        let context = Context {
             cwd: root.clone(),
             binary: binary.clone(),
             policy: policy.clone(),
@@ -238,7 +238,7 @@ pub(crate) fn run(
             rerun,
             publish,
             reports,
-        });
+        };
         if task_args.first().is_some_and(|word| word == "--native-queue") {
             if !is_trusted {
                 return Err("source project is not trusted; approve it before unattended work".into());

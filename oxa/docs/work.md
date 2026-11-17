@@ -267,12 +267,12 @@ active task IDs, pending/finished/failed counts, free bytes and disk-pause detai
 A controller lock prevents two queue controllers from exceeding the worker cap.
 
 The native board adapter runs one previously admitted packet from that board's
-existing spool. Use `oxa --offline work --native-queue --config PATH` from the
-source repository. The private board config must explicitly enable
-`nativeExecution` and identify the canonical source path in `nativeRoot`. The
-adapter moves the matching packet into `started` and resumes from the existing
-task checkpoint after interruption. It releases the original claim only after
-the whole task finishes and its worker process exits.
+existing spool. Use `oxa work --native-queue --config PATH` from the source
+repository with the same private config used by refill and `nativeExecution`
+explicitly enabled. This execution path uses the offline policy. It moves the
+matching packet into `started` and resumes from the task checkpoint after
+interruption. The original claim releases after the whole task finishes and
+its worker process exits.
 
 Problem-report workflows hold a per-user kernel lease across drafting, duplicate
 search, match reads and writing, so concurrent workers share one reporting lane.

@@ -24,7 +24,7 @@ fn paused(path: &Path) -> Result<bool, String> {
 }
 
 pub(super) fn run(
-    context: Arc<Context>,
+    mut context: Context,
     common: &Path,
     config: &Path,
     out: &mut dyn Write,
@@ -37,6 +37,11 @@ pub(super) fn run(
     }) {
         return Err("native queue execution requires the owner outside an agent tool".into());
     }
+    // The existing supervisor receives the runner's offline switch. Keep
+    // credential mounts and network off for deterministic steps until the
+    // supervisor also inherits the worker's runner-owned GitHub policy.
+    context.policy.offline = true;
+    let context = Arc::new(context);
     let root = &context.cwd;
     let config = config.canonicalize().map_err(|_| "board config unavailable")?;
     let owner = context
@@ -68,16 +73,6 @@ pub(super) fn run(
         protected_storage(&path, root, common)?;
         Ok(path)
     };
-    // The legacy check supervisor does not yet inherit the model worker's
-    // runner-owned GitHub policy. Offline mode also masks credentials and
-    // fences deterministic checkout, acceptance and save subprocesses.
-    if !context.policy.offline {
-        return Err("native queue execution currently requires --offline".into());
-    }
-    let source = value["nativeRoot"].as_str().ok_or("missing native source root")?;
-    if Path::new(source) != root {
-        return Err("native board configuration belongs to a different source root".into());
-    }
     let pause = owner_path("pause")?;
     if paused(&pause)? {
         return Ok(0);
