@@ -18,6 +18,15 @@ self-dependency enables it so ordinary hosted crate tests exercise the port.
 
 ## Existing core foundations
 
+The `a2a`-gated `follow::publisher::Publisher` ports #129 `f89ba2e`'s
+session-bound publisher onto the retained history. Owner-supplied status updates
+coalesce without advancing event cursors; reply events carry explicit bounded
+UTF-8 previews and the identity observed when published. Latest observations and
+individual bindings are byte-bounded; invalid publication changes neither cursor
+nor latest observation. Clones share one owner's history. Callers still approve
+summaries and enforce disclosure authority. No transport, task/goal state owner,
+CLI integration or automatic transcript capture is introduced.
+
 The `a2a`-gated `control` module ports #129 `f89ba2e`'s bounded request
 validation and nonblocking admission receipts for steer/pause/resume/cancel.
 The trusted frontend supplies the bounded queue and caller authentication;
