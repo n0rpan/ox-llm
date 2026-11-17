@@ -362,8 +362,9 @@ pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(50);
 ///
 /// Key rules (pi): Enter while a run is active = steer, Alt+Enter = follow-up
 /// (`Handle::steer` / `Handle::follow_up`); Escape = abort (`Handle::abort`), or
-/// `Handle::abort_retry` during a retry wait; Ctrl+C clears the editor, twice = quit; Ctrl+D on
-/// an empty editor = quit; `!cmd` and `!!cmd` become `SessionCmd::UserBash`.
+/// `Handle::abort_retry` during a retry wait; Ctrl+C aborts an active turn too. While idle,
+/// Ctrl+C clears the editor, or on empty input hints then quits on a second press within
+/// two seconds. Ctrl+D on an empty editor quits; `!cmd` / `!!cmd` become `SessionCmd::UserBash`.
 pub fn run_loop(
     term: &mut dyn Terminal,
     opts: &mut InteractiveOpts,

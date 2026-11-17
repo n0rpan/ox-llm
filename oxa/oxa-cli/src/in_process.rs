@@ -54,6 +54,14 @@ pub(crate) fn report_diagnostics(
             let _ = write!(stderr, " {name}={value}");
         }
     }
+    if let Some(cause) = snapshot.cause {
+        let _ = write!(stderr, " cause={}", cause.as_str());
+    }
+    if snapshot.cause == Some(oxc_gateway::diagnostics::StreamCause::TerminalUsage) {
+        if let Some(check) = snapshot.terminal_check {
+            let _ = write!(stderr, " terminal_check={}", check.as_str());
+        }
+    }
     let _ = writeln!(stderr);
 }
 
@@ -131,6 +139,7 @@ fn open(
     for (alias, value) in models {
         let (provider, default_endpoint) = match text(value, "provider")? {
             "anthropic" => (Provider::Anthropic, "https://api.anthropic.com"),
+            "openrouter" => (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
             "openai" => (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
             "chatgpt" => (Provider::ChatGpt, oxc_gateway::openai::client::SUBSCRIPTION_BASE),
             _ => return Err(OxaError::unsupported("this in-process cloud provider")),
@@ -157,16 +166,16 @@ fn open(
         routes.push((model, billing));
     }
     let (subscription, subscription_limits) = subscription_options(cloud, needs_subscription)?;
+    if go_enabled && subscription_limits.is_none() {
+        return Err(invalid());
+    }
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
     };
     // These existing private locations are denied to both file tools and bash.
-    // Anthropic discovery stays credential-free; explicit Go discovery uses
-    // only the existing protected key reader and never opens the ledger.
-    if go_enabled && subscription_limits.is_none() {
-        return Err(invalid());
-    }
+    // Configured-route discovery reads no key or ledger. Explicit Go discovery
+    // uses the existing protected key reader and this same gateway HTTP pool.
     let mut runtime = Runtime::new(
         routes,
         credential_path(dirs),

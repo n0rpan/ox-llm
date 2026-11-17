@@ -318,8 +318,9 @@ pub(crate) struct Loop<'a> {
     focused: bool,
     run_finished: bool,
     pub(crate) dirty: bool,
-    /// Ctrl+C was pressed on an empty editor; a second press quits.
+    /// Ctrl+C was pressed on an empty editor; a second press within two seconds quits.
     armed: bool,
+    armed_at: Option<std::time::Instant>,
     reset_screen: bool,
     header_pending: bool,
     pub(crate) quit: Option<i32>,
@@ -450,6 +451,7 @@ impl<'a> Loop<'a> {
             run_finished: false,
             dirty: true,
             armed: false,
+            armed_at: None,
             reset_screen: false,
             header_pending,
             quit: None,
@@ -1045,6 +1047,14 @@ impl<'a> Loop<'a> {
     }
 
     pub(crate) fn tick(&mut self, animating: bool) {
+        if self
+            .armed_at
+            .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(2))
+        {
+            self.armed = false;
+            self.armed_at = None;
+            self.dirty = true;
+        }
         // pi's look redraws on every turn of an animating loop. OXA's look redraws when its
         // animation steps: 8 times a second with the sprite, once a second (the elapsed time)
         // without motion. Everything else that changes the screen marks it dirty itself.
@@ -1279,8 +1289,27 @@ impl<'a> Loop<'a> {
     }
 
     fn key(&mut self, term: &mut dyn Terminal, key: Key) {
+        // Kitty sends release events too. They must not consume the two-press exit arm.
+        if key.kind == KeyKind::Release {
+            return;
+        }
         self.dirty = true;
-        let was_armed = std::mem::take(&mut self.armed);
+        let was_armed = std::mem::take(&mut self.armed)
+            && self
+                .armed_at
+                .take()
+                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2));
+        // Ctrl+C during a turn uses the existing cancel path, not idle clear/exit.
+        // Do this before dialogs/overlays and selection-copy can consume the key.
+        if self.opts.keymap.actions_for(&key.id).contains(&"app.clear")
+            && (self.running() || matches!(self.vm.status.activity, Activity::Retrying { .. }))
+        {
+            self.handle.abort();
+            self.handle.abort_retry();
+            self.dialogs.key(&key, &self.opts.keymap);
+            self.restore_queue();
+            return;
+        }
         if self.dialogs.is_open() {
             match self.dialogs.key(&key, &self.opts.keymap) {
                 DialogKey::NotOpen => {}
@@ -1290,9 +1319,6 @@ impl<'a> Loop<'a> {
                 }
                 DialogKey::Consumed | DialogKey::Closed => return,
             }
-        }
-        if key.kind == KeyKind::Release {
-            return;
         }
         if self.overlay.is_some() {
             self.overlay_key(term, &key);
@@ -1349,6 +1375,7 @@ impl<'a> Loop<'a> {
                 self.quit = Some(0);
             } else {
                 self.armed = true;
+                self.armed_at = Some(std::time::Instant::now());
             }
             return;
         }

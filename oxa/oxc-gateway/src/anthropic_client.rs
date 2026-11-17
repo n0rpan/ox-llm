@@ -1,4 +1,4 @@
-//! Anthropic-only streaming transport for the in-process walking skeleton.
+//! Streaming transport for the in-process gateway; OpenRouter shares the pool.
 //! The caller owns discovery, admission, request-time key reads and settlement.
 use crate::{
     anthropic_request,
@@ -16,6 +16,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, fmt, time::Duration};
 
 pub mod models;
+#[cfg(feature = "anthropic-gateway")]
+mod openrouter;
 
 const MAX_BODY: usize = 64 * 1024 * 1024;
 
