@@ -23,6 +23,16 @@ fn default_off_and_invalid_packets_never_publish() {
 }
 
 #[test]
+fn one_claim_cannot_publish_a_second_task_block() {
+    let env = TestEnv::new();
+    let queue = env.tmp().join("queue");
+    fs::create_dir(&queue).unwrap();
+    let packet = format!("{TASK}---\n{TASK}");
+    assert!(publish(&queue, &"c".repeat(64), &packet, false, &enabled()).is_err());
+    assert_eq!(fs::read_dir(queue).unwrap().count(), 0);
+}
+
+#[test]
 fn complete_private_publication_dedups_started_and_priority_changes() {
     let env = TestEnv::new();
     let queue = env.tmp().join("queue");
