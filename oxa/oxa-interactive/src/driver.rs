@@ -3536,3 +3536,6 @@ mod block_cache_tests {
 
 #[cfg(test)]
 mod catalog_tests;
+
+#[cfg(test)]
+mod export_tests;
