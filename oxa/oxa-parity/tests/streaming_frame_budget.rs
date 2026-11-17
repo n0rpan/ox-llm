@@ -45,7 +45,7 @@ fn a_long_streamed_reply_arrives_complete_and_the_editor_still_takes_keys() {
     let env = TestEnv::new();
     let turn = parse_script(&script()).expect("script");
     let server = FakeServer::start(turn, FakeOpts::default()).expect("start fake engine");
-    let pty = PtySession::spawn_with(
+    let mut pty = PtySession::spawn_with(
         &env,
         &server.url(),
         &[],
