@@ -7,20 +7,20 @@ use oxa_config::{Dirs, Keymap, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptedEngine, TestEnv};
 use oxa_interactive::{
-    apply_event, blocks_from_entries, exit_lines, frames, run_loop, status_from, transcript_lines, Activity,
-    Block, InteractiveOpts, RegularPrinter, SessionCmd, StatusModel, ToolState, UiRequest, ViewModel,
-    ViewSettings, WorkerMsg,
+    Activity, Block, InteractiveOpts, RegularPrinter, SessionCmd, StatusModel, ToolState, UiRequest,
+    ViewModel, ViewSettings, WorkerMsg, apply_event, blocks_from_entries, exit_lines, frames, run_loop,
+    status_from, transcript_lines,
 };
 use oxa_proto::{
-    codes, Access, AgentEvent, CancelToken, Decision, Engine, Entry, EntryBody, EventMessage, ExecResult,
-    ExecSpec, Level, Mode, OxaError, Part, Policy, Sandbox, StopReason, ToolOutput, WireMsg,
+    Access, AgentEvent, CancelToken, Decision, Engine, Entry, EntryBody, EventMessage, ExecResult, ExecSpec,
+    Level, Mode, OxaError, Part, Policy, Sandbox, StopReason, ToolOutput, WireMsg, codes,
 };
 use oxa_resources::Resources;
 use oxa_session::{MemStore, SessionStore};
-use oxa_tui::{visible_width, InputEvent, Key, TermCaps, TestTerminal, Theme};
+use oxa_tui::{InputEvent, Key, TermCaps, TestTerminal, Theme, visible_width};
 use std::path::Path;
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender};
 
 // ---------------------------------------------------------------------------------------------
 // Harness
@@ -484,17 +484,17 @@ fn escape_aborts_and_restores_queue() {
         vec![WorkerMsg::Event(AgentEvent::AgentStart)],
     );
     assert_eq!(d.code, 0);
-    // Escape took the queued message back into the editor; Enter sent it again as a steer.
+    // Escape restores queued text; explicit Enter recovers after the canceled run.
     let (steering, follow_up) = s.handle().queued();
-    assert_eq!(
-        steering,
-        vec!["q1".to_string()],
-        "the queued message is back in the editor and resubmitted"
+    assert!(
+        steering.is_empty(),
+        "recovered text must not steer the canceled run"
     );
     assert!(follow_up.is_empty());
     assert!(
-        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
-        "resubmitting restored input retains one consumer on its original handle"
+        matches!(d.cmds.as_slice(), [SessionCmd::RecoveryPrompt { handle, text, parts }]
+            if handle.same_instance(&s.handle()) && text == "q1" && parts.is_empty()),
+        "restored input becomes exactly one recovery prompt on its original handle"
     );
 }
 
