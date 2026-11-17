@@ -1,5 +1,7 @@
 //! Platform attachment policy; never a shell, wrapper process or memory-limit policy.
-use crate::{lifecycle::MemorySample, memory::MemorySource};
+use crate::lifecycle::MemorySample;
+#[cfg(target_os = "linux")]
+use crate::memory::MemorySource;
 use std::{fmt, io};
 
 /// Attach an already owned child and validate its platform memory policy before readiness.

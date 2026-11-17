@@ -422,38 +422,7 @@ pub(crate) fn run(
             "worker status does not match this session/version",
         ));
     }
-    if let Some(child) = value["local_engine_pid"]
-        .as_u64()
-        .and_then(|pid| u32::try_from(pid).ok())
-    {
-        let parent = value["pid"].as_u64();
-        let owned = fs::read_to_string(format!("/proc/{child}/stat"))
-            .ok()
-            .and_then(|s| {
-                s.rsplit_once(") ")
-                    .and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<u64>().ok())
-            })
-            == parent;
-        let safe = oxc_local::memory::MemorySource::default()
-            .sample_child(child)
-            .is_ok_and(|s| s.swap_limit_zero && s.swap_current_bytes == 0);
-        let scope = value["local_memory_policy"] != "scope"
-            || parent.is_some_and(|parent| {
-                fs::read_to_string(format!("/proc/{child}/cgroup")).is_ok_and(|s| {
-                    s.lines().any(|line| {
-                        line.rsplit('/').next().is_some_and(|name| {
-                            name.starts_with(&format!("oxa-local-{parent}-{child}-"))
-                                && name.ends_with(".scope")
-                        })
-                    })
-                })
-            });
-        if parent.is_none() || !owned || !safe || !scope {
-            value.as_object_mut().unwrap().remove("local_memory_policy");
-            value.as_object_mut().unwrap().remove("local_engine_pid");
-            value.as_object_mut().unwrap().remove("local_launcher_us");
-        }
-    }
+    strip_unproven_local(&mut value);
     value["stalled"] = value["stall_deadline_ms"]
         .as_u64()
         .is_some_and(|deadline| now_ms() >= deadline)
@@ -462,6 +431,58 @@ pub(crate) fn run(
     out.write_all(b"\n")
         .map_err(|e| OxaError::io("cannot write worker status", &e))?;
     Ok(0)
+}
+
+const LOCAL_FIELDS: [&str; 3] = ["local_memory_policy", "local_engine_pid", "local_launcher_us"];
+
+/// A saved snapshot is untrusted input. A reader may only repeat local facts it can re-prove
+/// from `/proc`: the child's parent is this worker, the child runs under a no-swap policy, and
+/// a `scope` child sits in the transient unit this worker named for it. A partial or tampered
+/// record loses every local field, never only the ones it happened to omit.
+fn strip_unproven_local(value: &mut Value) {
+    if proven_local_engine(value) {
+        return;
+    }
+    if let Some(record) = value.as_object_mut() {
+        for field in LOCAL_FIELDS {
+            record.remove(field);
+        }
+    }
+}
+
+fn proven_local_engine(value: &Value) -> bool {
+    let Some(child) = value["local_engine_pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+    else {
+        return false;
+    };
+    let Some(parent) = value["pid"].as_u64() else {
+        return false;
+    };
+    let policy = value["local_memory_policy"].as_str();
+    if !matches!(policy, Some("scope" | "inherited")) || value["local_launcher_us"].as_u64().is_none() {
+        return false;
+    }
+    let owned = fs::read_to_string(format!("/proc/{child}/stat"))
+        .ok()
+        .and_then(|s| {
+            s.rsplit_once(") ")
+                .and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<u64>().ok())
+        })
+        == Some(parent);
+    let safe = oxc_local::memory::MemorySource::default()
+        .sample_child(child)
+        .is_ok_and(|s| s.swap_limit_zero && s.swap_current_bytes == 0);
+    let scope = policy != Some("scope")
+        || fs::read_to_string(format!("/proc/{child}/cgroup")).is_ok_and(|membership| {
+            membership.lines().any(|line| {
+                line.rsplit('/').next().is_some_and(|name| {
+                    name.starts_with(&format!("oxa-local-{parent}-{child}-")) && name.ends_with(".scope")
+                })
+            })
+        });
+    owned && safe && scope
 }
 
 fn read_snapshot(path: &Path) -> Result<Value, OxaError> {
@@ -699,6 +720,46 @@ mod tests {
             read_snapshot(&one.path.with_extension("status.json")).unwrap()["phase"],
             "finished"
         );
+    }
+
+    #[test]
+    fn a_partial_local_claim_is_stripped_whole_and_never_left_half_trusted() {
+        let env = TestEnv::new();
+        let path = env.work().join("status.json");
+        let full = json!({
+            "pid": std::process::id(),
+            "local_memory_policy": "inherited",
+            "local_engine_pid": u32::MAX,
+            "local_launcher_us": 7,
+        });
+        // Every field is required; a record missing any one of them keeps none of them.
+        for missing in LOCAL_FIELDS {
+            let mut record = full.clone();
+            record.as_object_mut().unwrap().remove(missing);
+            atomic(&path, &serde_json::to_vec(&record).unwrap()).unwrap();
+            let mut read = read_snapshot(&path).unwrap();
+            strip_unproven_local(&mut read);
+            for field in LOCAL_FIELDS {
+                if record.get(field).is_some() {
+                    assert_eq!(read.get(field), record.get(field), "{field}");
+                } else {
+                    assert!(read.get(field).is_none(), "{missing} must strip {field}");
+                }
+            }
+            assert_eq!(read["pid"], full["pid"]);
+        }
+        // An unknown policy word and a non-integer timing are refusals, not passes.
+        for (policy, micros) in [("privileged", json!(7)), ("inherited", json!("7"))] {
+            let mut record = full.clone();
+            record["local_memory_policy"] = policy.into();
+            record["local_launcher_us"] = micros;
+            atomic(&path, &serde_json::to_vec(&record).unwrap()).unwrap();
+            let mut read = read_snapshot(&path).unwrap();
+            strip_unproven_local(&mut read);
+            for field in LOCAL_FIELDS {
+                assert!(read.get(field).is_none(), "{policy}: {field}");
+            }
+        }
     }
 
     #[test]
