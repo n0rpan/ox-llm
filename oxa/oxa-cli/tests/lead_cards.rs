@@ -1,5 +1,5 @@
 use oxa_cli::lead::cards::{command, unavailable, Cards, Unavailable};
-use oxa_proto::work::{Ask, Blocked, Running, Snapshot, Subject};
+use oxa_proto::work::{Ask, Blocked, Running, Snapshot, Subject, TaskStep};
 
 fn snapshot() -> Snapshot {
     Snapshot {
@@ -42,7 +42,7 @@ fn crowded_card_keeps_source_and_counts_within_twelve_lines() {
             branch: "feature".into(),
             worktree: "worktree".into(),
             session_id: None,
-            step: oxa_proto::work::TaskStep::Worker,
+            step: TaskStep::Preparing,
         });
     }
     s.blocked.push(Blocked {
