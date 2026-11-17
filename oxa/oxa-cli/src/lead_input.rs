@@ -1,7 +1,7 @@
 //! Bounded, read-only access to existing board samples and typed runner situation exports.
 //! These functions return facts, never raw file content or input-bearing diagnostics.
-use oxa_proto::work::{Snapshot, MAX_ITEMS, MAX_SNAPSHOT_BYTES};
-use oxa_work::board::Board;
+use oxa_proto::work::{Snapshot, MAX_SNAPSHOT_BYTES};
+use oxa_work::board::{Action, Board, MAX_OPEN_PULL_REQUESTS};
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
@@ -10,6 +10,8 @@ use std::{
 };
 
 const MAX_SAMPLE: u64 = 1_048_576;
+// Retain the previous board row ceiling for issue intake.
+const MAX_ISSUE_ROWS: usize = 128;
 type Result<T> = std::result::Result<T, &'static str>;
 
 /// The caller supplies the owner's uid from its user configuration, never project metadata.
@@ -61,7 +63,15 @@ pub fn board(path: &Path, uid: u32) -> Result<Board> {
         return Err("unsupported board sample version");
     }
     let board: Board = serde_json::from_value(sample["board"].clone()).map_err(|_| "invalid shared board")?;
-    if sample["observed_at"].as_u64() != Some(board.observed_at) || board.entries.len() > MAX_ITEMS {
+    let issue_rows = board
+        .entries
+        .iter()
+        .filter(|row| matches!(row.action, Action::BuildIssue | Action::WaitIssue))
+        .count();
+    if sample["observed_at"].as_u64() != Some(board.observed_at)
+        || issue_rows > MAX_ISSUE_ROWS
+        || board.entries.len() - issue_rows > MAX_OPEN_PULL_REQUESTS
+    {
         return Err("invalid board sample bounds");
     }
     let mut seen = std::collections::BTreeSet::new();
@@ -116,11 +126,11 @@ mod tests {
 
     #[test]
     fn reads_a_full_paginated_shadow_board() {
-        use oxa_work::board::{Action, Entry};
+        use oxa_work::board::Entry;
 
         let env = TestEnv::new();
         let (path, uid) = fixture(&env, b"");
-        let snapshot = Board {
+        let mut snapshot = Board {
             observed_at: 20,
             entries: (1..=1_000)
                 .map(|number| Entry {
@@ -134,14 +144,37 @@ mod tests {
                 })
                 .collect(),
         };
-        let mut log = oxa_work::shadow::open_log(&path).unwrap();
-        oxa_work::shadow::run(&mut log, true, || Ok(snapshot.clone()), |_| unreachable!()).unwrap();
-        drop(log);
+        let write_sample = |snapshot: &Board| {
+            let mut log = oxa_work::shadow::open_log(&path).unwrap();
+            oxa_work::shadow::run(&mut log, true, || Ok(snapshot.clone()), |_| unreachable!()).unwrap();
+        };
+        write_sample(&snapshot);
 
         let read = board(&path, uid).expect("complete board sample is readable by lead");
         assert_eq!(read.observed_at, 20);
         assert_eq!(read.entries.len(), 1_000);
         assert_eq!(read.entries.last().unwrap().number, 1_000);
+
+        let template = snapshot.entries[0].clone();
+        snapshot.entries.extend((1_001..=1_128).map(|number| Entry {
+            number,
+            action: Action::BuildIssue,
+            ..template.clone()
+        }));
+        write_sample(&snapshot);
+        assert_eq!(board(&path, uid).unwrap().entries.len(), 1_128);
+
+        snapshot.entries.push(Entry {
+            number: 1_129,
+            action: Action::WaitIssue,
+            ..template.clone()
+        });
+        write_sample(&snapshot);
+        assert_eq!(board(&path, uid).unwrap_err(), "invalid board sample bounds");
+
+        snapshot.entries.last_mut().unwrap().action = Action::Ready;
+        write_sample(&snapshot);
+        assert_eq!(board(&path, uid).unwrap_err(), "invalid board sample bounds");
     }
 
     #[test]
