@@ -1,5 +1,6 @@
 //! User-only local factory. The caller has already selected the default-off setting.
-use crate::launch_profile::{from_user_settings, InstalledLayout, InstalledModel};
+use crate::battery::{self, Power};
+use crate::launch_profile::{from_user_settings, resolve, InstalledLayout, InstalledModel, LaunchPower};
 use crate::lifecycle::{Model, Policy};
 use crate::native::{LocalEngine, LocalModel};
 use crate::Config;
@@ -13,6 +14,10 @@ use std::time::Duration;
 
 pub const LOCAL_SETTING: &str = "oxa.engine.inProcessLocal";
 
+/// The read-only power inputs of one child launch: the power source state and the CPUs
+/// this process may run on. Read at launch, never polled.
+pub type LaunchState = Arc<dyn Fn() -> (Power, Option<Vec<usize>>) + Send + Sync>;
+
 /// Only pass the user settings' oxa.local subtree and private agent directory.
 /// Merged project settings must never select a binary, arguments or environment.
 /// Discovery does not inspect binaries/weights, credentials or sockets or start a process.
@@ -21,6 +26,28 @@ pub fn configured_engine(
     local: Option<&Value>,
     private_dir: PathBuf,
     opts: StreamOpts,
+) -> Result<Arc<dyn Engine>, OxaError> {
+    configured_engine_with(
+        local,
+        private_dir,
+        opts,
+        Arc::new(|| {
+            (
+                battery::read_power(std::path::Path::new(battery::SYSFS_POWER_SUPPLY)),
+                battery::allowed_mask(),
+            )
+        }),
+    )
+}
+
+/// [`configured_engine`] with the N9 power inputs injected; the production factory passes
+/// the real reader above. A test injects a fixture state to drive one launch without a
+/// battery and to observe the child arguments without a real engine.
+pub(crate) fn configured_engine_with(
+    local: Option<&Value>,
+    private_dir: PathBuf,
+    opts: StreamOpts,
+    launch_state: LaunchState,
 ) -> Result<Arc<dyn Engine>, OxaError> {
     let local = local.and_then(Value::as_object).ok_or_else(invalid)?;
     if local.keys().any(|k| {
@@ -125,6 +152,9 @@ pub fn configured_engine(
         let alias_owned = alias.clone();
         let layout = layout.clone();
         let user = user.clone();
+        // N9: only an opted-in model reads the power state; every other launch is unchanged.
+        let opted_in = battery_opted_in(&user, alias);
+        let launch_state = launch_state.clone();
         models.push(LocalModel {
             alias: alias.clone(),
             context_window: context,
@@ -132,43 +162,88 @@ pub fn configured_engine(
             thinking: optional_bool(value, "thinking")?,
             images: optional_bool(value, "images")?,
             launch: Arc::new(move |port| {
-                let mut profile =
-                    from_user_settings(&user, &layout, &alias_owned, port).map_err(|_| invalid())?;
-                crate::admission::bind_context(&mut profile.arguments, context)?;
-                // Check only at cold load/switch, before creating child authentication.
-                // Discovery never inspects weights or runs the engine.
-                let required = required_for_weights(&profile.model, &budget, context)?;
-                use std::os::unix::fs::PermissionsExt;
-                if !std::fs::metadata(&profile.binary)
-                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-                {
-                    return Err(OxaError::new(codes::NOT_FOUND,
-                        "Local engine binary is missing or not executable; install oxe-server beside oxa or set oxa.local.binary."));
-                }
-                if profile.arguments.windows(2).any(|pair| pair[0] == "--engine" && pair[1] == "flash")
-                    || profile.arguments.iter().any(|word| word == "--engine=flash")
-                {
-                    return Err(OxaError::unsupported("Flash streaming-budget admission in the resident local factory"));
-                }
-                Ok(Model { name: alias_owned.clone(), required_available_bytes: required, config: Config {
-                    executable: profile.binary,
-                    arguments: profile.arguments,
-                    environment: profile
-                        .environment
-                        .into_iter()
-                        .map(|(k, v)| (k.into(), v.into()))
-                        .collect(),
-                    startup_timeout: startup,
-                    health_interval: Duration::from_millis(250),
-                    unhealthy_limit: 2,
-                    term_grace: Duration::from_secs(3),
-                    restart_backoff: Duration::from_secs(1),
-                    max_restarts: 1,
-                }})
+                launch_model(
+                    &user,
+                    &layout,
+                    &alias_owned,
+                    port,
+                    context,
+                    &budget,
+                    startup,
+                    opted_in,
+                    &launch_state,
+                )
             }),
         });
     }
     Ok(Arc::new(LocalEngine::new(models, private_dir, opts, policy)?))
+}
+/// Resolve one child launch. The read-only power state is read here, once per cold load or
+/// model switch, and only when this model opted into the N9 battery team.
+#[allow(clippy::too_many_arguments)]
+fn launch_model(
+    user: &Value,
+    layout: &InstalledLayout,
+    alias: &str,
+    port: u16,
+    context: u32,
+    budget: &Value,
+    startup: Duration,
+    opted_in: bool,
+    launch_state: &LaunchState,
+) -> Result<Model, OxaError> {
+    let power = if opted_in { Some(launch_state()) } else { None };
+    let power = power.as_ref().map(|(state, allowed)| LaunchPower {
+        state: *state,
+        allowed: allowed.as_deref(),
+    });
+    let mut profile = resolve(user, layout, alias, port, power.as_ref()).map_err(|_| invalid())?;
+    crate::admission::bind_context(&mut profile.arguments, context)?;
+    // Check only at cold load/switch, before creating child authentication.
+    // Discovery never inspects weights or runs the engine.
+    let required = required_for_weights(&profile.model, budget, context)?;
+    use std::os::unix::fs::PermissionsExt;
+    if !std::fs::metadata(&profile.binary).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0) {
+        return Err(OxaError::new(codes::NOT_FOUND,
+            "Local engine binary is missing or not executable; install oxe-server beside oxa or set oxa.local.binary."));
+    }
+    if profile
+        .arguments
+        .windows(2)
+        .any(|pair| pair[0] == "--engine" && pair[1] == "flash")
+        || profile.arguments.iter().any(|word| word == "--engine=flash")
+    {
+        return Err(OxaError::unsupported(
+            "Flash streaming-budget admission in the resident local factory",
+        ));
+    }
+    Ok(Model {
+        name: alias.to_owned(),
+        required_available_bytes: required,
+        config: Config {
+            executable: profile.binary,
+            arguments: profile.arguments,
+            environment: profile
+                .environment
+                .into_iter()
+                .map(|(k, v)| (k.into(), v.into()))
+                .collect(),
+            startup_timeout: startup,
+            health_interval: Duration::from_millis(250),
+            unhealthy_limit: 2,
+            term_grace: Duration::from_secs(3),
+            restart_backoff: Duration::from_secs(1),
+            max_restarts: 1,
+        },
+    })
+}
+
+/// `true` when the user-only settings opt this model into the N9 battery policy.
+fn battery_opted_in(user: &Value, alias: &str) -> bool {
+    user.pointer("/oxa/local/models")
+        .and_then(|models| models.get(alias))
+        .and_then(|model| model.get("battery_decode_team"))
+        .is_some()
 }
 fn required_for_weights(model: &std::path::Path, budget: &Value, context: u32) -> Result<u64, OxaError> {
     let weights = std::fs::metadata(model).ok().filter(|m| m.is_file()).ok_or_else(||
@@ -425,5 +500,116 @@ mod tests {
             );
         }
         assert!(!env.work().join("private").exists());
+    }
+
+    /// N9: the setting is consumed by the production launch function, and with the opt-in
+    /// absent the power state is not read. `launch_model` produces the `Config` whose
+    /// `arguments` the supervisor passes verbatim to the child.
+    #[test]
+    fn opt_in_battery_team_reaches_the_launch_arguments_and_off_reads_no_power_state() {
+        use crate::launch_profile::{InstalledLayout, InstalledModel};
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let env = TestEnv::new();
+        env.write(
+            "work/synthetic.gguf",
+            "Synthetic metadata placeholder; never loaded",
+        );
+        env.write("work/oxe-server", "Synthetic placeholder; never executed");
+        let binary = env.work().join("oxe-server");
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let weights = env.work().join("synthetic.gguf");
+        let budget = serde_json::json!({
+            "kv_bytes_per_position": 1,
+            "scratch_bytes": 0,
+            "mtp_state_bytes": 0,
+            "margin_bytes": 1044480
+        });
+        let mut local = settings();
+        local["models"]["synthetic"]["model"] = serde_json::json!(weights);
+        local["models"]["synthetic"]["arguments"] =
+            serde_json::json!(["--engine", "stub", "--oxe-cpus", "0-7"]);
+        let layout = InstalledLayout {
+            binary: binary.clone(),
+            models: std::collections::BTreeMap::from([(
+                "synthetic".into(),
+                InstalledModel {
+                    model: weights.clone(),
+                    arguments: vec![
+                        "--engine".into(),
+                        "stub".into(),
+                        "--oxe-cpus".into(),
+                        "0-7".into(),
+                    ],
+                },
+            )]),
+            environment: Default::default(),
+        };
+        let user = serde_json::json!({"oxa":{"local":local}});
+        let reads = Arc::new(AtomicUsize::new(0));
+        let state: LaunchState = {
+            let reads = reads.clone();
+            Arc::new(move || {
+                reads.fetch_add(1, Ordering::SeqCst);
+                (Power::Discharging, Some(vec![0, 1, 2, 3, 4, 5, 6, 7]))
+            })
+        };
+        let mut opted = user.clone();
+        opted["oxa"]["local"]["models"]["synthetic"]["battery_decode_team"] = serde_json::json!("0-3");
+        let model = launch_model(
+            &opted,
+            &layout,
+            "synthetic",
+            8080,
+            4096,
+            &budget,
+            Duration::from_secs(180),
+            battery_opted_in(&opted, "synthetic"),
+            &state,
+        )
+        .unwrap();
+        assert_eq!(cpu_argument(&model.config.arguments), Some("0,1,2,3"));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+        // Off: no `battery_decode_team`, so the power state is not read and the installed
+        // team is the one the child receives.
+        let model = launch_model(
+            &user,
+            &layout,
+            "synthetic",
+            8080,
+            4096,
+            &budget,
+            Duration::from_secs(180),
+            battery_opted_in(&user, "synthetic"),
+            &state,
+        )
+        .unwrap();
+        assert_eq!(cpu_argument(&model.config.arguments), Some("0-7"));
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+
+        // The factory itself refuses an opt-in that cannot be a smaller subset.
+        let mut invalid = opted.clone();
+        invalid["oxa"]["local"]["models"]["synthetic"]["battery_decode_team"] = serde_json::json!("0-7");
+        let private = env.work().join("private");
+        let error = match configured_engine(
+            Some(&invalid["oxa"]["local"]),
+            private.clone(),
+            StreamOpts::default(),
+        ) {
+            Ok(_) => panic!("an unusable opt-in was accepted"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, codes::INVALID);
+        // A usable opt-in is accepted by discovery without reading a power source.
+        let engine = configured_engine(Some(&opted["oxa"]["local"]), private, StreamOpts::default()).unwrap();
+        assert_eq!(engine.info(Some("synthetic")).unwrap().model, "synthetic");
+    }
+
+    fn cpu_argument(arguments: &[std::ffi::OsString]) -> Option<&str> {
+        let at = arguments
+            .iter()
+            .position(|word| word.as_os_str() == "--oxe-cpus")?;
+        arguments.get(at + 1)?.to_str()
     }
 }

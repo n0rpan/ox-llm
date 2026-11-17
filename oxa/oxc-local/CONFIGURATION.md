@@ -138,3 +138,19 @@ slimming, Studio, legacy completions or a separate controller CLI.
 synthetic GGUF. Tests mount explicit fake kernel metadata in a private namespace;
 that is a protocol/lifecycle proof, not hardware qualification or real-model
 acceptance. The orchestrator performs the real local task acceptance separately.
+
+An optional per-model `battery_decode_team` (a CPU list in the engine's
+`--oxe-cpus` grammar, e.g. `"0-3"`) opts one model into a smaller decode team
+while the machine runs on battery. It is absent by default; when absent, no power
+state is read and the launch words are byte-identical to the installed ones. The
+declared team must be a non-empty strict subset of the one separate
+`--oxe-cpus LIST` the installed or user arguments provide; otherwise discovery
+refuses. A user-supplied `arguments` list whose CPU team differs from the
+installed one always wins. AC, charging and any missing/unreadable/malformed
+power data keep the installed team,
+as does a declared team that the process CPU mask leaves unusable. The power
+source is read once per cold load or model switch, read-only, from
+`/sys/class/power_supply`, and the mask from `/proc/self/status`; nothing writes a
+power setting, polls in the background, changes a running team or estimates
+energy. No CPU count is built in: the smaller team is the one the user declared.
+See `oxa/docs/design/battery-decode-team.md` for the contract and its gates.

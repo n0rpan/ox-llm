@@ -4,6 +4,9 @@
 //! merged project settings here: project files must not select an executable or environment.
 //! This module reads no files/environment, probes no binaries and starts no processes.
 //! Executable identity, memory policy, authentication and supervision remain caller-owned.
+//! The N9 battery policy only rewrites the `--oxe-cpus` word the arguments already set; its
+//! injected power inputs come from the caller, never from this module.
+use crate::battery;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -26,6 +29,24 @@ pub struct InstalledLayout {
     pub environment: BTreeMap<String, String>,
 }
 
+/// N9: the per-model opt-in battery decode team (`oxa.local.models.<alias>.battery_decode_team`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BatteryTeam {
+    /// The setting is absent: the policy is off and no power source is read.
+    Off,
+    /// The user's own `--oxe-cpus` choice wins over the policy.
+    YieldsToExplicit,
+    /// The declared team selected a CPU list, then the (injected) power state decided whether
+    /// it applies. `Changed` = the installed team was replaced for this launch.
+    Decided { changed: bool },
+}
+
+/// The injected N9 launch inputs: the read-only power state and the process CPU mask.
+pub struct LaunchPower<'a> {
+    pub state: battery::Power,
+    pub allowed: Option<&'a [usize]>,
+}
+
 /// Pass these literal words to the native supervisor, with its environment cleared first.
 #[derive(Clone, PartialEq, Eq)]
 pub struct LaunchProfile {
@@ -34,6 +55,8 @@ pub struct LaunchProfile {
     /// Does not include the executable. Binding/model/alias words precede extra arguments.
     pub arguments: Vec<OsString>,
     pub environment: BTreeMap<String, String>,
+    /// N9: what the opt-in battery policy did to the decode team for this launch.
+    pub battery: BatteryTeam,
 }
 impl fmt::Debug for LaunchProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -57,6 +80,8 @@ pub enum Error {
     Arguments,
     OwnedArgument,
     Environment,
+    /// N9: an invalid `battery_decode_team` value or flag.
+    Battery,
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -70,6 +95,7 @@ impl fmt::Display for Error {
             Self::Arguments => "invalid local engine arguments",
             Self::OwnedArgument => "local engine arguments override a supervisor-owned option",
             Self::Environment => "invalid local engine environment",
+            Self::Battery => "invalid opt-in battery decode team",
         })
     }
 }
@@ -82,11 +108,25 @@ impl std::error::Error for Error {}
 /// native launch path, inherited GGML_/LLAMA_ tuning is removed before explicit overrides.
 /// The two shipped MoE aliases get the owner-selected sampled-MTP/cutoff profile.
 /// Other engine tuning, cache directories and interpreter/shell trampolines are not inferred.
+///
+/// With no `power`, the N9 battery policy reads nothing and keeps the installed team.
 pub fn from_user_settings(
     user: &Value,
     layout: &InstalledLayout,
     alias: &str,
     port: u16,
+) -> Result<LaunchProfile, Error> {
+    resolve(user, layout, alias, port, None)
+}
+
+/// [`from_user_settings`] with the injected power state and CPU mask for the N9 opt-in.
+/// The caller reads at most one power file ([`battery::read_power`]) and never writes one.
+pub fn resolve(
+    user: &Value,
+    layout: &InstalledLayout,
+    alias: &str,
+    port: u16,
+    power: Option<&LaunchPower<'_>>,
 ) -> Result<LaunchProfile, Error> {
     if alias.is_empty() || alias.chars().any(char::is_control) {
         return Err(Error::Alias);
@@ -105,7 +145,13 @@ pub fn from_user_settings(
     if selected.keys().any(|k| {
         !matches!(
             k.as_str(),
-            "binary" | "model" | "arguments" | "environment" | "mtp_max_context" | "sampled_mtp"
+            "binary"
+                | "model"
+                | "arguments"
+                | "environment"
+                | "mtp_max_context"
+                | "sampled_mtp"
+                | "battery_decode_team"
         )
     }) {
         return Err(Error::Settings);
@@ -127,6 +173,26 @@ pub fn from_user_settings(
             .collect::<Result<Vec<_>, _>>()?,
         _ => return Err(Error::Arguments),
     };
+    // N9: the opt-in battery team, and whether the user's own words already choose CPUs.
+    let declared = match selected.get("battery_decode_team") {
+        None => None,
+        Some(value) => match value.as_str() {
+            Some(list) => match battery::parse_cpus(list) {
+                Some(cpus) if !cpus.is_empty() => Some(cpus),
+                _ => return Err(Error::Battery),
+            },
+            None => return Err(Error::Battery),
+        },
+    };
+    // N9: a user-supplied argument list with its own CPU team wins over the battery policy.
+    // In the resident factory the installed layout and the per-model values are the same
+    // user-only object, so the policy applies there; only a real override wins.
+    let user_cpus = if selected.contains_key("arguments") {
+        cpu_list(&extra)
+    } else {
+        None
+    };
+    let explicit = user_cpus.is_some() && user_cpus != cpu_list(&installed.arguments);
     // Preserve the published per-model crossover; the owner enables sampled MTP
     // for these two shipped MoE aliases in the Rust-only release (#763).
     let default_cutoff = match alias {
@@ -173,7 +239,7 @@ pub fn from_user_settings(
         "--alias".into(),
         alias.into(),
     ];
-    for word in extra {
+    for word in &extra {
         if word.chars().any(char::is_control) {
             return Err(Error::Arguments);
         }
@@ -185,8 +251,32 @@ pub fn from_user_settings(
         {
             return Err(Error::OwnedArgument);
         }
-        arguments.push(word.into());
+        arguments.push(word.as_str().into());
     }
+    // N9: the policy may replace only the one decode-team word the installed arguments
+    // already set. No `=` spelling, repeated flag or missing team: fail closed instead of
+    // guessing which words reach the engine.
+    let battery = match declared {
+        None => BatteryTeam::Off,
+        Some(_) if explicit => BatteryTeam::YieldsToExplicit,
+        Some(declared) => {
+            let (at, installed) = cpus_in(&extra).ok_or(Error::Battery)?;
+            if declared.len() >= installed.len() || declared.iter().any(|cpu| !installed.contains(cpu)) {
+                return Err(Error::Battery);
+            }
+            let state = power.map_or(battery::Power::Unknown, |p| p.state);
+            let allowed = power.and_then(|p| p.allowed);
+            match battery::decide(state, &installed[..], Some(&declared[..]), false, allowed) {
+                battery::Decision::Reduced(cpus) if cpus != installed => {
+                    let flag = PREFIX_WORDS + at;
+                    arguments[flag] = "--oxe-cpus".into();
+                    arguments[flag + 1] = battery::format_cpus(&cpus).into();
+                    BatteryTeam::Decided { changed: true }
+                }
+                _ => BatteryTeam::Decided { changed: false },
+            }
+        }
+    };
     if let Some(cutoff) = cutoff.filter(|_| !raw_cutoff) {
         arguments.extend(["--mtp-max-ctx".into(), cutoff.to_string().into()]);
     }
@@ -214,7 +304,34 @@ pub fn from_user_settings(
         model,
         arguments,
         environment,
+        battery,
     })
+}
+
+/// `--host 127.0.0.1 --port N --model M --alias A` precede the model's own words.
+const PREFIX_WORDS: usize = 8;
+
+/// The CPU team `words` select, if they carry exactly one separate `--oxe-cpus LIST`.
+fn cpu_list(words: &[String]) -> Option<Vec<usize>> {
+    cpus_in(words).map(|(_, cpus)| cpus)
+}
+
+/// The single `--oxe-cpus LIST` separate-word choice in `words`: where the flag sits and the
+/// team it selects. `None` = absent, repeated, `=`-spelled or unparsable (the policy then
+/// cannot identify one installed team).
+fn cpus_in(words: &[String]) -> Option<(usize, Vec<usize>)> {
+    let mut found = None;
+    for (i, word) in words.iter().enumerate() {
+        if word != "--oxe-cpus" {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        let cpus = battery::parse_cpus(words.get(i + 1)?)?;
+        found = Some((i, cpus));
+    }
+    found
 }
 
 fn object(value: Option<&Value>) -> Result<Option<&Map<String, Value>>, Error> {

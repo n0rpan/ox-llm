@@ -305,3 +305,229 @@ fn equals_form_mtp_flags_are_rejected_before_launch() {
         );
     }
 }
+
+// ----- N9: opt-in battery decode team (design + fixture contract) ---------------------------
+
+use oxc_local::battery::{Decision, Keep, Power};
+use oxc_local::launch_profile::{resolve, BatteryTeam, LaunchPower};
+
+const TEAM: &[usize] = &[0, 1, 2, 3, 4, 5, 6, 7];
+
+fn cpu_layout(cpus: &str) -> InstalledLayout {
+    let mut installed = layout();
+    installed.models.get_mut("local-model").unwrap().arguments = vec![
+        "--oxe-cpus".into(),
+        cpus.into(),
+        "--ctx-size".into(),
+        "8192".into(),
+    ];
+    installed
+}
+
+fn at(power: Power, allowed: Option<&[usize]>) -> LaunchPower<'_> {
+    LaunchPower {
+        state: power,
+        allowed,
+    }
+}
+
+fn cpu_value(profile: &oxc_local::launch_profile::LaunchProfile) -> String {
+    let words: Vec<&str> = profile.arguments.iter().map(|w| w.to_str().unwrap()).collect();
+    let index = words
+        .iter()
+        .position(|w| *w == "--oxe-cpus")
+        .expect("--oxe-cpus retained");
+    words[index + 1].to_owned()
+}
+
+fn opt_in(team: &str) -> serde_json::Value {
+    json!({"oxa":{"local":{"models":{"local-model":{"battery_decode_team":team}}}}})
+}
+
+#[test]
+fn battery_policy_is_inert_until_opted_in_and_never_changes_other_words() {
+    let installed = cpu_layout("0-7");
+    let plain = from_user_settings(&json!({}), &installed, "local-model", 8080).unwrap();
+    assert_eq!(plain.battery, BatteryTeam::Off);
+    for power in [Power::Ac, Power::Charging, Power::Discharging, Power::Unknown] {
+        let profile = resolve(
+            &json!({}),
+            &installed,
+            "local-model",
+            8080,
+            Some(&at(power, Some(TEAM))),
+        )
+        .unwrap();
+        assert_eq!(profile.arguments, plain.arguments, "{power:?}");
+        assert_eq!(profile.environment, plain.environment);
+        assert_eq!(profile.battery, BatteryTeam::Off);
+    }
+    // An explicit user CPU list wins over the declared team, at any power state.
+    let user = json!({"oxa":{"local":{"models":{"local-model":{
+        "arguments":["--oxe-cpus","2,3","--ctx-size","8192"],
+        "battery_decode_team":"0,1"
+    }}}}});
+    let profile = resolve(
+        &user,
+        &installed,
+        "local-model",
+        8080,
+        Some(&at(Power::Discharging, Some(TEAM))),
+    )
+    .unwrap();
+    assert_eq!(profile.battery, BatteryTeam::YieldsToExplicit);
+    assert_eq!(cpu_value(&profile), "2,3");
+    // A user list identical to the installed team is not an override: the opt-in applies
+    // (this is the resident factory's shape, where both come from the same user object).
+    let user = json!({"oxa":{"local":{"models":{"local-model":{
+        "arguments":["--oxe-cpus","0-7","--ctx-size","8192"],
+        "battery_decode_team":"0-3"
+    }}}}});
+    let profile = resolve(
+        &user,
+        &installed,
+        "local-model",
+        8080,
+        Some(&at(Power::Discharging, Some(TEAM))),
+    )
+    .unwrap();
+    assert_eq!(profile.battery, BatteryTeam::Decided { changed: true });
+    assert_eq!(cpu_value(&profile), "0,1,2,3");
+}
+
+#[test]
+fn discharging_selects_the_declared_smaller_team_and_only_that_word_changes() {
+    let installed = cpu_layout("0-7");
+    let ac = resolve(
+        &opt_in("0-3"),
+        &installed,
+        "local-model",
+        8080,
+        Some(&at(Power::Ac, Some(TEAM))),
+    )
+    .unwrap();
+    let battery = resolve(
+        &opt_in("0-3"),
+        &installed,
+        "local-model",
+        8080,
+        Some(&at(Power::Discharging, Some(TEAM))),
+    )
+    .unwrap();
+    assert_eq!(ac.battery, BatteryTeam::Decided { changed: false });
+    assert_eq!(battery.battery, BatteryTeam::Decided { changed: true });
+    assert_eq!(cpu_value(&ac), "0-7");
+    assert_eq!(cpu_value(&battery), "0,1,2,3");
+    assert_eq!(battery.model, ac.model);
+    assert_eq!(battery.binary, ac.binary);
+    assert_eq!(battery.environment, ac.environment);
+    let differing: Vec<usize> = (0..ac.arguments.len())
+        .filter(|i| ac.arguments[*i] != battery.arguments[*i])
+        .collect();
+    assert_eq!(differing, [9], "only the --oxe-cpus value may change");
+    // The selected CPUs are a strict subset of the installed, already-supported team.
+    let chosen = oxc_local::battery::parse_cpus(&cpu_value(&battery)).unwrap();
+    assert!(chosen.iter().all(|cpu| TEAM.contains(cpu)) && chosen.len() < TEAM.len());
+}
+
+#[test]
+fn ac_charging_unknown_and_no_mask_keep_the_installed_team() {
+    let installed = cpu_layout("0-7");
+    for (power, allowed) in [
+        (Power::Ac, Some(TEAM)),
+        (Power::Charging, Some(TEAM)),
+        (Power::Unknown, Some(TEAM)),
+        (Power::Discharging, None),
+        (Power::Discharging, Some(&[4usize, 5, 6, 7][..])),
+    ] {
+        let profile = resolve(
+            &opt_in("0-3"),
+            &installed,
+            "local-model",
+            8080,
+            Some(&at(power, allowed)),
+        )
+        .unwrap();
+        assert_eq!(cpu_value(&profile), "0-7", "{power:?} {allowed:?}");
+        assert_eq!(profile.battery, BatteryTeam::Decided { changed: false });
+    }
+    // A mask that leaves part of the declared team keeps only the usable CPUs.
+    let profile = resolve(
+        &opt_in("0-3"),
+        &installed,
+        "local-model",
+        8080,
+        Some(&at(Power::Discharging, Some(&[0, 1][..]))),
+    )
+    .unwrap();
+    assert_eq!(cpu_value(&profile), "0,1");
+}
+
+#[test]
+fn a_declared_team_must_be_a_smaller_subset_of_one_installed_team() {
+    let installed = cpu_layout("0-7");
+    for team in ["", "0-7", "0-8", "8", "0-3,0-1", "x"] {
+        let user = json!({"oxa":{"local":{"models":{"local-model":{"battery_decode_team":team}}}}});
+        assert_eq!(
+            resolve(
+                &user,
+                &installed,
+                "local-model",
+                8080,
+                Some(&at(Power::Discharging, Some(TEAM)))
+            ),
+            Err(Error::Battery),
+            "{team:?}"
+        );
+    }
+    let user = json!({"oxa":{"local":{"models":{"local-model":{"battery_decode_team":7}}}}});
+    assert_eq!(
+        resolve(
+            &user,
+            &installed,
+            "local-model",
+            8080,
+            Some(&at(Power::Discharging, Some(TEAM)))
+        ),
+        Err(Error::Battery)
+    );
+    // No installed team to shrink, a repeated flag, or an `=` spelling: fail closed.
+    for arguments in [
+        vec!["--ctx-size", "8192"],
+        vec!["--oxe-cpus", "0-7", "--oxe-cpus", "0-7"],
+        vec!["--oxe-cpus=0-7"],
+    ] {
+        let mut installed = layout();
+        installed.models.get_mut("local-model").unwrap().arguments =
+            arguments.iter().map(|w| w.to_string()).collect();
+        assert_eq!(
+            resolve(
+                &opt_in("0-3"),
+                &installed,
+                "local-model",
+                8080,
+                Some(&at(Power::Discharging, Some(TEAM)))
+            ),
+            Err(Error::Battery),
+            "{arguments:?}"
+        );
+    }
+}
+
+#[test]
+fn the_mixed_state_decision_is_pure_and_ordered() {
+    // The same inputs always give the same decision; the policy never reads a clock or fs.
+    for power in [Power::Ac, Power::Charging, Power::Discharging, Power::Unknown] {
+        let first = oxc_local::battery::decide(power, TEAM, Some(&[0, 1][..]), false, Some(TEAM));
+        let second = oxc_local::battery::decide(power, TEAM, Some(&[0, 1][..]), false, Some(TEAM));
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            if power == Power::Discharging {
+                Decision::Reduced(vec![0, 1])
+            } else {
+                Decision::Installed(Keep::Power(power))
+            }
+        );
+    }
+}
