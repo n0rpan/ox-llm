@@ -416,7 +416,10 @@ mod tests {
     fn reduced_motion_resolution() {
         let e = |v: &str| vec![("OXA_REDUCED_MOTION".to_string(), v.to_string())];
         assert!(reduced_motion(true, &e("1")));
-        assert!(!reduced_motion(false, &e("1")));
+        assert!(
+            reduced_motion(false, &e("1")),
+            "an explicit true overrides the setting"
+        );
         assert!(
             !reduced_motion(true, &e("0")),
             "an explicit false overrides the setting"
