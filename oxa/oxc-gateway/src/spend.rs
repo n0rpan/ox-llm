@@ -164,11 +164,9 @@ impl SpendReader {
         self.total = total;
         self.subscription = subscription;
         self.tail = tail;
-        Ok(if total < f64::MAX / 1e8 {
-            (total * 1e8).round_ties_even() / 1e8
-        } else {
-            total
-        })
+        // Admission uses this amount directly. Currency display rounding must
+        // never erase a valid positive charge before comparing it with a cap.
+        Ok(total)
     }
 }
 
