@@ -215,6 +215,36 @@ fn spawn_worker(session: Session, reopen: ReopenFn) -> Worker {
     }
 }
 
+#[test]
+fn dropping_front_end_senders_disconnects_the_idle_worker() {
+    let env = TestEnv::new();
+    let session = Session::open(
+        deps(
+            &env,
+            Arc::new(MemStore::new()),
+            Arc::new(ScriptedEngine::new(Vec::new())),
+            Vec::new(),
+        ),
+        Open::Ephemeral,
+    )
+    .expect("open");
+    let w = spawn_worker(session, no_reopen());
+    assert!(matches!(
+        w.msgs.recv_timeout(Duration::from_secs(3)),
+        Ok(WorkerMsg::Session(_))
+    ));
+    drop(w.cmds);
+    let ended = w.done.recv_timeout(Duration::from_secs(3));
+    if ended.is_err() {
+        w.stop.stop();
+        let _ = w.done.recv_timeout(Duration::from_secs(3));
+    }
+    assert!(
+        ended.is_ok(),
+        "the worker must not retain its own command channel"
+    );
+}
+
 /// Collect worker messages until `until` holds for an event (or 10 s pass).
 fn events_until(w: &Worker, until: impl Fn(&AgentEvent) -> bool) -> Vec<AgentEvent> {
     let end = Instant::now() + Duration::from_secs(10);

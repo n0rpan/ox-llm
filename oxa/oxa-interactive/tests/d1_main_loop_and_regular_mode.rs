@@ -598,7 +598,7 @@ fn enter_while_the_run_is_aborting_starts_a_new_run() {
         handle.clone(),
         &env,
         vec![vec![ch('x'), key("enter")], vec![key("ctrl+d")]],
-        Vec::new(),
+        vec![WorkerMsg::Event(AgentEvent::AgentStart)],
     );
     assert_eq!(d.code, 0);
     let (steering, follow_up) = handle.queued();
