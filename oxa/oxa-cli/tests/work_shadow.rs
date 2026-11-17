@@ -1,8 +1,14 @@
 use oxa_fake::TestEnv;
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{
+    fs,
+    io::Write,
+    os::unix::fs::PermissionsExt,
+    process::{Command, Stdio},
+};
 
-fn invoke(env: &TestEnv, args: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_oxa"))
+fn command(env: &TestEnv, args: &str) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    command
         .args(args.split_whitespace())
         .current_dir(env.work())
         .env_clear()
@@ -11,13 +17,15 @@ fn invoke(env: &TestEnv, args: &str) -> std::process::Output {
         .env(
             "PATH",
             format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
-        )
-        .output()
-        .unwrap()
+        );
+    command
 }
 
-#[test]
-fn real_cli_requires_opt_in_and_offline_never_reads_github() {
+fn invoke(env: &TestEnv, args: &str) -> std::process::Output {
+    command(env, args).output().unwrap()
+}
+
+fn fixture() -> (TestEnv, serde_json::Value) {
     let env = TestEnv::new();
     assert!(Command::new("git")
         .args(["init", "-b", "main"])
@@ -30,24 +38,59 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
     oxa_perm::TrustStore::default()
         .save(&env.agent_dir().join("trust.json"), &env.work(), true)
         .unwrap();
-    for args in [
-        "work board",
-        "--offline work board --shadow --repo example/repo --once",
-    ] {
-        let out = invoke(&env, args);
-        assert_eq!(out.status.code(), Some(2));
-        assert!(!env.agent_dir().join("work").exists());
-    }
     let gh = env.write("tmp/gh", r#"#!/bin/sh
+printf 'read\n' >> gh-calls
+if [ -e expect-input ]; then IFS= read -r expected < expect-input; [ "$GH_TOKEN" = "$expected" ] || exit 93; fi
+if [ -e oversized ]; then
+  printf '{"data":{"repository":{"pullRequests":{"totalCount":0,"nodes":[]},"padding":"'
+  head -c 4194305 /dev/zero | tr '\000' 'a'
+  printf '"}}}'
+  exit 0
+fi
 case "$*" in
-  *'pullRequests(first:100'*) printf '%s' '{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]}}}}' ;;
   *'p42:pullRequest(number:42)'*) cat detail.json ;;
+  *'pullRequests(first:100'*) cat first.json ;;
   *) exit 92 ;;
 esac
 "#);
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
-    let mut detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"p42":{"number":42,"headRefOid":"synthetic-head","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
+    let detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]},"mergeQueue":null,"p42":{"number":42,"headRefOid":"synthetic-head","baseRefName":"main","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"CLEAN","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
     fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+    fs::write(env.work().join("first.json"), detail.to_string()).unwrap();
+    (env, detail)
+}
+
+fn log_for(env: &TestEnv, repo: &str) -> std::path::PathBuf {
+    fs::read_dir(env.agent_dir().join("work"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("board")
+        .join(repo)
+        .join("board-shadow.jsonl")
+}
+
+fn sample(env: &TestEnv, detail: &serde_json::Value) -> serde_json::Value {
+    fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+    let out = invoke(env, "work board --shadow --repo example/repo --once");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let text = fs::read_to_string(log_for(env, "example/repo")).unwrap();
+    serde_json::from_str(text.lines().last().unwrap()).unwrap()
+}
+
+#[test]
+fn real_cli_requires_opt_in_and_offline_never_reads_github() {
+    let (env, mut detail) = fixture();
+    for args in [
+        "work board",
+        "--offline work board --shadow --repo example/repo --once",
+    ] {
+        assert_eq!(invoke(&env, args).status.code(), Some(2));
+        assert!(!env.agent_dir().join("work").exists());
+    }
+    assert!(!env.work().join("gh-calls").exists());
     let out = invoke(&env, "work board --shadow --repo example/repo --once");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let storage = fs::read_dir(env.agent_dir().join("work"))
@@ -65,6 +108,7 @@ esac
     let mut actual = vec![];
     for (conclusion, head, source) in [
         ("STARTUP_FAILURE", "synthetic-head", ""),
+        ("STALE", "synthetic-head", ""),
         ("SUCCESS", "old-head", ""),
         ("SUCCESS", "synthetic-head", ""),
         ("SUCCESS", "synthetic-head", "engine.c"),
@@ -102,6 +146,7 @@ esac
         actual,
         vec![
             "fix_required_ci",
+            "fix_required_ci",
             "wait_review",
             "ready",
             "add_removes",
@@ -116,4 +161,103 @@ esac
             .count(),
         1
     );
+}
+
+#[test]
+fn requested_change_summary_is_actionable_without_threads() {
+    let (env, mut detail) = fixture();
+    detail["data"]["repository"]["p42"]["reviewDecision"] = "CHANGES_REQUESTED".into();
+    assert_eq!(
+        sample(&env, &detail)["board"]["entries"][0]["action"],
+        "fix_findings"
+    );
+}
+
+#[test]
+fn changed_open_set_is_refused() {
+    let (env, mut detail) = fixture();
+    detail["data"]["repository"]["pullRequests"] =
+        serde_json::json!({"totalCount":2,"nodes":[{"number":42},{"number":43}]});
+    fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+    assert_eq!(
+        invoke(&env, "work board --shadow --repo example/repo --once")
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn behind_heads_wait_without_a_queue_and_keep_queue_composition() {
+    let (env, mut detail) = fixture();
+    let row = &mut detail["data"]["repository"]["p42"];
+    row["mergeable"] = "MERGEABLE".into();
+    row["mergeStateStatus"] = "BEHIND".into();
+    row["reviewDecision"] = "APPROVED".into();
+    row["latestOpinionatedReviews"] =
+        serde_json::json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":"synthetic-head"}}]});
+    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"isRequired":true,"conclusion":"SUCCESS"}]}}}}]});
+    let mut actions = vec![];
+    for queued in [false, true] {
+        let mut first = detail.clone();
+        first["data"]["repository"]["mergeQueue"] = if queued {
+            serde_json::json!({"id":"synthetic-queue"})
+        } else {
+            serde_json::Value::Null
+        };
+        fs::write(env.work().join("first.json"), first.to_string()).unwrap();
+        actions.push(
+            sample(&env, &detail)["board"]["entries"][0]["action"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    assert_eq!(actions, vec!["wait_mergeability", "ready"]);
+}
+
+#[test]
+fn oversized_valid_json_is_refused_before_parsing() {
+    let (env, _) = fixture();
+    fs::write(env.work().join("oversized"), "synthetic").unwrap();
+    assert_eq!(
+        invoke(&env, "work board --shadow --repo example/repo --once")
+            .status
+            .code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn board_help_needs_no_repository_or_private_state() {
+    let env = TestEnv::new();
+    for args in ["work board --help", "help work board"] {
+        let out = invoke(&env, args);
+        assert!(out.status.success());
+        assert!(String::from_utf8_lossy(&out.stdout).contains("board --shadow"));
+    }
+    assert!(!env.agent_dir().join("work").exists());
+}
+
+#[test]
+fn refreshed_token_can_be_supplied_privately_by_the_caller() {
+    let (env, _) = fixture();
+    fs::write(env.work().join("expect-input"), "synthetic-refreshed\n").unwrap();
+    let mut child = command(
+        &env,
+        "work board --shadow --repo example/repo --once --token-stdin",
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"synthetic-refreshed\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
 }
