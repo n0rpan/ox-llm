@@ -19,7 +19,11 @@ class RustRetirementAudit(unittest.TestCase):
         self.destination = self.root.parent / 'report'
         self.source = self.root / 'oxa/src/lib.rs'
         self.source.parent.mkdir(parents=True)
-        self.source.write_text('pub mod native;\npub fn active() {}\n')
+        self.source.write_text(
+            'pub mod native;\npub fn active() {}\n'
+            'pub(crate) fn crate_only() {}\npub(super) struct Parent;\n'
+            'pub(in crate::scope) mod nested;\n'
+        )
 
     def run_audit(self, dependency_exit, dependency_output):
         def run(command, **kwargs):
@@ -37,7 +41,10 @@ class RustRetirementAudit(unittest.TestCase):
     def test_public_modules_and_dependency_candidates_are_recorded(self):
         self.run_audit(1, 'candidate: example-crate\n')
         report = json.loads((self.destination / 'source-inventory.json').read_text())
-        self.assertEqual([item['item'] for item in report['public_items']], ['native', 'active'])
+        self.assertEqual(
+            [item['item'] for item in report['public_items']],
+            ['native', 'active', 'crate_only', 'Parent', 'nested'],
+        )
         self.assertEqual((self.destination / 'oxa-machete-exit.txt').read_text(), '1\n')
 
     def test_manifest_errors_fail_even_with_success_or_candidate_exit(self):
