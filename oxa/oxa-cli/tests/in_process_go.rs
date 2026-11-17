@@ -1668,7 +1668,8 @@ fn go_private_stream_cause_content_type() {
             "application/json",
             b"synthetic-private-frame".to_vec(),
             vec![],
-        ),
+        )
+        .buffer_header_refusal(),
     );
 }
 #[test]

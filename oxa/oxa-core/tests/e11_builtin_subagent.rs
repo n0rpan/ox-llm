@@ -1119,6 +1119,225 @@ fn cancel_stops_queued_tasks() {
     assert_eq!(host.clears(), ["sess.s1"]);
 }
 
+/// #508: the parent's `--max-time` reaches every child as its own `--max-time` (the time that
+/// is left), so a looping child wraps up by itself.
+#[test]
+fn child_gets_the_remaining_max_time() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host).with_deadline(Instant::now() + Duration::from_secs(60));
+    let o = run(&env, &h, json!({"agent": "scout", "task": "look"}));
+    assert!(!o.out.is_error, "{}", o.out.text);
+    let words = argv(&env, "sess.s1");
+    let at = words
+        .iter()
+        .position(|w| w == "--max-time")
+        .expect("--max-time in argv");
+    let secs: f64 = words[at + 1].parse().expect("seconds");
+    assert!(secs > 30.0 && secs <= 60.0, "{secs}");
+    assert_eq!(words.last().unwrap(), "Task: look", "the task stays last");
+
+    // No parent limit: the argv is what it always was.
+    let h = hooks(&env, OK_BODY, &host);
+    run(&env, &h, json!({"agent": "scout", "task": "again"}));
+    assert_eq!(argv(&env, "sess.s1").last().unwrap(), "Task: again");
+    assert!(!argv(&env, "sess.s1").iter().any(|w| w == "--max-time"));
+}
+
+/// #508: a child that would start after the parent's deadline does not start.
+#[test]
+fn queued_children_do_not_start_after_the_deadline() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    // The first child takes longer than the time left, as a child that wraps up at the deadline.
+    let h = hooks(&env, "sleep 0.6\n", &host).with_deadline(Instant::now() + Duration::from_millis(300));
+    let o = run(
+        &env,
+        &h,
+        json!({"tasks": [{"agent": "scout", "task": "1"}, {"agent": "scout", "task": "2"}]}),
+    );
+    assert!(o.out.is_error);
+    assert!(
+        o.out.text.contains("Subagent was aborted before starting"),
+        "{}",
+        o.out.text
+    );
+    let starts: Vec<String> = log(&env).into_iter().filter(|l| l.starts_with("start")).collect();
+    assert_eq!(starts, ["start sess.s1"], "the queued task never started");
+}
+
+/// Exercise both kinds of concurrent queue: a remote task waiting for a worker, and a
+/// local task waiting for the single local slot while a remote task runs alongside it.
+fn concurrent_deadline_case(local: bool, remaining: Duration) -> (TestEnv, Outcome, Arc<MockHost>) {
+    let env = TestEnv::new();
+    let mut l = limits("sess", 200_000, None);
+    l["model"] = json!("cloud-lead");
+    l["remote"] = json!(true);
+    let host = MockHost::with(&env, l, json!({"parked": false}), false);
+    host.remote.lock().unwrap().push("cloud-child".to_string());
+    // Both initial remote workers (or whichever local child gets the slot first) hold
+    // their slot long enough to consume a measurable part of the parent's allowance.
+    let body = format!("case \"$last\" in *hold*) sleep 1;; esac\n{OK_BODY}");
+    let h = hooks_with(
+        child_script(&env, &body),
+        vec![
+            agent("scout", Some(if local { "local-child" } else { "cloud-child" })),
+            agent("worker", None),
+        ],
+        json!({"oxa": {"subagent": {"remoteConcurrency": if local { 3 } else { 2 }}}}),
+        &host,
+    )
+    .with_deadline(Instant::now() + remaining);
+    let o = run(
+        &env,
+        &h,
+        json!({"tasks": [
+            {"agent": "scout", "task": "hold one"},
+            {"agent": "scout", "task": "hold two"},
+            {"agent": "worker", "task": "last"},
+        ]}),
+    );
+    (env, o, host)
+}
+
+/// #508 / PR #560: preparation happens before workers run. Recheck the deadline after
+/// acquiring a worker or the local slot, not just in the sequential path.
+#[test]
+fn concurrent_queued_children_do_not_start_after_the_deadline() {
+    for local in [false, true] {
+        let (env, o, host) = concurrent_deadline_case(local, Duration::from_millis(500));
+        assert!(o.out.is_error, "local={local}: {}", o.out.text);
+        assert!(
+            o.out.text.contains("Subagent was aborted before starting"),
+            "local={local}: {}",
+            o.out.text
+        );
+        let mut started: Vec<String> = log(&env)
+            .into_iter()
+            .filter(|l| l.starts_with("start "))
+            .collect();
+        started.sort();
+        // Local workers race for one slot: exactly one of s1/s2 starts alongside s3;
+        // the other local child must remain unstarted after the deadline.
+        let expected = if local {
+            assert_eq!(started.len(), 2, "exactly one local and one remote child start");
+            assert!(started.contains(&"start sess.s3".to_string()));
+            assert_eq!(
+                started
+                    .iter()
+                    .filter(|s| s.ends_with(".s1") || s.ends_with(".s2"))
+                    .count(),
+                1
+            );
+            None
+        } else {
+            Some(vec!["start sess.s1".to_string(), "start sess.s2".to_string()])
+        };
+        if let Some(expected) = expected {
+            assert_eq!(started, expected, "the queued remote child must not start");
+        }
+        assert_eq!(
+            host.clears().len(),
+            usize::from(local),
+            "only a started local child is cleared"
+        );
+        assert!(
+            o.live.iter().any(|s| s.contains("queued")),
+            "queued children still appear in progress"
+        );
+    }
+}
+
+/// #508 / PR #560: even before the deadline, a queued child's argv must use the time left
+/// when its execution slot becomes available, not the allowance captured in `prepare`.
+#[test]
+fn concurrent_queued_children_get_the_remaining_max_time() {
+    for local in [false, true] {
+        let (env, o, _) = concurrent_deadline_case(local, Duration::from_secs(60));
+        assert!(!o.out.is_error, "local={local}: {}", o.out.text);
+        let hints: Vec<String> = log(&env)
+            .into_iter()
+            .filter_map(|s| s.strip_prefix("start ").map(str::to_string))
+            .collect();
+        assert_eq!(hints.len(), 3);
+        let seconds = |hint: &str| -> f64 {
+            let words = argv(&env, hint);
+            let at = words.iter().position(|w| w == "--max-time").expect("--max-time");
+            assert!(words.last().unwrap().starts_with("Task: "), "the task stays last");
+            words[at + 1].parse().unwrap()
+        };
+        let first = seconds(&hints[0]);
+        let queued = seconds(&hints[2]);
+        assert!(first > 0.0 && first <= 60.0, "{first}");
+        assert!(
+            queued > 0.0 && queued <= first - 0.5,
+            "local={local}: first={first}, queued={queued} (must subtract time waiting for a slot)"
+        );
+    }
+}
+
+/// #508 / PR #560: a deadline adds `--max-time` and nothing else. The child keeps its run
+/// budget (`--max-tokens` from the host's remaining tokens), its soft-token hint and its
+/// permission and tool flags, so ordinary work is not narrowed by the parent's limit.
+#[test]
+fn a_deadline_keeps_the_child_budget_and_permissions() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    host.limits.lock().unwrap()["remainingTokens"] = json!(100);
+    let h = hooks_with(
+        child_script(&env, OK_BODY),
+        vec![agent("scout", None)],
+        json!({"oxa": {"subagent": {"softTokens": 9000}}}),
+        &host,
+    )
+    .with_deadline(Instant::now() + Duration::from_secs(60));
+    let o = run(&env, &h, json!({"agent": "scout", "task": "look"}));
+    assert!(!o.out.is_error, "{}", o.out.text);
+    let words = argv(&env, "sess.s1");
+    let one = |flag: &str| -> String {
+        let at = words.iter().position(|w| w == flag).expect("the flag is in argv");
+        words[at + 1].clone()
+    };
+    assert!(words.iter().any(|w| w == "--max-time"));
+    assert_eq!(one("--max-tokens"), "100", "the run budget is unchanged");
+    assert_eq!(one("--permission-mode"), "workspace", "no wider permissions");
+    assert_eq!(one("--tools"), "read,grep", "the agent's tools are unchanged");
+    assert_eq!(one("--append-system-prompt"), "You are scout.");
+    assert_eq!(one("--model"), "fake-model");
+    assert_eq!(words.last().unwrap(), "Task: look", "the task stays last");
+    assert_eq!(
+        env_of(&env, "sess.s1", "OXA_CHILD_SOFT_TOKENS").as_deref(),
+        Some("9000")
+    );
+    assert_eq!(
+        env_of(&env, "sess.s1", "OXA_SUBAGENT_DEPTH").as_deref(),
+        Some("1")
+    );
+    assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(100));
+}
+
+/// #508 / PR #560: a deadline never outranks cancellation; a cancelled call starts nothing
+/// even while its allowance is still unspent.
+#[test]
+fn a_deadline_does_not_start_a_child_after_cancel() {
+    let env = TestEnv::new();
+    let host = MockHost::new(&env);
+    let h = hooks(&env, OK_BODY, &host).with_deadline(Instant::now() + Duration::from_secs(60));
+    let cancel = CancelToken::new();
+    cancel.cancel();
+    let o = run_with(&env, &h, json!({"agent": "scout", "task": "look"}), &cancel);
+    assert!(o.out.is_error, "{}", o.out.text);
+    assert!(
+        o.out.text.contains("Subagent was aborted before starting"),
+        "{}",
+        o.out.text
+    );
+    assert!(
+        !log(&env).iter().any(|l| l.starts_with("start ")),
+        "nothing started"
+    );
+}
+
 // ---- O-146: the eight-children cap over the whole tree of a parent session ----
 
 fn items(n: usize) -> Vec<Value> {

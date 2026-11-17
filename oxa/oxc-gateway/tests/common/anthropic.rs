@@ -786,6 +786,14 @@ mod mock_health {
     }
 
     #[test]
+    fn empty_redirect_has_a_valid_zero_chunk() {
+        let mut response = Vec::new();
+        write_reply(&mut response, &Reply::redirect("http://example.invalid/redirect")).unwrap();
+        let body_start = response.windows(4).position(|part| part == b"\r\n\r\n").unwrap() + 4;
+        assert_eq!(&response[body_start..], b"0\r\n\r\n");
+    }
+
+    #[test]
     fn shutdown_records_peer_panic() {
         let mut reply = Reply::text("Synthetic", 1, 0, 0, 1);
         // A broken fixture must not turn a panicking peer into a passing test.

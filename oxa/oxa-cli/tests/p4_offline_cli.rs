@@ -61,6 +61,9 @@ fn every_way_to_turn_offline_on_refuses_a_remote_engine_with_one_shape() {
         (vec![("OXA_OFFLINE", "1")], vec!["-p", "--no-session", "x"]),
         (vec![("OXA_OFFLINE", "TRUE")], vec!["-p", "--no-session", "x"]),
         (vec![("OXA_OFFLINE", "yes")], vec!["-p", "--no-session", "x"]),
+        // UX/DX item 5: `on` is one of the shared true words.
+        (vec![("OXA_OFFLINE", "on")], vec!["-p", "--no-session", "x"]),
+        (vec![("OXA_OFFLINE", "ON")], vec!["-p", "--no-session", "x"]),
     ];
     for (extra, words) in cases {
         let (code, _, err) = go(&env, remote, &extra, &words);
@@ -99,7 +102,7 @@ fn other_values_leave_offline_off_and_the_loopback_engine_always_works() {
     );
     // `OXA_OFFLINE=0` is not offline: the startup check passes (the remote engine is allowed),
     // which shows as the remote-engine notice path, not as the offline refusal.
-    for v in ["0", "no", "false"] {
+    for v in ["0", "no", "false", "off", "maybe"] {
         let _ = go(
             &env,
             "http://127.0.0.1:9",
