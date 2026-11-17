@@ -134,8 +134,8 @@ fn lost_marker_keeps_the_cap_but_lost_state_still_fails_closed() {
     // The reverse is corruption: attempts whose state file vanished are never reset.
     let vanished = Fixture::new();
     assert!(vanished.claim(10, 10).is_some());
-    fs::remove_file(vanished.0.join("1.board-claim.json")).unwrap();
-    fs::remove_file(vanished.0.join("1.board-claim.lock")).unwrap();
+    fs::remove_file(vanished.0.path().join("1.board-claim.json")).unwrap();
+    fs::remove_file(vanished.0.path().join("1.board-claim.lock")).unwrap();
     assert!(vanished.store().snapshot().is_err());
     assert!(vanished
         .store()
