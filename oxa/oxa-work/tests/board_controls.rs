@@ -604,10 +604,11 @@ fn idle_claims_preserve_expired_work_until_fenced_completion() {
     // Losing another worker's established state must fail the complete idle check closed.
     fs::remove_file(fixture.0.join("1.board-claim.json")).unwrap();
     next.number = 6;
+    let untouched = fs::read(fixture.0.join("6.board-claim.json")).unwrap();
     assert!(store
         .claim_idle_for(&next, &policy(), &crate::worker("slot-3"), 21, 10)
         .is_err());
-    assert!(!fixture.0.join("6.board-claim.json").exists());
+    assert_eq!(fs::read(fixture.0.join("6.board-claim.json")).unwrap(), untouched);
 }
 
 #[test]
@@ -666,6 +667,11 @@ fn idle_claims_require_saved_state_not_a_denied_claim_marker() {
         .is_none());
     assert!(!fixture.0.join("44.board-claim.json").exists());
     fixture.establish([44]);
+    assert!(store
+        .claim_idle_for(&candidate, &policy(), &reviewer, 10, 10)
+        .unwrap()
+        .is_none());
+    assert_eq!(store.snapshot().unwrap()[&44].attempts, 0);
     assert!(store
         .claim_idle_for(&candidate, &policy(), &builder, 10, 10)
         .unwrap()
