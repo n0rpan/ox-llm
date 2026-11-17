@@ -1,6 +1,7 @@
 use super::tests::{anthropic, skeleton};
 use super::*;
 use crate::{
+    billing::Billing,
     catalog::{Access, Model, Provider},
     pricing::Price,
     runtime::Options,
@@ -26,7 +27,7 @@ fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
     let runtime = Runtime::new(
         [(
             model,
-            Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]),
+            Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).map(Billing::Metered),
         )],
         fixture.key_path.clone(),
         fixture.ledger_dir.clone(),
@@ -34,6 +35,7 @@ fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
             access: Access::Enabled,
             daily_budget_usd: Some(1.0),
             ledger_enabled: true,
+            ..Options::default()
         },
     )
     .unwrap();

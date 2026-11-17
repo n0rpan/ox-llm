@@ -5,6 +5,7 @@ use crate::{
     anthropic_stream::{self, Completed, Field, Redactor, Usage},
     redaction,
     secrets::Key,
+    sse::Framer,
 };
 use futures_util::StreamExt;
 use reqwest::{
@@ -80,6 +81,11 @@ impl std::error::Error for Error {}
 #[derive(Clone)]
 pub struct Client(reqwest::Client);
 impl Client {
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn transport(&self) -> &reqwest::Client {
+        &self.0
+    }
+
     pub fn new() -> Result<Self, Error> {
         Self::with_read_timeout(Some(Duration::from_secs(1800)))
     }
@@ -99,6 +105,11 @@ impl Client {
             builder = builder.read_timeout(timeout);
         }
         builder.build().map(Self).map_err(|_| Error::Setup)
+    }
+
+    #[cfg(all(feature = "upstream-openai", feature = "anthropic-gateway"))]
+    pub(crate) fn shared_transport(&self) -> reqwest::Client {
+        self.0.clone()
     }
 
     pub async fn stream<F>(
@@ -184,14 +195,11 @@ impl Client {
             return Err(Error::Protocol);
         }
         let include_usage = chat.payload.pointer("/stream_options/include_usage") == Some(&Value::Bool(true));
-        let redactor = KeyRedactor {
-            key,
-            fields: BTreeMap::new(),
-        };
+        let redactor = KeyRedactor::new(key);
         let mut translated =
             anthropic_stream::Stream::with_redactor(chat.alias, chat.created, include_usage, redactor);
         let mut source = response.bytes_stream();
-        let mut decoder = Decoder::default();
+        let mut decoder = Framer::default();
         let mut received = 0_usize;
         loop {
             let next = tokio::select! {
@@ -208,9 +216,11 @@ impl Client {
                 if received > MAX_BODY {
                     return Err(Error::TooLarge);
                 }
-                let Some(event) = decoder.push(byte)? else {
+                let Some(data) = decoder.push(byte) else {
                     continue;
                 };
+                let event: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
+                drop(data);
                 let chunks = translated.event(&event).map_err(|_| Error::Protocol)?;
                 if event["type"] == "message_stop" {
                     let completed = translated.finish().map_err(|_| Error::Protocol)?;
@@ -270,9 +280,17 @@ where
     Ok(())
 }
 
-struct KeyRedactor<'a> {
+pub(crate) struct KeyRedactor<'a> {
     key: &'a Key,
     fields: BTreeMap<Field, redaction::Stream>,
+}
+impl<'a> KeyRedactor<'a> {
+    pub(crate) fn new(key: &'a Key) -> Self {
+        Self {
+            key,
+            fields: BTreeMap::new(),
+        }
+    }
 }
 impl Redactor for KeyRedactor<'_> {
     fn feed(&mut self, field: Field, fragment: &str) -> String {
@@ -293,51 +311,6 @@ impl Redactor for KeyRedactor<'_> {
     }
     fn whole(&mut self, value: &str) -> String {
         value.replace(self.key.expose(), "[redacted]")
-    }
-}
-
-#[derive(Default)]
-struct Decoder {
-    line: Vec<u8>,
-    data: Vec<u8>,
-    after_cr: bool,
-}
-impl Decoder {
-    fn push(&mut self, byte: u8) -> Result<Option<Value>, Error> {
-        self.push_data(byte)?
-            .map(|data| serde_json::from_slice(&data).map_err(|_| Error::Protocol))
-            .transpose()
-    }
-    fn push_data(&mut self, byte: u8) -> Result<Option<Vec<u8>>, Error> {
-        if byte == b'\n' && self.after_cr {
-            self.after_cr = false;
-            return Ok(None);
-        }
-        self.after_cr = byte == b'\r';
-        if !matches!(byte, b'\r' | b'\n') {
-            self.line.push(byte);
-            return Ok(None);
-        }
-        let line = std::mem::take(&mut self.line);
-        if line.is_empty() {
-            if self.data.is_empty() {
-                return Ok(None);
-            }
-            let mut data = std::mem::take(&mut self.data);
-            data.pop(); // The final SSE data-line separator.
-            return Ok(Some(data));
-        }
-        let data = if line == b"data" {
-            Some(&b""[..])
-        } else {
-            line.strip_prefix(b"data:")
-        };
-        if let Some(data) = data {
-            self.data
-                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            self.data.push(b'\n');
-        }
-        Ok(None)
     }
 }
 
@@ -371,8 +344,12 @@ mod tests {
     #[test]
     fn sse_handles_unicode_comments_multiline_data_and_every_byte_boundary() {
         let wire = b": ping\r\nevent: content_block_delta\r\ndata: {\"type\":\r\ndata: \"ping\",\"text\":\"\xce\xbb\"}\r\n\r\n";
-        let mut decoder = Decoder::default();
-        let events: Vec<_> = wire.iter().filter_map(|b| decoder.push(*b).unwrap()).collect();
+        let mut decoder = Framer::default();
+        let events: Vec<Value> = wire
+            .iter()
+            .filter_map(|b| decoder.push(*b))
+            .map(|data| serde_json::from_slice(&data).unwrap())
+            .collect();
         assert_eq!(events, vec![serde_json::json!({"type":"ping","text":"λ"})]);
     }
     #[tokio::test]

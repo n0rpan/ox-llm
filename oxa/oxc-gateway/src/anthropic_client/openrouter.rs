@@ -71,7 +71,7 @@ impl Client {
             return Err(Error::Protocol);
         }
         let mut stream = Stream::new(&chat, key);
-        let mut decoder = Decoder::default();
+        let mut decoder = Framer::default();
         let mut source = response.bytes_stream();
         let mut received = 0_usize;
         loop {
@@ -85,7 +85,7 @@ impl Client {
                 if received > MAX_BODY {
                     return Err(Error::TooLarge);
                 }
-                let Some(data) = decoder.push_data(byte)? else {
+                let Some(data) = decoder.push(byte) else {
                     continue;
                 };
                 if data == b"[DONE]" {
@@ -336,10 +336,8 @@ impl<'a> Stream<'a> {
             // Inspect that tree (including nested values and object keys) with
             // the existing exact held-key redactor before releasing any calls.
             // Refuse rather than rewrite identities or clean raw argument bytes.
-            let mut safe_arguments = arguments.clone();
-            let unsafe_arguments = redaction::value(&mut safe_arguments, self.redactor.key);
-            let mut safe_tool = tool.clone();
-            let unsafe_tool = redaction::value(&mut safe_tool, self.redactor.key);
+            let unsafe_arguments = redaction::contains_secret(&arguments, self.redactor.key.expose());
+            let unsafe_tool = redaction::contains_secret(tool, self.redactor.key.expose());
             if unsafe_arguments || unsafe_tool {
                 return Err(Error::Protocol);
             }

@@ -3,33 +3,38 @@
 use crate::secrets::Key;
 use serde_json::Value;
 
-/// Redact the exact held key and report whether it occurred, including when
-/// the key itself equals the replacement marker. Visits every string and key.
-pub fn value(value: &mut Value, key: &Key) -> bool {
+pub fn value(value: &mut Value, key: &Key) {
+    secret(value, key.expose());
+}
+#[cfg(feature = "anthropic-gateway")]
+pub(crate) fn contains_secret(value: &Value, secret: &str) -> bool {
+    if secret.is_empty() {
+        return false;
+    }
     match value {
-        Value::String(text) => {
-            let found = text.contains(key.expose());
-            *text = text.replace(key.expose(), "[redacted]");
-            found
-        }
-        Value::Array(items) => {
-            let mut found = false;
-            for item in items {
-                found |= self::value(item, key);
-            }
-            found
-        }
+        Value::String(text) => text.contains(secret),
+        Value::Array(items) => items.iter().any(|item| contains_secret(item, secret)),
+        Value::Object(map) => map
+            .iter()
+            .any(|(key, item)| key.contains(secret) || contains_secret(item, secret)),
+        _ => false,
+    }
+}
+pub(crate) fn secret(value: &mut Value, secret: &str) {
+    if secret.is_empty() {
+        return;
+    }
+    match value {
+        Value::String(text) => *text = text.replace(secret, "[redacted]"),
+        Value::Array(items) => items.iter_mut().for_each(|item| self::secret(item, secret)),
         Value::Object(map) => {
             let old = std::mem::take(map);
-            let mut found = false;
             for (name, mut item) in old {
-                found |= name.contains(key.expose());
-                found |= self::value(&mut item, key);
-                map.insert(name.replace(key.expose(), "[redacted]"), item);
+                self::secret(&mut item, secret);
+                map.insert(name.replace(secret, "[redacted]"), item);
             }
-            found
         }
-        _ => false,
+        _ => {}
     }
 }
 
