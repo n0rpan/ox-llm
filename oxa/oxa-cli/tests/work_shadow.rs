@@ -351,9 +351,22 @@ if [ "$status" != 200 ]; then
   printf '{"message":"synthetic-private-response-marker"}'
   exit 1
 fi
+if [ -e advance-after-list ] && [ "$#" -gt 0 ]; then
+  mv next-page.json pages/first.json
+  rm advance-after-list
+fi
 printf '{"data":{"repository":{"pullRequests":'
-cat "pages/${cursor:-first}.json"
+if [ -e unstable-page.json ] && [ "$#" -gt 0 ]; then
+  cat unstable-page.json
+else
+  cat "pages/${cursor:-first}.json"
+fi
 printf ',"mergeQueue":null'
+if [ -e response-padding ]; then
+  printf ',"padding":"'
+  head -c "$(cat response-padding)" /dev/zero | tr '\000' 'a'
+  printf '"'
+fi
 for number in "$@"; do
   printf ',"p%s":' "$number"
   cat "rows/$number.json"
@@ -370,6 +383,83 @@ fn batch_sizes(env: &TestEnv) -> Vec<usize> {
         .lines()
         .map(|line| line.parse().unwrap())
         .collect()
+}
+
+fn changing_membership_fixture() -> TestEnv {
+    let env = batched_fixture(2, 15, 504);
+    let page = env.work().join("pages/first.json");
+    fs::copy(&page, env.work().join("next-page.json")).unwrap();
+    let mut before: serde_json::Value = serde_json::from_slice(&fs::read(&page).unwrap()).unwrap();
+    before["totalCount"] = 1.into();
+    before["nodes"].as_array_mut().unwrap().truncate(1);
+    before["pageInfo"]["endCursor"] = "c1".into();
+    fs::write(page, before.to_string()).unwrap();
+    fs::write(env.work().join("advance-after-list"), "").unwrap();
+    env
+}
+
+#[test]
+fn one_clean_reacquisition_uses_fresh_membership_and_publishes_once() {
+    let env = changing_membership_fixture();
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(batch_sizes(&env), [0, 1, 0, 2, 0]);
+    let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    assert_eq!(text.lines().count(), 1);
+    let sample: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    let numbers: Vec<_> = sample["board"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, [1, 2]);
+}
+
+#[test]
+fn persistent_change_gets_only_one_reacquisition_and_keeps_the_previous_sample() {
+    let env = batched_fixture(2, 15, 504);
+    let args = "work board --shadow --repo example/repo --once";
+    assert!(invoke(&env, args).status.success());
+    let previous = fs::read(log_for(&env, "example/repo")).unwrap();
+    fs::write(env.work().join("batch-sizes"), "").unwrap();
+    let mut changed: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.work().join("pages/first.json")).unwrap()).unwrap();
+    changed["totalCount"] = 3.into();
+    changed["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"number":3,"headRefOid":"synthetic-head"}));
+    changed["pageInfo"]["endCursor"] = "c3".into();
+    fs::write(env.work().join("unstable-page.json"), changed.to_string()).unwrap();
+    assert!(!invoke(&env, args).status.success());
+    assert_eq!(batch_sizes(&env), [0, 2, 0, 2]);
+    assert_eq!(fs::read(log_for(&env, "example/repo")).unwrap(), previous);
+}
+
+#[test]
+fn reacquisition_keeps_the_same_aggregate_response_budget() {
+    let env = changing_membership_fixture();
+    fs::write(env.work().join("response-padding"), "1500000").unwrap();
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("snapshot exceeds byte limit"));
+    assert_eq!(batch_sizes(&env), [0, 1, 0]);
+    assert!(fs::read(log_for(&env, "example/repo")).unwrap().is_empty());
+}
+
+#[test]
+fn malformed_membership_is_not_a_consistency_retry() {
+    let env = batched_fixture(2, 15, 504);
+    let mut malformed: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.work().join("pages/first.json")).unwrap()).unwrap();
+    malformed["nodes"][0]["headRefOid"] = serde_json::Value::Null;
+    fs::write(env.work().join("unstable-page.json"), malformed.to_string()).unwrap();
+    assert!(!invoke(&env, "work board --shadow --repo example/repo --once")
+        .status
+        .success());
+    assert_eq!(batch_sizes(&env), [0, 2]);
+    assert!(fs::read(log_for(&env, "example/repo")).unwrap().is_empty());
 }
 
 #[test]
