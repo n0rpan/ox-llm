@@ -96,13 +96,14 @@ pub(crate) fn select(
     select_observed(user, effective, dirs, requested, None, None, http)
 }
 
-#[cfg(any(feature = "share", test))]
+/// Native launch configuration is user-only. Stream policy follows the effective session.
 pub(crate) fn local_engine_settings<'a>(
     user: &'a Settings,
-    _effective: &Settings,
+    effective: &Settings,
 ) -> (Option<&'a Value>, oxa_engine::StreamOpts) {
     let stream = oxa_engine::StreamOpts {
-        silence_limit_ms: crate::dispatch::stream_silence_timeout(user).unwrap_or(365 * 24 * 3600 * 1000),
+        silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
+            .unwrap_or(365 * 24 * 3600 * 1000),
         ..oxa_engine::StreamOpts::default()
     };
     (user.get("oxa.local"), stream)
@@ -128,15 +129,10 @@ pub(crate) fn select_observed(
 ) -> Result<Arc<dyn Engine>, OxaError> {
     let local_engine = || match shared_local {
         Some(engine) => Ok(engine as Arc<dyn Engine>),
-        None => oxc_local::configured_engine(
-            user.get("oxa.local"),
-            dirs.agent_dir.join("local-engine"),
-            oxa_engine::StreamOpts {
-                silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
-                    .unwrap_or(365 * 24 * 3600 * 1000),
-                ..oxa_engine::StreamOpts::default()
-            },
-        ),
+        None => {
+            let (launch, stream) = local_engine_settings(user, effective);
+            oxc_local::configured_engine(launch, dirs.agent_dir.join("local-engine"), stream)
+        }
     };
     if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
         let aliases = |path| {
