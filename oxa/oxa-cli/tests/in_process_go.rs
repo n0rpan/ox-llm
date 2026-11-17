@@ -935,6 +935,48 @@ fn dynamic_go_startup_errors_keep_provider_ownership_with_usable_local() {
     }
 }
 
+#[test]
+fn local_go_namespace_alias_with_thinking_suffix_keeps_local_ownership_offline() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    settings["oxa"]["engine"]["inProcessLocal"] = json!(true);
+    settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+        "models":{"opencode/custom-local":{"model":"/synthetic/model.gguf"}},
+        "limits":{"opencode/custom-local":{"context_window":4096,"max_output":64,
+            "required_available_bytes":1048576}}});
+    fs::write(path, settings.to_string()).unwrap();
+    for model in ["opencode/custom-local", "opencode/custom-local:high"] {
+        let output = run(
+            &env,
+            &[
+                "--offline",
+                "--model",
+                model,
+                "--no-session",
+                "--no-tools",
+                "-p",
+                "Synthetic local suffix",
+            ],
+        );
+        assert_eq!(
+            terminal(&output)["error_class"],
+            "not_found",
+            "model={model}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Local weights are missing"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+        assert!(!env.home().join(".oxa/agent/local-engine").exists());
+        assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+        assert!(mock.requests().is_empty());
+    }
+    mock.assert_healthy();
+}
+
 // #798 composition controls: the ordinary reader is the only credential reader.
 // Fixtures stay outside source repositories and use only loopback HTTP.
 fn go_diagnostic_env() -> TestEnv {
