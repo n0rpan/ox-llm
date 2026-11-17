@@ -1,6 +1,5 @@
 //! Typed intake and conservative bootstrap data; no acquisition, partitioner or second store.
 use super::*;
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Issue {
@@ -22,7 +21,6 @@ pub struct ImportState {
     /// Queued OR active legacy work excludes native admission until explicitly reconciled.
     pub excluded: bool,
 }
-
 pub(super) fn entry(
     number: u64,
     head: String,

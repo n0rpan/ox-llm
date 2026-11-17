@@ -173,7 +173,6 @@ fn one_snapshot_serves_all_workers_with_release_and_manual_pin_priority() {
     assert!(disabled.assignments.is_empty());
     assert_eq!(github.0, 1);
 }
-
 struct Intake(Snapshot, usize);
 impl GitHub for Intake {
     fn snapshot(&mut self) -> oxa_work::Result<Snapshot> {
@@ -181,11 +180,10 @@ impl GitHub for Intake {
         Ok(self.0.clone())
     }
 }
-
 #[test]
 fn typed_issue_intake_uses_one_snapshot_and_builder_authority() {
     let fixture = Fixture::new();
-    let worker = worker("slot-1");
+    let mut worker = worker("slot-1");
     let mut source = Intake(
         Snapshot {
             pull_requests: FakeGitHub(0).open_pull_requests().unwrap(),
@@ -215,6 +213,12 @@ fn typed_issue_intake_uses_one_snapshot_and_builder_authority() {
     let issue = board.board.entries.iter().find(|e| e.number == 4).unwrap();
     assert_eq!(issue.action, Action::BuildIssue);
     assert_eq!(issue.head, "source-revision");
+    worker.roles = [Role::Reviewer].into();
+    let denied = store.claim_for(issue, &policy(), &worker, 10, 10).unwrap();
+    assert!(denied.is_none());
+    let legacy = store.claim(issue, &policy(), &worker.id, 10, 10).unwrap();
+    assert!(legacy.is_none());
+    worker.roles = [Role::Builder].into();
     assert!(store
         .claim_for(issue, &policy(), &worker, 10, 10)
         .unwrap()
@@ -231,7 +235,6 @@ fn typed_issue_intake_uses_one_snapshot_and_builder_authority() {
     source.0.issues[0].number = 3;
     assert!(Board::read(&mut source, &policy(), &BTreeMap::new(), 10).is_err());
 }
-
 #[test]
 fn import_resumes_without_resetting_attempts_or_admitting_preserved_jobs() {
     let fixture = Fixture::new();
@@ -315,7 +318,6 @@ fn import_resumes_without_resetting_attempts_or_admitting_preserved_jobs() {
         .is_err());
     assert_eq!(store.snapshot().unwrap()[&4].attempts, 3);
 }
-
 #[test]
 fn invalid_or_conflicting_import_is_preflighted_before_any_state_write() {
     let fixture = Fixture::new();

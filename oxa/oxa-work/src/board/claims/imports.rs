@@ -1,7 +1,6 @@
 //! Bootstrap is restartable, refuses conflicting native facts, and never refunds attempts.
 use super::*;
 use crate::board::{assignment::ManualAuthority, ImportState};
-
 impl Claims {
     /// Caller keeps activation OFF until the entire authoritative batch is imported and verified.
     /// A partial I/O failure can be retried; an established, differing state is never overwritten.
@@ -54,7 +53,6 @@ impl Claims {
         }
         Ok(())
     }
-
     /// Only after the trusted frontend verifies preserved queued/active work has ended.
     pub fn clear_import_hold(
         &self,
