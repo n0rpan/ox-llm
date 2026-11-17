@@ -1,5 +1,8 @@
 //! One admission/stream/settlement path, with Done only after a durable row.
 #[cfg(test)]
+#[path = "../tests/common/openrouter_cases.rs"]
+mod openrouter_tests;
+#[cfg(test)]
 #[path = "../tests/common/gateway_cases.rs"]
 mod tests;
 use crate::{
@@ -39,6 +42,7 @@ pub struct Completed {
 pub enum Error {
     Refused(Refusal),
     Upstream(anthropic_client::Error),
+    OpenCode(crate::opencode::client::Error),
     #[cfg(feature = "upstream-openai")]
     OpenAi(crate::openai::client::Error),
 }
@@ -46,6 +50,7 @@ impl Error {
     pub fn refusal(&self) -> Refusal {
         let error = match self {
             Self::Refused(refusal) => return refusal.clone(),
+            Self::OpenCode(error) => return go_refusal(*error),
             Self::Upstream(error) => error,
             #[cfg(feature = "upstream-openai")]
             Self::OpenAi(error) => return completion::openai_refusal(error),
@@ -70,9 +75,17 @@ impl Error {
             param,
             message: match error {
                 anthropic_client::Error::Cancelled => "Request cancelled.",
-                anthropic_client::Error::Request(_) => "Invalid Anthropic request.",
-                _ => "The Anthropic upstream request failed.",
+                anthropic_client::Error::Request(_) => "Invalid cloud request.",
+                _ => "The cloud upstream request failed.",
             },
+        }
+    }
+    pub fn retry_after(&self) -> Option<u32> {
+        match self {
+            Self::OpenCode(crate::opencode::client::Error::Refused(
+                crate::opencode::Refusal::RateLimited { retry_after },
+            )) => *retry_after,
+            _ => None,
         }
     }
     pub fn body(&self) -> Value {
@@ -81,7 +94,11 @@ impl Error {
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.refusal().message)
+        f.write_str(self.refusal().message)?;
+        if let Some(seconds) = self.retry_after() {
+            write!(f, " (retry after {seconds} s)")?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for Error {}
@@ -106,6 +123,25 @@ impl Gateway {
             #[cfg(feature = "upstream-openai")]
             openai,
         })
+    }
+    /// Startup-only bounded live discovery. Reuses this gateway's HTTP pool;
+    /// the temporary current-thread driver creates no second queue or daemon.
+    pub fn discover_opencode(&mut self, base: &str, timeout: Duration) -> Result<(), Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(Error::OpenCode(crate::opencode::client::Error::Request));
+        }
+        let driver = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| Error::OpenCode(crate::opencode::client::Error::Transport))?;
+        let result = driver.block_on(self.runtime.discover_go(self.client.transport(), base, timeout));
+        driver.shutdown_timeout(Duration::from_secs(1));
+        if result.is_ok() {
+            if let Some(diagnostics) = self.runtime.diagnostics() {
+                diagnostics.clear();
+            }
+        }
+        result.map_err(Error::OpenCode)
     }
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
         self.runtime.discovery()
@@ -177,9 +213,12 @@ impl Gateway {
         if matches!(model.info().provider, Provider::OpenAi | Provider::ChatGpt) {
             return self.openai_chat(call, payload, history, cancel, on).await;
         }
+        if model.info().provider == Provider::OpenCode {
+            return self.chat_go(call, payload, cancel, on).await;
+        }
         // Transport dispatch is added with the provider client; an admitted
         // foreign route must never be sent using the Anthropic protocol.
-        if model.info().provider != Provider::Anthropic {
+        if !matches!(model.info().provider, Provider::Anthropic | Provider::OpenRouter) {
             let error = Refusal {
                 status: 503,
                 code: "cloud_provider_unavailable",
@@ -192,6 +231,7 @@ impl Gateway {
         }
         let key = call.key_handle().map_err(Error::Refused)?;
         let mut terminal_usage = None;
+        let mut terminal_reported_cost = None;
         let request = Chat {
             base_url: model.endpoint().as_str(),
             upstream_model: model.upstream(),
@@ -202,40 +242,56 @@ impl Gateway {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
         };
-        let result = self
-            .client
-            .stream_with_blocks(
-                request,
-                &key,
-                cancel,
-                &mut |event| match event {
-                    anthropic_client::Event::Sending => {
-                        if cancel.is_cancelled() {
-                            return Control::Stop;
-                        }
-                        call.mark_forwarded();
-                        Control::Continue
-                    }
-                    anthropic_client::Event::Chunk(chunk) => {
-                        call.observe(&chunk);
-                        on(Event::Chunk(chunk))
-                    }
-                },
-                |index| {
-                    history?
-                        .messages
-                        .get(index.checked_sub(1)?)?
-                        .provider_history
-                        .as_ref()
-                        .map(|saved| saved.items().to_vec())
-                },
-                &mut terminal_usage,
-            )
-            .await;
+        let mut deliver = |event| match event {
+            anthropic_client::Event::Sending => {
+                if cancel.is_cancelled() {
+                    return Control::Stop;
+                }
+                call.mark_forwarded();
+                Control::Continue
+            }
+            anthropic_client::Event::Chunk(chunk) => {
+                call.observe(&chunk);
+                on(Event::Chunk(chunk))
+            }
+        };
+        let result = if model.info().provider == Provider::OpenRouter {
+            self.client
+                .stream_openrouter(
+                    request,
+                    &key,
+                    cancel,
+                    &mut deliver,
+                    &mut terminal_usage,
+                    &mut terminal_reported_cost,
+                )
+                .await
+        } else {
+            self.client
+                .stream_with_blocks(
+                    request,
+                    &key,
+                    cancel,
+                    &mut deliver,
+                    |index| {
+                        history?
+                            .messages
+                            .get(index.checked_sub(1)?)?
+                            .provider_history
+                            .as_ref()
+                            .map(|saved| saved.items().to_vec())
+                    },
+                    &mut terminal_usage,
+                )
+                .await
+        };
         // This record survives cancellation during final chunk delivery and
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
             call.metered(usage);
+            if model.info().provider == Provider::OpenRouter {
+                call.metered_cost(terminal_reported_cost);
+            }
         }
         self.finish(
             call,
@@ -272,12 +328,28 @@ impl Gateway {
                     // private replay) still has trusted provider usage. Charge
                     // those facts without granting reply/replay authority.
                     Outcome::Complete
-                } else if completion::clean_refusal(error) {
+                } else if completion::clean_refusal(error)
+                    || call.model().info().provider == Provider::OpenRouter
+                        && matches!(error, Error::Upstream(anthropic_client::Error::Http(402)))
+                {
                     Outcome::Refused
                 } else {
                     Outcome::Failed
                 };
-                (outcome, refusal.status, Some(refusal.code))
+                // The ledger's clean-refusal guard requires the actual 4xx.
+                // Go auth is intentionally public503, but upstream401 is known
+                // before generation; do not poison accounting with public503.
+                let status = if matches!(
+                    error,
+                    Error::OpenCode(crate::opencode::client::Error::Refused(
+                        crate::opencode::Refusal::Unauthenticated
+                    ))
+                ) {
+                    401
+                } else {
+                    refusal.status
+                };
+                (outcome, status, Some(refusal.code))
             }
         };
         let pending = match (&result, history) {
@@ -299,6 +371,100 @@ impl Gateway {
         // Settlement committed success; a late cancel cannot retract a paid turn.
         let _ = on(Event::Done);
         Ok(completed)
+    }
+    async fn chat_go<F>(
+        &self,
+        mut call: crate::runtime::Call<'_>,
+        payload: &Value,
+        cancel: &Cancellation,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
+        use crate::opencode::client::{self, Error as GoError};
+        let alias = call.model().info().id;
+        let model = self
+            .runtime
+            .go_model(alias)
+            .ok_or(Error::OpenCode(GoError::Endpoint))?;
+        let hint = crate::opencode::SessionHint::from_provider_hint(
+            call.provider_session_hint().map_err(Error::Refused)?,
+        )
+        .map_err(|_| Error::OpenCode(GoError::Request))?;
+        let key = call.key_handle().map_err(Error::Refused)?;
+        let mut payload = payload.clone();
+        payload["max_tokens"] = call.max_output().into();
+        let mut usage = None;
+        let result = client::stream_observed(
+            self.client.transport(),
+            client::Chat {
+                model,
+                alias,
+                payload: &payload,
+                key: &key,
+                hint: &hint,
+            },
+            cancel,
+            &mut |event| match event {
+                client::Event::Sending => {
+                    if cancel.is_cancelled() {
+                        return Control::Stop;
+                    }
+                    call.mark_forwarded();
+                    Control::Continue
+                }
+                client::Event::Chunk(chunk) => {
+                    call.observe(&chunk);
+                    on(Event::Chunk(chunk))
+                }
+            },
+            &mut usage,
+            self.runtime.diagnostics(),
+        )
+        .await;
+        let result = self.finish_go(call, result, usage, on);
+        if result.is_ok() {
+            if let Some(diagnostics) = self.runtime.diagnostics() {
+                diagnostics.clear();
+            }
+        }
+        result
+    }
+    fn finish_go<F>(
+        &self,
+        mut call: crate::runtime::Call<'_>,
+        result: Result<crate::anthropic_stream::Completed, crate::opencode::client::Error>,
+        usage: Option<crate::opencode::Usage>,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
+        use crate::opencode::client::Error as GoError;
+        // Parsed terminal usage survives cancellation before public delivery.
+        // Meter it privately before consuming the hold, just as for Anthropic.
+        call.metered_go(usage.as_ref());
+        // Go chat completions have no native replay items. The common request
+        // path already verifies incoming history before dispatch; the common
+        // finish path owns durable settlement and the final Done transition.
+        let result = result
+            .map(|completed| Completed {
+                assistant: completed.assistant,
+                usage: None,
+                output_items: Arc::from([]),
+                replay_items: Arc::from([]),
+                finish_reason: completed.finish_reason,
+                history: None,
+            })
+            .map_err(|error| {
+                if error == GoError::Cancelled {
+                    Error::Upstream(anthropic_client::Error::Cancelled)
+                } else {
+                    Error::OpenCode(error)
+                }
+            });
+        self.finish(call, result, None, usage.is_some(), on)
     }
 }
 
@@ -348,4 +514,51 @@ fn payload(request: &oxa_proto::ChatRequest<'_>) -> Result<Value, Refusal> {
     Ok(json!({"model":request.model,"messages":messages,"tools":tools,
         "max_tokens":request.max_tokens,"reasoning_effort":effort,
         "stream":true,"stream_options":{"include_usage":true}}))
+}
+
+fn go_refusal(error: crate::opencode::client::Error) -> Refusal {
+    use crate::opencode::{client::Error as E, Refusal as R};
+    let (status, code, message) = match error {
+        E::Refused(R::RegionBlocked) => (
+            403,
+            "region_blocked",
+            "This Go model is blocked by the workspace region policy.",
+        ),
+        E::Refused(R::RateLimited { .. }) => (
+            429,
+            "cloud_rate_limited",
+            "The Go model is rate limited; the request can be retried.",
+        ),
+        E::Refused(R::Unauthenticated) => (
+            503,
+            "cloud_credentials_unavailable",
+            "OpenCode Go credentials are unavailable.",
+        ),
+        E::Refused(R::Forbidden) => (403, "cloud_forbidden", "OpenCode Go refused this request."),
+        E::Refused(R::Other(status)) => (
+            if (400..600).contains(&status) { status } else { 502 },
+            "cloud_upstream_error",
+            "The Go upstream request failed.",
+        ),
+        E::Discovery(problem) => (502, "cloud_discovery_invalid", problem.message()),
+        E::Cancelled => (499, "request_cancelled", "Request cancelled."),
+        E::Request => (400, "invalid_value", "Invalid Go configuration or request."),
+        E::Endpoint => (
+            503,
+            "cloud_provider_unavailable",
+            "This Go model has no supported chat route.",
+        ),
+        E::Protocol | E::TooLarge => (
+            502,
+            "cloud_upstream_stream_broken",
+            "Invalid or incomplete Go response.",
+        ),
+        E::Transport => (502, "cloud_upstream_unavailable", "The Go connection failed."),
+    };
+    Refusal {
+        status,
+        code,
+        message,
+        param: "model",
+    }
 }

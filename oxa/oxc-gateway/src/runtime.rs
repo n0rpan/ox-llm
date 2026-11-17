@@ -39,8 +39,10 @@ impl Default for Options {
     }
 }
 pub struct Runtime {
+    diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    go_models: BTreeMap<String, crate::opencode::Model>,
     key_file: Result<KeyFile, crate::secrets::Error>,
     ledger_dir: PathBuf,
     ledger: OnceLock<Result<Ledger, Refusal>>,
@@ -65,6 +67,7 @@ pub struct Call<'a> {
     hold: Option<Hold>,
     entry: Option<Entry>,
     forwarded: bool,
+    go_usage: Option<Value>,
 }
 fn invalid(param: &'static str) -> Refusal {
     Refusal {
@@ -89,8 +92,10 @@ fn catalog_error(error: catalog::Error) -> Refusal {
     }
 }
 fn supported(provider: Provider) -> bool {
-    matches!(provider, Provider::Anthropic | Provider::OpenCode)
-        || (cfg!(feature = "upstream-openai") && matches!(provider, Provider::OpenAi | Provider::ChatGpt))
+    matches!(
+        provider,
+        Provider::Anthropic | Provider::OpenRouter | Provider::OpenCode
+    ) || (cfg!(feature = "upstream-openai") && matches!(provider, Provider::OpenAi | Provider::ChatGpt))
 }
 fn invalid_billing() -> Refusal {
     Refusal {
@@ -113,6 +118,20 @@ fn unpaid(model: &Model, billing: Option<&Billing>) -> Value {
     fields
 }
 impl Runtime {
+    /// Install only for a trusted terminal caller, before discovery/requests.
+    pub fn with_diagnostics(mut self, diagnostics: crate::diagnostics::Diagnostics) -> Self {
+        self.diagnostics = Some(diagnostics);
+        self
+    }
+    pub(crate) fn diagnostics(&self) -> Option<&crate::diagnostics::Diagnostics> {
+        self.diagnostics.as_ref()
+    }
+    fn credential_error(&self) -> Refusal {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.local();
+        }
+        Refusal::credentials()
+    }
     /// Trusted, typed configuration. Preparing a path reads no key bytes;
     /// construction/discovery open no ledger and start no provider/runtime.
     pub fn new(
@@ -160,8 +179,10 @@ impl Runtime {
             .ok_or_else(Refusal::credentials)?
             .join("chatgpt-auth.json");
         Ok(Self {
+            diagnostics: None,
             catalog,
             billings,
+            go_models: BTreeMap::new(),
             key_file: KeyFile::prepare(&key_path),
             ledger_dir,
             ledger: OnceLock::new(),
@@ -190,7 +211,83 @@ impl Runtime {
         let entry = daily.entry(model, context).map_err(|_| Refusal::ledger())?;
         Ok((daily, entry))
     }
+    pub(crate) fn go_model(&self, alias: &str) -> Option<&crate::opencode::Model> {
+        self.go_models.get(alias)
+    }
+    pub(crate) async fn discover_go(
+        &mut self,
+        client: &reqwest::Client,
+        base: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), crate::opencode::client::Error> {
+        use crate::opencode::client::Error;
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.clear();
+        }
+        if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
+            return Err(Error::Request);
+        }
+        if self.subscription_limits.is_none() {
+            return Err(Error::Request);
+        }
+        let key = self
+            .key_file
+            .as_ref()
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })?
+            .read("opencode")
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })?;
+        let discovered = crate::opencode::client::models_observed(
+            client,
+            base,
+            &key,
+            timeout,
+            &oxa_proto::CancelToken::new(),
+            self.diagnostics.as_ref(),
+        )
+        .await?;
+        let mut models: Vec<_> = self
+            .catalog
+            .models()
+            .filter_map(|m| self.catalog.configured(m.id).cloned())
+            .collect();
+        let mut additions = BTreeMap::new();
+        for model in discovered {
+            if !model.api.contains_key("chat-completions") {
+                continue;
+            }
+            let alias = format!("opencode/{}", model.id);
+            let endpoint = &model.api["chat-completions"].base_url;
+            models.push(
+                Model::new(
+                    &alias,
+                    Provider::OpenCode,
+                    &model.id,
+                    endpoint,
+                    model.context_window,
+                    model.max_output,
+                )
+                .map_err(|_| Error::Protocol)?,
+            );
+            additions.insert(alias, model);
+        }
+        let catalog = Catalog::new(Access::Enabled, models).map_err(|_| Error::Protocol)?;
+        for alias in additions.keys() {
+            self.billings.insert(alias.clone(), Billing::Subscription);
+        }
+        self.go_models = additions;
+        self.catalog = catalog;
+        Ok(())
+    }
     pub fn begin(&self, payload: &Value, context: Context<'_>) -> Result<Call<'_>, Refusal> {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.clear();
+        }
         let owner_origin = matches!(context.origin, crate::ledger::Origin::Oxa);
         let shared = context.guest_key_name.is_some();
         let alias = payload["model"].as_str().ok_or_else(|| invalid("model"))?;
@@ -243,13 +340,15 @@ impl Runtime {
                 return Err(Refusal::ledger());
             }
             credential = Some(match model.info().provider {
-                Provider::Anthropic | Provider::OpenAi | Provider::OpenCode => Credential::ApiKey(Arc::new(
-                    self.key_file
-                        .as_ref()
-                        .map_err(|_| Refusal::credentials())?
-                        .read(model.info().provider.as_str())
-                        .map_err(|_| Refusal::credentials())?,
-                )),
+                Provider::Anthropic | Provider::OpenRouter | Provider::OpenAi | Provider::OpenCode => {
+                    Credential::ApiKey(Arc::new(
+                        self.key_file
+                            .as_ref()
+                            .map_err(|_| self.credential_error())?
+                            .read(model.info().provider.as_str())
+                            .map_err(|_| self.credential_error())?,
+                    ))
+                }
                 #[cfg(feature = "upstream-openai")]
                 Provider::ChatGpt => {
                     self.key_file.as_ref().map_err(|_| Refusal::credentials())?;
@@ -258,7 +357,8 @@ impl Runtime {
                             .map_err(|_| Refusal::credentials())?,
                     )
                 }
-                _ => return Err(Refusal::credentials()),
+                #[cfg(not(feature = "upstream-openai"))]
+                Provider::ChatGpt => return Err(Refusal::credentials()),
             });
             let (daily, _) = audit
                 .as_ref()
@@ -294,6 +394,7 @@ impl Runtime {
                 hold: Some(hold),
                 entry: Some(entry),
                 forwarded: false,
+                go_usage: None,
             })
         })();
         if let Err(error) = &result {
@@ -407,8 +508,22 @@ impl<'a> Call<'a> {
         self.hold.as_mut().expect("unsettled call").mark_forwarded();
     }
     pub fn observe(&mut self, chunk: &Value) {
+        if self.model.info().provider == Provider::OpenCode {
+            if let Ok(usage) = crate::opencode::Usage::parse(&chunk["usage"]) {
+                self.metered_go(Some(&usage));
+            }
+        }
         self.usage.observe(chunk);
         self.entry.as_mut().expect("unsettled call").observe();
+    }
+    pub(crate) fn metered_go(&mut self, usage: Option<&crate::opencode::Usage>) {
+        self.go_usage = usage.map(|usage| {
+            self.usage.prompt = Some(usage.prompt);
+            self.usage.output = Some(usage.completion);
+            self.usage.cache_read = usage.cache_read;
+            self.usage.cache_write = usage.cache_write;
+            json!({"allowance":usage.allowance,"list_cost":usage.list_cost,"tokens":usage.tokens})
+        });
     }
     pub fn metered(&mut self, usage: crate::anthropic_stream::Usage) {
         self.usage.prompt =
@@ -416,6 +531,10 @@ impl<'a> Call<'a> {
         self.usage.output = Some(usage.output_tokens);
         self.usage.cache_read = Some(usage.cache_read_input_tokens);
         self.usage.cache_write = Some(usage.cache_creation_input_tokens);
+    }
+    /// Private terminal metering only, never caller-supplied request fields.
+    pub(crate) fn metered_cost(&mut self, cost: Option<f64>) {
+        self.usage.reported_cost = cost.filter(|cost| cost.is_finite() && *cost >= 0.0);
     }
     pub fn finish(
         mut self,
@@ -447,6 +566,9 @@ impl<'a> Call<'a> {
         let mut saved = Value::Null;
         hold.finish(usage, outcome, |fields| {
             let mut fields = fields.clone();
+            if let Some(usage) = &self.go_usage {
+                fields["opencode"] = usage.clone();
+            }
             if !self.forwarded {
                 fields["settled"] = json!("not_forwarded");
             }

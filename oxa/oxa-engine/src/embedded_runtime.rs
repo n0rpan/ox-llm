@@ -26,6 +26,9 @@ fn normalize(error: Error) -> OxaError {
     if refusal.status == 499 && refusal.code == "request_cancelled" {
         return OxaError::new(codes::ABORTED, "request cancelled");
     }
+    if refusal.code == "cloud_rate_limited" {
+        return OxaError::new("cloud_rate_limited", format!("HTTP 429: {error}"));
+    }
     if refusal.code == "cloud_signed_out" {
         return OxaError::new("cloud_signed_out", "HTTP 401: ChatGPT is signed out.")
             .with_hint("Sign in to ChatGPT, then retry.");
@@ -61,6 +64,16 @@ fn normalize(error: Error) -> OxaError {
         .with_hint(
             "check the provider allowance; changing provider or using a paid balance requires your choice",
         );
+    }
+    if matches!(
+        refusal.code,
+        "region_blocked"
+            | "subscription_limit_reached"
+            | "subscription_limit_exceeded"
+            | "subscription_limits_not_configured"
+            | "subscription_private"
+    ) {
+        return OxaError::new(refusal.code, refusal.message);
     }
     if refusal.code == "budget_not_configured" {
         refusal.message = "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.";
