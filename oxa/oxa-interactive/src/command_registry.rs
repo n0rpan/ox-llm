@@ -188,7 +188,6 @@ pub struct Invocation<'a> {
 fn resolve(surface: Surface, words: &[String]) -> Option<Invocation<'_>> {
     COMMANDS
         .iter()
-        .filter(|command| command.surfaces.at(surface) == Availability::Supported)
         .flat_map(|command| {
             std::iter::once(command.path)
                 .chain(command.aliases.iter().copied())
@@ -198,6 +197,7 @@ fn resolve(surface: Surface, words: &[String]) -> Option<Invocation<'_>> {
             words.len() >= path.len() && words.iter().zip(*path).all(|(word, part)| word.as_str() == *part)
         })
         .max_by_key(|(_, path)| path.len())
+        .filter(|(command, _)| command.surfaces.at(surface) == Availability::Supported)
         .map(|(command, path)| Invocation {
             command,
             args: &words[path.len()..],
