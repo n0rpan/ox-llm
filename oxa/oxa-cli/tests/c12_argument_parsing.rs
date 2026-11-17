@@ -3,7 +3,8 @@
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
-use oxa_cli::{parse_args, usage_text, Args, ModeArg, Subcommand};
+use oxa_cli::{parse_args, run_pkg, usage_text, Args, ModeArg, Subcommand};
+use oxa_config::Dirs;
 use oxa_fake::TestEnv;
 use oxa_proto::{codes, FlagSpec, Mode, OxaError, ThinkingLevel, Value};
 
@@ -578,4 +579,145 @@ fn max_tokens_requires_a_positive_integer() {
     for value in ["0", "-1", "NaN", "inf", "1.5", "18446744073709551616", "invalid"] {
         assert_eq!(parse_err(&["--max-tokens", value]).code, codes::USAGE, "{value}");
     }
+}
+
+/// #874: `--trust` is the clearer spelling of `--approve` (project trust, not the tool
+/// permission table) and `--output-format` of `--mode`. Both keep the old spellings.
+#[test]
+fn trust_and_output_format_aliases_match_their_originals() {
+    // The alias parses to exactly the same options as the original spelling.
+    assert_eq!(parse(&["--trust"]), parse(&["--approve"]));
+    assert_eq!(parse(&["--trust"]), parse(&["-a"]));
+    assert_eq!(parse(&["--trust", "hi"]), parse(&["--approve", "hi"]));
+    for (alias, original) in [
+        (&["--output-format", "text"][..], &["--mode", "text"][..]),
+        (&["--output-format", "json"], &["--mode", "json"]),
+        (&["--output-format", "rpc"], &["--mode", "rpc"]),
+        (&["--output-format=json"], &["--mode=json"]),
+    ] {
+        assert_eq!(
+            parse(alias),
+            parse(original),
+            "{alias:?} and {original:?} differ"
+        );
+    }
+    // The last spelling given wins, as for two `--mode` flags.
+    assert_eq!(
+        parse(&["--mode", "json", "--output-format", "rpc"]).mode,
+        Some(ModeArg::Rpc)
+    );
+    assert_eq!(
+        parse(&["--output-format", "rpc", "--mode", "json"]).mode,
+        Some(ModeArg::Json)
+    );
+    // `--trust` is project trust, not the permission table: it never sets the level.
+    let a = parse(&["--trust"]);
+    assert_eq!(a.approve, Some(true));
+    assert_eq!(a.level, None);
+    assert_eq!(a.permission_mode, None);
+    // Errors keep the same code and the same valid values.
+    let alias = parse_err(&["--output-format", "yaml"]);
+    let original = parse_err(&["--mode", "yaml"]);
+    assert_eq!(alias.code, codes::USAGE);
+    assert_eq!(original.code, codes::USAGE);
+    for e in [&alias, &original] {
+        assert!(
+            e.message.contains("\"yaml\"") && e.message.contains("text, json, rpc"),
+            "{}",
+            e.message
+        );
+    }
+    assert_eq!(parse_err(&["--output-format"]).code, codes::USAGE);
+    assert_eq!(parse_err(&["--trust=yes"]).code, codes::USAGE);
+    // The documented conflict follows the alias too.
+    assert_eq!(
+        parse_err(&["--print", "--output-format", "rpc"]).message,
+        "--print cannot be combined with --mode rpc"
+    );
+}
+
+/// #874: `oxa pkg <verb>` is the clearer spelling of the top-level package verbs.
+#[test]
+fn pkg_alias_delegates_the_package_verbs() {
+    for (alias, original) in [
+        (&["pkg", "install", "src"][..], &["install", "src"][..]),
+        (&["pkg", "remove", "src"], &["remove", "src"]),
+        (&["pkg", "uninstall", "src"], &["uninstall", "src"]),
+        (&["pkg", "update"], &["update"]),
+        (
+            &["pkg", "update", "src", "--extensions"],
+            &["update", "src", "--extensions"],
+        ),
+        (&["pkg", "list"], &["list"]),
+        (&["pkg", "list", "-l"], &["list", "-l"]),
+    ] {
+        assert_eq!(
+            parse(alias),
+            parse(original),
+            "{alias:?} and {original:?} differ"
+        );
+    }
+    // The verb is delegated, not validated here: the package parser reports an unknown one.
+    assert_eq!(
+        parse(&["pkg", "bogus"]).subcommand,
+        Some(Subcommand::Pkg("bogus".to_string(), Vec::new()))
+    );
+    // A bare `pkg` names no verb.
+    let e = parse_err(&["pkg"]);
+    assert_eq!(e.code, codes::USAGE);
+    assert!(e.message.contains("install"), "{}", e.message);
+}
+
+/// #874: the `pkg` alias runs the same package code with the same effect.
+#[test]
+fn pkg_alias_has_the_same_effect_as_the_package_verbs() {
+    fn run(env: &TestEnv, words: &[&str]) -> (String, String) {
+        let args = parse(words);
+        let Some(Subcommand::Pkg(verb, rest)) = args.subcommand else {
+            panic!("{words:?} is not a package command");
+        };
+        let dirs = Dirs::under(env.root());
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        assert_eq!(
+            run_pkg(&verb, &rest, &dirs, &env.work(), &mut out, &mut err).unwrap(),
+            0
+        );
+        assert!(err.is_empty(), "{}", String::from_utf8_lossy(&err));
+        let settings = std::fs::read(dirs.project_settings_file(&env.work()))
+            .map(|b| String::from_utf8(b).unwrap())
+            .unwrap_or_default();
+        (String::from_utf8(out).unwrap(), settings)
+    }
+    fn source(env: &TestEnv) -> String {
+        env.write(
+            "package/skills/synthetic/SKILL.md",
+            "---\nname: synthetic\ndescription: Synthetic fixture.\n---\nReturn a short answer.\n",
+        );
+        env.root().join("package").display().to_string()
+    }
+    let alias_env = TestEnv::new();
+    let alias_src = source(&alias_env);
+    let original_env = TestEnv::new();
+    let original_src = source(&original_env);
+    // The source path differs per env, so compare the effect with the path normalised.
+    let (alias_out, alias_settings) = run(&alias_env, &["pkg", "install", "-l", &alias_src]);
+    let (original_out, original_settings) = run(&original_env, &["install", "-l", &original_src]);
+    assert!(alias_out.contains("(project)"), "{alias_out}");
+    assert_eq!(
+        alias_out.replace(&alias_src, "<src>"),
+        original_out.replace(&original_src, "<src>")
+    );
+    assert_eq!(
+        alias_settings.replace(&alias_src, "<src>"),
+        original_settings.replace(&original_src, "<src>")
+    );
+    // Listing through the alias shows the same installed package.
+    let (alias_list, _) = run(&alias_env, &["pkg", "list"]);
+    let (original_list, _) = run(&original_env, &["list"]);
+    assert!(alias_list.contains("synthetic"), "{alias_list}");
+    assert_eq!(
+        alias_list.replace(&alias_src, "<src>"),
+        original_list.replace(&original_src, "<src>")
+    );
 }

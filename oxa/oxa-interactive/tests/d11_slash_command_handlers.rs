@@ -488,3 +488,78 @@ fn the_mode_cycle_is_standard_auto_yolo() {
     assert_eq!(P::Plan.next(), P::Standard);
     assert_eq!(P::DEFAULT, P::Auto);
 }
+
+/// #874: `/permissions` is the clearer spelling of `/mode`, including `--save`; an extension
+/// command with that name still runs first, as for every other built-in.
+#[test]
+fn permissions_alias_matches_mode() {
+    use oxa_proto::{Mode, PermissionMode};
+    let fx = Fx::new();
+    assert!(matches!(
+        fx.run("/permissions").unwrap(),
+        AppAction::Open(SelectorKind::Mode)
+    ));
+    // Both spellings answer the same action for the same arguments.
+    for args in ["standard", "yolo --save", "--save plan"] {
+        let a = fx.run(&format!("/mode {args}")).unwrap();
+        let b = fx.run(&format!("/permissions {args}")).unwrap();
+        match (a, b) {
+            (
+                AppAction::SetPermissionMode {
+                    mode: m1, save: s1, ..
+                },
+                AppAction::SetPermissionMode {
+                    mode: m2, save: s2, ..
+                },
+            ) => assert_eq!((m1, s1), (m2, s2), "{args}"),
+            _ => panic!("{args}: not a permission-mode change"),
+        }
+    }
+    match fx.run("/permissions ask").unwrap() {
+        AppAction::Many(actions) => assert!(matches!(
+            actions.as_slice(),
+            [
+                AppAction::SetPermissionMode {
+                    mode: PermissionMode::Standard,
+                    save: false
+                },
+                AppAction::Session(SessionCmd::SetMode(Mode::Ask))
+            ]
+        )),
+        _ => panic!("/permissions ask: standard, then the ask table"),
+    }
+    // Wrong arguments are refused with the usage line of the spelling that was typed.
+    for (mode_line, perm_line) in [
+        ("/mode root", "/permissions root"),
+        ("/mode ask --save", "/permissions ask --save"),
+        ("/mode --save", "/permissions --save"),
+    ] {
+        let (mode_level, mode_text) = notice(fx.run(mode_line).unwrap());
+        let (perm_level, perm_text) = notice(fx.run(perm_line).unwrap());
+        assert_eq!(mode_level, Level::Error, "{mode_line}");
+        assert_eq!(perm_level, Level::Error, "{perm_line}");
+        assert_eq!(
+            mode_text.replace("/mode", "/permissions"),
+            perm_text,
+            "{perm_line}"
+        );
+        assert!(perm_text.contains("/permissions"), "{perm_line}: {perm_text}");
+    }
+    // `/help` lists the alias.
+    match expect_some("/help", fx.run("/help")) {
+        AppAction::ShowLines(lines) => assert!(
+            lines.iter().any(|l| l.contains("/permissions")),
+            "{lines:?}"
+        ),
+        _ => panic!("/help shows lines"),
+    }
+    // An extension command with the same name still runs first.
+    let mut fx = Fx::new();
+    fx.commands.push(CommandSpec {
+        name: "permissions".to_string(),
+        description: "extension permissions".to_string(),
+        argument_hint: None,
+        source: Source::Extension("ext.js".to_string()),
+    });
+    assert!(fx.run("/permissions").is_none());
+}
