@@ -14,8 +14,8 @@ use crate::selectors::{
     TreeFilter, TreePick, TreeSelector,
 };
 use crate::skin::{
-    env_reduced_motion, frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash,
-    oxa_title_text, oxa_yolo_banner, Animation, ArcadeScene, ArcadeState, HintContext, SPRITE_FRAME_MS,
+    frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash, oxa_title_text,
+    oxa_yolo_banner, reduced_motion, Animation, ArcadeScene, ArcadeState, HintContext, SPRITE_FRAME_MS,
 };
 use crate::{
     activity_text, choose_clip_method, compose_fullscreen, copy_text, debug_dump, dispatch_slash,
@@ -372,12 +372,13 @@ impl<'a> Loop<'a> {
             .and_then(Value::as_bool)
         {
             Some(on) => on,
+            // The shared true words (`1`, `true`, `yes`, `on`), under either name.
             None => opts
                 .env
                 .iter()
                 .rev()
                 .find(|(k, _)| k == "OXA_CLEAR_ON_SHRINK" || k == "PI_CLEAR_ON_SHRINK")
-                .is_some_and(|(_, v)| v == "1"),
+                .is_some_and(|(_, v)| oxa_config::EnvFlag::parse(Some(v)) == oxa_config::EnvFlag::On),
         };
         let header_pending = !view.quiet_startup;
         let open_picker = opts.open_picker;
@@ -474,18 +475,19 @@ impl<'a> Loop<'a> {
     /// `OXA_REDUCED_MOTION`), a theme with colour (not `NO_COLOR` / `TERM=dumb`) and the
     /// Unicode glyph set.
     fn motion(&self) -> bool {
-        self.view.skin == crate::Skin::Oxa
-            && !self.theme.is_plain()
-            && !self.opts.settings.bool("ui.reducedMotion", false)
-            && !env_reduced_motion(&self.opts.env)
+        self.view.skin == crate::Skin::Oxa && !self.theme.is_plain() && !self.reduced_motion()
+    }
+
+    /// `OXA_REDUCED_MOTION` overrides `ui.reducedMotion` for one run when it names one of the
+    /// eight words (`0`/`false`/`no`/`off` turn motion back on).
+    fn reduced_motion(&self) -> bool {
+        reduced_motion(self.opts.settings.bool("ui.reducedMotion", false), &self.opts.env)
     }
 
     /// The `ui.animation` setting (`arcade`, `minimal`, `off`); `Off` whenever motion is.
     /// Like [`Self::motion`], but the ASCII glyph set animates too (in ASCII).
     fn animation(&self) -> Animation {
-        let reduced =
-            self.opts.settings.bool("ui.reducedMotion", false) || env_reduced_motion(&self.opts.env);
-        if self.view.skin.is_oxa() && !self.theme.is_plain() && !reduced {
+        if self.view.skin.is_oxa() && !self.theme.is_plain() && !self.reduced_motion() {
             Animation::from_setting(self.opts.settings.string("ui.animation").as_deref())
         } else {
             Animation::Off

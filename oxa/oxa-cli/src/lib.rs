@@ -47,7 +47,9 @@ mod work_board;
 mod work_checks;
 mod work_cmd;
 
-pub use args::{parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand};
+pub use args::{
+    no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand, NO_TOOL_ALIASES,
+};
 pub use config_cmd::run_config;
 pub use dispatch::{choose_mode, run, RunMode, Stdio};
 pub use help::{requested, text};
