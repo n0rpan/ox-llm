@@ -38,6 +38,7 @@ pub struct LocalStatus {
     pub pid: Option<u32>,
     pub waiting: usize,
     pub stop_reason: Option<StopReason>,
+    pub memory_policy: Option<&'static str>,
 }
 trait Sample: Send + Sync {
     fn sample(&self) -> io::Result<MemorySample>;
@@ -309,6 +310,12 @@ impl Engine for LocalEngine {
             images: model.images,
         })
     }
+    fn local_memory_policy(&self, model: &str) -> Option<&'static str> {
+        let status = self.status();
+        (status.model.as_deref() == Some(model))
+            .then_some(status.memory_policy)
+            .flatten()
+    }
     fn count_tokens(&self, _text: &str) -> Result<u32, OxaError> {
         Err(OxaError::unsupported(
             "exact local token counts before model load",
@@ -384,19 +391,8 @@ impl Engine for LocalEngine {
             .lifecycle
             .load_reserved(operation, launch, Instant::now(), memory)
             .map_err(|error| {
-                if let Some(refusal) = error
-                    .get_ref()
-                    .and_then(|e| e.downcast_ref::<crate::lifecycle::AdmissionRefusal>())
-                {
-                    OxaError::new(codes::ENGINE_DOWN, refusal.to_string())
-                } else if let Some(predicate) = error
-                    .get_ref()
-                    .and_then(|e| e.downcast_ref::<crate::platform::Predicate>())
-                {
-                    OxaError::new(codes::ENGINE_DOWN, predicate.to_string())
-                } else {
-                    down()
-                }
+                startup_diagnostic(&error)
+                    .map_or_else(down, |message| OxaError::new(codes::ENGINE_DOWN, message))
             });
         publish(&self.inner, &state.lifecycle);
         if let Err(error) = loading {
@@ -420,25 +416,20 @@ impl Engine for LocalEngine {
                     let _ = state.lifecycle.unload(Instant::now());
                     state.target = None;
                     publish(&self.inner, &state.lifecycle);
-                    return Err(
-                        if let Some(predicate) = error
-                            .get_ref()
-                            .and_then(|e| e.downcast_ref::<crate::platform::Predicate>())
-                        {
-                            OxaError::new(codes::ENGINE_DOWN, predicate.to_string())
-                        } else if error.kind() == io::ErrorKind::Unsupported {
-                            OxaError::new(
-                                codes::ENGINE_DOWN,
-                                concat!(
-                                    "Local engine version mismatch; install matching oxe-server ",
-                                    env!("CARGO_PKG_VERSION"),
-                                    " beside oxa or set oxa.local.binary."
-                                ),
-                            )
-                        } else {
-                            down()
-                        },
-                    );
+                    return Err(if let Some(message) = startup_diagnostic(&error) {
+                        OxaError::new(codes::ENGINE_DOWN, message)
+                    } else if error.kind() == io::ErrorKind::Unsupported {
+                        OxaError::new(
+                            codes::ENGINE_DOWN,
+                            concat!(
+                                "Local engine version mismatch; install matching oxe-server ",
+                                env!("CARGO_PKG_VERSION"),
+                                " beside oxa or set oxa.local.binary."
+                            ),
+                        )
+                    } else {
+                        down()
+                    });
                 }
             }
             if state.lifecycle.status().state == State::Ready {
@@ -534,6 +525,17 @@ fn advance(inner: &Inner, state: &mut RuntimeState) -> io::Result<()> {
         result
     }
 }
+fn startup_diagnostic(error: &io::Error) -> Option<String> {
+    let detail = error.get_ref()?;
+    detail
+        .downcast_ref::<crate::lifecycle::AdmissionRefusal>()
+        .map(ToString::to_string)
+        .or_else(|| {
+            detail
+                .downcast_ref::<crate::platform::Predicate>()
+                .map(ToString::to_string)
+        })
+}
 fn snapshot(lifecycle: &Lifecycle) -> LocalStatus {
     let status = lifecycle.status();
     LocalStatus {
@@ -542,6 +544,7 @@ fn snapshot(lifecycle: &Lifecycle) -> LocalStatus {
         pid: status.pid,
         waiting: status.waiting,
         stop_reason: status.stop_reason,
+        memory_policy: lifecycle.memory_policy(),
     }
 }
 fn publish(inner: &Inner, lifecycle: &Lifecycle) {
@@ -736,6 +739,65 @@ mod tests {
         assert!(error.message.contains("available=8589934592"));
         assert!(error.message.contains("required=8589934593"));
         assert_eq!(engine.status().pid, None);
+    }
+    #[test]
+    fn scope_policy_is_visible_and_refused_child_is_reaped_before_queue_reuse() {
+        struct Scope {
+            bad: bool,
+            pid: std::sync::atomic::AtomicU32,
+        }
+        impl crate::platform::PlatformLauncher for Scope {
+            fn attach(&self, pid: u32) -> io::Result<crate::platform::Attachment> {
+                self.pid.store(pid, Ordering::Release);
+                let mut sample = Memory {
+                    fail: AtomicBool::new(false),
+                }
+                .sample()?;
+                sample.swap_limit_zero = !self.bad;
+                Ok(crate::platform::Attachment {
+                    sample,
+                    scope: Some("synthetic.scope".into()),
+                })
+            }
+        }
+        for bad in [true, false] {
+            let env = TestEnv::new();
+            let engine = engine(&env, Policy::default());
+            let scope = Arc::new(Scope {
+                bad,
+                pid: std::sync::atomic::AtomicU32::new(0),
+            });
+            engine.inner.state.lock().unwrap().lifecycle.platform = Some(scope.clone());
+            let result = engine.chat(
+                &ChatRequest::new(&prefix(), &[], "fake-model"),
+                &CancelToken::new(),
+                &mut |_| {},
+            );
+            if bad {
+                assert!(result
+                    .unwrap_err()
+                    .message
+                    .contains("engine child memory.swap.max == 0"));
+                assert!(engine.gate.try_acquire().is_err()); // unloaded, not a stale ready permit
+            } else {
+                result.unwrap();
+                assert_eq!(engine.local_memory_policy("fake-model"), Some("scope"));
+                assert_eq!(engine.local_memory_policy("other-model"), None);
+                engine
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .lifecycle
+                    .unload(Instant::now())
+                    .unwrap();
+                engine.inner.wake.notify_all();
+                until(&engine, State::Stopped);
+            }
+            assert_eq!(engine.status().pid, None);
+            assert!(wait_operation(&engine.gate, &CancelToken::new()).is_ok());
+            assert!(!PathBuf::from(format!("/proc/{}", scope.pid.load(Ordering::Acquire))).exists());
+        }
     }
     fn prefix() -> FrozenPrefix {
         FrozenPrefix {

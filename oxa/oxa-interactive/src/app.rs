@@ -781,7 +781,10 @@ fn session_info(s: &Session) -> SessionInfo {
         file: state.session_file,
         id: state.session_id,
         commands: s.commands(),
-        engine_url: info.base_url.clone(),
+        engine_url: match s.inner().engine.local_memory_policy(&state.model) {
+            Some(policy) => format!("{} ({policy})", info.base_url),
+            None => info.base_url.clone(),
+        },
         models,
         queue: info.queue,
         shortcuts: s

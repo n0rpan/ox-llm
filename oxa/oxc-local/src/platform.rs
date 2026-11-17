@@ -5,13 +5,18 @@ use std::{fmt, io};
 /// Attach an already owned child and validate its platform memory policy before readiness.
 /// macOS supplies a separate implementation; Linux cgroup rules are not portable.
 pub trait PlatformLauncher: Send + Sync {
-    fn attach(&self, pid: u32) -> io::Result<MemorySample>;
+    fn attach(&self, pid: u32) -> io::Result<Attachment>;
+}
+#[derive(Debug)]
+pub struct Attachment {
+    pub sample: MemorySample,
+    pub scope: Option<String>,
 }
 #[derive(Debug)]
 pub(crate) struct Predicate(pub &'static str);
 impl fmt::Display for Predicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Local engine check failed: {}. Use an active systemd user session with delegated cgroup v2 memory/pids controllers, or an inherited no-swap container/service; su, sudo -u, cron and logged-out sessions may have no user bus. No swap-enabled fallback is allowed.", self.0)
+        write!(f, "Local engine requires {} with no swap-enabled fallback; run in a delegated systemd user login session or enable its user bus with `loginctl enable-linger $USER` (otherwise use a no-swap service/container).", self.0)
     }
 }
 impl std::error::Error for Predicate {}
@@ -36,9 +41,9 @@ impl LinuxLauncher {
         &self,
         pid: u32,
         start: impl FnOnce(u32, &str) -> io::Result<()>,
-    ) -> io::Result<MemorySample> {
+    ) -> io::Result<Attachment> {
         if self.0.sample().is_ok_and(|s| no_swap(s).is_ok()) {
-            return no_swap(self.0.sample_child(pid)?);
+            return no_swap(self.0.sample_child(pid)?).map(|sample| Attachment { sample, scope: None });
         }
         use std::{
             sync::atomic::{AtomicU64, Ordering},
@@ -54,7 +59,10 @@ impl LinuxLauncher {
         let until = Instant::now() + Duration::from_secs(3);
         loop {
             if self.0.child_in_scope(pid, &unit)? {
-                return no_swap(self.0.sample_child(pid)?);
+                return no_swap(self.0.sample_child(pid)?).map(|sample| Attachment {
+                    sample,
+                    scope: Some(unit),
+                });
             }
             if Instant::now() >= until {
                 return Err(refused("engine child attached to requested no-swap scope"));
@@ -65,7 +73,7 @@ impl LinuxLauncher {
 }
 #[cfg(target_os = "linux")]
 impl PlatformLauncher for LinuxLauncher {
-    fn attach(&self, pid: u32) -> io::Result<MemorySample> {
+    fn attach(&self, pid: u32) -> io::Result<Attachment> {
         self.attach_with(pid, |pid, unit| {
             use zbus::zvariant::Value;
             let address = format!("unix:path=/run/user/{}/bus", nix::unistd::geteuid());
@@ -168,8 +176,9 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert!(sample.swap_limit_zero);
-        assert_eq!(sample.oom_events, 6);
+        assert!(sample.sample.swap_limit_zero);
+        assert!(sample.scope.unwrap().ends_with(".scope"));
+        assert_eq!(sample.sample.oom_events, 6);
     }
     #[test]
     fn unavailable_systemd_is_explicit_and_never_falls_back() {
@@ -183,7 +192,7 @@ mod tests {
             .unwrap_err();
         let message = error.to_string();
         assert!(message.contains("StartTransientUnit(MemorySwapMax=0)"));
-        assert!(message.contains("delegated cgroup v2"));
-        assert!(message.contains("No swap-enabled fallback"));
+        assert!(message.contains("loginctl enable-linger $USER"));
+        assert!(message.contains("no swap-enabled fallback"));
     }
 }

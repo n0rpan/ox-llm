@@ -882,7 +882,11 @@ fn prepare(
         default_edits: settings.default_tools_edits(),
     };
     let status = (!a.no_session).then(|| {
-        Arc::new(crate::status::StatusWriter::new(a.stall_timeout).with_billing(cloud_diagnostics.clone()))
+        Arc::new(
+            crate::status::StatusWriter::new(a.stall_timeout)
+                .with_billing(cloud_diagnostics.clone())
+                .with_engine(&engine, model.as_deref()),
+        )
     });
     let result_facts = Arc::new(
         crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),

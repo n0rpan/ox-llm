@@ -226,6 +226,7 @@ pub struct Lifecycle {
     control: Option<Lease>,
     retain_ready: bool,
     guard: Option<Guard>,
+    scope: Option<String>,
     clock: Arc<Mutex<Clock>>,
     policy: Policy,
     stop_reason: Option<StopReason>,
@@ -243,6 +244,7 @@ impl Lifecycle {
             control: None,
             retain_ready: false,
             guard: None,
+            scope: None,
             clock: Arc::new(Mutex::new(Clock {
                 last_use: now,
                 observed: now,
@@ -375,8 +377,14 @@ impl Lifecycle {
     }
     fn attach(&mut self, now: Instant) -> io::Result<()> {
         if let (Some(platform), Some(pid)) = (&self.platform, self.status().pid) {
-            match platform.attach(pid) {
-                Ok(sample) => self.guard = Some(Guard::new(sample, now)),
+            match platform.attach(pid).and_then(|attached| {
+                crate::platform::no_swap(attached.sample)?;
+                Ok(attached)
+            }) {
+                Ok(attached) => {
+                    self.guard = Some(Guard::new(attached.sample, now));
+                    self.scope = attached.scope;
+                }
                 Err(error) => {
                     self.supervisor.take(); // owned Drop kills the group and reaps before lease release
                     self.model = None;
@@ -439,6 +447,13 @@ impl Lifecycle {
             s.stop(now)?;
         }
         Ok(())
+    }
+    pub(crate) fn memory_policy(&self) -> Option<&'static str> {
+        (self.platform.is_some() && self.status().pid.is_some()).then_some(if self.scope.is_some() {
+            "scope"
+        } else {
+            "inherited"
+        })
     }
     pub(crate) fn reap(&mut self, now: Instant) -> io::Result<()> {
         if let Some(supervisor) = &mut self.supervisor {
