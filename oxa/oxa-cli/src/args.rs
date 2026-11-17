@@ -70,6 +70,8 @@ pub struct Args {
     pub print: bool,
     /// `--output-schema FILE`: validate final text as JSON, with one repair turn.
     pub output_schema: Option<String>,
+    /// Stored goal objective from a UTF-8 file (print/JSON).
+    pub goal: Option<String>,
     /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
     /// Flag a saved active session after this long without progress.
@@ -229,7 +231,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
     ),
     (
-        "oxa work <taskfile> | --issue N --model MODEL",
+        "oxa work <taskfile> | --issue N --model MODEL | board --shadow --repo OWNER/REPO --once",
         "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (
@@ -278,6 +280,7 @@ const OPTIONS: &[(&str, &str)] = &[
         "--continue [id], -c",
         "Continue the named session, or the most recent session when no id is given",
     ),
+    ("--goal <file>", "Pursue and persist this goal until complete, blocked, stalled or interrupted"),
     (
         "--max-time <seconds>",
         "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
@@ -624,6 +627,7 @@ fn parse_flag(
             no_value(inline, flag)?;
             a.resume = true;
         }
+        "--goal" => a.goal = Some(value(argv, i, inline, flag, "a goal file")?),
         "--max-time" => {
             let text = value(argv, i, inline, flag, "a positive number of seconds")?;
             let seconds = text

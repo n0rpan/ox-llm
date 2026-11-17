@@ -858,6 +858,11 @@ impl Editor {
             self.push_undo();
             self.kill_push("\n".to_string(), true, acc);
             self.merge_into_prev(l);
+        } else if !self.st.lines[l].is_empty() {
+            // Start of the first line (e.g. after an Up-arrow recall): clear the line.
+            self.push_undo();
+            let deleted = std::mem::take(&mut self.st.lines[l]);
+            self.kill_push(deleted, true, acc);
         } else {
             return false;
         }

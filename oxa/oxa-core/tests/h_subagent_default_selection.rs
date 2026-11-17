@@ -6,7 +6,7 @@
 //! Isolation: `oxa_fake::TestEnv`; the host is a mock answering `EngineLimits` only.
 
 use oxa_config::Settings;
-use oxa_core::{resolve_toolset, SubagentHooks, ToolSelection};
+use oxa_core::{resolve_toolset, AgentDef, SubagentHooks, ToolSelection};
 use oxa_proto::{
     codes, Access, Exposure, Hooks, Host, HostAction, OxaError, Source, Tool, ToolClass, ToolCtx, ToolOutput,
     ToolSpec, Value,
@@ -86,7 +86,16 @@ fn all_tools(model: Model, s: &Settings) -> Vec<Arc<dyn Tool>> {
     all.push(plain("ext_tool", Source::Extension("/x/ext.js".into())));
     // `hooks.rs` does not build the hook set when the setting is false (nor in a child).
     if s.get(SubagentHooks::SETTING_ENABLED).and_then(Value::as_bool) != Some(false) {
-        let h = SubagentHooks::new(PathBuf::from("/nonexistent/oxa"), Vec::new()).with_settings(s);
+        let agent = AgentDef {
+            name: "worker".into(),
+            description: "A test worker".into(),
+            tools: None,
+            model: None,
+            system_prompt: String::new(),
+            path: PathBuf::from("/agents/worker.md"),
+            project: false,
+        };
+        let h = SubagentHooks::new(PathBuf::from("/nonexistent/oxa"), vec![agent]).with_settings(s);
         h.attach(Arc::new(Limits(limits(model))));
         all.extend(h.tools());
     }

@@ -317,9 +317,7 @@ pub(crate) struct Loop<'a> {
     /// Assume focus until the terminal reports otherwise (unsupported terminals stay quiet).
     focused: bool,
     run_finished: bool,
-    /// The user aborted the run and it has not reported a new turn since. Input typed in that
-    /// window is a new prompt, not steering: the run is ending and would drop the steering
-    /// message (#699). Cleared when a run starts a turn.
+    /// Enter after explicit Ctrl+C starts a new prompt, even before settlement is observed.
     abort_requested: bool,
     pub(crate) dirty: bool,
     /// Ctrl+C was pressed on an empty editor; a second press within two seconds quits.
@@ -770,8 +768,28 @@ impl<'a> Loop<'a> {
                         inbox.retry();
                     }
                     self.run_finished = true;
+                    self.abort_requested = false;
                 }
                 apply_event(&mut self.vm, &e);
+            }
+            WorkerMsg::UnsentPrompt { text, mut parts } => {
+                self.editor.prepend_text(&text);
+                parts.append(&mut self.pending_parts);
+                self.pending_parts = parts;
+                if !self.pending_parts.is_empty() {
+                    self.vm.widgets_above.insert(
+                        "oxa.attachments".to_string(),
+                        vec![format!(
+                            "{} image(s) attached to the next prompt",
+                            self.pending_parts.len()
+                        )],
+                    );
+                }
+                self.push_notice(
+                    Level::Warning,
+                    "Recovery prompt was not sent after the session changed; it is back in the editor."
+                        .to_string(),
+                );
             }
             WorkerMsg::Done(result) => {
                 // The wire may have changed: the same draft is a new prefill.
@@ -827,6 +845,7 @@ impl<'a> Loop<'a> {
     /// and its tree, selectors and attachments are closed. Abort, steer and follow-up target
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
+        self.abort_requested = false;
         // Join the old callback before draining its queue back into the editor.
         self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
@@ -1217,6 +1236,7 @@ impl<'a> Loop<'a> {
             self.handle.cancel_background();
         }
         match ev {
+            InputEvent::TerminalClosed => self.quit = Some(129),
             InputEvent::Key(key) => self.key(term, key),
             InputEvent::Paste(text) => self.paste(&text),
             InputEvent::Mouse(m) => self.mouse(term, m),
@@ -1329,11 +1349,9 @@ impl<'a> Loop<'a> {
         if self.opts.keymap.actions_for(&key.id).contains(&"app.clear")
             && (self.running() || matches!(self.vm.status.activity, Activity::Retrying { .. }))
         {
+            self.abort_requested = true;
             self.handle.abort();
             self.handle.abort_retry();
-            // The run is ending: a prompt typed before it settles is a new prompt, not
-            // steering on a run that will drop it (#699).
-            self.abort_requested = true;
             self.dialogs.key(&key, &self.opts.keymap);
             self.restore_queue();
             return;
@@ -1433,6 +1451,11 @@ impl<'a> Loop<'a> {
             return;
         }
         if has("app.message.followUp") {
+            if !self.running() {
+                // Idle: Alt+Enter adds a line instead of sending (queueing is for a live run).
+                self.editor.insert("\n");
+                return;
+            }
             let text = self.editor.expanded_text();
             if text.trim().is_empty() {
                 return;
@@ -1444,8 +1467,7 @@ impl<'a> Loop<'a> {
                 self.wake_queued();
                 self.sync_queue();
             } else {
-                let parts = self.take_attachments();
-                self.send(SessionCmd::Prompt { text, parts });
+                self.send_prompt(text);
             }
             return;
         }
@@ -1715,9 +1737,23 @@ impl<'a> Loop<'a> {
             self.wake_queued();
             self.sync_queue();
         } else {
-            let parts = self.take_attachments();
-            self.send(SessionCmd::Prompt { text: trimmed, parts });
+            self.send_prompt(trimmed);
         }
+    }
+
+    /// Both Enter forms use the same explicit recovery path and retain attachments.
+    fn send_prompt(&mut self, text: String) {
+        let recovering = std::mem::take(&mut self.abort_requested);
+        let parts = self.take_attachments();
+        self.send(if recovering {
+            SessionCmd::RecoveryPrompt {
+                handle: self.handle.clone(),
+                text,
+                parts,
+            }
+        } else {
+            SessionCmd::Prompt { text, parts }
+        });
     }
 
     /// Run a built-in slash command line; `false` when it is not one.
@@ -2679,6 +2715,7 @@ impl<'a> Loop<'a> {
             version: env!("CARGO_PKG_VERSION").to_string(),
             resources: self.resources.clone(),
             engine_url: self.session.engine_url.clone(),
+            memory_policy: self.session.memory_policy,
             model: self.vm.status.model.clone(),
             model_remote: self.vm.status.model_remote,
             model_provider: self.vm.status.model_provider,
@@ -2910,6 +2947,13 @@ impl<'a> Loop<'a> {
             self.vm.status = saved;
         } else {
             lines.extend(render_footer(&self.vm, width, &self.theme));
+        }
+        // Regular mode commits its splash once; policy changes belong in the live
+        // region so a cold load, switch or idle unload remains observable.
+        if !self.fullscreen {
+            if let Some(policy) = self.session.memory_policy {
+                lines.push(self.theme.dim(&format!("Memory: {policy}")));
+            }
         }
         (lines, cursor)
     }
@@ -3223,13 +3267,14 @@ fn write_private(path: &Path, text: &str) -> Result<(), OxaError> {
 /// The project trust question (D10 `ask_trust`'s question) drawn directly on `term`, for the
 /// one question asked before the session (and with it the app loop) exists. `None` when
 /// dismissed (Escape, Ctrl+C, Ctrl+D): untrusted for this run, asked again next time.
+/// Terminal loss is an error, so callers cannot continue startup after the terminal disappears.
 pub fn ask_trust_on(
     term: &mut dyn Terminal,
     keymap: &Keymap,
     theme: &Theme,
     cwd: &str,
     gated: &[String],
-) -> Option<TrustChoice> {
+) -> Result<Option<TrustChoice>, OxaError> {
     let (title, options, choices) = trust_question(cwd, gated);
     let mut host = DialogHost::new();
     let mut vm = ViewModel::default();
@@ -3245,10 +3290,10 @@ pub fn ask_trust_on(
         now_ms(),
     );
     let mut renderer = Renderer::new(ScreenMode::Main);
-    let answer = loop {
+    let answer = 'dialog: loop {
         match rx.try_recv() {
-            Ok(answer) => break answer,
-            Err(TryRecvError::Disconnected) => break None,
+            Ok(answer) => break Ok(answer),
+            Err(TryRecvError::Disconnected) => break Ok(None),
             Err(TryRecvError::Empty) => {}
         }
         let (cols, _) = term.size();
@@ -3256,6 +3301,13 @@ pub fn ask_trust_on(
         renderer.draw(&Frame { lines, cursor: None }, term);
         term.flush();
         for ev in term.poll(250) {
+            if ev == InputEvent::TerminalClosed {
+                host.close_all();
+                break 'dialog Err(OxaError::new(
+                    oxa_proto::codes::TERMINAL_CLOSED,
+                    "terminal disconnected",
+                ));
+            }
             if let InputEvent::Key(key) = ev {
                 // Ctrl+C and Ctrl+D leave the question unanswered.
                 if keymap.matches(&key.id, "app.clear") || keymap.matches(&key.id, "app.exit") {
@@ -3268,7 +3320,7 @@ pub fn ask_trust_on(
     };
     renderer.clear(term);
     term.flush();
-    answer.and_then(|i| choices.get(i).copied())
+    answer.map(|answer| answer.and_then(|i| choices.get(i).copied()))
 }
 
 /// [`ask_trust_on`] on the process terminal (raw mode for the time of the question).
@@ -3285,7 +3337,7 @@ pub fn ask_trust_interactive(
         ..TermOpts::default()
     })?;
     let theme = resolve_theme("dark", &[], term.caps().color, None).unwrap_or_else(|_| Theme::plain());
-    let choice = ask_trust_on(&mut term, keymap, &theme, cwd, gated);
+    let choice = ask_trust_on(&mut term, keymap, &theme, cwd, gated)?;
     drop(term);
     Ok(choice)
 }

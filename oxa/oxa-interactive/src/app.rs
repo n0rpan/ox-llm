@@ -48,7 +48,8 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
             .file
             .as_deref()
             .is_some_and(|f| has_conversation(opts.store.as_ref(), f, &info.id));
-        if talked {
+        // A vanished terminal cannot receive the resume hint; println! would panic on EIO.
+        if talked && code != 129 {
             for line in exit_lines(info.file.as_deref(), &info.id) {
                 println!("{line}");
             }
@@ -513,6 +514,7 @@ pub fn worker_loop_with(
     // One wake in flight is enough; the flag is shared with the waker of the session in force.
     let pending = Arc::new(AtomicBool::new(false));
     install_wake(&session.handle(), &wake, &pending);
+    let mut memory_status = session.inner().engine.local_memory_status(&session.state().model);
     let _ = out.send(WorkerMsg::Session(session_info(&session)));
     let mut session = Some(session);
     // Commands are taken through a backlog so a `Shutdown` anywhere behind queued work is
@@ -526,6 +528,13 @@ pub fn worker_loop_with(
         // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
         // before the next command (the commands queued behind it run in the new session).
         if let Some(s) = session.as_mut() {
+            // A prompt/preload may load the child; idle unload may remove it without
+            // a session swap. Publish only changed in-process observations (no I/O).
+            let observed = s.inner().engine.local_memory_status(&s.state().model);
+            if observed != memory_status {
+                memory_status = observed;
+                let _ = out.send(WorkerMsg::Session(session_info(s)));
+            }
             s.enable_swap();
             let asked = match s.take_swap_request() {
                 None => None,
@@ -848,6 +857,11 @@ fn session_info(s: &Session) -> SessionInfo {
         id: state.session_id,
         commands: s.commands(),
         engine_url: info.base_url.clone(),
+        memory_policy: s
+            .inner()
+            .engine
+            .local_memory_status(&state.model)
+            .map(|(_, policy, _)| policy),
         models,
         queue: info.queue,
         shortcuts: s
@@ -1611,6 +1625,14 @@ fn execute(
                 Ok(())
             };
             (result, false)
+        }
+        SessionCmd::RecoveryPrompt { handle, text, parts } => {
+            if handle.same_instance(&s.handle()) {
+                (run_prompt(s, text, parts, sink, ui), false)
+            } else {
+                let _ = out.send(WorkerMsg::UnsentPrompt { text, parts });
+                (Ok(()), false)
+            }
         }
         SessionCmd::Prompt { text, parts } => (run_prompt(s, text, parts, sink, ui), false),
         SessionCmd::Compact { instructions } => {
