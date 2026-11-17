@@ -10,9 +10,29 @@ use syntect::util::LinesWithEndings;
 const PLAIN: &str = "mdCodeBlock";
 
 /// The bundled syntax set, loaded once on first use.
+static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+
 fn syntaxes() -> &'static SyntaxSet {
-    static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+/// V022 (#884): load the bundled syntax set now, so the first code block does not pay for it.
+///
+/// One bounded load per process: the set lives in a `OnceLock`, so a second call is a no-op and
+/// the highlight output is the same whether or not this ran. `true` when this call did the load.
+/// The caller decides *when*: the interactive loop is meant to call it after the first editable
+/// frame, off the UI thread, so startup never waits for it. Nothing calls it at startup.
+pub fn warm_syntaxes() -> bool {
+    if SYNTAXES.get().is_some() {
+        return false;
+    }
+    let _ = syntaxes();
+    true
+}
+
+/// V022 (#884): whether the bundled syntax set is loaded (the warm-up ran, or a highlight did).
+pub fn syntaxes_loaded() -> bool {
+    SYNTAXES.get().is_some()
 }
 
 /// pi-style language names that syntect knows only by another token (extension or name).
