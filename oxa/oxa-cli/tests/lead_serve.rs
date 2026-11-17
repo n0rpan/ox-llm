@@ -33,6 +33,30 @@ fn get(port: u16, path: &str, authority: &str, extra: &str) -> String {
     reply
 }
 
+fn start(test: &TestEnv, sample: &std::path::Path) -> Running {
+    let mut child = Running(
+        command(test)
+            .args(["lead", "serve"])
+            .env("OXA_LEAD_BOARD_LOG", sample)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = child.0.stdout.take().unwrap();
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stdout).read_line(&mut line);
+        let _ = send.send(line);
+    });
+    assert!(receive
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap()
+        .contains("listening"));
+    child
+}
+
 #[test]
 fn registered_help_and_menu_work_without_home_or_runtime_inputs() {
     let test = TestEnv::new();
@@ -103,26 +127,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     .unwrap();
     std::fs::set_permissions(&sample, std::fs::Permissions::from_mode(0o600)).unwrap();
     drop(reservation);
-    let mut child = Running(
-        command(&test)
-            .args(["lead", "serve"])
-            .env("OXA_LEAD_BOARD_LOG", &sample)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let stdout = child.0.stdout.take().unwrap();
-    let (send, receive) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut line = String::new();
-        let _ = BufReader::new(stdout).read_line(&mut line);
-        let _ = send.send(line);
-    });
-    assert!(receive
-        .recv_timeout(Duration::from_secs(10))
-        .unwrap()
-        .contains("listening"));
+    let child = start(&test, &sample);
     let authority = format!("127.0.0.1:{port}");
     let page = get(port, "/", &authority, "");
     assert!(page.starts_with("HTTP/1.1 200"));
@@ -140,4 +145,33 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     assert!(event.contains("event: snapshot\ndata: <main>"));
     assert!(event.contains("Board unavailable"));
     assert!(!event.contains(sample.to_str().unwrap()));
+    drop(child);
+    use std::os::unix::fs::MetadataExt;
+    let uid = std::fs::metadata(test.root()).unwrap().uid();
+    let proxy = |uid| {
+        serde_json::json!({"oxa":{"lead":{"serve":{
+            "enabled":true,"port":port,"identity":"tailscale",
+            "allowed_identities":["owner@example.invalid"],
+            "proxy":{"uid":uid,"authority":"lead.example.invalid"}
+        }}}})
+        .to_string()
+    };
+    test.write("home/.oxa/agent/settings.json", &proxy(uid));
+    let child = start(&test, &sample);
+    let login = "Tailscale-User-Login: owner@example.invalid\r\n";
+    assert!(get(port, "/", "lead.example.invalid", login).starts_with("HTTP/1.1 200"));
+    for (host, header) in [
+        ("attacker.invalid", login),
+        ("lead.example.invalid", ""),
+        (
+            "lead.example.invalid",
+            "Tailscale-User-Login: guest@example.invalid\r\n",
+        ),
+    ] {
+        assert!(get(port, "/", host, header).starts_with("HTTP/1.1 403"));
+    }
+    drop(child);
+    test.write("home/.oxa/agent/settings.json", &proxy(uid ^ 1));
+    let _child = start(&test, &sample);
+    assert!(get(port, "/", "lead.example.invalid", login).starts_with("HTTP/1.1 403"));
 }

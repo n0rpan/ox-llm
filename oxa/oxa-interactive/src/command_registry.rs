@@ -147,7 +147,11 @@ commands! {
     LeadServe {
         path: &["lead", "serve"], aliases: &[], summary: "Serve the local lead board",
         arguments: &[],
-        surfaces: LEAD_PENDING,
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            menu: Availability::Supported,
+            ..LEAD_PENDING
+        },
         requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
     },
     LeadBoard {
@@ -322,7 +326,7 @@ mod tests {
             let declaration = COMMANDS.iter().find(|entry| entry.id == *id).unwrap();
             assert_eq!(declaration.path, *path);
             let input: Vec<_> = path.iter().map(|part| (*part).to_string()).collect();
-            let installed = matches!(id, CommandId::Lead);
+            let installed = matches!(id, CommandId::Lead | CommandId::LeadServe);
             assert_eq!(
                 parse_cli(&input).map(|invocation| invocation.command.id),
                 installed.then_some(*id)

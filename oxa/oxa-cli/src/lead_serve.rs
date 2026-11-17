@@ -1,5 +1,5 @@
 //! Minimal local board caller. Transport, policy, peer proof and rendering stay shared.
-use crate::lead_access::{self, Config, IdentityProvider, Mode, VerifiedIdentity};
+use crate::lead_access::{self, proxy, Config, IdentityProvider, Mode, VerifiedIdentity};
 use oxa_config::{Dirs, Env};
 use oxa_proto::{codes, OxaError};
 use std::{
@@ -14,10 +14,16 @@ fn invalid(reason: &str) -> OxaError {
     OxaError::new(codes::INVALID, reason)
 }
 
-struct LocalProof(bool);
-impl IdentityProvider for LocalProof {
+enum Proof<'a> {
+    Local(bool),
+    Proxy(proxy::Proxy<'a>),
+}
+impl IdentityProvider for Proof<'_> {
     fn verified(&self) -> Option<VerifiedIdentity<'_>> {
-        self.0.then_some(VerifiedIdentity::LocalOwner)
+        match self {
+            Self::Local(owner) => owner.then_some(VerifiedIdentity::LocalOwner),
+            Self::Proxy(proof) => proof.verified(),
+        }
     }
 }
 
@@ -30,7 +36,13 @@ fn authorized(
     let Ok(peer) = stream.peer_addr() else {
         return false;
     };
-    let proof = LocalProof(crate::lead_peer::owner_uid(stream) == Ok(uid));
+    let proof = match config.mode() {
+        Mode::Local => Proof::Local(crate::lead_peer::owner_uid(stream) == Ok(uid)),
+        Mode::Tailscale => match proxy::verify(config, stream, request.forwarded_login) {
+            Ok(proof) => Proof::Proxy(proof),
+            Err(_) => return false,
+        },
+    };
     lead_access::read_only(
         config,
         request.method,
@@ -87,10 +99,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     if !config.enabled() {
         return Err(invalid("lead serve is disabled in user settings"));
     }
-    // A future provider must supply independently verified proxy authority and identity.
-    if config.mode() != Mode::Local {
-        return Err(invalid("lead proxy identity provider is unavailable"));
-    }
+    proxy::pre_bind(&config).map_err(invalid)?;
     let uid = std::fs::metadata("/proc/self")
         .map_err(|_| invalid("OS owner identity unavailable"))?
         .uid();
