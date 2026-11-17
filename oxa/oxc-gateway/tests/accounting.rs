@@ -71,7 +71,7 @@ fn subscription_reserves_full_window_and_settles_zero_usd_with_actual_token_coun
         .err()
         .unwrap();
     assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let row = hold
         .finish(
             &Usage {
@@ -93,7 +93,7 @@ fn subscription_reserves_full_window_and_settles_zero_usd_with_actual_token_coun
     let mut next = other
         .reserve_subscription(limits, true, &subscription(), 20)
         .unwrap();
-    next.mark_forwarded();
+    next.mark_forwarded().unwrap();
     next.finish(
         &Usage {
             prompt: Some(21),
@@ -120,7 +120,7 @@ fn clean_subscription_refusals_release_tokens_but_still_consume_request_allowanc
         let mut hold = Budget::new(path.clone())
             .reserve_subscription(limits, true, &subscription(), 20)
             .unwrap();
-        hold.mark_forwarded();
+        hold.mark_forwarded().unwrap();
         let row = hold
             .finish(&Usage::default(), Outcome::Refused, |row| append(&path, row))
             .unwrap();
@@ -181,7 +181,7 @@ fn unknown_subscription_outcomes_never_refund_the_token_reservation() {
         let mut hold = Budget::new(path.clone())
             .reserve_subscription(limits, true, &subscription(), 20)
             .unwrap();
-        hold.mark_forwarded();
+        hold.mark_forwarded().unwrap();
         let row = hold.finish(&usage, outcome, |row| append(&path, row)).unwrap();
         assert_eq!(row["subscription_tokens"], 120);
         assert_eq!(row["usage_missing"], true);
@@ -238,7 +238,7 @@ fn subscription_audit_failure_closes_both_classes_across_independent_instances()
     let mut hold = Budget::new(path.clone())
         .reserve_subscription(limits, true, &subscription(), 20)
         .unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     assert!(hold
         .finish(&Usage::default(), Outcome::Failed, |_| Err(
             io::ErrorKind::Other.into()

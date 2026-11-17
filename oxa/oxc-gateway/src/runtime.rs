@@ -505,7 +505,9 @@ impl<'a> Call<'a> {
     }
     pub fn mark_forwarded(&mut self) {
         self.forwarded = true;
-        self.hold.as_mut().expect("unsettled call").mark_forwarded();
+        // The recheck is fallible. Turning its refusal into a stopped stream at
+        // this boundary is a later slice, so the value is discarded here.
+        let _ = self.hold.as_mut().expect("unsettled call").mark_forwarded();
     }
     pub fn observe(&mut self, chunk: &Value) {
         if self.model.info().provider == Provider::OpenCode {
