@@ -83,11 +83,7 @@ pub fn publish_reserved(
     for prefix in ["board-", "p1-board-"] {
         let name = format!("{prefix}{key}.txt");
         // Check pending before started: the consumer's one-way rename cannot hide both.
-        for path in [
-            queue.join(&name),
-            started.join(&name),
-            started.join(format!("native-{name}")),
-        ] {
+        for path in [queue.join(&name), started.join(&name)] {
             match fs::symlink_metadata(path) {
                 Ok(metadata) => {
                     if !metadata.is_file() || metadata.mode() & 0o077 != 0 {
@@ -98,6 +94,15 @@ pub fn publish_reserved(
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                 Err(e) => return io(Err(e)),
             }
+        }
+        let native = started.join(format!("native-{prefix}{key}"));
+        match fs::symlink_metadata(&native) {
+            Ok(_) => {
+                directory(&native)?;
+                return Ok(false);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return io(Err(error)),
         }
     }
     if !reserve()? {
@@ -143,7 +148,24 @@ pub fn take_native_packet(queue: &Path, binding: &crate::board::NativeBinding) -
     for prefix in ["board-", "p1-board-"] {
         let name = format!("{prefix}{}.txt", binding.key);
         let ready = queue.join(&name);
-        let active = started.join(format!("native-{name}"));
+        let active_dir = started.join(format!("native-{prefix}{}", binding.key));
+        let active_name = format!("{}.txt", binding.native_task_id);
+        let active = active_dir.join(&active_name);
+        match fs::symlink_metadata(&active_dir) {
+            Ok(_) => {
+                directory(&active_dir)?;
+                let mut entries = io(fs::read_dir(&active_dir))?;
+                if let Some(entry) = io(entries.next().transpose())? {
+                    if entry.file_name() != std::ffi::OsStr::new(&active_name)
+                        || io(entries.next().transpose())?.is_some()
+                    {
+                        return Err("native started packet belongs to another lease generation".into());
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return io(Err(error)),
+        }
         // A started packet belonging to another consumer is never adopted.
         match fs::symlink_metadata(started.join(&name)) {
             Ok(_) => return Err("board packet is already started by another consumer".into()),
@@ -180,7 +202,15 @@ pub fn take_native_packet(queue: &Path, binding: &crate::board::NativeBinding) -
         return Err("native queue packet exceeds capacity".into());
     }
     if !renamed {
-        io(fs::rename(ready, active))?;
+        let active_dir = active.parent().ok_or("missing native started directory")?;
+        match fs::DirBuilder::new().mode(0o700).create(active_dir) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(error) => return io(Err(error)),
+        }
+        directory(active_dir)?;
+        io(fs::rename(ready, &active))?;
+        io(io(File::open(active_dir))?.sync_all())?;
         io(io(File::open(started))?.sync_all())?;
         io(lock.sync_all())?;
     }
