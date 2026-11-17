@@ -56,6 +56,7 @@ impl RunOutcome {
                 _ => 8,
             },
             Self::Failed(class) => match *class {
+                codes::TERMINAL_CLOSED => 129,
                 codes::USAGE | codes::UNSUPPORTED_IN_OXA | codes::ENGINE_DOWN => 2,
                 _ => 1,
             },
@@ -73,5 +74,20 @@ impl RunOutcome {
         };
         serde_json::json!({"type":"oxa_result", "outcome":outcome,
             "error_class":error_class, "exit_code":self.exit_code()})
+    }
+}
+
+#[cfg(test)]
+mod terminal_loss_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_loss_has_a_distinct_machine_class_and_hangup_exit() {
+        let outcome = RunOutcome::from_error(&OxaError::new(codes::TERMINAL_CLOSED, "closed"));
+        assert_eq!(outcome, RunOutcome::Failed(codes::TERMINAL_CLOSED));
+        assert_eq!(outcome.exit_code(), 129);
+        assert_eq!(outcome.record()["error_class"], "terminal_closed");
+        assert_eq!(outcome.record()["exit_code"], 129);
+        assert_eq!(RunOutcome::Interrupted.exit_code(), 130);
     }
 }

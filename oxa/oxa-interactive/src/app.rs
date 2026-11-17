@@ -48,7 +48,8 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
             .file
             .as_deref()
             .is_some_and(|f| has_conversation(opts.store.as_ref(), f, &info.id));
-        if talked {
+        // A vanished terminal cannot receive the resume hint; println! would panic on EIO.
+        if talked && code != 129 {
             for line in exit_lines(info.file.as_deref(), &info.id) {
                 println!("{line}");
             }

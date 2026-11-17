@@ -1216,6 +1216,7 @@ impl<'a> Loop<'a> {
             self.handle.cancel_background();
         }
         match ev {
+            InputEvent::TerminalClosed => self.quit = Some(129),
             InputEvent::Key(key) => self.key(term, key),
             InputEvent::Paste(text) => self.paste(&text),
             InputEvent::Mouse(m) => self.mouse(term, m),
@@ -3241,13 +3242,14 @@ fn write_private(path: &Path, text: &str) -> Result<(), OxaError> {
 /// The project trust question (D10 `ask_trust`'s question) drawn directly on `term`, for the
 /// one question asked before the session (and with it the app loop) exists. `None` when
 /// dismissed (Escape, Ctrl+C, Ctrl+D): untrusted for this run, asked again next time.
+/// Terminal loss is an error, so callers cannot continue startup after the terminal disappears.
 pub fn ask_trust_on(
     term: &mut dyn Terminal,
     keymap: &Keymap,
     theme: &Theme,
     cwd: &str,
     gated: &[String],
-) -> Option<TrustChoice> {
+) -> Result<Option<TrustChoice>, OxaError> {
     let (title, options, choices) = trust_question(cwd, gated);
     let mut host = DialogHost::new();
     let mut vm = ViewModel::default();
@@ -3263,10 +3265,10 @@ pub fn ask_trust_on(
         now_ms(),
     );
     let mut renderer = Renderer::new(ScreenMode::Main);
-    let answer = loop {
+    let answer = 'dialog: loop {
         match rx.try_recv() {
-            Ok(answer) => break answer,
-            Err(TryRecvError::Disconnected) => break None,
+            Ok(answer) => break Ok(answer),
+            Err(TryRecvError::Disconnected) => break Ok(None),
             Err(TryRecvError::Empty) => {}
         }
         let (cols, _) = term.size();
@@ -3274,6 +3276,13 @@ pub fn ask_trust_on(
         renderer.draw(&Frame { lines, cursor: None }, term);
         term.flush();
         for ev in term.poll(250) {
+            if ev == InputEvent::TerminalClosed {
+                host.close_all();
+                break 'dialog Err(OxaError::new(
+                    oxa_proto::codes::TERMINAL_CLOSED,
+                    "terminal disconnected",
+                ));
+            }
             if let InputEvent::Key(key) = ev {
                 // Ctrl+C and Ctrl+D leave the question unanswered.
                 if keymap.matches(&key.id, "app.clear") || keymap.matches(&key.id, "app.exit") {
@@ -3286,7 +3295,7 @@ pub fn ask_trust_on(
     };
     renderer.clear(term);
     term.flush();
-    answer.and_then(|i| choices.get(i).copied())
+    answer.map(|answer| answer.and_then(|i| choices.get(i).copied()))
 }
 
 /// [`ask_trust_on`] on the process terminal (raw mode for the time of the question).
@@ -3303,7 +3312,7 @@ pub fn ask_trust_interactive(
         ..TermOpts::default()
     })?;
     let theme = resolve_theme("dark", &[], term.caps().color, None).unwrap_or_else(|_| Theme::plain());
-    let choice = ask_trust_on(&mut term, keymap, &theme, cwd, gated);
+    let choice = ask_trust_on(&mut term, keymap, &theme, cwd, gated)?;
     drop(term);
     Ok(choice)
 }

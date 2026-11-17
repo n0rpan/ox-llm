@@ -1935,6 +1935,7 @@ fn exit_code(e: &OxaError) -> i32 {
     match e.code {
         codes::USAGE | codes::ENGINE_DOWN | codes::UNSUPPORTED_IN_OXA => 2,
         codes::BUDGET_EXHAUSTED => oxa_proto::EXIT_BUDGET,
+        codes::TERMINAL_CLOSED => 129,
         _ => 1,
     }
 }
