@@ -34,23 +34,34 @@ impl LimitWatcher {
         // subsequent signal takes its default action even if the watcher is blocked.
         // A deadline also arms escalation, so SIGTERM can stop a stuck final turn.
         let interrupted = Arc::new(AtomicBool::new(false));
+        // As for SIGTERM, the first SIGINT arms its own default-action escalation.
+        let interrupt_escalate =
+            signal_hook::flag::register_conditional_default(signal_hook::consts::SIGINT, interrupted.clone())
+                .map_err(|error| OxaError::io("cannot install SIGINT escalation", &error))?;
         let interrupt_signal = signal_hook::flag::register(signal_hook::consts::SIGINT, interrupted.clone())
-            .map_err(|error| OxaError::io("cannot install the SIGINT handler", &error))?;
-        let mut signals = vec![interrupt_signal];
+            .map_err(|error| {
+                signal_hook::low_level::unregister(interrupt_escalate);
+                OxaError::io("cannot install the SIGINT handler", &error)
+            })?;
+        let mut signals = vec![interrupt_signal, interrupt_escalate];
         if !supervised_child {
             let escalate = signal_hook::flag::register_conditional_default(
                 signal_hook::consts::SIGTERM,
                 terminated.clone(),
             )
             .map_err(|error| {
-                signal_hook::low_level::unregister(interrupt_signal);
+                for &signal in &signals {
+                    signal_hook::low_level::unregister(signal);
+                }
                 OxaError::io("cannot install SIGTERM escalation", &error)
             })?;
             let signal = match signal_hook::flag::register(signal_hook::consts::SIGTERM, terminated.clone()) {
                 Ok(signal) => signal,
                 Err(error) => {
                     signal_hook::low_level::unregister(escalate);
-                    signal_hook::low_level::unregister(interrupt_signal);
+                    for &signal in &signals {
+                        signal_hook::low_level::unregister(signal);
+                    }
                     return Err(OxaError::io("cannot install the SIGTERM handler", &error));
                 }
             };
