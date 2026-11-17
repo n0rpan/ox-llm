@@ -370,9 +370,7 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
     }
 }
 
-#[allow(dead_code)]
-#[path = "openai.rs"]
-mod openai;
+use crate::mock_openai as openai;
 
 #[test]
 fn go_stream_usage_must_follow_a_validated_terminal_transition() {
