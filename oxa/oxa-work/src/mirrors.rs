@@ -1,5 +1,7 @@
 //! Phase-2 adapter interface only. The phase-1 board CLI never calls this module.
-use crate::board::assignment::{valid_worker_id, ManualAuthority, MirrorObservation, MirrorPlan};
+use crate::board::assignment::{
+    valid_worker_id, ManualAuthority, MirrorObservation, MirrorPlan, ProjectWorker,
+};
 use crate::Result;
 
 /// An authenticated orchestrator adapter supplies these operations, with scrubbed errors.
@@ -35,9 +37,14 @@ pub fn reconcile(
     for label in &plan.add_labels {
         sink.add_worker_label(number, label)?;
     }
-    if let Some(worker) = &plan.project_worker {
-        if sink.project_worker(number)?.as_deref() != worker.as_deref() {
-            sink.set_project_worker(number, worker.as_deref())?;
+    let worker = match &plan.project_worker {
+        ProjectWorker::Unchanged => None,
+        ProjectWorker::Clear => Some(None),
+        ProjectWorker::Set(worker) => Some(Some(worker.as_str())),
+    };
+    if let Some(worker) = worker {
+        if sink.project_worker(number)?.as_deref() != worker {
+            sink.set_project_worker(number, worker)?;
         }
     }
     Ok(Some(plan))
