@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 mod claims;
 pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, ReleaseRecord};
 pub mod assignment;
+pub mod landing;
 mod intake;
 pub use intake::{ImportState, Issue, Snapshot};
 
