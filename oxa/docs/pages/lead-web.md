@@ -22,12 +22,12 @@ user layer for your own identity and chosen ports, leaving it off until ready:
 ```json
 {"oxa":{"lead":{"serve":{"enabled":false,"identity":"tailscale",
   "bind":"127.0.0.1","port":8743,
-  "allowed_identities":["owner@example.invalid"]}}}}
+  "allowed_identities":["YOUR_LOGIN_IDENTITY"]}}}}
 ```
 
-Then expose the local backend through Tailscale Serve using ports you selected:
+Operator guidance for Tailscale Serve (not an oxa command), using ports you selected:
 
-```sh
+```text
 tailscale serve --bg --https=<tailnet-port> http://127.0.0.1:<local-port>
 ```
 
