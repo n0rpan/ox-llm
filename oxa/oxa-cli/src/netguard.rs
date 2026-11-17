@@ -9,7 +9,8 @@ use std::sync::Arc;
 /// O-167(b): the process sandbox with the bash network decision (`oxa.sandbox.net`, default
 /// on; always off while offline). Read once at startup.
 pub(crate) fn with_net(sandbox: Arc<dyn Sandbox>, settings: &Settings) -> Arc<dyn Sandbox> {
-    let on = sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
+    let runner_owns_github = std::env::var_os(oxa_work::RUNNER_GITHUB_ENV).is_some_and(|value| value == "1");
+    let on = !runner_owns_github && sandbox_net_setting(settings.string(SETTING_SANDBOX_NET).as_deref());
     let offline = oxa_proto::offline();
     // The `gh` lookup can stall (a mise shim may try to install gh): run it lazily, at the first
     // bash command that has the network, never at startup.
@@ -223,9 +224,10 @@ pub(crate) const SETTING_OFFLINE: &str = "oxa.offline";
 /// The environment variable of the hard offline switch (pi: `PI_OFFLINE`).
 pub(crate) const ENV_OFFLINE: &str = "OXA_OFFLINE";
 
-/// pi's `isTruthyEnvFlag`: `1`, `true`, `yes` (any case).
+/// The shared user-facing boolean (`1`/`true`/`yes`/`on`), default `false`: unset, empty and
+/// any other word stay off. See [`oxa_config::EnvFlag`].
 pub(crate) fn truthy(v: Option<&str>) -> bool {
-    v.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+    oxa_config::EnvFlag::parse(v).or(false)
 }
 
 /// `(offline, allow_remote_engine)` from the flag, the environment and the user's settings.

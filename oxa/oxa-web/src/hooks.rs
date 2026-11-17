@@ -9,12 +9,11 @@ use std::sync::Arc;
 /// The status command (only listed while a key is configured).
 pub const STATUS_COMMAND: &str = "web-search";
 
-/// `OXA_WEB_SEARCH` switches the tool off with `0`, `false`, `no` or `off` (any case).
+/// `OXA_WEB_SEARCH` switches the tool off with `0`, `false`, `no` or `off` (any case); `1`,
+/// `true`, `yes` and `on` say on, and unset, empty or an unknown word keep the default (on).
+/// The same eight words as every other user-facing boolean ([`oxa_config::EnvFlag`]).
 pub fn disabled_by_env(v: Option<&str>) -> bool {
-    v.is_some_and(|v| {
-        let v = v.trim();
-        v == "0" || ["false", "no", "off"].iter().any(|f| v.eq_ignore_ascii_case(f))
-    })
+    oxa_config::EnvFlag::parse(v) == oxa_config::EnvFlag::Off
 }
 
 /// Whether the hook set is built at all: not with `--no-web-search`, `OXA_WEB_SEARCH=0`,
