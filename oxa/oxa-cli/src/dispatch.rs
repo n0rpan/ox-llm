@@ -20,6 +20,7 @@ use oxa_resources::{discover, DiscoverOpts, Resources};
 use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
 use oxa_sandbox::{Bwrap, NoSandbox};
 use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
+use std::collections::BTreeMap;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -281,6 +282,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             engine.as_ref(),
             &endpoint.name,
             search.as_deref(),
+            &crate::in_process::routing_descriptions(&user),
             &mut *stdout,
             &mut *stderr,
         );
@@ -1519,10 +1521,12 @@ fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
 }
 
 /// `--list-models [search]`: a table of the engine's models (pi's columns), sorted by id.
+/// `routing` (O-384) is the active OpenRouter provider routing per model id, display only.
 fn list_models(
     engine: &dyn Engine,
     provider: &str,
     search: Option<&str>,
+    routing: &BTreeMap<String, String>,
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<i32, OxaError> {
@@ -1534,7 +1538,7 @@ fn list_models(
     ids.sort();
     ids.dedup();
     let needle = search.map(|s| s.to_lowercase());
-    let rows: Vec<[String; 6]> = ids
+    let rows: Vec<[String; 7]> = ids
         .into_iter()
         .map(|id| {
             let model_info = if id == info.limits_for {
@@ -1542,6 +1546,7 @@ fn list_models(
             } else {
                 engine.info(Some(&id))
             };
+            let routing = routing.get(&id).cloned().unwrap_or_else(|| "-".to_string());
             match model_info {
                 Ok(model_info) => [
                     row_provider(provider, &model_info),
@@ -1550,6 +1555,7 @@ fn list_models(
                     format_tokens(model_info.max_output as u64),
                     model_info.thinking.map_or_else(|| "?".to_string(), bool_word),
                     model_info.images.map_or_else(|| "?".to_string(), bool_word),
+                    routing,
                 ],
                 // A failing per-model info call degrades only this row: '?' in the limits
                 // columns (never another model's limits), and the listing continues.
@@ -1562,6 +1568,7 @@ fn list_models(
                         "?".to_string(),
                         "?".to_string(),
                         "?".to_string(),
+                        routing,
                     ]
                 }
             }
@@ -1581,7 +1588,9 @@ fn list_models(
         }
         return Ok(0);
     }
-    let headers = ["provider", "model", "context", "max-out", "thinking", "images"];
+    let headers = [
+        "provider", "model", "context", "max-out", "thinking", "images", "routing",
+    ];
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
@@ -2016,13 +2025,29 @@ mod model_limits_tests {
     fn list_models_uses_each_models_limits() {
         let mut out = Vec::new();
         let mut err = Vec::new();
-        list_models(&CatalogEngine, "oxe", Some("sonnet"), &mut out, &mut err).unwrap();
+        list_models(
+            &CatalogEngine,
+            "oxe",
+            Some("sonnet"),
+            &BTreeMap::new(),
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
         let text = String::from_utf8(out).unwrap();
         let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
         assert_eq!(&row[1..4], &["anthropic/claude-sonnet-5-5", "200K", "32K"]);
 
         let mut out = Vec::new();
-        list_models(&CatalogEngine, "oxe", Some("local"), &mut out, &mut err).unwrap();
+        list_models(
+            &CatalogEngine,
+            "oxe",
+            Some("local"),
+            &BTreeMap::new(),
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
         let text = String::from_utf8(out).unwrap();
         let row: Vec<_> = text.lines().nth(1).unwrap().split_whitespace().collect();
         assert_eq!(&row[1..4], &["local", "131.1K", "16.4K"]);
@@ -2032,7 +2057,7 @@ mod model_limits_tests {
     fn list_models_shows_the_cloud_provider() {
         let mut out = Vec::new();
         let mut err = Vec::new();
-        list_models(&CatalogEngine, "oxe", None, &mut out, &mut err).unwrap();
+        list_models(&CatalogEngine, "oxe", None, &BTreeMap::new(), &mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
         let col0 = |id: &str| {
             let l = text.lines().find(|l| l.split_whitespace().nth(1) == Some(id));
@@ -2040,6 +2065,35 @@ mod model_limits_tests {
         };
         assert_eq!(col0("anthropic/claude-sonnet-5-5"), "anthropic");
         assert_eq!(col0("local"), "oxe");
+    }
+
+    /// O-384: the last column shows the active OpenRouter provider routing of a model and
+    /// `-` for every model without preferences.
+    #[test]
+    fn list_models_shows_the_active_provider_routing() {
+        let routing = BTreeMap::from([(
+            "anthropic/claude-sonnet-5-5".to_string(),
+            "zdr=true,data=deny,sort=price".to_string(),
+        )]);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        list_models(&CatalogEngine, "oxe", None, &routing, &mut out, &mut err).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let cell = |id: &str| {
+            text.lines()
+                .find(|l| l.split_whitespace().nth(1) == Some(id))
+                .unwrap()
+                .split_whitespace()
+                .last()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(
+            cell("anthropic/claude-sonnet-5-5"),
+            "zdr=true,data=deny,sort=price"
+        );
+        assert_eq!(cell("local"), "-");
+        assert!(text.lines().next().unwrap().ends_with("routing"));
     }
 
     /// A failing per-model `info(Some(id))` degrades only that row: '?' in the context,
@@ -2077,7 +2131,7 @@ mod model_limits_tests {
         };
         let mut out = Vec::new();
         let mut err = Vec::new();
-        list_models(&engine, "oxe", None, &mut out, &mut err).unwrap();
+        list_models(&engine, "oxe", None, &BTreeMap::new(), &mut out, &mut err).unwrap();
         let text = String::from_utf8(out).unwrap();
 
         // The listing succeeds and still contains every model id.

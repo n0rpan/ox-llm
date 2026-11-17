@@ -23,6 +23,8 @@ pub mod policy;
 pub mod pricing;
 #[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod rate_limits;
+#[cfg(any(feature = "cloud-only", feature = "anthropic-client"))]
+pub mod routing;
 
 #[cfg(feature = "accounting")]
 pub mod accounting;

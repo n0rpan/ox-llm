@@ -63,6 +63,9 @@ pub struct Model {
     endpoint: Url,
     context_window: u32,
     max_output: u32,
+    /// O-384: the OpenRouter provider routing preferences this route sends. `None` (the
+    /// default) sends no `provider` object, so the account/workspace settings apply.
+    routing: Option<crate::routing::ProviderRouting>,
 }
 impl fmt::Debug for Model {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -119,7 +122,18 @@ impl Model {
             endpoint,
             context_window,
             max_output,
+            routing: None,
         })
+    }
+    /// O-384: attach the user's OpenRouter provider routing preferences. An empty set is
+    /// stored as `None`, so the request carries no `provider` object.
+    pub fn with_routing(mut self, routing: Option<crate::routing::ProviderRouting>) -> Self {
+        self.routing = routing.filter(|routing| !routing.is_empty());
+        self
+    }
+    /// The preferences this route sends; `None` when the user expressed none.
+    pub fn routing(&self) -> Option<&crate::routing::ProviderRouting> {
+        self.routing.as_ref()
     }
     pub fn info(&self) -> ModelInfo<'_> {
         ModelInfo {

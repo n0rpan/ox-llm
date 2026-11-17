@@ -424,10 +424,8 @@ fn native_openrouter_refuses_decoded_held_key_before_executable_write() {
                 request.header("authorization"),
                 Some(format!("Bearer {HELD}").as_str())
             );
-            assert_eq!(
-                request.body["provider"],
-                json!({"zdr":true,"data_collection":"deny"})
-            );
+            // O-384: with no preferences configured the request carries no provider object.
+            assert!(request.body.get("provider").is_none(), "{}", request.body);
         }
         assert!(!json!(rows(&env)).to_string().contains(HELD));
         mock.finish();
@@ -506,10 +504,8 @@ fn native_openrouter_discovery_tool_loop_and_settlement() {
         );
         assert_eq!(request.body["model"], UPSTREAM);
         assert_eq!(request.body["max_tokens"], 16);
-        assert_eq!(
-            request.body["provider"],
-            json!({"zdr":true,"data_collection":"deny"})
-        );
+        // O-384: no configured preferences, so no provider object is sent.
+        assert!(request.body.get("provider").is_none(), "{}", request.body);
         assert_eq!(request.body["stream_options"]["include_usage"], true);
         assert_eq!(request.body["reasoning"], json!({"enabled":false}));
         assert!(request.body.get("reasoning_effort").is_none());
@@ -539,6 +535,103 @@ fn native_openrouter_discovery_tool_loop_and_settlement() {
     assert_eq!(refused["remote_provider"], "openrouter");
     assert_eq!(refused["cost_usd"], 0.0);
     mock.finish();
+}
+
+/// O-384: the user's OpenRouter provider routing preferences reach the wire exactly as
+/// configured (global merged with the model's own), and the model view shows them.
+#[test]
+fn native_openrouter_provider_routing_reaches_the_wire_and_the_model_view() {
+    let env = cloud_env();
+    let wire = [
+        json!({"choices":[{"index":0,"delta":{"content":"routed answer"},"finish_reason":null}]}),
+        json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
+        json!({"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":5,
+            "prompt_tokens_details":{"cached_tokens":7}}}),
+    ]
+    .iter()
+    .map(|chunk| format!("data: {chunk}\n\n"))
+    .collect::<String>()
+        + "data: [DONE]\n\n";
+    let mock = MockAnthropic::start(vec![Reply::wire("text/event-stream", wire.as_bytes())]);
+    settings(&env, &mock.base_url(), true);
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    value["oxa"]["cloud"]["models"][MODEL]["provider"] = json!("openrouter");
+    value["oxa"]["cloud"]["daily_budget_usd"] = json!(1.0);
+    value["oxa"]["cloud"]["provider_routing"] = json!({"zdr":true,"data_collection":"deny","sort":"price"});
+    value["oxa"]["cloud"]["models"][MODEL]["provider_routing"] =
+        json!({"sort":":nitro","only":["synthetic-a"]});
+    fs::write(path, value.to_string()).unwrap();
+    write_key(&env, &json!({"openrouter":{"api_key":CREDENTIAL}}).to_string());
+
+    // The model view shows the effective preferences; listing reads no key and no provider.
+    let listed = run(&env, &["--list-models"], None);
+    success(&listed);
+    let stdout = String::from_utf8_lossy(&listed.stdout);
+    let row = stdout
+        .lines()
+        .find(|line| line.split_whitespace().nth(1) == Some(MODEL))
+        .unwrap_or_else(|| panic!("no {MODEL} row in {stdout}"));
+    assert!(
+        row.ends_with("zdr=true,data=deny,sort=throughput,only=synthetic-a"),
+        "{row}"
+    );
+    assert!(mock.requests().is_empty());
+
+    let output = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic routed request"],
+        None,
+    );
+    success(&output);
+    let request = mock.requests().pop().unwrap();
+    assert_eq!(request.target, "/v1/chat/completions");
+    assert_eq!(
+        request.body["provider"],
+        json!({"zdr":true,"data_collection":"deny","sort":"throughput","only":["synthetic-a"]})
+    );
+    mock.finish();
+}
+
+/// O-384: an invalid preference, or one on a route that cannot use it, is refused while
+/// the settings are read, before any credential or provider I/O.
+#[test]
+fn native_openrouter_provider_routing_refuses_invalid_settings() {
+    for (routing, provider, expected) in [
+        (json!({"sort":"cheapest"}), "openrouter", "provider_routing.sort"),
+        (json!({"zdr":"yes"}), "openrouter", "provider_routing.zdr"),
+        (
+            json!({"only":["synthetic-a"],"ignore":["synthetic-b"]}),
+            "openrouter",
+            "provider_routing.only",
+        ),
+        (
+            json!({"zdr":true}),
+            "anthropic",
+            "applies only to an openrouter route",
+        ),
+    ] {
+        let env = cloud_env();
+        let mock = MockAnthropic::start(vec![]);
+        settings(&env, &mock.base_url(), true);
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        value["oxa"]["cloud"]["models"][MODEL]["provider"] = json!(provider);
+        value["oxa"]["cloud"]["models"][MODEL]["provider_routing"] = routing.clone();
+        fs::write(path, value.to_string()).unwrap();
+        write_key(&env, &json!({"openrouter":{"api_key":CREDENTIAL}}).to_string());
+        let output = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic refused request"],
+            None,
+        );
+        assert!(!output.status.success(), "{routing}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{routing}: {stderr}");
+        assert!(!stderr.contains(CREDENTIAL), "{routing}: {stderr}");
+        assert!(mock.requests().is_empty(), "{routing}");
+        assert!(!env.home().join(".oxa/agent/cloud-ledger").exists(), "{routing}");
+    }
 }
 
 #[test]

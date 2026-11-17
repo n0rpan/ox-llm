@@ -159,7 +159,7 @@ $ oxa mcp logout <name>
 | `--model <pattern>` | model pattern or id; accepts `provider/id` and a `:<thinking>` suffix |
 | `--models <patterns>` | comma-separated model patterns for the Ctrl+P cycle |
 | `--api-key <key>` | bearer key for the engine endpoint of this run; not stored |
-| `--list-models [search]` | list the models the engine serves, optionally filtered by a fuzzy search, and exit |
+| `--list-models [search]` | list the models the engine serves, optionally filtered by a fuzzy search, and exit. The `routing` column shows the active OpenRouter provider routing preferences for that model (`-` when none); see [settings.md](settings.md#native-cloud-gateway) |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
 | `--print`, `-p` | non-interactive: process the prompts and exit |

@@ -7,10 +7,11 @@ use oxc_gateway::{
     catalog::{Access, Model, Provider},
     gateway::Gateway,
     pricing::Price,
+    routing::ProviderRouting,
     runtime::{Billing, Options, Runtime, Subscription},
 };
 use serde_json::Value;
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 
@@ -81,6 +82,43 @@ fn limit(value: &Value, field: &str) -> Result<u32, OxaError> {
         .ok_or_else(invalid)
 }
 
+/// O-384: one refused OpenRouter provider preference, named so a settings typo is fixable.
+fn routing_error(error: oxc_gateway::routing::Error) -> OxaError {
+    OxaError::new(codes::INVALID, format!("Invalid oxa.cloud {error}."))
+}
+
+/// O-384: the global preferences (`oxa.cloud.provider_routing`); absent means none.
+fn global_routing(cloud: &Value) -> Result<ProviderRouting, OxaError> {
+    match cloud.get("provider_routing") {
+        None | Some(Value::Null) => Ok(ProviderRouting::default()),
+        Some(value) => ProviderRouting::parse(value).map_err(routing_error),
+    }
+}
+
+/// O-384: the active OpenRouter provider routing per model alias, for the model view.
+/// Display only: a malformed entry is skipped here and refused by [`select`].
+pub(crate) fn routing_descriptions(user: &Settings) -> BTreeMap<String, String> {
+    let Some(cloud) = user.get("oxa.cloud") else {
+        return BTreeMap::new();
+    };
+    let global = global_routing(cloud).unwrap_or_default();
+    let Some(models) = cloud.get("models").and_then(Value::as_object) else {
+        return BTreeMap::new();
+    };
+    models
+        .iter()
+        .filter(|(_, value)| value.get("provider").and_then(Value::as_str) == Some("openrouter"))
+        .filter_map(|(alias, value)| {
+            let model = value
+                .get("provider_routing")
+                .and_then(|value| ProviderRouting::parse(value).ok())
+                .unwrap_or_default();
+            let routing = global.overridden_by(&model);
+            (!routing.is_empty()).then(|| (alias.clone(), routing.describe()))
+        })
+        .collect()
+}
+
 pub(crate) fn select(
     user: &Settings,
     effective: &Settings,
@@ -136,6 +174,7 @@ fn open(
     }
     let mut routes = Vec::with_capacity(models.len());
     let mut needs_subscription = false;
+    let global = global_routing(cloud)?;
     for (alias, value) in models {
         let (provider, default_endpoint) = match text(value, "provider")? {
             "anthropic" => (Provider::Anthropic, "https://api.anthropic.com"),
@@ -148,6 +187,20 @@ fn open(
             None => default_endpoint,
             Some(value) => value.as_str().ok_or_else(invalid)?,
         };
+        // O-384: provider routing is an OpenRouter preference; on another route it would
+        // be silently ignored, so it is refused instead.
+        let routing = match value.get("provider_routing") {
+            None | Some(Value::Null) => global.clone(),
+            Some(value) if provider == Provider::OpenRouter => {
+                global.overridden_by(&ProviderRouting::parse(value).map_err(routing_error)?)
+            }
+            Some(_) => {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    format!("Invalid oxa.cloud.models.{alias}.provider_routing: provider routing applies only to an openrouter route."),
+                ))
+            }
+        };
         let model = Model::new(
             alias,
             provider,
@@ -156,7 +209,8 @@ fn open(
             limit(value, "context_window")?,
             limit(value, "max_output")?,
         )
-        .map_err(|_| invalid())?;
+        .map_err(|_| invalid())?
+        .with_routing(Some(routing));
         let billing = if provider == Provider::ChatGpt {
             needs_subscription = true;
             Some(Billing::Subscription)

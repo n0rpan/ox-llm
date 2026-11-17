@@ -2,6 +2,7 @@
 //! cancellation, bounded SSE decoder and connection pool. Never forwards provider
 //! errors or unrecognized response fields to the caller.
 use super::*;
+use crate::routing::ProviderRouting;
 use reqwest::header::AUTHORIZATION;
 use serde_json::json;
 
@@ -110,8 +111,12 @@ impl Client {
 
 fn request(chat: &Chat<'_>) -> Result<Value, Error> {
     let mut body = json!({"model":chat.upstream_model,"stream":true,
-        "provider":{"zdr":true,"data_collection":"deny"},
         "stream_options":{"include_usage":true}});
+    // O-384: oxa enforces no provider policy. Only the user's own preferences are sent;
+    // with none configured the request carries no `provider` object at all.
+    if let Some(provider) = chat.routing.and_then(ProviderRouting::to_json) {
+        body["provider"] = provider;
+    }
     // Local-only template/cache knobs and caller provider overrides never cross
     // the boundary. Tools and history retain the standard Chat Completions shape.
     for field in [

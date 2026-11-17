@@ -6,6 +6,11 @@
 
 - Security-relevant default change (#314): upgrading without a saved mode now selects `auto` instead of the previous prompting default. Select `--standard` or save `permissions.defaultMode: "standard"` to retain prompts. Owner-selected `yolo` deliberately disables the permission floor for file tools (including credentials and git hooks/config) and the bash sandbox; `auto` keeps both and plan remains read-only.
 - Permission modes (#202): `auto` is the old YOLO (no prompts, bash sandbox on) and the default on a fresh install; `yolo` now means full access (no prompts, no sandbox); `standard` still prompts. `permissions.defaultMode` (`standard` | `auto` | `yolo` | `plan`) sets the mode at start and replaces `permissions.yolo: "auto"`; a project's settings may lower it but never raise it to `yolo`. `/mode <name> --save` or "make default" in the `/mode` picker writes it, flags override per run, one key cycles standard → auto → yolo and the status bar always shows the mode.
+- The native `openrouter` route no longer forces `provider: {zdr: true, data_collection: "deny"}` (#887, O-384). oxa enforces no provider policy of its own: with no preferences configured the request carries no `provider` object, so your OpenRouter account and workspace settings apply as you configured them. Set `oxa.cloud.provider_routing` to choose one.
+
+### Added
+
+- OpenRouter provider routing preferences (#887, O-384): `oxa.cloud.provider_routing` sets `zdr`, `data_collection` (`allow`/`deny`), `sort` (`price`/`throughput`/`latency`, with `:floor`/`:nitro` accepted as shortcuts), `order`, `only`/`ignore` and `allow_fallbacks` for every `openrouter` route, and `oxa.cloud.models.<name>.provider_routing` overrides them for one model. Every preference is passed through exactly as written; an unknown key, a wrong type or an unknown value is refused while the settings are read, before any credential or provider I/O, and `provider_routing` on a route that is not `openrouter` is refused the same way. `--list-models` shows the active preferences in its new `routing` column. See [settings.md](docs/pages/settings.md#native-cloud-gateway).
 
 ## [0.2.0] - 2026-11-13
 

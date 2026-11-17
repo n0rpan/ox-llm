@@ -251,6 +251,33 @@ token usage and settle zero USD. Unknown paid work retains its full token bound;
 the cap includes concurrent and crashed-process reservations. It never falls back
 to a paid API balance. Missing metered pricing still refuses metered requests.
 
+An `openrouter` route defaults to `https://openrouter.ai/api/v1`, reads the
+`openrouter` key from that key file, and sends `upstream_model` as the OpenRouter
+model id. oxa enforces no provider policy of its own: with no `provider_routing`
+settings the request carries no `provider` object, so your OpenRouter account and
+workspace settings apply exactly as you configured them.
+
+`oxa.cloud.provider_routing` sets the preferences for every `openrouter` route;
+`oxa.cloud.models.<name>.provider_routing` overrides them for one model. Every key
+is optional and is passed through as written:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `zdr` | bool | require zero-data-retention providers |
+| `data_collection` | `allow` / `deny` | allow or deny providers that store your prompts |
+| `sort` | `price` / `throughput` / `latency` | order providers by price, speed or latency; `:floor` and `:nitro` are accepted as the shortcuts for `price` and `throughput` |
+| `order` | list | try these providers first, in this order |
+| `only` | list | use only these providers |
+| `ignore` | list | never use these providers |
+| `allow_fallbacks` | bool | allow providers outside `order`/`only` when the preferred ones are unavailable |
+
+`only` and `ignore` cannot be combined. A per-model object overrides the global
+fields it sets, and setting `only` or `ignore` there replaces the global pair
+rather than combining with it. An unknown key, a wrong type or an unknown value
+refuses the run while the settings are read, before any credential or provider
+I/O; `provider_routing` on a route that is not `openrouter` is refused the same
+way. `--list-models` shows the active preferences in its `routing` column.
+
 ### Other
 
 | Key | Type | Default | Meaning |

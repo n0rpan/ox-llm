@@ -18,6 +18,7 @@ fn chat<'a>(base: &'a str, payload: &'a Value) -> Chat<'a> {
         alias: skeleton::MODEL,
         max_output: Some(16),
         payload,
+        routing: None,
         created: 1700000000,
     }
 }

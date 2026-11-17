@@ -47,6 +47,8 @@ pub struct Chat<'a> {
     pub alias: &'a str,
     pub max_output: Option<u64>,
     pub payload: &'a Value,
+    /// O-384: the OpenRouter `provider` preferences to send; `None` sends none.
+    pub routing: Option<&'a crate::routing::ProviderRouting>,
     pub created: u64,
 }
 

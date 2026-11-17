@@ -4,11 +4,17 @@ use crate::{
     billing::Billing,
     catalog::{Access, Model, Provider},
     pricing::Price,
+    routing::ProviderRouting,
     runtime::Options,
 };
 use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 
 fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
+    gateway_routed(mock, None)
+}
+
+/// O-384: the same route with the user's OpenRouter provider routing preferences attached.
+fn gateway_routed(mock: &MockAnthropic, routing: Option<ProviderRouting>) -> (Gateway, skeleton::Fixture) {
     let fixture = skeleton::Fixture::new(mock);
     std::fs::write(
         &fixture.key_path,
@@ -23,7 +29,8 @@ fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
         1024,
         16,
     )
-    .unwrap();
+    .unwrap()
+    .with_routing(routing);
     let runtime = Runtime::new(
         [(
             model,
@@ -163,15 +170,47 @@ async fn openrouter_privacy_redaction_and_settlement_before_done() {
         );
         assert!(request.header("x-api-key").is_none());
         assert_eq!(request.body["model"], "synthetic-router");
-        assert_eq!(
-            request.body["provider"],
-            json!({"zdr":true,"data_collection":"deny"})
-        );
+        // O-384: no preferences configured, so no provider object is sent; the caller's
+        // own `provider` payload field never crosses the boundary either.
+        assert!(request.body.get("provider").is_none(), "{}", request.body);
         assert_eq!(request.body["reasoning"], json!({"enabled":false}));
         assert!(request.body.get("reasoning_effort").is_none());
         assert_eq!(request.body["stream_options"]["include_usage"], true);
         mock.finish();
     }
+}
+/// O-384: the configured preferences are the only `provider` object sent, exactly as
+/// written, and the caller's own payload field is still dropped.
+#[tokio::test]
+async fn openrouter_provider_routing_preferences_are_passed_through_exactly() {
+    let routing = ProviderRouting::parse(&json!({
+        "zdr": true,
+        "data_collection": "deny",
+        "sort": ":nitro",
+        "order": ["synthetic-a", "synthetic-b"],
+        "ignore": ["synthetic-c"],
+        "allow_fallbacks": false
+    }))
+    .unwrap();
+    let mock = MockAnthropic::start(vec![wire(chunks(), true)]);
+    let (gateway, _fixture) = gateway_routed(&mock, Some(routing));
+    gateway
+        .chat_payload(
+            &payload(true),
+            Context::default(),
+            &Cancellation::default(),
+            &mut |_| Control::Continue,
+        )
+        .await
+        .unwrap();
+    let request = mock.requests().pop().unwrap();
+    assert_eq!(
+        request.body["provider"],
+        json!({"zdr":true,"data_collection":"deny","sort":"throughput",
+            "order":["synthetic-a","synthetic-b"],"ignore":["synthetic-c"],
+            "allow_fallbacks":false})
+    );
+    mock.finish();
 }
 #[tokio::test]
 async fn openrouter_incomplete_or_invalid_stream_never_signals_done() {

@@ -238,6 +238,7 @@ impl Gateway {
             alias: model.info().id,
             max_output: Some(call.max_output()),
             payload,
+            routing: model.routing(),
             created: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
