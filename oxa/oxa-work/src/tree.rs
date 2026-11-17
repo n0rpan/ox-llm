@@ -24,6 +24,70 @@ fn merging(policy: &RunPolicy, tree: &Path) -> Result<bool> {
     Ok(git_path(policy, tree, "MERGE_HEAD")?.exists())
 }
 
+fn ref_exists(policy: &RunPolicy, repo: &Path, reference: &str) -> Result<bool> {
+    let out = output(git(policy, repo, &["show-ref", "--verify", "--quiet", reference]))?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(String::from_utf8_lossy(&out.stderr).into()),
+    }
+}
+
+/// The local branch a task base names, following Git's own precedence: a
+/// literal branch first, then `<remote>/<branch>` for a configured remote.
+fn local_branch_for_base(policy: &RunPolicy, repo: &Path, base: &str) -> Result<Option<String>> {
+    let branch = base.strip_prefix("refs/heads/").unwrap_or(base);
+    if ref_exists(policy, repo, &format!("refs/heads/{branch}"))? {
+        return Ok(Some(branch.to_owned()));
+    }
+    let mut remotes: Vec<String> = checked(git(policy, repo, &["remote"]))?
+        .lines()
+        .filter(|remote| !remote.is_empty())
+        .map(str::to_owned)
+        .collect();
+    // Prefer the longest remote name so a slashed remote wins over its prefix.
+    remotes.sort_by_key(|remote| std::cmp::Reverse(remote.len()));
+    for remote in remotes {
+        let Some(branch) = base.strip_prefix(&format!("{remote}/")) else {
+            continue;
+        };
+        if ref_exists(policy, repo, &format!("refs/heads/{branch}"))? {
+            return Ok(Some(branch.to_owned()));
+        }
+    }
+    Ok(None)
+}
+
+fn branch_checked_out(policy: &RunPolicy, repo: &Path, reference: &str) -> Result<bool> {
+    let listing = checked(git(policy, repo, &["worktree", "list", "--porcelain"]))?;
+    Ok(listing.lines().any(|line| line == format!("branch {reference}")))
+}
+
+/// A fresh task worktree shares the source repository's refs, so a local base
+/// branch that lags the frozen base makes the task's own diff look like the
+/// whole repository divergence. Advance that branch when it cannot lose work:
+/// a strict fast-forward that no worktree has checked out.
+fn fast_forward_stale_base(policy: &RunPolicy, repo: &Path, task: &Task, base: &str) -> Result<()> {
+    let Some(branch) = local_branch_for_base(policy, repo, &task.base)? else {
+        return Ok(());
+    };
+    let reference = format!("refs/heads/{branch}");
+    let old = checked(git(policy, repo, &["rev-parse", "--verify", &reference]))?;
+    if old == base || branch_checked_out(policy, repo, &reference)? {
+        return Ok(());
+    }
+    if !output(git(policy, repo, &["merge-base", "--is-ancestor", &old, base]))?
+        .status
+        .success()
+    {
+        return Ok(());
+    }
+    // Compare-and-swap: a branch that moved in the meantime keeps its new tip.
+    // A normalization failure leaves the checkout as it was and never blocks.
+    let _ = output(git(policy, repo, &["update-ref", &reference, base, &old]))?;
+    Ok(())
+}
+
 fn merge_prompt(
     policy: &RunPolicy,
     tree: &Path,
@@ -133,6 +197,7 @@ pub(crate) fn prepare(
                 String::from_utf8_lossy(&checkout.stderr)
             ));
         }
+        fast_forward_stale_base(policy, repo, task, base)?;
     }
     validate(policy, repo, tree, task)?;
     for operation in ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {

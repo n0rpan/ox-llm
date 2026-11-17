@@ -39,6 +39,11 @@ validated executables outside the repository. Worker and check-supervisor PATHs
 exclude project directories, relative entries and unsafe aliases; project tools
 can still run by explicit path inside the sandbox.
 Branches must be literal names; checkout-history aliases such as `@{-1}` are refused.
+A local base branch that lags behind the commit the base names (for example a local
+`main` after a fetch, though the runner itself never fetches) is fast-forwarded to that
+commit for the new worktree, so the task's own diff against its base shows only its own
+work. The branch is moved only when it is a strict ancestor of the base and no worktree
+has it checked out; otherwise it is left as it is.
 Every base and acceptance command list is resolved before any task in the batch
 starts. All bases must therefore exist at batch startup. Host metadata commands
 ignore replacement objects and inherited `GIT_*` overrides, disable filesystem

@@ -255,6 +255,67 @@ fn resumed_old_merge_is_told_to_integrate_the_newly_captured_base() {
 }
 
 #[test]
+fn fresh_worktree_fast_forwards_a_local_base_branch_that_lags_it() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    // The source checkout pulled `main` while its local branch stayed behind.
+    let stale = git(&env, &project(&env), &["rev-parse", "main"]);
+    commit_file(&env, "fetched.txt", "fetched base\n");
+    git(&env, &project(&env), &["push", "origin", "main"]);
+    git(&env, &project(&env), &["reset", "--hard", "HEAD~1"]);
+    git(&env, &project(&env), &["fetch", "origin"]);
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_ne!(record["base_sha"], stale, "{record}");
+    assert_eq!(
+        git(&env, &project(&env), &["rev-parse", "main"]),
+        git(&env, &project(&env), &["rev-parse", "origin/main"]),
+        "the local base branch still lags the fetched base"
+    );
+    assert_eq!(
+        git(&env, tree(&record), &["diff", "--name-only", "main..HEAD"]),
+        "",
+        "the task's own diff against its base is not empty"
+    );
+}
+
+#[test]
+fn local_base_branch_checked_out_elsewhere_is_never_moved() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let other = env.work().join("review");
+    git(
+        &env,
+        &project(&env),
+        &["worktree", "add", "-q", other.to_str().unwrap(), "main"],
+    );
+    let checked_out = git(&env, &project(&env), &["rev-parse", "main"]);
+    commit_file(&env, "fetched.txt", "fetched base\n");
+    git(
+        &env,
+        &project(&env),
+        &["fetch", "origin", "main:refs/heads/fetched"],
+    );
+    git(&env, &project(&env), &["reset", "--hard", "HEAD~1"]);
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"fake","base":"fetched","prompt":"Finish task"}]"#,
+    );
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(
+        git(&env, tree(&record), &["rev-parse", "HEAD"]),
+        git(&env, &project(&env), &["rev-parse", "fetched"]),
+        "{record}"
+    );
+    assert_eq!(
+        git(&env, &project(&env), &["rev-parse", "main"]),
+        checked_out,
+        "a branch checked out in another worktree was moved"
+    );
+}
+
+#[test]
 fn failed_worker_and_unfinished_merge_keep_both_causes() {
     let env = TestEnv::new();
     diverge(&env, true);
