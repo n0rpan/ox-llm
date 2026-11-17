@@ -25,6 +25,17 @@ maintainer, who says in the PR when a hardware check is needed.
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
+- A finding is a claim to verify, not an order. Whoever acts on a review finding first shows it is
+  real (a failing test, a concrete input or the exact code path) and fixes it with that test. If it
+  is not real, change nothing for it and answer on the thread with the evidence. Never widen
+  scope, refactor or rename to satisfy a reviewer.
+- Reuse before you write: search for an existing helper (settings and env parsing, trusted
+  executable lookup, private/atomic file writes, subprocess limits, GitHub calls, retry, redaction,
+  test fixtures) and call it. A second implementation of the same responsibility is a P2 review
+  finding; a weaker one (looser permissions, symlinks, limits) is P1.
+- Issues filed by agents state how the problem was observed (command, run or log line). Verify an
+  agent-filed issue against current main before building on it; close it with the evidence if it
+  does not reproduce.
 
 ## How to work
 

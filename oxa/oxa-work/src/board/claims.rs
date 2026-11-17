@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 mod controls;
 pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
+mod imports;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -197,7 +198,7 @@ impl Claims {
         ttl: u64,
     ) -> Result<Option<Lease>> {
         self.claim_checked(entry, policy, holder, (now, ttl), |row| {
-            Ok(row.data.policy.is_none())
+            Ok(entry.action != Action::BuildIssue && row.data.policy.is_none())
         })
     }
 
@@ -215,7 +216,7 @@ impl Claims {
             || !entry.eligible
             || matches!(
                 entry.action,
-                Action::WaitReview | Action::WaitRequiredCi | Action::WaitMergeability
+                Action::WaitReview | Action::WaitRequiredCi | Action::WaitMergeability | Action::WaitIssue
             )
         {
             return Ok(None);
@@ -231,6 +232,9 @@ impl Claims {
         let mut row = self.load(entry.number)?;
         if self.established(entry.number)? {
             self.mark(entry.number)?;
+        }
+        if row.data.import_hold {
+            return Ok(None);
         }
         if !authorize(&mut row)? {
             return Ok(None);
