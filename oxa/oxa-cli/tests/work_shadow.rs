@@ -56,14 +56,7 @@ esac
         .unwrap()
         .unwrap()
         .path();
-    let log_for = |repo: &str| {
-        let bound = storage.join("board").join(repo).join("board-shadow.jsonl");
-        if bound.exists() {
-            bound
-        } else {
-            storage.join("board-shadow.jsonl")
-        }
-    };
+    let log_for = |repo: &str| storage.join("board").join(repo).join("board-shadow.jsonl");
     let log = log_for("example/repo");
     assert_eq!(fs::metadata(&log).unwrap().permissions().mode() & 0o777, 0o600);
     let sample: serde_json::Value = serde_json::from_str(fs::read_to_string(log).unwrap().trim()).unwrap();
@@ -73,6 +66,7 @@ esac
     for (conclusion, head, source) in [
         ("STARTUP_FAILURE", "synthetic-head", ""),
         ("SUCCESS", "old-head", ""),
+        ("SUCCESS", "synthetic-head", ""),
         ("SUCCESS", "synthetic-head", "engine.c"),
         ("SUCCESS", "synthetic-head", "view.qml"),
         ("SUCCESS", "synthetic-head", "header.hpp"),
@@ -109,10 +103,17 @@ esac
         vec![
             "fix_required_ci",
             "wait_review",
+            "ready",
             "add_removes",
             "add_removes",
             "add_removes"
         ]
     );
-    assert_ne!(log_for("example/repo"), log_for("example/other"));
+    assert_eq!(
+        fs::read_to_string(log_for("example/other"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
 }

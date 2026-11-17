@@ -64,6 +64,7 @@ impl GitHub for Reader<'_> {
                 labels(first:100){{totalCount nodes{{name}}}}
                 files(first:100){{totalCount nodes{{path deletions}}}}
                 reviewThreads(first:100){{totalCount nodes{{isResolved}}}}
+                latestOpinionatedReviews(first:100,writersOnly:true){{totalCount nodes{{state commit{{oid}}}}}}
                 commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:100){{totalCount nodes{{
                     ... on CheckRun{{isRequired(pullRequestNumber:{n}) status conclusion}}
                     ... on StatusContext{{isRequired(pullRequestNumber:{n}) state}}
@@ -93,7 +94,14 @@ impl GitHub for Reader<'_> {
                 let required_ci = if checks.iter().any(|c| {
                     matches!(
                         c["state"].as_str().or(c["conclusion"].as_str()),
-                        Some("FAILURE" | "ERROR" | "CANCELLED" | "TIMED_OUT" | "ACTION_REQUIRED")
+                        Some(
+                            "FAILURE"
+                                | "ERROR"
+                                | "CANCELLED"
+                                | "TIMED_OUT"
+                                | "ACTION_REQUIRED"
+                                | "STARTUP_FAILURE"
+                        )
                     )
                 }) {
                     RequiredCi::Failed
@@ -128,13 +136,23 @@ impl GitHub for Reader<'_> {
                     removes_source: nodes(&row["files"])?.iter().any(|f| {
                         f["deletions"].as_u64().unwrap_or(0) > 0
                             && f["path"].as_str().is_some_and(|p| {
-                                [".rs", ".py", ".go", ".ts", ".js", ".sh", ".cpp", ".h"]
-                                    .iter()
-                                    .any(|ext| p.ends_with(ext))
+                                [
+                                    ".rs", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".sh", ".c", ".cc",
+                                    ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".qml",
+                                ]
+                                .iter()
+                                .any(|ext| p.ends_with(ext))
                             })
                     }),
                     draft: row["isDraft"].as_bool().ok_or("missing draft state")?,
-                    reviewed: row["reviewDecision"] == "APPROVED",
+                    reviewed: row["reviewDecision"] == "APPROVED" && {
+                        let approvals: Vec<_> = nodes(&row["latestOpinionatedReviews"])?
+                            .iter()
+                            .filter(|r| r["state"] == "APPROVED")
+                            .collect();
+                        !approvals.is_empty()
+                            && approvals.iter().all(|r| r["commit"]["oid"] == row["headRefOid"])
+                    },
                 })
             })
             .collect()
@@ -158,6 +176,7 @@ pub(crate) fn run(
     if repo.split('/').count() != 2
         || repo.split('/').any(|p| {
             p.is_empty()
+                || matches!(p, "." | "..")
                 || !p
                     .bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
@@ -179,12 +198,13 @@ pub(crate) fn run(
         crate::netguard::trusted_executable_for("gh", Some(&policy.host_path), Some(root), Some(&dirs.home))
             .ok_or("no trusted gh executable")?;
     use std::os::unix::fs::DirBuilderExt;
+    let storage = policy.storage.join("board").join(repo);
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(&policy.storage)
+        .create(&storage)
         .map_err(|_| "cannot create shadow storage")?;
-    let mut log = oxa_work::shadow::open_log(&policy.storage.join("board-shadow.jsonl"))?;
+    let mut log = oxa_work::shadow::open_log(&storage.join("board-shadow.jsonl"))?;
     let mut reader = Reader {
         gh: &gh,
         path: &policy.host_path,
