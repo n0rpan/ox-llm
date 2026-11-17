@@ -161,6 +161,7 @@ class CallerWorkspace(unittest.TestCase):
         checkout = self.root / name
         script = checkout / 'tools/ci/fmt_check.sh'
         script.parent.mkdir(parents=True, exist_ok=True)
+        (checkout / '.git').write_text('gitdir: synthetic-worktree\n')
         shutil.copyfile(HELPER, script)
         home = checkout / 'home'
         cargo_bin = home / 'cargo/bin'
@@ -276,6 +277,7 @@ class DoneWiring(unittest.TestCase):
 
     def test_repo_done_assertion_names_the_declared_entry(self):
         done = json.loads((ROOT / '.oxa/settings.json').read_text())['done']
+        self.assertTrue(done, done)
         source = (ROOT / 'oxa/oxa-config/tests/repo_done_checks.rs').read_text()
         for entry in done:
             self.assertIn(entry, source)
