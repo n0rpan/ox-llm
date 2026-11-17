@@ -14,6 +14,9 @@ tokio = { version = "1", features = ["sync"] }
 nix = { version = "0.30", features = ["signal", "process", "fs", "user"] }
 ureq.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = "5.19"
+
 [lints.rust]
 unsafe_code = "forbid"
 

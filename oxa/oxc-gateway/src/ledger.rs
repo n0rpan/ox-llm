@@ -306,7 +306,9 @@ impl Entry {
         self.row["remote"] = json!(true);
         self.row["remote_provider"] = fields["remote_provider"].clone();
         if let Some(value) = fields.get("opencode") {
-            if fields["remote_provider"] != "opencode" || fields["billing"] != "subscription" {
+            if fields["remote_provider"] != "opencode"
+                || !matches!(fields["billing"].as_str(), Some("subscription" | "metered"))
+            {
                 return Err(io::ErrorKind::InvalidData.into());
             }
             #[cfg(feature = "anthropic-client")]
@@ -357,9 +359,13 @@ impl Entry {
             return Err(io::ErrorKind::InvalidData.into());
         }
         match fields.get("billing") {
-            Some(value) if value == "subscription" => {
+            Some(value)
+                if value == "subscription"
+                    || value == "metered" && fields["remote_provider"] == "opencode" =>
+            {
                 if !matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
-                    || fields["cost_usd"].as_f64() != Some(0.0)
+                    || (value == "subscription" && fields["cost_usd"].as_f64() != Some(0.0))
+                    || (value == "metered" && fields["cost_usd"].as_f64().is_none_or(|n| n <= 0.0))
                 {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
@@ -375,7 +381,7 @@ impl Entry {
                 {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
-                self.row["billing"] = json!("subscription");
+                self.row["billing"] = value.clone();
                 self.row["subscription_requests"] = json!(requests);
                 self.row["subscription_tokens"] = json!(tokens);
             }
@@ -423,6 +429,11 @@ impl Entry {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         redact(&mut self.row);
+        #[cfg(feature = "anthropic-client")]
+        if let Some(plan) = self.row["opencode"].get("billing_source") {
+            let plan = crate::opencode::PlanName::from_value(plan);
+            self.row["opencode"]["billing_source"] = plan.as_str().into();
+        }
         append_private(&self.daily.path, &self.row)?;
         Ok(self.row)
     }

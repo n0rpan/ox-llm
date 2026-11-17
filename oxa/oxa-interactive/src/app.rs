@@ -48,7 +48,8 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
             .file
             .as_deref()
             .is_some_and(|f| has_conversation(opts.store.as_ref(), f, &info.id));
-        if talked {
+        // A vanished terminal cannot receive the resume hint; println! would panic on EIO.
+        if talked && code != 129 {
             for line in exit_lines(info.file.as_deref(), &info.id) {
                 println!("{line}");
             }
@@ -780,7 +781,10 @@ fn session_info(s: &Session) -> SessionInfo {
         file: state.session_file,
         id: state.session_id,
         commands: s.commands(),
-        engine_url: info.base_url.clone(),
+        engine_url: match s.inner().engine.local_memory_policy(&state.model) {
+            Some(policy) => format!("{} ({policy})", info.base_url),
+            None => info.base_url.clone(),
+        },
         models,
         queue: info.queue,
         shortcuts: s
@@ -1536,6 +1540,14 @@ fn execute(
                 Ok(())
             };
             (result, false)
+        }
+        SessionCmd::RecoveryPrompt { handle, text, parts } => {
+            if handle.same_instance(&s.handle()) {
+                (run_prompt(s, text, parts, sink, ui), false)
+            } else {
+                let _ = out.send(WorkerMsg::UnsentPrompt { text, parts });
+                (Ok(()), false)
+            }
         }
         SessionCmd::Prompt { text, parts } => (run_prompt(s, text, parts, sink, ui), false),
         SessionCmd::Compact { instructions } => {

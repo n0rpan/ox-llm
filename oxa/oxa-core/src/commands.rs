@@ -281,14 +281,18 @@ fn run_builtin_inner(
                 "" | "status" => {
                     let st = session.inner();
                     let last = st.last_usage.map(|u| (u.cached, u.prompt));
-                    Ok(engine_status_lines(
+                    let mut lines = engine_status_lines(
                         &st.info.base_url,
                         &st.model,
                         st.info.n_ctx,
                         last,
                         None,
                         st.stats.cache_misses,
-                    ))
+                    );
+                    if let Some(policy) = st.engine.local_memory_policy(&st.model) {
+                        lines.push(format!("Memory: {policy}"));
+                    }
+                    Ok(lines)
                 }
                 "load" if !rest.is_empty() => {
                     session.set_model(rest, sink)?;

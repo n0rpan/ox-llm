@@ -1,7 +1,12 @@
 //! D13: mode choice and wiring.
 // ported from pi packages/coding-agent/src/main.ts
+mod mode;
+
+use mode::headless_argument_error;
+pub use mode::{choose_mode, RunMode};
+
 use crate::hooks::{build_hooks, HookInputs, HookSets};
-use crate::{parse_args, run_config, run_mcp, run_pkg, usage_text, Args, ModeArg, Subcommand};
+use crate::{parse_args, run_config, run_mcp, run_pkg, usage_text, Args, Subcommand};
 use oxa_config::{
     dirs_from_env, resolve_model, Dirs, Endpoint, Env, Keymap, ModelRef, ModelsConfig, Settings,
 };
@@ -51,52 +56,7 @@ impl Stdio {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunMode {
-    Interactive,
-    Print,
-    Json,
-    Rpc,
-}
-
-/// cli.md's tty rules (see the crate docs). Pure.
-pub fn choose_mode(a: &Args, stdin_is_tty: bool, stdout_is_tty: bool) -> RunMode {
-    match a.mode {
-        Some(ModeArg::Rpc) => RunMode::Rpc,
-        Some(ModeArg::Json) => RunMode::Json,
-        _ if a.print || !stdin_is_tty || !stdout_is_tty => RunMode::Print,
-        _ => RunMode::Interactive,
-    }
-}
-
 pub(crate) const USAGE_HINT: &str = "Run `oxa --help` for the list of options.";
-
-fn headless_argument_error(argv: &[String], stdin_tty: bool, stdout_tty: bool) -> bool {
-    let standalone = parse_args(&argv[..argv.len().min(1)], &[])
-        .ok()
-        .is_some_and(|args| args.subcommand.is_some());
-    let flags: Vec<&str> = argv
-        .iter()
-        .map(String::as_str)
-        .take_while(|arg| *arg != "--")
-        .collect();
-    let single_action = flags.iter().any(|arg| {
-        ["--export", "--list-models", "--help", "-h", "--version", "-v"]
-            .iter()
-            .any(|flag| *arg == *flag || arg.starts_with(&format!("{flag}=")))
-    });
-    if standalone || single_action {
-        return false;
-    }
-    !stdin_tty
-        || !stdout_tty
-        || flags
-            .iter()
-            .any(|arg| matches!(*arg, "-p" | "--print" | "--mode=rpc" | "--mode=json"))
-        || flags
-            .windows(2)
-            .any(|pair| pair[0] == "--mode" && matches!(pair[1], "rpc" | "json"))
-}
 
 /// The whole program. Returns the exit code; never panics on user error.
 ///
@@ -921,8 +881,16 @@ fn prepare(
         no_tools: a.no_tools,
         default_edits: settings.default_tools_edits(),
     };
-    let status = (!a.no_session).then(|| Arc::new(crate::status::StatusWriter::new(a.stall_timeout)));
-    let result_facts = Arc::new(crate::result_facts::ResultFacts::new(status.clone()));
+    let status = (!a.no_session).then(|| {
+        Arc::new(
+            crate::status::StatusWriter::new(a.stall_timeout)
+                .with_billing(cloud_diagnostics.clone())
+                .with_engine(&engine, model.as_deref()),
+        )
+    });
+    let result_facts = Arc::new(
+        crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
+    );
     let built = Built {
         status,
         result_facts,
@@ -1971,6 +1939,7 @@ fn exit_code(e: &OxaError) -> i32 {
     match e.code {
         codes::USAGE | codes::ENGINE_DOWN | codes::UNSUPPORTED_IN_OXA => 2,
         codes::BUDGET_EXHAUSTED => oxa_proto::EXIT_BUDGET,
+        codes::TERMINAL_CLOSED => 129,
         _ => 1,
     }
 }
