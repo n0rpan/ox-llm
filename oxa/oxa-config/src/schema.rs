@@ -159,6 +159,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // Lead web access scaffold: user-layer object, disabled by default, no listener installed yet.
+    // The CLI validates the fields it reads (identity mode, loopback bind, port, allow-list).
+    key("oxa.lead.serve", Kind::Object, "{}"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
     key("oxa.local", Kind::Object, "{}"),
     key("oxa.maxTurns", Kind::Number, "null"),
