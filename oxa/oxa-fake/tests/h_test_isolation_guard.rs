@@ -73,11 +73,14 @@ fn testenv_explicit_parent_is_isolated_and_cleaned_up() {
             assert!(dir.is_dir() && dir.starts_with(&root));
         }
         for (name, value) in first.envs("http://127.0.0.1:1") {
-            if matches!(name.as_str(), "HOME" | "OXA_AGENT_DIR" | "TMPDIR") {
+            if matches!(
+                name.as_str(),
+                "HOME" | "OXA_AGENT_DIR" | "TMPDIR" | "XDG_CONFIG_HOME"
+            ) {
                 assert!(Path::new(&value).starts_with(&root));
             }
         }
-        first.write("work/synthetic.txt", "synthetic content");
+        assert!(first.write("work/synthetic.txt", "synthetic content").is_file());
     }
     assert!(
         !root.exists(),
