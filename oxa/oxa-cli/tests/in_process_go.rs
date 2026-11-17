@@ -517,3 +517,73 @@ fn encoded_credentials_in_streamed_tool_arguments_never_execute() {
         mock.assert_healthy();
     }
 }
+
+#[test]
+fn dynamic_go_startup_errors_keep_provider_ownership_with_usable_local() {
+    for (mode, expected, hits) in [
+        ("offline", "offline", 0),
+        ("missing-key", "cloud_credentials_unavailable", 0),
+        ("discovery-401", "cloud_credentials_unavailable", 1),
+        ("discovery-json", "cloud_discovery_invalid", 1),
+    ] {
+        for explicit in [false, true] {
+            let replies = match mode {
+                "discovery-401" => vec![Reply::error(401, "invalid_request_error", "Synthetic refusal")],
+                "discovery-json" => vec![Reply::raw(
+                    200,
+                    "application/json",
+                    b"invalid synthetic JSON".to_vec(),
+                    vec![],
+                )],
+                _ => vec![],
+            };
+            let mock = MockOpenAi::start(replies);
+            let env = TestEnv::new();
+            setup(&env, &format!("http://{}", mock.address()));
+            let path = env.home().join(".oxa/agent/settings.json");
+            let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            settings["oxa"]["engine"]["inProcessLocal"] = json!(true);
+            settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+                "models":{"synthetic-local":{"model":"/synthetic/model.gguf"}},
+                "limits":{"synthetic-local":{"context_window":4096,"max_output":64,
+                    "required_available_bytes":1048576}}});
+            if explicit {
+                settings["defaultModel"] = json!("synthetic-local");
+            }
+            fs::write(path, settings.to_string()).unwrap();
+            if mode == "missing-key" {
+                fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
+            }
+            let mut args = vec![];
+            if mode == "offline" {
+                args.push("--offline");
+            }
+            if explicit {
+                args.extend(["--model", MODEL]);
+            }
+            args.extend(["--no-session", "--no-tools", "-p", "Synthetic Go routing"]);
+            let output = run(&env, &args);
+            assert_eq!(
+                terminal(&output)["error_class"],
+                expected,
+                "mode={mode}, explicit={explicit}, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!output.status.success());
+            assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+            assert!(!env.home().join(".oxa/agent/local-engine").exists());
+            assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+            let local = run(&env, &["--offline", "--list-models"]);
+            assert!(
+                local.status.success(),
+                "{}",
+                String::from_utf8_lossy(&local.stderr)
+            );
+            assert!(String::from_utf8_lossy(&local.stdout).contains("synthetic-local"));
+            assert_eq!(mock.requests().len(), hits);
+            assert!(mock.requests().iter().all(|request| request.method == "GET"));
+            mock.assert_healthy();
+        }
+    }
+}
