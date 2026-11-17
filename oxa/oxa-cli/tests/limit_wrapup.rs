@@ -452,7 +452,19 @@ fn a_failed_final_request_retains_the_session_and_typed_failure() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(oxa_proto::EXIT_BUDGET), "{stderr}");
     assert!(stderr.contains("budget_exceeded"));
-    assert_eq!(server.requests().len(), 2, "the final turn is not retried");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2, "the final turn is not retried");
+    assert_eq!(
+        requests[1].max_tokens, 1024,
+        "the refused turn must be bounded wrap-up"
+    );
+    assert!(
+        requests[1].messages.iter().any(|message| message
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("Wrap up now: this run is ending."))),
+        "the refused turn must carry the actual wrap-up instruction"
+    );
     assert_eq!(
         std::fs::read_to_string(env.work().join("tool-finished")).unwrap(),
         "finished"
