@@ -116,6 +116,45 @@ fn native_goal_control_rejects_stale_requests_and_persists_terminal_cancel() {
 }
 
 #[test]
+fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let open = |name| {
+        let mut deps = deps(
+            &env,
+            Arc::new(FsStore::new(env.root().join(name))),
+            engine.clone(),
+        );
+        deps.session_id = Some("shared-id".into());
+        Session::open(deps, Open::New).unwrap()
+    };
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let goal = objective(GoalBudget::default());
+    let mut owner = open("original");
+    owner.set_goal(Some(goal.clone()), &mut sink).unwrap();
+    let original = owner.inner().sref.clone();
+    let revision = owner.goal_revision();
+
+    let mut other = open("second");
+    other.set_goal(Some(goal.clone()), &mut sink).unwrap();
+    let target = other.inner().sref.clone();
+    assert_ne!(original.path, target.path);
+    assert_eq!(original.id, target.id);
+    assert_eq!(other.goal_revision(), revision);
+    other.shutdown(&mut ui);
+    drop(other);
+
+    owner.switch(Open::Resume(target), &mut sink, &mut ui).unwrap();
+    assert_eq!(owner.goal_revision(), revision);
+    let result = owner.control_goal(&original.id, revision, GoalControl::Cancel, &mut sink);
+    assert_eq!(result.unwrap_err().code, "goal_revision_conflict");
+    assert_eq!(owner.goal_revision(), revision);
+    assert_eq!(owner.goal(), Some(goal));
+    owner.shutdown(&mut ui);
+}
+
+#[test]
 fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuation() {
     let env = TestEnv::new();
     let engine = Arc::new(ScriptedEngine::new(vec![
