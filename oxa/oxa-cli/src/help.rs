@@ -167,8 +167,19 @@ const BASE: &[Entry] = &[
             "oxa work <taskfile> [--rerun]",
             "oxa work --issue N --model MODEL [--rerun]",
             "oxa work status [--json]",
+            "oxa work board --shadow --repo OWNER/REPO --once",
         ],
         example: "oxa work tasks.json",
+    },
+    Entry {
+        // Migrate this command declaration to the shared registry in #1062.
+        path: &["work", "board"],
+        summary: "Sample a private read-only GitHub work board",
+        usage: &[
+            "oxa work board --shadow --repo OWNER/REPO --once",
+            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once]",
+        ],
+        example: "oxa work board --shadow --repo example/project --once",
     },
     Entry {
         path: &["work", "status"],

@@ -24,6 +24,9 @@ pub(crate) fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    if let Some(help) = crate::help::requested("work", args) {
+        return if write!(out, "{help}").is_ok() { 0 } else { 2 };
+    }
     let result = (|| -> Result<i32, String> {
         if let [flag, request] = args {
             if flag == "--supervise" {
