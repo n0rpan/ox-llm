@@ -290,6 +290,11 @@ impl<'a> Stream<'a> {
                             _ => value.as_str().ok_or(Error::Protocol)?.to_owned(),
                         };
                         let target = tool.pointer_mut(path).ok_or(Error::Protocol)?;
+                        // Match ReplyAssembler: a repeated whole name is idempotent;
+                        // a different fragment still appends, with all fields held.
+                        if path == "/function/name" && target.as_str() == Some(part.as_str()) {
+                            continue;
+                        }
                         *target = json!(format!("{}{part}", target.as_str().ok_or(Error::Protocol)?));
                     }
                 }
