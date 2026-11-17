@@ -260,6 +260,45 @@ fn export_flag() {
     assert!(missing.out.is_empty());
 }
 
+#[test]
+fn export_refuses_the_source_and_its_file_aliases_without_changing_bytes() {
+    for alias in ["same", "hard.jsonl", "soft.jsonl", "hard.html"] {
+        let env = TestEnv::new();
+        let server = FakeServer::start(
+            vec![ScriptTurn::text("Preserve this session.")],
+            FakeOpts::default(),
+        )
+        .unwrap();
+        assert_eq!(go(&env, &server.url(), &["-p", "hello"]).code, 0);
+        let input = first_jsonl(&env.agent_dir().join("sessions")).unwrap();
+        let source = std::fs::read(&input).unwrap();
+        let dest = if alias == "same" {
+            input.clone()
+        } else {
+            let dest = env.work().join(alias);
+            if alias == "soft.jsonl" {
+                std::os::unix::fs::symlink(&input, &dest).unwrap();
+            } else {
+                std::fs::hard_link(&input, &dest).unwrap();
+            }
+            dest
+        };
+        let result = go(
+            &env,
+            &closed_url(),
+            &["--export", input.to_str().unwrap(), dest.to_str().unwrap()],
+        );
+        assert_eq!(
+            std::fs::read(&input).unwrap(),
+            source,
+            "export must preserve source bytes: {alias}"
+        );
+        assert_ne!(result.code, 0, "source aliases must be refused: {alias}");
+        assert!(!result.out.contains("Exported to:"), "no success on refusal");
+        assert!(result.err.contains("source session"), "{}", result.err);
+    }
+}
+
 /// --export chooses the format by destination suffix, just like /export (#702).
 /// Both formats use the same session written by a print run against the fake engine.
 #[test]
