@@ -1169,7 +1169,7 @@ fn print_keeps_intermediate_reply_when_before_settle_appends_another_run() {
             Vec::new()
         }
     }
-    for later_prompt in [false, true] {
+    for later_prompt in [true, false] {
         let env = TestEnv::new();
         let mut turns = vec![
             ScriptTurn::text("before-settle reply"),
