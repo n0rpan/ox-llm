@@ -52,6 +52,9 @@ if [ -e oversized ]; then
   exit 0
 fi
 case "$*" in
+  *'enqueuedAt headCommit'*) cat queue-state.json ;;
+  *'comments(last:100)'*) cat review.json ;;
+  *'REMOVED_FROM_MERGE_QUEUE_EVENT'*) printf 'read\n' >> queue-calls; cat queue.json ;;
   *'p42:pullRequest(number:42)'*) cat detail.json ;;
   *'pullRequests(first:100'*) cat first.json ;;
   *) exit 92 ;;
@@ -572,14 +575,24 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
     });
     fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
     fs::write(env.work().join("first.json"), detail.to_string()).unwrap();
+    env.write(
+        "work/queue.json",
+        r#"{"data":{"repository":{"mergeQueue":null}}}"#,
+    );
+    env.write(
+        "work/queue-state.json",
+        r#"{"data":{"repository":{"mergeQueue":null}}}"#,
+    );
+    fs::write(env.work().join("review.json"), detail.to_string()).unwrap();
     let out = invoke(
         &env,
-        "work board --shadow --repo example/repo --once --review-policy ../home/review.json",
+        "work board --shadow --repo example/repo --once --review-policy ../home/review.json --landing-shadow",
     );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let log = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
     let sample: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
     assert_eq!(sample["board"]["entries"][0]["action"], "wait_review");
+    assert_eq!(sample["landing"]["42"]["next"], "wait_review");
     let plan = &sample["reviews"]["42"];
     assert_eq!(plan["decision"]["review"]["tier"], "core");
     assert_eq!(
@@ -645,4 +658,166 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
             outstanding
         );
     }
+}
+
+#[test]
+fn real_shadow_cli_records_exact_queue_evidence_only_when_opted_in() {
+    use serde_json::{json, Value};
+    let (env, _) = fixture();
+    let group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let queue = json!({"data":{"repository":{
+        "mergeQueue":{"id":"queue-1"},
+        "p42":{
+            "number":42,"headRefOid":"synthetic-head","state":"OPEN","baseRefName":"main",
+            "timelineItems":{"nodes":[{
+                "__typename":"RemovedFromMergeQueueEvent","id":"removal-1","reason":"failed_checks",
+                "createdAt":"2026-01-01T00:00:01Z","mergeQueue":{"id":"queue-1"},
+                "beforeCommit":{"oid":group,"statusCheckRollup":{
+                    "commit":{"oid":group},"contexts":{"totalCount":1,"nodes":[{
+                        "__typename":"CheckRun","databaseId":11,"isRequired":true,
+                        "status":"COMPLETED","conclusion":"FAILURE","completedAt":"2026-01-01T00:00:00Z"
+                    }]}
+                }}
+            }]}
+        }
+    }}});
+    fs::write(env.work().join("queue.json"), queue.to_string()).unwrap();
+
+    let args = "work board --shadow --repo example/repo --once";
+    assert_eq!(
+        invoke(&env, &format!("--offline {args} --queue-evidence"))
+            .status
+            .code(),
+        Some(2)
+    );
+    assert!(!env.work().join("gh-calls").exists());
+    assert!(invoke(&env, args).status.success());
+    assert!(!env.work().join("queue-calls").exists());
+
+    let output = invoke(&env, &format!("{args} --queue-evidence"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(env.work().join("queue-calls")).unwrap(),
+        "read\n"
+    );
+
+    let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    let mut samples = text
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap());
+    assert!(samples.next().unwrap().get("queue_rejections").is_none());
+    assert_eq!(
+        samples.next().unwrap()["queue_rejections"],
+        json!([{
+            "number":42, "removal_event":"removal-1","merge_group_head":group,
+            "removed_at":"2026-01-01T00:00:01Z",
+            "failed_required_check_runs":[11]
+        }])
+    );
+}
+
+#[test]
+fn landing_shadow_holds_an_approved_head_on_unresolved_older_review() {
+    use serde_json::{json, Value};
+    let (env, mut detail) = fixture();
+    let head = "cccccccccccccccccccccccccccccccccccccccc";
+    let main = "dddddddddddddddddddddddddddddddddddddddd";
+    let group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let row = &mut detail["data"]["repository"]["p42"];
+    row["headRefOid"] = head.into();
+    row["mergeable"] = "MERGEABLE".into();
+    row["mergeStateStatus"] = "CLEAN".into();
+    row["reviewDecision"] = "APPROVED".into();
+    row["latestOpinionatedReviews"] =
+        json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":head}}]});
+    row["commits"] = json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
+        "totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]
+    }}}}]});
+    detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = head.into();
+    fs::write(env.work().join("first.json"), detail.to_string()).unwrap();
+    assert_eq!(sample(&env, &detail)["board"]["entries"][0]["action"], "ready");
+    fs::write(
+        env.work().join("queue.json"),
+        json!({"data":{"repository":{"mergeQueue":null}}}).to_string(),
+    )
+    .unwrap();
+    let mut queue = json!({"data":{"repository":{
+        "main":{"target":{"oid":main}},
+        "mergeQueue":{"entries":{"totalCount":1,"nodes":[{
+            "enqueuedAt":"2020-01-01T00:00:00Z",
+            "headCommit":{"oid":group},
+            "pullRequest":{"number":42,"headRefOid":head}
+        }]}}
+    }}});
+    let save_queue = |queue: &Value| {
+        fs::write(env.work().join("queue-state.json"), queue.to_string()).unwrap();
+    };
+    save_queue(&queue);
+    let old = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let state = json!({
+        "code_review":{"commit_sha":old,"status":"completed",
+            "has_any_findings":true,"has_unresolved_findings":true},
+        "security_review":{"commit_sha":null,"status":null,
+            "has_any_findings":null,"has_unresolved_findings":null}
+    });
+    let summary =
+        format!("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {state} -->");
+    let mut review = json!({"data":{"repository":{"p42":{
+        "number":42,"headRefOid":head,"state":"OPEN",
+        "comments":{"totalCount":1,"nodes":[{
+            "author":{"databaseId":199175422},"updatedAt":"2026-01-01T00:00:00Z","body":summary
+        }]}
+    }}}});
+    let mut read = |change: fn(&mut Value)| -> Value {
+        change(&mut review);
+        fs::write(env.work().join("review.json"), review.to_string()).unwrap();
+        let output = invoke(
+            &env,
+            "work board --shadow --repo example/repo --once --landing-shadow",
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+        let data: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        assert_eq!(data["board"]["entries"][0]["action"], "ready");
+        data
+    };
+    let observed = read(|_| {});
+    let hold = &observed["landing"]["42"];
+    assert_eq!(hold["next"], "hold_findings");
+    assert_eq!(hold["queue_alarm"], true);
+    assert_eq!(observed["landing_main"], main);
+    assert_eq!(hold["queue"]["group_head"], group);
+    assert_eq!(
+        read(|doc| doc["data"]["repository"]["p42"]["comments"]["totalCount"] = 2.into())["landing"]["42"]
+            ["next"],
+        "wait_review"
+    );
+    queue["data"]["repository"]["main"] = Value::Null;
+    queue["data"]["repository"]["mergeQueue"]["entries"]["nodes"][0]["headCommit"] = Value::Null;
+    save_queue(&queue);
+    let waiting = read(|_| {});
+    let waiting_for_group = &waiting["landing"]["42"];
+    assert_eq!(waiting_for_group["queue_alarm"], true);
+    assert!(waiting_for_group["queue"].get("group_head").is_none());
+    assert!(waiting.get("landing_main").is_none());
+    queue["data"]["repository"]["mergeQueue"]["entries"]["nodes"][0]["pullRequest"]["headRefOid"] =
+        old.into();
+    save_queue(&queue);
+    let stale = read(|_| {});
+    assert_eq!(stale["landing"]["42"]["queue_alarm"], false);
+    assert!(stale["landing"]["42"].get("queue").is_none());
+    queue["data"]["repository"]["main"]["target"]["oid"] = main.into();
+    queue["data"]["repository"]["mergeQueue"]["entries"] = json!({"totalCount":0,"nodes":[]});
+    save_queue(&queue);
+    let empty = read(|_| {});
+    assert_eq!(empty["landing_main"], main);
+    assert!(empty["landing"]["42"].get("queue").is_none());
 }

@@ -13,6 +13,7 @@ const QUEUE: &str = r#"mergeQueue(branch:"main"){id}"#;
 pub struct RejectionEvidence {
     number: u64,
     removal_event: String,
+    removed_at: String,
     merge_group_head: String,
     failed_required_check_runs: Vec<u64>,
 }
@@ -165,6 +166,7 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
     Ok((!failed.is_empty()).then(|| RejectionEvidence {
         number: entry.number,
         removal_event: removal_event.to_owned(),
+        removed_at: removed_at.to_owned(),
         merge_group_head: sha.to_owned(),
         failed_required_check_runs: failed.into_iter().collect(),
     }))

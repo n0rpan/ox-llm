@@ -98,6 +98,7 @@ fn assert_rejection_journal(conclusion: &str) {
         sample["queue_rejections"],
         json!([{
             "number":42, "removal_event":"removal-1", "merge_group_head":GROUP,
+            "removed_at":"2026-01-01T00:00:01Z",
             "failed_required_check_runs":[11,15]
         }])
     );

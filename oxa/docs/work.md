@@ -11,6 +11,13 @@ The private, locked `work/<project-hash>/board/OWNER/REPO/board-shadow.jsonl` un
 directory appends `{schema_version:1,observed_at,board,would_take}`. Eligible shared
 board entries form `would_take`; shadow reserves no leases or attempts. Use one
 GitHub repository per capture. Read errors and incomplete connections stop sampling.
+
+Add `--landing-shadow` to record latest-review holds and queue-age alarms in `landing`.
+The sample records the observed main ref in `landing_main` independently of queue membership
+and verified merge-group rejection evidence in `queue_rejections`, including the
+removal event time.
+Use `--queue-evidence` to record only the rejection evidence alongside the board.
+
 Limit: 100 PRs/items per connection. Reported checks are matched against the base's
 classic protection and active repository/organization rulesets; missing required
 contexts and unknown/no required checks stay pending. Review
