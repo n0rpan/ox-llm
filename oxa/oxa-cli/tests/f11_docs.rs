@@ -672,10 +672,7 @@ fn cli_and_slash_tables_list_every_shipped_name() {
     );
     // The other direction: a row that names a command oxa no longer ships is stale, not coverage.
     let shipped: BTreeSet<&String> = command_names.iter().collect();
-    let stale: Vec<&String> = documented
-        .iter()
-        .filter(|name| !shipped.contains(name))
-        .collect();
+    let stale: Vec<&String> = documented.iter().filter(|name| !shipped.contains(name)).collect();
     assert!(
         stale.is_empty(),
         "docs/pages/cli.md documents commands that oxa does not ship: {stale:?}"
@@ -721,10 +718,7 @@ fn cli_and_slash_tables_list_every_shipped_name() {
         "an option row does not show the alias of its long flag:\n{}",
         alias_gaps.join("\n")
     );
-    let shipped_flags: BTreeSet<String> = option_cells
-        .iter()
-        .filter_map(|cell| option_name(cell))
-        .collect();
+    let shipped_flags: BTreeSet<String> = option_cells.iter().filter_map(|cell| option_name(cell)).collect();
     let stale: Vec<(&String, &usize)> = documented_flags
         .iter()
         .filter(|(flag, _)| !shipped_flags.contains(*flag))
@@ -780,10 +774,7 @@ fn cli_option_rows_must_show_their_short_aliases() {
     // Cells arrive with their backticks stripped, as `first_cells` hands them over.
     let complete = option_tokens("--print, -p");
     assert!(complete.contains("--print") && complete.contains("-p"));
-    assert_eq!(
-        missing_aliases("--print, -p", &complete),
-        Vec::<String>::new()
-    );
+    assert_eq!(missing_aliases("--print, -p", &complete), Vec::<String>::new());
 
     let dropped = option_tokens("--print");
     assert!(dropped.contains("--print"));
@@ -805,11 +796,7 @@ fn cli_option_rows_must_show_their_short_aliases() {
     ] {
         let tokens = option_tokens(cell);
         assert!(tokens.contains(alias), "{cell} should carry {alias}");
-        let without: BTreeSet<String> = tokens
-            .iter()
-            .filter(|token| *token != alias)
-            .cloned()
-            .collect();
+        let without: BTreeSet<String> = tokens.iter().filter(|token| *token != alias).cloned().collect();
         assert_eq!(missing_aliases(cell, &without), vec![alias.to_string()]);
     }
 }
