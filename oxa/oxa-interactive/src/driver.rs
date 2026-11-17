@@ -752,9 +752,10 @@ impl<'a> Loop<'a> {
                 }
                 apply_event(&mut self.vm, &e);
             }
-            WorkerMsg::UnsentPrompt { text, parts } => {
+            WorkerMsg::UnsentPrompt { text, mut parts } => {
                 self.editor.prepend_text(&text);
-                self.pending_parts.extend(parts);
+                parts.append(&mut self.pending_parts);
+                self.pending_parts = parts;
                 if !self.pending_parts.is_empty() {
                     self.vm.widgets_above.insert(
                         "oxa.attachments".to_string(),
