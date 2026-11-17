@@ -478,6 +478,7 @@ pub(crate) fn run(
         .mode(0o700)
         .create(&storage)
         .map_err(|_| "cannot create shadow storage")?;
+    oxa_work::require_private_directory(&storage)?;
     let mut log = oxa_work::shadow::open_log(&storage.join("board-shadow.jsonl"))?;
     oxa_work::shadow::run_with_reviews(
         &mut log,
