@@ -795,6 +795,19 @@ mod tests {
     }
 
     #[test]
+    fn truncated_comments_request_missing_data_from_the_runner() {
+        let long = "é".repeat(MAX_COMMENT_BYTES);
+        let prompt = issue_prompt(
+            42,
+            &json!({"title": "T", "body": "B", "state": "OPEN", "comments": comments(&[&long])}),
+        )
+        .unwrap();
+        assert!(prompt.contains("further comments truncated"), "{prompt}");
+        assert!(prompt.contains("ask the runner for the rest"), "{prompt}");
+        assert!(!prompt.contains("open the issue"), "{prompt}");
+    }
+
+    #[test]
     fn long_comment_threads_are_bounded_at_a_character_boundary() {
         let long = format!("{}{}", "é".repeat(MAX_COMMENT_BYTES), " tail");
         let prompt = issue_prompt(
