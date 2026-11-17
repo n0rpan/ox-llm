@@ -315,14 +315,9 @@ fn the_setting_is_known_and_off_by_default() {
     assert!(key.supported, "a working setting, not an ignored key");
     assert_eq!(key.default, "false", "off by default");
     let unset = oxa_config::Settings::from_values(Value::Null, Value::Null);
-    assert!(
-        !unset.bool("ui.activityDetails", false),
-        "off unless asked for"
-    );
-    let on = oxa_config::Settings::from_values(
-        serde_json::json!({"ui": {"activityDetails": true}}),
-        Value::Null,
-    );
+    assert!(!unset.bool("ui.activityDetails", false), "off unless asked for");
+    let on =
+        oxa_config::Settings::from_values(serde_json::json!({"ui": {"activityDetails": true}}), Value::Null);
     assert!(on.bool("ui.activityDetails", false), "the setting is read");
 }
 
