@@ -30,8 +30,8 @@ struct PrintSink<'a> {
     local_model: bool,
     pending_length: bool,
     continued: Option<String>,
-    /// The final reply of the last prompt, set at `AgentEnd`; written to `out` by `run_print`
-    /// once it knows the run did not fail or abort.
+    /// Completed candidate set at `AgentEnd`; the driver chooses stdout or progress after
+    /// settlement, once it knows whether another prompt is admitted or the run failed.
     final_text: Option<String>,
     notes: Vec<String>,
     started: HashMap<String, Instant>,
