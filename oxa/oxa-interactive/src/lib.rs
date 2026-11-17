@@ -35,7 +35,6 @@
 mod app;
 mod chrome;
 mod clipboard;
-pub mod command_menu;
 pub mod command_registry;
 mod dialogs;
 mod draft_trigger;
