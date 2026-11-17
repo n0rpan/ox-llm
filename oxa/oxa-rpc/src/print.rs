@@ -30,7 +30,7 @@ struct PrintSink<'a> {
     local_model: bool,
     pending_length: bool,
     continued: Option<String>,
-    /// Completed candidate set at `AgentEnd`; the driver chooses stdout or progress after
+    /// Completed candidate selected at `AgentEnd` or successful goal settlement; choose stdout or progress after
     /// settlement, once it knows whether another prompt is admitted or the run failed.
     final_text: Option<String>,
     notes: Vec<String>,
@@ -267,6 +267,21 @@ pub fn run_print_outcome(
         // included); print only says why on stderr.
         let settled = session.take_outcome();
         outcome.include(settled);
+        // goal_done can settle the run on the tool-call message itself. Its
+        // content is final only after goal, schema and project checks succeed.
+        if sink.is_last_prompt
+            && settled == RunOutcome::Done
+            && sink.final_text.is_none()
+            && session
+                .goal()
+                .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Done)
+        {
+            sink.final_text = sink
+                .last
+                .as_ref()
+                .filter(|message| message.msg.tool_calls.iter().any(|call| call.name == "goal_done"))
+                .and_then(|message| message.msg.content.clone());
+        }
         // Decide once after settlement, retaining failure precedence and progress
         // routing for an intermediate prompt whose next prompt will be admitted.
         let stopping = session.handle().wrap_up_requested() || session.handle().interrupted();

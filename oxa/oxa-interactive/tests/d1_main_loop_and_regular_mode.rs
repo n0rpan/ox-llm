@@ -465,7 +465,10 @@ fn enter_steers_alt_enter_follows_up() {
         "Enter steers while a run is active"
     );
     assert_eq!(follow_up, vec!["y".to_string()], "Alt+Enter queues a follow-up");
-    assert!(d.cmds.is_empty(), "nothing is sent as a new prompt while running");
+    assert!(
+        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
+        "steering and follow-up share one bound wake, never a new prompt"
+    );
 }
 
 /// editor refilled
@@ -489,7 +492,10 @@ fn escape_aborts_and_restores_queue() {
         "the queued message is back in the editor and resubmitted"
     );
     assert!(follow_up.is_empty());
-    assert!(d.cmds.is_empty());
+    assert!(
+        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
+        "resubmitting restored input retains one consumer on its original handle"
+    );
 }
 
 /// ! and !!

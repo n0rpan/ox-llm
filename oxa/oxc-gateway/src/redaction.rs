@@ -3,10 +3,11 @@
 use crate::secrets::Key;
 use serde_json::Value;
 
-pub fn value(value: &mut Value, key: &Key) {
+pub fn value(value: &mut Value, key: &Key) -> bool {
+    let found = contains_secret(value, key.expose());
     secret(value, key.expose());
+    found
 }
-#[cfg(feature = "anthropic-gateway")]
 pub(crate) fn contains_secret(value: &Value, secret: &str) -> bool {
     if secret.is_empty() {
         return false;
@@ -34,7 +35,7 @@ pub(crate) fn secret(value: &mut Value, secret: &str) {
                 map.insert(name.replace(secret, "[redacted]"), item);
             }
         }
-        _ => {}
+        _ => (),
     }
 }
 

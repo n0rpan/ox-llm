@@ -83,7 +83,17 @@ fn cfg(soft: Option<u32>, turn_start: Option<bool>) -> Settings {
 }
 
 fn open(env: &TestEnv, eng: Arc<ScriptedEngine>, tools: Vec<Arc<dyn Tool>>, settings: Settings) -> Session {
-    let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
+    open_saved(env, eng, tools, settings, Arc::new(MemStore::new()), Open::New)
+}
+
+fn open_saved(
+    env: &TestEnv,
+    eng: Arc<ScriptedEngine>,
+    tools: Vec<Arc<dyn Tool>>,
+    settings: Settings,
+    store: Arc<dyn SessionStore>,
+    how: Open,
+) -> Session {
     let engine: Arc<dyn Engine> = eng;
     let deps = Deps {
         engine,
@@ -103,7 +113,7 @@ fn open(env: &TestEnv, eng: Arc<ScriptedEngine>, tools: Vec<Arc<dyn Tool>>, sett
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     };
-    Session::open(deps, Open::New).expect("open")
+    Session::open(deps, how).expect("open")
 }
 
 fn call(id: &str) -> ToolCall {
@@ -325,4 +335,106 @@ fn pending_idle_summary_is_applied_without_a_request() {
         "the turn-start compaction used the pending summary: {:?}",
         sink3.0
     );
+}
+
+#[test]
+fn resumed_goal_accounts_turn_start_summary_before_any_new_chat() {
+    use oxa_session::{Goal, GoalBudget, GoalStatus};
+    for failed in [false, true] {
+        for (queued, remaining) in [(false, 0), (true, 0), (false, 1), (true, 1)] {
+            let env = TestEnv::new();
+            let soft = measured_abort_context(&env, BIG) + 1000;
+            let summary = if failed {
+                ScriptTurn::fault(oxa_fake::Fault::DropAt { bytes: 0 })
+            } else {
+                ScriptTurn::text("Synthetic summary of the aborted read")
+            };
+            let engine = Arc::new(ScriptedEngine::new(vec![
+                read_turn("before-goal"),
+                summary,
+                ScriptTurn::tool(
+                    "must-not-run",
+                    "goal_done",
+                    r#"{"status":"complete","evidence":"Must never be requested after compaction exhausts the goal."}"#,
+                ),
+            ]));
+            let store = Arc::new(MemStore::new());
+            let mut session = open_saved(
+                &env,
+                engine.clone(),
+                vec![read_tool(BIG, true)],
+                cfg(Some(soft), Some(true)),
+                store.clone(),
+                Open::New,
+            );
+            let mut sink = VecSink::default();
+            session
+                .set_goal(
+                    Some(Goal::new("Continue synthetic work".into(), GoalBudget::default(), 1000).unwrap()),
+                    &mut sink,
+                )
+                .unwrap();
+            session
+                .prompt("look".into(), vec![], &mut sink, &mut HeadlessUi::default())
+                .unwrap();
+            let mut stored_goal = session.goal().unwrap();
+            let spent_before = stored_goal.tokens_used;
+            stored_goal.budget.max_tokens = Some(spent_before + remaining);
+            session.set_goal(Some(stored_goal), &mut sink).unwrap();
+            let sref = session.inner().sref.clone();
+            session.shutdown(&mut HeadlessUi::default());
+            drop(session);
+            let mut resumed = open_saved(
+                &env,
+                engine.clone(),
+                vec![read_tool(BIG, true)],
+                cfg(Some(soft), Some(true)),
+                store.clone(),
+                Open::Resume(sref),
+            );
+            resumed.set_auto_retry(false);
+            if queued {
+                resumed.handle().follow_up("Continue".into());
+                resumed.run_queued(&mut sink, &mut HeadlessUi::default()).unwrap();
+            } else {
+                resumed
+                    .prompt("Continue".into(), vec![], &mut sink, &mut HeadlessUi::default())
+                    .unwrap();
+            }
+            assert!(
+                resumed.inner().transcript.wire().iter().any(|m| m
+                    .content
+                    .as_deref()
+                    .is_some_and(|text| text.starts_with("Continue"))),
+                "accepted input must remain stored even when the budget blocks generation"
+            );
+            assert_eq!(
+                kinds(&engine),
+                if remaining == 0 {
+                    vec!["chat"]
+                } else {
+                    vec!["chat", "compaction"]
+                },
+                "no generating chat after the goal's turn-start budget is spent"
+            );
+            let goal = resumed.goal().unwrap();
+            assert_eq!(goal.status, GoalStatus::Blocked);
+            if failed && remaining > 0 {
+                assert_eq!(goal.unknown_requests, 1);
+            } else {
+                assert_eq!(goal.unknown_requests, 0);
+                if remaining > 0 {
+                    assert!(goal.tokens_used > spent_before);
+                }
+                assert_eq!(
+                    goal.tokens_used,
+                    spent_before + resumed.handle().run_tokens_used()
+                );
+            }
+            assert_eq!(
+                Goal::latest(&store.load(&resumed.inner().sref).unwrap()).unwrap(),
+                Some(goal)
+            );
+        }
+    }
 }

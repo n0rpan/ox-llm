@@ -166,16 +166,16 @@ fn open(
         routes.push((model, billing));
     }
     let (subscription, subscription_limits) = subscription_options(cloud, needs_subscription)?;
+    if go_enabled && subscription_limits.is_none() {
+        return Err(invalid());
+    }
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
     };
     // These existing private locations are denied to both file tools and bash.
-    // Anthropic discovery stays credential-free; explicit Go discovery uses
-    // only the existing protected key reader and never opens the ledger.
-    if go_enabled && subscription_limits.is_none() {
-        return Err(invalid());
-    }
+    // Configured-route discovery reads no key or ledger. Explicit Go discovery
+    // uses the existing protected key reader and this same gateway HTTP pool.
     let mut runtime = Runtime::new(
         routes,
         credential_path(dirs),
