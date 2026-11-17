@@ -507,7 +507,11 @@ fn real_a_rustup_toolchain_without_shims_runs() {
     let (exit, out) = run(&b, "command -v cargo && cargo build", &env.work());
     assert_eq!(exit, Some(0), "{out}");
     assert!(out.contains("toolchain cargo build"), "{out}");
-    let (exit, _) = run(&b, "touch \"$HOME/.rustup/toolchains/pinned/bin/evil\"", &env.work());
+    let (exit, _) = run(
+        &b,
+        "touch \"$HOME/.rustup/toolchains/pinned/bin/evil\"",
+        &env.work(),
+    );
     assert_ne!(exit, Some(0));
     assert!(!home.join(".rustup/toolchains/pinned/bin/evil").exists());
 }
