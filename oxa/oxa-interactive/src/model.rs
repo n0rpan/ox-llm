@@ -442,6 +442,10 @@ pub type ReopenFn =
 /// One request to the worker thread that owns the `Session`. Each maps to one
 /// `oxa_core::Session` call; the results come back as `AgentEvent`s and [`WorkerMsg`]s.
 pub enum SessionCmd {
+    /// Event-driven inbox wake. The id makes a wake queued before a swap harmless.
+    Inbox {
+        session_id: String,
+    },
     /// `Session::prompt`. Slash commands that are templates, `/skill:name` or extension
     /// commands are sent as a prompt and expanded by the core.
     Prompt {

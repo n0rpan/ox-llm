@@ -183,6 +183,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                         OxaError::new(code, error.to_string())
                     })
             }
+            Subcommand::Login(logout, words) => crate::login_cmd::run(
+                logout,
+                &words.0,
+                &dirs,
+                &cwd,
+                env,
+                stdin_is_tty && stdout_is_tty,
+                &mut *stdout,
+            ),
             Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Work(words) => {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
@@ -190,6 +199,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
+            Subcommand::Send(words) => match words.as_slice() {
+                [id, text] if oxa_session::valid_inbox_id(id) => {
+                    oxa_session::send_inbox(&dirs.agent_dir, id, text)
+                        .map(|_| 0)
+                        .map_err(|e| OxaError::io("cannot send session message", &e))
+                }
+                _ => Err(OxaError::new(
+                    codes::USAGE,
+                    "Usage: oxa send <session-id> \"text\"",
+                )),
+            },
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
             Subcommand::ReportIssue(words) => crate::run_report_issue(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Wipe(words) => crate::run_wipe(

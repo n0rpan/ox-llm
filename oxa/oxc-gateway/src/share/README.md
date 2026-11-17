@@ -55,7 +55,12 @@ Forwarded headers do not provide peer identity.
 
 Only authenticated GET `/v1/models` and streaming text POST
 `/v1/chat/completions` are served. The `Answer` adapter receives only validated
-guest history and sampling/output limits. Tools, tool messages, file/image
+guest history and sampling/output limits. Its separate borrowed `Guest` argument
+comes only from successful quota admission, exposing key id/name for accounting
+and guest policy. It has opaque Debug, no bearer access and no public constructor;
+it stays valid through backend cleanup without copying key metadata. Neither the
+request JSON nor forwarded headers can claim this identity. Keep it out of model
+history and session/provider identity. Tools, tool messages, file/image
 attachments, session fields and unknown execution fields are refused. Local
 models are visible by default; metered remote aliases require a separate owner
 allowlist. Subscription routes are always excluded. No owner prompt, tool set,

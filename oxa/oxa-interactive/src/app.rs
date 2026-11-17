@@ -422,7 +422,16 @@ fn drive(
         lp.poll_asks();
 
         let animating = lp.animating();
-        let events = term.poll(if animating { 16 } else { 250 });
+        // A pending frame (including the first editable prompt) must not wait behind
+        // the idle input timeout. Still drain input first so it sees the latest state.
+        let wait_ms = if lp.dirty {
+            0
+        } else if animating {
+            16
+        } else {
+            250
+        };
+        let events = term.poll(wait_ms);
         for ev in events {
             lp.input(term, ev);
         }
@@ -1497,6 +1506,17 @@ fn execute(
     out: &Sender<WorkerMsg>,
 ) -> (Result<(), OxaError>, bool) {
     match cmd {
+        SessionCmd::Inbox { session_id } => {
+            s.handle().clear_inbox_wake();
+            // A coalesced wake may carry an older destination. Only run the
+            // current session's bound input, never that destination's queue.
+            let result = if s.inner().sref.id == session_id || s.handle().has_inbox_input() {
+                s.run_queued(sink, ui).map(|_| ())
+            } else {
+                Ok(())
+            };
+            (result, false)
+        }
         SessionCmd::Prompt { text, parts } => (run_prompt(s, text, parts, sink, ui), false),
         SessionCmd::Compact { instructions } => {
             let mut watch = StartWatch {

@@ -84,7 +84,7 @@ async fn native_client_uses_the_shared_mock_and_redacts_decoded_output() {
     assert_eq!(requests[0].body["model"], skeleton::UPSTREAM);
     assert_eq!(requests[0].body["max_tokens"], 16);
     assert_eq!(requests[0].body["stream"], true);
-    mock.assert_healthy();
+    mock.finish();
 }
 
 #[tokio::test]

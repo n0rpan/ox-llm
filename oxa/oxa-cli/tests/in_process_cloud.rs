@@ -3,6 +3,8 @@
 #[allow(dead_code)]
 #[path = "../../oxc-gateway/tests/common/anthropic.rs"]
 mod anthropic;
+#[path = "common/strace.rs"]
+mod strace;
 use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use serde_json::{json, Value};
@@ -52,7 +54,7 @@ fn run(env: &TestEnv, args: &[&str], trace: Option<&Path>) -> Output {
 }
 fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Output {
     let mut cmd = if let Some(path) = trace {
-        let mut cmd = Command::new("strace");
+        let mut cmd = Command::new(strace::executable());
         cmd.args(["-f", "-e", "trace=execve", "-o"])
             .arg(path)
             .arg(env!("CARGO_BIN_EXE_oxa"));
@@ -64,7 +66,15 @@ fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Outp
     for (key, value) in env.envs(url) {
         cmd.env(key, value);
     }
-    cmd.output().expect("run the real oxa binary")
+    cmd.output().unwrap_or_else(|error| {
+        if trace.is_some() && error.kind() == std::io::ErrorKind::NotFound {
+            panic!(
+                "strace is required for the no-Python process proof; install strace and put it on PATH \
+                 before running this test (see CONTRIBUTING.md): {error}"
+            );
+        }
+        panic!("failed to launch {cmd:?}: {error}");
+    })
 }
 fn rows(env: &TestEnv) -> Vec<Value> {
     fs::read_dir(env.home().join(".oxa/agent/cloud-ledger"))
@@ -298,7 +308,7 @@ fn native_discovery_tool_loop_and_budget_settlement_use_no_python_process() {
         .collect();
     assert!(programs.contains(&"oxa"), "{trace}");
     assert!(programs.iter().all(|name| !name.starts_with("python")), "{trace}");
-    mock.assert_healthy();
+    mock.finish();
 }
 
 #[test]
