@@ -519,6 +519,9 @@ pub fn worker_loop_with(
     // seen before that work starts: stop takes precedence (a prompt queued before the quit
     // must not begin after it).
     let mut backlog: VecDeque<SessionCmd> = VecDeque::new();
+    // O-152: the boot preload is due as soon as a session is ready, not at the next idle tick.
+    // Set again when a reopen gives the worker a new session.
+    let mut preload_due = true;
     loop {
         // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
         // before the next command (the commands queued behind it run in the new session).
@@ -562,16 +565,28 @@ pub fn worker_loop_with(
         }
         let cmd = match backlog.pop_front() {
             Some(cmd) => cmd,
-            None => match cmds.recv_timeout(WORKER_IDLE_TICK) {
-                Ok(cmd) => cmd,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
+            None => {
+                // O-152 / O-386: with nothing queued the worker is about to wait, and a session
+                // in force that has not preloaded its prefix yet does so now — the boot preload
+                // must not wait for the idle tick, which is now 250 ms and serves the host
+                // (a hook request pending at this instant still defers it to `idle_tick`).
+                if preload_due {
+                    preload_due = false;
                     if let Some(s) = session.as_mut() {
-                        idle_tick(s, &out, &mut ui_proxy, &mut last, &stop);
+                        run_boot_preload(s, &out, &mut ui_proxy, &stop);
                     }
-                    continue;
                 }
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            },
+                match cmds.recv_timeout(WORKER_IDLE_TICK) {
+                    Ok(cmd) => cmd,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        if let Some(s) = session.as_mut() {
+                            idle_tick(s, &out, &mut ui_proxy, &mut last, &stop);
+                        }
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                }
+            }
         };
         // A command taken in the same instant as the stop does not start.
         if stop.is_stopped() {
@@ -618,6 +633,7 @@ pub fn worker_loop_with(
                     Ok(new) => {
                         stop.enter(new.handle());
                         install_wake(&new.handle(), &wake, &pending);
+                        preload_due = true;
                         session = Some(new);
                         opened = true;
                     }
@@ -634,6 +650,7 @@ pub fn worker_loop_with(
                             Ok(s) => {
                                 stop.enter(s.handle());
                                 install_wake(&s.handle(), &wake, &pending);
+                                preload_due = true;
                                 session = Some(s);
                             }
                             Err(e) => {
@@ -726,6 +743,18 @@ pub fn worker_loop_with(
     ended
 }
 
+/// O-152: the boot preload of the session in force while its wire is still empty: prefill its
+/// frozen prefix (H6, background) so the first prompt starts warm. Once per entered session,
+/// and only if no host request is pending (then it is retried on a tick). The preload is
+/// invisible: its progress events are not shown (they would set the foreground activity and
+/// make the UI treat the next prompt as steering), and the UI cancels it on input
+/// (`WorkerStop::is_preloading`).
+fn run_boot_preload(s: &mut Session, out: &Sender<WorkerMsg>, ui: &mut UiProxy, stop: &WorkerStop) {
+    stop.set_preloading(true);
+    s.preload_prefix(&mut PreloadSink(ChanSink(out.clone())), ui);
+    stop.set_preloading(false);
+}
+
 /// The worker's idle tick: serve what hook sets asked for while the session was idle. A turn
 /// an extension triggered runs here (its events go out like a prompt's); a fresh status
 /// follows whenever something was reported.
@@ -736,14 +765,9 @@ fn idle_tick(
     last: &mut StatusModel,
     stop: &WorkerStop,
 ) {
-    // O-152: the first idle tick of a session with an empty wire prefills its frozen prefix
-    // (H6, background), so the first prompt starts warm. Once per entered session. The preload
-    // is invisible: its progress events are not shown (they would set the foreground activity
-    // and make the UI treat the next prompt as steering), and the UI cancels it on input
-    // (`WorkerStop::is_preloading`).
-    stop.set_preloading(true);
-    s.preload_prefix(&mut PreloadSink(ChanSink(out.clone())), ui);
-    stop.set_preloading(false);
+    // O-386: the preload is due before the worker's first wait (see `worker_loop_with`); this
+    // call is the retry for a session whose hook set had requests pending then.
+    run_boot_preload(s, out, ui, stop);
     let mut sink = CountingSink {
         inner: ChanSink(out.clone()),
         count: 0,
