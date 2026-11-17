@@ -14,6 +14,8 @@ Local mode requires independently verified local OS ownership, not merely a
 loopback address. Tailscale mode requires an authenticated request-bound proxy
 identity, its matching forwarded login, and an exact `allowed_identities` match.
 An untrusted `Tailscale-User-Login` header and loopback peer alone prove nothing.
+Only a loopback `bind` is accepted: a wider address is a configuration error, and
+the access check refuses any request whose peer is not loopback.
 No provider is enabled implicitly; the shipped unverified adapter always refuses.
 
 After a reviewed listener and trusted proxy adapter are available, configure the
