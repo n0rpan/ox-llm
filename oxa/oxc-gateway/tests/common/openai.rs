@@ -214,11 +214,34 @@ enum ArgumentDeltas {
     Partial,
 }
 
+// Closed test-only facts; never retain io::Error display text or request data.
+#[derive(Clone, Copy, Debug)]
+enum IoPhase {
+    Accept,
+    RequestRead,
+    ReplyGate,
+    ReplyWrite,
+    UnexpectedRequest,
+}
+#[derive(Clone, Copy)]
+struct HealthFailure {
+    phase: IoPhase,
+    kind: Option<io::ErrorKind>,
+}
+impl HealthFailure {
+    fn io(phase: IoPhase, error: io::Error) -> Self {
+        Self {
+            phase,
+            kind: Some(error.kind()),
+        }
+    }
+}
+
 #[derive(Default)]
 struct Shared {
     requests: Mutex<Vec<Request>>,
     changed: Condvar,
-    errors: Mutex<Vec<&'static str>>,
+    errors: Mutex<Vec<HealthFailure>>,
     stopping: AtomicBool,
 }
 pub struct MockOpenAi {
@@ -247,22 +270,22 @@ impl MockOpenAi {
                         let shared = worker.clone();
                         let replies = replies.clone();
                         peers.push(thread::spawn(move || {
-                            if serve(stream, &shared, &replies).is_err()
-                                && !shared.stopping.load(Ordering::Acquire)
-                            {
-                                shared
-                                    .errors
-                                    .lock()
-                                    .unwrap()
-                                    .push("mock upstream connection failed");
+                            if let Err(failure) = serve(stream, &shared, &replies) {
+                                if !shared.stopping.load(Ordering::Acquire) {
+                                    shared.errors.lock().unwrap().push(failure);
+                                }
                             }
                         }));
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(5))
                     }
-                    Err(_) => {
-                        worker.errors.lock().unwrap().push("mock upstream accept failed");
+                    Err(error) => {
+                        worker
+                            .errors
+                            .lock()
+                            .unwrap()
+                            .push(HealthFailure::io(IoPhase::Accept, error));
                         break;
                     }
                 }
@@ -301,9 +324,15 @@ impl MockOpenAi {
         requests.clone()
     }
     pub fn assert_healthy(&self) {
+        let (empty, first) = {
+            let errors = self.shared.errors.lock().unwrap();
+            (errors.is_empty(), errors.first().copied())
+        };
         assert!(
-            self.shared.errors.lock().unwrap().is_empty(),
-            "mock upstream reported a connection failure"
+            empty,
+            "mock upstream reported a connection failure phase={:?} kind={:?}",
+            first.map(|failure| failure.phase),
+            first.and_then(|failure| failure.kind),
         );
     }
 }
@@ -390,12 +419,20 @@ fn read_request(stream: &mut TcpStream) -> io::Result<Request> {
         headers,
     })
 }
-fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>>) -> io::Result<()> {
-    let request = read_request(&mut stream)?;
+fn serve(
+    mut stream: TcpStream,
+    shared: &Shared,
+    replies: &Mutex<VecDeque<Reply>>,
+) -> Result<(), HealthFailure> {
+    let request =
+        read_request(&mut stream).map_err(|error| HealthFailure::io(IoPhase::RequestRead, error))?;
     let reply = {
         let mut requests = shared.requests.lock().unwrap();
         let reply = replies.lock().unwrap().pop_front().unwrap_or_else(|| {
-            shared.errors.lock().unwrap().push("unexpected upstream request");
+            shared.errors.lock().unwrap().push(HealthFailure {
+                phase: IoPhase::UnexpectedRequest,
+                kind: None,
+            });
             Reply::error(500, "server_error", "unexpected synthetic request")
         });
         requests.push(request);
@@ -411,10 +448,18 @@ fn serve(mut stream: TcpStream, shared: &Shared, replies: &Mutex<VecDeque<Reply>
             match gate.recv_timeout(Duration::from_millis(20)) {
                 Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(_) if start.elapsed() < DEADLINE => {}
-                Err(_) => return Err(io::ErrorKind::TimedOut.into()),
+                Err(_) => {
+                    return Err(HealthFailure::io(
+                        IoPhase::ReplyGate,
+                        io::ErrorKind::TimedOut.into(),
+                    ))
+                }
             }
         }
     }
+    write_reply(&mut stream, &reply).map_err(|error| HealthFailure::io(IoPhase::ReplyWrite, error))
+}
+fn write_reply(stream: &mut TcpStream, reply: &Reply) -> io::Result<()> {
     write!(
         stream,
         "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n",
