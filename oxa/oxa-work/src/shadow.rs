@@ -1,7 +1,8 @@
 //! Read-only sampling: this runner has no executor or GitHub mutation interface.
-use crate::board::{Board, Entry};
+use crate::board::{review, Board, Entry};
 use crate::Result;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -17,6 +18,8 @@ struct Sample<'a> {
     observed_at: u64,
     board: &'a Board,
     would_take: Vec<&'a Entry>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    reviews: &'a BTreeMap<u64, review::Plan>,
 }
 
 /// Refuse links, shared files and concurrent writers before consulting GitHub.
@@ -154,16 +157,26 @@ pub fn run(
     log: &mut File,
     once: bool,
     mut snapshot: impl FnMut() -> Result<Board>,
+    wait: impl FnMut(Duration),
+) -> Result<()> {
+    run_with_reviews(log, once, || Ok((snapshot()?, BTreeMap::new())), wait)
+}
+
+pub fn run_with_reviews(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<(Board, BTreeMap<u64, review::Plan>)>,
     mut wait: impl FnMut(Duration),
 ) -> Result<()> {
     loop {
         let started = Instant::now();
-        let board = snapshot()?;
+        let (board, reviews) = snapshot()?;
         let sample = Sample {
             schema_version: 1,
             observed_at: board.observed_at,
             would_take: board.entries.iter().filter(|entry| entry.eligible).collect(),
             board: &board,
+            reviews: &reviews,
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         line.push(b'\n');

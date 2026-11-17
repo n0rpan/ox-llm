@@ -9,6 +9,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+mod review;
+
 fn token_line(input: &mut dyn BufRead) -> Result<String, String> {
     let mut line = Vec::new();
     input
@@ -32,6 +34,7 @@ struct Reader<'a> {
     path: &'a std::ffi::OsStr,
     repo: &'a str,
     token: &'a str,
+    review_rows: Option<Value>,
 }
 
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
@@ -178,18 +181,23 @@ impl GitHub for Reader<'_> {
         };
         let expected = ids(&list["pullRequests"])?;
         let mut details = serde_json::json!({});
+        let review_fields = if self.review_rows.is_some() {
+            "baseRefOid isCrossRepository authorAssociation comments(first:100){totalCount nodes{body author{login}}}"
+        } else {
+            ""
+        };
         let (mut offset, mut size, mut bytes) = (0, 15, 0usize);
         loop {
             let end = numbers.len().min(offset + size);
             let mut fields = LIST.to_owned();
             for n in &numbers[offset..end] {
                 fields.push_str(&format!(
-                r#"p{n}:pullRequest(number:{n}){{number headRefOid baseRefName state body isDraft reviewDecision mergeable mergeStateStatus
+                r#"p{n}:pullRequest(number:{n}){{number headRefOid baseRefName state body isDraft reviewDecision mergeable mergeStateStatus {review_fields}
                 baseRef{{refUpdateRule{{requiredStatusCheckContexts}} rules(first:100){{totalCount nodes{{type parameters{{... on RequiredStatusChecksParameters{{requiredStatusChecks{{context}}}}}}}}}}}}
                 labels(first:100){{totalCount nodes{{name}}}}
                 files(first:100){{totalCount nodes{{path deletions}}}}
                 reviewThreads(first:100){{totalCount nodes{{isResolved}}}}
-                latestOpinionatedReviews(first:100,writersOnly:true){{totalCount nodes{{state commit{{oid}}}}}}
+                latestOpinionatedReviews(first:100,writersOnly:true){{totalCount nodes{{state commit{{oid}} author{{login}}}}}}
                 commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:100){{totalCount nodes{{
                     ... on CheckRun{{name isRequired(pullRequestNumber:{n}) status conclusion}}
                     ... on StatusContext{{context isRequired(pullRequestNumber:{n}) state}}
@@ -223,7 +231,7 @@ impl GitHub for Reader<'_> {
                 break;
             }
         }
-        nodes(&list["pullRequests"])?
+        let rows = nodes(&list["pullRequests"])?
             .iter()
             .map(|pr| {
                 let row = &details[format!("p{}", pr["number"])];
@@ -304,14 +312,7 @@ impl GitHub for Reader<'_> {
                     body: row["body"].as_str().ok_or("missing PR body")?.into(),
                     removes_source: nodes(&row["files"])?.iter().any(|f| {
                         f["deletions"].as_u64().unwrap_or(0) > 0
-                            && f["path"].as_str().is_some_and(|p| {
-                                [
-                                    ".rs", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".sh", ".c", ".cc",
-                                    ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc", ".qml",
-                                ]
-                                .iter()
-                                .any(|ext| p.ends_with(ext))
-                            })
+                            && f["path"].as_str().is_some_and(review::source_path)
                     }),
                     draft: row["isDraft"].as_bool().ok_or("missing draft state")?,
                     reviewed: row["reviewDecision"] == "APPROVED" && {
@@ -324,7 +325,11 @@ impl GitHub for Reader<'_> {
                     },
                 })
             })
-            .collect()
+            .collect();
+        if self.review_rows.is_some() {
+            self.review_rows = Some(details);
+        }
+        rows
     }
 }
 
@@ -338,16 +343,20 @@ pub(crate) fn run(
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
         [shadow, flag, repo, options @ ..] if shadow == "--shadow" && flag == "--repo" => (repo, options),
-        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin]".into()),
+        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--review-policy FILE]".into()),
     };
-    if options
-        .iter()
-        .any(|o| !matches!(o.as_str(), "--once" | "--token-stdin"))
-    {
-        return Err("invalid board option".into());
+    let (mut once, mut streamed, mut review_file) = (false, false, None);
+    let mut options = options.iter();
+    while let Some(option) = options.next() {
+        match option.as_str() {
+            "--once" => once = true,
+            "--token-stdin" => streamed = true,
+            "--review-policy" if review_file.is_none() => {
+                review_file = Some(options.next().ok_or("missing board review policy file")?);
+            }
+            _ => return Err("invalid board option".into()),
+        }
     }
-    let once = options.iter().any(|o| o == "--once");
-    let streamed = options.iter().any(|o| o == "--token-stdin");
     if !once && !streamed {
         return Err("continuous sampling requires --token-stdin; use --once with a five-minute token-refresh supervisor otherwise".into());
     }
@@ -368,6 +377,9 @@ pub(crate) fn run(
     if !crate::work_cmd::trusted(root, env, dirs)? {
         return Err("source project is not trusted".into());
     }
+    let review_settings = review_file
+        .map(|path| review::Settings::read(Path::new(path)))
+        .transpose()?;
     let inherited = env.get("GH_TOKEN").filter(|s| !s.is_empty());
     if !streamed && inherited.is_none() {
         return Err("shadow board requires an explicit GitHub App token".into());
@@ -388,7 +400,7 @@ pub(crate) fn run(
         .create(&storage)
         .map_err(|_| "cannot create shadow storage")?;
     let mut log = oxa_work::shadow::open_log(&storage.join("board-shadow.jsonl"))?;
-    oxa_work::shadow::run(
+    oxa_work::shadow::run_with_reviews(
         &mut log,
         once,
         || {
@@ -402,20 +414,22 @@ pub(crate) fn run(
                 path: &policy.host_path,
                 repo,
                 token: &token,
+                review_rows: review_settings.as_ref().map(|_| Value::Null),
             };
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map_err(|_| "invalid system clock")?
                 .as_secs();
-            Board::read(
-                &mut reader,
-                &Policy {
-                    enabled: true,
-                    ..Policy::default()
-                },
-                &BTreeMap::new(),
-                now,
-            )
+            let board_policy = Policy {
+                enabled: true,
+                ..Policy::default()
+            };
+            if let Some(settings) = &review_settings {
+                review::sample(&mut reader, root, policy, &board_policy, settings, now)
+            } else {
+                Board::read(&mut reader, &board_policy, &BTreeMap::new(), now)
+                    .map(|board| (board, BTreeMap::new()))
+            }
         },
         std::thread::sleep,
     )?;

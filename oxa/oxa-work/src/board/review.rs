@@ -9,7 +9,8 @@ pub use git::{GitDiff, GitFileChange};
 mod receipts;
 pub use receipts::GitHubRequestReceipt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
 pub enum Tier {
     DocsAndTests,
     Product,
@@ -79,7 +80,8 @@ impl<'a> Facts<'a> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum Decision {
     Disabled,
     ResolveFindings,
@@ -92,7 +94,7 @@ pub enum Decision {
     },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Plan {
     pub decision: Decision,
     requests: Vec<Request>,
@@ -100,7 +102,7 @@ pub struct Plan {
 
 /// Only the board can produce requests. A dispatcher must revalidate the head
 /// and required checks and reserve the request before causing external effects.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub struct Request {
     pub(super) number: u64,
     pub(super) head: String,

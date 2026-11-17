@@ -444,3 +444,67 @@ fn exited_github_child_cannot_escape_the_whole_read_deadline() {
             || fs::metadata(log_for(&env, "example/repo")).unwrap().len() == 0
     );
 }
+
+#[test]
+fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
+    let (env, mut detail) = fixture();
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(env.work())
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:1"))
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+            .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(&["commit", "--allow-empty", "-m", "base"]);
+    let base = git(&["rev-parse", "HEAD"]);
+    env.write("work/engine/core.rs", "fn change() {}\n");
+    git(&["add", "engine/core.rs"]);
+    git(&["commit", "-m", "own diff"]);
+    let head = git(&["rev-parse", "HEAD"]);
+    env.write(
+        "home/review.json",
+        r#"{"requester":"review-bot","codex":"code-reviewer","security":"security-reviewer","owner":"owner-reviewer","core":["engine"],"protected":[]}"#,
+    );
+    let row = &mut detail["data"]["repository"]["p42"];
+    row["baseRefOid"] = base.into();
+    row["headRefOid"] = head.clone().into();
+    row["authorAssociation"] = "MEMBER".into();
+    row["isCrossRepository"] = false.into();
+    row["mergeable"] = "MERGEABLE".into();
+    row["comments"] = serde_json::json!({ "totalCount": 0, "nodes": [] });
+    row["commits"] = serde_json::json!({ "nodes": [{ "commit": {"statusCheckRollup":{"contexts":
+        {"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]}
+    }}}] });
+    row["latestOpinionatedReviews"] = serde_json::json!({
+        "totalCount": 2,
+        "nodes": [
+            {"state":"APPROVED","commit":{"oid":head},"author":{"login":"code-reviewer"}},
+            {"state":"APPROVED","commit":{"oid":head},"author":{"login":"outside"}}
+        ]
+    });
+    fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+    let out = invoke(
+        &env,
+        "work board --shadow --repo example/repo --once --review-policy ../home/review.json",
+    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let log = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    let sample: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(sample["board"]["entries"][0]["action"], "wait_review");
+    let plan = &sample["reviews"]["42"];
+    assert_eq!(plan["decision"]["review"]["tier"], "core");
+    assert_eq!(
+        plan["decision"]["review"]["outstanding"],
+        serde_json::json!(["security"])
+    );
+    assert_eq!(plan["requests"][0]["key"]["reviewer"], "security");
+    assert_eq!(plan["requests"][0]["head"], head);
+}
