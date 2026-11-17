@@ -224,7 +224,14 @@ fn checked(command: Command) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().into())
 }
 /// Capture stdout with an optional byte limit and a 30-second child deadline.
-pub fn command_runner(mut command: Command, limit: Option<usize>) -> Option<(i32, String)> {
+pub fn command_runner(command: Command, limit: Option<usize>) -> Option<(i32, String)> {
+    let (code, bytes) = command_output_bytes(command, limit)?;
+    Some((code, String::from_utf8(bytes).ok()?))
+}
+
+/// Capture binary stdout using the same byte limit, child deadline and stderr
+/// suppression as the text runner.
+pub fn command_output_bytes(mut command: Command, limit: Option<usize>) -> Option<(i32, Vec<u8>)> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -240,7 +247,7 @@ pub fn command_runner(mut command: Command, limit: Option<usize>) -> Option<(i32
         if limit.is_some_and(|limit| bytes.len() > limit) {
             return None;
         }
-        String::from_utf8(bytes).ok()
+        Some(bytes)
     });
     let start = Instant::now();
     let status = loop {
@@ -838,6 +845,18 @@ pub fn run_task_with_observer(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn bounded_command_output_preserves_binary_stdout_and_exit_status() {
+        let command = || {
+            let mut command = Command::new("sh");
+            command.args(["-c", r"printf '\377\000'; printf 'ignored' >&2; exit 3"]);
+            command
+        };
+        assert_eq!(command_output_bytes(command(), Some(2)), Some((3, vec![255, 0])));
+        assert_eq!(command_output_bytes(command(), Some(1)), None);
+        assert_eq!(command_runner(command(), Some(2)), None);
+    }
 
     fn comments(bodies: &[&str]) -> serde_json::Value {
         json!(bodies
