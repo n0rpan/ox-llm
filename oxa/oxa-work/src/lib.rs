@@ -14,6 +14,7 @@ mod queue;
 pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{publish, report_notes};
 pub use queue::{run_queue, QueueEvent, QueueOptions, QueueStatus};
+pub mod shadow;
 mod state;
 mod status;
 pub use status::{status, Liveness, Status};
@@ -24,6 +25,12 @@ mod worker_wait;
 pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult};
 
 pub type Result<T> = std::result::Result<T, String>;
+
+// Lead facts consume public observations and never open runner task-state files.
+pub mod events;
+mod facts_io;
+pub mod incidents;
+pub mod situation;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
