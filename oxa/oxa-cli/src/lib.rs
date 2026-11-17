@@ -49,6 +49,7 @@ mod wipe_cmd;
 mod work_board;
 mod work_checks;
 mod work_cmd;
+pub mod work_refill;
 mod work_reports;
 
 pub use args::{
