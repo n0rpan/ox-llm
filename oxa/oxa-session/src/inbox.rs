@@ -263,6 +263,34 @@ mod durability_tests {
     }
 
     #[test]
+    fn unpublished_receipt_is_withdrawn_so_the_message_survives() {
+        let env = oxa_fake::TestEnv::new();
+        let agent = env.agent_dir();
+        let id = send_inbox(&agent, "session", "pending").unwrap();
+        let dir = agent.join("inbox/session");
+        // The rename lands in the page cache but the directory entry is not durable: reporting
+        // success would let a retry believe the payload was delivered.
+        let result = fail_sync(&dir, || Inbox::take(&agent, "session"));
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EIO));
+        assert!(
+            !dir.join(format!("{id}.taken")).exists(),
+            "an undurable marker must not be left behind"
+        );
+        assert_eq!(
+            Inbox::take(&agent, "session").unwrap(),
+            Some((id.clone(), "pending".into())),
+            "a failed pickup keeps the message deliverable"
+        );
+        assert!(Inbox::receipt(&agent, "session", &id).unwrap());
+        assert!(!dir.join(format!("{id}.msg")).exists());
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            1,
+            "no temporary receipt is left in the inbox"
+        );
+    }
+
+    #[test]
     fn parent_sync_failure_cannot_acknowledge_pickup() {
         let env = oxa_fake::TestEnv::new();
         let id = send_inbox(&env.agent_dir(), "session", "pending").unwrap();

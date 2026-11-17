@@ -348,3 +348,26 @@ fn inbox_unverifiable_receipt_suppresses_only_its_message() {
     assert!(Inbox::receipt(&agent, "durable", &stale).is_err());
     assert_eq!(fs::read_to_string(&outside).unwrap(), "untouched");
 }
+
+#[test]
+fn inbox_take_returns_after_the_receipt_is_durable() {
+    // `take` reports success only once the receipt is durable and the consumed message is
+    // gone from the directory: a caller that trusts the result, and a later watcher, both
+    // see the same queue.
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    send_inbox(&agent, "session", "first").unwrap();
+    let (id, text) = Inbox::take(&agent, "session").unwrap().unwrap();
+    let dir = agent.join("inbox/session");
+    assert!(Inbox::receipt(&agent, "session", &id).unwrap());
+    assert_eq!(text, "first");
+    assert_eq!(
+        fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect::<Vec<_>>(),
+        vec![format!("{id}.taken")],
+        "pickup leaves only the payload-free receipt"
+    );
+    assert_eq!(Inbox::take(&agent, "session").unwrap(), None);
+}
