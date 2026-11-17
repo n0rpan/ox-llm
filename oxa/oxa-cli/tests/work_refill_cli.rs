@@ -44,15 +44,13 @@ fn invoke(env: &TestEnv, config: &Path, token: &str, offline: bool) -> std::proc
 
 fn fixture() -> (TestEnv, std::path::PathBuf) {
     let env = TestEnv::new();
-    assert!(
-        Command::new("git")
-            .args(["init", "-b", "main"])
-            .current_dir(env.work())
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
+    assert!(Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(env.work())
+        .output()
+        .unwrap()
+        .status
+        .success());
     oxa_perm::TrustStore::default()
         .save(&env.agent_dir().join("trust.json"), &env.work(), true)
         .unwrap();
@@ -103,7 +101,7 @@ fn refill_startup_retains_pause_and_refuses_worker_writable_authority() {
 
 #[test]
 fn private_token_and_exact_task_ref_precede_one_durable_publication() {
-    use oxa_work::board::{AttemptState, Claims, ImportState, assignment::ManualAuthority};
+    use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState};
     use std::collections::BTreeMap;
     let (env, controls) = fixture();
     let queue = controls.join("queue");

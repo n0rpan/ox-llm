@@ -1,8 +1,8 @@
 //! Owner-selected queue frontend. Existing Reader, Claims, publisher and private-file IO only.
-use super::refill_input::{Input, Prepared, text};
+use super::refill_input::{text, Input, Prepared};
 use super::*;
 use crate::work_refill::{Consumer, Packet, Partition};
-use oxa_work::board::{Action, assignment::Worker};
+use oxa_work::board::{assignment::Worker, Action};
 use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
 
 fn private(path: &Path, uid: u32) -> Result<Value, String> {

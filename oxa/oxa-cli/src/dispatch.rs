@@ -465,6 +465,7 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    lead: bool,
     status: Option<Arc<crate::status::StatusWriter>>,
     result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
@@ -530,6 +531,9 @@ impl Built {
                     .with_owner_present(self.ask_owner_present),
             ));
         }
+        if self.lead {
+            tools.retain(|tool| crate::lead_preset::READ_TOOLS.contains(&tool.spec().name.as_str()));
+        }
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
@@ -590,20 +594,33 @@ fn prepare(
         ));
     }
     let goal = crate::goal_cmd::load(a, cwd)?;
-    let output_schema = a
-        .output_schema
-        .as_ref()
-        .map(|file| {
-            let path = cwd.join(file);
-            let text = std::fs::read_to_string(&path)
-                .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
-            let value = serde_json::from_str(&text)
-                .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
-            oxa_core::output_schema::OutputSchema::new(value)
-        })
-        .transpose()?;
+    let output_schema = if a.lead {
+        Some(crate::lead_preset::schema()?)
+    } else {
+        a.output_schema
+            .as_ref()
+            .map(|file| {
+                let path = cwd.join(file);
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
+                let value = serde_json::from_str(&text)
+                    .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
+                oxa_core::output_schema::OutputSchema::new(value)
+            })
+            .transpose()?
+    };
     let mut notices: Vec<(Level, String)> = Vec::new();
     let user_settings = Settings::load(dirs, cwd, false);
+    // Only user settings may enable this default-off proposal session.
+    if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            format!(
+                "lead --shadow is disabled; set \"{}\": true in the user settings.json to enable it",
+                crate::lead_preset::SETTING
+            ),
+        ));
+    }
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -773,19 +790,7 @@ fn prepare(
     // `defaultModel` (SET-004) is applied by the core when no model was chosen here
     // (`Session::open`), so a resumed session keeps its own model and `--models` scopes it.
     if let Some(pattern) = &a.model {
-        let info = engine.info(None)?;
-        let mut ids = info.models.clone();
-        if !ids.contains(&info.model) {
-            ids.insert(0, info.model.clone());
-        }
-        let available: Vec<ModelRef> = ids
-            .into_iter()
-            .map(|id| ModelRef {
-                endpoint: endpoint.name.clone(),
-                model: id,
-                thinking: None,
-            })
-            .collect();
+        let available = engine_model_refs(engine.info(None)?, &endpoint.name);
         let picked = resolve_model(pattern, a.provider.as_deref(), &available)?;
         model = Some(picked.model);
         thinking = thinking.or(picked.thinking);
@@ -797,19 +802,7 @@ fn prepare(
         let patterns = a.models.clone().unwrap_or_else(|| settings.list("enabledModels"));
         let continuing = a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
         if !patterns.is_empty() && !continuing {
-            let info = engine.info(None)?;
-            let mut ids = info.models.clone();
-            if !ids.contains(&info.model) {
-                ids.insert(0, info.model.clone());
-            }
-            let available: Vec<ModelRef> = ids
-                .into_iter()
-                .map(|id| ModelRef {
-                    endpoint: endpoint.name.clone(),
-                    model: id,
-                    thinking: None,
-                })
-                .collect();
+            let available = engine_model_refs(engine.info(None)?, &endpoint.name);
             let (scoped, diags) = oxa_config::resolve_scoped(&patterns, &available);
             notices.extend(diags.into_iter().map(|d| (d.level, d.message)));
             let saved = settings.string("defaultModel");
@@ -909,6 +902,7 @@ fn prepare(
         crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
     );
     let built = Built {
+        lead: a.lead,
         status,
         result_facts,
         output_schema,
@@ -1095,6 +1089,9 @@ fn discover_opts(a: &Args, dirs: &Dirs, cwd: &Path, trusted: bool) -> Result<Dis
 /// that would need the dialog stays untrusted. Problems are reported on `err` and give no
 /// flags; the help is printed anyway.
 fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) -> Vec<oxa_proto::FlagSpec> {
+    if a.lead {
+        return Vec::new();
+    }
     let Ok(dirs) = dirs_from_env(env, a.session_dir.as_deref()) else {
         return Vec::new();
     };
@@ -1287,6 +1284,7 @@ fn run_headless(
                 oxa_session::GoalStatus::Done => oxa_core::RunOutcome::Done,
                 oxa_session::GoalStatus::Blocked => oxa_core::RunOutcome::Blocked("goal_blocked"),
                 oxa_session::GoalStatus::Paused => oxa_core::RunOutcome::Stalled,
+                oxa_session::GoalStatus::Canceled => oxa_core::RunOutcome::Interrupted,
                 oxa_session::GoalStatus::Pursuing => oxa_core::RunOutcome::NothingToDo,
             };
             built.result_facts.goal(Some(goal));
@@ -1541,6 +1539,20 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Ok(code) => code,
         Err(e) => report(stderr, &e),
     }
+}
+
+pub(crate) fn engine_model_refs(mut info: oxa_proto::EngineInfo, endpoint: &str) -> Vec<ModelRef> {
+    if !info.models.contains(&info.model) {
+        info.models.insert(0, info.model);
+    }
+    info.models
+        .into_iter()
+        .map(|model| ModelRef {
+            endpoint: endpoint.to_string(),
+            model,
+            thinking: None,
+        })
+        .collect()
 }
 
 /// The default engine endpoint of models.json (or the one `OXA_ENGINE_URL` names).
@@ -2391,6 +2403,7 @@ mod session_scratch_tests {
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
         let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
+            lead: false,
             status: None,
             result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,

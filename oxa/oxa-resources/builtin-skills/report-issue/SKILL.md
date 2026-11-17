@@ -22,7 +22,25 @@ under the home directory, names, emails, keys or tokens into a report.
 
    Title the report with the symptom and the component, without prefixes (no "Bug:", no
    "[oxa]") that make every report look alike.
-3. Look for a duplicate before the user posts anything. Take two or three keyword sets from
+3. For dogfood reports, use semantic dedupe. The owner enables
+   `oxa.reportIssue.semanticDedupe` in user settings. Include these fields in the draft notes,
+   using stable task and worker identifiers and a distinct identifier for each run.
+
+   ```text
+   Task: example-task
+   Worker: example-worker
+   Run: example-run
+   Observed: The command and one line describing the actual failure.
+   Evidence: path/to/source.rs:42
+   ```
+
+   Submit checks the cited source against current main and asks the configured model to compare
+   candidates from open issues and issues closed in the past 30 days. It previews the selected
+   comment or new issue before asking for permission to post. It creates at most one new issue
+   per task and three per worker per UTC day in the local agent directory. Drafts that fail
+   verification or hit a cap stay local, with the reason shown at submit time.
+
+   For other reports, look for a duplicate before the user posts anything. Take two or three keyword sets from
    the symptom (error text, command, component), not only the planned title, and search the
    OPEN issues and OPEN pull requests of the target repository (`oxa.reportIssue.repo`), then
    read the top matches:
@@ -47,7 +65,7 @@ under the home directory, names, emails, keys or tokens into a report.
    oxa report-issue submit DRAFT-PATH
    ```
 
-   It prints the text again and posts with `gh issue create` only after the user types `yes` on
+   It prints the text again and posts the issue or comment only after the user types `yes` on
    the terminal. It refuses when there is no terminal, so running it from a tool cannot post.
 6. Reporting is off until the public repository exists: `submit` then says so and leaves the
    draft in place so the user can file it by hand. The target is the setting

@@ -50,7 +50,7 @@ pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
 /// (`PATH` of the layout, `HOME`, `LANG`, `TERM=dumb`, `AI_AGENT=oxa`), the layout's
 /// passed-through variables (sorted), then `s.env` in order, then `-- bash -c <command>`.
 pub fn bwrap_args_with(s: &ExecSpec, home: &Path, layout: &Layout) -> Vec<String> {
-    bwrap_args_homes(s, home, layout, real_home().as_deref())
+    bwrap_args_homes(s, home, layout, account_home().as_deref())
 }
 
 /// [`bwrap_args_with`] with the real account home given explicitly (tests).
@@ -424,15 +424,12 @@ pub(crate) fn bwrap_args_homes(
     a
 }
 
-/// The home of the current uid from the passwd database, never from `$HOME`.
-pub fn account_home() -> Option<PathBuf> {
-    real_home()
-}
+pub use oxa_proto::account_home;
 
 /// `argv` without the `--tmpfs <account home>` and `--remount-ro <account home>` pairs that hides the real home (for goldens that
 /// pin a fake `$HOME` and must not depend on the machine they run on).
 pub fn without_account_home(mut argv: Vec<String>) -> Vec<String> {
-    if let Some(r) = real_home().map(|r| canon(&r).to_string_lossy().into_owned()) {
+    if let Some(r) = account_home().map(|r| canon(&r).to_string_lossy().into_owned()) {
         if let Some(i) = argv.windows(2).position(|w| w[0] == "--tmpfs" && w[1] == r) {
             argv.drain(i..i + 2);
         }
@@ -441,29 +438,6 @@ pub fn without_account_home(mut argv: Vec<String>) -> Vec<String> {
         }
     }
     argv
-}
-
-/// The home of the current uid from the passwd database, never from `$HOME`.
-fn real_home() -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut buf = vec![0u8; 16384];
-    // SAFETY: getpwuid_r writes only into `pwd` and `buf`, both live and sized as passed.
-    unsafe {
-        let mut pwd: libc::passwd = std::mem::zeroed();
-        let mut res: *mut libc::passwd = std::ptr::null_mut();
-        let rc = libc::getpwuid_r(
-            libc::getuid(),
-            &mut pwd,
-            buf.as_mut_ptr().cast(),
-            buf.len(),
-            &mut res,
-        );
-        if rc != 0 || res.is_null() || pwd.pw_dir.is_null() {
-            return None;
-        }
-        let dir = std::ffi::CStr::from_ptr(pwd.pw_dir).to_bytes();
-        (!dir.is_empty()).then(|| PathBuf::from(std::ffi::OsStr::from_bytes(dir)))
-    }
 }
 
 /// The GitHub CLI's config directory under the home, open (read-only) in a networked sandbox.
@@ -565,7 +539,7 @@ fn mask_missing(a: &mut Vec<String>, p: &Path) {
 /// are ignored (the argv then masks the file with `/dev/null`). The `hooks` directory needs
 /// no such step: its tmpfs mask is readable.
 pub(crate) fn create_missing_git_files(s: &ExecSpec, home: &Path, layout: &Layout) {
-    create_missing_git_files_homes(s, home, layout, real_home().as_deref());
+    create_missing_git_files_homes(s, home, layout, account_home().as_deref());
 }
 
 /// [`create_missing_git_files`] with the real account home given explicitly (tests).
@@ -632,7 +606,7 @@ cannot be checked; commands are not run",
         }
     }
     let cwd = canon(&s.cwd);
-    let mode = effective_mode(s, home, layout, real_home().as_deref());
+    let mode = effective_mode(s, home, layout, account_home().as_deref());
     let writable = mode == CwdMode::Writable;
     // #528: the home workspace's entries, listed once for every check below.
     let home_entries = home_entries_canon(&canon(home), layout, mode);

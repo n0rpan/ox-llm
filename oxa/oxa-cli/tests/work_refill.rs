@@ -146,11 +146,9 @@ fn paused_partitioned_role_checked_admission_retains_one_exact_lease() {
     }
     assert_eq!((source.reads, source.checks), (0, 0));
     fs::remove_file(pause).unwrap();
-    assert!(
-        target(true)
-            .once(&mut source, &PACKETS, 10, |_| Err("audit failed".into()))
-            .is_err()
-    );
+    assert!(target(true)
+        .once(&mut source, &PACKETS, 10, |_| Err("audit failed".into()))
+        .is_err());
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
     source.stale = true;
     no_task(target(true), &mut source, &PACKETS, 10);
@@ -162,11 +160,9 @@ fn paused_partitioned_role_checked_admission_retains_one_exact_lease() {
     no_task(target(true), &mut source, &PACKETS, 10);
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
     let other_lease = claims.snapshot().unwrap()[&46].lease.clone().unwrap();
-    assert!(
-        claims
-            .release_for(46, &worker.id, &other_lease, 10, "finished other ref")
-            .unwrap()
-    );
+    assert!(claims
+        .release_for(46, &worker.id, &other_lease, 10, "finished other ref")
+        .unwrap());
     let receipts = target(true)
         .once(&mut source, &PACKETS, 10, |board| {
             assert_eq!(
@@ -184,11 +180,9 @@ fn paused_partitioned_role_checked_admission_retains_one_exact_lease() {
     fs::rename(queue.join(&name), queue.join("started").join(name)).unwrap();
     no_task(target(true), &mut source, &PACKETS, 80);
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
-    assert!(
-        claims
-            .release_for(44, &worker.id, &receipt.lease, 80, "verified completion")
-            .unwrap()
-    );
+    assert!(claims
+        .release_for(44, &worker.id, &receipt.lease, 80, "verified completion")
+        .unwrap());
     // Retained started file dedupes before a second claim, even after fenced release.
     no_task(target(true), &mut source, &PACKETS, 81);
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
@@ -218,9 +212,7 @@ fn unknown_held_owner_only_and_reviewer_work_never_publishes() {
         no_task(fixture.target(), &mut source, &PACKETS, 10);
     }
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
-    assert!(
-        fs::read_dir(&fixture.queue)
-            .unwrap()
-            .all(|e| e.unwrap().path().is_dir())
-    );
+    assert!(fs::read_dir(&fixture.queue)
+        .unwrap()
+        .all(|e| e.unwrap().path().is_dir()));
 }

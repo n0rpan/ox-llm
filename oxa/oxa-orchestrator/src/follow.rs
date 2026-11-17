@@ -7,6 +7,8 @@
 use serde_json::Value;
 use std::collections::VecDeque;
 
+pub mod publisher;
+
 const HISTORY_BYTES: usize = 512 * 1024;
 const HISTORY_EVENTS: usize = 128;
 const PAGE_EVENTS: usize = 16;
