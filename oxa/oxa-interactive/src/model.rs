@@ -317,6 +317,10 @@ pub struct StatusModel {
     /// #202: the process's autonomy level (standard, auto or yolo); with `mode` it gives the
     /// permission mode the status bar shows.
     pub autonomy: oxa_proto::Autonomy,
+    /// #865: how many background jobs are running. The HUD shows `JOBS n` when it is not 0;
+    /// the UI loop reads it live from the session's registry, so it follows a job that
+    /// finishes while the session is idle.
+    pub jobs_running: usize,
 }
 
 impl StatusModel {
@@ -526,6 +530,10 @@ pub enum WorkerMsg {
     /// control handle (D-INT). Abort, steering and follow-ups go to it from now on; what was
     /// still queued for the previous session is handed back to the user, never sent.
     Rebind(oxa_core::Handle),
+    /// #865: the background-job registry of the session the worker holds now, sent when the
+    /// worker starts and after every swap. The UI loop reads it for `/jobs` and the HUD count,
+    /// so both stay live while a run is in progress (a `SessionCmd` would queue behind it).
+    JobsHandle(Arc<oxa_core::JobRegistry>),
     /// The worker asks the UI to open a selector (S3: "Fork from an earlier message" in the
     /// over-cap dialog of a model switch opens the fork selector).
     Open(SelectorKind),
@@ -657,6 +665,11 @@ pub enum AppAction {
     },
     /// Show plain lines as an info block (`/hotkeys`, `/session`, `/engine`).
     ShowLines(Vec<String>),
+    /// #865: `/jobs` (list) or `/jobs stop <id>`. The UI loop reads the session's live
+    /// background-job registry; `stop` names the one job to cancel.
+    Jobs {
+        stop: Option<String>,
+    },
     SetEditorText(String),
     /// Copy text to the clipboard (`/copy`).
     Copy(String),

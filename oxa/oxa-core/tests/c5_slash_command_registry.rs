@@ -186,6 +186,7 @@ fn builtins_list() {
         "copy",
         "name",
         "session",
+        "jobs",
         "hotkeys",
         "fork",
         "clone",

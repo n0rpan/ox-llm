@@ -36,7 +36,7 @@ pub struct SlashCx<'a> {
 /// Kept in oxa: every command of slash-commands.md that plan sec. 1 keeps, plus `engine`,
 /// `mode` and `mcp`. Omitted pi commands (`login`, `logout`, `share`) are handled too: they
 /// answer the fixed `unsupported_in_oxa` notice.
-pub const INTERACTIVE_COMMANDS: [&str; 32] = [
+pub const INTERACTIVE_COMMANDS: [&str; 33] = [
     "settings",
     "model",
     "scoped-models",
@@ -44,6 +44,7 @@ pub const INTERACTIVE_COMMANDS: [&str; 32] = [
     "copy",
     "name",
     "session",
+    "jobs",
     "hotkeys",
     "fork",
     "clone",
@@ -91,7 +92,7 @@ const OVERRIDABLE: [&str; 2] = ["help", "usage"];
 ///   `/export [path]`; `/thinking [level]`; `/theme [name]`;
 ///   `/mode [plan|workspace|ask]`; `/resume`, `/tree`, `/fork`, `/settings`, `/scoped-models`,
 ///   `/mcp`, `/trust` open selectors; `/session`, `/hotkeys`, `/engine` show
-///   lines; `/debug` -> `DebugDump`; `/bug` writes a local redacted bundle (no upload) and
+///   lines; `/jobs [stop <id>]` lists the background jobs or stops one; `/debug` -> `DebugDump`; `/bug` writes a local redacted bundle (no upload) and
 ///   reports its path; `/quit` and `/exit` -> `Quit`.
 /// * A command that needs an idle session while `cx.busy` -> a warning `Notify`.
 /// * Bad arguments -> an error `Notify` with pi's usage text.
@@ -225,6 +226,17 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
             }
         }
         "session" | "usage" => AppAction::ShowLines(session_info_lines(cx)),
+        // #865: `/jobs` lists the session's background jobs; `/jobs stop <id>` cancels one.
+        "jobs" => {
+            let mut words = args.split_whitespace();
+            match (words.next(), words.next(), words.next()) {
+                (None, _, _) => AppAction::Jobs { stop: None },
+                (Some("stop"), Some(id), None) => AppAction::Jobs {
+                    stop: Some(id.to_string()),
+                },
+                _ => usage("Usage: /jobs [stop <id>]"),
+            }
+        }
         "help" => AppAction::ShowLines(help_lines(cx)),
         "hotkeys" => AppAction::ShowLines(hotkeys_lines(cx.keymap)),
         "fork" => AppAction::Open(SelectorKind::ForkPoint),

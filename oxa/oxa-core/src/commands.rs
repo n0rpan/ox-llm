@@ -50,6 +50,7 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
     ("copy", "Copy last agent message to clipboard", None),
     ("name", "Set session display name", Some("[name]")),
     ("session", "Show session info and stats", None),
+    ("jobs", "List background jobs, or stop one", Some("[stop <id>]")),
     ("hotkeys", "Show all keyboard shortcuts", None),
     ("fork", "Create a new fork from a previous user message", None),
     (
@@ -322,6 +323,14 @@ fn run_builtin_inner(
             Ok(Vec::new())
         }
         "session" => Ok(session_lines(session)),
+        "jobs" => {
+            let mut words = args.split_whitespace();
+            match (words.next(), words.next(), words.next()) {
+                (None, _, _) => Ok(jobs_lines(&session.inner().jobs)),
+                (Some("stop"), Some(id), None) => Ok(vec![jobs_stop(&session.inner().jobs, id)?]),
+                _ => Err(usage("Usage: /jobs [stop <id>]")),
+            }
+        }
         "reload" => {
             let changed = session.reload(sink, ui)?;
             Ok(vec![if changed {
@@ -403,6 +412,43 @@ fn session_lines(session: &crate::Session) -> Vec<String> {
         ),
         format!("Context: {} / {} tokens", stats.context_tokens, state.n_ctx),
     ]
+}
+
+/// #865: the `/jobs` listing: one line per job, oldest first, or an explicit empty state.
+/// Reading the snapshot never consumes the output a `bash {job}` read would show.
+pub fn jobs_lines(jobs: &oxa_tools::JobRegistry) -> Vec<String> {
+    let jobs = jobs.list();
+    if jobs.is_empty() {
+        return vec!["No background jobs.".to_string()];
+    }
+    let mut out = vec![format!("Background jobs ({}):", jobs.len())];
+    for job in &jobs {
+        let mut line = format!(
+            "  {:<8} {:<10} {:>4}s",
+            job.id,
+            job.status.text(),
+            job.age.as_secs()
+        );
+        if !job.last_line.is_empty() {
+            line.push_str("  ");
+            line.push_str(&job.last_line);
+        }
+        out.push(line);
+    }
+    out
+}
+
+/// #865: `/jobs stop <id>`: stop one job with the existing per-job cancellation (never
+/// `kill_all`) and return the line to show. `Err` for an unknown id.
+pub fn jobs_stop(jobs: &oxa_tools::JobRegistry, id: &str) -> Result<String, oxa_proto::OxaError> {
+    let kill = jobs
+        .kill(id)
+        .map_err(|e| oxa_proto::OxaError::new(oxa_proto::codes::INVALID, e))?;
+    Ok(if kill.was_running {
+        format!("Stopped {id} ({}).", kill.status.text())
+    } else {
+        format!("{id} had already finished ({}).", kill.status.text())
+    })
 }
 
 /// The `/engine` status lines (both front ends): endpoint, model, context window, cache hit of

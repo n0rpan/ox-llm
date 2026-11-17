@@ -37,6 +37,7 @@ use oxa_tui::{
 };
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+use std::sync::Arc;
 
 /// The editor's layout settings: `editorPaddingX` (0..3), `autocompleteMaxVisible` (3..20).
 pub(crate) fn editor_opts_from(settings: &oxa_config::Settings) -> EditorOpts {
@@ -259,6 +260,10 @@ pub(crate) struct Loop<'a> {
     /// The worker has answered a command since `model_pending` was set (its Status settles it).
     model_answered: bool,
     session: SessionInfo,
+    /// #865: the background-job registry of the session the worker holds now (sent by
+    /// [`WorkerMsg::JobsHandle`]). `/jobs` and the HUD count read it live, so they work while
+    /// a run is in progress and follow a job that finishes while the session is idle.
+    jobs: Option<Arc<oxa_core::JobRegistry>>,
     inbox: Option<oxa_session::Inbox>,
     files: Option<FileIndex>,
     /// Images pasted for the next prompt.
@@ -408,6 +413,7 @@ impl<'a> Loop<'a> {
             model_pending: None,
             model_answered: false,
             session: SessionInfo::default(),
+            jobs: None,
             inbox: None,
             files: None,
             pending_parts: Vec::new(),
@@ -790,6 +796,7 @@ impl<'a> Loop<'a> {
                 }
             }
             WorkerMsg::Session(info) => self.set_session(info),
+            WorkerMsg::JobsHandle(jobs) => self.jobs = Some(jobs),
             WorkerMsg::Tree(tree) => self.tree_arrived(tree),
             WorkerMsg::Rebind(handle) => self.rebind(handle),
             WorkerMsg::Open(kind) => self.open_selector(kind),
@@ -2437,6 +2444,7 @@ impl<'a> Loop<'a> {
                     self.push_notice(Level::Info, line);
                 }
             }
+            AppAction::Jobs { stop } => self.jobs_action(stop),
             AppAction::SetEditorText(t) => self.editor.set_text(&t),
             AppAction::Copy(text) => {
                 self.copy(term, &text, false);
@@ -2605,6 +2613,31 @@ impl<'a> Loop<'a> {
         }
     }
 
+    /// #865: `/jobs` lists the session's background jobs; `/jobs stop <id>` cancels one with
+    /// the registry's existing per-job cancellation (never `kill_all`). Both read the live
+    /// registry, so they work while a run is in progress. The stop waits for the job to settle
+    /// (bounded by the registry's own settle timeout) so the slot is free when it returns.
+    fn jobs_action(&mut self, stop: Option<String>) {
+        let Some(jobs) = self.jobs.clone() else {
+            self.push_notice(
+                Level::Warning,
+                "Background jobs are not available in this session.".to_string(),
+            );
+            return;
+        };
+        match stop {
+            None => {
+                for line in oxa_core::jobs_lines(&jobs) {
+                    self.push_notice(Level::Info, line);
+                }
+            }
+            Some(id) => match oxa_core::jobs_stop(&jobs, &id) {
+                Ok(line) => self.push_notice(Level::Info, line),
+                Err(e) => self.push_notice(Level::Error, e.to_string()),
+            },
+        }
+    }
+
     // -----------------------------------------------------------------------------------------
     // Drawing
     // -----------------------------------------------------------------------------------------
@@ -2662,11 +2695,14 @@ impl<'a> Loop<'a> {
     fn bottom(&mut self, width: u16) -> (Vec<String>, Option<CursorPos>) {
         let mut lines: Vec<String> = Vec::new();
         // The loader line: a run in progress, or a run that waits for the user's answer.
-        let status = if self.running() {
+        let mut status = if self.running() {
             self.shown_status()
         } else {
             self.vm.status.clone()
         };
+        // #865: the running-job count is read live from the session's registry, so the HUD
+        // follows a job that finishes while the session is idle.
+        status.jobs_running = self.jobs.as_ref().map_or(0, |jobs| jobs.running());
         let oxa = self.view.skin.is_oxa();
         let mut status = if oxa { self.timed_status(status) } else { status };
         if oxa {

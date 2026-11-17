@@ -140,6 +140,7 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/clone` | duplicate the current session at the current point |
 | `/name [name]` | set the session's display name |
 | `/session` | show session info and stats |
+| `/jobs [stop <id>]` | list the background jobs (id, status, age, last output line), or stop one by id |
 | `/export [path]` | export the session to HTML (or `.jsonl`) |
 | `/copy` | copy the last assistant message to the clipboard |
 | `/hotkeys` | show the key bindings in force |
@@ -176,9 +177,10 @@ With the default `oxa` skin the footer is a single-line HUD instead of two lines
 - Decode speed (`tok/s`), only while the engine reports timings.
 - The activity badge, always present; `READY` when idle.
 - `repairs N` and `no summary`, only when they apply.
+- `JOBS n` — how many background jobs are running, only when there is at least one. `/jobs` lists them and `/jobs stop <id>` stops one ([tools.md](tools.md#background-jobs)).
 - The permission mode (`standard`, `auto`, `yolo`, `plan` or `ask`), always shown, and the profile word when set.
 
-Parts with no data are hidden, and on a narrow terminal parts are dropped in this order until the line fits: the profile word, the decode speed, the cache meter, the `used/n_ctx` figures, `repairs N` / `no summary`, then the context meter shrinks to 5 cells, then the thinking note, the whole `CACHE` part, the thinking level. The permission mode, the model name, the `CTX` percentage, the activity badge and `OXA` are kept; the model name is only cut when nothing else is left.
+Parts with no data are hidden, and on a narrow terminal parts are dropped in this order until the line fits: the profile word, the decode speed, the cache meter, the `used/n_ctx` figures, `repairs N` / `no summary`, then the context meter shrinks to 5 cells, then the thinking note, the whole `CACHE` part, the thinking level, `JOBS n`. The permission mode, the model name, the `CTX` percentage, the activity badge and `OXA` are kept; the model name is only cut when nothing else is left.
 
 ## Selectors
 

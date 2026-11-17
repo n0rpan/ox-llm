@@ -162,6 +162,43 @@ fn hud_shows_the_model_location() {
     assert!(plain_hud(&generic, 160).contains("cloud · remote"));
 }
 
+/// #865: the HUD shows the running background-job count, and only when there is one.
+#[test]
+fn hud_shows_running_jobs() {
+    let st = full_status();
+    assert!(
+        !plain_hud(&st, 200).contains("JOBS"),
+        "no jobs, no segment: {:?}",
+        plain_hud(&st, 200)
+    );
+    for n in [1usize, 4] {
+        let st = StatusModel {
+            jobs_running: n,
+            ..full_status()
+        };
+        let line = plain_hud(&st, 200);
+        assert!(line.contains(&format!("JOBS {n}")), "{line:?}");
+    }
+    // It drops before the location segment: where the model runs matters more than a
+    // transient count. At the narrowest width that still shows JOBS, `local` is there too.
+    let st = StatusModel {
+        jobs_running: 2,
+        ..full_status()
+    };
+    let narrowest = (20..=200u16)
+        .find(|w| plain_hud(&st, *w).contains("JOBS 2"))
+        .expect("JOBS never shows");
+    let line = plain_hud(&st, narrowest);
+    assert!(
+        line.contains("local"),
+        "location dropped first at {narrowest}: {line:?}"
+    );
+    assert!(
+        !plain_hud(&st, narrowest - 1).contains("JOBS 2"),
+        "JOBS should be gone one column narrower"
+    );
+}
+
 #[test]
 fn hud_drop_order_keeps_title_and_state_down_to_40() {
     let st = full_status();

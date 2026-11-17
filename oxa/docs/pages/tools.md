@@ -9,7 +9,7 @@ See [tools and context handling](tools-context.md) for the defaults and formats.
 | Tool | Access | What it does |
 |---|---|---|
 | `read` | read | reads a file. Parameters `path`, `offset` (first line, 1-based), `limit` (lines). A call returns at most 2000 lines or 16 KB; continue with `offset` for the rest. A call with neither `offset` nor `limit` returns a shorter first page; see [tools-context.md](tools-context.md) |
-| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` it stops after 120 seconds; `oxa.bash.defaultTimeout` sets it. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
+| `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds), `background` (start it detached and return a job id at once), `job` (read a background job), `wait_s` (with `job`: wait up to this many seconds, at most 60, for it to finish), `kill` (with `job`: stop it). With no `timeout` it stops after 120 seconds; `oxa.bash.defaultTimeout` sets it. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read. See [background jobs](#background-jobs) |
 | `edit` | write | replaces exact text in one file. Takes one `oldText` / `newText` pair per call; the array form is still accepted. See [tools-context.md](tools-context.md) |
 | `write` | write | writes a file, creating it and its parent directories, and overwrites an existing file |
 | `grep` | read | searches file contents for `pattern`. Optional `path`, `glob`, `ignoreCase`, `literal`, `context` and `limit` (default 100 matches). Respects `.gitignore`; lines are cut at 500 characters. When matches exceed `limit`, the answer is the total and one count per file instead of the lines; see [tools-context.md](tools-context.md) |
@@ -49,6 +49,18 @@ $ oxa --exclude-tools bash
 ```
 
 A read-only session: `oxa --tools read,grep,find,ls`. In plan mode the write tools are refused, and bash only runs read-only commands with no network.
+
+## Background jobs
+
+`bash` with `background: true` starts the command detached and returns a job id (`job-1`, `job-2`, ...) at once, so a long build or server does not block the turn. A background job has no timeout unless the call names one, and it runs until it exits, is stopped, or the session ends (a new session, fork, clone or quit ends its jobs).
+
+- `bash {"job": "job-1"}` reads the job's status and the last 8 KB of its output. A read marks the output as seen.
+- `bash {"job": "job-1", "wait_s": 30}` waits up to 30 seconds (at most 60) for the job to finish first.
+- `bash {"job": "job-1", "kill": true}` stops it and frees its slot.
+
+At most 4 jobs run at once; the oldest finished jobs are forgotten after 16. Each job keeps the last 64 KB of its output. A command that ends with `&` or uses `nohup` is treated as backgrounded too, and the "background processes were stopped" notice is not printed for it.
+
+In the terminal interface `/jobs` lists the running and finished jobs (id, status, age and the last output line) and `/jobs stop <id>` stops one; the HUD shows `JOBS n` while any are running. A listing does not consume the output a `bash {"job": ...}` read would show.
 
 ## Repair turn
 

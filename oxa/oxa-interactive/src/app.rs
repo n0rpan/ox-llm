@@ -483,6 +483,8 @@ pub fn worker_loop_with(
     let mut last = StatusModel::default();
     stop.enter(session.handle());
     let _ = out.send(WorkerMsg::Session(session_info(&session)));
+    // #865: the UI reads the live registry for `/jobs` and the HUD count.
+    let _ = out.send(WorkerMsg::JobsHandle(session.inner().jobs.clone()));
     let mut session = Some(session);
     // Commands are taken through a backlog so a `Shutdown` anywhere behind queued work is
     // seen before that work starts: stop takes precedence (a prompt queued before the quit
@@ -608,6 +610,9 @@ pub fn worker_loop_with(
                     let _ = out.send(msg);
                     let _ = out.send(WorkerMsg::Rebind(s.handle()));
                     let _ = out.send(WorkerMsg::Session(session_info(s)));
+                    // #865: the new session has its own registry; the UI's `/jobs` and HUD
+                    // count follow it from here.
+                    let _ = out.send(WorkerMsg::JobsHandle(s.inner().jobs.clone()));
                     if opened {
                         let _ = out.send(WorkerMsg::Event(notice_event(&status)));
                     }
@@ -1406,6 +1411,8 @@ pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusMo
         yolo: prev.yolo,
         yolo_approved: prev.yolo_approved,
         autonomy: prev.autonomy,
+        // #865: display-only, set by the UI loop from the live job registry.
+        jobs_running: prev.jobs_running,
     }
 }
 

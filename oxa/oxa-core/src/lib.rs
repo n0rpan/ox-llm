@@ -63,8 +63,8 @@ mod user_bash;
 
 pub use agent_loop::{append_entry, run_loop, RunEnd};
 pub use commands::{
-    all_commands, builtin_commands, cache_text, engine_status_lines, expand_input, run_builtin,
-    write_bug_report, Expanded,
+    all_commands, builtin_commands, cache_text, engine_status_lines, expand_input, jobs_lines, jobs_stop,
+    run_builtin, write_bug_report, Expanded,
 };
 pub use compaction::{boot_preload, compact_now, idle_prefill, maybe_compact, SETTING_BOOT_PRELOAD};
 pub use epoch::{epoch_inputs, open_epoch, reload, replay_prefix};
@@ -91,3 +91,7 @@ pub use user_bash::user_bash;
 pub fn fresh_jobs() -> std::sync::Arc<oxa_tools::JobRegistry> {
     std::sync::Arc::new(oxa_tools::JobRegistry::new())
 }
+
+/// The background-job registry of a session (issue #865): the interactive front end reads it
+/// for `/jobs` and the HUD count. Re-exported for the same reason as [`fresh_jobs`].
+pub use oxa_tools::JobRegistry;

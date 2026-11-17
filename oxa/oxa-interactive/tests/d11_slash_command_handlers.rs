@@ -327,6 +327,30 @@ fn compact_name_session_copy_export() {
     }
 }
 
+/// #865: `/jobs` lists, `/jobs stop <id>` names one job, anything else is a usage error.
+#[test]
+fn jobs_lists_and_stops() {
+    let fx = Fx::new();
+    match expect_some("/jobs", fx.run("/jobs")) {
+        AppAction::Jobs { stop } => assert_eq!(stop, None),
+        _ => panic!("/jobs lists"),
+    }
+    match expect_some("/jobs stop job-2", fx.run("/jobs stop job-2")) {
+        AppAction::Jobs { stop } => assert_eq!(stop.as_deref(), Some("job-2")),
+        _ => panic!("/jobs stop names the job"),
+    }
+    // The listing works while a run is in progress: it reads the registry, not the session.
+    match dispatch_slash("/jobs", &fx.cx(true, None)).unwrap() {
+        AppAction::Jobs { stop } => assert_eq!(stop, None),
+        _ => panic!("/jobs is not refused while busy"),
+    }
+    for line in ["/jobs stop", "/jobs stop job-1 extra", "/jobs nonsense"] {
+        let (level, text) = notice(expect_some(line, fx.run(line)));
+        assert_eq!(level, Level::Error, "{line}");
+        assert_eq!(text, "Usage: /jobs [stop <id>]", "{line}");
+    }
+}
+
 /// handlers
 #[test]
 fn new_resume_tree_fork_clone() {

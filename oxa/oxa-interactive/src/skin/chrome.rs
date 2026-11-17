@@ -189,6 +189,8 @@ struct HudParts {
     spinner: &'static str,
     /// O-182: YOLO is on, with the count of auto-approved questions.
     yolo: Option<u64>,
+    /// #865: how many background jobs are running; the segment is absent at 0.
+    jobs: usize,
     /// D4b: where the model runs: `local`, or `cloud · <provider>`.
     remote: Option<&'static str>,
     is_remote: bool,
@@ -237,6 +239,7 @@ impl HudParts {
             // frame changes a handful of cells and nothing else on the screen.
             spinner: g.dot,
             yolo: st.yolo.then_some(st.yolo_approved),
+            jobs: st.jobs_running,
             remote: st.model_provider,
             is_remote: st.model_remote,
         }
@@ -333,6 +336,12 @@ fn hud_build(p: &HudParts, drops: usize, model: &str, g: &Glyphs, theme: &Theme)
     // 7: repairs, only when there are some.
     if p.repairs > 0 && shown(5) {
         segs.push(theme.fg("warning", &format!("repairs {}", p.repairs)));
+    }
+
+    // 7a: background jobs (#865), only when some are running. It goes before the location:
+    // where the model runs matters more than a transient count.
+    if p.jobs > 0 && shown(11) {
+        segs.push(theme.fg("accent", &format!("JOBS {}", p.jobs)));
     }
 
     // 7b: the last compaction had no model summary.
