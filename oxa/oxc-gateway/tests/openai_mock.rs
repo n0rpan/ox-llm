@@ -278,33 +278,59 @@ fn diagnostic_reply() -> Reply {
 #[test]
 fn mock_reply_write_diagnostics_identify_each_finite_part_without_error_text() {
     use openai::ReplyPart;
-    for (fail_at, expected) in [
-        ReplyPart::Headers,
-        ReplyPart::Headers,
-        ReplyPart::HeaderEnd,
-        ReplyPart::ChunkHeader,
-        ReplyPart::ChunkPayload,
-        ReplyPart::ChunkEnd,
-        ReplyPart::Flush,
-        ReplyPart::TransferEnd,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut writer = FailingReplyWriter {
-            fail_at,
-            calls: 0,
-            bytes: Vec::new(),
-        };
-        let failure = openai::write_reply(&mut writer, &diagnostic_reply()).unwrap_err();
-        assert_eq!(failure.part, Some(expected));
-        assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
-        assert_eq!(writer.calls, fail_at + 1, "do not continue after failed writes");
-        let finite = format!("{failure:?}");
-        assert!(finite.contains("ReplyWrite"));
-        assert!(!finite.contains("synthetic-private-write"));
-        assert!(!finite.contains("X-Synthetic"));
+    let cases = [
+        (
+            false,
+            vec![
+                ReplyPart::Headers,
+                ReplyPart::Headers,
+                ReplyPart::HeaderEnd,
+                ReplyPart::ChunkHeader,
+                ReplyPart::FinalChunk,
+                ReplyPart::Flush,
+            ],
+        ),
+        (
+            true,
+            vec![
+                ReplyPart::Headers,
+                ReplyPart::Headers,
+                ReplyPart::HeaderEnd,
+                ReplyPart::ChunkHeader,
+                ReplyPart::ChunkPayload,
+                ReplyPart::ChunkEnd,
+                ReplyPart::Flush,
+            ],
+        ),
+    ];
+    for (truncate, expected_parts) in cases {
+        for (fail_at, expected) in expected_parts.into_iter().enumerate() {
+            let mut writer = FailingReplyWriter {
+                fail_at,
+                calls: 0,
+                bytes: Vec::new(),
+            };
+            let mut reply = diagnostic_reply();
+            reply.truncate_transfer = truncate;
+            let failure = openai::write_reply(&mut writer, &reply).unwrap_err();
+            assert_eq!(failure.part, Some(expected));
+            assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+            assert_eq!(writer.calls, fail_at + 1, "do not continue after failed writes");
+            let finite = format!("{failure:?}");
+            assert!(finite.contains("ReplyWrite"));
+            assert!(!finite.contains("synthetic-private-write"));
+            assert!(!finite.contains("X-Synthetic"));
+        }
     }
+    let mut writer = FailingReplyWriter {
+        fail_at: 2,
+        calls: 0,
+        bytes: Vec::new(),
+    };
+    let empty = Reply::raw(200, "text/plain", Vec::new(), vec![]);
+    let failure = openai::write_reply(&mut writer, &empty).unwrap_err();
+    assert_eq!(failure.part, Some(ReplyPart::TransferEnd));
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
 }
 #[test]
 fn mock_reply_diagnostics_preserve_wire_flush_and_transfer_truncation() {
@@ -322,6 +348,141 @@ fn mock_reply_diagnostics_preserve_wire_flush_and_transfer_truncation() {
             expected.extend_from_slice(b"0\r\n\r\n");
         }
         assert_eq!(writer.bytes, expected);
-        assert_eq!(writer.calls, if truncate { 7 } else { 8 });
+        // A non-truncated final chunk coalesces payload and terminal framing into one
+        // write (main's framing fix); a truncated transfer writes its closing CRLF last.
+        assert_eq!(writer.calls, if truncate { 7 } else { 6 });
     }
+}
+
+/// A peer that closes after a flushed semantic end, before a later HTTP-tail write.
+#[derive(Default)]
+struct CloseOnDoneFlush {
+    bytes: Vec<u8>,
+    closed: bool,
+}
+impl Write for CloseOnDoneFlush {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.closed {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.closed = self
+            .bytes
+            .windows(b"data: [DONE]".len())
+            .any(|w| w == b"data: [DONE]");
+        Ok(())
+    }
+}
+#[test]
+fn mock_finishes_http_before_final_done_flush_can_close_the_peer() {
+    let reply = Reply::raw(200, "text/event-stream", b"data: [DONE]\r\n\r\n".to_vec(), vec![]);
+    let mut peer = CloseOnDoneFlush::default();
+    openai::write_reply(&mut peer, &reply).expect("HTTP framing must be complete at final flush");
+    assert!(peer.closed);
+    assert!(peer.bytes.ends_with(b"\r\n0\r\n\r\n"));
+}
+
+/// A peer that accepts a fixed number of wire bytes and is gone after that, so a
+/// partially accepted coalesced write is observable without sockets or timing races.
+struct CloseAfter {
+    remaining: usize,
+    kind: std::io::ErrorKind,
+    /// `(offered, accepted)` per write attempt: a single coalesced write offers the
+    /// final payload and its terminal framing together.
+    attempts: Vec<(usize, usize)>,
+    bytes: Vec<u8>,
+}
+impl CloseAfter {
+    fn new(remaining: usize, kind: std::io::ErrorKind) -> Self {
+        Self {
+            remaining,
+            kind,
+            attempts: Vec::new(),
+            bytes: Vec::new(),
+        }
+    }
+}
+impl Write for CloseAfter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            self.attempts.push((bytes.len(), 0));
+            return Err(self.kind.into());
+        }
+        let count = bytes.len().min(self.remaining);
+        self.remaining -= count;
+        self.attempts.push((bytes.len(), count));
+        self.bytes.extend_from_slice(&bytes[..count]);
+        Ok(count)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A single chunk of semantic terminal events: the native consumer returns at `[DONE]`.
+const DONE_BODY: &[u8] = b"data: [DONE]\r\n\r\n";
+fn done_reply() -> Reply {
+    Reply::raw(200, "text/event-stream", DONE_BODY.to_vec(), vec![])
+}
+
+/// The complete wire of a non-truncated reply and the offset where its final payload
+/// ends, i.e. where the peer may already be gone.
+fn wire_and_payload_end(reply: &Reply) -> (Vec<u8>, usize) {
+    let mut wire = Vec::new();
+    openai::write_reply(&mut wire, reply).unwrap();
+    (wire, wire.len() - b"\r\n0\r\n\r\n".len())
+}
+
+/// The final payload and its terminal framing leave in one bounded write, so a peer
+/// that returned at `[DONE]` is the expected disconnect once the payload is settled.
+#[test]
+fn mock_terminal_coalesced_chunk_is_one_write_and_tolerates_the_done_disconnect() {
+    let reply = done_reply();
+    let (wire, payload_end) = wire_and_payload_end(&reply);
+    let framing_len = wire.len() - payload_end;
+    let coalesced = (DONE_BODY.len() + framing_len, DONE_BODY.len());
+    let mut peer = CloseAfter::new(payload_end, std::io::ErrorKind::BrokenPipe);
+    openai::write_reply(&mut peer, &reply).expect("the [DONE] disconnect is healthy");
+    assert_eq!(peer.bytes, wire[..payload_end]);
+    assert!(
+        peer.attempts.contains(&coalesced),
+        "payload and terminal framing share one write: {:?}",
+        peer.attempts
+    );
+}
+
+#[test]
+fn mock_rejects_a_short_payload_and_any_other_failure_kind() {
+    let reply = done_reply();
+    let (_, payload_end) = wire_and_payload_end(&reply);
+    // One byte short of the payload: a partial payload is never an expected disconnect.
+    let mut short = CloseAfter::new(payload_end - 1, std::io::ErrorKind::BrokenPipe);
+    let failure = openai::write_reply(&mut short, &reply).unwrap_err();
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(failure.part, Some(openai::ReplyPart::FinalChunk));
+    // A settled payload followed by a timeout stays strict.
+    let mut timed_out = CloseAfter::new(payload_end, std::io::ErrorKind::TimedOut);
+    let failure = openai::write_reply(&mut timed_out, &reply).unwrap_err();
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::TimedOut));
+    assert_eq!(failure.part, Some(openai::ReplyPart::FinalChunk));
+    // A nonterminal final payload has no expected peer return.
+    let incomplete = Reply::raw(200, "text/event-stream", b"data: {}\r\n\r\n".to_vec(), vec![]);
+    let (_, incomplete_end) = wire_and_payload_end(&incomplete);
+    let mut nonterminal = CloseAfter::new(incomplete_end, std::io::ErrorKind::BrokenPipe);
+    let failure = openai::write_reply(&mut nonterminal, &incomplete).unwrap_err();
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(failure.part, Some(openai::ReplyPart::FinalChunk));
+}
+
+#[test]
+fn mock_still_rejects_peer_close_before_later_payload_chunks() {
+    let mut body = b"data: [DONE]\r\n\r\n".to_vec();
+    body.extend(std::iter::repeat_n(b'x', 2048));
+    let reply = Reply::raw(200, "text/event-stream", body, vec![]);
+    let failure = openai::write_reply(&mut CloseOnDoneFlush::default(), &reply).unwrap_err();
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(failure.part, Some(openai::ReplyPart::ChunkHeader));
 }

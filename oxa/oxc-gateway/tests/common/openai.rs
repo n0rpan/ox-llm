@@ -242,6 +242,9 @@ pub(super) enum ReplyPart {
     ChunkEnd,
     Flush,
     TransferEnd,
+    /// Final payload, chunk CRLF and terminal zero in one bounded write; a terminal
+    /// SSE payload also tolerates the peer's expected `[DONE]` disconnect.
+    FinalChunk,
 }
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HealthFailure {
@@ -526,25 +529,33 @@ pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), 
     stream
         .write_all(b"\r\n")
         .map_err(|error| HealthFailure::reply(ReplyPart::HeaderEnd, error))?;
-    let mut chunks = reply.bytes.chunks(reply.fragment).peekable();
-    while let Some(bytes) = chunks.next() {
+    let chunks = reply.bytes.chunks(reply.fragment);
+    let last = chunks.len().saturating_sub(1);
+    for (index, bytes) in chunks.enumerate() {
         write!(stream, "{:x}\r\n", bytes.len())
             .map_err(|error| HealthFailure::reply(ReplyPart::ChunkHeader, error))?;
+        if index == last && !reply.truncate_transfer {
+            // A client may stop reading as soon as it sees its semantic terminal event.
+            // Finish the HTTP message before flushing that final payload to the peer.
+            let mut complete = Vec::with_capacity(bytes.len() + 7);
+            complete.extend_from_slice(bytes);
+            complete.extend_from_slice(b"\r\n0\r\n\r\n");
+            write_final(stream, &complete, bytes.len(), reply.ends_at_done())?;
+            stream
+                .flush()
+                .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error))?;
+            return Ok(());
+        }
         stream
             .write_all(bytes)
             .map_err(|error| HealthFailure::reply(ReplyPart::ChunkPayload, error))?;
-        if chunks.peek().is_none() && reply.ends_at_done() {
+        if index == last && reply.ends_at_done() {
             // The native client returns at `[DONE]` without waiting for HTTP EOF
-            // (`post_sse`), so only framing remains after this last payload byte.
-            // A peer disconnect here is expected: accept it only after the whole
-            // payload, and only for BrokenPipe/ConnectionReset. Partial payloads,
-            // nonterminal replies and timeouts stay strict.
-            let tail: &[u8] = if reply.truncate_transfer {
-                b"\r\n"
-            } else {
-                b"\r\n0\r\n\r\n"
-            };
-            return match stream.write_all(tail) {
+            // (`post_sse`), so only the truncated transfer's closing CRLF remains
+            // after this last payload byte. A peer disconnect here is expected: accept
+            // it only after the whole payload, and only for BrokenPipe/ConnectionReset.
+            // Partial payloads, nonterminal replies and timeouts stay strict.
+            return match stream.write_all(b"\r\n") {
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -572,12 +583,52 @@ pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), 
     }
 }
 
+/// Write the coalesced final chunk (payload, chunk CRLF and terminal zero in one bounded
+/// write). The native client returns at `[DONE]` without waiting for HTTP EOF
+/// (`post_sse`), so once the whole payload is on the wire a peer disconnect is expected:
+/// accept it there, and only for BrokenPipe/ConnectionReset. Partial payloads and
+/// timeouts stay strict.
+fn write_final(
+    stream: &mut impl Write,
+    complete: &[u8],
+    payload_len: usize,
+    terminal: bool,
+) -> Result<(), HealthFailure> {
+    let mut written = 0;
+    while written < complete.len() {
+        let count = match stream.write(&complete[written..]) {
+            Ok(0) => {
+                return Err(HealthFailure::reply(
+                    ReplyPart::FinalChunk,
+                    io::ErrorKind::WriteZero.into(),
+                ))
+            }
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if terminal
+                    && written >= payload_len
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                    ) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(HealthFailure::reply(ReplyPart::FinalChunk, error)),
+        };
+        written += count;
+    }
+    Ok(())
+}
+
 #[cfg(all(test, feature = "upstream-openai"))]
 mod mock_health {
     use super::*;
 
     /// Deterministically model a client closing after any particular wire byte,
-    /// including between the `[DONE]` payload and the final HTTP chunk framing.
+    /// including between the `[DONE]` payload and the final HTTP chunk framing, and
+    /// expect every call that completes before the close to be accepted.
     struct DisconnectAfter {
         remaining: usize,
         kind: io::ErrorKind,
@@ -625,6 +676,8 @@ mod mock_health {
             };
             let mut wire = Vec::new();
             write_reply(&mut wire, &reply).unwrap();
+            // Everything before the closing framing: a coalesced final chunk and a
+            // truncated transfer's closing CRLF both settle the payload at this offset.
             let framing = wire.len() - tail.len();
             for kind in [
                 io::ErrorKind::BrokenPipe,
