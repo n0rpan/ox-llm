@@ -74,6 +74,14 @@ Keep target directories and large scratch under your own clone or `~/.cache`; ne
 `/tmp` (it is RAM on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary
 files; preserve anything a running process of yours uses, and never clean another lane's files.
 
+When `cargo` is not on `PATH` (a rustup-style install whose `~/.cargo/bin` proxies are missing or
+empty), the local checks still run through `tools/ci/cargo.sh`, which finds the toolchain's own `bin`
+directory and execs the command unchanged: `sh ../tools/ci/cargo.sh fmt --check` from `oxa/`, or
+`sh tools/ci/cargo.sh clippy -p <crate> -- -D warnings` from the repository root. It looks at
+`RUSTUP_TOOLCHAIN`, the rustup default toolchain, the rustup home beside the `~/.cargo/bin` on `PATH`,
+an installed toolchain, then `PATH`; with no toolchain it exits non-zero and lists every directory it
+searched, so a missing toolchain never looks like a passing check. CI remains the judge.
+
 Push the lane branch to start the `lane` workflow, or dispatch it explicitly:
 
 ```sh
