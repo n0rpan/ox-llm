@@ -234,10 +234,12 @@ fn github_issue_input_uses_mock_gh() {
     let env = TestEnv::new();
     setup(&env, "[]");
     let tools = trusted_tools(&env);
+    let lookup_log = env.write("tmp/issue-lookup.log", "");
     let gh = env.write(
         "tmp/trusted-tools/gh",
         r##"#!/bin/sh
 [ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s\n' "$*" >> "$ISSUE_LOOKUP_LOG"
 printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OPEN","comments":[{"author":{"login":"reviewer"},"body":"Synthetic follow-up finding"}]}'
 "##,
     );
@@ -250,6 +252,7 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OP
         .env_clear()
         .envs(env.envs(&server.url()))
         .env("PATH", &path)
+        .env("ISSUE_LOOKUP_LOG", &lookup_log)
         .stdin(std::process::Stdio::null())
         .output()
         .unwrap();
@@ -263,6 +266,10 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OP
     assert_eq!(record["id"], "issue-42");
     assert_eq!(record["branch"], "agent/42-work");
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(lookup_log).unwrap(),
+        "issue view 42 --json title,body,state,comments\n"
+    );
     // The packet the child receives is the one lookup: text, state and comments. A worker
     // that cannot read the issue itself must not receive a title-shaped packet.
     let requests = server.requests();
@@ -275,6 +282,16 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OP
     assert!(prompt.contains("Fix the test fixture"), "{prompt}");
     assert!(prompt.contains("Runner-fetched issue state: OPEN."), "{prompt}");
     assert!(prompt.contains("Synthetic follow-up finding"), "{prompt}");
+    let ownership = prompt
+        .find("The runner owns GitHub access for this task.")
+        .unwrap_or_else(|| panic!("worker did not receive GitHub ownership guidance: {prompt}"));
+    let issue = prompt.find("Implement issue #42: Synthetic task").unwrap();
+    assert!(ownership < issue, "{prompt}");
+    assert!(
+        prompt.contains("Do not invoke gh or authenticated GitHub HTTP"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("NEED-METADATA"), "{prompt}");
 }
 /// A dogfood issue carried its content in comments, so a packet built from the
 /// title and body alone reached the worker without it. The child's first request
