@@ -27,10 +27,12 @@ pub fn warm_syntaxes() -> bool {
 }
 
 fn warm_syntaxes_with(slot: &OnceLock<SyntaxSet>, load: impl FnOnce() -> SyntaxSet) -> bool {
-    if slot.get().is_some() {
-        return false;
-    }
-    slot.set(load()).is_ok()
+    let mut initialized = false;
+    slot.get_or_init(|| {
+        initialized = true;
+        load()
+    });
+    initialized
 }
 
 /// V022 (#884): whether the bundled syntax set is loaded (the warm-up ran, or a highlight did).
