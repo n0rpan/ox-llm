@@ -123,11 +123,25 @@ fn review_git_evidence_keeps_an_unchanged_main_merge_and_rejects_a_changed_patch
         terminate_binary: None,
         storage: env.tmp(),
     };
-    let read = |base: &str, head: &str| GitDiff::read(&policy, &repo, base, head).unwrap().unwrap();
+    let read = |base: &str, head: &str| {
+        GitDiff::read(
+            &policy,
+            &repo,
+            base,
+            head,
+            &[(oxa_work::board::review::Reviewer::Codex, &reviewed)],
+            |_| false,
+        )
+        .unwrap()
+        .unwrap()
+    };
     let original = read(&old_main, &reviewed);
     let carried = read(&main, &merged);
     assert_eq!(carried.patch_id, original.patch_id);
-    assert_eq!(carried.main_merge_predecessors, [reviewed]);
+    assert_eq!(
+        carried.main_merge_predecessors.as_slice(),
+        std::slice::from_ref(&reviewed)
+    );
 
     env.write("work/protected.rs", "fn check() { }\n");
     git(&["add", "protected.rs"]);
@@ -136,7 +150,7 @@ fn review_git_evidence_keeps_an_unchanged_main_merge_and_rejects_a_changed_patch
     let current = read(&main, &edited);
     assert_ne!(current.patch_id, carried.patch_id);
     assert!(current.main_merge_predecessors.is_empty());
-    assert!(GitDiff::read(&policy, &repo, &main, "HEAD").is_err());
+    assert!(GitDiff::read(&policy, &repo, &main, "HEAD", &[], |_| false).is_err());
 
     git(&["mv", "old_name.rs", "renamed.md"]);
     git(&["rm", "obsolete.rs"]);
