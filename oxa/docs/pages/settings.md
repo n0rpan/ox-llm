@@ -150,11 +150,11 @@ The compaction rules are in [compaction.md](compaction.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `retry.enabled` | bool | `true` | retry a failed request in the agent loop |
+| `retry.enabled` | bool | `true` | retry a failed request; off sends each request once, with no provider retry |
 | `retry.maxRetries` | number | `3` | retries of an agent request |
 | `retry.baseDelayMs` | number | `2000` | first delay, doubled each retry |
 | `retry.maxAgentDelayMs` | number | `60000` | longest delay the agent loop waits |
-| `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply |
+| `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply; `retry.enabled` false disables them |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | longest wait of one HTTP retry |
 | `retry.provider.timeoutMs` | number | `null` | silence limit of the engine stream; unset uses `httpIdleTimeoutMs` |
 
