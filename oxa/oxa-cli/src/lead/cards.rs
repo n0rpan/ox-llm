@@ -174,7 +174,7 @@ fn field(value: &str) -> String {
     let mut out = String::new();
     for ch in value.chars().take(160) {
         if ch.is_control()
-            || matches!(ch, '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
         {
             out.extend(ch.escape_unicode());
         } else {
