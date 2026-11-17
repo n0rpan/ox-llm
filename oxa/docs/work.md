@@ -32,7 +32,9 @@ available as a trusted executable outside the project; status reads do not need 
 IDs and branches must be unique within one file. Existing task branches can be
 continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.
 This explicitly invokes your installed,
-authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
+authenticated `gh` CLI to fetch the issue title, body and comments, so follow-up
+review findings given as comments reach the task packet; the comment section is
+bounded and its text is data, not instructions. Issue lookup is refused
 when the environment or user settings enable offline mode.
 Issue lookup also requires source-project trust. Git and GitHub CLI host calls use
 validated executables outside the repository. Worker and check-supervisor PATHs

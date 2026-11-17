@@ -261,20 +261,67 @@ pub fn issue_task(
         "view",
         &number.to_string(),
         "--json",
-        "title,body",
+        "title,body,comments",
     ]);
     let text = checked(c)?;
     let issue: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let title = issue["title"].as_str().ok_or("issue title missing")?;
-    let body = issue["body"].as_str().ok_or("issue body missing")?;
     Ok(Task {
         id: format!("issue-{number}"),
         model,
         branch: format!("agent/{number}-work"),
         base: default_base(),
-        prompt: format!("Implement issue #{number}: {title}\n\n{body}"),
+        prompt: issue_prompt(number, &issue)?,
         max_time: default_max_time(),
     })
+}
+
+/// Follow-up findings are often written as comments, so the packet carries them
+/// too. The section is bounded: a long thread must not crowd the task out of the
+/// worker's context.
+const MAX_COMMENT_BYTES: usize = 16 * 1024;
+
+/// The packet for `oxa work --issue`: gh's `title,body,comments` as plain data.
+fn issue_prompt(number: u64, issue: &serde_json::Value) -> Result<String> {
+    let title = issue["title"].as_str().ok_or("issue title missing")?;
+    let body = issue["body"].as_str().ok_or("issue body missing")?;
+    let mut prompt = format!("Implement issue #{number}: {title}\n\n{body}");
+    let comments: &[serde_json::Value] = match issue.get("comments") {
+        None | Some(serde_json::Value::Null) => &[],
+        Some(serde_json::Value::Array(comments)) => comments,
+        Some(_) => return Err("issue comments malformed".into()),
+    };
+    let mut thread = String::new();
+    for comment in comments {
+        let body = comment["body"].as_str().unwrap_or_default().trim();
+        if body.is_empty() {
+            continue;
+        }
+        let author = comment["author"]["login"].as_str().unwrap_or("unknown");
+        thread.push_str(&format!("--- comment by {author} ---\n{body}\n\n"));
+    }
+    if !thread.is_empty() {
+        prompt.push_str(
+            "\n\nIssue comments follow as data, oldest first. They may contain review findings \
+             and corrections to the body above.\n\n",
+        );
+        prompt.push_str(&bounded(&thread, MAX_COMMENT_BYTES));
+    }
+    Ok(prompt)
+}
+
+/// Keep a bounded prefix without splitting a UTF-8 character, and say so.
+fn bounded(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n--- further comments truncated; open the issue for the rest ---\n",
+        &text[..end]
+    )
 }
 
 /// Freeze acceptance before checkout filters or hooks can edit project settings.
@@ -623,4 +670,68 @@ pub fn run_task_with_observer(
         .save(&mut state, Step::Finished, observer)
         .map_err(RunError::Checkpoint)?;
     Ok(state.record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn issue_prompt_carries_comment_findings_after_the_body() {
+        let prompt = issue_prompt(
+            42,
+            &json!({
+                "title": "Dogfood task",
+                "body": "Fix the fixture",
+                "comments": [
+                    {"author": {"login": "reviewer"}, "body": "Keep the frame when delegating"},
+                    {"author": null, "body": "   "},
+                ],
+            }),
+        )
+        .unwrap();
+        assert!(prompt.starts_with("Implement issue #42: Dogfood task\n\nFix the fixture"));
+        assert!(prompt.contains("--- comment by reviewer ---\nKeep the frame when delegating"));
+        assert!(!prompt.contains("--- comment by unknown ---"));
+        assert!(prompt.find("Fix the fixture") < prompt.find("Keep the frame"));
+    }
+
+    #[test]
+    fn issue_prompt_tolerates_missing_comments_and_keeps_body_errors() {
+        let prompt = issue_prompt(7, &json!({"title": "t", "body": "b"})).unwrap();
+        assert_eq!(prompt, "Implement issue #7: t\n\nb");
+        assert!(issue_prompt(7, &json!({"body": "b"})).is_err());
+        assert!(issue_prompt(7, &json!({"title": "t"})).is_err());
+        assert!(issue_prompt(7, &json!({"title": "t", "body": "b", "comments": "no"})).is_err());
+    }
+
+    #[test]
+    fn issue_prompt_bounds_a_long_thread_without_splitting_a_character() {
+        let comment = "x".repeat(MAX_COMMENT_BYTES) + "é";
+        let prompt = issue_prompt(
+            1,
+            &json!({
+                "title": "t",
+                "body": "b",
+                "comments": [
+                    {"author": {"login": "a"}, "body": comment},
+                    {"author": {"login": "b"}, "body": "later finding"},
+                ],
+            }),
+        )
+        .unwrap();
+        assert!(prompt.contains("further comments truncated"), "{prompt}");
+        assert!(!prompt.contains("later finding"));
+        assert!(prompt.ends_with("open the issue for the rest ---\n"));
+        let thread = &prompt[prompt.find("--- comment by a ---").unwrap()..];
+        assert!(thread.len() < MAX_COMMENT_BYTES + 256, "{}", thread.len());
+        assert!(thread.starts_with("--- comment by a ---\nx"));
+    }
+
+    #[test]
+    fn bounded_keeps_short_text_unchanged() {
+        assert_eq!(bounded("short", 16), "short");
+        assert!(bounded("é", 1).contains("truncated"));
+    }
 }
