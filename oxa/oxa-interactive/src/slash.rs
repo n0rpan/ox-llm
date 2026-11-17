@@ -34,9 +34,10 @@ pub struct SlashCx<'a> {
 
 /// The built-in commands this module handles, without the slash, in pi's listing order.
 /// Kept in oxa: every command of slash-commands.md that plan sec. 1 keeps, plus `engine`,
-/// `mode` and `mcp`. Omitted pi commands (`login`, `logout`, `share`) are handled too: they
-/// answer the fixed `unsupported_in_oxa` notice.
-pub const INTERACTIVE_COMMANDS: [&str; 32] = [
+/// `mode`, `permissions` (the clearer spelling of `mode`) and `mcp`. Omitted pi commands
+/// (`login`, `logout`, `share`) are handled too: they answer the fixed `unsupported_in_oxa`
+/// notice.
+pub const INTERACTIVE_COMMANDS: [&str; 33] = [
     "settings",
     "model",
     "scoped-models",
@@ -59,6 +60,7 @@ pub const INTERACTIVE_COMMANDS: [&str; 32] = [
     "mcp",
     "engine",
     "mode",
+    "permissions",
     "yolo",
     "auto",
     "bug",
@@ -75,11 +77,18 @@ pub const INTERACTIVE_COMMANDS: [&str; 32] = [
 /// still runs first, as in `oxa_core::expand_input`.
 const OMITTED: [&str; 3] = ["login", "logout", "share"];
 
-/// #202: the usage line of `/mode`.
-const MODE_USAGE: &str = "Usage: /mode [standard|auto|yolo|plan|workspace|ask] [--save]";
+/// #202: the usage line of `/mode` and of its `/permissions` alias, naming the spelling typed.
+fn mode_usage(name: &str) -> String {
+    format!("Usage: /{name} [standard|auto|yolo|plan|workspace|ask] [--save]")
+}
 
 /// Names added after pi: a template, skill or extension command with the same name wins.
-const OVERRIDABLE: [&str; 2] = ["help", "usage"];
+/// `permissions` is here so the new alias never shadows an extension command of that name.
+const OVERRIDABLE: [&str; 3] = ["help", "usage", "permissions"];
+
+/// Descriptions for built-in names the core registry does not list (aliases of a listed one),
+/// so `/help` shows them with a meaning.
+const ALIAS_DESCRIPTIONS: &[(&str, &str)] = &[("permissions", "Set permission mode (alias of /mode)")];
 
 /// Dispatch one submitted editor line.
 ///
@@ -89,7 +98,8 @@ const OVERRIDABLE: [&str; 2] = ["help", "usage"];
 /// * A built-in: returns the action. Arguments follow slash-commands.md: `/model <pattern>`
 ///   switches directly, `/model` opens the selector; `/compact [instructions]`; `/name <text>`;
 ///   `/export [path]`; `/thinking [level]`; `/theme [name]`;
-///   `/mode [plan|workspace|ask]`; `/resume`, `/tree`, `/fork`, `/settings`, `/scoped-models`,
+///   `/mode [plan|workspace|ask]` (or `/permissions`, the same command); `/resume`, `/tree`,
+///   `/fork`, `/settings`, `/scoped-models`,
 ///   `/mcp`, `/trust` open selectors; `/session`, `/hotkeys`, `/engine` show
 ///   lines; `/debug` -> `DebugDump`; `/bug` writes a local redacted bundle (no upload) and
 ///   reports its path; `/quit` and `/exit` -> `Quit`.
@@ -168,7 +178,8 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
             }
         }
         // #202: no argument opens the picker; `--save` also makes the mode the default.
-        "mode" => {
+        // #874: `/permissions` is the clearer spelling of the same command.
+        "mode" | "permissions" => {
             let mut words: Vec<&str> = args.split_whitespace().collect();
             let save = words.contains(&"--save");
             words.retain(|w| *w != "--save");
@@ -184,9 +195,9 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
                         },
                         AppAction::Session(SessionCmd::SetMode(mode)),
                     ]),
-                    _ => usage(MODE_USAGE),
+                    _ => usage(&mode_usage(name)),
                 },
-                _ => usage(MODE_USAGE),
+                _ => usage(&mode_usage(name)),
             }
         }
         "auto" => match args.trim() {
@@ -278,9 +289,13 @@ pub fn help_lines(cx: &SlashCx) -> Vec<String> {
         .filter(|n| !OMITTED.contains(n) && **n != "exit")
         .map(|n| {
             let d = cx.commands.iter().find(|c| c.name == *n);
+            let alias = ALIAS_DESCRIPTIONS
+                .iter()
+                .find(|(a, _)| a == n)
+                .map(|(_, d)| (*d).to_string());
             (
                 n.to_string(),
-                d.map(|c| c.description.clone()).unwrap_or_default(),
+                d.map(|c| c.description.clone()).or(alias).unwrap_or_default(),
             )
         })
         .collect();

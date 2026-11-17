@@ -595,11 +595,7 @@ fn trust_and_output_format_aliases_match_their_originals() {
         (&["--output-format", "rpc"], &["--mode", "rpc"]),
         (&["--output-format=json"], &["--mode=json"]),
     ] {
-        assert_eq!(
-            parse(alias),
-            parse(original),
-            "{alias:?} and {original:?} differ"
-        );
+        assert_eq!(parse(alias), parse(original), "{alias:?} and {original:?} differ");
     }
     // The last spelling given wins, as for two `--mode` flags.
     assert_eq!(
@@ -651,11 +647,7 @@ fn pkg_alias_delegates_the_package_verbs() {
         (&["pkg", "list"], &["list"]),
         (&["pkg", "list", "-l"], &["list", "-l"]),
     ] {
-        assert_eq!(
-            parse(alias),
-            parse(original),
-            "{alias:?} and {original:?} differ"
-        );
+        assert_eq!(parse(alias), parse(original), "{alias:?} and {original:?} differ");
     }
     // The verb is delegated, not validated here: the package parser reports an unknown one.
     assert_eq!(

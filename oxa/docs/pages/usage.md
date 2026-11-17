@@ -128,6 +128,7 @@ Type a slash command at the start of the editor and press Enter. Commands with a
 | `/scoped-models` | choose which models Ctrl+P cycles through |
 | `/thinking [level]` | set the thinking level: off, minimal, low, medium, high, xhigh, max |
 | `/mode [standard\|auto\|yolo\|plan\|workspace\|ask] [--save]` | set the permission mode; no argument opens the picker; `--save` makes it the default |
+| `/permissions [standard\|auto\|yolo\|plan\|workspace\|ask] [--save]` | the same command under a clearer name |
 | `/auto` | permission mode auto: no prompts; the sandbox and the deny-list stay on |
 | `/yolo [on\|off]` | toggle yolo, full access: no prompts, bash without the sandbox, no deny-list or protected paths for file tools |
 | `/settings` | open the settings selector |

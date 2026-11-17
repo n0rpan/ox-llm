@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Clearer command aliases (#874), with every existing spelling kept: `--trust` for `--approve` (project trust, not the tool permission table), `--output-format` for `--mode`, `oxa pkg <install|remove|update|list>` for the top-level package verbs, and `/permissions` for `/mode` (including `--save`). An extension command named `permissions` still runs first.
+
 ### Changed
 
 - Security-relevant default change (#314): upgrading without a saved mode now selects `auto` instead of the previous prompting default. Select `--standard` or save `permissions.defaultMode: "standard"` to retain prompts. Owner-selected `yolo` deliberately disables the permission floor for file tools (including credentials and git hooks/config) and the bash sandbox; `auto` keeps both and plan remains read-only.

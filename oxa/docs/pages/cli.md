@@ -94,6 +94,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
+| `oxa pkg <install\|remove\|update\|list> [args]` | the same package commands under one verb: `oxa pkg install <source> [-l]`, `oxa pkg remove <source> [-l]`, `oxa pkg update [source]`, `oxa pkg list` |
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
@@ -162,6 +163,7 @@ $ oxa mcp logout <name>
 | `--list-models [search]` | list the models the engine serves, optionally filtered by a fuzzy search, and exit |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
+| `--output-format <mode>` | the same output mode under a clearer name; the last of `--mode` and `--output-format` wins |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
 | `--max-time <seconds>` | softly limit a headless run, then allow one final wrap-up turn |
 | `--max-tokens <N>` | softly limit new prompt + output tokens in a headless run; cached tokens are free |
@@ -206,6 +208,7 @@ See [tools.md](tools.md) for the tool names.
 | `--auto` | permission mode auto: no prompts; the sandbox and the deny-list stay on |
 | `--yolo` | permission mode yolo, full access: no prompts, bash runs without the sandbox, no deny-list or protected paths for file tools ([security.md](security.md#standard-auto-and-yolo)) |
 | `--approve`, `-a` | trust the project's configuration and resources for this run |
+| `--trust` | the same project trust under a clearer name; it is not the tool permission table (`--permission-mode`, `--standard`, `--auto`, `--yolo`) |
 | `--no-approve`, `-na` | ignore the project's configuration and resources for this run |
 | `--offline` | offline mode: oxa's own non-local connections are refused, bash has no network, `web_search` is off, and `!cmd` and stdio MCP servers run without network. What it does not cover is in [security.md](security.md#offline-mode) |
 

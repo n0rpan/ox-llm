@@ -207,6 +207,10 @@ const COMMANDS: &[(&str, &str)] = &[
     ),
     ("oxa list", "List installed packages"),
     (
+        "oxa pkg <install|remove|update|list>",
+        "Alias of the package commands: install, remove, update, list",
+    ),
+    (
         "oxa login chatgpt --experimental [--paste] [--replace]",
         "Owner-only native experimental ChatGPT sign-in",
     ),
@@ -265,6 +269,10 @@ const OPTIONS: &[(&str, &str)] = &[
         "Thinking level: off, minimal, low, medium, high, xhigh, max",
     ),
     ("--mode <mode>", "Output mode: text (default), json, or rpc"),
+    (
+        "--output-format <mode>",
+        "Alias of --mode: text (default), json, or rpc",
+    ),
     ("--output-schema <file>", "Check final JSON against a schema; retry once on mismatch"),
     (
         "--print, -p",
@@ -372,6 +380,10 @@ const OPTIONS: &[(&str, &str)] = &[
         "Trust project-local configuration and resources for this run",
     ),
     (
+        "--trust",
+        "Alias of --approve: trust project-local configuration and resources for this run",
+    ),
+    (
         "--no-approve, -na",
         "Ignore project-local configuration and resources for this run",
     ),
@@ -417,6 +429,16 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
         }
+        // #874: `oxa pkg <verb>` is the clearer spelling of the verbs above. The verb is
+        // delegated unchanged, so the package parser keeps its own validation and messages.
+        "pkg" => match rest.split_first() {
+            Some((verb, words)) => Subcommand::Pkg(verb.clone(), words.to_vec()),
+            None => {
+                return Err(usage(
+                    "`oxa pkg` takes a package command: install, remove, update, or list",
+                ))
+            }
+        },
         #[cfg(feature = "share")]
         "share" => Subcommand::Share(rest.to_vec()),
         #[cfg(not(feature = "share"))]
@@ -594,16 +616,22 @@ fn parse_flag(
             a.print = true;
         }
         "--output-schema" => a.output_schema = Some(value(argv, i, inline, flag, "a file")?),
-        "--mode" => {
+        // #874: `--output-format` is the clearer spelling of `--mode`; both set the same field,
+        // so the last one given wins and the conflicts below apply to either.
+        "--mode" | "--output-format" => {
             let v = value(argv, i, inline, flag, "text, json, or rpc")?;
             a.mode = Some(match v.as_str() {
                 "text" => ModeArg::Text,
                 "json" => ModeArg::Json,
                 "rpc" => ModeArg::Rpc,
                 _ => {
+                    let what = match flag {
+                        "--output-format" => "output format",
+                        _ => "mode",
+                    };
                     return Err(usage(format!(
-                        "Invalid mode \"{v}\". Valid values: text, json, rpc"
-                    )))
+                        "Invalid {what} \"{v}\". Valid values: text, json, rpc"
+                    )));
                 }
             });
         }
@@ -784,7 +812,9 @@ fn parse_flag(
             no_value(inline, flag)?;
             a.verbose = true;
         }
-        "-a" | "--approve" => {
+        // #874: `--trust` is the clearer spelling of `--approve`: project trust, not the tool
+        // permission table (`--permission-mode`, `--standard`, `--auto`, `--yolo`).
+        "-a" | "--approve" | "--trust" => {
             no_value(inline, flag)?;
             a.approve = Some(true);
         }

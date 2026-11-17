@@ -547,10 +547,7 @@ fn permissions_alias_matches_mode() {
     }
     // `/help` lists the alias.
     match expect_some("/help", fx.run("/help")) {
-        AppAction::ShowLines(lines) => assert!(
-            lines.iter().any(|l| l.contains("/permissions")),
-            "{lines:?}"
-        ),
+        AppAction::ShowLines(lines) => assert!(lines.iter().any(|l| l.contains("/permissions")), "{lines:?}"),
         _ => panic!("/help shows lines"),
     }
     // An extension command with the same name still runs first.
