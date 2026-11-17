@@ -9,7 +9,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 mod controls;
-pub use controls::{Assignment, AssignmentBoard, AssignmentData, QueueAdmission, ReleaseRecord};
+pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
 mod imports;
 mod reviews;
 
@@ -126,11 +126,6 @@ impl Claims {
         let saved: Saved = serde_json::from_slice(&bytes).map_err(|_| "invalid board claim state")?;
         if saved.version != 1
             || saved.number != number
-            || saved
-                .data
-                .queue_admission
-                .as_ref()
-                .is_some_and(|admission| !admission.matches_lease(saved.state.lease.as_ref()))
             || saved.review_requests.iter().any(|key| !key.valid())
             || saved.state.lease.as_ref().is_some_and(|l| {
                 saved.state.attempts == 0
@@ -254,7 +249,7 @@ impl Claims {
         if self.established(entry.number)? {
             self.mark(entry.number)?;
         }
-        if row.data.import_hold || row.data.queue_admission.is_some() {
+        if row.data.import_hold {
             return Ok(None);
         }
         if !authorize(&mut row)? {
@@ -321,7 +316,7 @@ impl Claims {
         }
         let _lock = self.lock(number)?;
         let mut row = self.load(number)?;
-        if row.data.policy.is_some() || row.data.queue_admission.is_some() {
+        if row.data.policy.is_some() {
             return Err("configured assignments require authenticated release with a reason".into());
         }
         if row.state.lease.as_ref() != Some(lease) {
