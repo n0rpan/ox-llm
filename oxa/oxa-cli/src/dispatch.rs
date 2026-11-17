@@ -172,6 +172,22 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         let result = match sub {
             #[cfg(feature = "share")]
             Subcommand::Share(words) => {
+                // Env::get treats empty values as unset; owner-command policy
+                // refuses marker presence, including an empty value.
+                if env.pairs().iter().any(|(name, _)| {
+                    matches!(
+                        name.as_str(),
+                        "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+                    )
+                }) {
+                    return report(
+                        &mut *stderr,
+                        &OxaError::new(
+                            codes::INVALID,
+                            "Guest key commands require the owner outside an agent tool",
+                        ),
+                    );
+                }
                 oxc_gateway::share::command::run(&words, &dirs.home.join(".oxa/share"), &mut *stdout)
                     .map(|()| 0)
                     .map_err(|error| {
