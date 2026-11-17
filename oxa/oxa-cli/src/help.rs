@@ -237,7 +237,18 @@ fn entries() -> Vec<&'static Entry> {
 
 /// The help text of exactly this command path, or `None` when no public command has it.
 pub fn text(path: &[&str]) -> Option<String> {
-    entries().into_iter().find(|e| e.path == path).map(render)
+    let path: Vec<_> = path
+        .iter()
+        .copied()
+        .filter(|word| !matches!(*word, "--help" | "-h"))
+        .collect();
+    if path.is_empty() || path == ["help"] {
+        return Some(crate::usage_text(&[]));
+    }
+    entries()
+        .into_iter()
+        .find(|e| e.path == path.as_slice())
+        .map(render)
 }
 
 /// The longest public command path that is a prefix of `words`.

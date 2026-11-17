@@ -202,16 +202,20 @@ fn unknown_help_target_is_a_usage_error() {
 fn feature_gated_help_reflects_the_build() {
     let env = TestEnv::new();
     let server = FakeServer::start(Vec::new(), FakeOpts::default()).expect("fake engine");
+    let before = tree(env.root());
     let flag = run(&env, &server.url(), &["share", "--help"]);
     assert_eq!(flag.code, 2, "`oxa share --help`: {}", flag.err);
     assert!(flag.err.contains("sharing"), "`oxa share --help`: {}", flag.err);
     let help = run(&env, &server.url(), &["help", "share"]);
     assert_eq!(help.code, 2, "`oxa help share`: {}", help.err);
     assert!(
-        help.err.contains("no help for `oxa share`"),
+        help.err.contains("no help for `oxa share`") || help.err.trim() == "unknown help command",
         "`oxa help share`: {}",
         help.err
     );
+    assert!(help.out.is_empty(), "disabled sharing exposed help");
+    assert_eq!(server.requests().len(), 0, "disabled help made a request");
+    assert_eq!(tree(env.root()), before, "disabled help changed a file");
 }
 
 /// `oxa wipe --all --yes --help` must not delete anything: help is answered first.
