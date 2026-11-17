@@ -325,6 +325,75 @@ mod tests {
         }
     }
 
+    #[test]
+    fn base_selection_refuses_revision_sets() {
+        for revision in ["HEAD~2..HEAD", "HEAD...main", "^HEAD", "HEAD^@", "HEAD^!"] {
+            assert!(
+                diff_argv(&Selection::Base(revision.into())).is_err(),
+                "{revision}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_from_a_subdirectory_includes_files_outside_it() {
+        let env = repository();
+        env.write("work/a/one.txt", "one\n");
+        env.write("work/b/two.txt", "two\n");
+        git(&env, &["add", "."]);
+        git(&env, &["commit", "-m", "root"]);
+        git(&env, &["config", "diff.relative", "true"]);
+        let mut args = vec!["-C".to_string(), "a".to_string()];
+        args.extend(diff_argv(&Selection::Commit("HEAD".into())).unwrap());
+        let diff = git(&env, &args.iter().map(String::as_str).collect::<Vec<_>>());
+        assert!(diff.contains("diff --git a/a/one.txt b/a/one.txt"), "{diff}");
+        assert!(diff.contains("diff --git a/b/two.txt b/b/two.txt"), "{diff}");
+    }
+
+    #[test]
+    fn combined_diff_files_keep_independent_caps() {
+        for header in ["diff --cc ", "diff --combined "] {
+            let big = " synthetic conflict line\n".repeat(PER_FILE_CAP / 20);
+            let diff = format!("{header}one.rs\n{big}{header}two.rs\n+  second file\n");
+            let result = prompt(&diff, "", usize::MAX);
+            assert!(
+                result.contains(&format!("{header}two.rs")),
+                "second conflict must survive the first file cap"
+            );
+            assert!(result.contains("+  second file"));
+            assert!(result.contains("one.rs cut:"));
+        }
+    }
+
+    #[test]
+    fn commit_review_does_not_launch_a_configured_signature_verifier() {
+        use std::os::unix::fs::PermissionsExt;
+        let env = repository();
+        env.write("work/root.txt", "root\n");
+        git(&env, &["add", "."]);
+        git(&env, &["commit", "-m", "root"]);
+        let tree = git(&env, &["rev-parse", "HEAD^{tree}"]);
+        let parent = git(&env, &["rev-parse", "HEAD"]);
+        // Deliberately synthetic signature text: no key, signing or external service.
+        env.write("work/synthetic-commit", &format!(
+            "tree {}\nparent {}\nauthor Test <test@example.invalid> 1 +0000\ncommitter Test <test@example.invalid> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n synthetic\n -----END PGP SIGNATURE-----\n\nsynthetic commit\n",
+            tree.trim(), parent.trim()
+        ));
+        let commit = git(&env, &["hash-object", "-t", "commit", "-w", "synthetic-commit"]);
+        let verifier = env.write(
+            "work/verifier",
+            "#!/bin/sh\nprintf called > verifier-called\nexit 1\n",
+        );
+        std::fs::set_permissions(&verifier, std::fs::Permissions::from_mode(0o700)).unwrap();
+        git(&env, &["config", "gpg.program", verifier.to_str().unwrap()]);
+        git(&env, &["config", "log.showSignature", "true"]);
+        selected_diff(&env, Selection::Commit(commit.trim().into()));
+        assert!(
+            !env.work().join("verifier-called").exists(),
+            "a diff review must not execute the configured verifier"
+        );
+    }
+
     fn two_files() -> String {
         let line = " line of a diff that is repeated to grow one file past the cap\n";
         let big = line.repeat(PER_FILE_CAP / line.len() + 8);
