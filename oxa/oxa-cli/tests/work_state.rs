@@ -721,6 +721,37 @@ fn acceptance_time_cannot_give_the_repair_worker_a_fresh_time_budget() {
 }
 
 #[test]
+fn task_storage_refuses_shared_or_linked_destinations() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    for linked in [false, true] {
+        let env = TestEnv::new();
+        setup(&env, "[]");
+        let storage = storage(&env);
+        fs::create_dir_all(storage.parent().unwrap()).unwrap();
+        if linked {
+            symlink(env.tmp(), &storage).unwrap();
+        } else {
+            fs::create_dir(&storage).unwrap();
+            fs::set_permissions(&storage, fs::Permissions::from_mode(0o770)).unwrap();
+        }
+        let (record, requests) = run_observed(
+            &env,
+            vec![ScriptTurn::text("done")],
+            &["work", "../tasks.json"],
+            None,
+        );
+        assert_eq!(record["outcome"], "blocked", "{record}");
+        assert!(
+            record["detail"].as_str().unwrap().contains("task storage"),
+            "{record}"
+        );
+        assert!(requests.is_empty());
+        assert!(!storage.join("test.lock").exists());
+    }
+}
+
+#[test]
 fn a_restart_keeps_the_original_deadline_instead_of_starting_another_budget() {
     let env = TestEnv::new();
     setup(&env, "[]");
