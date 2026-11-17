@@ -435,13 +435,16 @@ fn a_subagent_call_shows_the_child_on_screen() {
     rig.pty.wait_for_text("● READY").unwrap();
     rig.pty.send_text("ping");
     rig.pty.send_key("enter");
+    // The call parks the parent (one held H6 request) before it starts the child, and that
+    // frame already names `scout` (`scout: parking the session`). Wait for the state this
+    // test is about: the child is running.
     let running = rig
         .pty
         .wait_for_named(
             "the subagent line",
             |s| {
                 s.find_row("AGENTS")
-                    .map(|r| s.row(r).contains("scout"))
+                    .map(|r| s.row(r).contains("scout: running"))
                     .unwrap_or(false)
             },
             WAIT,
