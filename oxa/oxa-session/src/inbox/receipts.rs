@@ -48,14 +48,16 @@ impl Inbox {
     /// Pick up the oldest valid message with a durable, payload-free receipt.
     /// Exclusive ownership is shared with `watch`. After success, retries and watchers
     /// never deliver this id again, even if a crash left its `.msg` file behind.
-    /// A receipt proves pickup only: a crash after publication can lose execution.
+    /// Success also means the marker is durable: a failure before that withdraws it, so the
+    /// message stays deliverable. A receipt proves pickup only, never execution.
     pub fn take(agent_dir: &Path, session: &str) -> io::Result<Option<(String, String)>> {
         let dir = directory(agent_dir, session)?;
         dir.lock()?;
         // Keep memory bounded even for an arbitrarily large stopped inbox.
         let mut first: Option<(PathBuf, String)> = None;
         for entry in fs::read_dir(dir.path())? {
-            let path = entry?.path();
+            let Ok(entry) = entry else { continue };
+            let path = entry.path();
             if !path.extension().is_some_and(|s| s == "msg")
                 || first.as_ref().is_some_and(|(best, _)| &path >= best)
             {
@@ -67,7 +69,10 @@ impl Inbox {
             if !valid_inbox_id(id) {
                 continue;
             }
-            let meta = fs::symlink_metadata(&path)?;
+            let meta = match fs::symlink_metadata(&path) {
+                Ok(meta) => meta,
+                Err(_) => continue,
+            };
             if !meta.is_file() || meta.nlink() != 1 || meta.len() > INBOX_MESSAGE_BYTES as u64 {
                 continue;
             }
@@ -82,7 +87,7 @@ impl Inbox {
                 Ok(file) => file,
                 Err(_) => continue,
             };
-            let meta = file.metadata()?;
+            let Ok(meta) = file.metadata() else { continue };
             if !meta.is_file() || meta.nlink() != 1 || meta.len() > INBOX_MESSAGE_BYTES as u64 {
                 continue;
             }
@@ -106,27 +111,35 @@ impl Inbox {
             .expect("validated message id")
             .to_owned();
         // An empty marker needs no payload write. Sync the inode before publishing it,
-        // then the directory before removing the message. Neither path follows links.
+        // then the directory. Neither path follows links.
         let temp = dir
             .path()
             .join(format!(".{}.receipt.tmp", crate::new_entry_id(&|_| false)));
-        let result = (|| {
-            let marker = OpenOptions::new()
+        let marker = dir.path().join(format!("{id}.taken"));
+        let published = (|| {
+            let file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
                 .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
                 .open(&temp)?;
-            marker.sync_all()?;
-            fs::rename(&temp, dir.path().join(format!("{id}.taken")))?;
-            sync_directory(&dir.0)?;
-            fs::remove_file(path)?;
-            sync_directory(&dir.0)?;
-            Ok(Some((id, text)))
+            file.sync_all()?;
+            fs::rename(&temp, &marker)?;
+            sync_directory(&dir.0)
         })();
-        if result.is_err() {
-            let _ = fs::remove_file(temp);
+        if let Err(e) = published {
+            // A marker whose directory entry did not become durable must not survive: a retry
+            // would read the errored pickup as taken and drop the payload. Withdraw it before
+            // reporting the failure.
+            let _ = fs::remove_file(&temp);
+            let _ = fs::remove_file(&marker);
+            let _ = sync_directory(&dir.0);
+            return Err(e);
         }
-        result
+        // The marker is durable, so neither this message nor a leftover copy can be delivered
+        // again. A cleanup failure below only leaves a suppressed file for `remove_inbox`.
+        let _ = fs::remove_file(path);
+        let _ = sync_directory(&dir.0);
+        Ok(Some((id, text)))
     }
 }
