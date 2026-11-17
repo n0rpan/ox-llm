@@ -166,6 +166,11 @@ impl Claims {
         Self::open(&self.root)?;
         let lock = io(File::open(&self.root))?;
         io(lock.lock())?;
+        self.rows_locked()
+    }
+
+    /// Caller holds the directory lock used by every reservation and control update.
+    fn rows_locked(&self) -> Result<BTreeMap<u64, Saved>> {
         let mut states = BTreeMap::new();
         for entry in io(fs::read_dir(&self.root))? {
             let name = io(entry)?.file_name();
