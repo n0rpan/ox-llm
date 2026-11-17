@@ -508,7 +508,7 @@ pub fn worker_loop_with(
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
     stop: WorkerStop,
-    wake: Sender<SessionCmd>,
+    wake: Weak<Sender<SessionCmd>>,
 ) -> Option<SessionInfo> {
     let mut ui_proxy = UiProxy::new(ui.clone());
     let mut last = StatusModel::default();
