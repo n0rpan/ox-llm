@@ -67,7 +67,12 @@ fn unknown_prices_and_missing_budget_have_distinct_client_errors() {
 
 #[test]
 fn spending_and_outstanding_holds_both_reduce_available_budget() {
-    for (spent, held, required) in [(0.5, 0.4, 0.2), (0.999, 0.0, 0.08008)] {
+    for (spent, held, required) in [
+        (0.5, 0.4, 0.2),
+        (0.999, 0.0, 0.08008),
+        (0.0, 1.0, 1e-13),
+        (1.0, 0.0, 1e-13),
+    ] {
         refusal(
             daily_budget(&json!(1), true, Some(spent), held, required).unwrap_err(),
             429,

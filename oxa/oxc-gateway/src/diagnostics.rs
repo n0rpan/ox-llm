@@ -65,6 +65,7 @@ pub struct Snapshot {
     pub code: Option<&'static str>,
     pub cause: Option<StreamCause>,
     pub terminal_check: Option<TerminalCheck>,
+    pub billing_source: Option<crate::opencode::PlanName>,
     /// Fixed order: Retry-After, limit, remaining, reset. Numeric values only.
     pub rate: [Option<u32>; 4],
 }
@@ -72,8 +73,39 @@ pub struct Snapshot {
 /// One native CLI operation at a time; retries clear the preceding operation.
 /// API callers do not install this sink. No serialization or user supplied text.
 #[derive(Clone, Default)]
-pub struct Diagnostics(Arc<Mutex<Option<Snapshot>>>);
+pub struct Diagnostics(Arc<Mutex<Option<Snapshot>>>, Arc<Mutex<Option<BillingFact>>>);
+impl std::fmt::Debug for Diagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Diagnostics([private])")
+    }
+}
+#[derive(Clone, Copy)]
+pub struct BillingFact {
+    pub plan: crate::opencode::PlanName,
+    pub cost: f64,
+}
+impl BillingFact {
+    pub fn record(self) -> Value {
+        let display = if self.cost > 0.0 {
+            format!("billed USD {:.2}", self.cost)
+        } else {
+            format!("plan {}", self.plan.as_str())
+        };
+        serde_json::json!({"provider":"opencode","scope":"last_settled_call_in_process","display":display,"cost_usd":self.cost,"plan":self.plan.as_str()})
+    }
+}
 impl Diagnostics {
+    pub fn last_billing(&self) -> Option<BillingFact> {
+        self.1.lock().ok().and_then(|v| *v)
+    }
+    pub(crate) fn settled_billing(&self, plan: crate::opencode::PlanName, cost: f64) {
+        if cost.is_finite() && cost >= 0.0 {
+            if let Ok(mut slot) = self.1.lock() {
+                *slot = Some(BillingFact { plan, cost });
+            }
+        }
+    }
+
     pub fn take(&self) -> Option<Snapshot> {
         self.0.lock().ok()?.take()
     }
@@ -88,6 +120,7 @@ impl Diagnostics {
                 code: None,
                 cause: None,
                 terminal_check: None,
+                billing_source: None,
                 rate: [None; 4],
             });
         }
@@ -118,6 +151,7 @@ impl Diagnostics {
                 code: None,
                 cause: None,
                 terminal_check: None,
+                billing_source: None,
                 rate,
             });
         }
@@ -135,6 +169,13 @@ impl Diagnostics {
             if let Some(snapshot) = slot.as_mut() {
                 snapshot.cause = Some(StreamCause::TerminalUsage);
                 snapshot.terminal_check = Some(check);
+            }
+        }
+    }
+    pub(crate) fn billing_source(&self, plan: crate::opencode::PlanName) {
+        if let Ok(mut slot) = self.0.lock() {
+            if let Some(snapshot) = slot.as_mut() {
+                snapshot.billing_source = Some(plan);
             }
         }
     }

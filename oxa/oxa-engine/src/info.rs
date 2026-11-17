@@ -151,7 +151,9 @@ pub fn parse_info_for(
     let queue = first_u32(status, &["/queued_requests", "/active/queued_requests", "/queue"]).unwrap_or(0);
     let (prefill_only, mut caps) = capabilities(status, &limits_for);
     caps.remote = caps.remote || remote.is_some();
-    if caps.remote && oxa_proto::offline() {
+    // Untargeted discovery must expose the catalog so callers can resolve their selection.
+    // Session startup checks the resolved model, including when it uses the default.
+    if target.is_some() && caps.remote && oxa_proto::offline() {
         return Err(oxa_proto::offline_error(&format!("the cloud model {limits_for}")));
     }
     let (thinking, images) = modality(status, &limits_for);
@@ -618,9 +620,7 @@ pub(crate) fn http_error_with(status: u16, body: &[u8], retry_after: Option<u32>
             codes::BUDGET_EXHAUSTED,
             format!("the cloud gateway refused the request (budget_exceeded): {detail}"),
         )
-        .with_hint(
-            "raise cloud.daily_budget_usd in oxc, or wait for the next spend day; this is not retried",
-        );
+        .with_hint("wait for the next spend day; this is not retried");
     }
     if status == 503 {
         if let Some(code) = err
@@ -734,6 +734,11 @@ mod cloud_refusal_tests {
             e.message.contains("daily cloud budget is exhausted"),
             "{}",
             e.message
+        );
+        assert_eq!(
+            e.hint.as_deref(),
+            Some("wait for the next spend day; this is not retried"),
+            "shared normalization must not point native cloud users to a controller setting"
         );
         let plain = http_error_with(429, br#"{"error":{"message":"slow down"}}"#, None);
         assert_eq!(plain.code, codes::ENGINE_HTTP, "other 429s stay retryable");

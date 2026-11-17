@@ -52,6 +52,8 @@ pub struct HookSets {
     pub hooks: Vec<Arc<dyn Hooks>>,
     pub extensions: Option<Arc<ExtensionHost>>,
     pub mcp: Option<Arc<McpManager>>,
+    /// Shared instance: the run timer publishes its exact deadline after startup.
+    pub subagent: Option<Arc<SubagentHooks>>,
     /// The flags the loaded extensions registered (`registerFlag`), for the second pass of the
     /// argument parse.
     pub flags: Vec<oxa_proto::FlagSpec>,
@@ -206,12 +208,14 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
         match std::env::current_exe() {
             Ok(bin) => {
                 let agents = discover_agents(i.dirs, i.cwd, i.trusted);
-                sets.hooks.push(Arc::new(
+                let subagent = Arc::new(
                     SubagentHooks::new(bin, agents)
                         .with_settings(i.settings)
                         .with_tool_exclusions(i.args.exclude_tools.clone())
                         .with_yolo(i.yolo.clone()),
-                ));
+                );
+                sets.hooks.push(subagent.clone());
+                sets.subagent = Some(subagent);
             }
             Err(e) => notices.push((
                 Level::Warning,
