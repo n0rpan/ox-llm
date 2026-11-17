@@ -101,6 +101,7 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
             operation: SupervisorOperation::Checkout {
                 branch: saved.task.branch,
                 create: false,
+                adopted: false,
             },
         },
         policy,
