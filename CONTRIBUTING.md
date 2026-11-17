@@ -38,22 +38,6 @@ The native cloud tool-loop test uses `strace -f -e trace=execve` to verify that 
 and its descendants never launch Python; running without the tracer is not a valid substitute.
 Hosted CI installs both prerequisites too.
 
-For a checkout-only environment without permission to install system packages, unpack a trusted
-`strace` package for the host architecture into `oxa/target/test-tools/root` (so the executable is
-`oxa/target/test-tools/root/usr/bin/strace`). Keep these local tools under the ignored `target/`
-directory, not in source control. From the repository root, run the proof with that directory on
-`PATH`:
-
-```sh
-export PATH="$PWD/oxa/target/test-tools/root/usr/bin:$PATH"
-strace --version
-cd oxa
-cargo test -p oxa-cli --test in_process_cloud native_discovery_tool_loop_and_budget_settlement_use_no_python_process
-```
-
-The same `PATH` must be supplied to any external check runner; a missing tracer is an environment
-setup failure, not a reason to skip the test or replace its process-tracing assertions.
-
 ```sh
 cd oxc && ./tools/run_lab_tests.sh                       # lab
 cd engine && cargo test --release --locked --workspace --exclude qwen4exp   # engine (Flash: see engine/CONTRIBUTING.md)
