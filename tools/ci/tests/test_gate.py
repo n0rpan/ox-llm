@@ -102,6 +102,26 @@ class Gate(unittest.TestCase):
         self.assertNotIn('workspace', package)
         self.assertFalse((root / 'oxa/oxc-gateway/Cargo.lock').exists())
 
+    def test_widget_preview_is_required_even_on_drafts_and_cannot_skip(self):
+        block = job_block(self.checks, 'panel-preview')
+        self.assertIn('runs-on: ubuntu-24.04-arm', block)
+        self.assertRegex(block, r"(?m)^    if: needs\.changes\.outputs\.lab == 'true'$")
+        self.assertNotIn('continue-on-error', block)
+        self.assertIn('qml-qt6 qml6-module-qtquick qml6-module-qtqml-workerscript', block)
+        self.assertIn('command -v qml6', block)
+        self.assertIn('env -i ', block)
+        for name in ('HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME',
+                     'XDG_STATE_HOME', 'XDG_RUNTIME_DIR', 'TMPDIR'):
+            self.assertIn(name + '=', block)
+        self.assertIn('QT_QUICK_BACKEND=software', block)
+        self.assertIn('python3 -I tools/ci/panel_preview.py', block)
+        self.assertIn('set -o pipefail', block)
+        self.assertIn('if: always()', block)
+        self.assertIn('if-no-files-found: error', block)
+        gate = job_block(self.checks, 'gate')
+        self.assertIn('panel-preview', gate)
+        self.assertIn("if flags.get('lab') == 'true' and needs['panel-preview']['result'] != 'success':", gate)
+
     def test_caches_restore_only_and_save_only_on_main(self):
         for path in sorted(WORKFLOWS.glob('*.y*ml')):
             text = path.read_text()
