@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::descriptions;
 
-/// `grep` with pi's arguments (pattern, path, glob, ignoreCase, literal, context, limit). In-process: `ignore` walk honouring .gitignore, `regex` matching. Output `path:line: text` sorted by path then line; limit default 100, a limit below 1 is 1; pi's long-line truncation and limit notice. Identical bytes on two runs.
+/// `grep` with pi's arguments (pattern, path, glob, ignoreCase, literal, context, limit). In-process: `ignore` walk honouring .gitignore, `regex` matching. Output `path:line: text` sorted by path then line; limit default 100, a limit below 1 is 1; pi's long-line truncation and limit notice. Over the limit the first `limit` matches (with context) are kept and the limit notice says how to see more. Identical bytes on two runs.
 #[derive(Debug, Clone)]
 pub struct GrepTool {
     spec: ToolSpec,

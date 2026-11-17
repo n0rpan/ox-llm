@@ -788,6 +788,17 @@ fn tools_017() {
         "local: limit 2 shows both lines"
     );
 
+    // Over the limit the matching lines are kept, not replaced by counts; a match beyond the
+    // limit in another file proves it, and the notice names the doubled limit.
+    env.write("work/d.txt", "hit\n");
+    let over = run_one(&env, "grep", r#"{"pattern":"hit","limit":2}"#, &[]);
+    assert_eq!(
+        over,
+        "a.txt\n  1: hit\n  2: hit\n\n[2 matches limit reached. Use limit=4 for more, or refine pattern]",
+        "local: over the limit keeps the matches of the first file"
+    );
+    std::fs::remove_file(env.work().join("d.txt")).unwrap();
+
     let f = run_one(&env, "find", r#"{"pattern":"*.rs","limit":0}"#, &[]);
     assert_eq!(
         f, "b.rs\n\n[1 results limit reached. Use limit=2 for more, or refine pattern]",
