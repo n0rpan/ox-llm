@@ -956,16 +956,7 @@ fn run_locked(
     if planned.checkpoint_revision.is_some() && !replacing {
         return Err("task checkpoint disappeared after planning; retry the task file".into());
     }
-    let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
-        common.parent().ok_or("git directory has no parent")?
-    } else {
-        &common
-    };
-    let parent = repo_dir
-        .parent()
-        .ok_or("repository has no parent for worktrees")?;
-    let name = repo_dir.file_name().ok_or("repository has no directory name")?;
-    let trees = parent.join(".oxa-worktrees").join(name);
+    let trees = worktree_root(&common)?;
     let tree = trees.join(&task.id);
     let fresh = |revision| {
         let mut record = blocked_record(task, String::new());

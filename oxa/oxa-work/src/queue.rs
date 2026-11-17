@@ -143,6 +143,13 @@ fn free_space(repo: &Path, common: &Path, queue: &Path, df: &Path, policy: &RunP
 }
 const MAX_INPUT_BYTES: u64 = 1024 * 1024;
 const MAX_INPUT_TASKS: usize = 128;
+const MAX_QUEUE_FILES: usize = 256;
+const MAX_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
+const MAX_RETAINED_TASKS: usize = 4096;
+
+fn task_bytes(task: &Task) -> u64 {
+    (task.id.len() + task.branch.len() + task.base.len() + task.model.len() + task.prompt.len()) as u64
+}
 
 struct QueueTasks(Vec<Task>);
 impl<'de> Deserialize<'de> for QueueTasks {
@@ -235,6 +242,8 @@ struct Inputs {
     files: HashMap<PathBuf, (SystemTime, u64)>,
     tasks: HashMap<String, (PathBuf, Task)>,
     errors: HashMap<PathBuf, Vec<String>>,
+    branches: HashSet<String>,
+    task_bytes: u64,
 }
 fn scan(
     directory: &Path,
@@ -243,6 +252,7 @@ fn scan(
     emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
 ) -> Result<()> {
     let mut files = vec![];
+    let mut bytes = 0;
     for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
         let entry = match entry {
             Ok(entry) => entry,
@@ -250,6 +260,16 @@ fn scan(
             Err(error) => return Err(error.to_string()),
         };
         if let Some(file) = input_file(entry)? {
+            if files.len() == MAX_QUEUE_FILES {
+                return Err(format!(
+                    "queue exceeds {MAX_QUEUE_FILES} task files; archive old inputs"
+                ));
+            }
+            // Oversized files are reported individually by read_input.
+            bytes += file.2.min(MAX_INPUT_BYTES);
+            if bytes > MAX_QUEUE_BYTES {
+                return Err("queue exceeds 16 MiB of task inputs; archive old inputs".into());
+            }
             files.push(file);
         }
     }
@@ -261,7 +281,12 @@ fn scan(
         .collect();
     pending.retain(|job| paths.contains(&job.file));
     // Active/external workers are not pending and retain their identities.
-    inputs.tasks.retain(|id, _| !withdrawn.contains(id));
+    for id in withdrawn {
+        if let Some((_, task)) = inputs.tasks.remove(&id) {
+            inputs.branches.remove(&task.branch);
+            inputs.task_bytes -= task_bytes(&task);
+        }
+    }
     inputs.files.retain(|p, _| paths.contains(p));
     inputs.errors.retain(|p, _| paths.contains(p));
     files.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
@@ -286,17 +311,22 @@ fn scan(
                         }
                         problems.push(format!("task {} was already queued; use a new id for changed work or remove the duplicate input", task.id));
                     } else {
-                        if inputs
-                            .tasks
-                            .values()
-                            .any(|(_, known)| known.branch == task.branch)
-                        {
+                        if inputs.branches.contains(&task.branch) {
                             problems.push(format!(
                                 "branch {} was already queued; use a distinct branch",
                                 task.branch
                             ));
                             continue;
                         }
+                        let bytes = task_bytes(&task);
+                        if inputs.tasks.len() == MAX_RETAINED_TASKS
+                            || inputs.task_bytes + bytes > MAX_QUEUE_BYTES
+                        {
+                            problems.push("queue task identity capacity reached; archive completed inputs and restart the controller".into());
+                            break;
+                        }
+                        inputs.branches.insert(task.branch.clone());
+                        inputs.task_bytes += bytes;
                         inputs.tasks.insert(task.id.clone(), (file.clone(), task.clone()));
                         pending.push(Job {
                             task,
@@ -718,9 +748,17 @@ mod tests {
         assert_eq!(pending.len(), 1);
         fs::rename(&path, dir.join("archived")).unwrap();
         scan(&dir, &mut pending, &mut inputs, &mut |_| Ok(())).unwrap();
-        fs::remove_dir_all(&dir).unwrap();
         assert!(pending.is_empty(), "archived input must not be dispatched");
         assert!(!inputs.tasks.contains_key("queued"));
+        fs::write(
+            &path,
+            r#"[{"id":"replacement","branch":"agent/queued","model":"fake","prompt":"Synthetic replacement"}]"#,
+        )
+        .unwrap();
+        scan(&dir, &mut pending, &mut inputs, &mut |_| Ok(())).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].task.id, "replacement");
     }
     #[test]
     fn archiving_between_directory_read_and_metadata_is_not_a_controller_error() {

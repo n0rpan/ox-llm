@@ -231,8 +231,10 @@ summaries, without raw assistant output or acceptance logs.
 
 
 Queue mode watches a directory of regular, non-hidden `*.json` task files.
-Each file may contain up to 128 tasks and occupy up to 1 MiB. Split larger
-batches across files.
+Each file may contain up to 128 tasks and occupy up to 1 MiB. A queue accepts
+up to 256 task files and 16 MiB of input per scan. The controller retains at
+most 4,096 task identities and 16 MiB of task text across scans. Archive
+completed inputs and restart the controller if it reaches the retention limit.
 After adding task files, run
 `oxa work --queue ./tasks --max 2 --min-free-mib 1024`.
 
