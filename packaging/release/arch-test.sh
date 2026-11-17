@@ -70,16 +70,22 @@ for variant in ox-llm ox-llm-bin; do
   source_root="/build/ox-llm/src/ox-llm-$OX_SOURCE_COMMIT"
   receipt="/packages/NO-PYTHON-PROOF-$variant.txt"
   { printf 'source=%s\n' "$OX_SOURCE_COMMIT"; sha256sum "$package" | cut -d' ' -f1;
-    (cd /usr/bin && sha256sum oxa); } > "$receipt"
+    (cd /usr/bin && sha256sum oxa oxe-server); } > "$receipt"
+  test -x /usr/bin/oxa
+  test -x /usr/bin/oxe-server
+  oxa_sha256=$(sha256sum /usr/bin/oxa | cut -d' ' -f1)
+  oxe_sha256=$(sha256sum /usr/bin/oxe-server | cut -d' ' -f1)
   proof_home=$(mktemp -d)
   chown builder:builder "$proof_home"
   trap 'rm -rf "$proof_home"' EXIT
   runuser -u builder -- env -i PATH=/usr/bin:/bin HOME="$proof_home" \
     CARGO_HOME=/home/builder/.cargo RUSTUP_HOME=/home/builder/.rustup \
     SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
-    OXA_TEST_RELEASE_OXA=/usr/bin/oxa OXA_TEST_REQUIRE_RELEASE_ARTIFACT=1 \
+    OXA_TEST_RELEASE_OXA=/usr/bin/oxa OXA_TEST_RELEASE_OXE_SERVER=/usr/bin/oxe-server \
+    OXA_TEST_RELEASE_OXA_SHA256="$oxa_sha256" OXA_TEST_RELEASE_OXE_SERVER_SHA256="$oxe_sha256" \
+    OXA_TEST_REQUIRE_RELEASE_ARTIFACT=1 \
     bash -eu -c 'source "$1/packaging/release/environment.sh"; cd oxa; cargo fetch --locked;
-      CARGO_NET_OFFLINE=true cargo test --release --locked -p oxa-cli --test no_python_in_path' proof "$source_root" \
+      CARGO_NET_OFFLINE=true cargo test --release --locked -p oxa-cli --test no_python_in_path -- --nocapture' proof "$source_root" \
     2>&1 | tee -a "$receipt"
   rm -rf "$proof_home"
   trap - EXIT
