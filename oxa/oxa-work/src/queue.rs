@@ -1,5 +1,5 @@
 //! Directory queue: oldest regular JSON files first, with bounded independent workers.
-use super::{blocked_record, checked, state, Record, Result, RunPolicy, Task};
+use super::{blocked_record, board, checked, state, LockedTask, Record, Result, RunPolicy, Task};
 use serde::{
     de::{Error, IgnoredAny, SeqAccess, Visitor},
     Deserialize, Deserializer, Serialize,
@@ -15,6 +15,9 @@ use std::{
     thread,
     time::{Duration, SystemTime},
 };
+
+mod native;
+pub use native::{native_task, NativeQueueOwner};
 
 #[derive(Clone, Debug)]
 pub struct QueueOptions {
@@ -64,6 +67,39 @@ struct Job {
     modified: SystemTime,
     file: PathBuf,
     index: usize,
+    binding: Option<board::NativeBinding>,
+}
+
+type WorkerFn = dyn Fn(&Task) -> Result<Record> + Send + Sync;
+type NativeWorkerFn = dyn Fn(&Task, &mut LockedTask<'_>) -> Result<Record> + Send + Sync;
+
+#[derive(Clone)]
+enum QueueWorker {
+    Manual(Arc<WorkerFn>),
+    Native(Arc<NativeWorker>),
+}
+
+struct NativeWorker {
+    claims: board::Claims,
+    worker_id: String,
+    policy: RunPolicy,
+    run: Arc<NativeWorkerFn>,
+}
+
+impl QueueWorker {
+    fn run(&self, job: &mut Job) -> Result<Record> {
+        let worker = match self {
+            Self::Manual(run) => return run(&job.task),
+            Self::Native(worker) => worker,
+        };
+        let mut locked = LockedTask::acquire(&job.task, &worker.policy)?;
+        let owner = NativeQueueOwner {
+            claims: &worker.claims,
+            worker_id: &worker.worker_id,
+        };
+        job.binding = Some(owner.admit(&job.task)?);
+        (worker.run)(&job.task, &mut locked)
+    }
 }
 fn busy(storage: &Path, id: &str) -> Result<bool> {
     match fs::OpenOptions::new()
@@ -267,6 +303,7 @@ fn scan(
                             file: file.clone(),
                             modified,
                             index,
+                            binding: None,
                         });
                     }
                 }
@@ -326,9 +363,62 @@ pub fn run_queue(
     options: &QueueOptions,
     policy: &RunPolicy,
     df: &Path,
-    worker: Arc<dyn Fn(&Task) -> Result<Record> + Send + Sync>,
+    worker: Arc<WorkerFn>,
     emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
 ) -> Result<QueueStatus> {
+    run_queue_inner(
+        QueueRun {
+            repo,
+            directory,
+            options,
+            policy,
+            df,
+        },
+        None,
+        QueueWorker::Manual(worker),
+        emit,
+    )
+}
+
+/// The same execution queue with trusted owner context for a native admitted attempt.
+pub struct QueueRun<'a> {
+    pub repo: &'a Path,
+    pub directory: &'a Path,
+    pub options: &'a QueueOptions,
+    pub policy: &'a RunPolicy,
+    pub df: &'a Path,
+}
+
+impl QueueRun<'_> {
+    pub fn run_native(
+        self,
+        owner: &NativeQueueOwner<'_>,
+        worker: Arc<NativeWorkerFn>,
+        emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
+    ) -> Result<QueueStatus> {
+        let worker = QueueWorker::Native(Arc::new(NativeWorker {
+            claims: owner.claims.clone(),
+            worker_id: owner.worker_id.into(),
+            policy: self.policy.clone(),
+            run: worker,
+        }));
+        run_queue_inner(self, Some(owner), worker, emit)
+    }
+}
+
+fn run_queue_inner(
+    queue: QueueRun<'_>,
+    native: Option<&NativeQueueOwner<'_>>,
+    worker: QueueWorker,
+    emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
+) -> Result<QueueStatus> {
+    let QueueRun {
+        repo,
+        directory,
+        options,
+        policy,
+        df,
+    } = queue;
     if options.max == 0 {
         return Err("--max must be positive".into());
     }
@@ -406,12 +496,12 @@ pub fn run_queue(
             let id = job.task.id.clone();
             let worker = worker.clone();
             let tx = tx.clone();
-            let input = job.clone();
+            let mut input = job.clone();
             match thread::Builder::new()
                 .name(format!("oxa-work-{id}"))
                 .spawn(move || {
                     let record =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker(&input.task)))
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run(&mut input)))
                             .unwrap_or_else(|_| {
                                 Ok(blocked_record(
                                     &input.task,
@@ -480,11 +570,32 @@ pub fn run_queue(
                 if let Some(handle) = active.handles.remove(&job.task.id) {
                     let _ = handle.join();
                 }
-                if busy(&storage, &job.task.id)? {
-                    external.push(job);
-                    continue;
-                }
-                let record = record?;
+                let record = if let Some(native) = native {
+                    match record.and_then(|record| {
+                        let binding = job
+                            .binding
+                            .as_ref()
+                            .ok_or("native admission was not established")?;
+                        native.finish(policy, &job.task, binding, &record)?;
+                        Ok(record)
+                    }) {
+                        Ok(record) => record,
+                        Err(detail) => {
+                            failed += 1;
+                            emit(QueueEvent::Error {
+                                file: job.file,
+                                detail,
+                            })?;
+                            continue;
+                        }
+                    }
+                } else {
+                    if busy(storage, &job.task.id)? {
+                        external.push(job);
+                        continue;
+                    }
+                    record?
+                };
                 finished += 1;
                 if record.failed() {
                     failed += 1;
