@@ -458,17 +458,31 @@ fn positional(a: &mut Args, word: &str) {
 /// `unsupported_in_oxa`.
 pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaError> {
     let mut a = Args::default();
+    if let Some(first) = argv.first() {
+        if !first.starts_with('-') && !first.starts_with('@') {
+            if let Some(sub) = subcommand(first, &argv[1..])? {
+                a.subcommand = Some(sub);
+                return Ok(a);
+            }
+        }
+    }
+    // `oxa --offline work ..`: the global offline switch is the one option that may come
+    // before the work subcommand, because the runner passes the policy on to every child.
+    // Any other option first keeps the old meaning: `work` is then an ordinary prompt word.
+    let leading_offline = argv
+        .iter()
+        .take_while(|word| word.as_str() == "--offline")
+        .count();
+    if leading_offline > 0 && argv.get(leading_offline).map(String::as_str) == Some("work") {
+        a.offline = true;
+        a.subcommand = Some(Subcommand::Work(argv[leading_offline + 1..].to_vec()));
+        return Ok(a);
+    }
     let mut i = 0;
     let mut stop = false;
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
-        if !stop && (i == 1 || (arg == "work" && argv[..i - 1].iter().all(|word| word == "--offline"))) {
-            if let Some(sub) = subcommand(arg, &argv[i..])? {
-                a.subcommand = Some(sub);
-                break;
-            }
-        }
         if stop || !arg.starts_with('-') {
             positional(&mut a, arg);
             continue;
