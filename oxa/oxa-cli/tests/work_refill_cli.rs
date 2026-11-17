@@ -185,6 +185,18 @@ cat "$0.reply"
         .collect();
     assert_eq!(tasks.len(), 1);
     assert_eq!(fs::read_to_string(&tasks[0]).unwrap(), valid);
+    let binding = claims.assignments().unwrap()[&44]
+        .data
+        .native_binding
+        .clone()
+        .expect("CLI must retain native receipt");
+    assert_eq!(binding.number, 44);
+    assert_eq!(binding.branch, "agent/44");
+    assert!(binding.lease == claims.snapshot().unwrap()[&44].lease.clone().unwrap());
+    assert_eq!(
+        tasks[0].file_name().unwrap().to_str().unwrap(),
+        format!("board-{}.txt", binding.key)
+    );
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
     assert!(invoke(&env, &config, "synthetic\n", false).status.success());
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
