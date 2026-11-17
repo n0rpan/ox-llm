@@ -315,6 +315,11 @@ fn native_credentials_diagnostic_valid_store_succeeds() {
 fn http_credentials_refusal_does_not_name_a_local_store() {
     let env = diagnostic_env();
     settings(&env, "http://127.0.0.1:9", false);
+    // This control exercises only the HTTP transport, independently of native defaults.
+    let path = env.agent_dir().join("settings.json");
+    let mut value: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    value["oxa"]["engine"]["inProcessLocal"] = json!(false);
+    fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
     let http = FakeServer::start(
         vec![ScriptTurn::fault(oxa_fake::Fault::Http {
             status: 503,
@@ -342,6 +347,7 @@ fn http_credentials_refusal_does_not_name_a_local_store() {
         "{diagnostic}"
     );
     assert!(!diagnostic.contains("attempted protected store"), "{diagnostic}");
+    assert_eq!(http.requests().len(), 1, "HTTP refusal must come from the mock");
 }
 
 #[test]
