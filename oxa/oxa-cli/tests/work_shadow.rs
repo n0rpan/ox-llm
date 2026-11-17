@@ -321,6 +321,7 @@ set -- $numbers
 printf '%s\n' "$#" >> batch-sizes
 status=200
 if [ "$#" -gt "$(cat limit)" ]; then status=$(cat failure); fi
+if [ -e fail-after ] && [ "$(wc -l < batch-sizes)" -gt "$(cat fail-after)" ]; then status=403; fi
 if "$include"; then printf 'HTTP/2.0 %s Synthetic\r\n\r\n' "$status"; fi
 if [ "$status" != 200 ]; then
   printf '{"message":"synthetic-private-response-marker"}'
@@ -393,4 +394,13 @@ fn terminal_http_failures_are_bounded_named_and_do_not_publish_a_partial_board()
             .unwrap()
             .is_empty());
     }
+    let env = batched_fixture(31, 15, 504);
+    fs::write(env.work().join("fail-after"), "2").unwrap();
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("HTTP 403"));
+    assert_eq!(batch_sizes(&env), [0, 15, 15]);
+    assert!(fs::read_to_string(log_for(&env, "example/repo"))
+        .unwrap()
+        .is_empty());
 }
