@@ -37,6 +37,12 @@
 //!   a fixed note naming the spill file that holds the full text.
 //! * **Abort.** The tool's cancel token and [`Hooks::shutdown`] kill the child's process group
 //!   (SIGTERM, SIGKILL after [`KILL_GRACE`]); queued tasks never start.
+//! * **Parent `--max-time` (#508).** `hooks.rs` hands the parent's `--max-time` in as a deadline
+//!   ([`SubagentHooks::with_deadline`]); a child is started with the time that is left as its
+//!   own `--max-time`, re-read after it takes a worker or the local slot, and a child whose time
+//!   is gone does not start at all. Everything else about a child (its `--max-tokens` run
+//!   budget, `OXA_CHILD_SOFT_TOKENS`, permission mode, tools, cancellation) is unchanged, and
+//!   without the flag nothing is added to its argv.
 //! * **Small models.** Not declared in an epoch whose model's context window is below
 //!   [`MIN_CONTEXT`] unless `oxa.subagent.smallContext` is true. `tools()` runs on the session
 //!   thread while it builds an epoch, where a `Host::call` cannot be answered; the window is
