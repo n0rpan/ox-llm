@@ -318,7 +318,10 @@ mod tests {
             let input: Vec<_> = path.iter().map(|part| (*part).to_string()).collect();
             assert!(parse_cli(&input).is_none());
             assert!(dispatch_slash(&input).is_none());
-            assert!(!entries(Surface::Menu).any(|entry| entry.id == *id));
+            for surface in [Surface::Cli, Surface::Slash, Surface::Menu, Surface::Web] {
+                assert!(!entries(surface).any(|entry| entry.id == *id));
+                assert!(!help(surface).contains(declaration.summary));
+            }
         }
     }
 }
