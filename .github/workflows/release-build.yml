@@ -327,8 +327,20 @@ jobs:
         run: |
           set -euo pipefail
           # Dedicated users on this disposable hosted runner; no product installation.
+          setup_receipt="$GITHUB_WORKSPACE/scope-receipts/SETUP.txt"
+          printf 'source=%s\nphase=scope-setup\n' "$GITHUB_SHA" > "$setup_receipt"
+          require_setup() {
+            if ! "$@"; then
+              printf 'SCOPE-SETUP-REFUSAL: %s\n' "$predicate" | tee -a "$setup_receipt" >&2
+              if [[ -n ${uid:-} ]]; then
+                sudo systemctl show "user@$uid.service" -p ActiveState -p SubState | tee -a "$setup_receipt" || true
+              fi
+              exit 1
+            fi
+          }
           created=()
           cleanup() {
+            for user in "${created[@]}"; do sudo loginctl disable-linger "$user" || true; done
             if [[ -n ${uid:-} ]]; then sudo systemctl stop "user@$uid.service" || true; fi
             for user in "${created[@]}"; do
               sudo loginctl terminate-user "$user" || true
@@ -337,14 +349,27 @@ jobs:
           }
           trap cleanup EXIT
           for user in ox-proof-scope ox-proof-nobus; do
-            ! id "$user" >/dev/null 2>&1
-            sudo useradd --create-home --shell /bin/bash "$user"
+            predicate='fixture user must not already exist'
+            if id "$user" >/dev/null 2>&1; then
+              printf 'SCOPE-SETUP-REFUSAL: %s\n' "$predicate" | tee -a "$setup_receipt" >&2
+              exit 1
+            fi
+            predicate='fixture user creation must succeed'
+            require_setup sudo useradd --create-home --shell /bin/bash "$user"
             created+=("$user")
           done
           uid=$(id -u ox-proof-scope)
-          sudo systemctl start "user@$uid.service"
-          test -S "/run/user/$uid/bus"
-          test ! -e "/run/user/$(id -u ox-proof-nobus)/bus"
+          predicate='positive fixture user must have a persistent real manager'
+          require_setup sudo loginctl enable-linger ox-proof-scope
+          require_setup sudo systemctl start "user@$uid.service"
+          predicate='positive fixture user manager must start its bus socket'
+          require_setup sudo runuser -u ox-proof-scope -- env -i PATH=/usr/bin:/bin \
+            XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user start dbus.socket
+          predicate='positive canonical user bus must be a socket'
+          require_setup test -S "/run/user/$uid/bus"
+          predicate='negative fixture canonical user bus must be absent'
+          require_setup test ! -e "/run/user/$(id -u ox-proof-nobus)/bus"
+          printf 'scope_setup=ready positive_bus=socket negative_bus=absent\n' | tee -a "$setup_receipt"
           archive="$GITHUB_WORKSPACE/artifacts/ox-llm-$VERSION-linux-x86_64.tar.gz"
           binary="$GITHUB_WORKSPACE/subject/usr/bin/oxa"
           engine="$GITHUB_WORKSPACE/subject/usr/bin/oxe-server"

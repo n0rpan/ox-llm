@@ -765,15 +765,7 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
             .args(["--kill-on-exit", "-f", "-e", "trace=execve,connect", "-o"])
             .arg(&trace)
             .arg(binary)
-            .args([
-                "--mode",
-                "rpc",
-                "--offline",
-                "--no-session",
-                "--no-tools",
-                "--model",
-                "synthetic",
-            ])
+            .args(["--mode", "rpc", "--offline", "--no-tools", "--model", "synthetic"])
             .env_clear()
             .envs(env.envs(&url))
             .env("PATH", &bin)
@@ -837,7 +829,7 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
             assert!(observed.is_none(), "absent bus must not create a real scope");
             assert!(!output.contains("native-local-proof"), "unadmitted completion");
             let diagnostic = format!("{output}\n{errors}");
-            if diagnostic.contains("systemd user bus StartTransientUnit") {
+            if diagnostic.contains("systemd user bus for StartTransientUnit(MemorySwapMax=0)") {
                 assert!(
                     diagnostic.contains("no swap-enabled fallback")
                         && diagnostic.contains("loginctl enable-linger $USER"),
@@ -845,8 +837,30 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
                 );
                 break;
             }
-        } else if observed.is_some() && output.contains("native-local-proof") {
-            break;
+        } else if let Some((pid, _)) = &observed {
+            use oxa_session::SessionStore;
+            let sessions = oxa_session::FsStore::new(env.agent_dir().join("sessions")).list(None);
+            if let Some(saved) = sessions.first() {
+                if let Ok(bytes) = fs::read(saved.sref.path.with_extension("status.json")) {
+                    assert!(bytes.len() <= 4096, "bounded saved scope status");
+                    let status: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                    if status["local_memory_policy"] == "scope"
+                        && status["local_engine_pid"].as_u64() == Some(u64::from(*pid))
+                        && output.contains("native-local-proof")
+                    {
+                        assert_eq!(
+                            status["pid"].as_u64(),
+                            oxa_pid.map(u64::from),
+                            "saved agent ownership"
+                        );
+                        let micros = status["local_launcher_us"]
+                            .as_u64()
+                            .expect("canonical bounded launcher timing");
+                        eprintln!("REAL-SCOPE local_memory_policy=scope local_launcher_us={micros} samples=1 interval=spawn-policy-gate-attach-permission excludes_engine_load=true");
+                        break;
+                    }
+                }
+            }
         }
         assert!(
             child.0.try_wait().unwrap().is_none(),
@@ -875,37 +889,8 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
         }
         let unit = path.file_name().unwrap().to_str().unwrap();
         loop {
-            // Observer infrastructure is outside the traced subject. The native
-            // launcher must still use D-Bus directly, without wrapper execs.
-            let result = Command::new("/usr/bin/busctl")
-                .env_clear()
-                .env("LC_ALL", "C")
-                .arg(format!("--address=unix:path={bus}"))
-                .args([
-                    "--timeout=3",
-                    "--json=short",
-                    "--allow-interactive-authorization=no",
-                    "call",
-                    "org.freedesktop.systemd1",
-                    "/org/freedesktop/systemd1",
-                    "org.freedesktop.systemd1.Manager",
-                    "ListUnits",
-                ])
-                .output()
-                .expect("scope collection observer must exist");
-            assert!(
-                result.status.success(),
-                "user manager must answer collection query"
-            );
-            let listing: serde_json::Value =
-                serde_json::from_slice(&result.stdout).expect("typed systemd unit listing");
-            assert_eq!(listing["type"], "a(ssssssouso)", "systemd unit-list signature");
-            assert!(listing["data"][0].is_array(), "systemd unit-list rows");
-            if !listing["data"][0]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|row| row[0] == unit)
+            if !oxc_local::platform::scope_exists(unit)
+                .expect("real GetUnit collection query must succeed; bus errors are not collection")
             {
                 eprintln!("REAL-SCOPE owned_child_exited=true scope_collected=true");
                 break;
@@ -918,6 +903,7 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
     }
     let text = fs::read_to_string(&trace).unwrap();
     let mut executed = std::collections::BTreeSet::new();
+    let mut subject_pids = std::collections::BTreeSet::new();
     for line in text
         .lines()
         .filter(|s| s.contains("execve(\"") && s.ends_with("= 0"))
@@ -928,19 +914,31 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
             "unexpected scoped child executable"
         );
         executed.insert(PathBuf::from(path));
+        let pid: u32 = line
+            .split_whitespace()
+            .next()
+            .unwrap()
+            .parse()
+            .expect("successful subject exec must identify its owned PID");
+        subject_pids.insert(pid);
     }
     assert!(executed.contains(binary));
     if !absent_bus {
         assert!(executed.contains(engine));
+    } else {
+        assert!(
+            !executed.contains(engine),
+            "absent bus must refuse before engine exec"
+        );
+        assert!(
+            !text.contains(&format!("execve(\"{}\"", engine.display())),
+            "absent bus must not attempt engine exec"
+        );
     }
-    for pid in text.lines().filter_map(|line| {
-        (line.contains(&format!("execve(\"{}\"", engine.display())) && line.ends_with("= 0"))
-            .then(|| line.split_whitespace().next()?.parse::<u32>().ok())
-            .flatten()
-    }) {
+    for pid in subject_pids {
         assert!(
             !Path::new(&format!("/proc/{pid}")).exists(),
-            "owned engine survived RPC exit"
+            "owned subject/gated child survived RPC exit"
         );
     }
     for port in [8092, controller.local_addr().unwrap().port()] {
