@@ -223,9 +223,10 @@ pub(crate) const SETTING_OFFLINE: &str = "oxa.offline";
 /// The environment variable of the hard offline switch (pi: `PI_OFFLINE`).
 pub(crate) const ENV_OFFLINE: &str = "OXA_OFFLINE";
 
-/// pi's `isTruthyEnvFlag`: `1`, `true`, `yes` (any case).
+/// The shared user-facing boolean (`1`/`true`/`yes`/`on`), default `false`: unset, empty and
+/// any other word stay off. See [`oxa_config::EnvFlag`].
 pub(crate) fn truthy(v: Option<&str>) -> bool {
-    v.is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes"))
+    oxa_config::EnvFlag::parse(v).or(false)
 }
 
 /// `(offline, allow_remote_engine)` from the flag, the environment and the user's settings.

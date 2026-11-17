@@ -483,6 +483,7 @@ pub fn worker_loop_with(
     let mut ui_proxy = UiProxy::new(ui.clone());
     let mut last = StatusModel::default();
     stop.enter(session.handle());
+    let mut memory_status = session.inner().engine.local_memory_status(&session.state().model);
     let _ = out.send(WorkerMsg::Session(session_info(&session)));
     let mut session = Some(session);
     // Commands are taken through a backlog so a `Shutdown` anywhere behind queued work is
@@ -493,6 +494,13 @@ pub fn worker_loop_with(
         // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
         // before the next command (the commands queued behind it run in the new session).
         if let Some(s) = session.as_mut() {
+            // A prompt/preload may load the child; idle unload may remove it without
+            // a session swap. Publish only changed in-process observations (no I/O).
+            let observed = s.inner().engine.local_memory_status(&s.state().model);
+            if observed != memory_status {
+                memory_status = observed;
+                let _ = out.send(WorkerMsg::Session(session_info(s)));
+            }
             s.enable_swap();
             let asked = match s.take_swap_request() {
                 None => None,
@@ -782,6 +790,11 @@ fn session_info(s: &Session) -> SessionInfo {
         id: state.session_id,
         commands: s.commands(),
         engine_url: info.base_url.clone(),
+        memory_policy: s
+            .inner()
+            .engine
+            .local_memory_status(&state.model)
+            .map(|(_, policy, _)| policy),
         models,
         queue: info.queue,
         shortcuts: s
