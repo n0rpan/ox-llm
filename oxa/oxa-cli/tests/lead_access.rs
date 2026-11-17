@@ -213,6 +213,9 @@ fn documented_setting_is_a_known_schema_key() {
         .iter()
         .map(|diagnostic| diagnostic.message.as_str())
         .collect();
-    assert!(warnings.is_empty(), "documented settings must not warn: {warnings:?}");
+    assert!(
+        warnings.is_empty(),
+        "documented settings must not warn: {warnings:?}"
+    );
     assert!(settings.get(SETTING).is_some(), "the user layer must be read");
 }
