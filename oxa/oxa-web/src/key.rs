@@ -292,7 +292,10 @@ mod tests {
     #[test]
     fn an_oversized_key_file_is_refused() {
         let env = TestEnv::new();
-        let p = env.write("home/.oxa/agent/brave-search.key", &"k".repeat(KEY_FILE_LIMIT as usize + 1));
+        let p = env.write(
+            "home/.oxa/agent/brave-search.key",
+            &"k".repeat(KEY_FILE_LIMIT as usize + 1),
+        );
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
         match load_key(&file_inputs(&env)) {
             KeyStatus::Refused(msg) => assert!(msg.contains("larger than"), "{msg}"),

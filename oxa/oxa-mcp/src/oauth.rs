@@ -98,7 +98,10 @@ impl TokenStore {
         let unsafe_path = |why: &str| {
             Err(OxaError::new(
                 codes::UNSAFE_PATH,
-                format!("{} {why}; refusing to read credentials through it", self.path.display()),
+                format!(
+                    "{} {why}; refusing to read credentials through it",
+                    self.path.display()
+                ),
             ))
         };
         let bytes = match read_private(&self.path, TOKEN_FILE_LIMIT) {
@@ -1483,13 +1486,18 @@ mod tests {
         let env = TestEnv::new();
         let p = token_file(&env, "home/.oxa/agent/mcp-auth.json", 0o600);
         let doc = TokenStore::open(&p).read_doc().expect("read");
-        assert_eq!(doc["svc"]["https://mcp.example/mcp"]["access_token"], "fixture-token");
+        assert_eq!(
+            doc["svc"]["https://mcp.example/mcp"]["access_token"],
+            "fixture-token"
+        );
     }
 
     #[test]
     fn a_missing_token_file_is_empty() {
         let env = TestEnv::new();
-        let doc = TokenStore::open(&env.agent_dir().join("mcp-auth.json")).read_doc().expect("read");
+        let doc = TokenStore::open(&env.agent_dir().join("mcp-auth.json"))
+            .read_doc()
+            .expect("read");
         assert!(doc.is_empty());
     }
 

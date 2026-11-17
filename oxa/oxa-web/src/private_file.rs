@@ -114,7 +114,10 @@ mod tests {
         for mode in [0o640, 0o604, 0o644, 0o660] {
             let p = private(&env, &format!("shared-{mode:o}.txt"), "fixture-bytes", mode);
             let err = read_private(&p, 64).unwrap_err();
-            assert!(matches!(err, PrivateFileError::Permissions(m) if m == mode), "{mode:o}: {err:?}");
+            assert!(
+                matches!(err, PrivateFileError::Permissions(m) if m == mode),
+                "{mode:o}: {err:?}"
+            );
         }
     }
 
