@@ -61,6 +61,16 @@ fn trusted_tools(env: &TestEnv) -> PathBuf {
     std::fs::DirBuilder::new().mode(0o700).create(&tools).unwrap();
     tools
 }
+fn enable_test_subagent(env: &TestEnv) {
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"subagent":{"enabled":true}}}"#,
+    );
+    env.write(
+        "home/.oxa/agent/agents/scout.md",
+        "---\nname: scout\ndescription: Reads local files\ntools: read\n---\nRead local files.\n",
+    );
+}
 fn run(env: &TestEnv, turns: Vec<ScriptTurn>) -> serde_json::Value {
     run_args(env, turns, &["work", "../tasks.json"], None)
 }
@@ -233,6 +243,7 @@ fn github_issue_input_uses_mock_gh() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     setup(&env, "[]");
+    enable_test_subagent(&env);
     let tools = trusted_tools(&env);
     let lookup_log = env.write("tmp/issue-lookup.log", "");
     let lookup_packet = env.write(
@@ -280,6 +291,10 @@ exec /bin/cat "$ISSUE_LOOKUP_PACKET"
     let requests = server.requests();
     assert_eq!(requests.len(), 1, "worker made no request: {record}");
     let request = &requests[0];
+    assert!(
+        !request.tools_json.contains("\"name\":\"subagent\""),
+        "{request:?}"
+    );
     let prompt = std::iter::once(request.system.as_str())
         .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
         .collect::<Vec<_>>()
@@ -332,6 +347,10 @@ exec /bin/cat "$ISSUE_LOOKUP_PACKET"
     let requests = rerun.requests();
     assert_eq!(requests.len(), 1, "rerun never started the worker");
     let request = &requests[0];
+    assert!(
+        !request.tools_json.contains("\"name\":\"subagent\""),
+        "{request:?}"
+    );
     let prompt = std::iter::once(request.system.as_str())
         .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
         .collect::<Vec<_>>()
@@ -467,6 +486,7 @@ fn pull_request_packet_carries_reviews_and_failing_checks() {
 
     let env = TestEnv::new();
     setup(&env, "[]");
+    enable_test_subagent(&env);
     let project = env.work().join("project");
     git(&env, &project, &["switch", "-c", "seed-pr-head"]);
     env.write("work/project/only-on-pr.txt", "Reviewed change");
@@ -559,6 +579,10 @@ exec /bin/cat "${0%/*}/pr-packet.json"
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
+    assert!(
+        !request.tools_json.contains("\"name\":\"subagent\""),
+        "{request:?}"
+    );
     let prompt = std::iter::once(request.system.as_str())
         .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
         .collect::<Vec<_>>()
