@@ -2600,6 +2600,8 @@ impl<'a> Loop<'a> {
     /// the session file). A relative path is taken from the working directory; with no path the
     /// HTML goes to the default name (`default_output_name`, as `--export` and RPC do).
     fn export(&mut self, path: Option<PathBuf>) {
+        use std::os::unix::fs::MetadataExt;
+
         let Some(source) = self.session.file.clone() else {
             self.push_notice(
                 Level::Warning,
@@ -2608,9 +2610,23 @@ impl<'a> Loop<'a> {
             return;
         };
         let cwd = self.cwd();
-        let target = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) });
+        let target = path
+            .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+            .unwrap_or_else(|| default_output_name(Some(&source), &self.session.id, &cwd));
+        let aliases_source = source == target
+            || match (std::fs::metadata(&source), std::fs::metadata(&target)) {
+                (Ok(source), Ok(target)) => source.dev() == target.dev() && source.ino() == target.ino(),
+                _ => false,
+            };
+        if aliases_source {
+            self.push_notice(
+                Level::Error,
+                "/export: destination is the session file; choose a different path.".to_string(),
+            );
+            return;
+        }
         match target {
-            Some(target) if target.extension().is_some_and(|e| e == "jsonl") => {
+            target if target.extension().is_some_and(|e| e == "jsonl") => {
                 match std::fs::copy(&source, &target) {
                     Ok(_) => self.push_notice(
                         Level::Info,
@@ -2622,11 +2638,7 @@ impl<'a> Loop<'a> {
                     }
                 }
             }
-            Some(path) => self.send(SessionCmd::Export { path }),
-            None => {
-                let path = default_output_name(self.session.file.as_deref(), &self.session.id, &cwd);
-                self.send(SessionCmd::Export { path });
-            }
+            path => self.send(SessionCmd::Export { path }),
         }
     }
 
