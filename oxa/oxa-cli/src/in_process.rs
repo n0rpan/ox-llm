@@ -12,12 +12,13 @@ use oxc_gateway::{
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 
+mod routing;
+
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 
 /// Shown when a stale Go catalog entry is in use: the entry is past its fresh
 /// window, so it is used now and exactly one refresh runs in the background.
-pub(crate) const STALE_GO_CATALOG: &str =
-    "the Go model catalog came from a cached entry past its fresh window; it is in use now and one refresh is running in the background";
+pub(crate) const STALE_GO_CATALOG: &str = "the Go model catalog came from a cached entry past its fresh window; it is in use now and one refresh is running in the background";
 
 pub(crate) fn credential_path(dirs: &Dirs) -> std::path::PathBuf {
     dirs.home.join(".config/oxc/llm/cloud-secrets.json")
@@ -34,9 +35,11 @@ pub(crate) fn report_diagnostics(
         return;
     };
     if snapshot.stage == Stage::LocalCredentialRead {
-        let _ = writeln!(stderr,
+        let _ = writeln!(
+            stderr,
             "Local cloud credentials unavailable; attempted protected store: {:?}. Check the provider entry and file protections.",
-            credential_path(dirs));
+            credential_path(dirs)
+        );
         return;
     }
     let stage = match snapshot.stage {
@@ -58,6 +61,9 @@ pub(crate) fn report_diagnostics(
         if let Some(value) = value {
             let _ = write!(stderr, " {name}={value}");
         }
+    }
+    if let Some(plan) = snapshot.billing_source {
+        let _ = write!(stderr, " billing_source={}", plan.as_str());
     }
     if let Some(cause) = snapshot.cause {
         let _ = write!(stderr, " cause={}", cause.as_str());
@@ -94,18 +100,58 @@ pub(crate) fn select(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
+    requested: Option<&str>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
-    select_observed(user, effective, dirs, None, http)
+    select_observed(user, effective, dirs, requested, None, http)
 }
 
 pub(crate) fn select_observed(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
+    requested: Option<&str>,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
+    if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
+        let aliases = |path| {
+            user.get(path)
+                .and_then(Value::as_object)
+                .map(|models| models.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        let local = oxc_local::configured_engine(
+            user.get("oxa.local"),
+            dirs.agent_dir.join("local-engine"),
+            oxa_engine::StreamOpts {
+                silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
+                    .unwrap_or(365 * 24 * 3600 * 1000),
+                ..oxa_engine::StreamOpts::default()
+            },
+        );
+        let (cloud, go) = if oxa_proto::offline() {
+            (
+                Err(oxa_proto::offline_error("the in-process cloud gateway")),
+                None,
+            )
+        } else {
+            match open(user, effective, dirs, diagnostics) {
+                Ok((engine, go)) => (Ok(engine), go),
+                Err(error) => (Err(error), None),
+            }
+        };
+        return routing::Routed {
+            local,
+            cloud,
+            local_models: aliases("oxa.local.models"),
+            cloud_models: aliases("oxa.cloud.models"),
+            dynamic_go: user.get("oxa.cloud.opencode.enabled") == Some(&Value::Bool(true)),
+            default: effective.string("defaultModel"),
+        }
+        .into_engine(requested)
+        .map(|engine| (engine, go));
+    }
     if user.bool(oxc_local::LOCAL_SETTING, false) {
         return oxc_local::configured_engine(
             user.get("oxa.local"),

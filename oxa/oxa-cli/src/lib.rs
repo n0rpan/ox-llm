@@ -21,10 +21,18 @@ mod args;
 mod child;
 mod config_cmd;
 mod dispatch;
+mod goal_cmd;
+mod help;
 mod home_cwd;
 mod hooks;
 mod identity_cmd;
 mod in_process;
+pub mod lead_access;
+pub mod lead_input;
+pub mod lead_page;
+pub mod lead_panels;
+pub mod lead_peer;
+mod lead_preset;
 mod limits;
 mod login_cmd;
 mod mcp_cmd;
@@ -36,12 +44,16 @@ mod sandbox_layout;
 mod status;
 mod themes;
 mod wipe_cmd;
+mod work_board;
 mod work_checks;
 mod work_cmd;
 
-pub use args::{parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand};
+pub use args::{
+    no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand, NO_TOOL_ALIASES,
+};
 pub use config_cmd::run_config;
 pub use dispatch::{choose_mode, run, RunMode, Stdio};
+pub use help::{requested, text};
 pub use hooks::{build_hooks, HookInputs, HookSets, EXTENSIONS_LOG};
 pub use identity_cmd::{identity_facts, run_identity, write_identity};
 pub use mcp_cmd::run_mcp;

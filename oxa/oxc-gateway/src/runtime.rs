@@ -71,6 +71,7 @@ pub struct Call<'a> {
     entry: Option<Entry>,
     forwarded: bool,
     go_usage: Option<Value>,
+    diagnostics: Option<crate::diagnostics::Diagnostics>,
 }
 fn invalid(param: &'static str) -> Refusal {
     Refusal {
@@ -439,9 +440,15 @@ impl Runtime {
             let hold = match &billing.billing {
                 Billing::Metered(_) => daily.budget().reserve(&self.cap, true, &billing, output)?,
                 Billing::Subscription => {
-                    daily
-                        .budget()
-                        .reserve_subscription(self.subscription_limits, true, &billing, output)?
+                    let cap = (model.info().provider == Provider::OpenCode && !self.cap.is_null())
+                        .then_some(&self.cap);
+                    daily.budget().reserve_subscription_with_budget(
+                        self.subscription_limits,
+                        true,
+                        &billing,
+                        output,
+                        cap,
+                    )?
                 }
             };
             let (_, mut entry) = audit.take().expect("known model")?;
@@ -459,6 +466,7 @@ impl Runtime {
                 entry: Some(entry),
                 forwarded: false,
                 go_usage: None,
+                diagnostics: self.diagnostics.clone(),
             })
         })();
         if let Err(error) = &result {
@@ -581,12 +589,13 @@ impl<'a> Call<'a> {
         self.entry.as_mut().expect("unsettled call").observe();
     }
     pub(crate) fn metered_go(&mut self, usage: Option<&crate::opencode::Usage>) {
+        self.usage.reported_cost = usage.map(|usage| usage.cost);
         self.go_usage = usage.map(|usage| {
             self.usage.prompt = Some(usage.prompt);
             self.usage.output = Some(usage.completion);
             self.usage.cache_read = usage.cache_read;
             self.usage.cache_write = usage.cache_write;
-            json!({"allowance":usage.allowance,"list_cost":usage.list_cost,"tokens":usage.tokens})
+            json!({"billing_source":usage.billing_source.as_str(),"allowance":usage.allowance,"list_cost":usage.list_cost,"tokens":usage.tokens})
         });
     }
     pub fn metered(&mut self, usage: crate::anthropic_stream::Usage) {
@@ -639,6 +648,15 @@ impl<'a> Call<'a> {
             saved = entry.append_redacting(&fields, status, error, &|value| self.credential.redact(value))?;
             Ok(())
         })?;
+        if saved["settled"] == "usage" {
+            if let (Some(diagnostics), Some(cost), Some(plan)) = (
+                self.diagnostics.as_ref(),
+                saved["cost_usd"].as_f64(),
+                saved["opencode"].get("billing_source"),
+            ) {
+                diagnostics.settled_billing(crate::opencode::PlanName::from_value(plan), cost);
+            }
+        }
         Ok(saved)
     }
 }

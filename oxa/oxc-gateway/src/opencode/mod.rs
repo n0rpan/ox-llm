@@ -306,8 +306,39 @@ impl SessionHint {
     }
 }
 
+/// Bounded provider plan label; never a credential or unrestricted provider string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlanName {
+    bytes: [u8; 32],
+    len: u8,
+}
+impl PlanName {
+    pub fn from_value(value: &Value) -> Self {
+        let label = value
+            .as_str()
+            .filter(|s| {
+                !s.is_empty()
+                    && s.len() <= 32
+                    && s.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+            })
+            .unwrap_or("unknown");
+        let mut bytes = [0; 32];
+        bytes[..label.len()].copy_from_slice(label.as_bytes());
+        Self {
+            bytes,
+            len: label.len() as u8,
+        }
+    }
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.bytes[..usize::from(self.len)]).expect("validated ASCII plan")
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Usage {
+    pub billing_source: PlanName,
+    pub cost: f64,
     pub prompt: u64,
     pub completion: u64,
     pub cache_read: Option<u64>,
@@ -330,12 +361,12 @@ fn money(value: &Value) -> Result<BigDecimal, Error> {
 impl Usage {
     pub fn parse(value: &Value) -> Result<Self, Error> {
         let go = &value["opencode"];
-        // Both subscription plans use Go allowance; never accept a paid balance.
-        if !matches!(go["billing_source"].as_str(), Some("go" | "go-plus"))
-            || !money(&value["cost"])?.is_zero()
-        {
-            return Err(Error::Usage);
-        }
+        let amount = money(&value["cost"])?;
+        let cost = value["cost"]
+            .as_f64()
+            .filter(|n| n.is_finite() && *n >= 0.0)
+            .filter(|n| *n != 0.0 || amount.is_zero())
+            .ok_or(Error::Usage)?;
         money(&go["allowance"])?;
         money(&go["list_cost"])?;
         let prompt = value["prompt_tokens"].as_u64().ok_or(Error::Usage)?;
@@ -373,6 +404,8 @@ impl Usage {
             tokens.insert(key.into(), go["tokens"][key].as_u64().ok_or(Error::Usage)?);
         }
         Ok(Self {
+            billing_source: PlanName::from_value(&go["billing_source"]),
+            cost,
             prompt,
             completion,
             cache_read,
@@ -384,10 +417,13 @@ impl Usage {
     }
 }
 
-/// Only these validated numeric fields may enter a private usage receipt.
+/// Only checked numeric fields and the bounded plan label enter a private receipt.
 /// Raw provider metadata, extra names and text are never copied to the ledger.
 pub(crate) fn ledger_metadata(value: &Value) -> Result<Value, Error> {
-    if value.as_object().is_none_or(|o| o.len() != 3) {
+    if value
+        .as_object()
+        .is_none_or(|o| o.len() != 3 + usize::from(o.contains_key("billing_source")))
+    {
         return Err(Error::Usage);
     }
     money(&value["allowance"])?;
@@ -407,7 +443,12 @@ pub(crate) fn ledger_metadata(value: &Value) -> Result<Value, Error> {
     ] {
         tokens.insert(key, raw.get(key).and_then(Value::as_u64).ok_or(Error::Usage)?);
     }
-    Ok(serde_json::json!({"allowance":value["allowance"],"list_cost":value["list_cost"],"tokens":tokens}))
+    let mut out =
+        serde_json::json!({"allowance":value["allowance"],"list_cost":value["list_cost"],"tokens":tokens});
+    if let Some(plan) = value.get("billing_source") {
+        out["billing_source"] = PlanName::from_value(plan).as_str().into();
+    }
+    Ok(out)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
