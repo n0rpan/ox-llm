@@ -85,7 +85,7 @@ fn unsigned(value: &str) -> Option<u64> {
     value.parse().ok()
 }
 
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     header(headers, "retry-after")
         .and_then(unsigned)
         .map(Duration::from_secs)

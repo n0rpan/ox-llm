@@ -12,7 +12,7 @@ fn lead_shadow_reads_evidence_and_repairs_proposals_without_ambient_hooks() {
     // A configured exec hook must never run, even in an otherwise trusted HOME.
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"codemode":{"enabled":true},"hooks":{"session_start":[{"command":"touch ambient-hook-ran"}]}}"#,
+        r#"{"oxa":{"lead":{"shadow":true}},"codemode":{"enabled":true},"hooks":{"session_start":[{"command":"touch ambient-hook-ran"}]}}"#,
     );
     env.write("home/.oxa/agent/SYSTEM.md", "AMBIENT_SYSTEM_SENTINEL");
     let (hooks, warnings) = oxa_ext::parse_exec_hooks(&serde_json::json!({
@@ -89,6 +89,24 @@ fn lead_shadow_reads_evidence_and_repairs_proposals_without_ambient_hooks() {
             "missing observation: {observed}"
         );
     }
+}
+
+#[test]
+fn lead_shadow_is_off_until_the_user_setting_enables_it() {
+    let env = TestEnv::new();
+    env.write("work/state/digest.txt", "as_of_seq=18\n");
+    let server = FakeServer::start(vec![ScriptTurn::text("{}")], FakeOpts::default()).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["lead", "--shadow", "--model", "fake-model"])
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .current_dir(env.work())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("oxa.lead.shadow"), "{stderr}");
+    assert!(server.requests().is_empty(), "no engine request before the gate");
 }
 
 #[test]

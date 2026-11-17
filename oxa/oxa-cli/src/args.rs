@@ -14,8 +14,12 @@ pub enum ModeArg {
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    #[cfg(feature = "share")]
+    Share(Vec<String>),
     /// Read the live snapshot of a saved session.
     Status(Vec<String>),
+    /// Explicit owner ChatGPT sign-in/sign-out.
+    Login(bool, LoginArgs),
     /// `oxa work <taskfile> | --issue N --model MODEL`.
     Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
@@ -30,6 +34,18 @@ pub enum Subcommand {
     ReportIssue(Vec<String>),
     /// P6: `oxa wipe --session <id> | --all [--yes] [--engine]`.
     Wipe(Vec<String>),
+    /// Publish a follow-up to a session's file inbox.
+    Send(Vec<String>),
+}
+
+/// Login words can contain a mistakenly pasted callback. Never expose them
+/// through Args/Subcommand Debug; command validation uses fixed diagnostics.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LoginArgs(pub Vec<String>);
+impl std::fmt::Debug for LoginArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoginArgs([redacted])")
+    }
 }
 
 /// A secret given on the command line. `Debug` never shows it.
@@ -56,6 +72,8 @@ pub struct Args {
     pub print: bool,
     /// `--output-schema FILE`: validate final text as JSON, with one repair turn.
     pub output_schema: Option<String>,
+    /// Stored goal objective from a UTF-8 file (print/JSON).
+    pub goal: Option<String>,
     /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
     pub max_time: Option<std::time::Duration>,
     /// Flag a saved active session after this long without progress.
@@ -170,6 +188,11 @@ const SESSION_ID_ERROR: &str = "Session id must be non-empty, contain only alpha
 
 /// Subcommands take every following word raw; they are parsed by their own modules.
 const COMMANDS: &[(&str, &str)] = &[
+    #[cfg(feature = "share")]
+    (
+        "oxa share key <add|list|revoke>",
+        "Manage private guest keys and daily limits",
+    ),
     (
         "oxa lead --shadow [--model MODEL]",
         "Read ./state and return proposal JSON without taking actions",
@@ -191,6 +214,15 @@ const COMMANDS: &[(&str, &str)] = &[
         "Update packages from their git or local sources (not oxa itself or model catalogs)",
     ),
     ("oxa list", "List installed packages"),
+    (
+        "oxa login chatgpt --experimental [--paste] [--replace]",
+        "Owner-only native experimental ChatGPT sign-in",
+    ),
+    ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
+    (
+        "oxa send <session-id> \"text\"",
+        "Queue a session follow-up, waking its TUI or RPC owner",
+    ),
     ("oxa config [-l]", "Print every setting with its value and source"),
     (
         "oxa mcp <command>",
@@ -254,6 +286,7 @@ const OPTIONS: &[(&str, &str)] = &[
         "--continue [id], -c",
         "Continue the named session, or the most recent session when no id is given",
     ),
+    ("--goal <file>", "Pursue and persist this goal until complete, blocked, stalled or interrupted"),
     (
         "--max-time <seconds>",
         "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
@@ -387,23 +420,24 @@ fn usage(message: impl Into<String>) -> OxaError {
 /// The first word of a subcommand. `None` when the word is an ordinary prompt.
 fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaError> {
     Ok(Some(match word {
+        "login" => Subcommand::Login(false, LoginArgs(rest.to_vec())),
+        "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
         "mcp" => Subcommand::Mcp(rest.to_vec()),
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
         }
+        #[cfg(feature = "share")]
+        "share" => Subcommand::Share(rest.to_vec()),
+        #[cfg(not(feature = "share"))]
+        "share" => return Err(usage("this build does not include sharing")),
         "config" => Subcommand::Config(rest.to_vec()),
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
+        "send" => Subcommand::Send(rest.to_vec()),
         "status" => Subcommand::Status(rest.to_vec()),
         "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
-        // pi's provider sign-in (`pi login [--api-key] [--no-browser]`, `pi logout`).
-        "login" | "logout" => {
-            return Err(OxaError::unsupported(&format!(
-                "the {word} command (provider sign-in)"
-            )))
-        }
         _ => return Ok(None),
     }))
 }
@@ -516,7 +550,12 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
-        if !stop && (i == 1 || (arg == "work" && argv[..i - 1].iter().all(|word| word == "--offline"))) {
+        // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
+        // another option or `--` appears, later words retain their positional meaning.
+        if !stop
+            && (i == 1
+                || (matches!(arg, "send" | "work") && argv[..i - 1].iter().all(|word| word == "--offline")))
+        {
             if let Some(sub) = subcommand(arg, &argv[i..])? {
                 a.subcommand = Some(sub);
                 break;
@@ -597,6 +636,7 @@ fn parse_flag(
             no_value(inline, flag)?;
             a.resume = true;
         }
+        "--goal" => a.goal = Some(value(argv, i, inline, flag, "a goal file")?),
         "--max-time" => {
             let text = value(argv, i, inline, flag, "a positive number of seconds")?;
             let seconds = text

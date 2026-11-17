@@ -54,11 +54,15 @@ In a fresh private directory outside any checkout, create empty sibling `home/`
 and `agent/` directories and a `work/state/` directory containing bounded
 `digest.txt`, `board.txt` and `verdicts.txt` exports of the same observations the
 orchestrator uses. The digest includes `as_of_seq`. Use owner-only files and
-directories; do not include credentials, logs or transcripts. Set the absolute
-binary path and configured engine/model, then run once:
+directories; do not include credentials, logs or transcripts. The preset is
+default-off: write `{"oxa":{"lead":{"shadow":true}}}` to
+`$LEAD_SHADOW_DIR/agent/settings.json` (user settings only; a project file cannot
+enable it). Set the absolute binary path and configured engine/model, then run
+once:
 
 ```sh lead-command-shadow
 cd "$LEAD_SHADOW_DIR/work"
+printf '{"oxa":{"lead":{"shadow":true}}}\n' > "$LEAD_SHADOW_DIR/agent/settings.json"
 env -i PATH="$PATH" HOME="$LEAD_SHADOW_DIR/home" \
   OXA_AGENT_DIR="$LEAD_SHADOW_DIR/agent" OXA_SYSTEM_SKILLS_DIR='' \
   OXA_ENGINE_URL="$LEAD_ENGINE_URL" \
@@ -70,7 +74,8 @@ system prefix and the embedded proposal schema. No skill/schema copying is
 needed. It disables resource discovery and all hook registries (including exec
 hooks, MCP, extensions and codemode), and exposes exactly `read`, `grep`, `find`
 and `ls`. It never saves a session or applies a proposal. Tool/instruction
-overrides and live mode are refused. The only optional arguments are `--model`,
+overrides and live mode are refused, and so is the whole preset while
+`oxa.lead.shadow` is unset. The only optional arguments are `--model`,
 `--provider`, `--max-time`, `--max-tokens` and `--offline`; the default time limit
 is 120 seconds. Engine selection and offline enforcement use the ordinary path.
 Offline therefore requires an engine permitted by that path.

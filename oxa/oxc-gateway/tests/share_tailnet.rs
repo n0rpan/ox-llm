@@ -276,7 +276,13 @@ async fn real_listener_adapter_refuses_unavailable_tailnet_without_fallback() {
         fn models(&self) -> &[Model] {
             &[]
         }
-        async fn chat(&self, _: Request, _: Output, _: CancelToken) -> Result<Completed, Failure> {
+        async fn chat(
+            &self,
+            _: Request,
+            _: Guest<'_>,
+            _: Output,
+            _: CancelToken,
+        ) -> Result<Completed, Failure> {
             panic!("discovery must refuse before any backend work")
         }
     }

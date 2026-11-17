@@ -17,6 +17,18 @@ $ oxa -p --continue SESSION_ID "continue with this instruction"
 
 Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word after `--continue` is taken as the id only if a session with that id exists; otherwise it stays part of the prompt and the most recent session continues, as before. The id is never sent as a prompt. `--continue` without a value (or `-c`) selects the most recent session. `--no-session` keeps the run ephemeral and prints no session id. An explicit continuation id cannot be combined with `--no-session` or `--session`.
 
+## Send a session follow-up
+
+```console
+$ oxa send SESSION_ID "task finished, red"
+```
+
+Use the full session id. This queues one follow-up without starting an engine or requiring the session to be running. Its TUI or RPC owner consumes it when idle or at a follow-up boundary, just like queued follow-up input; it does not interrupt the active turn. A stopped session retains the message until it is opened again in TUI or RPC mode. Success means **queued**, not that the model has answered.
+
+The inbox lives at `inbox/<session-id>/` under the agent directory, in private `0700` directories with `0600` message files. Publication is an atomic rename; the owner uses inotify (no file polling, socket or daemon), including a startup scan for queued messages. The agent directory remains masked by the sandbox. Messages are limited to 256 KiB. The owner admits at most 64 messages or 1 MiB of inbox text across destinations; excess files remain on disk and are retried when the owner releases capacity, without polling. Oversized externally written files remain on disk and are not delivered. Once admitted to the owner's in-memory follow-up queue, a message file is removed. This is not transactional with the session transcript: a process crash can lose an admitted message or replay a file not yet removed. Worker prompts are unchanged.
+
+## Headless results
+
 Print, JSON and RPC runs write exactly one terminal JSON result on standard error, after diagnostics. For example:
 
 ```json
@@ -56,6 +68,8 @@ Retries use the `retry` settings: transient gateway credentials/ledger refusals,
 
 A plain reply cut at its output limit also continues under the auto-retry policy. Local models keep the cut reply as context and receive an explicit continuation instruction, with a zero-token prefill when advertised and enabled. Cloud models receive a request for a shorter complete answer, with the cut reply kept only as shown progress. Each length recovery is a new logical request with a fresh idempotency key. `retry.maxRetries` bounds consecutive length recoveries; a completed model step resets the count. Disabling auto-retry leaves the cut reply terminal with `failed/output_limit`. Exhausting the bound does the same. A pending time limit or SIGTERM goes directly to the bounded wrap-up turn.
 
+`--goal <file>` opts print/JSON mode into a persistent objective (UTF-8, at most 64 KiB). The session exposes `goal_done` and a cancellable `wait` of 1–3,600 seconds only while pursuing it. A normal assistant stop sends the same continuation instruction; two consecutive stops without tool use pause the goal with a `stalled` result. Completion or blockage requires evidence. The terminal record includes goal status, evidence and cumulative counters. A pursuing saved goal continues with `--continue` without rereading the file. Goal time and token budgets are stored with their spent counters, so restarting does not grant a fresh allowance. Ordinary sessions retain their existing tools and prefix. Interactive slash controls and inbox wake integration are separate follow-ups.
+
 `--max-time <seconds>` sets a soft runtime limit for print, JSON and RPC modes, measured after startup/session loading. Fractional seconds are accepted. At the limit, or on SIGTERM, oxa lets the active tool batch finish, then gives the agent one final turn (up to 1,024 output tokens, thinking off) to commit changes from this run or summarize its state. That final request is not retried by the agent. The session and completed tool results are retained; the outcome is `interrupted` (130), and later prompts are left unstarted. If an in-flight or final request fails, its typed failure takes precedence over interruption; a final summary cannot hide an earlier blocked or failed request. Resume with the session id and a new instruction. RPC also exits on a limit/SIGTERM while stdin is still open. `--no-session` continues to disable session storage.
 
 `--max-tokens <N>` sets a positive integer token budget for the same headless modes, with the same wrap-up and `interrupted` outcome as `--max-time`. It counts newly processed prompt tokens (`prompt - cached`, floored at zero) plus output tokens across requests in this invocation, not usage restored from a session. Cached prefix tokens are free. Each subagent gets the remaining budget at spawn; its reported assistant usage is also charged to the parent, so later queued children see the reduced amount. This is a soft budget: active requests/tools (including concurrent children) finish, and the one final wrap-up turn is allowed beyond the budget. Both limits may be used together; the first reached requests wrap-up. Without either flag, normal work is unchanged.
@@ -82,6 +96,8 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
+| `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
+| `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
@@ -95,6 +111,28 @@ Commands take the place of the message. They do not start a session.
 `oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes`.
 
 `oxa config` lists the settings as oxa resolves them.
+
+### Experimental ChatGPT sign-in
+
+Run `oxa login chatgpt --experimental` in your own terminal. It prints the
+experimental public-client notice and a browser URL; open that URL yourself.
+The loopback callback must use `http://localhost:1455/auth/callback`, with port
+1455 free. With `--paste`, paste the complete callback URL into the hidden
+terminal prompt. Sign-in expires after five minutes; Ctrl+C or Escape cancels it.
+No browser is launched automatically.
+
+The command writes only the existing private
+`~/.config/oxc/llm/chatgpt-auth.json`. It does not enable cloud access, change
+models/settings, or print tokens/account details. Login is create-only by
+default. `--replace` explicitly replaces an existing record for the same account;
+it refuses an account switch. `oxa logout chatgpt` removes the checked token
+record under the refresh lock and keeps that lock for concurrent refresh safety.
+These commands are separate from chat/RPC and unavailable from agent tools.
+
+A failure before atomic publication leaves the previous token record unchanged.
+If the directory sync fails after atomic rename, the command returns a fixed
+storage error: the new record is already visible, but its crash durability is
+uncertain. The command does not roll back the record or repeat the token exchange.
 
 ### MCP commands
 
@@ -127,6 +165,7 @@ $ oxa mcp logout <name>
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
+| `--goal <file>` | pursue a stored UTF-8 objective in print/JSON mode; continue the saved pursuing goal after restart |
 | `--max-time <seconds>` | softly limit a headless run, then allow one final wrap-up turn |
 | `--max-tokens <N>` | softly limit new prompt + output tokens in a headless run; cached tokens are free |
 | `--export <input> [output]` | export a session file to HTML and exit |

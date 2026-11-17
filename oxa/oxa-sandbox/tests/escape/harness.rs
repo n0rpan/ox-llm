@@ -48,6 +48,12 @@ pub fn sandbox_with_layout(env: &TestEnv, layout: Layout) -> Option<Bwrap> {
 
 /// One command in `cwd`; the sandbox's own refusal text and exit are returned unchanged.
 pub fn run(sb: &Bwrap, cwd: &Path, command: &str, writable: bool, net: bool) -> (Option<i32>, String) {
+    let r = run_result(sb, cwd, command, writable, net);
+    (r.exit, String::from_utf8_lossy(&r.output).into_owned())
+}
+
+/// The same command boundary, retaining timeout metadata for fixture diagnostics.
+pub fn run_result(sb: &Bwrap, cwd: &Path, command: &str, writable: bool, net: bool) -> ExecResult {
     let spec = ExecSpec {
         command: command.to_string(),
         cwd: cwd.to_path_buf(),
@@ -56,8 +62,7 @@ pub fn run(sb: &Bwrap, cwd: &Path, command: &str, writable: bool, net: bool) -> 
         timeout_s: Some(30),
         env: Vec::new(),
     };
-    let r: ExecResult = sb.run(&spec, &CancelToken::new(), &mut |_| {});
-    (r.exit, String::from_utf8_lossy(&r.output).into_owned())
+    sb.run(&spec, &CancelToken::new(), &mut |_| {})
 }
 
 /// A command that must fail (the expected refusal) and leave no marker in `out`.
