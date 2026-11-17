@@ -133,8 +133,10 @@ fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
     let goal = objective(GoalBudget::default());
     let mut owner = open("original");
     owner.set_goal(Some(goal.clone()), &mut sink).unwrap();
-    let original = owner.inner().sref.clone();
-    let revision = owner.goal_revision();
+    let observation = owner.goal_observation();
+    let original = observation.session.clone();
+    let revision = observation.revision;
+    assert_eq!(observation.status, Some(GoalStatus::Pursuing));
 
     let mut other = open("second");
     other.set_goal(Some(goal.clone()), &mut sink).unwrap();
@@ -145,8 +147,14 @@ fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
     other.shutdown(&mut ui);
     drop(other);
 
-    owner.switch(Open::Resume(target), &mut sink, &mut ui).unwrap();
-    assert_eq!(owner.goal_revision(), revision);
+    owner
+        .switch(Open::Resume(target.clone()), &mut sink, &mut ui)
+        .unwrap();
+    let observation = owner.goal_observation();
+    assert_eq!(observation.session, &target);
+    assert_ne!(observation.session, &original);
+    assert_eq!(observation.revision, revision);
+    assert_eq!(observation.status, Some(GoalStatus::Pursuing));
     let result = owner.control_goal(&original, revision, GoalControl::Cancel, &mut sink);
     assert_eq!(result.unwrap_err().code, "goal_revision_conflict");
     assert_eq!(owner.goal_revision(), revision);

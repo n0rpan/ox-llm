@@ -1,6 +1,8 @@
 use super::{nodes, Board, GitHub, Policy, PullRequest, Reader, RequiredCi};
+use oxa_session::parse_utc_seconds;
 use oxa_work::board::review::{
-    self, Approval, Change, ChangeKind, Facts, GitDiff, GitHubRequestReceipt, PathRule, Reviewer, Tier,
+    self, Approval, Change, ChangeKind, Comment, Facts, GitDiff, GitHubRequestReceipt, PathRule, Reviewer,
+    Tier,
 };
 use serde_json::Value;
 use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
@@ -137,6 +139,7 @@ struct Evidence<'a> {
     two_review: bool,
     admitted: bool,
     approvals: Vec<(Reviewer, &'a str)>,
+    summary_approval: Option<String>,
     receipts: Vec<GitHubRequestReceipt>,
 }
 
@@ -168,6 +171,29 @@ impl<'a> Evidence<'a> {
             })
             .collect();
         let comments = nodes(&row["comments"]).ok()?;
+        let summaries = comments
+            .iter()
+            .filter(|comment| {
+                comment["author"]["login"]
+                    .as_str()
+                    .and_then(|actor| settings.reviewer(actor))
+                    == Some(Reviewer::Codex)
+            })
+            .map(|comment| {
+                let bot_id = comment["author"]["databaseId"].as_u64();
+                // GitHub records the connector as editor when it updates its
+                // summary. Edits by another actor invalidate this snapshot.
+                if !comment["lastEditedAt"].is_null() && comment["editor"]["databaseId"].as_u64() != bot_id {
+                    return None;
+                }
+                Some(Comment {
+                    bot_id,
+                    updated_at: comment["updatedAt"].as_str().and_then(parse_utc_seconds),
+                    body: comment["body"].as_str()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>();
+        let summary_approval = review::latest_code_approval(summaries.as_deref());
         let receipts = comments
             .iter()
             .filter(|comment| comment["lastEditedAt"].is_null())
@@ -197,6 +223,7 @@ impl<'a> Evidence<'a> {
             two_review: labeled("two-review"),
             admitted,
             approvals,
+            summary_approval,
             receipts,
         })
     }
@@ -268,7 +295,14 @@ pub(super) fn sample(
             let approvals: Vec<_> = evidence
                 .approvals
                 .iter()
-                .map(|&(reviewer, head)| Approval {
+                .copied()
+                .chain(
+                    evidence
+                        .summary_approval
+                        .as_deref()
+                        .map(|head| (Reviewer::Codex, head)),
+                )
+                .map(|(reviewer, head)| Approval {
                     reviewer,
                     head,
                     patch_id: &evidence.git.patch_id,
