@@ -131,5 +131,24 @@ class NativeStage(unittest.TestCase):
             STAGE.stage(self.source, self.payload)
 
 
+class ReleaseEnvironment(unittest.TestCase):
+    def test_actual_build_home_toolchains_and_checkout_are_remapped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            paths = {name: str(base / name.lower()) for name in
+                     ('HOME', 'CARGO_HOME', 'RUSTUP_HOME', 'GITHUB_WORKSPACE')}
+            result = subprocess.run(
+                ['/bin/bash', '-c', '. "$1"; printf "%s\\n" "$RUSTFLAGS" "$CFLAGS" "$CXXFLAGS"',
+                 'environment', str(REPO / 'packaging/release/environment.sh')],
+                env={'PATH': os.defpath, 'SOURCE_DATE_EPOCH': '1', **paths},
+                capture_output=True, text=True, check=True)
+            rust, c, cxx = result.stdout.splitlines()
+            for name, destination in [('HOME', 'build-home'), ('CARGO_HOME', 'cargo'),
+                                      ('RUSTUP_HOME', 'rust'), ('GITHUB_WORKSPACE', 'checkout')]:
+                self.assertIn(f'--remap-path-prefix={paths[name]}=/usr/src/{destination}', rust)
+                self.assertIn(f'-ffile-prefix-map={paths[name]}=/usr/src/{destination}', c)
+            self.assertEqual(c, cxx)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -15,8 +15,13 @@ case "$arch" in
   *) echo "unsupported architecture: $arch" >&2; exit 1;;
 esac
 # RUSTFLAGS replaces .cargo/config.toml rustflags; explicitly retain Oryon on ARM.
-export RUSTFLAGS="$cpu --remap-path-prefix=$root=/usr/src/ox-llm --remap-path-prefix=$CARGO_HOME=/usr/src/cargo --remap-path-prefix=$RUSTUP_HOME=/usr/src/rust"
-export CFLAGS="-ffile-prefix-map=$root=/usr/src/ox-llm -ffile-prefix-map=$CARGO_HOME=/usr/src/cargo"
+export RUSTFLAGS="$cpu --remap-path-prefix=$HOME=/usr/src/build-home --remap-path-prefix=$root=/usr/src/ox-llm --remap-path-prefix=$CARGO_HOME=/usr/src/cargo --remap-path-prefix=$RUSTUP_HOME=/usr/src/rust"
+export CFLAGS="-ffile-prefix-map=$HOME=/usr/src/build-home -ffile-prefix-map=$root=/usr/src/ox-llm -ffile-prefix-map=$CARGO_HOME=/usr/src/cargo -ffile-prefix-map=$RUSTUP_HOME=/usr/src/rust"
+# The checkout mount differs from the two clean build roots in explicit Docker jobs.
+if [[ -n ${GITHUB_WORKSPACE:-} ]]; then
+  RUSTFLAGS+=" --remap-path-prefix=$GITHUB_WORKSPACE=/usr/src/checkout"
+  CFLAGS+=" -ffile-prefix-map=$GITHUB_WORKSPACE=/usr/src/checkout"
+fi
 export CXXFLAGS="$CFLAGS"
 export CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_STRIP=symbols
 export CARGO_INCREMENTAL=0

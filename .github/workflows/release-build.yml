@@ -75,12 +75,12 @@ jobs:
             -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$RUNNER_TEMP:$RUNNER_TEMP" \
             -w "$GITHUB_WORKSPACE" \
             -e GITHUB_WORKSPACE -e GITHUB_SHA -e VERSION -e CARGO_HOME -e RUSTUP_HOME -e CARGO_BUILD_JOBS \
-            -e "NATIVE_MEMORY_BUDGET=$memory_bytes" -e "NATIVE_RUNNER_MEMORY=$host_bytes" \
+            -e "NATIVE_MEMORY_BUDGET=$memory_bytes" -e "NATIVE_RUNNER_MEMORY=$host_bytes" -e HOME=/build/home \
             -e PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e sleep infinity
           docker start "$RELEASE_CONTAINER"
       - name: GCC 16 and pinned Rust 1.99.1
-        run: packaging/release/setup.sh
+        run: mkdir -p "$HOME" && packaging/release/setup.sh
       - name: Verify inherited native no-swap policy
         run: |
           set -euo pipefail
@@ -228,10 +228,16 @@ jobs:
           python3 -B - <<'PY'
           import os, pathlib, re
           payload = pathlib.Path('/build/payload')
-          prefixes = [b'/build/first', b'/build/second', os.fsencode(os.environ['HOME']), b'/opt/cargo', b'/opt/rustup']
+          prefixes = {
+              'first-build': b'/build/first', 'second-build': b'/build/second',
+              'build-home': os.fsencode(os.environ['HOME']),
+              'cargo-home': b'/opt/cargo', 'rustup-home': b'/opt/rustup',
+              'checkout': os.fsencode(os.environ['GITHUB_WORKSPACE']),
+          }
           for binary in (payload / 'usr/bin').iterdir():
               data = binary.read_bytes()
-              assert not any(prefix in data for prefix in prefixes), binary.name
+              matched = [name for name, prefix in prefixes.items() if prefix in data]
+              assert not matched, (binary.name, matched)
               assert not re.search(rb'/home/[^/\x00\s]+/', data), binary.name
           PY
           cd "$GITHUB_WORKSPACE/dist"
