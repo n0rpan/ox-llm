@@ -261,12 +261,23 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
         .spawn()
         .unwrap();
     mock.wait_for_requests(2);
-    let second = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic second request"]);
+    let second = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic second request"],
+    );
     release.send(()).unwrap();
     let first = first.wait_with_output().unwrap();
-    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
     assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
-    assert_eq!(mock.requests().len(), 3, "only discovery may follow the held request");
+    assert_eq!(
+        mock.requests().len(),
+        3,
+        "only discovery may follow the held request"
+    );
     assert_eq!(rows(&env)[0]["settled"], "usage");
     mock.assert_healthy();
 }
@@ -277,15 +288,27 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
     let mock = MockOpenAi::start_with(|base| {
         vec![
             Reply::json(discovery(base)),
-            terminal_frames(&[json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})], true),
+            terminal_frames(
+                &[json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})],
+                true,
+            ),
             Reply::json(discovery(base)),
-            stream(json!({"content":"Unexpected forwarding after unknown usage"}), "stop"),
+            stream(
+                json!({"content":"Unexpected forwarding after unknown usage"}),
+                "stop",
+            ),
         ]
     });
     capped_go(&env, &format!("http://{}", mock.address()));
-    let first = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic unknown usage"]);
+    let first = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic unknown usage"],
+    );
     assert!(!first.status.success());
-    let second = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic next process"]);
+    let second = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic next process"],
+    );
     assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
     assert_eq!(mock.requests().len(), 3);
     let ledger = rows(&env);
