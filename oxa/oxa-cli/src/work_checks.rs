@@ -27,14 +27,28 @@ pub(crate) fn run(
     let settings = Settings::load(dirs, &source, true);
     let commands = match request.operation {
         SupervisorOperation::Inspect => return inspect(&b, &root),
-        SupervisorOperation::Checkout { branch, create } => {
+        SupervisorOperation::Checkout {
+            branch,
+            create,
+            normalize,
+        } => {
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            let quote = |text: &str| format!("'{}'", text.replace('\'', "'\\''"));
+            let mut command = if let Some(update) = normalize {
+                // Materialize filters first, then advance under the caller's Git
+                // worktree hold. All reference and checkout hooks stay sandboxed.
+                format!("git --no-replace-objects read-tree --reset -u HEAD && test $(git symbolic-ref --quiet {}; echo $?) = 1 && git --no-replace-objects update-ref --no-deref {} {} {} && checkout_head=$(git rev-parse HEAD) && git hook run --ignore-missing post-checkout -- \"$checkout_head\" \"$checkout_head\" 0", quote(&update.reference), quote(&update.reference), quote(&update.new), quote(&update.old))
+            } else {
+                "git --no-replace-objects checkout HEAD -- .".into()
+            };
+            if create {
+                command.push_str(&format!(
+                    " && git --no-replace-objects checkout -b {} HEAD",
+                    quote(&branch)
+                ));
+            }
             let spec = ExecSpec {
-                command: if create {
-                    format!("git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b '{}' HEAD", branch.replace('\'', "'\\''"))
-                } else {
-                    "git --no-replace-objects checkout HEAD -- .".into()
-                },
+                command,
                 cwd: root,
                 writable: true,
                 net: sandbox.network(),

@@ -33,13 +33,25 @@ fn ref_exists(policy: &RunPolicy, repo: &Path, reference: &str) -> Result<bool> 
     }
 }
 
-/// The local branch a task base names, following Git's own precedence: a
-/// literal branch first, then `<remote>/<branch>` for a configured remote.
-fn local_branch_for_base(policy: &RunPolicy, repo: &Path, base: &str) -> Result<Option<String>> {
-    let branch = base.strip_prefix("refs/heads/").unwrap_or(base);
-    if ref_exists(policy, repo, &format!("refs/heads/{branch}"))? {
-        return Ok(Some(branch.to_owned()));
-    }
+#[derive(Clone)]
+pub(crate) struct BaseAlias {
+    pub reference: String,
+    pub remote: bool,
+}
+
+/// Capture Git's actual resolution, never a tag or a symbolic local branch.
+pub(crate) fn base_alias(
+    policy: &RunPolicy,
+    repo: &Path,
+    base: &str,
+    sha: &str,
+) -> Result<Option<BaseAlias>> {
+    let resolved = checked(git(
+        policy,
+        repo,
+        &["rev-parse", "--symbolic-full-name", "--verify", base],
+    ))?;
+    let local = resolved.strip_prefix("refs/heads/");
     let mut remotes: Vec<String> = checked(git(policy, repo, &["remote"]))?
         .lines()
         .filter(|remote| !remote.is_empty())
@@ -47,15 +59,30 @@ fn local_branch_for_base(policy: &RunPolicy, repo: &Path, base: &str) -> Result<
         .collect();
     // Prefer the longest remote name so a slashed remote wins over its prefix.
     remotes.sort_by_key(|remote| std::cmp::Reverse(remote.len()));
-    for remote in remotes {
-        let Some(branch) = base.strip_prefix(&format!("{remote}/")) else {
-            continue;
-        };
-        if ref_exists(policy, repo, &format!("refs/heads/{branch}"))? {
-            return Ok(Some(branch.to_owned()));
-        }
+    let branch = local.or_else(|| {
+        remotes
+            .iter()
+            .find_map(|remote| resolved.strip_prefix(&format!("refs/remotes/{remote}/")))
+    });
+    let Some(branch) = branch else { return Ok(None) };
+    let reference = format!("refs/heads/{branch}");
+    if !ref_exists(policy, repo, &reference)?
+        || output(git(policy, repo, &["symbolic-ref", "--quiet", &reference]))?
+            .status
+            .code()
+            != Some(1)
+        || checked(git(
+            policy,
+            repo,
+            &["rev-parse", "--verify", &format!("{resolved}^{{commit}}")],
+        ))? != sha
+    {
+        return Ok(None);
     }
-    Ok(None)
+    Ok(Some(BaseAlias {
+        reference,
+        remote: local.is_none(),
+    }))
 }
 
 fn branch_checked_out(policy: &RunPolicy, repo: &Path, reference: &str) -> Result<bool> {
@@ -67,35 +94,90 @@ fn branch_checked_out(policy: &RunPolicy, repo: &Path, reference: &str) -> Resul
 /// branch that lags the frozen base makes the task's own diff look like the
 /// whole repository divergence. Advance that branch when it cannot lose work:
 /// a strict fast-forward that no worktree has checked out.
-fn fast_forward_stale_base(policy: &RunPolicy, repo: &Path, task: &Task, base: &str) -> Result<()> {
-    let Some(branch) = local_branch_for_base(policy, repo, &task.base)? else {
-        return Ok(());
+fn hold_stale_base(
+    policy: &RunPolicy,
+    repo: &Path,
+    tree: &Path,
+    alias: Option<&BaseAlias>,
+    base: &str,
+) -> Result<Option<(PathBuf, super::BaseUpdate)>> {
+    let Some(alias) = alias else {
+        return Ok(None);
     };
-    let reference = format!("refs/heads/{branch}");
+    let reference = alias.reference.clone();
+    if output(git(policy, repo, &["symbolic-ref", "--quiet", &reference]))?
+        .status
+        .code()
+        != Some(1)
+    {
+        return Ok(None);
+    }
     let old = checked(git(policy, repo, &["rev-parse", "--verify", &reference]))?;
     if old == base || branch_checked_out(policy, repo, &reference)? {
-        return Ok(());
+        return Ok(None);
     }
     if !output(git(policy, repo, &["merge-base", "--is-ancestor", &old, base]))?
         .status
         .success()
     {
-        return Ok(());
+        return Ok(None);
     }
-    // Compare-and-swap: a branch that moved in the meantime keeps its new tip.
-    // A normalization failure leaves the checkout as it was and never blocks.
-    // Host metadata never runs repository hooks: the reference-transaction
-    // hook belongs inside the sandbox, exactly as for worktree creation.
-    let _ = output(git(
+    // Git must first own this branch in an empty linked worktree. A checkout
+    // interleaved after the ancestry read makes this add refuse the branch.
+    let holder = tree.with_extension("base-hold");
+    if holder.exists() {
+        return Err("base preparation worktree retained; reconcile it before retrying".into());
+    }
+    let added = output(git(
         policy,
         repo,
         &[
             "-c",
             "core.hooksPath=/dev/null",
-            "update-ref",
-            &reference,
-            base,
-            &old,
+            "worktree",
+            "add",
+            "--no-checkout",
+            holder.to_str().ok_or("non-UTF8 base worktree")?,
+            reference
+                .strip_prefix("refs/heads/")
+                .ok_or("invalid base branch")?,
+        ],
+    ))?;
+    if !added.status.success() {
+        return Ok(None);
+    }
+    Ok(Some((
+        holder,
+        super::BaseUpdate {
+            reference,
+            old,
+            new: base.into(),
+        },
+    )))
+}
+
+fn remove_base_holder(policy: &RunPolicy, repo: &Path, holder: &Path) -> Result<()> {
+    // This task owns the fresh no-checkout path. Preserve anything added to it.
+    let entries = fs::read_dir(holder)
+        .map_err(|e| e.to_string())?
+        .collect::<std::io::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    if entries.len() != 1
+        || entries[0].file_name() != ".git"
+        || !fs::symlink_metadata(holder.join(".git")).is_ok_and(|metadata| metadata.is_file())
+    {
+        return Err("base preparation contains work; retained for reconciliation".into());
+    }
+    checked(git(
+        policy,
+        repo,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "worktree",
+            "remove",
+            "--force",
+            holder.to_str().ok_or("non-UTF8 base worktree")?,
         ],
     ))?;
     Ok(())
@@ -161,11 +243,12 @@ pub(crate) fn prepare(
     repo: &Path,
     tree: &Path,
     task: &Task,
-    base: &str,
+    base: (&str, Option<&BaseAlias>),
     binary: &Path,
     policy: &RunPolicy,
     lock: &fs::File,
 ) -> Result<Prepared> {
+    let (base, alias) = base;
     let retained = tree.exists();
     if !retained {
         let branch = format!("refs/heads/{}", task.branch);
@@ -191,6 +274,7 @@ pub(crate) fn prepare(
         // Only metadata on the host. Git still refuses a branch checked out
         // elsewhere; no task-branch update or checkout callback runs here.
         checked(git(policy, repo, &args))?;
+        let holder = hold_stale_base(policy, repo, tree, alias, base)?;
         let checkout = supervise(
             binary,
             tree,
@@ -199,18 +283,22 @@ pub(crate) fn prepare(
                 operation: SupervisorOperation::Checkout {
                     branch: task.branch.clone(),
                     create,
+                    normalize: holder.as_ref().map(|(_, update)| update.clone()),
                 },
             },
             policy,
             lock,
-        )?;
+        );
+        if let Some((holder, _)) = holder {
+            remove_base_holder(policy, repo, &holder)?;
+        }
+        let checkout = checkout?;
         if !checkout.status.success() {
             return Err(format!(
                 "sandboxed worktree checkout failed: {}",
                 String::from_utf8_lossy(&checkout.stderr)
             ));
         }
-        fast_forward_stale_base(policy, repo, task, base)?;
     }
     validate(policy, repo, tree, task)?;
     for operation in ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {

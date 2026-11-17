@@ -74,6 +74,7 @@ pub struct PlannedTask {
     base_sha: String,
     commands: Vec<String>,
     checkpoint_revision: Option<u64>,
+    base_alias: Option<tree::BaseAlias>,
 }
 impl PlannedTask {
     pub fn task(&self) -> &Task {
@@ -96,11 +97,13 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
         &["rev-parse", "--verify", &format!("{}^{{commit}}", task.base)],
     ))?;
     let commands = done_commands(policy, repo, &base_sha)?;
+    let base_alias = tree::base_alias(policy, repo, &task.base, &base_sha)?;
     Ok(PlannedTask {
         task,
         base_sha,
         commands,
         checkpoint_revision: None,
+        base_alias,
     })
 }
 
@@ -133,9 +136,59 @@ pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: boo
             base_sha: execution.base,
             commands: execution.commands,
             checkpoint_revision: Some(saved.record.checkpoint_revision),
+            base_alias: None,
         });
     }
     plan_task(repo, task, policy)
+}
+
+/// Freeze a batch before callbacks, reconciling a literal local base with its
+/// sole requested remote tip. Conflicting remote targets never choose a winner.
+pub fn plan_tasks_for_run(
+    repo: &Path,
+    tasks: &[Task],
+    policy: &RunPolicy,
+    rerun: bool,
+) -> Vec<Result<PlannedTask>> {
+    let mut plans: Vec<_> = tasks
+        .iter()
+        .map(|task| plan_task_for_run(repo, task.clone(), policy, rerun))
+        .collect();
+    let mut targets =
+        std::collections::BTreeMap::<String, std::collections::BTreeMap<String, Vec<String>>>::new();
+    for plan in plans.iter().filter_map(|plan| plan.as_ref().ok()) {
+        if let Some(alias) = plan.base_alias.as_ref().filter(|alias| alias.remote) {
+            targets
+                .entry(alias.reference.clone())
+                .or_default()
+                .insert(plan.base_sha.clone(), plan.commands.clone());
+        }
+    }
+    for result in &mut plans {
+        let Ok(plan) = result else { continue };
+        let Some(alias) = &plan.base_alias else { continue };
+        let Some(tips) = targets.get(&alias.reference) else {
+            continue;
+        };
+        if tips.len() != 1 {
+            plan.base_alias = None;
+        } else if !alias.remote {
+            let (tip, commands) = tips.first_key_value().expect("one captured tip");
+            match output(git(
+                policy,
+                repo,
+                &["merge-base", "--is-ancestor", &plan.base_sha, tip],
+            )) {
+                Ok(out) if out.status.success() => {
+                    plan.base_sha = tip.clone();
+                    plan.commands = commands.clone();
+                }
+                Ok(out) if out.status.code() == Some(1) => {}
+                _ => *result = Err("cannot reconcile captured base aliases".into()),
+            }
+        }
+    }
+    plans
 }
 
 fn output(mut command: Command) -> Result<Output> {
@@ -306,11 +359,30 @@ pub struct SupervisorRequest {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SupervisorOperation {
-    Checkout { branch: String, create: bool },
-    Merge { base: String },
-    Save { task_id: String },
-    Checks { commands: Vec<String> },
+    Checkout {
+        branch: String,
+        create: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        normalize: Option<BaseUpdate>,
+    },
+    Merge {
+        base: String,
+    },
+    Save {
+        task_id: String,
+    },
+    Checks {
+        commands: Vec<String>,
+    },
     Inspect,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BaseUpdate {
+    pub reference: String,
+    pub old: String,
+    pub new: String,
 }
 
 fn supervise(
@@ -581,6 +653,7 @@ pub fn run_task_with_observer(
         lock: &lock_file,
         writer: &mut writer,
         observer,
+        base_alias: planned.base_alias.as_ref(),
     })
     .drive(&mut state)
     {

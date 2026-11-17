@@ -12,6 +12,7 @@ pub(crate) struct Runner<'a> {
     pub lock: &'a File,
     pub writer: &'a mut Writer,
     pub observer: &'a dyn CheckpointObserver,
+    pub base_alias: Option<&'a tree::BaseAlias>,
 }
 impl Runner<'_> {
     fn advance(&mut self, state: &mut State, step: Step) -> std::result::Result<(), RunError> {
@@ -30,7 +31,7 @@ impl Runner<'_> {
                         self.repo,
                         &tree,
                         &state.task,
-                        &base,
+                        (&base, self.base_alias),
                         self.binary,
                         self.policy,
                         self.lock,
