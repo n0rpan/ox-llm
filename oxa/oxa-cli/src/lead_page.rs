@@ -10,7 +10,10 @@ pub struct View<'a> {
     pub situation: Option<&'a Snapshot>,
     pub main_red: bool,
     pub main_merge_stalled: bool,
+    pub stalled_runs: &'a [u64],
     pub queue: Option<&'a [PullRequest]>,
+    /// Exact PR heads for which the landing policy raised its queue age alarm.
+    pub overdue_queue: &'a [PullRequest],
     /// Source issue and its reported checkbox states; these do not establish validation.
     pub release: Option<(u64, &'a [(bool, String)])>,
 }
@@ -62,13 +65,42 @@ pub fn document(view: &View<'_>, now: u64) -> String {
 pub fn content(view: &View<'_>, now: u64) -> String {
     let mut html = String::from("<main><h1>Work in motion</h1>");
     let ask_count = view.situation.map_or(0, |s| s.asks.len());
-    if view.main_red || view.main_merge_stalled || ask_count > 0 {
+    let overdue: Vec<_> = view
+        .queue
+        .into_iter()
+        .flatten()
+        .filter(|pr| view.overdue_queue.contains(pr))
+        .collect();
+    if view.main_red
+        || view.main_merge_stalled
+        || !view.stalled_runs.is_empty()
+        || !overdue.is_empty()
+        || ask_count > 0
+    {
         html.push_str("<section id=attention><h2>Needs attention</h2><ul>");
         if view.main_red {
             html.push_str("<li>Checks on main are failing.</li>");
         }
         if view.main_merge_stalled {
             html.push_str("<li>No PR merged into main for 45 minutes or more at the last observation.</li>");
+        }
+        for pr in overdue {
+            let _ = write!(
+                html,
+                "<li><a href=#queue>PR #{} has waited too long in the merge queue</a></li>",
+                pr.number
+            );
+        }
+        if !view.stalled_runs.is_empty() {
+            let _ = write!(
+                html,
+                "<li><details><summary>Workflow runs queued for more than 15 minutes ({})</summary><ul>",
+                view.stalled_runs.len()
+            );
+            for id in view.stalled_runs {
+                let _ = write!(html, "<li>Run {id}</li>");
+            }
+            html.push_str("</ul></details></li>");
         }
         if ask_count > 0 {
             let _ = write!(
@@ -218,6 +250,47 @@ stream.onerror=()=>{badge.textContent='Disconnected · reconnecting';};
 mod tests {
     use super::*;
     use oxa_work::board::{GitHub, Mergeability, Policy, PullRequest as BoardPr, RequiredCi};
+
+    #[test]
+    fn queue_alarm_requires_membership_at_the_exact_head() {
+        let active = PullRequest {
+            number: 17,
+            head: "a".repeat(40),
+        };
+        let queue = [active.clone()];
+        let older = PullRequest {
+            head: "b".repeat(40),
+            ..active.clone()
+        };
+        let render = |queue, overdue_queue| {
+            content(
+                &View {
+                    queue,
+                    overdue_queue,
+                    ..View::default()
+                },
+                100,
+            )
+        };
+        let overdue = [active];
+        let stale = [older];
+        let other = [PullRequest {
+            number: 18,
+            head: "a".repeat(40),
+        }];
+        for (queue, alarms) in [
+            (None, overdue.as_slice()),
+            (Some(queue.as_slice()), stale.as_slice()),
+            (Some(queue.as_slice()), other.as_slice()),
+            (Some(queue.as_slice()), &[]),
+        ] {
+            assert!(!render(queue, alarms).contains("Needs attention"));
+        }
+        let page = render(Some(&queue), &overdue);
+        assert!(page.contains("PR #17 has waited too long in the merge queue"));
+        assert!(!page.contains(&queue[0].head));
+    }
+
     #[test]
     fn shared_runner_fixture_renders_asks_without_private_record_fields() {
         let fixture = include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl");
