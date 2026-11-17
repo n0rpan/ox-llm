@@ -366,9 +366,9 @@ jobs:
           require_setup sudo runuser -u ox-proof-scope -- env -i PATH=/usr/bin:/bin \
             XDG_RUNTIME_DIR="/run/user/$uid" systemctl --user start dbus.socket
           predicate='positive canonical user bus must be a socket'
-          require_setup test -S "/run/user/$uid/bus"
+          require_setup sudo runuser -u ox-proof-scope -- test -S "/run/user/$uid/bus"
           predicate='negative fixture canonical user bus must be absent'
-          require_setup test ! -e "/run/user/$(id -u ox-proof-nobus)/bus"
+          require_setup sudo runuser -u ox-proof-nobus -- test ! -e "/run/user/$(id -u ox-proof-nobus)/bus"
           printf 'scope_setup=ready positive_bus=socket negative_bus=absent\n' | tee -a "$setup_receipt"
           archive="$GITHUB_WORKSPACE/artifacts/ox-llm-$VERSION-linux-x86_64.tar.gz"
           binary="$GITHUB_WORKSPACE/subject/usr/bin/oxa"
