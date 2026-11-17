@@ -298,6 +298,39 @@ mod tests {
         )
     }
     #[test]
+    fn declining_visible_queries_prevents_any_github_request() {
+        let env = TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let mut value = note();
+        value.keywords[0] = "component\u{1b}[2Jsymptom\u{200f}".into();
+        let mut calls = 0;
+        let mut approved = false;
+        let result = report(
+            &value,
+            &dirs,
+            &settings(),
+            &ScrubCtx::default(),
+            false,
+            &mut |prompt| {
+                assert!(!prompt.contains('\u{1b}') && !prompt.contains('\u{200f}'));
+                assert!(prompt.contains("\\u{1b}") && prompt.contains("\\u{200f}"));
+                approved = true;
+                Some(false)
+            },
+            &mut |program, _| {
+                if program == "gh" {
+                    calls += 1;
+                }
+                Some((0, "[]".into()))
+            },
+        )
+        .unwrap();
+        assert!(approved);
+        assert_eq!(calls, 0);
+        assert_eq!(result.disposition, "local");
+        assert!(result.draft.exists());
+    }
+    #[test]
     fn matching_issue_is_commented_after_all_queries_and_reads() {
         let env = TestEnv::new();
         let dirs = Dirs::under(env.root());

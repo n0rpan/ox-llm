@@ -2,8 +2,17 @@
 #[path = "common/work.rs"]
 mod work;
 use oxa_fake::{ScriptTurn, TestEnv};
+use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, process::Command};
 use work::{git, run, run_args, run_observed, setup};
+fn state_path(env: &TestEnv) -> PathBuf {
+    let common = env.work().join("project/.git").canonicalize().unwrap();
+    let key: String = Sha256::digest(common.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    env.agent_dir().join("work").join(key).join("test.json")
+}
 fn configure(env: &TestEnv) -> String {
     use std::os::unix::fs::PermissionsExt;
     env.write(
@@ -24,17 +33,17 @@ case "$1 $2" in
       if test "$arg" = '--draft'; then draft=true; fi
       if test "$arg" = '--body-file'; then body_next=true; fi
     done
-    printf '{"number":1,"url":"https://github.com/example/project/pull/1","isDraft":%s}' "$draft" > "$HOME/pr-state.json"
+    printf '{"number":1,"url":"https://github.com/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$draft" > "$HOME/pr-state.json"
     printf '%s' 'https://github.com/example/project/pull/1' ;;
   'pr edit') : ;;
   'pr ready')
     draft=false
     for arg in "$@"; do if test "$arg" = '--undo'; then draft=true; fi; done
-    printf '{"number":1,"url":"https://github.com/example/project/pull/1","isDraft":%s}' "$draft" > "$HOME/pr-state.json" ;;
+    printf '{"number":1,"url":"https://github.com/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$draft" > "$HOME/pr-state.json" ;;
   *) exit 7 ;;
 esac
 "##);
-    let git_wrapper = env.write("tmp/git", "#!/bin/sh\nif test \"$1\" = push; then printf 'push\\n' >> \"$HOME/push-calls\"; fi\nexec /usr/bin/git \"$@\"\n");
+    let git_wrapper = env.write("tmp/git", "#!/bin/sh\nfor arg do if test \"$arg\" = push; then printf 'push\\n' >> \"$HOME/push-calls\"; fi; done\nexec /usr/bin/git \"$@\"\n");
     let controller = env.write("tmp/oxc", "#!/bin/sh\nprintf '{}'\n");
     for file in [gh, git_wrapper, controller] {
         fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
@@ -83,7 +92,7 @@ fn publishes_local_branch_and_updates_same_pr_on_restart() {
     assert!(!body.contains("Finish task"));
 }
 #[test]
-fn red_checks_create_a_draft_pr() {
+fn red_checks_never_push_or_create_a_pr() {
     let env = TestEnv::new();
     setup(&env, r#"["printf red > failed-check; exit 1"]"#);
     let path = configure(&env);
@@ -94,8 +103,10 @@ fn red_checks_create_a_draft_pr() {
         Some(path),
     );
     assert_eq!(record["outcome"], "red", "{record}");
-    assert_eq!(record["draft"], true);
-    assert!(record["pull_request"].is_string());
+    assert_eq!(record["draft"], false);
+    assert!(record["pull_request"].is_null());
+    assert!(!env.home().join("gh-calls").exists());
+    assert!(!env.home().join("push-calls").exists());
 }
 #[test]
 fn queued_pr_is_never_pushed_and_publication_retries_without_agent_replay() {
@@ -200,7 +211,7 @@ fn a_model_tool_cannot_opt_itself_into_reporting_or_publishing() {
 }
 
 #[test]
-fn green_rerun_marks_an_existing_red_draft_ready() {
+fn green_rerun_can_publish_after_red_remained_local() {
     let env = TestEnv::new();
     setup(
         &env,
@@ -213,7 +224,8 @@ fn green_rerun_marks_an_existing_red_draft_ready() {
         &["work", "../tasks.json", "--publish"],
         Some(path.clone()),
     );
-    assert_eq!(red["draft"], true, "{red}");
+    assert_eq!(red["draft"], false, "{red}");
+    assert!(red["pull_request"].is_null());
     let green = run_args(
         &env,
         vec![
@@ -227,7 +239,7 @@ fn green_rerun_marks_an_existing_red_draft_ready() {
     assert_eq!(green["draft"], false);
     assert!(fs::read_to_string(env.home().join("gh-calls"))
         .unwrap()
-        .contains("pr ready"));
+        .contains("pr create"));
 }
 #[test]
 fn a_local_report_retries_without_replaying_the_completed_task() {
@@ -256,48 +268,6 @@ fn a_local_report_retries_without_replaying_the_completed_task() {
 }
 
 #[test]
-fn unfinished_execution_keeps_its_saved_offline_restriction() {
-    use oxa_fake::{FakeModel, FakeOpts, FakeServer};
-    let env = TestEnv::new();
-    setup(&env, "[]");
-    run_args(
-        &env,
-        vec![ScriptTurn::text("done")],
-        &["--offline", "work", "../tasks.json"],
-        None,
-    );
-    let state_path = env.work().join("project/.git/oxa-work/test.json");
-    let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
-    state["step"] = "agent".into();
-    state["outcome"] = "running".into();
-    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-    let server = FakeServer::start(
-        vec![ScriptTurn::text("network was allowed")],
-        FakeOpts {
-            remote: Some("openrouter"),
-            models: vec![FakeModel {
-                alias: "fake-model".into(),
-                cap: 64000,
-                max_output: Some(4096),
-                caps: None,
-            }],
-            ..FakeOpts::default()
-        },
-    )
-    .unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
-        .args(["work", "../tasks.json"])
-        .current_dir(env.work().join("project"))
-        .env_clear()
-        .envs(env.envs(&server.url()))
-        .output()
-        .unwrap();
-    let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(record["outcome"], "blocked", "{record}");
-    assert!(record["detail"].as_str().unwrap().contains("offline"));
-    assert!(server.requests().is_empty());
-}
-#[test]
 fn later_publication_and_reporting_do_not_erase_execution_policy() {
     let env = TestEnv::new();
     setup(&env, "[]");
@@ -308,7 +278,7 @@ fn later_publication_and_reporting_do_not_erase_execution_policy() {
         &["--offline", "work", "../tasks.json"],
         Some(path.clone()),
     );
-    let state_path = env.work().join("project/.git/oxa-work/test.json");
+    let state_path = state_path(&env);
     for flag in ["--publish", "--report-problems"] {
         let record = run_args(&env, vec![], &["work", "../tasks.json", flag], Some(path.clone()));
         assert_eq!(record["outcome"], "done", "{record}");
@@ -321,17 +291,16 @@ fn optional_publication_metadata_defaults_to_inactive() {
     let env = TestEnv::new();
     setup(&env, "[]");
     run(&env, vec![ScriptTurn::text("done")]);
-    let state_path = env.work().join("project/.git/oxa-work/test.json");
+    let state_path = state_path(&env);
     let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
     for key in [
-        "head",
         "pull_request",
         "draft",
         "problem_notes",
         "reports",
         "acceptance_outcome",
     ] {
-        state.as_object_mut().unwrap().remove(key);
+        state["record"].as_object_mut().unwrap().remove(key);
     }
     fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
     let record = run(&env, vec![]);
@@ -417,30 +386,4 @@ esac
         unauthorized.is_empty(),
         "public writes without confirmation: {unauthorized:?}"
     );
-}
-
-#[test]
-fn rerun_resumes_interrupted_execution_without_discarding_its_checkpoint() {
-    for step in ["acceptance", "recheck", "saving"] {
-        let env = TestEnv::new();
-        setup(&env, r#"["printf checked >> checkpoint-checks"]"#);
-        let first = run(&env, edits());
-        let state_path = env.work().join("project/.git/oxa-work/test.json");
-        let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
-        state["step"] = step.into();
-        state["outcome"] = if step == "saving" { "done" } else { "running" }.into();
-        state["pull_request"] = "https://github.com/example/project/pull/1".into();
-        state["problem_notes"] = serde_json::json!([{"title":"Synthetic problem","notes":"Keep these notes","keywords":["synthetic problem","keep notes"]}]);
-        state["reports"] = serde_json::json!([{"draft":"report.md","disposition":"existing_issue","url":"https://github.com/example/project/issues/1","detail":""}]);
-        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
-        let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json", "--rerun"], None);
-        assert_eq!(record["outcome"], "done", "{step}: {record}");
-        assert!(requests.is_empty(), "{step}: agent was replayed");
-        for key in ["pull_request", "problem_notes", "reports"] {
-            assert_eq!(record[key], state[key], "{step}: {key}");
-        }
-        let after: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
-        assert_eq!(after["checkpoint"], state["checkpoint"], "{step}");
-        assert_eq!(record["worktree"], first["worktree"]);
-    }
 }

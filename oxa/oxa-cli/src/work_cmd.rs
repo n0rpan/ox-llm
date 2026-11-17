@@ -185,7 +185,12 @@ pub(crate) fn run(
             .into_iter()
             .map(|task| {
                 if is_trusted {
-                    oxa_work::plan_task_for_run(&root, task.clone(), &policy, rerun)
+                    let planner = if publish || reports {
+                        oxa_work::plan_task_for_actions
+                    } else {
+                        oxa_work::plan_task_for_run
+                    };
+                    planner(&root, task.clone(), &policy, rerun)
                         .map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail)))
                 } else {
                     Err(Box::new(oxa_work::blocked_record(

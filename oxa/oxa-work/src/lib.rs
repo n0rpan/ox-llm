@@ -131,6 +131,27 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
 /// Recover immutable inputs before consulting today's mutable base/settings.
 /// New attempts still freeze a fresh plan before any worker in the batch runs.
 pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: bool) -> Result<PlannedTask> {
+    plan_task_mode(repo, task, policy, rerun, false)
+}
+
+/// Explicit actions reuse completed execution inputs, including red results,
+/// without treating a report/publication retry as another model attempt.
+pub fn plan_task_for_actions(
+    repo: &Path,
+    task: Task,
+    policy: &RunPolicy,
+    rerun: bool,
+) -> Result<PlannedTask> {
+    plan_task_mode(repo, task, policy, rerun, true)
+}
+
+fn plan_task_mode(
+    repo: &Path,
+    task: Task,
+    policy: &RunPolicy,
+    rerun: bool,
+    actions: bool,
+) -> Result<PlannedTask> {
     validate(&task)?;
     let path = policy.storage.join(format!("{}.json", task.id));
     match fs::symlink_metadata(&path) {
@@ -146,7 +167,7 @@ pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: boo
         return Err("task specification changed; use a new task id".into());
     }
     if saved.record.step != Step::Finished
-        || (!rerun && matches!(saved.record.outcome, Outcome::Done | Outcome::NothingToDo))
+        || (!rerun && (actions || matches!(saved.record.outcome, Outcome::Done | Outcome::NothingToDo)))
     {
         let execution = saved.execution.ok_or("missing task execution checkpoint")?;
         if saved.record.base_sha.as_deref() != Some(&execution.base) {
@@ -652,6 +673,10 @@ pub fn run_task_with_observer(
             state.record.detail = error;
         }
     }
+    state
+        .record
+        .acceptance_outcome
+        .get_or_insert(state.record.outcome);
     writer
         .save(&mut state, Step::Saving, observer)
         .map_err(RunError::Checkpoint)?;
@@ -663,7 +688,12 @@ pub fn run_task_with_observer(
             state.record.detail.push('\n');
         }
         state.record.detail.push_str(&format!("save: {error}"));
+        writer
+            .save(&mut state, Step::Saving, observer)
+            .map_err(RunError::Checkpoint)?;
+        return Ok(state.record);
     }
+    state.record.outcome = state.record.acceptance_outcome.unwrap_or(state.record.outcome);
     writer
         .save(&mut state, Step::Finished, observer)
         .map_err(RunError::Checkpoint)?;
