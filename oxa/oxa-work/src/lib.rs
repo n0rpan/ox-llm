@@ -688,12 +688,25 @@ pub fn run_task_with_observer(
             state.record.detail.push('\n');
         }
         state.record.detail.push_str(&format!("save: {error}"));
+        let retry = if matches!(
+            state.record.acceptance_outcome,
+            Some(Outcome::Done | Outcome::NothingToDo | Outcome::Red)
+        ) {
+            Step::Saving
+        } else {
+            // An unfinished merge/worker still needs another execution attempt.
+            Step::Finished
+        };
         writer
-            .save(&mut state, Step::Saving, observer)
+            .save(&mut state, retry, observer)
             .map_err(RunError::Checkpoint)?;
         return Ok(state.record);
     }
-    state.record.outcome = state.record.acceptance_outcome.unwrap_or(state.record.outcome);
+    state.record.outcome = state
+        .record
+        .acceptance_outcome
+        .take()
+        .unwrap_or(state.record.outcome);
     writer
         .save(&mut state, Step::Finished, observer)
         .map_err(RunError::Checkpoint)?;

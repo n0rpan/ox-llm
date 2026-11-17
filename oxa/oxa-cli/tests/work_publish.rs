@@ -4,7 +4,7 @@ mod work;
 use oxa_fake::{ScriptTurn, TestEnv};
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, process::Command};
-use work::{git, run, run_args, run_observed, setup};
+use work::{git, run, run_args, setup};
 fn state_path(env: &TestEnv) -> PathBuf {
     let common = env.work().join("project/.git").canonicalize().unwrap();
     let key: String = Sha256::digest(common.as_os_str().as_encoded_bytes())
@@ -127,7 +127,10 @@ fn queued_pr_is_never_pushed_and_publication_retries_without_agent_replay() {
         Some(path.clone()),
     );
     assert_eq!(blocked["outcome"], "blocked", "{blocked}");
-    assert!(blocked["detail"].as_str().unwrap().contains("merge queue"));
+    assert!(
+        blocked["detail"].as_str().unwrap().contains("merge queue"),
+        "{blocked}"
+    );
     assert_eq!(
         fs::read_to_string(env.home().join("push-calls"))
             .unwrap()
