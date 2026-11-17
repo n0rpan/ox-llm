@@ -135,6 +135,53 @@ fn published_head_reference_hooks_run_only_in_the_task_sandbox() {
 }
 
 #[test]
+fn published_checkout_hooks_have_neither_network_nor_github_credentials() {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    let env = TestEnv::new();
+    published_task(&env);
+    git(
+        &env,
+        &project(&env),
+        &["checkout", "-b", "published", "origin/agent/test"],
+    );
+    commit_file(&env, "checkout-policy.sh", "printf ran > adopted-hook-ran\nif test -n \"${GH_TOKEN-}\"; then printf exposed > adopted-hook-credentials; fi\nreadlink /proc/self/ns/net > adopted-hook-network\n");
+    git(&env, &project(&env), &["push", "origin", "published:agent/test"]);
+    git(&env, &project(&env), &["checkout", "main"]);
+    git(&env, &project(&env), &["branch", "-D", "published"]);
+    git(&env, &project(&env), &["fetch", "origin"]);
+    let hook = env.write(
+        "work/project/.git/hooks/post-checkout",
+        "#!/bin/sh\nif test -f checkout-policy.sh; then sh checkout-policy.sh; fi\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let tools = env.tmp().join("trusted-tools");
+    std::fs::DirBuilder::new().mode(0o700).create(&tools).unwrap();
+    let gh = env.write("tmp/trusted-tools/gh", "#!/bin/sh\ntest \"$*\" = 'auth token --hostname github.com' || exit 9\nprintf '%s\\n' SYNTH_CHECKOUT_CREDENTIAL\n");
+    std::fs::set_permissions(gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    // Only this fixture gh is reachable first, under a throwaway HOME. No real login is read.
+    let (record, _) = work::run_observed_with_env(
+        &env,
+        vec![ScriptTurn::text("nothing")],
+        &["work", "../tasks.json"],
+        Some(path),
+        &[("OXA_TEST_ISOLATION", "0")],
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert!(tree(&record).join("adopted-hook-ran").exists(), "{record}");
+    assert!(
+        !tree(&record).join("adopted-hook-credentials").exists(),
+        "checkout exposed credentials: {record}"
+    );
+    let hook_net = std::fs::read_to_string(tree(&record).join("adopted-hook-network")).unwrap();
+    assert_ne!(
+        hook_net.trim(),
+        std::fs::read_link("/proc/self/ns/net").unwrap().to_str().unwrap(),
+        "checkout retained host networking"
+    );
+}
+
+#[test]
 fn a_divergent_matching_remote_tip_prevents_published_head_adoption() {
     let env = TestEnv::new();
     published_task(&env);

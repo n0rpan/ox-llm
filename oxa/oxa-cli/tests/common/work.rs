@@ -54,13 +54,23 @@ pub fn run_observed(
     args: &[&str],
     path: Option<String>,
 ) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
+    run_observed_with_env(env, turns, args, path, &[])
+}
+pub fn run_observed_with_env(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    path: Option<String>,
+    extra: &[(&str, &str)],
+) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
         .args(args)
         .current_dir(env.work().join("project"))
         .env_clear()
-        .envs(env.envs(&server.url()));
+        .envs(env.envs(&server.url()))
+        .envs(extra.iter().copied());
     if let Some(path) = path {
         command.env("PATH", path);
     }
