@@ -116,6 +116,11 @@ def eligible(pr, sha):
 
 
 def reviewed(comments, sha, diff_hash):
+    return bool(reviewed_models(comments, sha, diff_hash))
+
+
+def reviewed_models(comments, sha, diff_hash):
+    covered = set()
     for comment in comments:
         if comment.get('user', {}).get('login') != 'github-actions[bot]':
             continue
@@ -127,8 +132,13 @@ def reviewed(comments, sha, diff_hash):
             if (isinstance(receipt, dict) and receipt.get('verdict') in ('OK', 'CLEAR', 'REVISE')
                     and (receipt.get('diff_hash') == diff_hash
                          or 'diff_hash' not in receipt and receipt.get('sha') == sha)):
-                return True
-    return False
+                # The original single-model receipt omitted model.
+                models = receipt.get('model', MODEL)
+                if isinstance(models, str):
+                    names = models.split(',')
+                    if all(name in (MODEL, ARGON) for name in names):
+                        covered.update(names)
+    return covered
 
 
 def review_models(pr, files):
@@ -169,14 +179,28 @@ def model_response(model, token, prompt, diff, session):
                              'responseMimeType': 'application/json'}}).encode())
     candidate, = result['candidates']
     parts = candidate['content']['parts']
-    if (candidate.get('finishReason') != 'STOP' or not isinstance(parts, list)
-            or not parts or any(not isinstance(p, dict) or set(p) != {'text'}
-                                or not isinstance(p['text'], str) for p in parts)):
+    if candidate.get('finishReason') != 'STOP' or not isinstance(parts, list):
         raise Refused('Second review did not complete normally')
     if result.get('promptFeedback', {}).get('blockReason'):
         raise Refused('Second review was blocked; no receipt posted')
+    text = []
+    text_fields = {'text', 'thought', 'thoughtSignature', 'partMetadata'}
+    for part in parts:
+        if (not isinstance(part, dict) or part.keys() - text_fields
+                or not isinstance(part.get('thought', False), bool)
+                or not isinstance(part.get('thoughtSignature', ''), str)
+                or not isinstance(part.get('partMetadata', {}), dict)
+                or not isinstance(part.get('text', ''), str)):
+            raise Refused('Second review did not complete normally')
+        if not part.get('thought', False):
+            if 'text' not in part:
+                raise Refused('Second review did not complete normally')
+            text.append(part['text'])
+    content = ''.join(text)
+    if not content.strip():
+        raise Refused('Second review did not return final text')
     return {'choices': [{'finish_reason': 'stop', 'message': {
-        'content': ''.join(p['text'] for p in parts)}}]}
+        'content': content}}]}
 
 
 def docs_only(files):
@@ -282,13 +306,13 @@ def main():
     pull = f'{API}/pulls/{number}'
     comments_url = f'{API}/issues/{number}/comments'
 
-    def already_reviewed(diff_hash):
+    def coverage(diff_hash, models):
+        covered = set()
         for page in range(1, 21):
             comments = request(f'{comments_url}?per_page=100&page={page}', headers, limit=2_000_000)
-            if reviewed(comments, sha, diff_hash):
-                return True
-            if len(comments) < 100:
-                return False
+            covered.update(reviewed_models(comments, sha, diff_hash))
+            if covered.issuperset(models) or len(comments) < 100:
+                return covered
         raise Refused('Comment history exceeds the duplicate-check bound')
 
     current = request(pull, headers)
@@ -310,26 +334,36 @@ def main():
         raise Skipped('Diff exceeds 200KB; review skipped')
     allowed = changed_lines(files)
     diff_hash = own_diff_hash(files)
-    if already_reviewed(diff_hash) or not eligible(request(pull, headers), sha):
-        return
     models = review_models(current, files)
+    covered = coverage(diff_hash, models)
+    if covered.issuperset(models) or not eligible(request(pull, headers), sha):
+        return
+    supplemental = bool(covered)
     prompt = review_prompt()
     token = access_token()
-    rows = []
+    results = {}
     for model in models:
+        if model in covered:
+            continue
         response = model_response(model, token, prompt, diff, f'{REPO}/pull/{number}/{diff_hash}')
         model_rows = findings(response, allowed, [token, gh, os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']])
-        rows.extend(f'### {model}\n\n{row}' for row in model_rows)
-        # Never spend the second request after a superseding head or completed receipt.
-        if not eligible(request(pull, headers), sha) or already_reviewed(diff_hash):
+        results[model] = [f'### {model}\n\n{row}' for row in model_rows]
+        if not eligible(request(pull, headers), sha):
             return
+        covered = coverage(diff_hash, models)
     # A synchronize/cancel or rerun must not turn a stale result into a current-head receipt.
-    if not eligible(request(pull, headers), sha) or already_reviewed(diff_hash):
+    if not eligible(request(pull, headers), sha):
         return
+    covered = coverage(diff_hash, models)
+    completed = [model for model in results if model not in covered]
+    if not completed:
+        return
+    rows = [row for model in completed for row in results[model]]
     verdict = 'REVISE' if rows else 'OK'
-    body = f'First-pass Go review of `{sha}` ({", ".join(models)}; diff only; advisory, no approval).\n\n'
+    title = 'Supplemental' if supplemental else 'First-pass'
+    body = f'{title} Go review of `{sha}` ({", ".join(completed)}; diff only; advisory, no approval).\n\n'
     body += '\n\n'.join(rows) if rows else 'No concrete findings supported by the bounded diff.'
-    body += '\n\n<!-- go-review:v1 ' + json.dumps({'sha': sha, 'model': ','.join(models), 'verdict': verdict,
+    body += '\n\n<!-- go-review:v1 ' + json.dumps({'sha': sha, 'model': ','.join(completed), 'verdict': verdict,
                                                            'findings': len(rows), 'diff_hash': diff_hash}, separators=(',', ':')) + ' -->'
     request(comments_url, headers, json.dumps({'body': body}).encode())
 
