@@ -300,3 +300,43 @@ fn max_tokens_wraps_up_child_and_parent_without_starting_queued_child() {
     }
     assert!(String::from_utf8_lossy(&out.stdout).contains("parent wrap-up"));
 }
+
+/// A session-start hook consumes startup time, not the parent's run allowance.
+#[test]
+fn slow_session_initialization_does_not_expire_the_child_deadline() {
+    let env = TestEnv::new();
+    setup(&env);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"subagent":{"enabled":true}},"hooks":{"session_start":"if [ ! -e startup-held ]; then sleep 4; printf done > startup-held; fi"}}"#,
+    );
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool("c1", "subagent", r#"{"agent":"scout","task":"look around"}"#),
+            ScriptTurn::text("the child found three files"),
+            ScriptTurn::text("parent done"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let out = oxa(
+        &env,
+        &server.url(),
+        &["-p", "--max-time", "3", "delegate after startup"],
+    );
+    assert!(env.work().join("startup-held").exists(), "startup hook must run");
+    let reqs = requests(&server);
+    assert!(
+        reqs.iter()
+            .any(|r| r.session.ends_with(".s1") && r.max_tokens > 0),
+        "the child must start within the parent's fresh run allowance: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("parent done"));
+}
