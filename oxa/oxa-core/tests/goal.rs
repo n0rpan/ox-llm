@@ -57,13 +57,13 @@ fn native_goal_control_rejects_stale_requests_and_persists_terminal_cancel() {
     let original = session.goal_revision();
 
     let paused = session
-        .control_goal(&saved.id, original, GoalControl::Pause, &mut sink)
+        .control_goal(&saved, original, GoalControl::Pause, &mut sink)
         .unwrap();
     assert!(paused > original);
     assert_eq!(session.goal().unwrap().status, GoalStatus::Paused);
     assert_eq!(
         session
-            .control_goal(&saved.id, original, GoalControl::Cancel, &mut sink)
+            .control_goal(&saved, original, GoalControl::Cancel, &mut sink)
             .unwrap_err()
             .code,
         "goal_revision_conflict"
@@ -72,12 +72,12 @@ fn native_goal_control_rejects_stale_requests_and_persists_terminal_cancel() {
     assert_eq!(session.goal().unwrap().status, GoalStatus::Paused);
 
     let resumed = session
-        .control_goal(&saved.id, paused, GoalControl::Resume, &mut sink)
+        .control_goal(&saved, paused, GoalControl::Resume, &mut sink)
         .unwrap();
     assert!(resumed > paused);
     assert_eq!(session.goal().unwrap(), goal);
     let canceled = session
-        .control_goal(&saved.id, resumed, GoalControl::Cancel, &mut sink)
+        .control_goal(&saved, resumed, GoalControl::Cancel, &mut sink)
         .unwrap();
     assert!(canceled > resumed);
     goal.status = GoalStatus::Canceled;
@@ -91,7 +91,7 @@ fn native_goal_control_rejects_stale_requests_and_persists_terminal_cancel() {
     assert_eq!(session.goal_revision(), canceled);
     for control in [GoalControl::Pause, GoalControl::Resume, GoalControl::Cancel] {
         assert!(session
-            .control_goal(&saved.id, canceled, control, &mut sink)
+            .control_goal(&saved, canceled, control, &mut sink)
             .is_err());
     }
     assert_eq!(session.goal_revision(), canceled);
@@ -105,7 +105,7 @@ fn native_goal_control_rejects_stale_requests_and_persists_terminal_cancel() {
     let new_revision = session.goal_revision();
     assert_eq!(
         session
-            .control_goal(&saved.id, new_revision, GoalControl::Cancel, &mut sink)
+            .control_goal(&saved, new_revision, GoalControl::Cancel, &mut sink)
             .unwrap_err()
             .code,
         "goal_revision_conflict"
@@ -147,7 +147,7 @@ fn a_control_bound_to_a_different_file_rejects_an_equal_id_and_revision() {
 
     owner.switch(Open::Resume(target), &mut sink, &mut ui).unwrap();
     assert_eq!(owner.goal_revision(), revision);
-    let result = owner.control_goal(&original.id, revision, GoalControl::Cancel, &mut sink);
+    let result = owner.control_goal(&original, revision, GoalControl::Cancel, &mut sink);
     assert_eq!(result.unwrap_err().code, "goal_revision_conflict");
     assert_eq!(owner.goal_revision(), revision);
     assert_eq!(owner.goal(), Some(goal));

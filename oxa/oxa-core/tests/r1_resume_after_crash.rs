@@ -10,7 +10,7 @@ use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_proto::{codes, EntryBody, Finish, HeadlessUi, OxaError, Role, ToolCall, VecSink, WireMsg};
 use oxa_session::{FsStore, Goal, GoalBudget, GoalStatus, SessionRef};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 fn deps(env: &TestEnv, engine: Arc<ScriptedEngine>) -> Deps {
@@ -247,6 +247,7 @@ fn a_second_resume_appends_nothing_more() {
 struct CountingStore {
     inner: oxa_session::MemStore,
     syncs: AtomicUsize,
+    goal_revision_at_sync: AtomicU64,
     fail_sync: AtomicBool,
     fail_prefix: AtomicBool,
 }
@@ -281,8 +282,10 @@ impl oxa_session::SessionStore for CountingStore {
     fn delete(&self, s: &SessionRef) -> Result<(), oxa_proto::OxaError> {
         self.inner.delete(s)
     }
-    fn sync(&self, _s: &SessionRef) -> Result<(), oxa_proto::OxaError> {
+    fn sync(&self, s: &SessionRef) -> Result<(), oxa_proto::OxaError> {
         self.syncs.fetch_add(1, Ordering::SeqCst);
+        self.goal_revision_at_sync
+            .store(Goal::revision(&self.inner.load(s)?), Ordering::SeqCst);
         if self.fail_sync.load(Ordering::SeqCst) {
             return Err(OxaError::new(codes::IO, "synthetic sync failure"));
         }
@@ -329,16 +332,17 @@ fn goal_control_syncs_before_ack_and_distinguishes_partial_failures() {
         store.fail_sync.store(fail_sync, Ordering::SeqCst);
         store.fail_prefix.store(fail_prefix, Ordering::SeqCst);
 
-        let receipt = session.control_goal(&bound.id, before, GoalControl::Cancel, &mut sink);
+        let receipt = session.control_goal(&bound, before, GoalControl::Cancel, &mut sink);
         let after = session.goal_revision();
         assert!(after > before);
         assert_eq!(session.goal().unwrap().status, GoalStatus::Canceled);
         assert_eq!(store.syncs.load(Ordering::SeqCst), 1);
+        assert_eq!(store.goal_revision_at_sync.load(Ordering::SeqCst), after);
         match expected_error {
             Some(code) => assert_eq!(receipt.unwrap_err().code, code),
             None => assert_eq!(receipt.unwrap(), after),
         }
-        let retry = session.control_goal(&bound.id, before, GoalControl::Cancel, &mut sink);
+        let retry = session.control_goal(&bound, before, GoalControl::Cancel, &mut sink);
         assert_eq!(retry.unwrap_err().code, "goal_revision_conflict");
         assert_eq!(session.goal_revision(), after);
         assert_eq!(store.syncs.load(Ordering::SeqCst), 1);

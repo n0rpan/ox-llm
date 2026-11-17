@@ -1,6 +1,6 @@
 //! Session-local goal controls; no worker, timer thread or external scheduler.
 use oxa_proto::{Access, Exposure, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
-use oxa_session::{Goal, GoalStatus};
+use oxa_session::{Goal, GoalStatus, SessionRef};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Wake, Waker};
@@ -15,23 +15,27 @@ pub enum GoalControl {
 }
 
 impl crate::Session {
-    /// The saved goal revision, scoped to the owner session's current ID.
+    /// The saved goal revision, scoped to the owner's current session reference.
     pub fn goal_revision(&self) -> u64 {
         Goal::revision(self.inner().tree.entries())
     }
 
     /// Apply a lifecycle request on the idle session owner. The frontend
-    /// authenticates the sender and must pass the session ID it bound when
-    /// accepting the request. A matching revision on another session is insufficient.
+    /// authenticates the sender and keeps the full session reference it bound
+    /// at admission private. Two files can share an ID and revision.
+    ///
+    /// Success means the store sync succeeded. If the goal revision advanced
+    /// before a later step failed, the error distinguishes an unconfirmed sync
+    /// from a saved transition that still needs a prefix refresh.
     pub fn control_goal(
         &mut self,
-        session_id: &str,
+        bound_session: &SessionRef,
         revision: u64,
         control: GoalControl,
         sink: &mut dyn oxa_proto::EventSink,
     ) -> Result<u64, oxa_proto::OxaError> {
         use oxa_proto::{codes, OxaError};
-        if self.inner().sref.id != session_id || self.goal_revision() != revision {
+        if &self.inner().sref != bound_session || self.goal_revision() != revision {
             return Err(OxaError::new(
                 "goal_revision_conflict",
                 "The session or goal revision changed.",
@@ -53,8 +57,22 @@ impl crate::Session {
                 ))
             }
         }
-        self.set_goal(Some(goal), sink)?;
-        Ok(self.goal_revision())
+        let result = self.set_goal(Some(goal), sink);
+        let applied_revision = self.goal_revision();
+        if applied_revision == revision {
+            return result.map(|()| applied_revision);
+        }
+        let state = self.inner();
+        state.store.sync(&state.sref).map_err(|error| {
+            OxaError::new("goal_sync_failed", error.message).with_hint(
+                "The goal revision advanced. Confirm durability before acknowledging the transition.",
+            )
+        })?;
+        result.map_err(|error| {
+            OxaError::new("goal_applied_prefix_failed", error.message)
+                .with_hint("The goal transition was saved. Refresh the session prefix before running again.")
+        })?;
+        Ok(applied_revision)
     }
 }
 
