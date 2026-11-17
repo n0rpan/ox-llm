@@ -76,6 +76,33 @@ fn nodes(value: &Value) -> Result<&Vec<Value>, String> {
     Ok(rows)
 }
 
+fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
+    if !base.is_object() {
+        return Err("missing PR base requirements".into());
+    }
+    let mut required = BTreeSet::new();
+    if !base["refUpdateRule"].is_null() {
+        for context in base["refUpdateRule"]["requiredStatusCheckContexts"]
+            .as_array()
+            .ok_or("missing classic check requirements")?
+        {
+            required.insert(context.as_str().ok_or("invalid check requirement")?);
+        }
+    }
+    // Ref.rules includes active repository and organization rulesets for this base.
+    for rule in nodes(&base["rules"])? {
+        if rule["type"] == "REQUIRED_STATUS_CHECKS" {
+            for check in rule["parameters"]["requiredStatusChecks"]
+                .as_array()
+                .ok_or("missing ruleset check requirements")?
+            {
+                required.insert(check["context"].as_str().ok_or("invalid check requirement")?);
+            }
+        }
+    }
+    Ok(required)
+}
+
 impl GitHub for Reader<'_> {
     fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
         // One list plus one batched detail query, never per-PR polling. Fail on truncation.
@@ -87,13 +114,14 @@ impl GitHub for Reader<'_> {
             let n = pr["number"].as_u64().ok_or("missing PR number")?;
             fields.push_str(&format!(
                 r#"p{n}:pullRequest(number:{n}){{number headRefOid baseRefName state body isDraft reviewDecision mergeable mergeStateStatus
+                baseRef{{refUpdateRule{{requiredStatusCheckContexts}} rules(first:100){{totalCount nodes{{type parameters{{... on RequiredStatusChecksParameters{{requiredStatusChecks{{context}}}}}}}}}}}}
                 labels(first:100){{totalCount nodes{{name}}}}
                 files(first:100){{totalCount nodes{{path deletions}}}}
                 reviewThreads(first:100){{totalCount nodes{{isResolved}}}}
                 latestOpinionatedReviews(first:100,writersOnly:true){{totalCount nodes{{state commit{{oid}}}}}}
                 commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:100){{totalCount nodes{{
-                    ... on CheckRun{{isRequired(pullRequestNumber:{n}) status conclusion}}
-                    ... on StatusContext{{isRequired(pullRequestNumber:{n}) state}}
+                    ... on CheckRun{{name isRequired(pullRequestNumber:{n}) status conclusion}}
+                    ... on StatusContext{{context isRequired(pullRequestNumber:{n}) state}}
                 }}}}}}}}}}}}}}"#
             ));
         }
@@ -114,6 +142,7 @@ impl GitHub for Reader<'_> {
                 if row["state"] != "OPEN" {
                     return Err("PR changed during snapshot; retry later".into());
                 }
+                let required = required_contexts(&row["baseRef"])?;
                 let contexts = &row["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"];
                 let checks = if contexts.is_null() {
                     vec![]
@@ -139,6 +168,11 @@ impl GitHub for Reader<'_> {
                 }) {
                     RequiredCi::Failed
                 } else if checks.is_empty()
+                    || required.iter().any(|name| {
+                        !checks
+                            .iter()
+                            .any(|c| c["name"].as_str().or(c["context"].as_str()) == Some(*name))
+                    })
                     || checks.iter().any(|c| {
                         !matches!(
                             c["state"].as_str().or(c["conclusion"].as_str()),
@@ -169,7 +203,10 @@ impl GitHub for Reader<'_> {
                             ) || (row["isDraft"] == true && row["mergeStateStatus"] == "DRAFT")
                                 || (has_queue
                                     && row["baseRefName"] == "main"
-                                    && row["mergeStateStatus"] == "BEHIND") =>
+                                    && row["mergeStateStatus"] == "BEHIND")
+                                || (required_ci == RequiredCi::Passed
+                                    && row["reviewDecision"] == "REVIEW_REQUIRED"
+                                    && row["mergeStateStatus"] == "BLOCKED") =>
                         {
                             Mergeability::Mergeable
                         }

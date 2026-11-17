@@ -11,7 +11,9 @@ The private, locked `work/<project-hash>/board/OWNER/REPO/board-shadow.jsonl` un
 directory appends `{schema_version:1,observed_at,board,would_take}`. Eligible shared
 board entries form `would_take`; shadow reserves no leases or attempts. Use one
 GitHub repository per capture. Read errors and incomplete connections stop sampling.
-Limit: 100 PRs/items per connection. Unknown/no required checks stay pending. Review
+Limit: 100 PRs/items per connection. Reported checks are matched against the base's
+classic protection and active repository/organization rulesets; missing required
+contexts and unknown/no required checks stay pending. Review
 requires GitHub's approval decision and all latest approving writer reviews at the
 current head; older approvals wait, including pure base merges without fresh evidence.
 Snapshot reads reject changing open-PR sets and responses above 4 MiB. Detailed
