@@ -58,12 +58,12 @@ fn subject(value: &Subject) -> String {
 
 /// Full server-rendered page; scripts/styles are same-origin resources, without a CDN.
 pub fn document(view: &View<'_>, now: u64) -> String {
-    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1\"><title>oxa lead</title><link rel=stylesheet href=/style.css><script src=/live.js defer></script><header><a href=/>oxa <b>lead</b></a><span id=connection>Snapshot</span></header>{}</html>", content(view, now))
+    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=color-scheme content=\"light dark\"><title>oxa lead</title><link rel=stylesheet href=/style.css><script src=/live.js defer></script><a class=skip href=#main>Skip to content</a><header class=top><a href=/>oxa <b>lead</b></a><span id=connection class=age>Snapshot</span></header>{}</html>", content(view, now))
 }
 
 /// Allow-listed HTML fragment, also used by SSE. No worktrees, sessions, errors or headers.
 pub fn content(view: &View<'_>, now: u64) -> String {
-    let mut html = String::from("<main><h1>Work in motion</h1>");
+    let mut html = String::from("<main id=main tabindex=-1><h1>Status</h1>");
     let ask_count = view.situation.map_or(0, |s| s.asks.len());
     let overdue: Vec<_> = view
         .queue
@@ -110,7 +110,7 @@ pub fn content(view: &View<'_>, now: u64) -> String {
         }
         html.push_str("</ul></section>");
     }
-    html.push_str("<nav aria-label=Views><a href=#board>Board</a><a href=#lanes>Lanes</a><a href=#queue>Merge queue</a><a href=#release>Release</a><a href=#asks>Asks</a></nav><section id=board><h2>Board</h2>");
+    html.push_str("<nav class=tabs aria-label=Main><a href=#board>Board</a><a href=#lanes>Workers</a><a href=#queue>Merge queue</a><a href=#release>Release</a><a href=#asks>Asks</a></nav><section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
         let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
         let _ = write!(
@@ -229,16 +229,7 @@ pub fn content(view: &View<'_>, now: u64) -> String {
     html
 }
 
-pub const STYLE: &str = r#"
-:root{color-scheme:dark;font:16px/1.6 system-ui,sans-serif;background:#10171e;color:#e2e9ed}
-body{max-width:1100px;margin:auto;padding:0 24px}header{display:flex;justify-content:space-between;padding:28px 0;border-bottom:1px solid #34414a}
-a{color:#e9c785;text-decoration:none}a:focus-visible{outline:2px solid #e9c785}header a{font-size:22px;color:inherit}header b{color:#e9c785}
-h1{font-size:clamp(32px,5vw,48px);letter-spacing:-.04em;margin:40px 0 0}h2{font-size:22px}h3{font-size:18px;margin:6px 0}
-.muted,footer,#connection{color:#a3b4bf}nav{display:flex;gap:24px;overflow:auto;padding:20px 0}nav a{white-space:nowrap}
-section{padding:16px 0 28px;border-top:1px solid #34414a;scroll-margin:16px}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;text-align:left;font-size:14px}
-th{color:#a3b4bf;font-weight:500}td,th{padding:12px;border-bottom:1px solid #28343d}article{background:#19242d;padding:16px 20px;margin:12px 0;border-radius:8px}article p{margin:4px 0}footer{padding:24px 0 40px}li{margin:10px 0}
-@media(max-width:600px){body{padding:0 16px}nav{gap:18px}td,th{padding:10px}header{padding:20px 0}}
-"#;
+pub const STYLE: &str = include_str!("lead_page/style.css");
 
 pub const SCRIPT: &str = r#"const badge=document.getElementById('connection');
 const stream=new EventSource('/events');

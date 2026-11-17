@@ -142,7 +142,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     .starts_with("HTTP/1.1 403"));
     std::fs::set_permissions(&sample, std::fs::Permissions::from_mode(0o644)).unwrap();
     let event = get(port, "/events", &authority, "");
-    assert!(event.contains("event: snapshot\ndata: <main>"));
+    assert!(event.contains("event: snapshot\ndata: <main"));
     assert!(event.contains("Board unavailable"));
     assert!(!event.contains(sample.to_str().unwrap()));
     drop(child);
