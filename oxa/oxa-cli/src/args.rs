@@ -13,8 +13,9 @@ pub enum ModeArg {
 
 /// The `--no-<tool>` aliases (UX/DX review item 5): each is sugar for `--exclude-tools <tool>`,
 /// so one exclusion precedence (`resolve_toolset`) covers both spellings and the effective tool
-/// selection is identical. `--no-web-search` and `--no-mcp` are not here: they also skip
-/// building the web-search hook set and the MCP manager.
+/// selection is identical. A denylist has no replacement meaning: every spelling appends to
+/// `Args::exclude_tools`, in the order given. `--no-web-search` and `--no-mcp` are not here:
+/// they also skip building the web-search hook set and the MCP manager.
 pub const NO_TOOL_ALIASES: [(&str, &str); 8] = [
     ("--no-read", "read"),
     ("--no-bash", "bash"),
@@ -729,10 +730,13 @@ fn parse_flag(
             check_tool_list(flag, &entries)?;
             a.tools = Some(entries);
         }
+        // Repeated `-xt` / `--exclude-tools` lists accumulate, so a later exclusion never
+        // undoes an earlier explicit one (a denylist has no replacement meaning, unlike the
+        // `--tools` allowlist). `--no-<tool>` appends to the same list, in the order given.
         "-xt" | "--exclude-tools" => {
-            a.exclude_tools = list(&value(argv, i, inline, flag, "a comma-separated list")?)
+            a.exclude_tools
+                .extend(list(&value(argv, i, inline, flag, "a comma-separated list")?))
         }
-        // `--no-<tool>`: the same exclusion list as `-xt`, appended in the order given.
         _ if no_tool_alias(flag).is_some() => {
             no_value(inline, flag)?;
             a.exclude_tools

@@ -522,7 +522,9 @@ fn no_tool_aliases_are_exclude_tools_and_pick_the_same_tools() {
     assert_eq!(parse_err(&["--no-bash=1"]).code, codes::USAGE);
 }
 
-/// A later exclusion must never undo an earlier explicit tool restriction.
+/// A later exclusion must never undo an earlier explicit tool restriction: `-xt` and the
+/// `--no-<tool>` aliases accumulate in one denylist, in either order, and further `-xt` lists
+/// add to it rather than replace it.
 #[test]
 fn mixed_tool_exclusions_remain_disabled_in_either_order() {
     for words in [
@@ -533,10 +535,21 @@ fn mixed_tool_exclusions_remain_disabled_in_either_order() {
         let args = parse(&words);
         let (tools, warnings) = oxa_core::resolve_toolset(&oxa_tools::builtin_tools(), &selection(&args));
         assert!(warnings.is_empty(), "{words:?}: {warnings:?}");
+        // Both spellings land in one list, so later words cannot re-enable an earlier one.
+        assert_eq!(args.exclude_tools, ["bash", "read"], "{words:?}");
         let names: Vec<_> = tools.specs().into_iter().map(|s| s.name).collect();
-        assert!(!names.iter().any(|name| name == "bash"), "{words:?} re-enabled bash");
-        assert!(!names.iter().any(|name| name == "read"), "{words:?} re-enabled read");
-        assert!(names.iter().any(|name| name == "edit"), "{words:?} removed an unrelated tool");
+        assert!(
+            !names.iter().any(|name| name == "bash"),
+            "{words:?} re-enabled bash"
+        );
+        assert!(
+            !names.iter().any(|name| name == "read"),
+            "{words:?} re-enabled read"
+        );
+        assert!(
+            names.iter().any(|name| name == "edit"),
+            "{words:?} removed an unrelated tool"
+        );
     }
 }
 

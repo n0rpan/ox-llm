@@ -189,7 +189,7 @@ See [sessions.md](sessions.md).
 | Option | Meaning |
 |---|---|
 | `--tools`, `-t <list>` | allowlist of tool names or patterns (`*` matches any characters) |
-| `--exclude-tools`, `-xt <list>` | denylist of tool names or patterns |
+| `--exclude-tools`, `-xt <list>` | denylist of tool names or patterns. Repeated lists and every `--no-<tool>` add to it |
 | `--no-builtin-tools`, `-nbt` | disable the built-in tools by default; extension tools stay |
 | `--no-tools`, `-nt` | disable all tools by default |
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
