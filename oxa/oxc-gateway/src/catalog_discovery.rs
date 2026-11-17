@@ -79,19 +79,30 @@ impl Source {
             .map_err(|error| error.error)?
             .into_iter()
             .map(|model| {
-                let price = |rate: Option<bigdecimal::BigDecimal>| {
-                    let rate = rate?;
-                    let number = (&rate * 1_000_000i64).to_f64()?;
-                    (number.is_finite() && (number > 0.0 || rate == 0)).then_some(number)
-                };
-                let prompt = price(model.prompt_price_per_token);
-                let completion = price(model.completion_price_per_token);
+                let mut prices = serde_json::Map::new();
+                for (field, rate) in [
+                    ("input_per_million", model.prompt_price_per_token),
+                    ("output_per_million", model.completion_price_per_token),
+                    ("cache_read_per_million", model.cache_read_price_per_token),
+                    ("cache_write_per_million", model.cache_write_price_per_token),
+                ] {
+                    let Some(rate) = rate else {
+                        continue;
+                    };
+                    if let Some(value) = (&rate * 1_000_000i64)
+                        .to_f64()
+                        .filter(|value| value.is_finite() && (*value > 0.0 || rate == 0))
+                    {
+                        prices.insert(field.into(), json!(value));
+                    } else {
+                        prices.clear();
+                        break;
+                    }
+                }
                 json!({
                     "id": model.id, "context": model.context_length,
                     "output": model.max_completion_tokens, "tools": model.tools,
-                    "pricing": prompt.zip(completion).map(|(prompt, completion)| {
-                        json!({"input_per_million": prompt, "output_per_million": completion})
-                    })
+                    "pricing": prices
                 })
             })
             .collect(),

@@ -91,6 +91,46 @@ impl Price {
     pub fn normalized(&self) -> &Value {
         &self.0
     }
+    /// The live list publishes short-context rates. Keep configured tiers and
+    /// never treat a zero live rate as proof that a configured charge is free.
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn overlay_discovered(mut self, live: &Self) -> Self {
+        let overlay = |tier: &mut Value, base: bool| {
+            for (field, rate) in live.0.as_object().into_iter().flatten() {
+                let Some(rate) = rate.as_f64() else {
+                    continue;
+                };
+                let configured = tier[field].as_f64();
+                let rate = if base && rate > 0.0 {
+                    rate
+                } else {
+                    configured.map_or(rate, |configured| configured.max(rate))
+                };
+                tier[field] = json!(rate);
+            }
+        };
+        if let Some(tiers) = self.0.get_mut("tiers").and_then(Value::as_array_mut) {
+            let mut tiers = tiers.iter_mut();
+            let mut previous = tiers.next().expect("validated price has a tier");
+            overlay(previous, true);
+            for tier in tiers {
+                overlay(tier, false);
+                for (field, rate) in previous.as_object().into_iter().flatten() {
+                    if field.ends_with("_per_million")
+                        && tier[field]
+                            .as_f64()
+                            .is_none_or(|current| rate.as_f64().is_some_and(|rate| rate > current))
+                    {
+                        tier[field] = rate.clone();
+                    }
+                }
+                previous = tier;
+            }
+        } else {
+            overlay(&mut self.0, true);
+        }
+        self
+    }
     pub fn cost(
         &self,
         provider: &str,

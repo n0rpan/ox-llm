@@ -26,6 +26,8 @@ pub struct Model {
     pub prompt_price_per_token: Option<BigDecimal>,
     /// `None` when OpenRouter reports the unavailable-price sentinel `-1`.
     pub completion_price_per_token: Option<BigDecimal>,
+    pub cache_read_price_per_token: Option<BigDecimal>,
+    pub cache_write_price_per_token: Option<BigDecimal>,
     pub tools: bool,
 }
 
@@ -173,6 +175,8 @@ impl Client {
                     },
                     prompt_price_per_token: rate(&pricing["prompt"])?,
                     completion_price_per_token: rate(&pricing["completion"])?,
+                    cache_read_price_per_token: rate(&pricing["input_cache_read"])?,
+                    cache_write_price_per_token: rate(&pricing["input_cache_write"])?,
                     tools: parameters
                         .iter()
                         .any(|parameter| parameter.as_str() == Some("tools")),
@@ -403,7 +407,7 @@ mod tests {
         let fixture = Fixture::new();
         let (base, task) = mock(vec![reply(
             "models/user",
-            r#"{"data":[{"id":"synthetic/tool-model","context_length":128000,"top_provider":{"max_completion_tokens":8192},"pricing":{"prompt":"0.0000001234567890123456789","completion":"2.5e-7"},"supported_parameters":["tools","temperature"]},{"id":"synthetic/plain","context_length":1024,"top_provider":{"max_completion_tokens":null},"pricing":{"prompt":"0","completion":"0"},"supported_parameters":[]}]}"#,
+            r#"{"data":[{"id":"synthetic/tool-model","context_length":128000,"top_provider":{"max_completion_tokens":8192},"pricing":{"prompt":"0.0000001234567890123456789","completion":"2.5e-7","input_cache_read":"1e-8","input_cache_write":"3e-7"},"supported_parameters":["tools","temperature"]},{"id":"synthetic/plain","context_length":1024,"top_provider":{"max_completion_tokens":null},"pricing":{"prompt":"0","completion":"0"},"supported_parameters":[]}]}"#,
         )]);
         let models = Client::new(&base, Duration::from_secs(2))
             .unwrap()
@@ -419,9 +423,12 @@ mod tests {
             Some(decimal("0.0000001234567890123456789"))
         );
         assert_eq!(models[0].completion_price_per_token, Some(decimal("0.00000025")));
+        assert_eq!(models[0].cache_read_price_per_token, Some(decimal("0.00000001")));
+        assert_eq!(models[0].cache_write_price_per_token, Some(decimal("0.0000003")));
         assert!(models[0].tools);
         assert!(!models[1].tools);
         assert_eq!(models[1].max_completion_tokens, None);
+        assert_eq!(models[1].cache_write_price_per_token, None);
         task.join().unwrap();
     }
 

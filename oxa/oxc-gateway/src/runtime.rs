@@ -295,10 +295,13 @@ impl Runtime {
                     missing_limits += 1;
                     continue;
                 };
-                let price = offer.price.clone().or_else(|| match self.billings.get(alias) {
-                    Some(Billing::Metered(price)) => Some(price.clone()),
-                    _ => None,
-                });
+                let price = match (self.billings.get(alias), offer.price.as_ref()) {
+                    (Some(Billing::Metered(configured)), Some(live)) => {
+                        Some(configured.clone().overlay_discovered(live))
+                    }
+                    (Some(Billing::Metered(configured)), None) => Some(configured.clone()),
+                    (_, live) => live.cloned(),
+                };
                 let Some(price) = price.filter(|price| {
                     price
                         .reservation(
