@@ -617,10 +617,12 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
     setup(&env, "[]");
     env.write(
         "work/tasks.json",
-        r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","max_time":1}]"#,
+        r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","max_time":4}]"#,
     );
     // Prepare only the synthetic linked tree before the task budget starts.
     // The runner still validates, inspects and merges it before admitting the child.
+    // That preparation is billed to the task budget, so the budget stays well above
+    // its cost while the active tool below outlasts whatever allowance is left.
     let ready_tree = env.work().join(".oxa-worktrees/project/test");
     fs::create_dir_all(ready_tree.parent().unwrap()).unwrap();
     git(
@@ -643,7 +645,7 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
             ScriptTurn::tool(
                 "edit",
                 "bash",
-                r#"{"command":"printf draft > change.txt; sleep 1.2; printf finished > tool-finished"}"#,
+                r#"{"command":"printf draft > change.txt; sleep 6; printf finished > tool-finished"}"#,
             ),
             ScriptTurn::tool(
                 "save",
@@ -671,7 +673,7 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
         "{}",
         diagnostics()
     );
-    assert_eq!(load(&env)["task"]["max_time"], 1, "{}", diagnostics());
+    assert_eq!(load(&env)["task"]["max_time"], 4, "{}", diagnostics());
     assert_eq!(record["step"], "finished", "{}", diagnostics());
     assert_eq!(record["interruption"], "deadline", "{}", diagnostics());
 }
