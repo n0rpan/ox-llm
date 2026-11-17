@@ -199,6 +199,110 @@ fn total_mark(limit: usize, omitted: usize) -> String {
 mod tests {
     use super::*;
 
+    fn git(env: &oxa_fake::TestEnv, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(env.work())
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", env.home())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    fn repository() -> oxa_fake::TestEnv {
+        let env = oxa_fake::TestEnv::new();
+        git(&env, &["init", "-b", "main"]);
+        git(&env, &["config", "user.name", "Test"]);
+        git(&env, &["config", "user.email", "test@example.invalid"]);
+        env
+    }
+
+    fn selected_diff(env: &oxa_fake::TestEnv, selection: Selection) -> String {
+        let args = diff_argv(&selection).unwrap();
+        git(env, &args.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn merge_commit_review_includes_first_parent_changes() {
+        let env = repository();
+        env.write("work/base.txt", "base\n");
+        git(&env, &["add", "."]);
+        git(&env, &["commit", "-m", "base"]);
+        git(&env, &["checkout", "-b", "topic"]);
+        env.write("work/topic.txt", "topic\n");
+        git(&env, &["add", "."]);
+        git(&env, &["commit", "-m", "topic"]);
+        git(&env, &["checkout", "main"]);
+        git(&env, &["merge", "--no-ff", "topic", "-m", "merge"]);
+        let diff = selected_diff(&env, Selection::Commit("HEAD".into()));
+        assert!(diff.contains("diff --git a/topic.txt b/topic.txt"), "{diff}");
+        assert!(diff.contains("+topic"), "{diff}");
+    }
+
+    #[test]
+    fn root_and_annotated_tag_reviews_ignore_display_configuration() {
+        let env = repository();
+        env.write("work/root.txt", "root\n");
+        git(&env, &["add", "."]);
+        git(&env, &["commit", "-m", "root"]);
+        git(
+            &env,
+            &[
+                "tag",
+                "-a",
+                "review-tag",
+                "-m",
+                "annotation must not enter review",
+            ],
+        );
+        git(&env, &["config", "log.showRoot", "false"]);
+        git(&env, &["config", "color.ui", "always"]);
+        git(&env, &["config", "color.diff", "always"]);
+        let diff = selected_diff(&env, Selection::Commit("review-tag".into()));
+        assert!(diff.starts_with("diff --git a/root.txt b/root.txt"), "{diff}");
+        assert!(diff.contains("+root"), "{diff}");
+        assert!(!diff.contains("annotation must not enter review"), "{diff}");
+        assert!(!diff.contains('\u{1b}'), "{diff:?}");
+    }
+
+    #[test]
+    fn submodule_ignore_configuration_cannot_hide_a_changed_gitlink() {
+        let env = repository();
+        env.write("work/base.txt", "base\n");
+        git(&env, &["add", "."]);
+        git(&env, &["commit", "-m", "base"]);
+        let commit = git(&env, &["rev-parse", "HEAD"]);
+        let entry = format!("160000,{},module", commit.trim());
+        git(&env, &["update-index", "--add", "--cacheinfo", &entry]);
+        std::fs::create_dir(env.work().join("module")).unwrap();
+        git(&env, &["config", "diff.ignoreSubmodules", "all"]);
+        let diff = selected_diff(&env, Selection::Base("HEAD".into()));
+        assert!(diff.contains("diff --git a/module b/module"), "{diff}");
+        assert!(diff.contains("+Subproject commit"), "{diff}");
+    }
+
+    #[test]
+    fn commit_selection_refuses_revision_sets() {
+        for revision in [
+            "HEAD~2..HEAD",
+            "HEAD...main",
+            "^HEAD",
+            "HEAD^@",
+            "HEAD^!",
+            "HEAD^-2",
+        ] {
+            assert!(
+                diff_argv(&Selection::Commit(revision.into())).is_err(),
+                "{revision}"
+            );
+        }
+    }
+
     fn two_files() -> String {
         let line = " line of a diff that is repeated to grow one file past the cap\n";
         let big = line.repeat(PER_FILE_CAP / line.len() + 8);
