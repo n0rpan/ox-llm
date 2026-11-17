@@ -333,7 +333,16 @@ fn animation_off_is_reduced_motion_for_the_run() {
         "home/.oxa/agent/settings.json",
         r#"{"oxa":{"bootPreload":false}}"#,
     );
-    let rig = start_args(env, &["--animation", "off"], &[], FakeOpts::default());
+    // The activity line is only observable while the run is held, as in the sibling cases.
+    let rig = start_args(
+        env,
+        &["--animation", "off"],
+        &[],
+        FakeOpts {
+            hold_headers_ms: 2500,
+            ..FakeOpts::default()
+        },
+    );
     rig.pty.wait_for_text("● READY").unwrap();
     // The working line is the static badge as well.
     rig.pty.send_text("ping");
