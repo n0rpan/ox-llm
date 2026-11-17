@@ -3,10 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod claims;
-pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, ReleaseRecord};
+pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, NativeBinding, ReleaseRecord};
 pub mod assignment;
 mod intake;
 pub mod landing;
+pub mod queue;
 pub use intake::{ImportState, Issue, Snapshot};
 pub mod review;
 
