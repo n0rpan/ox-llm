@@ -421,41 +421,9 @@ impl ManagerShared {
         true
     }
 
-    /// Run one `!command` of an `env` / `headers` value, after asking the gate.
+    /// Run one `!command` of an `env` / `headers` / OAuth value (`run_value_command`).
     fn run_value_command(&self, command: &str) -> Result<String, OxaError> {
-        let access = Access::Exec {
-            command: command.to_string(),
-            net: true,
-        };
-        if !(self.opts.gate)(&access) {
-            return Err(OxaError::new(
-                codes::DENIED,
-                format!("permission to run `{command}` was denied"),
-            ));
-        }
-        // Item 1 (sec-prod): offline, the value command runs through bwrap without network.
-        let argv = crate::offline::launch(
-            &format!("the value command `{command}`"),
-            oxa_proto::offline(),
-            &std::env::var("PATH").unwrap_or_default(),
-            &self.opts.home,
-            &self.opts.cwd,
-            vec!["sh".to_string(), "-c".to_string(), command.to_string()],
-        )?;
-        let out = std::process::Command::new(&argv[0])
-            .args(&argv[1..])
-            .current_dir(&self.opts.cwd)
-            .stdin(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .output()
-            .map_err(|e| OxaError::new(codes::MCP, format!("cannot run `{command}`: {e}")))?;
-        if !out.status.success() {
-            return Err(OxaError::new(
-                codes::MCP,
-                format!("`{command}` failed with {}", out.status),
-            ));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        run_value_command(&*self.opts.gate, &self.opts.home, &self.opts.cwd, command)
     }
 
     fn expand_pairs(&self, pairs: &[(String, String)]) -> Result<Vec<(String, String)>, OxaError> {
@@ -511,6 +479,50 @@ impl ManagerShared {
 /// alive while the connection lives: a stdio server dies with the thread that started it
 /// (`PR_SET_PDEATHSIG`). It handles idle server messages (pings, logging) and closes the client
 /// when the connection is replaced, disabled or stopped.
+/// Run one `!command` value of `mcp.json` (`env`, `headers`, OAuth `clientSecret`): ask `gate`
+/// for `Access::Exec` first, run it in `cwd` with stdin and stderr closed, and offline through
+/// bwrap without network (`crate::offline::launch`). Every `!command` value runs here.
+pub fn run_value_command(
+    gate: &dyn Fn(&Access) -> bool,
+    home: &Path,
+    cwd: &Path,
+    command: &str,
+) -> Result<String, OxaError> {
+    let access = Access::Exec {
+        command: command.to_string(),
+        net: true,
+    };
+    if !gate(&access) {
+        return Err(OxaError::new(
+            codes::DENIED,
+            format!("permission to run `{command}` was denied"),
+        ));
+    }
+    // Item 1 (sec-prod): offline, the value command runs through bwrap without network.
+    let argv = crate::offline::launch(
+        &format!("the value command `{command}`"),
+        oxa_proto::offline(),
+        &std::env::var("PATH").unwrap_or_default(),
+        home,
+        cwd,
+        vec!["sh".to_string(), "-c".to_string(), command.to_string()],
+    )?;
+    let out = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| OxaError::new(codes::MCP, format!("cannot run `{command}`: {e}")))?;
+    if !out.status.success() {
+        return Err(OxaError::new(
+            codes::MCP,
+            format!("`{command}` failed with {}", out.status),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 fn worker(shared: Arc<ManagerShared>, idx: usize, gen: u64, cfg: ServerConfig) {
     if !shared.is_current(idx, gen) {
         return;
@@ -1045,7 +1057,8 @@ impl McpManager {
                 "MCP sign-in is not available in this build yet (OAuth support is pending)",
             ));
         }
-        crate::login(name, http, &self.shared.tokens, io, timeout, cancel)?;
+        let run = |c: &str| self.shared.run_value_command(c);
+        crate::login(name, http, &self.shared.tokens, io, timeout, cancel, &run)?;
         if cfg.enabled {
             self.reconnect(name)?;
         }

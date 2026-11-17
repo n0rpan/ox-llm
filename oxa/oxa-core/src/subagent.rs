@@ -37,6 +37,13 @@
 //!   a fixed note naming the spill file that holds the full text.
 //! * **Abort.** The tool's cancel token and [`Hooks::shutdown`] kill the child's process group
 //!   (SIGTERM, SIGKILL after [`KILL_GRACE`]); queued tasks never start.
+//! * **Parent `--max-time` (#508).** The parent's limit watcher publishes its actual deadline
+//!   ([`SubagentHooks::set_deadline`]); a child is started with the time that is left as its
+//!   own `--max-time`, re-read after it takes a worker or the local slot, and a child whose time
+//!   is gone does not start at all. The parent cancels an active child group at that deadline,
+//!   including startup before the child's timer exists. Everything else (its `--max-tokens` run
+//!   budget, `OXA_CHILD_SOFT_TOKENS`, permission mode, tools, cancellation) is unchanged, and
+//!   without the flag nothing is added to its argv.
 //! * **Small models.** Not declared in an epoch whose model's context window is below
 //!   [`MIN_CONTEXT`] unless `oxa.subagent.smallContext` is true. `tools()` runs on the session
 //!   thread while it builds an epoch, where a `Host::call` cannot be answered; the window is
@@ -282,6 +289,7 @@ impl Default for Config {
 struct Inner {
     oxa_bin: PathBuf,
     agents: Vec<AgentDef>,
+    excluded_tools: Mutex<Vec<String>>,
     config: Mutex<Config>,
     host: Mutex<Option<Arc<dyn Host>>>,
     /// The context window of the session's model, as last learned through the host.
@@ -304,6 +312,9 @@ struct Inner {
     /// gets `--standard`, `--auto` or `--yolo` for its level then. Not a global: the process
     /// hands its own switch in (`with_yolo`); `None` = no level flag.
     yolo: Mutex<Option<YoloSwitch>>,
+    /// The parent's `--max-time` deadline (#508): a child gets the time left as its own
+    /// `--max-time`, and none starts after it. `None` = no limit.
+    deadline: Mutex<Option<Instant>>,
 }
 
 /// The built-in subagent hook set. O-146: on by default for every model but the Rust Flash
@@ -329,6 +340,7 @@ impl SubagentHooks {
         let inner = Arc::new(Inner {
             oxa_bin,
             agents,
+            excluded_tools: Mutex::new(Vec::new()),
             config: Mutex::new(Config::default()),
             host: Mutex::new(None),
             context_window: Mutex::new(None),
@@ -339,6 +351,7 @@ impl SubagentHooks {
             child_pgid: Mutex::new(Vec::new()),
             abort: AtomicBool::new(false),
             yolo: Mutex::new(None),
+            deadline: Mutex::new(None),
         });
         let tool: Arc<dyn Tool> = Arc::new(SubagentTool {
             spec: ToolSpec {
@@ -372,6 +385,27 @@ impl SubagentHooks {
     pub fn with_yolo(self, switch: YoloSwitch) -> SubagentHooks {
         *lock(&self.inner.yolo) = Some(switch);
         self
+    }
+
+    /// Explicit parent exclusions remain denied even when an agent requests those tools.
+    pub fn with_tool_exclusions(self, excluded: Vec<String>) -> SubagentHooks {
+        *lock(&self.inner.excluded_tools) = excluded;
+        self
+    }
+
+    /// #508: the parent's `--max-time` deadline. Every child is started with the time that is
+    /// left as its own `--max-time`, and no child is started once the deadline has passed.
+    /// The child's timer asks it to wrap up cooperatively. The parent also supervises the
+    /// absolute deadline, including startup before the child's timer exists, and cancels
+    /// its process group at that deadline. Unlimited parents retain no time deadline.
+    pub fn with_deadline(self, deadline: Instant) -> SubagentHooks {
+        self.set_deadline(Some(deadline));
+        self
+    }
+
+    /// Publish the parent's actual run deadline after session initialization completes.
+    pub fn set_deadline(&self, deadline: Option<Instant>) {
+        *lock(&self.inner.deadline) = deadline;
     }
 
     /// Read `oxa.subagent.enabled`, `oxa.subagent.softTokens`, `oxa.subagent.resultCap` and
@@ -1095,6 +1129,32 @@ struct Prepared {
     remote: bool,
 }
 
+impl Prepared {
+    /// Check again after taking an execution slot: preparation and queueing may have used
+    /// up the parent's allowance. Only a child about to spawn gets its remaining time.
+    fn ready_to_start(&mut self, inner: &Inner, cancel: &CancelToken) -> bool {
+        if cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst) {
+            return false;
+        }
+        if let Some(at) = *lock(&inner.deadline) {
+            let left = at.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return false;
+            }
+            // Keep the task last; `--max-time` takes a positive number of seconds.
+            let at = self.argv.len() - 1;
+            self.argv.splice(
+                at..at,
+                [
+                    "--max-time".into(),
+                    format!("{:.3}", left.as_secs_f64().max(0.001)),
+                ],
+            );
+        }
+        true
+    }
+}
+
 /// What a concurrently running child reports to the call's thread (which owns the UI).
 enum Event {
     Activity(usize, String),
@@ -1204,7 +1264,8 @@ impl Run<'_, '_> {
     /// Prepare task `k`: its agent, model, hint and argv; park the parent before the first
     /// child. `Err` is the task's finished result (unknown agent, aborted before start).
     fn prepare(&mut self, k: usize, item: &Item, task: &str) -> Result<Prepared, Box<ChildResult>> {
-        if self.stopped() {
+        let left = (*lock(&self.inner.deadline)).map(|at| at.saturating_duration_since(Instant::now()));
+        if self.stopped() || left.is_some_and(|left| left.is_zero()) {
             let r = ChildResult::unstarted(&item.agent, Status::Aborted, NOT_STARTED.to_string());
             return Err(Box::new(self.finish(k, r)));
         }
@@ -1279,6 +1340,12 @@ impl Run<'_, '_> {
             argv.push("--tools".into());
             argv.push(tools.join(","));
         }
+        let excluded = lock(&self.inner.excluded_tools);
+        if !excluded.is_empty() {
+            argv.push("--exclude-tools".into());
+            argv.push(excluded.join(","));
+        }
+        drop(excluded);
         if !agent.system_prompt.trim().is_empty() {
             argv.push("--append-system-prompt".into());
             argv.push(agent.system_prompt.clone());
@@ -1336,10 +1403,14 @@ impl Run<'_, '_> {
 
     /// Run task `k` (one child), its cleanup included.
     fn child(&mut self, k: usize, item: &Item, task: &str) -> ChildResult {
-        let p = match self.prepare(k, item, task) {
+        let mut p = match self.prepare(k, item, task) {
             Ok(p) => p,
             Err(r) => return *r,
         };
+        if !p.ready_to_start(self.inner, self.cx.cancel) {
+            let r = ChildResult::unstarted(&p.agent, Status::Aborted, NOT_STARTED.to_string());
+            return self.finish(k, r);
+        }
         self.progress(k, "running");
         let (inner, cancel) = (self.inner, self.cx.cancel);
         let r = wait_child(inner, cancel, self.host, &p, &mut |a| self.progress(k, &a));
@@ -1367,11 +1438,11 @@ impl Run<'_, '_> {
             for _ in 0..workers {
                 let (tx, queue, local) = (tx.clone(), &queue, &local);
                 scope.spawn(move || loop {
-                    let Some((k, p)) = lock(queue).pop_front() else {
+                    let Some((k, mut p)) = lock(queue).pop_front() else {
                         break;
                     };
                     let _slot = (!p.remote).then(|| lock(local));
-                    if cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst) {
+                    if !p.ready_to_start(inner, cancel) {
                         let r = ChildResult::unstarted(&p.agent, Status::Aborted, NOT_STARTED.to_string());
                         let _ = tx.send(Event::Skipped(k, r));
                         continue;
@@ -1400,7 +1471,8 @@ impl Run<'_, '_> {
 }
 
 /// Spawn one child and wait for it; `on` gets its activity. An abort (the cancel token,
-/// [`Hooks::shutdown`]) kills its process group.
+/// [`Hooks::shutdown`]) or the parent's absolute deadline kills its process group, including
+/// initialization that runs before the child's own limit watcher starts.
 fn wait_child(
     inner: &Inner,
     cancel: &CancelToken,
@@ -1408,7 +1480,11 @@ fn wait_child(
     p: &Prepared,
     on: &mut dyn FnMut(String),
 ) -> ChildResult {
-    let stopped = || cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst);
+    let stopped = || {
+        cancel.is_cancelled()
+            || inner.abort.load(Ordering::SeqCst)
+            || lock(&inner.deadline).is_some_and(|at| Instant::now() >= at)
+    };
     // Read at spawn, not when tasks are queued: earlier children and the park may
     // have consumed tokens. Parallel children, like active tools, may finish in flight.
     let mut argv = p.argv.clone();

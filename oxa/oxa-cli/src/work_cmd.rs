@@ -16,6 +16,53 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
     .map_err(|e| e.to_string())
 }
 
+// Keep owner state outside every worker Git bind.
+fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
+    if !storage.is_absolute()
+        || storage
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("runner storage must have an absolute canonical path".into());
+    }
+    let existing = storage
+        .ancestors()
+        .find(|path| path.exists())
+        .ok_or("runner storage has no existing parent")?;
+    let resolved = existing
+        .canonicalize()
+        .map_err(|_| "cannot resolve runner storage")?
+        .join(
+            storage
+                .strip_prefix(existing)
+                .map_err(|_| "cannot resolve runner storage")?,
+        );
+    let git_repo = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().ok_or("Git directory has no parent")?
+    } else {
+        common
+    };
+    let trees = git_repo
+        .parent()
+        .ok_or("repository has no worktree parent")?
+        .join(".oxa-worktrees")
+        .join(git_repo.file_name().ok_or("repository has no name")?);
+    if resolved.starts_with(repo) || resolved.starts_with(common) || resolved.starts_with(trees) {
+        return Err("runner storage must be outside repositories and task worktrees".into());
+    }
+    for parent in resolved.ancestors() {
+        if parent.join(".git").exists()
+            || (parent.join("HEAD").is_file()
+                && parent.join("config").is_file()
+                && parent.join("objects").is_dir()
+                && parent.join("refs").is_dir())
+        {
+            return Err("runner storage must be outside Git metadata and worktrees".into());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run(
     args: &[String],
     cwd: &Path,
@@ -24,6 +71,9 @@ pub(crate) fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    if let Some(help) = crate::help::requested("work", args) {
+        return if write!(out, "{help}").is_ok() { 0 } else { 2 };
+    }
     let result = (|| -> Result<i32, String> {
         if let [flag, request] = args {
             if flag == "--supervise" {
@@ -97,8 +147,13 @@ pub(crate) fn run(
             host_path,
             terminate_binary,
             offline: oxa_proto::offline(),
+            runner_owns_github: false,
             storage: dirs.agent_dir.join("work").join(key),
         };
+        protected_storage(&policy.storage, &root, &common)?;
+        if args.first().is_some_and(|arg| arg == "board") {
+            return crate::work_board::run(&args[1..], &root, env, dirs, &policy);
+        }
         if matches!(args.first().map(String::as_str), Some("status" | "--status")) {
             let json = match args {
                 [_] => false,
@@ -127,6 +182,28 @@ pub(crate) fn run(
             }
             return Ok(0);
         }
+        if let [command, id] = args {
+            if command == "verify" {
+                if !trusted(&root, env, dirs)? {
+                    return Err(
+                        "source project is not trusted; approve it before running saved checks".into(),
+                    );
+                }
+                let verified = oxa_work::verify_saved_task(&root, &binary, &policy, id)?;
+                let record = verified.record();
+                serde_json::to_writer(
+                    &mut *out,
+                    &serde_json::json!({
+                        "type":"oxa_committed_acceptance", "version":1, "task":record.id,
+                        "head_sha":record.head_sha, "tree_sha":record.tree_sha, "base_sha":record.base_sha,
+                        "checked_at_ms":verified.checked_at_ms(),
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+                writeln!(out).map_err(|error| error.to_string())?;
+                return Ok(0);
+            }
+        }
         let rerun = args.last().is_some_and(|arg| arg == "--rerun");
         let task_args = if rerun { &args[..args.len() - 1] } else { args };
         let is_trusted = trusted(&root, env, dirs)?;
@@ -139,6 +216,30 @@ pub(crate) fn run(
                 if !is_trusted {
                     return Err("source project is not trusted; approve it before issue lookup".into());
                 }
+                let number = number.parse().map_err(|_| "invalid issue number")?;
+                if let Some(task) = oxa_work::saved_issue_task(&policy, number, model)? {
+                    vec![task]
+                } else {
+                    let gh = crate::netguard::trusted_executable_for(
+                        "gh",
+                        Some(policy.host_path.as_os_str()),
+                        Some(&root),
+                        Some(&dirs.home),
+                    )
+                    .ok_or("no trusted gh executable outside the source project")?;
+                    let mut task =
+                        oxa_work::issue_task(&root, &gh, &policy.host_path, number, model.clone())?;
+                    task.prompt.insert_str(0, &oxa_work::github_runner_guidance("issue"));
+                    vec![task]
+                }
+            }
+            [flag, number, model_flag, model] if flag == "--pr" && model_flag == "--model" => {
+                if oxa_proto::offline() {
+                    return Err("GitHub pull request lookup is unavailable in offline mode".into());
+                }
+                if !is_trusted {
+                    return Err("source project is not trusted; approve it before pull request lookup".into());
+                }
                 let gh = crate::netguard::trusted_executable_for(
                     "gh",
                     Some(policy.host_path.as_os_str()),
@@ -146,16 +247,11 @@ pub(crate) fn run(
                     Some(&dirs.home),
                 )
                 .ok_or("no trusted gh executable outside the source project")?;
-                vec![oxa_work::issue_task(
-                    &root,
-                    &gh,
-                    &policy.host_path,
-                    number.parse().map_err(|_| "invalid issue number")?,
-                    model.clone(),
-                )?]
+                let number = number.parse().map_err(|_| "invalid pull request number")?;
+                vec![oxa_work::pull_request_task(&root, &gh, &policy, number, model.clone())?]
             }
             _ => return Err(
-                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | status [--json]"
+                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | --pr N --model MODEL [--rerun] | status [--json]"
                     .into(),
             ),
         };

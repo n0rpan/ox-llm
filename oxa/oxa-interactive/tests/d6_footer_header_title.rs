@@ -155,6 +155,7 @@ fn quiet_startup() {
         version: "0.1.0".to_string(),
         resources: vec![("skills".to_string(), vec!["review".to_string()])],
         engine_url: "http://127.0.0.1:8080".to_string(),
+        memory_policy: None,
         model: "qwen".to_string(),
         model_remote: false,
         model_provider: None,
@@ -345,6 +346,30 @@ fn loaded_resources_listing() {
 }
 
 /// Wave D D4b: the status bar names where the model runs, both states.
+/// The in-process engine child's observed policy is shown beside a real endpoint; an engine
+/// that observes none shows the endpoint alone, and the endpoint never carries the policy.
+#[test]
+fn header_shows_the_endpoint_and_its_memory_policy_separately() {
+    let keymap = Keymap::defaults();
+    let vm = ViewModel::default();
+    let url = "http://127.0.0.1:8093";
+    let info = HeaderInfo {
+        model: "qwen".to_string(),
+        engine_url: url.to_string(),
+        memory_policy: Some("scope"),
+        ..HeaderInfo::default()
+    };
+    let shown = render_header(&info, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
+    assert!(shown.contains(&format!("{url} · scope")), "{shown}");
+    let unobserved = HeaderInfo {
+        memory_policy: None,
+        ..info
+    };
+    let plain = render_header(&unobserved, &vm, &keymap, false, 100, &Theme::plain()).join("\n");
+    assert!(plain.contains(url), "{plain}");
+    assert!(!plain.contains(" · scope"), "{plain}");
+}
+
 #[test]
 fn footer_and_header_show_the_model_location() {
     let local = render_footer(&vm_with(base_status()), 120, &Theme::plain());
@@ -393,6 +418,7 @@ fn footer_and_header_show_the_model_location() {
         version: "0.2.0".to_string(),
         resources: Vec::new(),
         engine_url: "http://127.0.0.1:8092".to_string(),
+        memory_policy: None,
         model: "qwen".to_string(),
         model_remote: false,
         model_provider: None,

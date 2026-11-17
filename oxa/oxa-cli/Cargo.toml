@@ -47,9 +47,13 @@ serde_json.workspace = true
 regex.workspace = true
 sha2.workspace = true
 signal-hook.workspace = true
+pulldown-cmark = { version = "0.13.6", default-features = false }
 
 [dev-dependencies]
 oxa-fake.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+oxa-orchestrator = { path = "../oxa-orchestrator", features = ["a2a"] }
 
 [lints]
 workspace = true

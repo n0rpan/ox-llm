@@ -96,7 +96,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
-| `oxa work <taskfile> \| --issue N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
+| `oxa work <taskfile> \| --issue N \| --pr N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
@@ -104,6 +104,7 @@ Commands take the place of the message. They do not start a session.
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
+| `oxa share serve --model ALIAS` | start the authenticated streaming OpenAI-compatible listener for explicitly selected native local models in a build with the `share` feature |
 | `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
 | `oxa report-issue <draft\|submit>` | draft a scrubbed issue for the ox-llm repository, or post a draft after confirmation |
 | `oxa wipe --session <id> \| --all [--yes] [--engine]` | remove the stored session files and spill files of one session or of all sessions. See [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) |
@@ -116,6 +117,8 @@ Commands take the place of the message. They do not start a session.
 $ oxa share key add guest --daily-requests 100 --daily-tokens 200000
 $ oxa share key list
 ```
+
+`oxa share serve` starts a foreground listener after the owner enables the native local engine and selects one or more local aliases with `--model`. It binds to the Tailscale interface by default and prints its `/v1` base URL. Set `--port` to use a fixed port, or `--bind 127.0.0.1` to put the listener behind Tailscale Serve. `--same-owner` requires the connecting peer to pass the Tailscale owner check. Clients send a guest bearer and can list models or stream text chat. Ctrl+C stops admission and joins active cleanup.
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
@@ -175,6 +178,7 @@ $ oxa mcp logout <name>
 | `--list-models [search]` | list the models the engine serves, optionally filtered by a fuzzy search, and exit |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
+| `--shadow` | required with `oxa lead`; read-only proposal preset, enabled only by user setting `oxa.lead.shadow` (default false) |
 | `--output-schema <file>` | check the final answer against a JSON schema file (a supported subset), retrying once on mismatch |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
 | `--goal <file>` | pursue a stored UTF-8 objective in print/JSON mode; continue the saved pursuing goal after restart |
@@ -205,11 +209,20 @@ See [sessions.md](sessions.md).
 | Option | Meaning |
 |---|---|
 | `--tools`, `-t <list>` | allowlist of tool names or patterns (`*` matches any characters) |
-| `--exclude-tools`, `-xt <list>` | denylist of tool names or patterns |
+| `--exclude-tools`, `-xt <list>` | denylist of tool names or patterns. Repeated lists and every `--no-<tool>` add to it |
 | `--no-builtin-tools`, `-nbt` | disable the built-in tools by default; extension tools stay |
 | `--no-tools`, `-nt` | disable all tools by default |
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `--no-web-search` | disable `web_search` (same as `OXA_WEB_SEARCH=0`) |
+| `--no-<tool>` | disable one tool by name: `--no-read`, `--no-bash`, `--no-edit`, `--no-write`, `--no-grep`, `--no-find`, `--no-ls`, `--no-subagent`; the same as `--exclude-tools <tool>` |
+
+### Animation
+
+| Option | Meaning |
+|---|---|
+| `--animation <mode>` | animation of the `oxa` skin for this run: `arcade`, `minimal` or `off`, over the `ui.animation` setting. Anything else is a usage error. `off` is the same as `ui.reducedMotion` for one run (the working sprite, the YOLO flames and the arcade are all still); `arcade` and `minimal` clear it for the run, so the mode applies even when the setting asks for reduced motion. `OXA_REDUCED_MOTION` still wins over both |
+
+See [settings.md](settings.md#ui) for what each mode draws.
 
 See [tools.md](tools.md) for the tool names.
 
@@ -258,23 +271,26 @@ Options added by extensions are listed after the options when you run `oxa --hel
 
 Variables that oxa reads. Variables marked *set* are set by oxa for the bash tool and its children, and you do not need to set them.
 
+Every boolean variable takes the same eight words, in any case: `1`, `true`, `yes` and `on` mean on; `0`, `false`, `no` and `off` mean off. Unset, empty and any other word leave the variable's own default in place (so a typo never turns a switch on or off by accident).
+
 | Variable | Meaning |
 |---|---|
 | `OXA_ENGINE_URL` | engine endpoint for the default model entry. Default `http://127.0.0.1:8092` |
 | `OXA_AGENT_DIR` | agent directory. Default `~/.oxa/agent`; `~` is expanded |
+| `OXA_LEAD_BOARD_LOG` | owner-selected absolute path to a private local board sample log; missing or refused data stays unavailable |
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
 | `OXA_PACKAGE_DIR` | package directory, for Nix or Guix store paths |
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |
-| `OXA_OFFLINE` | `1`, `true` or `yes` turns offline mode on, as `--offline` does |
-| `OXA_ALLOW_HOME_CWD` | `1`, `true` or `yes` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
-| `OXA_WEB_SEARCH` | `0`, `false`, `no` or `off` disables `web_search` |
+| `OXA_OFFLINE` | `1`, `true`, `yes` or `on` turns offline mode on, as `--offline` does |
+| `OXA_ALLOW_HOME_CWD` | `1`, `true`, `yes` or `on` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
+| `OXA_WEB_SEARCH` | `0`, `false`, `no` or `off` disables `web_search`; `1`, `true`, `yes` or `on` says on |
 | `BRAVE_SEARCH_API_KEY` | Brave Search key for `web_search`; wins over `brave-search.key` ([tools.md](tools.md#web_search)) |
 | `OXA_CODEMODE_MAX_WORKERS` | script workers alive at once in the process. Default 2; overrides `codemode.maxWorkers` |
-| `OXA_CLEAR_ON_SHRINK` | `1` clears empty rows when the rendered output shrinks |
+| `OXA_CLEAR_ON_SHRINK` | `1`, `true`, `yes` or `on` clears empty rows when the rendered output shrinks |
 | `OXA_SKIN` | `pi`, `oxa` or `ascii` (ASCII glyphs only): the look of the interactive UI for this run, over the `ui.skin` setting |
-| `OXA_REDUCED_MOTION` | `1` switches the animations of the `oxa` skin off, as the `ui.reducedMotion` setting does |
+| `OXA_REDUCED_MOTION` | `1`, `true`, `yes` or `on` switches the animations of the `oxa` skin off, as the `ui.reducedMotion` setting does; `0`, `false`, `no` or `off` says the opposite for one run |
 | `NO_COLOR` | with the `oxa` skin: no colour and no animation |
-| `OXA_CLIPBOARD_OSC52` | `1` also copies through OSC 52, the escape sequence that terminals relay to the clipboard |
+| `OXA_CLIPBOARD_OSC52` | `1`, `true`, `yes` or `on` also copies through OSC 52, the escape sequence that terminals relay to the clipboard |
 | `VISUAL`, `EDITOR` | external editor for Ctrl+G, when `externalEditor` is not set; `VISUAL` first |
 | `HTTP_PROXY`, `HTTPS_PROXY` | proxy for MCP HTTP requests only |
 | `OXA_SESSION_ID`, `OXA_SESSION_FILE` | *set*: the current session id, and the session file (unset when the session is ephemeral) |

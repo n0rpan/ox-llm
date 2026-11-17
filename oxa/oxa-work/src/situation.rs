@@ -1,6 +1,6 @@
 //! Bounded projection of typed facts. This module never reads or writes runner task state.
 use crate::Result;
-use oxa_proto::work::{Event, Fact, Snapshot, TaskStep, MAX_ITEMS};
+use oxa_proto::work::{Ask, Event, Fact, Incident, Snapshot, TaskStep, MAX_ITEMS};
 
 pub(crate) fn empty() -> Snapshot {
     Snapshot {
@@ -73,23 +73,23 @@ pub(crate) fn apply(snapshot: &mut Snapshot, event: &Event) -> Result<()> {
             snapshot.blocked.push(block.clone());
         }
         Fact::Unblocked(subject) => snapshot.blocked.retain(|row| &row.subject != subject),
-        Fact::AskOpened(ask) => {
-            if let Some(existing) = snapshot.asks.iter().find(|row| row.id == ask.id) {
-                if existing != ask {
-                    return Err("ask id has conflicting contents".into());
-                }
-            } else {
-                snapshot.asks.push(ask.clone());
-            }
-        }
+        Fact::AskOpened(ask) => open_ask(snapshot, ask)?,
         Fact::AskClosed(ask) => snapshot.asks.retain(|row| row.id != ask.id),
-        Fact::Incident(incident) => {
-            if let Some(existing) = snapshot.incidents.iter().find(|row| row.id == incident.id) {
-                if existing != incident {
-                    return Err("incident id has conflicting contents".into());
-                }
-            } else {
-                snapshot.incidents.push(incident.clone());
+        Fact::Incident(incident) => add_incident(snapshot, incident)?,
+        Fact::StandingChanged(change) => {
+            if change.revision <= snapshot.standing_revision {
+                return Err("stale standing projection revision".into());
+            }
+            snapshot.standing_revision = change.revision;
+            snapshot.goal = change.goal.clone();
+            if let Some(ask) = &change.ask_opened {
+                open_ask(snapshot, ask)?;
+            }
+            if let Some(ask) = &change.ask_closed {
+                snapshot.asks.retain(|row| row.id != ask.id);
+            }
+            if let Some(incident) = &change.incident {
+                add_incident(snapshot, incident)?;
             }
         }
         Fact::ExternalAcceptance(_) | Fact::Enqueued(_) | Fact::Mechanical(_) => {}
@@ -126,6 +126,27 @@ pub(crate) fn apply(snapshot: &mut Snapshot, event: &Event) -> Result<()> {
         if !discard_history(snapshot) {
             return Err(error.to_string());
         }
+    }
+    Ok(())
+}
+
+fn open_ask(snapshot: &mut Snapshot, ask: &Ask) -> Result<()> {
+    if let Some(existing) = snapshot.asks.iter().find(|row| row.id == ask.id) {
+        if existing != ask {
+            return Err("ask id has conflicting contents".into());
+        }
+    } else {
+        snapshot.asks.push(ask.clone());
+    }
+    Ok(())
+}
+fn add_incident(snapshot: &mut Snapshot, incident: &Incident) -> Result<()> {
+    if let Some(existing) = snapshot.incidents.iter().find(|row| row.id == incident.id) {
+        if existing != incident {
+            return Err("incident id has conflicting contents".into());
+        }
+    } else {
+        snapshot.incidents.push(incident.clone());
     }
     Ok(())
 }
