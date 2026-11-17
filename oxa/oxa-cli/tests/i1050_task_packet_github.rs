@@ -1,0 +1,69 @@
+//! Issue #1050: a task packet showed how it had been fetched (`gh issue view 1050 ...`) and, further
+//! down, said GitHub access belongs to the outside runner and `gh` must not be invoked. The agent
+//! had to choose between a line it could not follow and the rule that forbade it, so the metadata
+//! read was dropped.
+//!
+//! The repository guidance now names the instruction that decides, says the fetch line is provenance
+//! rather than an order, and says a fact the packet leaves out is reported instead of fetched. It
+//! also scopes every `gh` command in the file to a session that owns GitHub access, so the two
+//! directions cannot disagree again.
+
+const GUIDANCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../AGENTS.md");
+const RULE: &str = "A task packet's fetch line is provenance, not an order.";
+
+/// The guidance with its line breaks flattened, so rewrapping a paragraph still matches.
+fn guidance() -> String {
+    let text = std::fs::read_to_string(GUIDANCE).unwrap_or_else(|e| panic!("{GUIDANCE}: {e}"));
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The rule paragraph, from its heading to the sentence that scopes the `gh` commands below it.
+fn rule(text: &str) -> &str {
+    let start = text
+        .find(RULE)
+        .expect("the guidance has no rule for a packet line that says how it was fetched");
+    let tail = &text[start..];
+    let scoped = "keeps the `gh` commands below unchanged.";
+    let end = tail
+        .find(scoped)
+        .map(|i| i + scoped.len())
+        .expect("the rule has to scope the `gh` commands that follow it");
+    &tail[..end]
+}
+
+#[test]
+fn a_fetch_line_in_a_runner_owned_packet_is_not_an_order() {
+    let text = guidance();
+    let rule = rule(&text);
+    assert!(
+        rule.contains("The session prompt decides who owns GitHub access."),
+        "the rule has to name the instruction that decides: {rule}"
+    );
+    assert!(
+        rule.contains("make no `gh` call"),
+        "a runner-owned session must not call gh: {rule}"
+    );
+    assert!(
+        rule.contains("reported as missing, not fetched"),
+        "a missing fact is reported, not fetched: {rule}"
+    );
+}
+
+#[test]
+fn the_lane_commands_follow_the_rule_that_scopes_them() {
+    let text = guidance();
+    let at = text.find(RULE).expect("the ownership rule is missing");
+    for command in [
+        "gh workflow run lane",
+        "gh run watch <run-id>",
+        "gh run view <run-id>",
+    ] {
+        let found = text
+            .find(command)
+            .unwrap_or_else(|| panic!("{command} is missing from the guidance"));
+        assert!(
+            at < found,
+            "{command} has to follow the rule that scopes it to a session owning GitHub"
+        );
+    }
+}
