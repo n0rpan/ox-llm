@@ -1286,7 +1286,10 @@ fn a_deadline_keeps_the_child_budget_and_permissions() {
         env_of(&env, "sess.s1", "OXA_CHILD_SOFT_TOKENS").as_deref(),
         Some("9000")
     );
-    assert_eq!(env_of(&env, "sess.s1", "OXA_SUBAGENT_DEPTH").as_deref(), Some("1"));
+    assert_eq!(
+        env_of(&env, "sess.s1", "OXA_SUBAGENT_DEPTH").as_deref(),
+        Some("1")
+    );
     assert_eq!(host.limits.lock().unwrap()["remainingTokens"], json!(100));
 }
 
@@ -1301,8 +1304,15 @@ fn a_deadline_does_not_start_a_child_after_cancel() {
     cancel.cancel();
     let o = run_with(&env, &h, json!({"agent": "scout", "task": "look"}), &cancel);
     assert!(o.out.is_error, "{}", o.out.text);
-    assert!(o.out.text.contains("Subagent was aborted before starting"), "{}", o.out.text);
-    assert!(!log(&env).iter().any(|l| l.starts_with("start ")), "nothing started");
+    assert!(
+        o.out.text.contains("Subagent was aborted before starting"),
+        "{}",
+        o.out.text
+    );
+    assert!(
+        !log(&env).iter().any(|l| l.starts_with("start ")),
+        "nothing started"
+    );
 }
 
 // ---- O-146: the eight-children cap over the whole tree of a parent session ----
