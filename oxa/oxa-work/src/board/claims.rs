@@ -198,7 +198,7 @@ impl Claims {
         ttl: u64,
     ) -> Result<Option<Lease>> {
         self.claim_checked(entry, policy, holder, (now, ttl), |row| {
-            Ok(row.data.policy.is_none())
+            Ok(entry.action != Action::BuildIssue && row.data.policy.is_none())
         })
     }
 
