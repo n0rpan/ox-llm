@@ -47,6 +47,8 @@ pub struct FakeOpts {
     /// `/props` answers 503 "no model loaded" (the controller with nothing loaded). Also
     /// switchable at run time ([`FakeServer::set_props_unloaded`]).
     pub props_unloaded: bool,
+    /// Owned native-engine build identity; None models an older/unidentified peer.
+    pub build_info: Option<String>,
     /// `/_local/status` answers the controller's short `state: loading` body (no model, no
     /// context; F14). Also switchable at run time ([`FakeServer::set_loading`]).
     pub loading: bool,
@@ -215,6 +217,7 @@ impl Default for FakeOpts {
             omit_modality: false,
             models: Vec::new(),
             props_unloaded: false,
+            build_info: Some(format!("oxe-{}", env!("CARGO_PKG_VERSION"))),
             loading: false,
             controller: true,
             strict_tool_args: true,
@@ -725,6 +728,9 @@ fn engine_props(o: &FakeOpts, cancel: CancelMode) -> Value {
         "model_alias": o.model,
         "is_sleeping": false,
     });
+    if let Some(build) = &o.build_info {
+        v["build_info"] = json!(build);
+    }
     if o.hints {
         v["oxe_hints"] = json!({"snapshot_keep": 2, "prefill_only": true, "hint_clear": true});
         if cancel != CancelMode::Off {
