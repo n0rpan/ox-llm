@@ -47,10 +47,18 @@ pub struct Reply {
     headers: Vec<(&'static str, String)>,
     bytes: Vec<u8>,
     fragment: usize,
+    buffer_before_headers: bool,
     pub truncate_transfer: bool,
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
+    /// Bounded replies for clients that reject the response at its headers.
+    #[allow(dead_code)] // Only header-refusal controls opt in.
+    pub fn buffer_header_refusal(mut self) -> Self {
+        assert!(self.bytes.len() <= 1024 && !self.truncate_transfer);
+        self.buffer_before_headers = true;
+        self
+    }
     #[allow(dead_code)] // Shared fixture constructor; not every consumer refreshes tokens.
     pub fn json(value: Value) -> Self {
         Self {
@@ -61,6 +69,7 @@ impl Reply {
             fragment: 7,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
     #[allow(dead_code)] // Shared fixture constructor for transport boundary cases.
@@ -78,6 +87,7 @@ impl Reply {
             fragment: 1024,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
 
@@ -97,6 +107,7 @@ impl Reply {
             fragment: 7,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
     pub fn error(status: u16, kind: &str, message: &str) -> Self {
@@ -110,6 +121,7 @@ impl Reply {
             fragment: 7,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
     /// A Responses quota refusal, including the server's retry delay in seconds.
@@ -225,7 +237,7 @@ enum IoPhase {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReplyPart {
-    CompleteReply,
+    BufferedReply,
     Headers,
     HeaderEnd,
     ChunkHeader,
@@ -483,27 +495,21 @@ fn serve(
     write_reply(&mut stream, &reply)
 }
 pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), HealthFailure> {
-    if !reply.truncate_transfer && reply.bytes.len() <= reply.fragment {
-        // A client can refuse on headers alone (for example an unexpected content type).
-        // Put the entire small reply on the wire before making those headers readable.
-        let mut complete = format!("HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n", reply.status, reply.content_type).into_bytes();
-        for (name, value) in &reply.headers {
-            complete.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
-        }
-        complete.extend_from_slice(b"\r\n");
-        if !reply.bytes.is_empty() {
-            complete.extend_from_slice(format!("{:x}\r\n", reply.bytes.len()).as_bytes());
-            complete.extend_from_slice(&reply.bytes);
-            complete.extend_from_slice(b"\r\n");
-        }
-        complete.extend_from_slice(b"0\r\n\r\n");
+    if reply.buffer_before_headers {
+        assert!(reply.bytes.len() <= 1024 && !reply.truncate_transfer);
+        let mut wire = Vec::new();
+        write_fragmented_reply(&mut wire, reply)?;
         stream
-            .write_all(&complete)
-            .map_err(|error| HealthFailure::reply(ReplyPart::CompleteReply, error))?;
+            .write_all(&wire)
+            .map_err(|error| HealthFailure::reply(ReplyPart::BufferedReply, error))?;
         return stream
             .flush()
             .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error));
     }
+    write_fragmented_reply(stream, reply)
+}
+
+fn write_fragmented_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), HealthFailure> {
     write!(
         stream,
         "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n",
