@@ -49,6 +49,15 @@ fn registered_help_and_menu_work_without_home_or_runtime_inputs() {
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("lead serve"));
     }
+    for command_name in ["board", "status", "asks", "chat"] {
+        let output = command(&test)
+            .args(["lead", command_name])
+            .env_remove("HOME")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("unavailable"));
+    }
 }
 
 #[test]
