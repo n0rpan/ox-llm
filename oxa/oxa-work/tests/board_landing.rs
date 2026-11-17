@@ -41,9 +41,10 @@ fn rejection() -> Rejection<'static> {
     Rejection {
         head: "head-one",
         main: "main-one",
+        merge_group_head: "group-first",
         cause: RejectionCause::FailedTests(&["synthetic_regression"]),
         notified: false,
-        retry_used: false,
+        retry: Retry::Unused,
     }
 }
 
@@ -116,12 +117,70 @@ fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves(
     rejected.notified = true;
     assert_eq!(plan(rejected, "main-one").next, Next::WaitMain);
     assert_eq!(plan(rejected, "main-two").next, Next::Retry);
-    rejected.retry_used = true;
+    rejected.retry = Retry::Consumed {
+        first_rejected_group: "group-first",
+        admitted_group: None,
+    };
     let exhausted = plan(rejected, "main-three");
     assert_eq!(exhausted.next, Next::RetryExhausted);
     assert_eq!(exhausted.notify_rejection, None);
+    assert!(!exhausted.repeat_rejection_alarm);
     rejected.head = "old-head";
     assert_eq!(plan(rejected, "main-three").next, Next::WaitReconciliation);
+}
+
+#[test]
+fn repeat_rejection_alarm_requires_the_retried_group_for_the_same_head() {
+    let entry = ready();
+    let mut rejected = rejection();
+    rejected.retry = Retry::Consumed {
+        first_rejected_group: "group-first",
+        admitted_group: Some("group-retry"),
+    };
+    let plan = |receipt| {
+        policy().plan(
+            &entry,
+            LatestReviews::Unresolved,
+            Queue::Rejected(receipt),
+            "main-two",
+            0,
+        )
+    };
+    assert!(!plan(rejected).repeat_rejection_alarm);
+    rejected.merge_group_head = "group-other";
+    assert!(!plan(rejected).repeat_rejection_alarm);
+    rejected.merge_group_head = "group-retry";
+    assert!(plan(rejected).repeat_rejection_alarm);
+    assert_eq!(plan(rejected).next, Next::HoldFindings);
+    assert!(
+        !board::landing::Policy::default()
+            .plan(
+                &entry,
+                LatestReviews::Clear,
+                Queue::Rejected(rejected),
+                "main-two",
+                0
+            )
+            .repeat_rejection_alarm
+    );
+    assert!(
+        !plan(Rejection {
+            head: "different-head",
+            ..rejected
+        })
+        .repeat_rejection_alarm
+    );
+    let missing_report = plan(Rejection {
+        cause: RejectionCause::Unknown,
+        ..rejected
+    });
+    assert!(missing_report.repeat_rejection_alarm);
+    assert!(missing_report.notify_rejection.is_none());
+    rejected.retry = Retry::Consumed {
+        first_rejected_group: "group-retry",
+        admitted_group: Some("group-retry"),
+    };
+    assert!(!plan(rejected).repeat_rejection_alarm);
 }
 
 #[test]

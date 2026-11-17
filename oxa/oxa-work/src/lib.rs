@@ -40,6 +40,7 @@ pub type Result<T> = std::result::Result<T, String>;
 // Lead facts consume public observations and never open runner task-state files.
 pub mod events;
 mod facts_io;
+pub use facts_io::require_private_directory;
 mod github;
 pub use github::pull_request_task;
 pub mod incidents;
@@ -111,6 +112,7 @@ pub struct PlannedTask {
     base_sha: String,
     commands: Vec<String>,
     checkpoint_revision: Option<u64>,
+    base_alias: Option<tree::BaseAlias>,
 }
 impl PlannedTask {
     pub fn task(&self) -> &Task {
@@ -143,11 +145,13 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
     {
         return Err("task branch must differ from its base branch".into());
     }
+    let base_alias = tree::base_alias(policy, repo, &task.base, &base_sha)?;
     Ok(PlannedTask {
         task,
         base_sha,
         commands,
         checkpoint_revision: None,
+        base_alias,
     })
 }
 
@@ -199,9 +203,78 @@ fn plan_task_mode(
             base_sha: execution.base,
             commands: execution.commands,
             checkpoint_revision: Some(saved.record.checkpoint_revision),
+            base_alias: None,
         });
     }
     plan_task(repo, task, policy)
+}
+
+/// Freeze a batch before callbacks, reconciling a literal local base with its
+/// sole requested remote tip. Conflicting remote targets never choose a winner.
+pub fn plan_tasks_for_run(
+    repo: &Path,
+    tasks: &[Task],
+    policy: &RunPolicy,
+    rerun: bool,
+) -> Vec<Result<PlannedTask>> {
+    plan_tasks(repo, tasks, policy, rerun, false)
+}
+
+pub fn plan_tasks_for_actions(
+    repo: &Path,
+    tasks: &[Task],
+    policy: &RunPolicy,
+    rerun: bool,
+) -> Vec<Result<PlannedTask>> {
+    plan_tasks(repo, tasks, policy, rerun, true)
+}
+
+fn plan_tasks(
+    repo: &Path,
+    tasks: &[Task],
+    policy: &RunPolicy,
+    rerun: bool,
+    actions: bool,
+) -> Vec<Result<PlannedTask>> {
+    let mut plans: Vec<_> = tasks
+        .iter()
+        .map(|task| plan_task_mode(repo, task.clone(), policy, rerun, actions))
+        .collect();
+    let mut targets =
+        std::collections::BTreeMap::<String, std::collections::BTreeMap<String, Vec<String>>>::new();
+    for plan in plans.iter().filter_map(|plan| plan.as_ref().ok()) {
+        if let Some(alias) = plan.base_alias.as_ref().filter(|alias| alias.remote) {
+            targets
+                .entry(alias.reference.clone())
+                .or_default()
+                .insert(plan.base_sha.clone(), plan.commands.clone());
+        }
+    }
+    for result in &mut plans {
+        let Ok(plan) = result else { continue };
+        let Some(alias) = &plan.base_alias else { continue };
+        let Some(tips) = targets.get(&alias.reference) else {
+            continue;
+        };
+        if tips.len() != 1 {
+            plan.base_alias = None;
+        } else if !alias.remote {
+            let (tip, commands) = tips.first_key_value().expect("one captured tip");
+            match output(git(
+                policy,
+                repo,
+                &["merge-base", "--is-ancestor", &plan.base_sha, tip],
+            )) {
+                Ok(out) if out.status.success() => {
+                    plan.base_sha = tip.clone();
+                    plan.commands = commands.clone();
+                }
+                Ok(out) if out.status.code() == Some(1) => {}
+                _ => *result = Err("cannot reconcile captured base aliases".into()),
+            }
+        }
+    }
+    plans
 }
 
 fn load_task_checkpoint(policy: &RunPolicy, id: &str) -> Result<Option<state::State>> {
@@ -232,6 +305,16 @@ pub fn github_runner_guidance(kind: &str) -> String {
 
 pub const RUNNER_GITHUB_ENV: &str = "OXA_RUNNER_OWNS_GITHUB";
 
+fn restrict_child_github(command: &mut Command) {
+    command
+        .env(RUNNER_GITHUB_ENV, "1")
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_ENTERPRISE_TOKEN")
+        .env_remove("GITHUB_ENTERPRISE_TOKEN")
+        .env_remove("GH_CONFIG_DIR");
+}
+
 impl Task {
     fn matches_issue_packet(&self, number: u64) -> bool {
         let packet = self
@@ -246,7 +329,7 @@ impl Task {
             && packet.starts_with(&format!("Implement issue #{number}: "))
     }
 
-    // Derive the worker restriction from the frozen task on every launch. This
+    // Derive the subprocess restriction from the frozen task on every launch. This
     // also covers old issue checkpoints resumed through an identical task file.
     fn runner_owns_github(&self) -> bool {
         self.prompt.starts_with(GITHUB_RUNNER_LEAD)
@@ -299,6 +382,16 @@ fn checked(command: Command) -> Result<String> {
 /// Capture bounded stdout, discarding stderr, within one process and pipe deadline.
 pub fn command_runner(command: Command, limit: Option<usize>, deadline: Duration) -> Option<(i32, String)> {
     command_runner_with_stdin(command, limit, Stdio::null(), deadline)
+}
+
+/// Capture binary stdout with the same process and pipe deadline as the text runner.
+pub fn command_output_bytes(
+    command: Command,
+    limit: Option<usize>,
+    deadline: Duration,
+) -> Option<(i32, Vec<u8>)> {
+    let out = capture_command(command, limit, deadline, Stdio::null(), false).ok()?;
+    Some((out.status.code().unwrap_or(1), out.stdout))
 }
 
 /// Capture through the same deadline and byte limit while a supervised child holds a supplied stdin.
@@ -622,6 +715,8 @@ pub struct RunPolicy {
     pub host_path: std::ffi::OsString,
     pub terminate_binary: Option<PathBuf>,
     pub offline: bool,
+    /// Set by the runner from the immutable packet before launching its children.
+    pub runner_owns_github: bool,
     pub storage: PathBuf,
 }
 
@@ -635,13 +730,37 @@ pub struct SupervisorRequest {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SupervisorOperation {
-    Checkout { branch: String, create: bool },
-    Merge { base: String },
-    Save { task_id: String },
-    Checks { commands: Vec<String> },
-    CommittedChecks { commands: Vec<String>, index: PathBuf },
+    Checkout {
+        branch: String,
+        create: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        normalize: Option<BaseUpdate>,
+    },
+    Merge {
+        base: String,
+    },
+    Save {
+        task_id: String,
+    },
+    Checks {
+        commands: Vec<String>,
+    },
+    CommittedChecks {
+        commands: Vec<String>,
+        index: PathBuf,
+    },
     Inspect,
-    InspectCommitted { index: PathBuf },
+    InspectCommitted {
+        index: PathBuf,
+    },
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct BaseUpdate {
+    pub reference: String,
+    pub old: String,
+    pub new: String,
 }
 
 fn supervise(
@@ -655,6 +774,9 @@ fn supervise(
     isolate_git_environment(&mut command);
     if policy.offline {
         command.arg("--offline");
+    }
+    if policy.runner_owns_github {
+        restrict_child_github(&mut command);
     }
     command
         .env("PATH", &policy.host_path)
@@ -972,6 +1094,7 @@ pub fn run_task_with_notes(
     state.offline |= policy.offline;
     let policy = RunPolicy {
         offline: state.offline,
+        runner_owns_github: state.task.runner_owns_github(),
         ..policy.clone()
     };
     // Replaying the prior checkpoint precedes this first new checkpoint or action.
@@ -992,6 +1115,7 @@ pub fn run_task_with_notes(
         writer: &mut writer,
         observer,
         scrub_note,
+        base_alias: planned.base_alias.as_ref(),
     })
     .drive(&mut state)
     {
@@ -1075,6 +1199,22 @@ pub fn run_task_with_notes(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn bounded_command_output_preserves_binary_stdout_and_exit_status() {
+        let command = || {
+            let mut command = Command::new("sh");
+            command.args(["-c", r"printf '\377\000'; printf 'ignored' >&2; exit 3"]);
+            command
+        };
+        let deadline = Duration::from_secs(5);
+        assert_eq!(
+            command_output_bytes(command(), Some(2), deadline),
+            Some((3, vec![255, 0]))
+        );
+        assert_eq!(command_output_bytes(command(), Some(1), deadline), None);
+        assert_eq!(command_runner(command(), Some(2), deadline), None);
+    }
 
     #[test]
     fn command_deadline_cleans_up_a_descendant_holding_stdout() {
