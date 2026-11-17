@@ -108,11 +108,13 @@ def access_token():
 def eligible(pr, sha):
     known = pr.get('author_association') in ('OWNER', 'MEMBER', 'COLLABORATOR')
     labeled = any(label.get('name') == 'ok-to-review' for label in pr.get('labels', []))
+    base = pr.get('base', {})
     return (pr.get('state') == 'open' and not pr.get('draft')
             and (known or labeled)
             and pr.get('head', {}).get('sha') == sha
             and pr.get('head', {}).get('repo', {}).get('full_name') == REPO
-            and pr.get('base', {}).get('repo', {}).get('full_name') == REPO)
+            and base.get('ref') == 'main'
+            and base.get('repo', {}).get('full_name') == REPO)
 
 
 def reviewed(comments, sha, diff_hash):
