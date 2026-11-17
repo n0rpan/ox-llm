@@ -741,6 +741,39 @@ mod tests {
         assert_eq!(engine.status().pid, None);
     }
     #[test]
+    fn swap_policy_refusal_reaches_caller_with_predicates_and_never_spawns() {
+        struct PolicyMemory(bool, u64);
+        impl Sample for PolicyMemory {
+            fn sample(&self) -> io::Result<MemorySample> {
+                let mut sample = Memory {
+                    fail: AtomicBool::new(false),
+                }
+                .sample()?;
+                sample.swap_limit_zero = self.0;
+                sample.swap_current_bytes = self.1;
+                Ok(sample)
+            }
+        }
+        for (zero, current, predicate) in [
+            (false, 0, "memory.swap.max_zero=false (must be true)"),
+            (true, 64, "memory.swap.current=64 (must be 0)"),
+        ] {
+            let env = TestEnv::new();
+            let mut engine = engine(&env, Policy::default());
+            Arc::get_mut(&mut engine.inner).unwrap().source = Arc::new(PolicyMemory(zero, current));
+            let error = engine
+                .chat(
+                    &ChatRequest::new(&prefix(), &[], "fake-model"),
+                    &CancelToken::new(),
+                    &mut |_| panic!("unadmitted generation"),
+                )
+                .unwrap_err();
+            assert_eq!(error.code, codes::ENGINE_DOWN);
+            assert!(error.message.contains(predicate), "{}", error.message);
+            assert_eq!(engine.status().pid, None);
+        }
+    }
+    #[test]
     fn scope_policy_is_visible_and_refused_child_is_reaped_before_queue_reuse() {
         struct Scope {
             bad: bool,
