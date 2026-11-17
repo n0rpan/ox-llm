@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 pub mod board;
+pub mod shadow;
 mod checkpoint;
 mod execute;
 mod state;
