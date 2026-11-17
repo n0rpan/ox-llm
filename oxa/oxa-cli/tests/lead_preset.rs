@@ -8,6 +8,31 @@ use std::process::Stdio;
 const EMPTY: &str = r#"{"mode":"shadow","as_of_seq":0,"proposals":[]}"#;
 
 #[test]
+fn shadow_setting_is_off_and_project_settings_cannot_enable_it() {
+    for project_enable in [false, true] {
+        let env = TestEnv::new();
+        if project_enable {
+            env.write("work/.oxa/settings.json", r#"{"oxa":{"lead":{"shadow":true}}}"#);
+            env.write(
+                "home/.oxa/agent/settings.json",
+                r#"{"defaultProjectTrust":"always","oxa":{"lead":{"shadow":false}}}"#,
+            );
+        }
+        let server = FakeServer::start(vec![ScriptTurn::text(EMPTY)], FakeOpts::default()).unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args(["lead", "--shadow", "-p", "--model", "fake-model", "check"])
+            .env_clear()
+            .envs(env.envs(&server.url()))
+            .current_dir(env.work())
+            .output()
+            .unwrap();
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("oxa.lead.shadow"));
+        assert!(server.requests().is_empty(), "gate precedes provider discovery");
+    }
+}
+
+#[test]
 fn shadow_is_explicit_and_cannot_add_executable_resources() {
     let parse = |args: &[&str]| parse_args(&args.iter().map(|s| (*s).into()).collect::<Vec<_>>(), &[]);
     assert!(!parse(&["-p", "ordinary"]).unwrap().lead);
