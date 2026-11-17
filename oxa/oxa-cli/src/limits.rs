@@ -124,3 +124,126 @@ impl Drop for LimitWatcher {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{BufRead, Write};
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn second_sigint_terminates_a_stuck_cooperative_watcher() {
+        const CHILD: &str = "OXA_SYNTHETIC_SIGINT_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let env = oxa_fake::TestEnv::new();
+            let session = oxa_core::Session::open(
+                oxa_core::Deps {
+                    engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+                    store: Arc::new(oxa_session::MemStore::default()),
+                    tools: Vec::new(),
+                    hooks: Vec::new(),
+                    policy: Box::new(oxa_perm::ModePolicy::new()),
+                    sandbox: Arc::new(oxa_sandbox::NoSandbox),
+                    settings: oxa_config::Settings::default(),
+                    dirs: oxa_config::Dirs::under(env.root()),
+                    cwd: env.work(),
+                    selection: oxa_core::ToolSelection::default(),
+                    resources: oxa_resources::Resources::default(),
+                    model: None,
+                    thinking: None,
+                    mode: None,
+                    session_id: None,
+                    jobs: oxa_core::fresh_jobs(),
+                },
+                oxa_core::Open::New,
+            )
+            .unwrap();
+            let watcher = LimitWatcher::start(session.handle(), None, None, false)
+                .unwrap()
+                .unwrap();
+            // Deliberately prevent the cooperative watcher from making progress.
+            let _stuck = watcher.stop.0.lock().unwrap();
+            let delivered = Arc::new(AtomicBool::new(false));
+            let _probe = signal_hook::flag::register(signal_hook::consts::SIGINT, delivered.clone()).unwrap();
+            println!("synthetic-ready");
+            std::io::stdout().flush().unwrap();
+            while !delivered.load(Ordering::SeqCst) {
+                thread::yield_now();
+            }
+            println!("synthetic-first-delivered");
+            std::io::stdout().flush().unwrap();
+            loop {
+                thread::park();
+            }
+        }
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "limits::tests::second_sigint_terminates_a_stuck_cooperative_watcher",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env(CHILD, "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        let stdout = child.stdout.take().unwrap();
+        thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines().map_while(Result::ok) {
+                if line.contains("synthetic-ready") || line.contains("synthetic-first-delivered") {
+                    if send.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        let result = (|| -> Result<(), &'static str> {
+            let ready = receive
+                .recv_timeout(Duration::from_secs(10))
+                .map_err(|_| "child not ready")?;
+            if !ready.contains("synthetic-ready") {
+                return Err("wrong readiness phase");
+            }
+            let signal = || {
+                Command::new("kill")
+                    .args(["-INT", &child.id().to_string()])
+                    .status()
+                    .unwrap()
+                    .success()
+            };
+            if !signal() {
+                return Err("first signal failed");
+            }
+            let first = receive
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|_| "first signal not delivered")?;
+            if !first.contains("synthetic-first-delivered") {
+                return Err("wrong first signal phase");
+            }
+            if !signal() {
+                return Err("second signal failed");
+            }
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                if let Some(status) = child.try_wait().unwrap() {
+                    return if status.signal() == Some(2) {
+                        Ok(())
+                    } else {
+                        Err("second SIGINT did not use default action")
+                    };
+                }
+                if Instant::now() >= deadline {
+                    return Err("second SIGINT swallowed while cooperative watcher stuck");
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        })();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(result, Ok(()));
+    }
+}
