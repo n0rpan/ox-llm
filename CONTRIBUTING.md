@@ -66,8 +66,10 @@ strace -V
 
 The bundled headers avoid incompatibilities with newer system kernel headers; disabling
 optional multi-personality decoding avoids needing a 32-bit toolchain. Neither changes the
-native `execve` tracing used by this test. Keep this `PATH` prefix for subsequent check commands
-(and set it again in each new shell); all downloaded sources and build/install output remain
+native `execve` tracing used by this test. The native cloud integration test automatically uses
+`.local-checks/strace/bin/strace` when present, otherwise it requires `strace` on `PATH`.
+The `PATH` export is only needed for direct shell invocations such as `strace -V`; a fresh
+check shell does not need to repeat it. All downloaded sources and build/install output remain
 ignored inside `.local-checks/`. No test is skipped or substituted, and no host installation
 is changed. A failure to trace (for example, denied `ptrace`) must still be fixed, not ignored.
 Keep the test's temporary directory outside any repository: its synthetic credential fixture
