@@ -235,27 +235,32 @@ fn github_issue_input_uses_mock_gh() {
     setup(&env, "[]");
     let tools = trusted_tools(&env);
     let lookup_log = env.write("tmp/issue-lookup.log", "");
+    let lookup_packet = env.write(
+        "tmp/issue-packet.json",
+        r#"{"title":"Synthetic task","body":"Fix the test fixture","state":"OPEN","comments":[{"author":{"login":"reviewer"},"body":"Synthetic follow-up finding"}]}"#,
+    );
     let gh = env.write(
         "tmp/trusted-tools/gh",
         r##"#!/bin/sh
 [ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
 printf '%s\n' "$*" >> "$ISSUE_LOOKUP_LOG"
-printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OPEN","comments":[{"author":{"login":"reviewer"},"body":"Synthetic follow-up finding"}]}'
+exec /bin/cat "$ISSUE_LOOKUP_PACKET"
 "##,
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
     let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
-    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+    let mut invocation = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    invocation
         .args(["work", "--issue", "42", "--model", "fake"])
         .current_dir(env.work().join("project"))
         .env_clear()
         .envs(env.envs(&server.url()))
         .env("PATH", &path)
         .env("ISSUE_LOOKUP_LOG", &lookup_log)
-        .stdin(std::process::Stdio::null())
-        .output()
-        .unwrap();
+        .env("ISSUE_LOOKUP_PACKET", &lookup_packet)
+        .stdin(std::process::Stdio::null());
+    let out = invocation.output().unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "issue task did not run: {stderr}");
     let record: serde_json::Value = String::from_utf8_lossy(&out.stdout)
@@ -267,7 +272,7 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OP
     assert_eq!(record["branch"], "agent/42-work");
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
     assert_eq!(
-        std::fs::read_to_string(lookup_log).unwrap(),
+        std::fs::read_to_string(&lookup_log).unwrap(),
         "issue view 42 --json title,body,state,comments\n"
     );
     // The packet the child receives is the one lookup: text, state and comments. A worker
@@ -292,6 +297,54 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OP
         "{prompt}"
     );
     assert!(prompt.contains("NEED-METADATA"), "{prompt}");
+
+    std::fs::write(
+        &lookup_packet,
+        r#"{"title":"Synthetic task","body":"Fix the test fixture","state":"CLOSED","comments":[{"body":"New comment after the task was frozen"}]}"#,
+    )
+    .unwrap();
+    let repeat = invocation.output().unwrap();
+    assert!(
+        repeat.status.success(),
+        "an updated issue prevented checkpoint reuse: {} {}",
+        String::from_utf8_lossy(&repeat.stdout),
+        String::from_utf8_lossy(&repeat.stderr)
+    );
+    let repeated: serde_json::Value = serde_json::from_slice(&repeat.stdout).unwrap();
+    assert_eq!(repeated["checkpoint_revision"], record["checkpoint_revision"]);
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "a settled task started a second worker"
+    );
+
+    let rerun = FakeServer::start(vec![ScriptTurn::text("done again")], FakeOpts::default()).unwrap();
+    let repeated = invocation
+        .envs(env.envs(&rerun.url()))
+        .arg("--rerun")
+        .output()
+        .unwrap();
+    assert!(
+        repeated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeated.stdout)
+    );
+    let requests = rerun.requests();
+    assert_eq!(requests.len(), 1, "rerun never started the worker");
+    let request = &requests[0];
+    let prompt = std::iter::once(request.system.as_str())
+        .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("Synthetic follow-up finding"), "{prompt}");
+    assert!(
+        !prompt.contains("New comment after the task was frozen"),
+        "{prompt}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lookup_log).unwrap(),
+        "issue view 42 --json title,body,state,comments\n"
+    );
 }
 /// A dogfood issue carried its content in comments, so a packet built from the
 /// title and body alone reached the worker without it. The child's first request
