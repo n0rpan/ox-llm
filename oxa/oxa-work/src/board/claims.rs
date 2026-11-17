@@ -1,6 +1,6 @@
 //! Durable reservations only; execution and GitHub writes are outside this API.
 use super::{valid_worker_id, Action, AttemptState, Entry, Lease, Policy};
-use crate::Result;
+use crate::{facts_io, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -36,8 +36,14 @@ pub struct Claims {
 
 impl Claims {
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_for_owner(root, facts_io::effective_uid())
+    }
+
+    fn open_for_owner(root: &Path, expected_owner: u32) -> Result<Self> {
         let metadata = io(fs::symlink_metadata(root))?;
-        if !metadata.is_dir() || metadata.mode() & 0o077 != 0 || io(root.canonicalize())? != root {
+        if facts_io::private_for_owner(&metadata, true, expected_owner).is_err()
+            || io(root.canonicalize())? != root
+        {
             return Err("board claims require a canonical private directory".into());
         }
         Ok(Self {
@@ -309,5 +315,32 @@ impl Claims {
         row.state.lease = None;
         self.save(number, row, true)?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::DirBuilderExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn claim_store_requires_the_expected_owner() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir(&self.0);
+            }
+        }
+        let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "oxa-claim-owner-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        let fixture = Fixture(path);
+        let metadata = fs::metadata(&fixture.0).unwrap();
+        assert!(Claims::open(&fixture.0).is_ok());
+        assert!(Claims::open_for_owner(&fixture.0, metadata.uid().wrapping_add(1)).is_err());
     }
 }
