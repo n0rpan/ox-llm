@@ -769,7 +769,13 @@ fn prepare(
     #[cfg(feature = "share")]
     let sharing = (!a.share_models.is_empty())
         .then(|| {
-            crate::share_cmd::prepare_session(&user_settings, dirs, a.share_models.clone(), a.share_bind)
+            crate::share_cmd::prepare_session(
+                &user_settings,
+                &settings,
+                dirs,
+                a.share_models.clone(),
+                a.share_bind,
+            )
         })
         .transpose()?;
     #[cfg(feature = "share")]

@@ -96,6 +96,27 @@ pub(crate) fn select(
     select_observed(user, effective, dirs, requested, None, None, http)
 }
 
+#[cfg(any(feature = "share", test))]
+pub(crate) fn local_engine_settings<'a>(
+    user: &'a Settings,
+    _effective: &Settings,
+) -> (Option<&'a Value>, oxa_engine::StreamOpts) {
+    let stream = oxa_engine::StreamOpts {
+        silence_limit_ms: crate::dispatch::stream_silence_timeout(user).unwrap_or(365 * 24 * 3600 * 1000),
+        ..oxa_engine::StreamOpts::default()
+    };
+    (user.get("oxa.local"), stream)
+}
+
+#[test]
+fn shared_local_engine_uses_effective_stream_timeout() {
+    let user_values = serde_json::json!({"httpIdleTimeoutMs": 1700});
+    let user = Settings::from_values(user_values.clone(), serde_json::json!({}));
+    let effective = Settings::from_values(user_values, serde_json::json!({"httpIdleTimeoutMs": 2400}));
+    let (_, stream) = local_engine_settings(&user, &effective);
+    assert_eq!(stream.silence_limit_ms, 2400);
+}
+
 pub(crate) fn select_observed(
     user: &Settings,
     effective: &Settings,
