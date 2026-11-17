@@ -1,6 +1,7 @@
 //! One read-only GraphQL projection for queue membership and a selected release issue.
 //! No scheduler decisions are inferred here. Checkbox states are reported, not validated.
 use oxa_proto::work::{PullRequest, MAX_ITEMS};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde_json::Value;
 
 type Result<T> = std::result::Result<T, &'static str>;
@@ -91,32 +92,64 @@ pub fn parse(bytes: &[u8], release_issue: Option<u64>) -> Result<Panels> {
             let body = repo["issue"]["body"]
                 .as_str()
                 .ok_or("missing release issue body")?;
-            let mut items = Vec::new();
-            for line in body.lines() {
-                let Some(checkbox) = line.trim_start().strip_prefix("- [") else {
-                    continue;
-                };
-                let (checked, label) = if let Some(label) = checkbox.strip_prefix(" ] ") {
-                    (false, label)
-                } else if let Some(label) = checkbox
-                    .strip_prefix("x] ")
-                    .or_else(|| checkbox.strip_prefix("X] "))
-                {
-                    (true, label)
-                } else {
-                    continue;
-                };
-                if items.len() == MAX_ITEMS || label.len() > 1024 || label.trim().is_empty() {
-                    return Err("release checklist exceeds bounds");
-                }
-                items.push((checked, label.into()));
-            }
-            Some((number, items))
+            Some((number, checklist(body)?))
         }
     } else {
         None
     };
     Ok(Panels { queue, release })
+}
+
+fn label(items: &mut [(bool, String)], stack: &[(Option<usize>, bool)], text: &str) -> Result<()> {
+    if let Some((Some(index), true)) = stack.last() {
+        let label = &mut items[*index].1;
+        if label.len().saturating_add(text.len()) > 1024 {
+            return Err("release checklist exceeds bounds");
+        }
+        label.push_str(text);
+    }
+    Ok(())
+}
+
+fn checklist(body: &str) -> Result<Vec<(bool, String)>> {
+    let mut items: Vec<(bool, String)> = Vec::new();
+    let mut stack = Vec::new();
+    for event in Parser::new_ext(body, Options::ENABLE_TASKLISTS) {
+        match event {
+            Event::Start(Tag::Item) => stack.push((None, true)),
+            Event::TaskListMarker(checked) => {
+                if items.len() == MAX_ITEMS {
+                    return Err("release checklist exceeds bounds");
+                }
+                let item = stack.last_mut().ok_or("invalid checklist context")?;
+                item.0 = Some(items.len());
+                items.push((checked, String::new()));
+            }
+            Event::End(TagEnd::Item) => {
+                if let Some((Some(index), _)) = stack.pop() {
+                    let text = &mut items[index].1;
+                    *text = text.trim().to_owned();
+                    if text.is_empty() {
+                        return Err("release checklist exceeds bounds");
+                    }
+                }
+            }
+            // Only the item's first paragraph labels its checkbox. Nested items have
+            // their own stack entry; code, HTML, later prose and URLs are never labels.
+            Event::End(TagEnd::Paragraph)
+            | Event::Start(
+                Tag::List(_) | Tag::CodeBlock(_) | Tag::HtmlBlock | Tag::BlockQuote(_) | Tag::Heading { .. },
+            ) => {
+                if let Some(item) = stack.last_mut() {
+                    item.1 = false;
+                }
+            }
+            Event::Text(text) | Event::Code(text) => label(&mut items, &stack, &text)?,
+            Event::SoftBreak | Event::HardBreak => label(&mut items, &stack, " ")?,
+            _ => {}
+        }
+    }
+    Ok(items)
 }
 
 #[cfg(test)]
@@ -179,6 +212,19 @@ mod tests {
                 (true, "Third task".into())
             ]
         );
+    }
+    #[test]
+    fn markdown_context_keeps_nested_multiline_labels_and_omits_examples_and_urls() {
+        let body = "    - [x] Indented code example\n\n<!--\n- [x] Hidden example\n-->\n\n1. [ ] **Parent** task\n   continuing here\n   - [x] Child `gate` [label](https://example.invalid/private-marker)\n\n   Later prose is not a checkbox label.\n";
+        assert_eq!(
+            checklist(body).unwrap(),
+            [
+                (false, "Parent task continuing here".into()),
+                (true, "Child gate label".into())
+            ]
+        );
+        assert!(checklist(&format!("- [ ] {}", "a".repeat(1025))).is_err());
+        assert!(checklist(&"- [ ] Task\n".repeat(MAX_ITEMS + 1)).is_err());
     }
     #[test]
     fn refuses_truncation_errors_wrong_issue_and_missing_fields() {
