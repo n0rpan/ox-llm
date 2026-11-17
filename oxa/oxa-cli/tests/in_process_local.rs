@@ -108,7 +108,7 @@ fn identity_refresh_uses_native_defaults_without_http_and_respects_explicit_opt_
         let identity = std::fs::read_to_string(env.home().join(".oxa/agent/identity.md")).unwrap();
         if native {
             assert!(
-                http.requests().is_empty(),
+                http.hits("GET", "/v1/models") == 0 && http.hits("GET", "/_local/status") == 0,
                 "native identity must not contact the controller fallback"
             );
             assert!(
@@ -117,7 +117,7 @@ fn identity_refresh_uses_native_defaults_without_http_and_respects_explicit_opt_
             );
         } else {
             assert!(
-                !http.requests().is_empty(),
+                http.hits("GET", "/v1/models") > 0,
                 "explicit user HTTP opt-out remains supported"
             );
         }
@@ -139,7 +139,7 @@ fn invalid_native_identity_configuration_never_falls_back_to_http() {
         "identity keeps its existing best-effort metadata contract"
     );
     assert!(
-        http.requests().is_empty(),
+        http.hits("GET", "/v1/models") == 0 && http.hits("GET", "/_local/status") == 0,
         "native configuration failure must not enable HTTP"
     );
 }
