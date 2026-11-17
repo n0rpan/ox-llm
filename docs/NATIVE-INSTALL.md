@@ -1,10 +1,13 @@
 # Native v0.2.1 install and upgrade
 
 v0.2.1 is the Rust-only release target tracked by [#763](https://github.com/oxstack/ox-llm/issues/763).
-Its installed runtime is `oxa` plus `oxe-server`: no Python runtime, controller
+Its model runtime is `oxa` plus `oxe-server`, with the native
+`local-ai-memlat-boot` utility: no Python runtime, controller
 daemon, `oxc` command wrapper or service on port 8092. Release qualification and
 publication are separate owner steps; this guide does not declare an unpublished
 candidate ready. v0.2.0 remains the legacy install.
+Python may still be a source-package build/test tool; it is not an installed
+runtime dependency.
 
 ## Install verified native artifacts
 
@@ -21,8 +24,9 @@ who published it. Follow the release provenance as well as checking the sums.
 Do not use v0.2.0's source/bootstrap installer or a development parser binary as
 the native v0.2.1 installer.
 
-For an Arch package, use the verified v0.2.1 package and the package manager's
-normal upgrade operation. For a tarball, first inspect its file list and extract
+For an Arch package, use the verified v0.2.1 package with `sudo pacman -U`.
+The combined tarball has the same `usr/` layout as the packages, including
+`usr/bin/oxa` and `usr/bin/oxe-server`. First inspect its file list and extract
 into a fresh, versioned user-owned directory. Run the native binaries directly
 from that directory for the first check; do not overlay the legacy installation
 or copy the release's configuration over existing user settings. Keep the
@@ -37,7 +41,9 @@ needed to launch native `oxa`.
 ## Upgrade from v0.2.0
 
 1. Finish active work and stop the legacy runtime through the mechanism that
-   started it. Do not run its controller alongside the native install as a
+   started it; disable a legacy controller service if you previously enabled one.
+   Installation does not stop processes or modify user service configuration.
+   Do not run its controller alongside the native install as a
    migration step. Keep the old binaries and user data available for rollback;
    a binary replacement is not a data cleanup or uninstall operation.
 2. Install the verified native v0.2.1 binaries as above, keeping the same user
@@ -61,9 +67,14 @@ needed to launch native `oxa`.
 4. Preserve user settings and review the native model configuration. Reusing a
    key does not translate legacy controller configuration, model aliases, caps
    or endpoint overrides automatically. Native cloud selection is the user
-   setting `oxa.engine.inProcessCloud`; the native local model configuration is
-   documented in [native local configuration](../oxa/oxc-local/CONFIGURATION.md).
-   Use the release's native defaults and explicit model routes rather than a
+   setting `oxa.engine.inProcessCloud`; native local selection uses
+   `oxa.engine.inProcessLocal`. Both default to `true` in v0.2.1; an explicit
+   user `false` remains respected. Installation writes no user settings. Review
+   `settings.json` in the user agent directory (normally
+   `~/.oxa/agent/settings.json`, changed by `OXA_AGENT_DIR`); project settings
+   cannot choose credential or engine executable paths. The native local model
+   configuration is documented in [native local configuration](https://github.com/oxstack/ox-llm/blob/main/oxa/oxc-local/CONFIGURATION.md).
+   Use these native defaults and explicit model routes rather than a
    legacy controller URL. Do not point the new agent at port 8092 as an upgrade
    requirement. Keep explicit cloud budgets and provider subscription limits.
 5. Existing model weights need not be downloaded again: configure their actual
@@ -97,4 +108,9 @@ installation explicitly. Do not run both to repair a shared token, restore a
 stale token backup over a refreshed record or delete user data to switch versions.
 
 LAN sharing, panel, Studio/images, the lead layer and a controller/HTTP daemon are
-outside v0.2.1. See [release qualification and upgrade boundary](RELEASE.md#v021-rust-only-upgrade-boundary).
+outside v0.2.1. See [release qualification and upgrade boundary](https://github.com/oxstack/ox-llm/blob/main/docs/RELEASE.md#v021-rust-only-upgrade-boundary).
+
+The qualified MEMLAT templates ship as inert data under
+`/usr/share/ox-llm/memlat/`. Installation does not activate hooks, install a
+service, change boot defaults or write to the ESP. Activation is a separate
+owner operation.
