@@ -340,3 +340,41 @@ fn slow_session_initialization_does_not_expire_the_child_deadline() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("parent done"));
 }
+
+#[test]
+fn parent_deadline_cancels_a_child_still_in_session_initialization() {
+    let env = TestEnv::new();
+    setup(&env);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"subagent":{"enabled":true}},"hooks":{"session_start":"if [ \"${OXA_SUBAGENT_DEPTH:-0}\" = 1 ]; then printf started > child-startup; sleep 4; printf finished > child-startup-finished; fi"}}"#,
+    );
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool("c1", "subagent", r#"{"agent":"scout","task":"look around"}"#),
+            ScriptTurn::text("parent final reply"),
+            ScriptTurn::text("parent final reply"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let out = oxa(&env, &server.url(), &["-p", "--max-time", "2", "delegate"]);
+    assert!(env.work().join("child-startup").exists(), "child hook must start");
+    assert!(
+        !env.work().join("child-startup-finished").exists(),
+        "parent deadline must cancel the child's startup process group"
+    );
+    assert!(
+        !requests(&server)
+            .iter()
+            .any(|r| r.session.ends_with(".s1") && r.max_tokens > 0),
+        "the expired child must not make an engine request after startup"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("parent final reply"));
+}
