@@ -23,8 +23,18 @@ use std::collections::HashSet;
 use std::io::BufRead;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread;
+use std::time::Duration;
+
+/// How long the session thread waits for a job before it re-checks the stop flags
+/// (`wrap_up_requested`, `interrupted`).
+///
+/// The wait is not the only wake: the session's attention waker (see
+/// [`Handle::set_attention_waker`]) sends [`Job::Wake`] when a wrap-up or an interruption is
+/// requested, so a stop is served at once instead of at the next tick. A job (a command, an
+/// inbox follow-up, a shutdown) wakes the wait by itself.
+const RPC_IDLE_TICK: Duration = Duration::from_millis(250);
 
 /// One parsed command line.
 #[derive(Debug, Clone, PartialEq)]
@@ -144,6 +154,9 @@ enum Job {
     Outcome(RunOutcome),
     /// A follow-up is already in Handle's queue; wake the session even with stdin idle.
     Inbox(String),
+    /// The session's attention waker: a wrap-up or an interruption was requested. The session
+    /// thread re-checks the flags at the top of its loop; the job carries no work.
+    Wake,
     Shutdown,
 }
 
@@ -413,6 +426,7 @@ fn session_loop(
     gate: Arc<Mutex<Gate>>,
     bash_running: Arc<AtomicBool>,
     tx: Sender<Job>,
+    wake_pending: Arc<AtomicBool>,
 ) -> RunOutcome {
     let mut outcome = RunOutcome::NothingToDo;
     let mut inbox = None;
@@ -473,7 +487,7 @@ fn session_loop(
                 }
             }
         } else {
-            match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+            match rx.recv_timeout(RPC_IDLE_TICK) {
                 Ok(job) => job,
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -497,6 +511,13 @@ fn session_loop(
                     false,
                     false,
                 )
+            }
+            // The session's attention waker: a wrap-up or an interruption was requested. The
+            // flags are re-checked at the top of the loop; the job carries no work. The flag is
+            // cleared first, so a wake arriving while this one is served is not lost.
+            Job::Wake => {
+                wake_pending.store(false, Ordering::SeqCst);
+                continue;
             }
             Job::Shutdown => break,
         };
@@ -678,14 +699,41 @@ pub fn serve_outcome(
         dirs,
     };
     let cache = Arc::new(Mutex::new(publish(&cx)));
+    // The wake the session thread and the supervisory loop share. The session's attention
+    // waker (see `Handle::set_attention_waker`) sends one `Job::Wake` per pending wake, so the
+    // session thread's wait ends at once when a wrap-up or an interruption is requested, and
+    // signals the supervisory loop, which otherwise waits on the session thread's exit.
+    let wake_pending = Arc::new(AtomicBool::new(false));
+    let done = Arc::new((Mutex::new(false), Condvar::new()));
+    {
+        let wake_tx = tx.clone();
+        let wake_pending = wake_pending.clone();
+        let done = done.clone();
+        handle.set_attention_waker(Arc::new(move || {
+            if !wake_pending.swap(true, Ordering::SeqCst) {
+                let _ = wake_tx.send(Job::Wake);
+            }
+            let (lock, wake) = &*done;
+            drop(lock.lock().unwrap_or_else(|p| p.into_inner()));
+            wake.notify_all();
+        }));
+    }
     let worker = {
         let cache = cache.clone();
         let gate = gate.clone();
         let bash_flag = bash_running.clone();
         let tx = tx.clone();
+        let wake_pending = wake_pending.clone();
+        let done = done.clone();
         thread::Builder::new()
             .name("oxa-rpc-session".to_string())
-            .spawn(move || session_loop(cx, rx, cache, gate, bash_flag, tx))
+            .spawn(move || {
+                let outcome = session_loop(cx, rx, cache, gate, bash_flag, tx, wake_pending);
+                let (lock, wake) = &*done;
+                *lock.lock().unwrap_or_else(|p| p.into_inner()) = true;
+                wake.notify_all();
+                outcome
+            })
             .map_err(|e| OxaError::io("cannot start the session thread", &e))?
     };
     let control = handle.clone();
@@ -723,12 +771,22 @@ pub fn serve_outcome(
             return Err(OxaError::io("cannot start the RPC input thread", &error));
         }
     };
-    while !worker.is_finished() {
+    // The supervisory wait: the session thread signals `done` when it returns, and the
+    // attention waker signals it when a wrap-up or an interruption is requested (the router is
+    // closed then, so a dialog the run waits on is answered). The tick is the deadline, not the
+    // only wake.
+    let (done_lock, done_wake) = &*done;
+    let mut finished = done_lock.lock().unwrap_or_else(|p| p.into_inner());
+    while !*finished && !worker.is_finished() {
         if control.wrap_up_requested() || control.interrupted() {
             router.close();
         }
-        thread::sleep(std::time::Duration::from_millis(20));
+        finished = done_wake
+            .wait_timeout(finished, RPC_IDLE_TICK)
+            .unwrap_or_else(|p| p.into_inner())
+            .0;
     }
+    drop(finished);
     router.close();
     if reader.is_finished() {
         let _ = reader.join();

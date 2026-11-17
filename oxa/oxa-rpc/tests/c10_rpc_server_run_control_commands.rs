@@ -897,6 +897,36 @@ fn wrap_up_retains_queued_errors_without_running_later_commands() {
 }
 
 #[test]
+fn a_wrap_up_while_the_session_thread_waits_is_served_before_the_tick() {
+    // O-386: the session thread waits up to RPC_IDLE_TICK (250 ms) for a job. A wrap-up
+    // requested while it waits is served at once by the session's attention waker, not at the
+    // tick: the server returns without any job being sent and without stdin closing. Before
+    // O-386 the tick was 20 ms, so this is the regression guard for the wake, not a
+    // failing-before test.
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(Vec::new()));
+    let session = open_session(&env, engine);
+    let handle = session.handle();
+    let mut rpc = Rpc::start(session, &env);
+    // No command is sent: the session thread is in its wait.
+    let start = Instant::now();
+    handle.request_wrap_up(oxa_core::WrapUpReason::Signal);
+    let outcome = rpc
+        .thread
+        .take()
+        .expect("the server thread")
+        .join()
+        .expect("the server thread does not panic")
+        .expect("serve returns Ok");
+    let waited = start.elapsed();
+    assert_eq!(outcome, RunOutcome::Interrupted);
+    assert!(
+        waited < Duration::from_millis(100),
+        "the wrap-up is served at once, not at the tick: {waited:?}"
+    );
+}
+
+#[test]
 fn stdin_close_drains_work_and_keeps_the_late_commands_outcome() {
     for (kind, accepted, expected_code) in [("get_state", true, 0), ("get_commands", false, 1)] {
         let env = TestEnv::new();

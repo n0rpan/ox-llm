@@ -181,9 +181,13 @@ pub fn run_session(
     );
     let stop = WorkerStop::new();
     let worker_stop = stop.clone();
+    // The worker's own wake sender: the session's attention waker sends `SessionCmd::Wake`
+    // through it (see `install_wake`), so a host request posted while the worker waits is
+    // served at once instead of at the next idle tick.
+    let wake = cmd_tx.clone();
     let spawned = thread::Builder::new()
         .name("oxa-worker".to_string())
-        .spawn(move || worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop));
+        .spawn(move || worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, wake));
     let worker = match spawned {
         Ok(w) => w,
         Err(_) => return (1, None),
@@ -351,7 +355,27 @@ impl WorkerStop {
 
 /// How long the worker waits for a command before its idle tick serves the session's host
 /// (`Session::serve_host`: timers, MCP callbacks, `sendMessage` with `triggerTurn`).
-pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(50);
+///
+/// The wait is not the only wake: a host request posted while the worker waits calls the
+/// session's attention waker (`Handle::set_attention_waker`), which sends one
+/// [`SessionCmd::Wake`], so the host is served at once. This is the deadline for the tick
+/// itself, and a session without hook sets posts no host request at all.
+pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(250);
+
+/// Install the worker's idle wake on `handle`: the session calls it when something the worker
+/// cannot see through `cmds` happens (a host request posted while it waits, a wrap-up
+/// request), and one coalesced [`SessionCmd::Wake`] is sent so the host is served at once
+/// instead of at the next idle tick. One wake in flight is enough: the worker clears the flag
+/// when it serves.
+fn install_wake(handle: &Handle, wake: &Sender<SessionCmd>, pending: &Arc<AtomicBool>) {
+    let tx = wake.clone();
+    let pending = pending.clone();
+    handle.set_attention_waker(Arc::new(move || {
+        if !pending.swap(true, Ordering::SeqCst) {
+            let _ = tx.send(SessionCmd::Wake);
+        }
+    }));
+}
 
 /// The UI loop over an arbitrary terminal (tests pass `oxa_tui::TestTerminal` and scripted
 /// channels). Ends when an [`AppAction::Quit`] was carried out or `worker` disconnects.
@@ -463,14 +487,17 @@ pub fn worker_loop(
     cmds: Receiver<SessionCmd>,
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
+    wake: Sender<SessionCmd>,
 ) -> Option<SessionInfo> {
-    worker_loop_with(session, reopen, cmds, out, ui, WorkerStop::new())
+    worker_loop_with(session, reopen, cmds, out, ui, WorkerStop::new(), wake)
 }
 
 /// [`worker_loop`] with the worker's stop signal (see [`WorkerStop`]). Between commands the
 /// worker waits at most [`WORKER_IDLE_TICK`] and then serves the session's host, so host
 /// requests made while idle are answered and a turn an extension triggered runs, its events
-/// reaching the UI like a prompt's.
+/// reaching the UI like a prompt's. `wake` is a sender on the same channel as `cmds`, used to
+/// send the worker its own [`SessionCmd::Wake`] when a host request arrives (see
+/// [`install_wake`]): the tick is the deadline, not the only wake.
 pub fn worker_loop_with(
     session: Session,
     mut reopen: ReopenFn,
@@ -478,10 +505,14 @@ pub fn worker_loop_with(
     out: Sender<WorkerMsg>,
     ui: Sender<UiRequest>,
     stop: WorkerStop,
+    wake: Sender<SessionCmd>,
 ) -> Option<SessionInfo> {
     let mut ui_proxy = UiProxy::new(ui.clone());
     let mut last = StatusModel::default();
     stop.enter(session.handle());
+    // One wake in flight is enough; the flag is shared with the waker of the session in force.
+    let pending = Arc::new(AtomicBool::new(false));
+    install_wake(&session.handle(), &wake, &pending);
     let _ = out.send(WorkerMsg::Session(session_info(&session)));
     let mut session = Some(session);
     // Commands are taken through a backlog so a `Shutdown` anywhere behind queued work is
@@ -548,6 +579,16 @@ pub fn worker_loop_with(
         }
         match cmd {
             SessionCmd::Shutdown => break,
+            // The session's attention waker (see [`install_wake`]): something the worker cannot
+            // see through `cmds` happened while it waited — a host request was posted, or a
+            // wrap-up was requested. Serve the host now instead of at the next idle tick. The
+            // flag is cleared first, so a wake arriving while the host is served is not lost.
+            SessionCmd::Wake => {
+                pending.store(false, Ordering::SeqCst);
+                if let Some(s) = session.as_mut() {
+                    idle_tick(s, &out, &mut ui_proxy, &mut last, &stop);
+                }
+            }
             SessionCmd::Reopen(how) => {
                 // The session to return to when the new one cannot be opened (an unreadable
                 // file): the old one is already shut down by then.
@@ -576,6 +617,7 @@ pub fn worker_loop_with(
                 match reopen(how, carry) {
                     Ok(new) => {
                         stop.enter(new.handle());
+                        install_wake(&new.handle(), &wake, &pending);
                         session = Some(new);
                         opened = true;
                     }
@@ -591,6 +633,7 @@ pub fn worker_loop_with(
                         match again {
                             Ok(s) => {
                                 stop.enter(s.handle());
+                                install_wake(&s.handle(), &wake, &pending);
                                 session = Some(s);
                             }
                             Err(e) => {
@@ -1575,6 +1618,7 @@ fn execute(
         SessionCmd::Reopen(_)
         | SessionCmd::Snapshot
         | SessionCmd::Shutdown
+        | SessionCmd::Wake
         | SessionCmd::PrefillDraft { .. } => (Ok(()), false),
     }
 }

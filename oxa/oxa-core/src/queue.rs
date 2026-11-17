@@ -124,6 +124,39 @@ pub struct Gate {
     /// `true` once a front end polls `Session::take_swap_request`; without it the two
     /// extension calls answer `unsupported_in_oxa`.
     pub swap_enabled: std::sync::atomic::AtomicBool,
+    /// The wake a front end registered for state it cannot poll (see
+    /// [`Handle::set_attention_waker`]).
+    pub attention: Attention,
+}
+
+/// The wake a front end registered for state it cannot see through its own channels: a host
+/// request posted while its worker waits ([`CoreHost::post`]) and a wrap-up or interruption
+/// request. A front end that would otherwise poll a channel waits with a deadline and is
+/// woken here instead. One waker per session; the closure must be cheap and must not block.
+#[derive(Default)]
+pub struct Attention(Mutex<Option<Arc<dyn Fn() + Send + Sync>>>);
+
+impl std::fmt::Debug for Attention {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The closure is not printable; its presence is enough for a `{:?}` of the state.
+        f.write_str("Attention(..)")
+    }
+}
+
+impl Attention {
+    fn set(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.0) = Some(waker);
+    }
+
+    /// Wake the front end, if one registered. Called after the state the front end will look
+    /// at is in place (the host request is in its channel, the wrap-up flag is set), so a
+    /// woken front end that re-checks sees it. A panic in the waker is contained here.
+    pub(crate) fn notify(&self) {
+        let waker = lock(&self.0).clone();
+        if let Some(waker) = waker {
+            let _ = oxa_proto::panic::contain(|| waker());
+        }
+    }
 }
 
 /// Holds [`Gate::in_flight`] for one request; dropping it opens the gate.
@@ -389,6 +422,9 @@ impl Handle {
                 .compare_exchange(0, reason as u8, Ordering::SeqCst, Ordering::SeqCst);
         self.cancel_background();
         self.shared.cancel_retry.cancel();
+        // The flag is set: a front end that waits instead of polling (see
+        // [`Handle::set_attention_waker`]) must re-check it now.
+        self.notify_attention();
     }
 
     pub fn wrap_up_reason(&self) -> Option<WrapUpReason> {
@@ -412,6 +448,21 @@ impl Handle {
         self.abort();
         self.abort_retry();
         self.cancel_background();
+        // Set before the wake, so a woken front end sees it (see `set_attention_waker`).
+        self.notify_attention();
+    }
+
+    /// Register the wake this session gives a front end that waits instead of polling: a host
+    /// request posted while the front end waits ([`CoreHost::post`]) and a wrap-up or
+    /// interruption request ([`Handle::request_wrap_up`], [`Handle::interrupt`]). One waker
+    /// per session; the closure must be cheap and must not block.
+    pub fn set_attention_waker(&self, waker: Arc<dyn Fn() + Send + Sync>) {
+        self.shared.gate.attention.set(waker);
+    }
+
+    /// Wake the registered front end, if any (see [`Handle::set_attention_waker`]).
+    pub(crate) fn notify_attention(&self) {
+        self.shared.gate.attention.notify();
     }
 
     pub fn interrupted(&self) -> bool {
@@ -476,6 +527,7 @@ impl Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     fn handle(steer: QueueMode, follow: QueueMode) -> Handle {
         Handle {
@@ -500,6 +552,41 @@ mod tests {
         assert_eq!(h.queued().1, vec!["retained instruction"]);
         h.request_wrap_up(WrapUpReason::Signal);
         assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TimeLimit));
+    }
+
+    /// O-386: a front end that waits instead of polling is woken when the state it cannot see
+    /// through its own channels changes: a wrap-up request and an interruption.
+    #[test]
+    fn the_attention_waker_fires_on_wrap_up_and_interrupt() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        let fired = Arc::new(AtomicUsize::new(0));
+        let count = fired.clone();
+        h.set_attention_waker(Arc::new(move || {
+            count.fetch_add(1, Ordering::SeqCst);
+        }));
+        h.request_wrap_up(WrapUpReason::TimeLimit);
+        assert_eq!(fired.load(Ordering::SeqCst), 1, "the wrap-up wakes the front end");
+        h.interrupt();
+        assert_eq!(
+            fired.load(Ordering::SeqCst),
+            2,
+            "the interruption wakes the front end"
+        );
+        // The state is set before the wake, so a woken front end that re-checks sees it.
+        assert!(h.interrupted());
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::TimeLimit));
+    }
+
+    /// A waker is front-end code: a panic in it must not unwind into the session that set the
+    /// state (the state is already in place and the front end re-checks it).
+    #[test]
+    fn a_panicking_attention_waker_is_contained() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.set_attention_waker(Arc::new(|| panic!("injected waker panic")));
+        h.request_wrap_up(WrapUpReason::Signal);
+        assert_eq!(h.wrap_up_reason(), Some(WrapUpReason::Signal));
+        h.interrupt();
+        assert!(h.interrupted());
     }
 
     #[test]

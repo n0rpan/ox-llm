@@ -83,8 +83,10 @@ fn worker_prefills_the_current_draft_only() {
     let (ui_tx, _ui_rx) = mpsc::channel();
     let reopen: ReopenFn = Box::new(|_, _| Err(OxaError::new("invalid", "no reopen in this test")));
     let worker_stop = stop.clone();
-    let worker =
-        std::thread::spawn(move || worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop));
+    let wake = cmd_tx.clone();
+    let worker = std::thread::spawn(move || {
+        worker_loop_with(session, reopen, cmd_rx, msg_tx, ui_tx, worker_stop, wake)
+    });
 
     let draft = "fn main() { println!(\"pasted\"); }\n".repeat(80);
     // Taken at an old generation: the user typed since, so it is skipped.
