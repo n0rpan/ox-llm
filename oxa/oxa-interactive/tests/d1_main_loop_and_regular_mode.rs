@@ -7,20 +7,20 @@ use oxa_config::{Dirs, Keymap, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptedEngine, TestEnv};
 use oxa_interactive::{
-    Activity, Block, InteractiveOpts, RegularPrinter, SessionCmd, StatusModel, ToolState, UiRequest,
-    ViewModel, ViewSettings, WorkerMsg, apply_event, blocks_from_entries, exit_lines, frames, run_loop,
-    status_from, transcript_lines,
+    apply_event, blocks_from_entries, exit_lines, frames, run_loop, status_from, transcript_lines, Activity,
+    Block, InteractiveOpts, RegularPrinter, SessionCmd, StatusModel, ToolState, UiRequest, ViewModel,
+    ViewSettings, WorkerMsg,
 };
 use oxa_proto::{
-    Access, AgentEvent, CancelToken, Decision, Engine, Entry, EntryBody, EventMessage, ExecResult, ExecSpec,
-    Level, Mode, OxaError, Part, Policy, Sandbox, StopReason, ToolOutput, WireMsg, codes,
+    codes, Access, AgentEvent, CancelToken, Decision, Engine, Entry, EntryBody, EventMessage, ExecResult,
+    ExecSpec, Level, Mode, OxaError, Part, Policy, Sandbox, StopReason, ToolOutput, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_session::{MemStore, SessionStore};
-use oxa_tui::{InputEvent, Key, TermCaps, TestTerminal, Theme, visible_width};
+use oxa_tui::{visible_width, InputEvent, Key, TermCaps, TestTerminal, Theme};
 use std::path::Path;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------------------------
 // Harness
