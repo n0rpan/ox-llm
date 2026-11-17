@@ -4,12 +4,21 @@ mod confirm;
 #[path = "common/work_repo.rs"]
 mod work;
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     process::{Command, Output},
     time::{Duration, Instant, SystemTime},
 };
 use work::{git, setup};
+fn storage(env: &TestEnv) -> std::path::PathBuf {
+    let common = env.work().join("project/.git").canonicalize().unwrap();
+    let key: String = Sha256::digest(common.as_os_str().as_encoded_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    env.agent_dir().join("work").join(key)
+}
 fn task_file(env: &TestEnv, file: &str, id: &str, age: u64) {
     let path = env.write(&format!("work/queue/{file}.json"), &serde_json::json!([{"id":id,"model":"fake","branch":format!("agent/{id}"),"prompt":format!("{id} task")}]).to_string());
     fs::OpenOptions::new()
@@ -149,7 +158,7 @@ fn low_disk_never_starts_a_task_and_leaves_the_file_pending() {
     let status = events.last().unwrap();
     assert_eq!(status["disk_blocked"], true);
     assert_eq!(status["pending"], 1);
-    assert!(!env.work().join("project/.git/oxa-work/low.json").exists());
+    assert!(!storage(&env).join("low.json").exists());
     assert!(env.work().join("queue/task.json").exists());
 }
 #[test]
@@ -171,11 +180,12 @@ fn a_surviving_worker_counts_against_max_until_its_lock_releases() {
     setup(&env, "[]");
     task_file(&env, "held", "held", 20);
     task_file(&env, "next", "next", 10);
-    env.write("work/project/.git/oxa-work/held.lock", "");
+    fs::create_dir_all(storage(&env)).unwrap();
+    fs::write(storage(&env).join("held.lock"), "").unwrap();
     let file = fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(env.work().join("project/.git/oxa-work/held.lock"))
+        .open(storage(&env).join("held.lock"))
         .unwrap();
     file.try_lock().unwrap();
     let server = FakeServer::start(vec![ScriptTurn::text("done"); 2], FakeOpts::default()).unwrap();
@@ -218,7 +228,7 @@ fn files_arriving_while_a_worker_runs_are_picked_up_before_once_exits() {
     until(|| !server.requests().is_empty());
     task_file(&env, "arrived", "arrived", 1);
     assert!(child.wait().unwrap().success());
-    let path = env.work().join("project/.git/oxa-work/arrived.json");
+    let path = storage(&env).join("arrived.json");
     assert!(path.exists());
 }
 
@@ -295,21 +305,26 @@ fn preparing_git_keeps_ownership_after_a_queue_controller_is_killed() {
     let env = TestEnv::new();
     setup(&env, "[]");
     task_file(&env, "preparing", "preparing", 1);
+    let tree = env.work().join(".oxa-worktrees/project/preparing");
+    env.write(
+        "work/project/.git/info/exclude",
+        ".prep-started\n.release-prep\n.prep-done\n",
+    );
     let release = Release {
-        release: env.home().join("release-prep"),
-        done: env.home().join("prep-done"),
+        release: tree.join(".release-prep"),
+        done: tree.join(".prep-done"),
     };
     let hook = env.write(
         "work/project/.git/hooks/post-checkout",
         r#"#!/bin/sh
-touch "$HOME/prep-started"
+touch .prep-started
 attempt=0
-while ! test -f "$HOME/release-prep"; do
+while ! test -f .release-prep; do
   attempt=$((attempt + 1))
   if test "$attempt" -ge 500; then exit 9; fi
   sleep 0.01
 done
-touch "$HOME/prep-done"
+touch .prep-done
 "#,
     );
     fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
@@ -319,10 +334,10 @@ touch "$HOME/prep-done"
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
-    until(|| env.home().join("prep-started").exists());
+    until(|| tree.join(".prep-started").exists());
     child.kill().unwrap();
     child.wait().unwrap();
-    let lock_path = env.work().join("project/.git/oxa-work/preparing.lock");
+    let lock_path = storage(&env).join("preparing.lock");
     let probe = fs::OpenOptions::new()
         .read(true)
         .write(true)

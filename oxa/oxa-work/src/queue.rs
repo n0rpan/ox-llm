@@ -148,6 +148,14 @@ fn scan(
         }
     }
     let paths: HashSet<_> = files.iter().map(|(p, _, _)| p.clone()).collect();
+    let withdrawn: HashSet<_> = pending
+        .iter()
+        .filter(|job| !paths.contains(&job.file))
+        .map(|job| job.task.id.clone())
+        .collect();
+    pending.retain(|job| paths.contains(&job.file));
+    // Active/external workers are not pending and retain their identities.
+    inputs.tasks.retain(|id, _| !withdrawn.contains(id));
     inputs.files.retain(|p, _| paths.contains(p));
     inputs.errors.retain(|p, _| paths.contains(p));
     files.sort_by(|a, b| (&a.1, &a.0).cmp(&(&b.1, &b.0)));
