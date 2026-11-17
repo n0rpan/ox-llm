@@ -305,3 +305,25 @@ fn equals_form_mtp_flags_are_rejected_before_launch() {
         );
     }
 }
+
+#[test]
+fn v_cache_thp_defaults_off_and_explicit_shared_toggle_wins_over_raw_environment() {
+    for enabled in [false, true] {
+        let settings = json!({"oxa":{"local":{"vCacheThp":enabled,"models":{"local-model":{
+            "environment":{"OXE_KV_V_THP": if enabled { "0" } else { "1" }}
+        }}}}});
+        let p = from_user_settings(&settings, &layout(), "local-model", 8080).unwrap();
+        assert_eq!(p.environment["OXE_KV_V_THP"], if enabled { "1" } else { "0" });
+    }
+    let p = from_user_settings(&json!({}), &layout(), "local-model", 8080).unwrap();
+    assert_eq!(p.environment.get("OXE_KV_V_THP").map(String::as_str), Some("0"));
+    assert_eq!(
+        from_user_settings(
+            &json!({"oxa":{"local":{"vCacheThp":"true"}}}),
+            &layout(),
+            "local-model",
+            8080
+        ),
+        Err(Error::Settings)
+    );
+}

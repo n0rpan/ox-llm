@@ -84,3 +84,34 @@ fn invalid_enabled_local_configuration_never_falls_back_to_http() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("Invalid user local configuration"));
     assert_eq!(http.hits("GET", "/v1/models"), 0);
 }
+
+#[test]
+fn widget_v_cache_thp_command_writes_same_user_setting_without_launch_or_project_override() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &json!({"theme":"dark"}).to_string(),
+    );
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"oxa":{"local":{"vCacheThp":true}}}).to_string(),
+    );
+    let http = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    for (arg, expected) in [("--json", false), ("on", true), ("off", false)] {
+        let output = run(&env, &http.url(), &["config", "v-cache-thp", arg]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["enabled"], expected);
+        assert_eq!(value["applies"], "next-model-load");
+    }
+    let saved: Value =
+        serde_json::from_slice(&std::fs::read(env.home().join(".oxa/agent/settings.json")).unwrap()).unwrap();
+    assert_eq!(saved["theme"], "dark");
+    assert_eq!(saved["oxa"]["local"]["vCacheThp"], false);
+    assert!(!env.home().join(".oxa/agent/local-engine").exists());
+    assert_eq!(http.hits("GET", "/v1/models"), 0);
+}
