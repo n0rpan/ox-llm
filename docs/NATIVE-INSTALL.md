@@ -129,6 +129,10 @@ LAN sharing, panel, Studio/images, the lead layer and a controller/HTTP daemon a
 outside v0.2.1. See [release qualification and upgrade boundary](https://github.com/oxstack/ox-llm/blob/main/docs/RELEASE.md#v021-rust-only-upgrade-boundary).
 
 The approved native `local-ai-memlat-boot` utility is retained. The four MEMLAT
-hook/script templates ship as inert data under `/usr/share/ox-llm/memlat/`.
+hook/script templates are `05-local-ai-memlat-fallback.hook`,
+`20-local-ai-memlat-fallback`, `85-local-ai-memlat-rebuild` and
+`99-z-local-ai-memlat-rebuild.hook`. They ship as inert data at
+`usr/share/ox-llm/memlat/` in the payload: `/usr/share/ox-llm/memlat/` for a system
+package, or below the chosen extraction directory for a versioned user tarball.
 This upgrade does not activate hooks, install a service, change boot defaults or
 write to the ESP. Activation is a separate owner operation.
