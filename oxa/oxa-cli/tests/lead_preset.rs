@@ -36,7 +36,15 @@ fn shadow_setting_is_off_and_project_settings_cannot_enable_it() {
 fn shadow_is_explicit_and_cannot_add_executable_resources() {
     let parse = |args: &[&str]| parse_args(&args.iter().map(|s| (*s).into()).collect::<Vec<_>>(), &[]);
     assert!(!parse(&["-p", "ordinary"]).unwrap().lead);
-    assert!(parse(&["lead"]).unwrap_err().message.contains("unavailable"));
+    let menu = parse(&["lead"]).unwrap();
+    assert!(!menu.lead && !menu.shadow);
+    assert!(matches!(
+        menu.subcommand,
+        Some(oxa_cli::Subcommand::Registered(
+            oxa_interactive::command_registry::CommandId::Lead,
+            _
+        ))
+    ));
     assert!(parse(&["--shadow"]).is_err());
     for args in [
         vec!["lead", "--shadow", "--tools", "bash"],
