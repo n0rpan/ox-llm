@@ -7,7 +7,7 @@ pub struct ProblemNote {
     pub notes: String,
     pub keywords: Vec<String>,
 }
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ReportRecord {
     pub disposition: String,
     pub draft: PathBuf,

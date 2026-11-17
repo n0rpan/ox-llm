@@ -1,4 +1,4 @@
-//! A9: process running with timeout, cancel and process-group kill. Owner: task A9. Signatures below are frozen; bodies are yours.
+//! A9: process running with timeout, cancel and process-group kill.
 use oxa_proto::{CancelToken, ExecResult, ExecSpec};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -333,6 +333,65 @@ pub fn die_with_parent(cmd: &mut Command) {
     }
 }
 
+/// A checked, resolved working directory held open until process spawn.
+/// Opening walks each component without following symlinks; applying it uses `fchdir`,
+/// never a second pathname lookup in the child.
+pub struct PinnedCwd(std::fs::File);
+
+impl PinnedCwd {
+    /// Open an absolute, already resolved directory, refusing substituted symlinks.
+    pub fn open(path: &std::path::Path) -> std::io::Result<Self> {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::os::unix::ffi::OsStrExt;
+        use std::path::Component;
+        if !path.is_absolute() {
+            return Err(std::io::Error::other("expected a resolved absolute directory"));
+        }
+        let mut dir = std::fs::File::open("/")?;
+        for component in path.components() {
+            let name = match component {
+                Component::RootDir => continue,
+                Component::Normal(name) => name,
+                _ => return Err(std::io::Error::other("expected a resolved absolute directory")),
+            };
+            let name = std::ffi::CString::new(name.as_bytes()).map_err(std::io::Error::other)?;
+            // SAFETY: dir is open and name is a valid single-component C string.
+            let fd = unsafe {
+                libc::openat(
+                    dir.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // SAFETY: fd was just opened and has no other owner.
+            dir = unsafe { std::fs::File::from_raw_fd(fd) };
+        }
+        Ok(Self(dir))
+    }
+
+    /// Set the child's cwd to this open directory, retaining the descriptor until exec.
+    /// Do not also set `Command::current_dir`.
+    pub fn apply(&self, cmd: &mut Command) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        let dir = self.0.try_clone()?;
+        // SAFETY: the closure owns the open directory and calls only async-signal-safe
+        // fchdir before exec; it allocates nothing and takes no locks.
+        unsafe {
+            cmd.pre_exec(move || {
+                if libc::fchdir(dir.as_raw_fd()) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +419,44 @@ mod tests {
         let mut c = Capture::new(10);
         c.push(b"hello");
         assert_eq!(c.finish(), b"hello");
+    }
+
+    #[test]
+    fn pinned_cwd_refuses_symlinks_and_parent_components() {
+        let env = oxa_fake::TestEnv::new();
+        let work = std::fs::canonicalize(env.work()).unwrap();
+        let target = work.join("real");
+        std::fs::create_dir_all(target.join("sub")).unwrap();
+        std::os::unix::fs::symlink(&target, work.join("link")).unwrap();
+        assert!(PinnedCwd::open(&work.join("link")).is_err());
+        assert!(PinnedCwd::open(&work.join("link/sub")).is_err());
+        assert!(PinnedCwd::open(&work.join("real/../real")).is_err());
+        assert!(PinnedCwd::open(std::path::Path::new("real")).is_err());
+        assert!(PinnedCwd::open(&work.join("missing")).is_err());
+    }
+
+    #[test]
+    fn pinned_cwd_spawn_uses_open_directory_after_path_is_retargeted() {
+        let env = oxa_fake::TestEnv::new();
+        let work = std::fs::canonicalize(env.work()).unwrap();
+        let original = work.join("original");
+        let moved = work.join("moved");
+        let outside = env.root().join("elsewhere");
+        std::fs::create_dir_all(&original).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let pin = PinnedCwd::open(&original).unwrap();
+        let mut cmd = Command::new("/bin/pwd");
+        pin.apply(&mut cmd).unwrap();
+        // Even a swap after applying the command cannot redirect the child.
+        std::fs::rename(&original, &moved).unwrap();
+        std::os::unix::fs::symlink(&outside, &original).unwrap();
+        drop(pin);
+        let out = cmd.output().unwrap();
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap().trim(),
+            moved.to_str().unwrap()
+        );
     }
 
     #[test]

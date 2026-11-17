@@ -1,4 +1,4 @@
-//! B6: the OXA_* environment table. Owner: task B6. Signatures below are frozen; bodies are yours.
+//! B6: the OXA_* environment table.
 // ported from pi packages/coding-agent/docs/environment-variables.md
 
 /// One documented environment variable.

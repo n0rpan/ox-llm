@@ -21,10 +21,10 @@ def documentation(path):
 
 
 # Top-level directories and the outputs (job groups) they select. `lab` is the Python controller
-# suite, `cli` the oxc CLI conformance (Python and oxc-rs), `gateway` the oxc-gateway jobs. Nothing
-# under oxc/ reads oxc-rs/, oxc-gateway/ or conformance/, so those paths skip `lab`.
+# suite, `cli` the retiring oxc-rs CLI, `gateway` the in-process library. Gateway changes
+# exercise the oxa workspace; the old standalone controller is not its consumer.
 COMPONENTS = {'engine': {'engine'}, 'oxa': {'oxa'}, 'oxc': {'lab', 'cli', 'gateway'},
-              'oxc-rs': {'cli'}, 'conformance': {'cli'}, 'oxc-gateway': {'gateway'}}
+              'oxc-rs': {'cli'}, 'conformance': {'cli'}}
 FUZZ = {'fuzz/oxa': {'oxa'}, 'fuzz/oxe': {'engine'}}
 OUTPUTS = ('engine', 'oxa', 'lab', 'cli', 'gateway')
 # Anything else (.github/, tools/, packaging/, root files, new directories) marks every component.
@@ -37,7 +37,10 @@ def classify(paths, full_event=False):
     for path in paths:
         if documentation(path):
             continue
-        components = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))
+        if path.startswith(('oxa/oxc-gateway/', 'oxa/oxa-engine/', 'oxa/oxa-proto/', 'oxa/oxa-cli/')) or path in ('oxa/Cargo.toml', 'oxa/Cargo.lock'):
+            components = {'oxa', 'gateway'}
+        else:
+            components = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))
         for component in components or OUTPUTS:
             changed[component] = True
     md = any(Path(path).suffix.lower() in ('.md', '.rst') for path in paths)
@@ -84,10 +87,13 @@ def main():
     name = os.environ['GITHUB_EVENT_NAME']
     full = full_gate(name, os.environ.get('GITHUB_REF', ''))
     result = classify(changed_paths(event, name), full)
-    if full and name != 'merge_group':
-        # main after a merge, nightly and manual runs test every component; the queue and pull
-        # requests keep the diff result, so the workflow needs no event tests of its own.
-        result.update(dict.fromkeys(OUTPUTS, True))
+    if full:
+        if name == 'merge_group':
+            # Every queued tree runs all oxa tests, including tests that consume docs/assets.
+            result['oxa'] = True
+        else:
+            # Main, nightly and manual runs test every component.
+            result.update(dict.fromkeys(OUTPUTS, True))
     with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
         for key, value in result.items():
             stream.write(f'{key}={str(value).lower()}\n')

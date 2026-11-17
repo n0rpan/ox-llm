@@ -14,6 +14,7 @@ fn entry(id: &str, text: &str) -> AgentEvent {
             body: EntryBody::Msg {
                 wire: WireMsg::user(text),
                 parts: vec![Part::Text(text.into())],
+                tool: None,
             },
         },
     }

@@ -1,4 +1,4 @@
-//! A8 acceptance tests: grep, find, ls tools. Owner: task A8.
+//! A8 acceptance tests: grep, find, ls tools.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -37,6 +37,7 @@ fn call_raw(tool: &dyn Tool, env: &TestEnv, cwd: &Path, args: Value) -> ToolOutp
     let cancel = CancelToken::new();
     let spill = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd,
         spill_dir: &spill,
         sandbox: &NoSandbox,
@@ -44,6 +45,7 @@ fn call_raw(tool: &dyn Tool, env: &TestEnv, cwd: &Path, args: Value) -> ToolOutp
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     tool.run(&args, &cx, &mut |_: &str| {})
 }
@@ -443,6 +445,7 @@ fn no_matches_text_and_access_is_the_search_root() {
     let cancel = CancelToken::new();
     let spill = env.tmp();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &work,
         spill_dir: &spill,
         sandbox: &NoSandbox,
@@ -450,6 +453,7 @@ fn no_matches_text_and_access_is_the_search_root() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     let access = GrepTool::new()
         .access(&json!({"pattern": "x", "path": "a.txt"}), &cx)

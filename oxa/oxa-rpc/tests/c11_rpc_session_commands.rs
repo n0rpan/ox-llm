@@ -1,4 +1,4 @@
-//! C11 acceptance tests: RPC session commands. Owner: task C11.
+//! C11 acceptance tests: RPC session commands.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -386,6 +386,65 @@ fn stats_fixture() {
     assert_eq!(code, 0);
 }
 
+/// A cloud request makes cost unavailable even after switching back to a local model.
+#[test]
+fn stats_unknown_cost_survives_model_and_session_switches() {
+    struct MixedEngine(ScriptedEngine);
+    impl Engine for MixedEngine {
+        fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, OxaError> {
+            let mut info = self.0.info(target)?;
+            let model = target.unwrap_or("local-m");
+            info.models = vec!["local-m".into(), "cloud-m".into()];
+            info.model = model.into();
+            info.limits_for = model.into();
+            info.caps.remote = model == "cloud-m";
+            info.caps.remote_provider = info.caps.remote.then_some("anthropic");
+            Ok(info)
+        }
+        fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+            self.0.count_tokens(text)
+        }
+        fn chat(
+            &self,
+            request: &oxa_proto::ChatRequest,
+            cancel: &CancelToken,
+            on: &mut dyn FnMut(oxa_proto::StreamEvent),
+        ) -> Result<oxa_proto::AssistantTurn, OxaError> {
+            self.0.chat(request, cancel, on)
+        }
+    }
+    let env = TestEnv::new();
+    let engine = Arc::new(MixedEngine(ScriptedEngine::new(vec![
+        ScriptTurn::text("Cloud reply"),
+        ScriptTurn::text("Local reply"),
+    ])));
+    let mut rpc = Rpc::start(open_session(&env, engine), &env);
+    assert_eq!(
+        rpc.call("initial", json!({"type":"get_session_stats"}))["data"]["cost"],
+        0
+    );
+    assert_eq!(
+        rpc.call("cloud", json!({"type":"set_model","modelId":"cloud-m"}))["success"],
+        true
+    );
+    rpc.prompt("cloud-prompt", "Synthetic cloud request");
+    let cloud = rpc.call("cloud-stats", json!({"type":"get_session_stats"}));
+    assert_eq!(cloud["data"].get("cost"), Some(&Value::Null), "{cloud}");
+    assert_eq!(
+        rpc.call("local", json!({"type":"set_model","modelId":"local-m"}))["success"],
+        true
+    );
+    rpc.prompt("local-prompt", "Synthetic local request");
+    let mixed = rpc.call("mixed-stats", json!({"type":"get_session_stats"}));
+    assert_eq!(mixed["data"].get("cost"), Some(&Value::Null), "{mixed}");
+    assert_eq!(rpc.call("new", json!({"type":"new_session"}))["success"], true);
+    // Token totals are process-local and survive `new_session`; cost availability must too.
+    let new = rpc.call("new-stats", json!({"type":"get_session_stats"}));
+    assert_eq!(new["data"]["tokens"], mixed["data"]["tokens"]);
+    assert_eq!(new["data"].get("cost"), Some(&Value::Null), "{new}");
+    assert_eq!(rpc.finish().0, 0);
+}
+
 /// abort_bash cancels a running bash (answered on the reader, ahead of the busy check)
 #[test]
 fn abort_bash_cancels_a_running_bash() {
@@ -644,7 +703,7 @@ fn error_shapes() {
     }
 
     let (code, _) = rpc.finish();
-    assert_eq!(code, 0);
+    assert_eq!(code, 1);
 }
 
 /// exit code 0
@@ -657,13 +716,15 @@ fn shutdown_on_stdin_close() {
     // Queue a run and close stdin straight away: the queued work finishes, then the exit is 0.
     let resp = rpc.call("p1", json!({"type": "prompt", "message": "Bye"}));
     assert_eq!(resp["success"], true);
-    rpc.send(json!({"type": "get_commands", "id": "late"}));
+    rpc.send(json!({"type": "get_state", "id": "late"}));
 
     let (code, records) = rpc.finish();
     assert_eq!(code, 0, "exit code 0 after stdin closes");
     assert!(has_settled(&records, false), "the queued run settled before exit");
-    // The late command is either run or refused as busy; either way it is answered before exit.
-    assert!(records
+    // This read is allowed while busy, so it cannot add a rejected-command outcome.
+    let late = records
         .iter()
-        .any(|r| r["type"] == "response" && r["id"] == "late"));
+        .find(|r| r["type"] == "response" && r["id"] == "late")
+        .expect("the late state read is answered before exit");
+    assert_eq!(late["success"], true);
 }

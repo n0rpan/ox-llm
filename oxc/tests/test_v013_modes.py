@@ -230,7 +230,7 @@ class StatusContract(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertEqual(set(limits), {row['id'] for row in models['data']})
         # v0.2.0 EG2: capabilities per alias, before any load
-        rust = {'prefill_only': True, 'snapshot_hint': 2, 'turn_kind': True, 'hint_clear': True, 'thinking': 'toggle',
+        rust = {'thinking_budget': False, 'prefill_only': True, 'snapshot_hint': 2, 'turn_kind': True, 'hint_clear': True, 'thinking': 'toggle',
                 'vision': False, 'slots': 1}
         self.assertEqual(caps['local-default'], caps[ORNITH])
         for alias in (ORNITH, QWEN):
@@ -239,7 +239,7 @@ class StatusContract(unittest.TestCase):
             available = [row['cap'] for row in limits[alias]['modes'] if row['available']]
             self.assertEqual(caps[alias]['max_context'], max(available))
         # this FLASH row is the C++ BigMoe adapter (bigmoe-cpu-stream): no Rust request hints
-        self.assertEqual(caps[FLASH], {'prefill_only': False, 'snapshot_hint': 0, 'turn_kind': False, 'hint_clear': False,
+        self.assertEqual(caps[FLASH], {'thinking_budget': False, 'prefill_only': False, 'snapshot_hint': 0, 'turn_kind': False, 'hint_clear': False,
                                        'thinking': 'toggle', 'vision': False, 'slots': 1, 'preserve_thinking': False,
                                        'mtp': False, 'max_context': 16384, 'context_window': 16384,
                                        'park': 'none', 'sampling': [], 'remote': False, 'remote_provider': None,
@@ -269,6 +269,22 @@ class StatusContract(unittest.TestCase):
         self.assertNotIn('mtp_fallback', got[QWEN])
         stack.manager.process = None  # unloaded: back to the profile
         self.assertIs(caps()[ORNITH]['mtp'], True)
+
+    def test_model_limits_follow_the_loaded_engine_on_thinking_budget(self):
+        """The binary advertising thinking-budget-v1 is not enough: a loaded model whose template
+        cannot think reports /props.thinking_budget false, and the capability follows it."""
+        stack = self.stack()
+        caps = lambda: {a: v['capabilities'] for a, v in stack.manager.model_limits().items()}
+        stack.manager.engine_thinking_budget = False
+        stack.manager.loaded_config = stack.manager.config(ORNITH)
+        stack.manager.process = object()
+        self.addCleanup(setattr, stack.manager, 'process', None)
+        with patch.object(oxe_runtime, 'engine_has_thinking_budget', return_value=True):
+            got = caps()
+            self.assertIs(got[ORNITH]['thinking_budget'], False)
+            self.assertIs(got[QWEN]['thinking_budget'], True)
+            stack.manager.engine_thinking_budget = True
+            self.assertIs(caps()[ORNITH]['thinking_budget'], True)
 
     def test_max_needs_the_proof(self):
         stack = self.stack()

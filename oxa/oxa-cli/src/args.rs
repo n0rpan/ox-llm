@@ -1,6 +1,6 @@
-//! C12: command-line parsing. Owner: task C12. Signatures below are frozen; bodies are yours.
+//! C12: command-line parsing.
 // ported from pi packages/coding-agent/src/cli/args.ts (docs: cli.md)
-use oxa_proto::{codes, FlagSpec, Mode, OxaError, ThinkingLevel, Value};
+use oxa_proto::{codes, FlagSpec, Mode, OxaError, PermissionMode, ThinkingLevel, Value};
 use std::path::PathBuf;
 
 /// `--mode`.
@@ -14,6 +14,12 @@ pub enum ModeArg {
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    #[cfg(feature = "share")]
+    Share(Vec<String>),
+    /// Read the live snapshot of a saved session.
+    Status(Vec<String>),
+    /// Explicit owner ChatGPT sign-in/sign-out.
+    Login(bool, LoginArgs),
     /// `oxa work <taskfile> | --issue N --model MODEL`.
     Work(Vec<String>),
     /// `oxa mcp add|remove|list|login|logout ..`: the words after `mcp`.
@@ -28,6 +34,18 @@ pub enum Subcommand {
     ReportIssue(Vec<String>),
     /// P6: `oxa wipe --session <id> | --all [--yes] [--engine]`.
     Wipe(Vec<String>),
+    /// Publish a follow-up to a session's file inbox.
+    Send(Vec<String>),
+}
+
+/// Login words can contain a mistakenly pasted callback. Never expose them
+/// through Args/Subcommand Debug; command validation uses fixed diagnostics.
+#[derive(Clone, PartialEq, Eq)]
+pub struct LoginArgs(pub Vec<String>);
+impl std::fmt::Debug for LoginArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoginArgs([redacted])")
+    }
 }
 
 /// A secret given on the command line. `Debug` never shows it.
@@ -50,6 +68,16 @@ pub struct Args {
     pub files: Vec<String>,
     /// `-p`, `--print`.
     pub print: bool,
+    /// `--output-schema FILE`: validate final text as JSON, with one repair turn.
+    pub output_schema: Option<String>,
+    /// Stored goal objective from a UTF-8 file (print/JSON).
+    pub goal: Option<String>,
+    /// Soft runtime limit for print, JSON and RPC modes (`--max-time`, seconds).
+    pub max_time: Option<std::time::Duration>,
+    /// Flag a saved active session after this long without progress.
+    pub stall_timeout: Option<std::time::Duration>,
+    /// Soft run budget: uncached prompt plus output tokens (`--max-tokens`).
+    pub max_tokens: Option<u64>,
     /// `--mode text|json|rpc`.
     pub mode: Option<ModeArg>,
     /// `--export <input> [output]`.
@@ -67,8 +95,14 @@ pub struct Args {
     pub list_models: Option<Option<String>>,
     /// `--thinking <level>`.
     pub thinking: Option<ThinkingLevel>,
-    /// `-c`, `--continue`.
+    /// `-c`, `--continue [id]`.
     pub continue_: bool,
+    /// Explicit session id supplied to `--continue`.
+    pub continue_id: Option<String>,
+    /// The word after a bare `--continue`, and where it sat among the messages. It is a session
+    /// id only if a session with that id exists; otherwise it stays a prompt word
+    /// (`--continue fix` always continued the latest session with the prompt "fix").
+    pub continue_word: Option<(String, usize)>,
     /// `-r`, `--resume`.
     pub resume: bool,
     /// `--session <path|id>`.
@@ -123,10 +157,12 @@ pub struct Args {
     pub approve: Option<bool>,
     /// `--tui-mode <mode>` (`fullscreen` | `regular`).
     pub tui_mode: Option<String>,
-    /// oxa: `--permission-mode plan|workspace|ask`.
+    /// oxa: `--permission-mode plan|workspace|ask` (the table mode; `standard`, `auto` and
+    /// `yolo` set [`Args::level`]).
     pub permission_mode: Option<oxa_proto::Mode>,
-    /// `--yolo` (O-182): no permission prompts; the sandbox and the deny-list stay on.
-    pub yolo: bool,
+    /// #202: `--standard`, `--auto`, `--yolo` (or `--permission-mode <that>`): the permission
+    /// mode for this run, over `permissions.defaultMode`. The last one given wins.
+    pub level: Option<oxa_proto::PermissionMode>,
     /// `--verbose`.
     pub verbose: bool,
     /// `-h`, `--help`.
@@ -150,6 +186,15 @@ const SESSION_ID_ERROR: &str = "Session id must be non-empty, contain only alpha
 
 /// Subcommands take every following word raw; they are parsed by their own modules.
 const COMMANDS: &[(&str, &str)] = &[
+    #[cfg(feature = "share")]
+    (
+        "oxa share key <add|list|revoke>",
+        "Manage private guest keys and daily limits",
+    ),
+    (
+        "oxa status <session-id|session-file>",
+        "Read a saved session's current progress and stall signal",
+    ),
     (
         "oxa install <source> [-l]",
         "Install a package source and add it to settings",
@@ -163,6 +208,15 @@ const COMMANDS: &[(&str, &str)] = &[
         "Update packages from their git or local sources (not oxa itself or model catalogs)",
     ),
     ("oxa list", "List installed packages"),
+    (
+        "oxa login chatgpt --experimental [--paste] [--replace]",
+        "Owner-only native experimental ChatGPT sign-in",
+    ),
+    ("oxa logout chatgpt", "Remove the owner ChatGPT token record"),
+    (
+        "oxa send <session-id> \"text\"",
+        "Queue a session follow-up, waking its TUI or RPC owner",
+    ),
     ("oxa config [-l]", "Print every setting with its value and source"),
     (
         "oxa mcp <command>",
@@ -177,7 +231,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
     ),
     (
-        "oxa work <taskfile> [options] | --queue DIR --max N | --status",
+        "oxa work <taskfile> [--rerun] [--publish] [--report-problems] | --status",
         "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (
@@ -213,6 +267,7 @@ const OPTIONS: &[(&str, &str)] = &[
         "Thinking level: off, minimal, low, medium, high, xhigh, max",
     ),
     ("--mode <mode>", "Output mode: text (default), json, or rpc"),
+    ("--output-schema <file>", "Check final JSON against a schema; retry once on mismatch"),
     (
         "--print, -p",
         "Non-interactive mode: process the prompts and exit",
@@ -222,8 +277,21 @@ const OPTIONS: &[(&str, &str)] = &[
         "Export a session file to HTML and exit",
     ),
     (
-        "--continue, -c",
-        "Continue the most recent session for the current directory",
+        "--continue [id], -c",
+        "Continue the named session, or the most recent session when no id is given",
+    ),
+    ("--goal <file>", "Pursue and persist this goal until complete, blocked, stalled or interrupted"),
+    (
+        "--max-time <seconds>",
+        "Gracefully wrap up a headless run after this time (fractional seconds allowed)",
+    ),
+    (
+        "--stall-timeout <seconds>",
+        "Flag an active session after this long without progress (no automatic cancellation)",
+    ),
+    (
+        "--max-tokens <N>",
+        "Gracefully wrap up a headless run after N new prompt + output tokens (cached tokens are free)",
     ),
     ("--resume, -r", "Pick a session to resume"),
     (
@@ -311,12 +379,20 @@ const OPTIONS: &[(&str, &str)] = &[
         "Ignore project-local configuration and resources for this run",
     ),
     (
+        "--standard",
+        "Permission mode standard: prompts before actions outside the workspace",
+    ),
+    (
+        "--auto",
+        "Permission mode auto: no prompts; the bash sandbox and the deny-list stay on",
+    ),
+    (
         "--yolo",
-        "No permission prompts: every question is auto-approved (the sandbox and the deny-list stay on)",
+        "Permission mode yolo, full access: no prompts, bash runs without the sandbox",
     ),
     (
         "--permission-mode <mode>",
-        "Permission mode: plan, workspace (default), or ask",
+        "Permission mode: standard, auto, yolo, plan (or workspace, ask); default: permissions.defaultMode, else auto",
     ),
     ("--verbose", "Show verbose startup information"),
     (
@@ -338,22 +414,24 @@ fn usage(message: impl Into<String>) -> OxaError {
 /// The first word of a subcommand. `None` when the word is an ordinary prompt.
 fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaError> {
     Ok(Some(match word {
+        "login" => Subcommand::Login(false, LoginArgs(rest.to_vec())),
+        "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
         "mcp" => Subcommand::Mcp(rest.to_vec()),
         "install" | "remove" | "uninstall" | "update" | "list" => {
             Subcommand::Pkg(word.to_string(), rest.to_vec())
         }
+        #[cfg(feature = "share")]
+        "share" => Subcommand::Share(rest.to_vec()),
+        #[cfg(not(feature = "share"))]
+        "share" => return Err(usage("this build does not include sharing")),
         "config" => Subcommand::Config(rest.to_vec()),
         "identity" => Subcommand::Identity(rest.to_vec()),
         "report-issue" => Subcommand::ReportIssue(rest.to_vec()),
         "wipe" => Subcommand::Wipe(rest.to_vec()),
+        "send" => Subcommand::Send(rest.to_vec()),
+        "status" => Subcommand::Status(rest.to_vec()),
         "work" => Subcommand::Work(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
-        // pi's provider sign-in (`pi login [--api-key] [--no-browser]`, `pi logout`).
-        "login" | "logout" => {
-            return Err(OxaError::unsupported(&format!(
-                "the {word} command (provider sign-in)"
-            )))
-        }
         _ => return Ok(None),
     }))
 }
@@ -430,7 +508,7 @@ fn check_tool_list(flag: &str, entries: &[String]) -> Result<(), OxaError> {
     Ok(())
 }
 
-fn valid_session_id(id: &str) -> bool {
+pub(crate) fn valid_session_id(id: &str) -> bool {
     let b = id.as_bytes();
     let alnum = |c: u8| c.is_ascii_alphanumeric();
     match (b.first(), b.last()) {
@@ -458,31 +536,22 @@ fn positional(a: &mut Args, word: &str) {
 /// `unsupported_in_oxa`.
 pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaError> {
     let mut a = Args::default();
-    if let Some(first) = argv.first() {
-        if !first.starts_with('-') && !first.starts_with('@') {
-            if let Some(sub) = subcommand(first, &argv[1..])? {
-                a.subcommand = Some(sub);
-                return Ok(a);
-            }
-        }
-    }
-    // `oxa --offline work ..`: the global offline switch is the one option that may come
-    // before the work subcommand, because the runner passes the policy on to every child.
-    // Any other option first keeps the old meaning: `work` is then an ordinary prompt word.
-    let leading_offline = argv
-        .iter()
-        .take_while(|word| word.as_str() == "--offline")
-        .count();
-    if leading_offline > 0 && argv.get(leading_offline).map(String::as_str) == Some("work") {
-        a.offline = true;
-        a.subcommand = Some(Subcommand::Work(argv[leading_offline + 1..].to_vec()));
-        return Ok(a);
-    }
     let mut i = 0;
     let mut stop = false;
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
+        // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
+        // another option or `--` appears, later words retain their positional meaning.
+        if !stop
+            && (i == 1
+                || (matches!(arg, "send" | "work") && argv[..i - 1].iter().all(|word| word == "--offline")))
+        {
+            if let Some(sub) = subcommand(arg, &argv[i..])? {
+                a.subcommand = Some(sub);
+                break;
+            }
+        }
         if stop || !arg.starts_with('-') {
             positional(&mut a, arg);
             continue;
@@ -527,6 +596,7 @@ fn parse_flag(
             no_value(inline, flag)?;
             a.print = true;
         }
+        "--output-schema" => a.output_schema = Some(value(argv, i, inline, flag, "a file")?),
         "--mode" => {
             let v = value(argv, i, inline, flag, "text, json, or rpc")?;
             a.mode = Some(match v.as_str() {
@@ -540,13 +610,58 @@ fn parse_flag(
                 }
             });
         }
-        "-c" | "--continue" => {
+        "-c" => {
             no_value(inline, flag)?;
             a.continue_ = true;
+        }
+        "--continue" => {
+            a.continue_ = true;
+            match inline {
+                Some(v) => a.continue_id = Some(v.to_string()),
+                None => {
+                    a.continue_word = optional_value(argv, i, None).map(|w| (w, a.messages.len()));
+                }
+            }
         }
         "-r" | "--resume" => {
             no_value(inline, flag)?;
             a.resume = true;
+        }
+        "--goal" => a.goal = Some(value(argv, i, inline, flag, "a goal file")?),
+        "--max-time" => {
+            let text = value(argv, i, inline, flag, "a positive number of seconds")?;
+            let seconds = text
+                .parse::<f64>()
+                .ok()
+                .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
+                .ok_or_else(|| usage("--max-time requires a positive, finite number of seconds"))?;
+            a.max_time = Some(
+                std::time::Duration::try_from_secs_f64(seconds)
+                    .map_err(|_| usage("--max-time is too large"))?,
+            );
+        }
+        "--stall-timeout" => {
+            let text = value(argv, i, inline, flag, "a positive number of seconds")?;
+            let seconds = text
+                .parse::<f64>()
+                .ok()
+                .filter(|s| s.is_finite() && *s >= 0.001)
+                .ok_or_else(|| usage("--stall-timeout requires at least 0.001 finite seconds"))?;
+            let duration = std::time::Duration::try_from_secs_f64(seconds)
+                .map_err(|_| usage("--stall-timeout is too large"))?;
+            if duration.as_millis() > u64::MAX as u128 {
+                return Err(usage("--stall-timeout is too large"));
+            }
+            a.stall_timeout = Some(duration);
+        }
+        "--max-tokens" => {
+            let text = value(argv, i, inline, flag, "a positive integer")?;
+            a.max_tokens = Some(
+                text.parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| usage("--max-tokens requires a positive integer"))?,
+            );
         }
         "--provider" => a.provider = Some(value(argv, i, inline, flag, "a provider name")?),
         "--model" => a.model = Some(value(argv, i, inline, flag, "a model pattern")?),
@@ -646,14 +761,28 @@ fn parse_flag(
             a.tui_mode = Some(v);
         }
         "--permission-mode" => {
-            let v = value(argv, i, inline, flag, "plan, workspace, or ask")?;
-            a.permission_mode = Some(Mode::parse(&v).ok_or_else(|| {
-                let valid: Vec<&str> = Mode::ALL.iter().map(|m| m.as_str()).collect();
-                usage(format!(
-                    "Invalid permission mode \"{v}\". Valid values: {}",
-                    valid.join(", ")
-                ))
-            })?);
+            let v = value(
+                argv,
+                i,
+                inline,
+                flag,
+                "standard, auto, yolo, plan, workspace, or ask",
+            )?;
+            if let Some(m) = Mode::parse(&v) {
+                a.permission_mode = Some(m);
+                // The last flag given wins: `workspace` and `ask` prompt, so they end an
+                // earlier `--yolo` / `--auto`.
+                a.level = Some(match m {
+                    Mode::Plan => PermissionMode::Plan,
+                    _ => PermissionMode::Standard,
+                });
+            } else if let Some(level) = PermissionMode::parse(&v) {
+                a.level = Some(level);
+            } else {
+                return Err(usage(format!(
+                    "Invalid permission mode \"{v}\". Valid values: standard, auto, yolo, plan, workspace, ask"
+                )));
+            }
         }
         "--verbose" => {
             no_value(inline, flag)?;
@@ -673,7 +802,15 @@ fn parse_flag(
         }
         "--yolo" => {
             no_value(inline, flag)?;
-            a.yolo = true;
+            a.level = Some(PermissionMode::Yolo);
+        }
+        "--auto" => {
+            no_value(inline, flag)?;
+            a.level = Some(PermissionMode::Auto);
+        }
+        "--standard" => {
+            no_value(inline, flag)?;
+            a.level = Some(PermissionMode::Standard);
         }
         _ => return parse_extension_or_unknown(a, argv, i, flag, inline, ext),
     }
@@ -714,8 +851,22 @@ fn parse_extension_or_unknown(
 
 /// The documented conflicts, checked after all words are read.
 fn check_conflicts(a: &Args) -> Result<(), OxaError> {
+    if a.no_session && a.stall_timeout.is_some() {
+        return Err(usage("--stall-timeout requires a saved session"));
+    }
     if a.continue_ && a.resume {
         return Err(usage("--continue cannot be combined with --resume"));
+    }
+    if let Some(id) = &a.continue_id {
+        if !valid_session_id(id) {
+            return Err(usage(SESSION_ID_ERROR));
+        }
+        if a.no_session {
+            return Err(usage("--continue cannot be combined with --no-session"));
+        }
+        if a.session.is_some() {
+            return Err(usage("--continue cannot be combined with --session"));
+        }
     }
     if a.session.is_some() && a.no_session {
         return Err(usage("--session cannot be combined with --no-session"));

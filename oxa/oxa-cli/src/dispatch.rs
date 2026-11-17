@@ -1,7 +1,12 @@
-//! D13: mode choice and wiring. Owner: task D13. Signatures below are frozen; bodies are yours.
+//! D13: mode choice and wiring.
 // ported from pi packages/coding-agent/src/main.ts
+mod mode;
+
+use mode::headless_argument_error;
+pub use mode::{choose_mode, RunMode};
+
 use crate::hooks::{build_hooks, HookInputs, HookSets};
-use crate::{parse_args, run_config, run_mcp, run_pkg, usage_text, Args, ModeArg, Subcommand};
+use crate::{parse_args, run_config, run_mcp, run_pkg, usage_text, Args, Subcommand};
 use oxa_config::{
     dirs_from_env, resolve_model, Dirs, Endpoint, Env, Keymap, ModelRef, ModelsConfig, Settings,
 };
@@ -17,7 +22,7 @@ use oxa_perm::{
 };
 use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
-use oxa_rpc::{run_json, run_print, serve, Out};
+use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
 use oxa_sandbox::{Bwrap, NoSandbox};
 use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
 use std::io::{BufReader, Read, Write};
@@ -51,24 +56,6 @@ impl Stdio {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunMode {
-    Interactive,
-    Print,
-    Json,
-    Rpc,
-}
-
-/// cli.md's tty rules (see the crate docs). Pure.
-pub fn choose_mode(a: &Args, stdin_is_tty: bool, stdout_is_tty: bool) -> RunMode {
-    match a.mode {
-        Some(ModeArg::Rpc) => RunMode::Rpc,
-        Some(ModeArg::Json) => RunMode::Json,
-        _ if a.print || !stdin_is_tty || !stdout_is_tty => RunMode::Print,
-        _ => RunMode::Interactive,
-    }
-}
-
 pub(crate) const USAGE_HINT: &str = "Run `oxa --help` for the list of options.";
 
 /// The whole program. Returns the exit code; never panics on user error.
@@ -92,7 +79,14 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
 
     let a = match parse_args(argv, &[]) {
         Ok(a) => a,
-        Err(e) => return report(&mut *stderr, &e),
+        Err(e) => {
+            let headless = headless_argument_error(argv, stdin_is_tty, stdout_is_tty);
+            return if headless {
+                finish_outcome(Err(e), &mut *stderr)
+            } else {
+                report(&mut *stderr, &e)
+            };
+        }
     };
     if a.help {
         let flags = help_extension_flags(&a, env, &cwd, &mut *stderr);
@@ -103,6 +97,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         let _ = writeln!(stdout, "oxa {}", env!("CARGO_PKG_VERSION"));
         return 0;
     }
+    let headless = a.subcommand.is_none()
+        && a.export.is_none()
+        && a.list_models.is_none()
+        && choose_mode(&a, stdin_is_tty, stdout_is_tty) != RunMode::Interactive;
+    let report = |err: &mut dyn Write, error: &OxaError| {
+        if headless {
+            finish_outcome(Err(error.clone()), err)
+        } else {
+            report(err, error)
+        }
+    };
     // A long flag oxa does not know may belong to an extension (`registerFlag`): the session
     // paths resolve it once the extensions are loaded (`build_hooks`). The paths that load no
     // extension (subcommands, `--export`, `--list-models`) refuse it here.
@@ -125,12 +130,62 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            #[cfg(feature = "share")]
+            Subcommand::Share(words) => {
+                // Env::get treats empty values as unset; owner-command policy
+                // refuses marker presence, including an empty value.
+                if env.pairs().iter().any(|(name, _)| {
+                    matches!(
+                        name.as_str(),
+                        "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+                    )
+                }) {
+                    return report(
+                        &mut *stderr,
+                        &OxaError::new(
+                            codes::INVALID,
+                            "Guest key commands require the owner outside an agent tool",
+                        ),
+                    );
+                }
+                oxc_gateway::share::command::run(&words, &dirs.home.join(".oxa/share"), &mut *stdout)
+                    .map(|()| 0)
+                    .map_err(|error| {
+                        let code = if matches!(error, oxc_gateway::share::command::Error::Usage) {
+                            codes::USAGE
+                        } else {
+                            codes::INVALID
+                        };
+                        OxaError::new(code, error.to_string())
+                    })
+            }
+            Subcommand::Login(logout, words) => crate::login_cmd::run(
+                logout,
+                &words.0,
+                &dirs,
+                &cwd,
+                env,
+                stdin_is_tty && stdout_is_tty,
+                &mut *stdout,
+            ),
+            Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Work(words) => {
-                return crate::work_cmd::run(&words, &cwd, &dirs, env, &mut *stdout, &mut *stderr)
+                return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
             }
             Subcommand::Mcp(words) => run_mcp(&words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Pkg(verb, words) => run_pkg(&verb, &words, &dirs, &cwd, &mut *stdout, &mut *stderr),
             Subcommand::Config(words) => run_config(&words, &dirs, &cwd, &mut *stdout),
+            Subcommand::Send(words) => match words.as_slice() {
+                [id, text] if oxa_session::valid_inbox_id(id) => {
+                    oxa_session::send_inbox(&dirs.agent_dir, id, text)
+                        .map(|_| 0)
+                        .map_err(|e| OxaError::io("cannot send session message", &e))
+                }
+                _ => Err(OxaError::new(
+                    codes::USAGE,
+                    "Usage: oxa send <session-id> \"text\"",
+                )),
+            },
             Subcommand::Identity(words) => crate::run_identity(&words, &dirs, env, &mut *stdout),
             Subcommand::ReportIssue(words) => crate::run_report_issue(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Wipe(words) => crate::run_wipe(
@@ -177,7 +232,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Ok(ep) => with_api_key(ep, &a),
             Err(e) => return report(&mut *stderr, &e),
         };
-        let engine = match engine_for(&endpoint) {
+        let user = Settings::load(&dirs, &cwd, false);
+        let engine = match crate::in_process::select(&user, &user, &dirs, None, || engine_for(&endpoint)) {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
@@ -192,6 +248,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     let mode = choose_mode(&a, stdin_is_tty, stdout_is_tty);
+    if (a.max_time.is_some() || a.max_tokens.is_some()) && mode == RunMode::Interactive {
+        let flag = if a.max_tokens.is_some() {
+            "--max-tokens"
+        } else {
+            "--max-time"
+        };
+        return report(
+            &mut *stderr,
+            &OxaError::new(codes::USAGE, format!("{flag} requires print, JSON or RPC mode")),
+        );
+    }
     if mode == RunMode::Rpc && !a.files.is_empty() {
         let e = OxaError::new(codes::USAGE, "@file arguments are not supported in RPC mode")
             .with_hint(USAGE_HINT);
@@ -206,6 +273,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     // CLI-019: pi's question when `--session <id>` names a session of another directory
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
     // stdin (read byte by byte, so piped prompt text after it stays unread).
+    let mut a = a;
+    let cloud_diagnostics = oxc_gateway::diagnostics::Diagnostics::default();
     let prepared = {
         let mut confirm = |notice: &str, question: &str| -> bool {
             if mode == RunMode::Rpc {
@@ -219,7 +288,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             answer == "y" || answer == "yes"
         };
         prepare(
-            &a,
+            &mut a,
             env,
             &dirs,
             &cwd,
@@ -228,15 +297,23 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             stdin_is_tty,
             stdout_is_tty,
             &mut confirm,
+            cloud_diagnostics.clone(),
         )
     };
     let prep = match prepared {
         Ok(p) => p,
         Err(e) if e.code == FORK_DECLINED => {
             let _ = writeln!(stdout, "Aborted.");
-            return 0;
+            return if headless {
+                finish_outcome(Ok(oxa_core::RunOutcome::Interrupted), &mut *stderr)
+            } else {
+                0
+            };
         }
-        Err(e) => return report(&mut *stderr, &e),
+        Err(e) => {
+            crate::in_process::report_diagnostics(&cloud_diagnostics, &dirs, &mut *stderr);
+            return report(&mut *stderr, &e);
+        }
     };
     // Second pass (pi): the long flags the first pass did not know are parsed again with the
     // flags the loaded extensions registered; one that nobody registered is a usage error.
@@ -251,6 +328,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             let e = OxaError::new(codes::USAGE, format!("Unknown option: --{name}")).with_hint(USAGE_HINT);
             return report(&mut *stderr, &e);
         }
+        let again = resolve_continue_word(&again, &prep.built.dirs).unwrap_or(again);
         for (name, value) in &again.extension_flags {
             for h in &prep.built.hook_sets.hooks {
                 h.set_flag(name, value);
@@ -266,7 +344,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         }
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
-            run_rpc(prep, dirs, stdin, stdout, &mut *stderr)
+            run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
         }
         RunMode::Print | RunMode::Json => {
             let stdin_text = match read_piped_stdin(&mut *stdin, stdin_is_tty) {
@@ -277,12 +355,20 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 Ok(p) => p,
                 Err(e) => return report(&mut *stderr, &e),
             };
-            if prompts.is_empty() {
+            if prompts.is_empty() && a.goal.is_none() && !a.continue_ && !a.resume {
                 let e = OxaError::new(codes::USAGE, "no prompt: give a message, an @file or piped stdin")
                     .with_hint(USAGE_HINT);
                 return report(&mut *stderr, &e);
             }
-            run_headless(mode, prep, prompts, &mut *stdout, &mut *stderr)
+            run_headless(
+                mode,
+                a.max_time,
+                a.max_tokens,
+                prep,
+                prompts,
+                &mut *stdout,
+                &mut *stderr,
+            )
         }
     }
 }
@@ -298,12 +384,47 @@ struct Prep {
     /// CLI-024: `-n/--name`, trimmed and non-empty; written as a `session_info` entry once
     /// the session is open.
     name: Option<String>,
+    /// Explicit user continuation may resume a paused, unexhausted stored goal.
+    continue_goal: bool,
 }
 
-/// The one-line handshake warning of the engine (read by the `info` call of the session open;
-/// no request of its own).
-fn handshake_notice(built: &Built) -> Option<(Level, String)> {
-    built.engine.handshake_warning().map(|w| (Level::Warning, w))
+/// Startup warnings after opening the session, so restored/selected model limits are final.
+/// No extra engine requests: context tokens are a cheap estimate (four UTF-8 bytes per token).
+fn startup_notices(built: &Built, session: &Session) -> Vec<(Level, String)> {
+    const CONTEXT_WARNING_PERCENT: u64 = 5;
+    let mut notices: Vec<_> = built
+        .engine
+        .handshake_warning()
+        .map(|w| (Level::Warning, w))
+        .into_iter()
+        .collect();
+    let state = session.state();
+    let mut total = 0_u64;
+    let mut largest = None;
+    for file in &session.inner().resources.context_files {
+        let tokens = file.content.len().div_ceil(4) as u64;
+        total = total.saturating_add(tokens);
+        if largest.is_none_or(|(_, size)| tokens > size) {
+            largest = Some((file.path.as_path(), tokens));
+        }
+    }
+    let window = u64::from(state.n_ctx);
+    if window > 0 && total.saturating_mul(100) > window * CONTEXT_WARNING_PERCENT {
+        if let Some((path, tokens)) = largest {
+            let shown = if let Ok(rel) = path.strip_prefix(&built.cwd) {
+                rel.display().to_string()
+            } else if let Ok(rel) = path.strip_prefix(&built.dirs.home) {
+                format!("~/{}", rel.display())
+            } else {
+                path.display().to_string()
+            };
+            notices.push((Level::Warning, format!(
+                "context files use ~{total} tokens ({:.1}% of {}'s {window}-token window); largest: {shown} (~{tokens} tokens)",
+                total as f64 * 100.0 / window as f64, state.model,
+            )));
+        }
+    }
+    notices
 }
 
 /// `Session::open`, then pi's `--name` (`appendSessionInfo`).
@@ -314,9 +435,14 @@ fn open_named(
     name: Option<&str>,
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
+    session.set_output_schema(built.output_schema.clone());
+    if let Some(goal) = &built.goal {
+        session.set_goal(Some(goal.clone()), &mut oxa_proto::VecSink::default())?;
+    }
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
+    built.result_facts.attach(&mut session)?;
     Ok(session)
 }
 
@@ -324,7 +450,12 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    status: Option<Arc<crate::status::StatusWriter>>,
+    result_facts: Arc<crate::result_facts::ResultFacts>,
+    output_schema: Option<oxa_core::output_schema::OutputSchema>,
+    goal: Option<oxa_session::Goal>,
     engine: Arc<dyn Engine>,
+    cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
     store: Arc<dyn SessionStore>,
     sandbox: Arc<dyn Sandbox>,
     settings: Settings,
@@ -335,46 +466,80 @@ struct Built {
     model: Option<String>,
     thinking: Option<ThinkingLevel>,
     mode: Option<Mode>,
+    /// A supervised subagent keeps SIGTERM as immediate supervisor cancellation.
+    supervised_child: bool,
+    /// RPC hosts opt into owner questions; unattended hosts need not handle UI requests.
+    ask_owner_present: bool,
     /// The hook sets of the process (E-INT 4), shared by every session it opens.
     hook_sets: HookSets,
     /// O-182: the YOLO switch (`--yolo`, `/yolo`), shared by the policy of every session.
     yolo: oxa_proto::YoloSwitch,
+    /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
+    /// bypassed while the switch is at yolo (full access).
+    bash_sandbox: Arc<oxa_sandbox::FullAccess>,
+}
+
+/// #597: `guard` plus the session's scratch directory (`/tmp` in its sandbox), which the file
+/// tools read without asking.
+fn session_guard(guard: oxa_perm::PathGuard, sandbox: &dyn Sandbox) -> oxa_perm::PathGuard {
+    match sandbox.scratch_dir() {
+        Some(dir) => guard.with_scratch(dir),
+        None => guard,
+    }
 }
 
 impl Built {
     /// Fresh `Deps` (the policy and built-in tools are not `Clone`).
     fn deps(&self, session_id: Option<String>) -> Deps {
+        // #457: the session's own sandbox (its scratch directory at /tmp), dropped with it.
+        let sandbox = self.sandbox.for_session().unwrap_or_else(|| self.sandbox.clone());
         // Issue #127 (b): one background-job registry per session, sharing the session's
         // sandbox. The session kills its jobs on close/shutdown.
         let jobs = Arc::new(oxa_tools::JobRegistry::new());
-        jobs.set_sandbox(self.sandbox.clone());
+        let bash_sandbox: Arc<dyn Sandbox> = Arc::new(self.bash_sandbox.with_inner(sandbox.clone()));
+        jobs.set_sandbox(bash_sandbox.clone());
+        // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
+        let mut tools = oxa_tools::builtin_tools_with_bash_sandbox(
+            oxa_tools::ShellConfig {
+                shell_path: self.settings.shell_path(&self.dirs.home),
+                command_prefix: self.settings.shell_command_prefix(),
+            },
+            jobs.clone(),
+            bash_sandbox,
+        );
+        // Owner questions belong to lead sessions (including unattended leads). Keep worker
+        // declarations and their small frozen prefixes unchanged.
+        if !self.supervised_child {
+            tools.push(Arc::new(
+                oxa_tools::AskTool::new(self.dirs.agent_dir.join("asks.jsonl"))
+                    .with_owner_present(self.ask_owner_present),
+            ));
+        }
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
-            // pi's `shellPath` and `shellCommandPrefix` (SET-055, SET-056).
-            tools: oxa_tools::builtin_tools_with_shell_and_jobs(
-                oxa_tools::ShellConfig {
-                    shell_path: self.settings.shell_path(&self.dirs.home),
-                    command_prefix: self.settings.shell_command_prefix(),
-                },
-                jobs.clone(),
-            ),
+            tools,
             // Extensions (E1/E2), exec hooks (E5), MCP (E7/E9, F6), the built-in subagent (E11)
             // and codemode (E6); see `hooks.rs`.
             hooks: self.hook_sets.hooks.clone(),
-            // B3: the file tools never touch the sandbox's deny-list.
-            // O-182: YOLO answers the policy's questions; the guard above it is untouched.
+            // B3: the file tools keep the deny-list and protected paths in standard/auto.
+            // #202/#314: only user-selected yolo outside plan mode bypasses that floor.
             policy: Box::new(
                 ModePolicy::new()
-                    .with_guard(oxa_perm::PathGuard::with_real_home(
-                        &self.dirs.home,
-                        oxa_sandbox::account_home().as_deref(),
-                        &self.dirs.agent_dir,
-                        &self.dirs.tmp_dir,
+                    .with_guard(session_guard(
+                        oxa_perm::PathGuard::with_real_home(
+                            &self.dirs.home,
+                            oxa_sandbox::account_home().as_deref(),
+                            &self.dirs.agent_dir,
+                            &self.dirs.tmp_dir,
+                        ),
+                        sandbox.as_ref(),
                     ))
                     .with_yolo(self.yolo.clone()),
             ),
-            sandbox: self.sandbox.clone(),
+            // File names follow bash's current view, without giving hooks/extensions the
+            // bash-only execution bypass. The shared switch also handles live /yolo changes.
+            sandbox: self.bash_sandbox.file_view(sandbox),
             settings: self.settings.clone(),
             dirs: self.dirs.clone(),
             cwd: self.cwd.clone(),
@@ -392,7 +557,7 @@ impl Built {
 /// Settings, trust, resources, engine, sandbox and the open mode. Notices are printed by the
 /// caller once the session is open, so a failed start prints only its one error line.
 fn prepare(
-    a: &Args,
+    a: &mut Args,
     env: &Env,
     dirs: &Dirs,
     cwd: &Path,
@@ -401,8 +566,29 @@ fn prepare(
     stdin_is_tty: bool,
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
+    cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
 ) -> Result<Prep, OxaError> {
+    if a.goal.is_some() && !matches!(mode, RunMode::Print | RunMode::Json) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "--goal currently requires print or JSON mode.",
+        ));
+    }
+    let goal = crate::goal_cmd::load(a, cwd)?;
+    let output_schema = a
+        .output_schema
+        .as_ref()
+        .map(|file| {
+            let path = cwd.join(file);
+            let text = std::fs::read_to_string(&path)
+                .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
+            let value = serde_json::from_str(&text)
+                .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
+            oxa_core::output_schema::OutputSchema::new(value)
+        })
+        .transpose()?;
     let mut notices: Vec<(Level, String)> = Vec::new();
+    let user_settings = Settings::load(dirs, cwd, false);
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -412,114 +598,20 @@ fn prepare(
     let endpoint = with_api_key(default_endpoint(&models)?, a);
     // E11: a subagent child sends its requests under the parent's child hint (`child.rs`).
     let child = crate::child::ChildIdentity::from_env(env, &mut notices);
-    notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    if !user_settings.bool(crate::in_process::SETTING, false) {
+        notices.extend(crate::netguard::endpoint_notice(&endpoint.base_url));
+    }
 
-    // Trust: the user's own settings decide the default; project settings load only when the
-    // project is trusted.
-    let user_settings = Settings::load(dirs, cwd, false);
-    let default = match user_settings.string("defaultProjectTrust").as_deref() {
-        Some("always") => DefaultTrust::Trust,
-        Some("never") => DefaultTrust::Untrusted,
-        _ => DefaultTrust::Ask,
-    };
     let gated = gated_resources(cwd);
-    // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
-    // an explicit `-na` still wins.
-    let approve = a
-        .approve
-        .or_else(|| matches!(env.get("OXA_TRUST_PROJECT"), Some("1" | "true")).then_some(true));
-    let mut trust_store = TrustStore::load(&dirs.trust_file());
-    // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
-    // saved decision and the default (pi's `resolveProjectTrusted`).
-    let extension = if approve.is_none() && !gated.is_empty() {
-        extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, &mut notices)
-    } else {
-        None
-    };
-    let interactive = mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty;
-    let saved = trust_store.lookup(cwd);
-    let outcome = resolve_trust(&TrustInputs {
-        flag: approve,
-        extension,
-        saved,
-        default,
-        interactive,
-        has_gated: !gated.is_empty(),
-    });
-    // B4: the user answered the trust question in this start (it approves the content too).
-    let mut asked_now = false;
-    let trusted = match outcome {
-        TrustOutcome::Trusted => true,
-        TrustOutcome::Untrusted => false,
-        TrustOutcome::AskUser => {
-            // The trust dialog (D10) on the terminal, before the session exists. A dismissed
-            // question leaves the project untrusted for this run and is asked again next time.
-            let (keymap, _) = Keymap::load(dirs);
-            let choice = ask_trust_interactive(env.pairs(), &keymap, &cwd.display().to_string(), &gated)?;
-            asked_now = true;
-            let file = dirs.trust_file();
-            match choice {
-                Some(TrustChoice::Trust) => {
-                    trust_store.save(&file, cwd, true)?;
-                    true
-                }
-                Some(TrustChoice::TrustParent) => {
-                    trust_store.save(&file, cwd.parent().unwrap_or(cwd), true)?;
-                    true
-                }
-                Some(TrustChoice::NoTrust) => {
-                    trust_store.save(&file, cwd, false)?;
-                    false
-                }
-                Some(TrustChoice::Skip) | None => {
-                    notices.push((
-                        Level::Warning,
-                        "the project is not trusted for this run; /trust saves a decision".to_string(),
-                    ));
-                    false
-                }
-            }
-        }
-    };
-    // B4: what runs outside the sandbox loads only as the user approved it (content hashes).
-    let trusted = if trusted && !gated.is_empty() {
-        crate::approval::check(crate::approval::Check {
-            env,
-            dirs,
-            cwd,
-            store: &mut trust_store,
-            via_flag: approve == Some(true),
-            via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
-            asked_now,
-            interactive,
-            notices: &mut notices,
-        })?
-    } else {
-        trusted
-    };
-    // #201: a project trusted by a saved decision gets its approval baseline now (also with
-    // no project config yet), before any tool runs: `.oxa` / `.agents` content the session
-    // creates is then new at the next start and goes through the normal approval.
-    if trusted && saved == Some(true) {
-        trust_store.record_baseline(&dirs.trust_file(), cwd)?;
-    }
-    if !trusted && !gated.is_empty() {
-        notices.push((
-            Level::Warning,
-            format!(
-                "project resources were skipped (not trusted): {}",
-                gated.join(", ")
-            ),
-        ));
-    }
-    // `done` is a project-only key in practice: an untrusted project's list is never merged,
-    // so say that its checks will not run.
-    if !trusted && Settings::project_declares_done(dirs, cwd) {
-        notices.push((
-            Level::Warning,
-            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
-        ));
-    }
+    let trusted = project_trusted(
+        a,
+        env,
+        dirs,
+        cwd,
+        &gated,
+        mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty,
+        &mut notices,
+    )?;
     let mut settings = child.apply(Settings::load(dirs, cwd, trusted));
     // CLI-045 (pi cli.md): `--verbose` overrides `quietStartup` for this run (in memory only).
     if a.verbose {
@@ -553,9 +645,33 @@ fn prepare(
         }
     }
     let dirs = &session_dirs;
+    // Spaced --continue is ambiguous until the effective store is known.
+    if let Some(resolved) = resolve_continue_word(a, dirs) {
+        *a = resolved;
+    }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
-    let engine = child.wrap(engine_with_settings(&endpoint, &settings)?);
+    let has_model_scope = a.models.as_ref().map_or_else(
+        || !settings.list("enabledModels").is_empty(),
+        |patterns| !patterns.is_empty(),
+    );
+    let resuming = a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
+    let requested_model = a.model.clone().or_else(|| {
+        // The core chooses a restored/scoped model instead of an unused default.
+        if resuming || has_model_scope {
+            None
+        } else {
+            settings.string("defaultModel")
+        }
+    });
+    let engine = child.wrap(crate::in_process::select_observed(
+        &user_settings,
+        &settings,
+        dirs,
+        requested_model.as_deref(),
+        (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
+        || engine_with_settings(&endpoint, &settings),
+    )?);
 
     let opts = discover_opts(a, dirs, cwd, trusted)?;
     // O-152: the built-in skills' files, so the model can read their bodies (written only
@@ -610,6 +726,15 @@ fn prepare(
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
             b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
+            // #457: each session gets its own directory at /tmp (`Built::deps`).
+            let root = oxa_sandbox::scratch_root(&dirs.home);
+            match std::fs::create_dir_all(&root) {
+                Ok(()) => b.layout.scratch_root = Some(root),
+                Err(e) => notices.push((
+                    Level::Warning,
+                    format!("no session scratch directory ({e}); /tmp is discarded after each command"),
+                )),
+            }
             let b = b.with_git_dirs(cwd);
             notices.extend(b.layout.git.notes.iter().map(|n| (Level::Warning, n.clone())));
             Arc::new(b)
@@ -682,8 +807,34 @@ fn prepare(
         }
     }
 
-    // O-182: one switch for the policy of every session and for the subagent children.
-    let yolo = oxa_proto::YoloSwitch::new(a.yolo);
+    // O-182, #202: one switch for the policy of every session and for the subagent children.
+    // The command line wins; else `permissions.defaultMode` (a project may only lower it).
+    // `--permission-mode workspace|ask` alone keeps its old meaning: the table asks you.
+    let level = a
+        .level
+        .or(match a.permission_mode {
+            Some(Mode::Workspace | Mode::Ask) => Some(oxa_proto::PermissionMode::Standard),
+            _ => None,
+        })
+        .unwrap_or_else(|| settings.default_permission_mode());
+    let yolo = oxa_proto::YoloSwitch::new(level.autonomy());
+    let table_mode = match (a.permission_mode, level) {
+        (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
+        (m, _) => m,
+    };
+    if !matches!(mode, RunMode::Interactive) {
+        notices.push((
+            Level::Info,
+            format!("permission mode {}: {}", level.as_str(), level.describe()),
+        ));
+    }
+    let bash_sandbox = Arc::new(oxa_sandbox::FullAccess::new(
+        sandbox.clone(),
+        yolo.clone(),
+        env.get("PATH").unwrap_or(""),
+        dirs.home.clone(),
+        oxa_proto::offline(),
+    ));
     let hook_sets = build_hooks(
         &HookInputs {
             args: a,
@@ -730,8 +881,19 @@ fn prepare(
         no_tools: a.no_tools,
         default_edits: settings.default_tools_edits(),
     };
+    let status = (!a.no_session).then(|| {
+        Arc::new(crate::status::StatusWriter::new(a.stall_timeout).with_billing(cloud_diagnostics.clone()))
+    });
+    let result_facts = Arc::new(
+        crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
+    );
     let built = Built {
+        status,
+        result_facts,
+        output_schema,
+        goal,
         engine,
+        cloud_diagnostics,
         store,
         sandbox,
         settings,
@@ -741,9 +903,12 @@ fn prepare(
         selection,
         model,
         thinking,
-        mode: a.permission_mode,
+        mode: table_mode,
+        supervised_child: child.nested(),
+        ask_owner_present: mode != RunMode::Rpc || env.get("OXA_RPC_OWNER_PRESENT") == Some("1"),
         hook_sets,
         yolo,
+        bash_sandbox,
     };
     Ok(Prep {
         built,
@@ -752,10 +917,128 @@ fn prepare(
         notices,
         gated,
         name,
+        continue_goal: a.continue_,
     })
 }
 
 /// The resource discovery options of the flags.
+/// The same project trust and executable-content approval for sessions and workers.
+pub(crate) fn project_trusted(
+    a: &Args,
+    env: &Env,
+    dirs: &Dirs,
+    cwd: &Path,
+    gated: &[String],
+    interactive: bool,
+    notices: &mut Vec<(Level, String)>,
+) -> Result<bool, OxaError> {
+    // Trust: the user's own settings decide the default; project settings load only when the
+    // project is trusted.
+    let user_settings = Settings::load(dirs, cwd, false);
+    let default = match user_settings.string("defaultProjectTrust").as_deref() {
+        Some("always") => DefaultTrust::Trust,
+        Some("never") => DefaultTrust::Untrusted,
+        _ => DefaultTrust::Ask,
+    };
+    // `OXA_TRUST_PROJECT=1` is `--approve` for the trust decision, for unattended runs;
+    // an explicit `-na` still wins.
+    let approve = a
+        .approve
+        .or_else(|| matches!(env.get("OXA_TRUST_PROJECT"), Some("1" | "true")).then_some(true));
+    let mut trust_store = TrustStore::load(&dirs.trust_file());
+    // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
+    // saved decision and the default (pi's `resolveProjectTrusted`).
+    let extension = if approve.is_none() && !gated.is_empty() {
+        extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, notices)
+    } else {
+        None
+    };
+    let saved = trust_store.lookup(cwd);
+    let outcome = resolve_trust(&TrustInputs {
+        flag: approve,
+        extension,
+        saved,
+        default,
+        interactive,
+        has_gated: !gated.is_empty(),
+    });
+    // B4: the user answered the trust question in this start (it approves the content too).
+    let mut asked_now = false;
+    let trusted = match outcome {
+        TrustOutcome::Trusted => true,
+        TrustOutcome::Untrusted => false,
+        TrustOutcome::AskUser => {
+            // The trust dialog (D10) on the terminal, before the session exists. A dismissed
+            // question leaves the project untrusted for this run and is asked again next time.
+            let (keymap, _) = Keymap::load(dirs);
+            let choice = ask_trust_interactive(env.pairs(), &keymap, &cwd.display().to_string(), gated)?;
+            asked_now = true;
+            let file = dirs.trust_file();
+            match choice {
+                Some(TrustChoice::Trust) => {
+                    trust_store.save(&file, cwd, true)?;
+                    true
+                }
+                Some(TrustChoice::TrustParent) => {
+                    trust_store.save(&file, cwd.parent().unwrap_or(cwd), true)?;
+                    true
+                }
+                Some(TrustChoice::NoTrust) => {
+                    trust_store.save(&file, cwd, false)?;
+                    false
+                }
+                Some(TrustChoice::Skip) | None => {
+                    notices.push((
+                        Level::Warning,
+                        "the project is not trusted for this run; /trust saves a decision".to_string(),
+                    ));
+                    false
+                }
+            }
+        }
+    };
+    // B4: what runs outside the sandbox loads only as the user approved it (content hashes).
+    let trusted = if trusted && !gated.is_empty() {
+        crate::approval::check(crate::approval::Check {
+            env,
+            dirs,
+            cwd,
+            store: &mut trust_store,
+            via_flag: approve == Some(true),
+            via_default: extension.is_none() && saved.is_none() && default == DefaultTrust::Trust,
+            asked_now,
+            interactive,
+            notices,
+        })?
+    } else {
+        trusted
+    };
+    // #201: a project trusted by a saved decision gets its approval baseline now (also with
+    // no project config yet), before any tool runs: `.oxa` / `.agents` content the session
+    // creates is then new at the next start and goes through the normal approval.
+    if trusted && saved == Some(true) {
+        trust_store.record_baseline(&dirs.trust_file(), cwd)?;
+    }
+    if !trusted && !gated.is_empty() {
+        notices.push((
+            Level::Warning,
+            format!(
+                "project resources were skipped (not trusted): {}",
+                gated.join(", ")
+            ),
+        ));
+    }
+    // `done` is a project-only key in practice: an untrusted project's list is never merged,
+    // so say that its checks will not run.
+    if !trusted && Settings::project_declares_done(dirs, cwd) {
+        notices.push((
+            Level::Warning,
+            "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
+        ));
+    }
+    Ok(trusted)
+}
+
 fn discover_opts(a: &Args, dirs: &Dirs, cwd: &Path, trusted: bool) -> Result<DiscoverOpts, OxaError> {
     Ok(DiscoverOpts {
         trusted,
@@ -839,6 +1122,27 @@ fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) ->
     }
 }
 
+/// `--continue <word>`: the word is the id of an existing session, or else the first words of
+/// the prompt (and the latest session continues). `None` when there is nothing to settle.
+fn resolve_continue_word(a: &Args, dirs: &Dirs) -> Option<Args> {
+    let store = FsStore::new(dirs.sessions_dir.clone());
+    let (word, at) = a.continue_word.as_ref()?;
+    let mut out = a.clone();
+    out.continue_word = None;
+    let is_id = !a.no_session
+        && a.session.is_none()
+        && a.fork.is_none()
+        && !a.resume
+        && crate::args::valid_session_id(word)
+        && store.resolve(word).is_ok_and(|session| session.id == *word);
+    if is_id {
+        out.continue_id = Some(word.clone());
+    } else {
+        out.messages.insert((*at).min(out.messages.len()), word.clone());
+    }
+    Some(out)
+}
+
 /// The open mode of the flags: `--no-session`, `--fork`, `--session`, `--session-id`,
 /// `--continue`, `--resume` (interactive only, through the picker) or a new session.
 fn choose_open(
@@ -856,7 +1160,7 @@ fn choose_open(
         // pi passes `--session-id` on to `SessionManager.forkFrom` (the fork's new id).
         return Ok((Open::Fork(store.resolve(s)?), a.session_id.clone()));
     }
-    if let Some(s) = &a.session {
+    if let Some(s) = a.continue_id.as_ref().or(a.session.as_ref()) {
         let sref = store.resolve(s)?;
         // pi main.ts `resolveSessionPath`: a path opens as it is; an id found only in another
         // directory is offered as a fork into this one (declining exits 0 with "Aborted.").
@@ -908,6 +1212,8 @@ fn choose_open(
 /// The mode runs that print to stdout and exit: `-p` and `--mode json`.
 fn run_headless(
     mode: RunMode,
+    max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     prep: Prep,
     prompts: Vec<(String, Vec<Part>)>,
     stdout: &mut dyn Write,
@@ -919,13 +1225,64 @@ fn run_headless(
         session_id,
         mut notices,
         name,
+        continue_goal,
         ..
     } = prep;
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
-        Err(e) => return report(stderr, &e),
+        Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
-    notices.extend(handshake_notice(&built));
+    if continue_goal {
+        if let Some(mut goal) = session
+            .goal()
+            .filter(|g| g.status == oxa_session::GoalStatus::Paused && !g.exhausted())
+        {
+            if let Err(error) = goal
+                .resume()
+                .and_then(|()| session.set_goal(Some(goal), &mut oxa_proto::VecSink::default()))
+            {
+                return finish_outcome_facts(Err(error), stderr, Some(&built.result_facts));
+            }
+        }
+    }
+    let mut prompts = prompts;
+    if let Some(goal) = session.goal() {
+        if goal.status == oxa_session::GoalStatus::Pursuing {
+            if built.goal.is_some() {
+                let start = oxa_core::prompt::goal_start(&goal.objective);
+                if let Some((text, _parts)) = prompts.first_mut() {
+                    *text = format!("{start}\n\n{text}");
+                } else {
+                    prompts.push((start, vec![]));
+                }
+            } else if prompts.is_empty() {
+                prompts.push((oxa_core::prompt::GOAL_CONTINUE.into(), vec![]));
+            }
+        }
+    }
+    if prompts.is_empty() {
+        if let Some(goal) = session.goal() {
+            let outcome = match goal.status {
+                oxa_session::GoalStatus::Done => oxa_core::RunOutcome::Done,
+                oxa_session::GoalStatus::Blocked => oxa_core::RunOutcome::Blocked("goal_blocked"),
+                oxa_session::GoalStatus::Paused => oxa_core::RunOutcome::Stalled,
+                oxa_session::GoalStatus::Pursuing => oxa_core::RunOutcome::NothingToDo,
+            };
+            built.result_facts.goal(Some(goal));
+            session.shutdown(&mut oxa_proto::HeadlessUi::default());
+            let result = built
+                .status
+                .as_ref()
+                .map_or(Ok(outcome), |status| status.finish(Ok(outcome), stderr));
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
+        }
+        return finish_outcome_facts(
+            Err(OxaError::new(codes::USAGE, "No prompt or pursuing stored goal.")),
+            stderr,
+            Some(&built.result_facts),
+        );
+    }
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     if mode == RunMode::Print {
         // Printed before the run so a driver that kills a long task still knows what to resume.
@@ -933,25 +1290,82 @@ fn run_headless(
         if st.session_file.is_some() {
             let _ = writeln!(
                 stderr,
-                "oxa: session {} (resume with --session {})",
+                "oxa: session {} (resume with --continue {})",
                 st.session_id, st.session_id
             );
         }
     }
-    let result = match mode {
-        RunMode::Json => run_json(&mut session, prompts, stdout, stderr),
-        _ => run_print(&mut session, prompts, stdout, stderr),
+    let goal = session
+        .goal()
+        .filter(|g| g.status == oxa_session::GoalStatus::Pursuing);
+    let goal_time = goal.as_ref().and_then(|g| {
+        g.budget
+            .max_time_ms
+            .map(|cap| std::time::Duration::from_millis(cap.saturating_sub(g.elapsed_ms)))
+    });
+    let goal_tokens = goal
+        .as_ref()
+        .and_then(|g| g.budget.max_tokens.map(|cap| cap.saturating_sub(g.tokens_used)));
+    let max_time = match (max_time, goal_time) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
     };
+    let max_tokens = match (max_tokens, goal_tokens) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
+        Ok(limit) => limit,
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
+        }
+    };
+    let result = match mode {
+        RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
+        _ => run_print_outcome(&mut session, prompts, stdout, stderr),
+    };
+    built.result_facts.goal(session.goal());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
     write_notices(stderr, ui.notes);
-    finish(result, stderr)
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
+    if mode == RunMode::Json && built.supervised_child && max_tokens.is_some() {
+        // Private child/parent accounting: message_end omits summaries and tool
+        // prefill. Report the uncapped total, including the child's final turn.
+        let usage = serde_json::json!({
+            "type": "run_usage",
+            "tokens": session.handle().run_tokens_used(),
+        });
+        let _ = writeln!(stdout, "{usage}");
+    }
+    // Child stderr can be captured as a tool result in the parent's history.
+    if matches!(
+        &result,
+        Err(_) | Ok(oxa_core::RunOutcome::Blocked(_) | oxa_core::RunOutcome::Failed(_))
+    ) {
+        crate::in_process::report_diagnostics(&built.cloud_diagnostics, &built.dirs, stderr);
+    }
+    finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
 
 /// `--mode rpc`: the protocol owns stdin and stdout; notices go to stderr.
 fn run_rpc(
     prep: Prep,
+    max_time: Option<std::time::Duration>,
+    max_tokens: Option<u64>,
     dirs: Dirs,
     stdin: Box<dyn Read + Send>,
     stdout: Box<dyn Write + Send>,
@@ -967,13 +1381,33 @@ fn run_rpc(
     } = prep;
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
-        Err(e) => return report(stderr, &e),
+        Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
+    let _limit = match crate::limits::LimitWatcher::start(
+        session.handle(),
+        max_time,
+        max_tokens,
+        built.supervised_child,
+    ) {
+        Ok(limit) => limit,
+        Err(error) => {
+            let result = match &built.status {
+                Some(status) => status.finish(Err(error), stderr),
+                None => Err(error),
+            };
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
+        }
+    };
     let out: Out = Arc::new(Mutex::new(stdout));
     let input = Box::new(BufReader::new(stdin));
-    finish(serve(session, dirs, input, out), stderr)
+    let result = serve_outcome(session, dirs, input, out);
+    let result = match &built.status {
+        Some(status) => status.finish(result, stderr),
+        None => result,
+    };
+    finish_outcome_facts(result, stderr, Some(&built.result_facts))
 }
 
 /// The interactive terminal: the first prompt and the further messages come from the command
@@ -997,12 +1431,13 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         mut notices,
         gated,
         name,
+        ..
     } = prep;
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
     };
-    notices.extend(handshake_notice(&built));
+    notices.extend(startup_notices(&built, &session));
     let yolo = built.yolo.clone();
     // Its diagnostics are among the startup notices (`prepare`).
     let (keymap, _) = Keymap::load(dirs);
@@ -1042,7 +1477,10 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Resume(sref) => Open::Resume(sref),
             Reopen::Fork(sref) => Open::Fork(sref),
         };
-        Session::open(deps, how)
+        let mut session = Session::open(deps, how)?;
+        base.result_facts.attach(&mut session)?;
+        session.set_output_schema(base.output_schema.clone());
+        Ok(session)
     });
     let opts = InteractiveOpts {
         // `--tui-mode` over the `tuiMode` setting (default fullscreen).
@@ -1071,7 +1509,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         gated,
         yolo: Some(yolo),
     };
-    match run_interactive(session, opts) {
+    let result = run_interactive(session, opts);
+    let result = match &built.status {
+        Some(status) => status.finish_interactive(result, stderr),
+        None => result,
+    };
+    match result {
         Ok(code) => code,
         Err(e) => report(stderr, &e),
     }
@@ -1110,12 +1553,7 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     const NO_LIMIT_MS: u64 = 365 * 24 * 3600 * 1000;
     // P3: the same remote-engine guard as `engine_for`.
     crate::netguard::check_endpoint(&endpoint.base_url)?;
-    let silence = settings
-        .provider_retry()
-        .timeout_ms
-        .filter(|ms| *ms > 0)
-        .or_else(|| settings.http_idle_timeout_ms())
-        .unwrap_or(NO_LIMIT_MS);
+    let silence = stream_silence_timeout(settings).unwrap_or(NO_LIMIT_MS);
     let opts = oxa_engine::StreamOpts {
         silence_limit_ms: silence,
         ..oxa_engine::StreamOpts::default()
@@ -1125,12 +1563,27 @@ fn engine_with_settings(endpoint: &Endpoint, settings: &Settings) -> Result<Arc<
     Ok(Arc::new(engine))
 }
 
-/// The provider column: the controller's `remote_provider` (else `cloud`) for a cloud model,
-/// the endpoint name for a local one.
+/// Shared by HTTP and native engines; project layers affect timeouts, while the
+/// native selector, catalog and credential locations remain user-only.
+pub(crate) fn stream_silence_timeout(settings: &Settings) -> Option<u64> {
+    settings
+        .provider_retry()
+        .timeout_ms
+        .filter(|ms| *ms > 0)
+        .or_else(|| settings.http_idle_timeout_ms())
+}
+
+/// The provider column: the controller's `remote_provider`, else the remote model id's
+/// provider prefix (or `cloud` for an unprefixed id); the endpoint name for a local one.
 fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
     match (info.caps.remote, info.caps.remote_provider) {
         (_, Some(p)) => p.to_string(),
-        (true, None) => "cloud".to_string(),
+        (true, None) => info
+            .limits_for
+            .split_once('/')
+            .filter(|(provider, model)| !provider.is_empty() && !model.is_empty())
+            .map_or("cloud", |(provider, _)| provider)
+            .to_string(),
         _ => endpoint.to_string(),
     }
 }
@@ -1450,6 +1903,31 @@ fn report(err: &mut dyn Write, e: &OxaError) -> i32 {
     exit_code(e)
 }
 
+fn finish_outcome(result: Result<oxa_core::RunOutcome, OxaError>, err: &mut dyn Write) -> i32 {
+    finish_outcome_facts(result, err, None)
+}
+
+fn finish_outcome_facts(
+    result: Result<oxa_core::RunOutcome, OxaError>,
+    err: &mut dyn Write,
+    facts: Option<&crate::result_facts::ResultFacts>,
+) -> i32 {
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            report(err, &error);
+            oxa_core::RunOutcome::from_error(&error)
+        }
+    };
+    let _ = writeln!(
+        err,
+        "{}",
+        crate::result_facts::ResultFacts::record(outcome, facts)
+    );
+    let _ = err.flush();
+    outcome.exit_code()
+}
+
 fn finish(result: Result<i32, OxaError>, err: &mut dyn Write) -> i32 {
     match result {
         Ok(code) => code,
@@ -1462,6 +1940,7 @@ fn exit_code(e: &OxaError) -> i32 {
     match e.code {
         codes::USAGE | codes::ENGINE_DOWN | codes::UNSUPPORTED_IN_OXA => 2,
         codes::BUDGET_EXHAUSTED => oxa_proto::EXIT_BUDGET,
+        codes::TERMINAL_CLOSED => 129,
         _ => 1,
     }
 }
@@ -1634,6 +2113,29 @@ mod model_limits_tests {
         assert_eq!(col0("local"), "oxe");
     }
 
+    #[test]
+    fn list_models_provider_falls_back_to_remote_model_prefix() {
+        let mut info = CatalogEngine.info(None).unwrap();
+        info.caps.remote = true;
+        info.caps.remote_provider = None;
+        for (id, expected) in [
+            ("chatgpt/subscription-model", "chatgpt"),
+            ("future-provider/model", "future-provider"),
+            ("unprefixed-model", "cloud"),
+            ("/model", "cloud"),
+            ("provider/", "cloud"),
+        ] {
+            info.limits_for = id.to_string();
+            assert_eq!(row_provider("oxe", &info), expected, "{id}");
+        }
+        info.limits_for = "chatgpt/subscription-model".to_string();
+        info.caps.remote_provider = Some("openrouter");
+        assert_eq!(row_provider("oxe", &info), "openrouter", "gateway provider wins");
+        info.caps.remote_provider = None;
+        info.caps.remote = false;
+        assert_eq!(row_provider("oxe", &info), "oxe", "local endpoint is unchanged");
+    }
+
     /// A failing per-model `info(Some(id))` degrades only that row: '?' in the context,
     /// max-out, thinking and images columns, while every other model still lists.
     struct FailingInfoEngine {
@@ -1695,5 +2197,120 @@ mod model_limits_tests {
             .split_whitespace()
             .collect();
         assert_eq!(&row[2..], &["?", "?", "?", "?"]);
+    }
+}
+
+#[cfg(test)]
+mod session_scratch_tests {
+    use super::*;
+    use oxa_proto::ExecSpec;
+    use oxa_sandbox::{Layout, NetSandbox};
+
+    /// The host directory a session's sandbox mounts at `/tmp` (`None` = a fresh tmpfs).
+    fn tmp_dir(d: &Deps, cwd: &Path) -> Option<PathBuf> {
+        let spec = ExecSpec {
+            command: "true".into(),
+            cwd: cwd.to_path_buf(),
+            writable: true,
+            net: false,
+            timeout_s: None,
+            env: Vec::new(),
+        };
+        let a = d.sandbox.bwrap_args(&spec);
+        a.windows(3)
+            .find(|w| w[0] == "--bind" && w[2] == "/tmp")
+            .map(|w| PathBuf::from(&w[1]))
+    }
+
+    /// #457 (Codex P2): every session the process opens (the first one, `/new`, `/resume`,
+    /// fork and clone all go through `Built::deps`) gets its own scratch directory, and the
+    /// directory is deleted when that session's dependencies are dropped. The process sandbox
+    /// itself (exec hooks) keeps the per-command tmpfs.
+    #[test]
+    fn each_session_gets_its_own_scratch_and_drops_it() {
+        let env = oxa_fake::TestEnv::new();
+        let home = env.home();
+        let root = oxa_sandbox::scratch_root(&home);
+        let bwrap = Bwrap {
+            bwrap: PathBuf::from("/usr/bin/bwrap"),
+            home: home.clone(),
+            layout: Layout {
+                scratch_root: Some(root.clone()),
+                ..Layout::default()
+            },
+        };
+        let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
+        let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
+        let built = Built {
+            status: None,
+            result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
+            output_schema: None,
+            goal: None,
+            engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
+            cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics::default(),
+            store: Arc::new(MemStore::new()),
+            sandbox: base.clone(),
+            settings: Settings::default(),
+            dirs: Dirs::under(env.root()),
+            cwd: env.work(),
+            resources: Resources::default(),
+            selection: ToolSelection::default(),
+            model: None,
+            thinking: None,
+            mode: None,
+            supervised_child: false,
+            ask_owner_present: true,
+            hook_sets: HookSets::default(),
+            bash_sandbox: Arc::new(oxa_sandbox::FullAccess::new(
+                base.clone(),
+                yolo.clone(),
+                "",
+                home,
+                false,
+            )),
+            yolo,
+        };
+        let first = built.deps(None);
+        let second = built.deps(None);
+        let a = tmp_dir(&first, &env.work()).expect("first session has a scratch directory");
+        let b = tmp_dir(&second, &env.work()).expect("second session has a scratch directory");
+        assert_ne!(a, b, "two sessions share one /tmp");
+        assert!(a.starts_with(&root) && b.starts_with(&root), "{a:?} {b:?}");
+        std::fs::write(a.join("left-by-first"), "x").unwrap();
+        assert!(!b.join("left-by-first").exists());
+        assert_eq!(
+            first.sandbox.persistence_notice(),
+            Some(oxa_sandbox::SCRATCH_NOTICE)
+        );
+        assert!(base
+            .persistence_notice()
+            .unwrap()
+            .contains("discarded after each command"));
+        // #597: the model names that directory as `/tmp`; the file tools read it unasked, the
+        // other session's directory still asks.
+        use oxa_proto::{Access, Decision, Mode};
+        let cwd = env.work();
+        assert_eq!(
+            first.sandbox.scratch_dir(),
+            Some(a.as_path()),
+            "the file tools and the sandbox name one directory"
+        );
+        assert_eq!(
+            first
+                .policy
+                .decide(Mode::Workspace, &Access::Read(a.join("left-by-first")), &cwd),
+            Decision::Allow
+        );
+        assert_eq!(
+            first
+                .policy
+                .decide(Mode::Workspace, &Access::Read(b.join("left-by-first")), &cwd),
+            Decision::Ask
+        );
+        drop(first);
+        assert!(!a.exists(), "the first session's scratch outlived it");
+        assert!(b.is_dir(), "ending one session removed another's scratch");
+        drop(second);
+        assert!(!b.exists(), "the second session's scratch outlived it");
     }
 }

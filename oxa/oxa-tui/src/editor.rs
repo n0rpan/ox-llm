@@ -1,4 +1,4 @@
-//! B10: the multi-line prompt editor. Owner: task B10. Signatures below are frozen; bodies are yours.
+//! B10: the multi-line prompt editor.
 // ported from pi packages/tui/src/components/editor.ts, kill-ring.ts, undo-stack.ts, word-navigation.ts
 use crate::{
     cluster_boundaries, pad_to_width, truncate_to_width, visible_width, AutocompleteItem,
@@ -208,6 +208,18 @@ impl Editor {
     pub fn expanded_text(&self) -> String {
         expand(&self.text(), &self.pastes)
     }
+    /// Put `prefix` in front of the current content, keeping paste contents.
+    pub fn prepend_text(&mut self, prefix: &str) {
+        let current = self.text();
+        if current.is_empty() {
+            self.set_text(prefix);
+            return;
+        }
+        let (pastes, counter) = (self.pastes.clone(), self.paste_counter);
+        self.set_text(&format!("{prefix}\n\n{current}"));
+        self.pastes = pastes;
+        self.paste_counter = counter;
+    }
     /// Replace the content (one undo step); cursor to the end.
     pub fn set_text(&mut self, text: &str) {
         self.suggest = None;
@@ -302,8 +314,13 @@ impl Editor {
     /// Install (or remove) the completion source. While suggestions are open, up/down/tab/enter
     /// and escape go to the list (rendered below the text with `SelectList`).
     pub fn set_autocomplete(&mut self, provider: Option<Box<dyn AutocompleteProvider>>) {
+        let arriving = self.provider.is_none() && provider.is_some();
         self.provider = provider;
         self.suggest = None;
+        // Initial session metadata can arrive after the user has already typed a query.
+        if arriving {
+            self.refresh_suggestions(false);
+        }
     }
     pub fn autocomplete_open(&self) -> bool {
         self.suggest.is_some()
@@ -841,6 +858,11 @@ impl Editor {
             self.push_undo();
             self.kill_push("\n".to_string(), true, acc);
             self.merge_into_prev(l);
+        } else if !self.st.lines[l].is_empty() {
+            // Start of the first line (e.g. after an Up-arrow recall): clear the line.
+            self.push_undo();
+            let deleted = std::mem::take(&mut self.st.lines[l]);
+            self.kill_push(deleted, true, acc);
         } else {
             return false;
         }

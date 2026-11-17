@@ -16,12 +16,17 @@ class Paths(unittest.TestCase):
     def test_component_source_and_test_changes(self):
         for directory, components in (('engine', {'engine'}), ('oxa', {'oxa'}),
                                       ('oxc', {'lab', 'cli', 'gateway'}), ('oxc-rs', {'cli'}),
-                                      ('conformance', {'cli'}), ('oxc-gateway', {'gateway'}),
+                                      ('conformance', {'cli'}),
+                                      ('oxa/oxc-gateway', {'oxa', 'gateway'}),
+                                      ('oxa/oxa-engine', {'oxa', 'gateway'}),
+                                      ('oxa/oxa-cli', {'oxa', 'gateway'}),
+                                      ('oxa/oxa-proto', {'oxa', 'gateway'}),
                                       ('fuzz/oxa', {'oxa'}), ('fuzz/oxe', {'engine'})):
             for suffix in ('src/code.rs', 'tests/test_unit.py', 'Cargo.lock'):
                 with self.subTest(directory=directory, suffix=suffix):
                     got = paths.classify([directory + '/' + suffix])
-                    self.assertEqual({key for key in KEYS if got[key]}, components)
+                    expected = components | {'gateway'} if directory == 'oxa' and suffix == 'Cargo.lock' else components
+                    self.assertEqual({key for key in KEYS if got[key]}, expected)
                     self.assertFalse(got['full'])
                     self.assertFalse(got['md'])
 
@@ -99,7 +104,25 @@ class Paths(unittest.TestCase):
                     self.assertEqual(values['docs'], 'true')
                     self.assertEqual(values['md'], 'true')
                     for key in KEYS:
-                        self.assertEqual(values[key], str(everything).lower(), key)
+                        self.assertEqual(values[key], str(everything or (event == 'merge_group' and key == 'oxa')).lower(), key)
+
+    def test_merge_group_docs_reader_runs_for_oxa_documentation(self):
+        # This is documentation to the classifier, but f11_docs reads it at runtime.
+        document = 'oxa/docs/design/sandbox-config-cache-inventory.md'
+        self.assertFalse(paths.classify([document])['oxa'])
+        with tempfile.TemporaryDirectory() as directory:
+            source, output = Path(directory) / 'event.json', Path(directory) / 'output'
+            source.write_text(json.dumps({'merge_group': {
+                'base_sha': 'a' * 40, 'head_sha': 'b' * 40}}))
+            with patch.dict(os.environ, {'GITHUB_EVENT_PATH': str(source),
+                    'GITHUB_EVENT_NAME': 'merge_group', 'GITHUB_REF': 'refs/heads/queue',
+                    'GITHUB_OUTPUT': str(output)}, clear=True), \
+                    patch.object(paths, 'changed_paths', return_value=[document]):
+                paths.main()
+            values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            for key in ('full', 'docs', 'md', 'oxa'):
+                self.assertEqual(values[key], 'true', key)
+            self.assertEqual(values['engine'], 'false')
 
 
 class GitPaths(unittest.TestCase):
@@ -119,12 +142,13 @@ class GitPaths(unittest.TestCase):
 
     def test_merge_group_classifies_only_the_group_diff(self):
         self.assertEqual(self.group(b'oxa/oxa-core/src/a.rs\0fuzz/oxa/smoke.rs\0'), {'oxa'})
-        self.assertEqual(self.group(b'oxc-gateway/src/a.rs\0oxc-rs/src/a.rs\0conformance/t.py\0'), {'cli', 'gateway'})
+        self.assertEqual(self.group(b'oxc-rs/src/a.rs\0conformance/t.py\0'), {'cli'})
+        self.assertEqual(self.group(b'oxa/oxc-gateway/src/a.rs\0'), {'oxa', 'gateway'})
         self.assertEqual(self.group(b'engine/crates/server/src/a.rs\0fuzz/oxe/smoke.rs\0'), {'engine'})
         self.assertEqual(self.group(b'oxa/src/a.rs\0engine/src/a.rs\0'), {'oxa', 'engine'})
         self.assertEqual(self.group(b'docs/page.md\0'), set())
         for path in (b'.github/workflows/build.yml', b'tools/ci/paths.py', b'packaging/x', b'NOTICE',
-                     b'fuzz/other/x.rs'):
+                     b'fuzz/other/x.rs', b'oxc-gateway/src/a.rs'):
             self.assertEqual(self.group(path + b'\0'), set(KEYS), path)
 
     def test_empty_merge_group_diff_tests_everything(self):

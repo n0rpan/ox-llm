@@ -1,4 +1,4 @@
-//! C6: `!cmd` and `!!cmd`. Owner: task C6. Signatures below are frozen; bodies are yours.
+//! C6: `!cmd` and `!!cmd`.
 // ported from pi packages/coding-agent/src/core/bash-executor.ts and agent-session.ts (executeBash)
 use crate::{append_entry, SessionState};
 use oxa_proto::{
@@ -45,10 +45,18 @@ pub fn user_bash(
     let _claim = Claim::take(&shared.busy)?;
     // We own the run now: clear a cancel left over from an idle `abort`.
     shared.cancel.reset();
+    // A headless SIGINT is sticky, including when it arrived before this claim.
+    if shared.gate.interrupted.load(Ordering::SeqCst) {
+        shared.cancel.cancel();
+    }
 
-    let (raw, exit) = match consult_hooks(st, cmd, excluded, sink, ui) {
-        Some(replaced) => (replaced.text, replaced.exit),
-        None => run_command(st, cmd, sink, &shared.cancel),
+    let (raw, exit) = if shared.cancel.is_cancelled() {
+        ("Command aborted".to_string(), None)
+    } else {
+        match consult_hooks(st, cmd, excluded, sink, ui) {
+            Some(replaced) => (replaced.text, replaced.exit),
+            None => run_command(st, cmd, sink, &shared.cancel),
+        }
     };
     let output = finish_output(&st.spill_dir, &raw);
     let entry = append_entry(

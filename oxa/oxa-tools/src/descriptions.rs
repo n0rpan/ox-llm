@@ -62,16 +62,20 @@ pub const READ: ToolText = ToolText {
     guidelines: &["Use read to examine files instead of cat or sed."],
 };
 
+/// #670: process lifetime is distinct from the persistence of the session's scratch files.
+pub const BASH_PROCESS_LIFETIME: &str = "Sandboxed Bash commands have separate PID namespaces: detached children (including tmux new-session -d and nohup) are stopped when the owning command exits. For a tmux live check, run the entire drive in one call, or use background: true and keep the command alive after starting the server (for example: while tmux -S /tmp/live.sock has-session -t live 2>/dev/null; do sleep 1; done). Later calls can drive that server through the same explicit socket path. background: true alone does not keep a daemon alive after its launching command exits. Stop the job when finished.";
+
 /// ADAPTED: pi says "truncated to last 2000 lines or 50KB ... saved to a temp file".
 pub const BASH: ToolText = ToolText {
     name: "bash",
-    description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part. If truncated, full output is saved to a file. Optionally provide a timeout in seconds. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 60).",
-    schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"number","description":"With job: block up to this many seconds (max 60) until the job exits or prints new output, then read it. 0 or absent: no wait."}}}"#,
+    description: "Execute a bash command in the current working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part. If truncated, full output is saved to a file. Optionally provide a timeout in seconds. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 60); stop it with job: \"job-N\", kill: true. A timeout given with background limits the job's lifetime.",
+    schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional, no default timeout)"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"number","description":"With job: block up to this many seconds (max 60) until the job exits or prints new output, then read it. 0 or absent: no wait."},"kill":{"type":"boolean","description":"With job: stop the background job and free its slot"}}}"#,
     class: ToolClass::Exec,
     prompt_snippet: "Execute bash commands (ls, grep, find, etc.)",
     guidelines: &[
         "You can inspect OXA_* environment variables for current model and session details.",
-        "Bash sandbox persistence: workspace writes persist except protected paths; configured writable binds, package caches and permitted git data also persist. Other paths are read-only or hidden. /tmp is private scratch discarded after each command, even on success. Save deliverables in the working directory, never claim a scratch file was saved on the host, and report write failures instead of claiming success. Plan mode keeps workspace files read-only.",
+        BASH_PROCESS_LIFETIME,
+        "Bash sandbox persistence: workspace writes persist except protected paths; configured writable binds, package caches and permitted git data also persist. Other paths are read-only or hidden. /tmp is this session's private scratch (TMPDIR and XDG_CACHE_HOME point into it): it persists between commands of this session and is deleted when the session ends (/new, /resume, fork, clone, switching session or quitting oxa); a resumed session starts with an empty /tmp. Save deliverables in the working directory, never claim a scratch file was saved on the host, and report write failures instead of claiming success. Plan mode keeps workspace files read-only.",
     ],
 };
 
@@ -573,8 +577,8 @@ pub mod builtin_specs {
 
     pub const BASH_DEFAULT: ToolText = ToolText {
         name: BASH.name,
-        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 60).",
-        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Timeout in seconds"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"integer","description":"With job: block up to this many seconds (max 60) until the job exits or prints new output, then read it. 0 or absent: no wait."}}}"#,
+        description: "Run a bash command in the working directory. Returns stdout and stderr. Output over 16KB is cut to its first and last part and the full output is saved to a file. With background: true the command runs detached and returns a job id; read it later with job: \"job-N\" (optionally wait_s: seconds to block for new output or exit, at most 60); stop it with job: \"job-N\", kill: true. A timeout given with background limits the job's lifetime.",
+        schema_json: r#"{"type":"object","properties":{"command":{"type":"string","description":"Command to run"},"timeout":{"type":"integer","description":"Timeout in seconds"},"background":{"type":"boolean","description":"Run the command detached and return a job id immediately"},"job":{"type":"string","description":"Read the status and output of a background job instead of running a command"},"wait_s":{"type":"integer","description":"With job: block up to this many seconds (max 60) until the job exits or prints new output, then read it. 0 or absent: no wait."},"kill":{"type":"boolean","description":"With job: stop the background job and free its slot"}}}"#,
         class: BASH.class,
         prompt_snippet: BASH.prompt_snippet,
         guidelines: BASH.guidelines,

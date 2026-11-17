@@ -1,4 +1,4 @@
-//! G12 PARITY tests (extensions). Owner: task G12.
+//! G12 PARITY tests (extensions).
 //! One test per PARITY.md row of the EXT area (`EXT-001` -> `fn ext_001()`), plus the four
 //! meta-checks of the task. Every row test drives the real `oxa` binary in print mode against
 //! `oxa-fake` (a fake engine script), with JavaScript extensions written into the test's agent
@@ -660,9 +660,12 @@ fn ext_025() {
     assert!(r.index_of("before_settle") < r.index_of("settled"), "{}", r.log);
 }
 
-/// EXT-026 (P): `ui_prompt_start` fires when a UI prompt opens. A permission prompt opens in the
-/// default mode for a read outside the working directory. (Not ask mode: there every write
-/// asks, the test's own `log.txt` write included, and print mode answers no.)
+/// EXT-026 (P): `ui_prompt_start` fires when a UI prompt opens. A permission prompt opens in
+/// workspace table mode for a read outside the working directory. Select it explicitly via
+/// `--permission-mode workspace`: the default `auto` mode (#202) never prompts, and the newer
+/// `--standard` alias is not available in older prebuilt `OXA_BIN` binaries. This tests the
+/// prompt hooks, not that alias. (Not ask mode: there every write asks, the test's own
+/// `log.txt` write included, and print mode answers no.)
 /// invariant: fired around oxa's own permission prompt in every mode (pi has no permission prompt; its print mode has no UI)
 #[test]
 fn ext_026() {
@@ -673,9 +676,20 @@ fn ext_026() {
             "oxa.on('ui_prompt_start', (e, ctx) => note(ctx, 'prompt_start'));",
         )],
         tool_then_text("c1", "read", r#"{"path":"../outside.txt"}"#, "ok"),
-        &["-p", "hi"],
+        &["--permission-mode", "workspace", "-p", "hi"],
     );
-    assert!(r.has("prompt_start"), "ui_prompt_start fires: {}", r.log);
+    assert_eq!(r.code, Some(0), "stderr: {}", r.err);
+    assert_eq!(r.lines(), ["prompt_start"], "ui_prompt_start fires once");
+    assert!(
+        r.req(1).messages.iter().any(|m| {
+            m.tool_call_id.as_deref() == Some("c1")
+                && m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("Permission denied"))
+        }),
+        "print mode refuses the outside read: {:?}",
+        shape(r.req(1))
+    );
 }
 
 /// EXT-027 (P): `ui_prompt_end` fires when that prompt closes.
@@ -689,9 +703,20 @@ fn ext_027() {
             "oxa.on('ui_prompt_end', (e, ctx) => note(ctx, 'prompt_end'));",
         )],
         tool_then_text("c1", "read", r#"{"path":"../outside.txt"}"#, "ok"),
-        &["-p", "hi"],
+        &["--permission-mode", "workspace", "-p", "hi"],
     );
-    assert!(r.has("prompt_end"), "ui_prompt_end fires: {}", r.log);
+    assert_eq!(r.code, Some(0), "stderr: {}", r.err);
+    assert_eq!(r.lines(), ["prompt_end"], "ui_prompt_end fires once");
+    assert!(
+        r.req(1).messages.iter().any(|m| {
+            m.tool_call_id.as_deref() == Some("c1")
+                && m.content
+                    .as_deref()
+                    .is_some_and(|c| c.contains("Permission denied"))
+        }),
+        "print mode refuses the outside read: {:?}",
+        shape(r.req(1))
+    );
 }
 
 /// EXT-028 (P): `turn_start` fires at the start of each model turn.
@@ -1528,21 +1553,40 @@ fn ext_091() {
 }
 
 /// EXT-092 (A): the subagent example extension is oxa's `builtin:subagent`. O-146: its
-/// `subagent` tool is on by default on a large non-Flash model, off on the Rust Flash engine and
-/// below a 32K window; an explicit `oxa.subagent.enabled` wins (`true` on any model, `false`
-/// never). An extension of the session does not change that.
+/// `subagent` tool requires an available agent. With one installed it is on by default on a
+/// large non-Flash model, off on the Rust Flash engine and below a 32K window; an explicit
+/// `oxa.subagent.enabled` wins (`true` on any model, `false` never). An extension does not
+/// bypass the agent requirement.
 /// Invariant: E11 (child processes, parent parked; O-146 default; oxa.subagent.enabled).
 #[test]
 fn ext_092() {
     let declares = |r: &Run| r.req(0).tools_json.contains("\"subagent\"");
-    // An extension in the session; the fake's default model is large and not Flash.
-    let on = one("oxa.on('session_start', (e, ctx) => {});");
-    assert!(declares(&on), "on by default on a large non-Flash model");
+    // An extension alone cannot make subagent usable without an agent definition.
+    let body = "oxa.on('session_start', (e, ctx) => {});";
+    let empty = one(body);
+    assert_eq!(empty.code, Some(0), "{}", empty.err);
+    assert!(!declares(&empty), "no agents: do not offer subagent");
+    let on = go(
+        &[
+            agent_ext("e", body),
+            (
+                "home/.oxa/agent/agents/worker.md".into(),
+                "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n".into(),
+            ),
+        ],
+        text("ok"),
+        &["-p", "hi"],
+    );
+    assert!(declares(&on), "on by default with an available agent");
 
     // The same run against a Flash engine or a model below 32K, with the setting unset, `true`
     // or `false`.
     fn run_on(opts: FakeOpts, settings: Option<&str>) -> Run {
         let env = TestEnv::new();
+        env.write(
+            "home/.oxa/agent/agents/worker.md",
+            "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+        );
         if let Some(body) = settings {
             env.write("home/.oxa/agent/settings.json", body);
         }

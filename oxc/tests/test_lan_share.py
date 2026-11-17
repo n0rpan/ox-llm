@@ -419,6 +419,33 @@ class GateTests(ShareBase):
         self.assertEqual(status, 200, data)
         self.assertEqual(json.loads(data)['data'][0]['id'], 'synthetic-classic')
 
+    def test_namespaced_model_metadata_is_shared(self):
+        alias = 'openrouter/vendor/model:variant'
+        self.manager.models = Mock(return_value=[{'id': alias, 'object': 'model', 'remote': True}])
+        for method in ('GET', 'HEAD'):
+            with self.subTest(method=method):
+                status, data = self.send(method, '/v1/models/' + alias + '?unused=1', key=self.key)
+                self.assertEqual(status, 200, data)
+                if method == 'GET':
+                    self.assertEqual(json.loads(data)['id'], alias)
+                else:
+                    self.assertEqual(data, b'')
+        self.manager.models.assert_called_with(remote=True)
+        self.assertEqual(self.send('GET', '/v1/models/openrouter/unknown', key=self.key)[0], 404)
+        self.manager.begin_queued.assert_not_called()
+        self.assertEqual(self.seen, [])
+
+    def test_namespaced_model_routes_reject_unsafe_ids(self):
+        for alias in ('provider/../_local/status', 'provider/./model', 'provider/.../model',
+                      'provider//model', '/provider/model', 'provider/%2e%2e/model',
+                      'provider%2fmodel', 'provider\\model', 'provider/model%00',
+                      'provider/' + 'x' * 120):
+            with self.subTest(alias=alias):
+                self.assertEqual(self.send('GET', '/v1/models/' + alias, key=self.key)[0], 403)
+        self.manager.models.assert_not_called()
+        self.manager.begin_queued.assert_not_called()
+        self.assertEqual(self.seen, [])
+
     def test_rate_limit(self):
         self.share.limiter = lan_share.RateLimiter(1, 2)
         codes = [self.send('GET', '/v1/models', key=self.key)[0] for _ in range(3)]
@@ -707,10 +734,13 @@ class ApplyBase(unittest.TestCase):
         self.bound = []
         test = self
 
+        self.tls_contexts = []
+
         class FakeListener:
             def __init__(self, controller_, address, port, handler, manager, tls=None):
                 self.address, self.closed = address, False
                 test.bound.append(address)
+                test.tls_contexts.append(tls)
             def close(self): self.closed = True
         patcher = patch.object(lan_share, 'Listener', FakeListener)
         patcher.start(); self.addCleanup(patcher.stop)
@@ -771,6 +801,22 @@ class ApplyTests(ApplyBase):
         value = self.controller().apply()
         self.assertEqual((self.bound, value['active']), ([], False))
         self.assertIn('TLS', value['error'])
+
+    @unittest.skipUnless(shutil.which('openssl'), 'openssl is needed to make a test certificate')
+    def test_tls_listener_refuses_tls_below_1_2(self):
+        # Code scanning alert 3 (py/insecure-protocol) is dismissed because the shared listener's
+        # context sets this floor right after create_default_context; keep it pinned.
+        cert, key = self.config.parent / 'cert.pem', self.config.parent / 'key.pem'
+        subprocess.run(['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1',
+                        '-nodes', '-days', '1', '-subj', '/CN=oxc-test', '-keyout', str(key), '-out', str(cert)],
+                       check=True, capture_output=True, timeout=60)
+        self.config.write_text(json.dumps({'lan_share': 'lan', 'lan_share_options': {
+            'tls_cert': str(cert), 'tls_key': str(key)}}))
+        value = self.controller().apply()
+        self.assertEqual((self.bound, value['active']), ([LAN_IP], True))
+        self.assertEqual(len(self.tls_contexts), 1)
+        self.assertIsInstance(self.tls_contexts[0], ssl.SSLContext)
+        self.assertGreaterEqual(self.tls_contexts[0].minimum_version, ssl.TLSVersion.TLSv1_2)
 
     def test_options_are_bounded(self):
         opts = lan_share.options({'lan_share_options': {'rate_per_min': 0, 'burst': True, 'max_body_mb': 99,

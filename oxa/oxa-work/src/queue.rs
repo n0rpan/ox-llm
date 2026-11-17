@@ -1,6 +1,7 @@
 //! Directory queue: oldest regular JSON files first, with bounded independent workers.
-use super::{blocked_record, checked, git, state, Record, Result, Task};
+use super::{blocked_record, checked, state, Record, Result, RunPolicy, Task};
 use serde::Serialize;
+use std::os::unix::fs::DirBuilderExt;
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -75,8 +76,10 @@ fn busy(storage: &Path, id: &str) -> Result<bool> {
         Err(error) => Err(error.to_string()),
     }
 }
-fn available(path: &Path) -> Result<u64> {
-    let mut command = Command::new("df");
+fn available(path: &Path, df: &Path, policy: &RunPolicy) -> Result<u64> {
+    let mut command = Command::new(df);
+    super::isolate_git_environment(&mut command);
+    command.env("PATH", &policy.host_path);
     command.args(["--output=avail", "-B1", "--"]).arg(path);
     checked(command)?
         .lines()
@@ -86,16 +89,16 @@ fn available(path: &Path) -> Result<u64> {
         .parse()
         .map_err(|_| "df returned an invalid free-space value".into())
 }
-fn free_space(repo: &Path, common: &Path, queue: &Path) -> Result<u64> {
+fn free_space(repo: &Path, common: &Path, queue: &Path, df: &Path, policy: &RunPolicy) -> Result<u64> {
     let trees = super::worktree_root(common)?;
     let tree_volume = trees
         .ancestors()
         .find(|p| p.is_dir())
         .ok_or("worktree storage has no existing parent")?;
-    Ok(available(repo)?
-        .min(available(common)?)
-        .min(available(queue)?)
-        .min(available(tree_volume)?))
+    Ok(available(repo, df, policy)?
+        .min(available(&policy.storage, df, policy)?)
+        .min(available(queue, df, policy)?)
+        .min(available(tree_volume, df, policy)?))
 }
 fn input_file(entry: fs::DirEntry) -> Result<Option<(PathBuf, SystemTime, u64)>> {
     let path = entry.path();
@@ -213,7 +216,9 @@ pub fn run_queue(
     repo: &Path,
     directory: &Path,
     options: &QueueOptions,
-    worker: Arc<dyn Fn(&Task) -> Record + Send + Sync>,
+    policy: &RunPolicy,
+    df: &Path,
+    worker: Arc<dyn Fn(&Task) -> Result<Record> + Send + Sync>,
     emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
 ) -> Result<QueueStatus> {
     if options.max == 0 {
@@ -224,11 +229,17 @@ pub fn run_queue(
         return Err("queue path is not a directory".into());
     }
     let _controller = state::lock(&directory.join(".oxa-queue.lock"))?;
-    let common = PathBuf::from(checked(git(
+    let common = PathBuf::from(checked(super::git(
+        policy,
         repo,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ))?);
-    let storage = common.join("oxa-work");
+    let storage = &policy.storage;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(storage)
+        .map_err(|e| e.to_string())?;
     let (tx, rx) = mpsc::channel();
     let mut active = Workers::default();
     let (mut pending, mut external, mut inputs) = (vec![], vec![], Inputs::default());
@@ -256,7 +267,7 @@ pub fn run_queue(
         }
         pending = ready;
         pending.sort_by(|a, b| (&a.modified, &a.file, a.index).cmp(&(&b.modified, &b.file, b.index)));
-        let disk = free_space(repo, &common, &directory);
+        let disk = free_space(repo, &common, &directory, df, policy);
         let (mut free_bytes, mut disk_error) = match disk {
             Ok(free) => (Some(free), None),
             Err(error) => (None, Some(error)),
@@ -264,7 +275,7 @@ pub fn run_queue(
         let mut disk_blocked = free_bytes.is_none_or(|free| free < options.min_free_bytes);
         while !disk_blocked && active.handles.len() + external.len() < options.max && !pending.is_empty() {
             // Check again for each admission: earlier workers may already be writing.
-            match free_space(repo, &common, &directory) {
+            match free_space(repo, &common, &directory, df, policy) {
                 Ok(free) => {
                     free_bytes = Some(free);
                     disk_error = None;
@@ -290,10 +301,10 @@ pub fn run_queue(
                     let record =
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker(&input.task)))
                             .unwrap_or_else(|_| {
-                                blocked_record(
+                                Ok(blocked_record(
                                     &input.task,
                                     "queue worker panicked; retained state can be resumed".into(),
-                                )
+                                ))
                             });
                     let _ = tx.send((input, record));
                 }) {
@@ -317,7 +328,7 @@ pub fn run_queue(
             .collect();
         ids.sort();
         let status = QueueStatus {
-            time: state::now(),
+            time: state::now_ms() / 1000,
             active: ids,
             pending: pending.len(),
             finished,
@@ -332,7 +343,8 @@ pub fn run_queue(
             })
             .map_err(|e| e.to_string())?;
             bytes.push(b'\n');
-            state::atomic_write(&directory.join(".oxa-queue-status.json"), &bytes)?;
+            let status_path = directory.join(".oxa-queue-status.json");
+            super::checkpoint::write_atomic(&status_path, &bytes, status_path.exists())?;
             emit(QueueEvent::State {
                 status: status.clone(),
             })?;
@@ -358,6 +370,7 @@ pub fn run_queue(
                     external.push(job);
                     continue;
                 }
+                let record = record?;
                 finished += 1;
                 if record.failed() {
                     failed += 1;

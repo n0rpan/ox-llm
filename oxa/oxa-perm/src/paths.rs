@@ -1,4 +1,4 @@
-//! A10: path containment and read-only command classification. Owner: task A10. Signatures below are frozen; bodies are yours.
+//! A10: path containment and read-only command classification.
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};

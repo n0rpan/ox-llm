@@ -83,13 +83,27 @@ fn refused(path: &Path, why: &str, fix: &str) -> KeyStatus {
 
 /// The key: `env_key` when set, else the file `<agent dir>/brave-search.key`. The file must be
 /// a regular file (not a symlink), mode 0600 or stricter (no group or other bits) and not
-/// empty after trimming. Under isolation a file below the real home is refused before it is
-/// opened.
+/// empty after trimming. Under isolation an existing file below the real home is refused
+/// before it is opened; a missing one is simply [`KeyStatus::Missing`].
 pub fn load_key(i: &KeyInputs) -> KeyStatus {
+    load_key_with_metadata(i, |path| std::fs::symlink_metadata(path))
+}
+
+// Keep the metadata lookup injectable so tests can reproduce a file appearing during it.
+fn load_key_with_metadata(
+    i: &KeyInputs,
+    mut metadata: impl FnMut(&Path) -> std::io::Result<std::fs::Metadata>,
+) -> KeyStatus {
     if let Some(k) = &i.env_key {
         return KeyStatus::Found(k.clone(), KeyOrigin::Env);
     }
     let path = i.agent_dir.join(crate::KEY_FILE);
+    // A missing file stays quiet. Do not retry the lookup: a key appearing between two
+    // lookups must never bypass the isolation guard.
+    let meta = match metadata(&path) {
+        Ok(m) => m,
+        Err(_) => return KeyStatus::Missing,
+    };
     if i.isolation {
         match &i.real_home {
             Some(home) if !path.starts_with(home) => {}
@@ -102,10 +116,6 @@ pub fn load_key(i: &KeyInputs) -> KeyStatus {
             }
         }
     }
-    let meta = match std::fs::symlink_metadata(&path) {
-        Ok(m) => m,
-        Err(_) => return KeyStatus::Missing,
-    };
     if meta.file_type().is_symlink() {
         return refused(
             &path,
@@ -171,4 +181,42 @@ pub fn real_home() -> Option<PathBuf> {
 /// by `oxa`'s `main` right after it took its `Env` snapshot, before any thread exists.
 pub fn remove_key_from_process_env() {
     std::env::remove_var(crate::ENV_KEY);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxa_fake::TestEnv;
+
+    #[test]
+    fn isolation_does_not_retry_when_a_key_appears_after_a_missing_lookup() {
+        for known_home in [true, false] {
+            let env = TestEnv::new();
+            let inputs = KeyInputs {
+                env_key: None,
+                agent_dir: env.agent_dir(),
+                isolation: true,
+                real_home: known_home.then(|| env.root().to_path_buf()),
+            };
+            let mut lookups = 0;
+            let status = load_key_with_metadata(&inputs, |path| {
+                lookups += 1;
+                if lookups == 1 {
+                    // The lookup sees no file, but a concurrent writer creates one before
+                    // the result is handled. A second lookup would now succeed.
+                    assert_eq!(
+                        std::fs::symlink_metadata(path).unwrap_err().kind(),
+                        std::io::ErrorKind::NotFound
+                    );
+                    env.write("home/.oxa/agent/brave-search.key", "file-key-not-real");
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                    return Err(std::io::ErrorKind::NotFound.into());
+                }
+                std::fs::symlink_metadata(path)
+            });
+            assert_eq!(status, KeyStatus::Missing);
+            assert_eq!(lookups, 1);
+            assert!(matches!(load_key(&inputs), KeyStatus::Refused(_)));
+        }
+    }
 }

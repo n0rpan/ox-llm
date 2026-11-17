@@ -1,12 +1,14 @@
-//! E11: `builtin:subagent`. Owner: task E11. Signatures below are frozen; bodies are yours.
+//! E11: `builtin:subagent`.
 // ported from pi packages/coding-agent/examples/extensions/subagent/ (index.ts, agents.ts)
 //!
 //! The subagent policy of OXA-ENGINE-SUPPORT sec. 2 (one inference slot, so "parallel" children
 //! are a queue):
 //!
-//! * **Concurrency 1, fixed.** At most one child process is alive per hook set (a lock held for
-//!   the whole call also serialises calls that arrive concurrently, e.g. from codemode). A
-//!   `tasks` call runs its tasks in call order and shows the rest as `subagent k/n, queued`;
+//! * **Concurrency 1 on the local engine.** A lock held for the whole call serialises calls that
+//!   arrive concurrently (e.g. from codemode). A `tasks` call whose children all run locally
+//!   runs them in call order and shows the rest as `subagent k/n, queued`; when some child runs
+//!   on a remote (cloud) model, up to `oxa.subagent.remoteConcurrency` (default 4) children run
+//!   at once, local ones still one at a time, and results come back in call order (#458);
 //!   more than [`MAX_PARALLEL_TASKS`] tasks are refused with pi's text. Depth 1: a child gets
 //!   `OXA_SUBAGENT_DEPTH=1` and the binary then does not build this hook set.
 //! * **Eight children per parent session, over the whole tree (O-146).** The cap is not per
@@ -26,8 +28,10 @@
 //!   `HostAction::ClearEngineHint(hint)`; a failure is a warning notice, never a tool failure.
 //! * **Child limits.** `oxa.subagent.softTokens` (default 24000), never above the parent's
 //!   `compactAt` and below the context window, handed to the child as `OXA_CHILD_SOFT_TOKENS`.
-//! * **One model.** The child always gets `--model <the session's model>`; an agent's own
-//!   `model:` is ignored with a warning notice.
+//! * **Child model.** The child gets `--model <the session's model>`, or the agent's own
+//!   `model:` when that model is remote or the session's is (#458; `HostAction::ModelInfo`).
+//!   A local `model:` under a local session is ignored with a warning notice (one model is
+//!   loaded).
 //! * **Result.** The final assistant text of each child only (W4: deterministic, no timings,
 //!   no usage), capped at `oxa.subagent.resultCap` bytes (default 6144) on a UTF-8 boundary with
 //!   a fixed note naming the spill file that holds the full text.
@@ -43,8 +47,8 @@
 //! live in `oxa_tools::descriptions::subagent` (README rule 4).
 use oxa_config::{Dirs, Settings};
 use oxa_proto::{
-    Access, CommandSpec, Exposure, HookPoint, HookReply, Hooks, Host, HostAction, Level, OxaError, Source,
-    Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui, Value, YoloSwitch,
+    Access, CancelToken, CommandSpec, Exposure, HookPoint, HookReply, Hooks, Host, HostAction, Level,
+    OxaError, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Ui, Value, YoloSwitch,
 };
 use oxa_tools::descriptions::subagent as T;
 use serde_json::json;
@@ -104,6 +108,8 @@ pub const SETTING_RESULT_CAP: &str = "oxa.subagent.resultCap";
 pub const SETTING_SMALL_CONTEXT: &str = "oxa.subagent.smallContext";
 pub const DEFAULT_SOFT_TOKENS: u32 = 24_000;
 pub const DEFAULT_RESULT_CAP: usize = 6144;
+pub const SETTING_REMOTE_CONCURRENCY: &str = "oxa.subagent.remoteConcurrency";
+pub const DEFAULT_REMOTE_CONCURRENCY: usize = 4;
 
 /// pi's limit on `tasks`.
 pub const MAX_PARALLEL_TASKS: usize = 8;
@@ -255,6 +261,9 @@ struct Config {
     enabled: Option<bool>,
     /// `oxa.subagent.smallContext: true` (older setting): declare on a small model too.
     small_context: bool,
+    /// `oxa.subagent.remoteConcurrency`: children of one `tasks` call on a remote model that
+    /// run at once (#458; local children always run one at a time).
+    remote_concurrency: usize,
 }
 
 impl Default for Config {
@@ -264,6 +273,7 @@ impl Default for Config {
             result_cap: DEFAULT_RESULT_CAP,
             enabled: None,
             small_context: false,
+            remote_concurrency: DEFAULT_REMOTE_CONCURRENCY,
         }
     }
 }
@@ -286,13 +296,13 @@ struct Inner {
     pending: Mutex<HashMap<String, usize>>,
     /// Held for the whole call: one child process at a time.
     running: Mutex<()>,
-    /// The process group of the live child.
-    child_pgid: Mutex<Option<u32>>,
+    /// The process groups of the live children.
+    child_pgid: Mutex<Vec<u32>>,
     /// Set by `shutdown`: the call in progress stops.
     abort: AtomicBool,
-    /// The parent's YOLO switch (O-182), read when a child's argv is built: a child started
-    /// while it is on gets `--yolo`. Not a global: the process hands its own switch in
-    /// (`with_yolo`); `None` = no `--yolo` ever.
+    /// The parent's autonomy switch (O-182, #202), read when a child's argv is built: the child
+    /// gets `--standard`, `--auto` or `--yolo` for its level then. Not a global: the process
+    /// hands its own switch in (`with_yolo`); `None` = no level flag.
     yolo: Mutex<Option<YoloSwitch>>,
 }
 
@@ -302,8 +312,8 @@ struct Inner {
 /// Provides one `Direct` tool `subagent` with pi's three shapes: single `{agent, task}`,
 /// `{tasks: [..]}` (parallel = queued on the one engine) and `{chain: [..]}` (`{previous}`
 /// substitution). Each child is the process `<oxa_bin> --mode json -p --no-session --model
-/// <session model> --permission-mode <mode> [--yolo] [--tools ..] [--append-system-prompt <agent
-/// prompt>] "Task: <task>"` (`--yolo` only while the parent's YOLO switch is on) in its own
+/// <session model> --permission-mode <mode> [--standard|--auto|--yolo] [--tools ..] [--append-system-prompt <agent
+/// prompt>] "Task: <task>"` (the parent's autonomy level, when it handed its switch in) in its own
 /// process group, with the environment of the module docs.
 /// Before the first child starts, the parent parks its state (`HostAction::ParkSession`).
 /// Child JSON records stream to `live` as progress lines; abort kills the child's process
@@ -326,7 +336,7 @@ impl SubagentHooks {
             counters: Mutex::new(HashMap::new()),
             pending: Mutex::new(HashMap::new()),
             running: Mutex::new(()),
-            child_pgid: Mutex::new(None),
+            child_pgid: Mutex::new(Vec::new()),
             abort: AtomicBool::new(false),
             yolo: Mutex::new(None),
         });
@@ -357,9 +367,8 @@ impl SubagentHooks {
     pub const MAX_PARALLEL_TASKS: usize = MAX_PARALLEL_TASKS;
     pub const MIN_CONTEXT: u32 = MIN_CONTEXT;
 
-    /// O-182: the parent's YOLO switch. A child started while it is on runs with `--yolo` (the
-    /// sandbox, the deny-list and the question for writes to the project's `.oxa` stay as they
-    /// are for the parent); a child started while it is off gets the argv it always had.
+    /// O-182, #202: the parent's autonomy switch. Each child inherits the level the parent has
+    /// when the child starts (`--standard`, `--auto` or `--yolo`).
     pub fn with_yolo(self, switch: YoloSwitch) -> SubagentHooks {
         *lock(&self.inner.yolo) = Some(switch);
         self
@@ -373,16 +382,23 @@ impl SubagentHooks {
             result_cap: settings.u32(SETTING_RESULT_CAP, DEFAULT_RESULT_CAP as u32) as usize,
             enabled: enabled_setting(settings),
             small_context: settings.bool(SETTING_SMALL_CONTEXT, false),
+            remote_concurrency: (settings.u32(SETTING_REMOTE_CONCURRENCY, DEFAULT_REMOTE_CONCURRENCY as u32)
+                as usize)
+                .clamp(1, MAX_PARALLEL_TASKS),
         };
         self
     }
 
-    /// O-146: whether the tool is declared for a model with this context window (`None` =
-    /// unknown) on this engine. Explicit `oxa.subagent.enabled` wins (`true` declares it on any
+    /// Whether the tool is declared: at least one agent must be available (#696).
+    /// O-146: for a model with this context window (`None` = unknown) on this engine,
+    /// explicit `oxa.subagent.enabled` wins (`true` declares it on any
     /// model, `false` never); otherwise it is on, except on the Rust Flash engine and below
     /// [`MIN_CONTEXT`] (the served model's `model_limits` cap), where `smallContext: true` still
     /// declares it. An unknown window counts as large.
     pub fn declared_for(&self, window: Option<u32>, flash: bool) -> bool {
+        if self.inner.agents.is_empty() {
+            return false;
+        }
         let c = *lock(&self.inner.config);
         match c.enabled {
             Some(on) => on,
@@ -469,8 +485,8 @@ impl Hooks for SubagentHooks {
     /// progress returns aborted and its queued tasks do not start. Idempotent.
     fn shutdown(&self) {
         self.inner.abort.store(true, Ordering::SeqCst);
-        let pgid = *lock(&self.inner.child_pgid);
-        if let Some(pgid) = pgid {
+        let pgids = lock(&self.inner.child_pgid).clone();
+        for pgid in pgids {
             kill_group(pgid);
         }
     }
@@ -636,6 +652,8 @@ impl ChildResult {
 struct Limits {
     session_id: String,
     model: String,
+    /// The session's model runs at a cloud provider through oxc.
+    remote: bool,
     context_window: u32,
     compact_at: Option<u32>,
 }
@@ -653,6 +671,7 @@ fn parse_limits(v: &Value) -> Limits {
             .unwrap_or("")
             .to_string(),
         model: v.get("model").and_then(Value::as_str).unwrap_or("").to_string(),
+        remote: v.get("remote").and_then(Value::as_bool).unwrap_or(false),
         context_window: num("contextWindow").unwrap_or(u32::MAX),
         compact_at: num("compactAt"),
     }
@@ -681,6 +700,17 @@ fn parse_items(v: Option<&Value>) -> Vec<Item> {
         .unwrap_or_default()
 }
 
+/// Resolve symlinks before `..`, just as the OS does when starting the child. Both access
+/// checking and spawning use this path. If resolution fails, preserve the original path so
+/// spawning fails too, rather than silently running in a lexically normalised directory.
+fn child_cwd(session_cwd: &Path, c: &str) -> PathBuf {
+    let dir = session_cwd.join(c);
+    std::fs::canonicalize(&dir).unwrap_or(dir)
+}
+
+const CWD_CHANGED: &str =
+    "the subagent working directory changed after the permission check; no child was started there";
+
 fn available_list(agents: &[AgentDef]) -> String {
     let list: Vec<String> = agents
         .iter()
@@ -699,11 +729,33 @@ impl Tool for SubagentTool {
     }
     /// One child process per task, sandboxed like the session itself: `Exec`, so plan mode
     /// refuses it and the loop runs it serially (never in a parallel read batch).
-    fn access(&self, _args: &Value, _cx: &ToolCtx) -> Result<Vec<Access>, String> {
-        Ok(vec![Access::Exec {
+    ///
+    /// #509: the model chooses each child's `cwd`, and the child's sandbox and project trust
+    /// follow it. A `cwd` that leaves the session's directory is also a `Write` of that
+    /// directory, so the permission layer decides (ask, grant, deny-list); one inside it adds
+    /// nothing.
+    fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
+        let mut out = vec![Access::Exec {
             command: TOOL_NAME.to_string(),
             net: false,
-        }])
+        }];
+        let mut cwds: Vec<&str> = Vec::new();
+        for key in ["chain", "tasks"] {
+            if let Some(items) = args.get(key).and_then(Value::as_array) {
+                cwds.extend(items.iter().filter_map(|x| x.get("cwd").and_then(Value::as_str)));
+            }
+        }
+        cwds.extend(args.get("cwd").and_then(Value::as_str));
+        for c in cwds {
+            let dir = child_cwd(cx.cwd, c);
+            let w = Access::Write(dir.clone());
+            // Pin in-project roots too: an earlier child can retarget their symlinks.
+            // Workspace writes inside the session remain allowed without a prompt.
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+        Ok(out)
     }
     fn run(&self, args: &Value, cx: &ToolCtx, live: &mut dyn FnMut(&str)) -> ToolOutput {
         let mut ui = oxa_proto::HeadlessUi::default();
@@ -755,6 +807,22 @@ impl Tool for SubagentTool {
             )
         };
 
+        // Resolve the entire call before any child runs, not one chain step at a time.
+        // When called through the executor, each explicit cwd must still be a location
+        // the permission check pinned. Direct tool calls have no checked paths.
+        let mut cwds = Vec::with_capacity(items.len());
+        for item in &items {
+            let dir = item
+                .cwd
+                .as_deref()
+                .map(|c| child_cwd(cx.cwd, c))
+                .unwrap_or_else(|| child_cwd(cx.cwd, "."));
+            if item.cwd.is_some() && !cx.checked.is_empty() && cx.checked_real(&dir) != Some(dir.as_path()) {
+                return ToolOutput::error(CWD_CHANGED);
+            }
+            cwds.push(dir);
+        }
+
         let Some(host) = lock(&inner.host).clone() else {
             return ToolOutput::error(NOT_ATTACHED);
         };
@@ -789,9 +857,12 @@ impl Tool for SubagentTool {
             live,
             parked: false,
             warned_models: Vec::new(),
+            remote_models: HashMap::new(),
             n: items.len(),
+            cwds,
             agents: items.iter().map(|i| i.agent.clone()).collect(),
-            done: Vec::new(),
+            done: vec![None; items.len()],
+            activity: vec![None; items.len()],
             budget,
         };
 
@@ -809,6 +880,10 @@ impl Tool for SubagentTool {
                         break;
                     }
                 }
+            }
+            Shape::Parallel if run.concurrency(&items) > 1 => {
+                let limit = run.concurrency(&items);
+                results = run.concurrent(&items, limit);
             }
             Shape::Parallel | Shape::Single => {
                 for (i, item) in items.iter().enumerate() {
@@ -946,11 +1021,17 @@ struct Run<'a, 'b> {
     live: &'a mut dyn FnMut(&str),
     parked: bool,
     warned_models: Vec<String>,
+    /// #458: whether a model runs remotely, as the host said during this call.
+    remote_models: HashMap<String, bool>,
     /// Number of tasks and their agents (for the progress lines).
     n: usize,
+    /// Resolved before any child starts; never rebase a later step onto a changed symlink.
+    cwds: Vec<PathBuf>,
     agents: Vec<String>,
-    /// Status of the finished tasks, in order.
-    done: Vec<Status>,
+    /// Status of each finished task.
+    done: Vec<Option<Status>>,
+    /// The activity of each running task.
+    activity: Vec<Option<String>>,
     /// This call's share of the parent session's eight children.
     budget: Budget<'a>,
 }
@@ -1003,29 +1084,54 @@ impl Drop for Budget<'_> {
     }
 }
 
+/// A child ready to start: its argv, environment and working directory.
+struct Prepared {
+    agent: String,
+    argv: Vec<String>,
+    env: Vec<(String, String)>,
+    cwd: oxa_sandbox::PinnedCwd,
+    hint: String,
+    /// Its model runs at a cloud provider (it does not take the local engine's slot).
+    remote: bool,
+}
+
+/// What a concurrently running child reports to the call's thread (which owns the UI).
+enum Event {
+    Activity(usize, String),
+    Skipped(usize, ChildResult),
+    Done(usize, ChildResult, Prepared),
+}
+
 impl Run<'_, '_> {
     fn stopped(&self) -> bool {
         self.cx.cancel.is_cancelled() || self.inner.abort.load(Ordering::SeqCst)
     }
 
-    /// The progress block: one line per task (`done` / the running task's activity / `queued`).
-    /// `k = usize::MAX`: no task is running.
+    /// Task `k` is running and doing `activity`; redraw the progress block.
     fn progress(&mut self, k: usize, activity: &str) {
+        if let Some(a) = self.activity.get_mut(k) {
+            *a = Some(activity.to_string());
+        }
+        self.render();
+    }
+
+    /// The progress block: one line per task (`done` / the running task's activity / `queued`).
+    fn render(&mut self) {
         let mut lines = Vec::with_capacity(self.n);
         for j in 0..self.n {
-            let line = if j < self.done.len() {
+            let line = if let Some(status) = self.done[j] {
                 format!(
                     "subagent {}/{} {}: {}",
                     j + 1,
                     self.n,
                     self.agents[j],
-                    match self.done[j] {
+                    match status {
                         Status::Completed => "done",
                         Status::Failed => "failed",
                         Status::Aborted => "aborted",
                     }
                 )
-            } else if j == k {
+            } else if let Some(activity) = &self.activity[j] {
                 format!("subagent {}/{} {}: {activity}", j + 1, self.n, self.agents[j])
             } else {
                 format!("subagent {}/{}, queued", j + 1, self.n)
@@ -1039,20 +1145,68 @@ impl Run<'_, '_> {
         self.ui.notify(&text, Level::Warning);
     }
 
-    fn finish(&mut self, r: ChildResult) -> ChildResult {
-        self.done.push(r.status);
+    fn finish(&mut self, k: usize, r: ChildResult) -> ChildResult {
+        self.done[k] = Some(r.status);
+        self.activity[k] = None;
         self.budget.release(1);
         r
     }
 
-    /// Run task `k` (one child), its cleanup included.
-    fn child(&mut self, k: usize, item: &Item, task: &str) -> ChildResult {
+    /// Whether `model` runs at a cloud provider, asked once per model and call (#458). A host
+    /// that cannot tell means local.
+    fn model_remote(&mut self, model: &str) -> bool {
+        if model == self.limits.model {
+            return self.limits.remote;
+        }
+        if let Some(r) = self.remote_models.get(model) {
+            return *r;
+        }
+        let r = self
+            .host
+            .call(HostAction::ModelInfo(model.to_string()))
+            .ok()
+            .and_then(|v| v.get("remote").and_then(Value::as_bool))
+            .unwrap_or(false);
+        self.remote_models.insert(model.to_string(), r);
+        r
+    }
+
+    /// The model an agent's child runs (#458): the agent's own `model:` when that model is
+    /// remote or the session's is (neither shares the one local slot with the parent),
+    /// otherwise the session's model. The flag says whether it is remote.
+    fn agent_model(&mut self, agent: &AgentDef) -> (String, bool) {
+        if let Some(m) = agent.model.as_deref().filter(|m| *m != self.limits.model) {
+            let remote = self.model_remote(m);
+            if remote || self.limits.remote {
+                return (m.to_string(), remote);
+            }
+        }
+        (self.limits.model.clone(), self.limits.remote)
+    }
+
+    /// How many children of this `tasks` call may run at once: more than one only when some
+    /// child runs remotely (local children still take the one slot in turn).
+    fn concurrency(&mut self, items: &[Item]) -> usize {
+        if self.config.remote_concurrency <= 1 {
+            return 1;
+        }
+        let agents: Vec<AgentDef> = items
+            .iter()
+            .filter_map(|item| self.inner.agents.iter().find(|a| a.name == item.agent).cloned())
+            .collect();
+        if agents.iter().any(|a| self.agent_model(a).1) {
+            self.config.remote_concurrency.min(items.len())
+        } else {
+            1
+        }
+    }
+
+    /// Prepare task `k`: its agent, model, hint and argv; park the parent before the first
+    /// child. `Err` is the task's finished result (unknown agent, aborted before start).
+    fn prepare(&mut self, k: usize, item: &Item, task: &str) -> Result<Prepared, Box<ChildResult>> {
         if self.stopped() {
-            return self.finish(ChildResult::unstarted(
-                &item.agent,
-                Status::Aborted,
-                NOT_STARTED.to_string(),
-            ));
+            let r = ChildResult::unstarted(&item.agent, Status::Aborted, NOT_STARTED.to_string());
+            return Err(Box::new(self.finish(k, r)));
         }
         let Some(agent) = self.inner.agents.iter().find(|a| a.name == item.agent).cloned() else {
             let available: Vec<String> = self
@@ -1066,17 +1220,19 @@ impl Run<'_, '_> {
             } else {
                 available.join(", ")
             };
-            return self.finish(ChildResult::unstarted(
+            let r = ChildResult::unstarted(
                 &item.agent,
                 Status::Failed,
                 // The model's text (the agent name) is filled in last.
                 T::UNKNOWN_AGENT
                     .replace("{available}", &available)
                     .replace("{agent}", &item.agent),
-            ));
+            );
+            return Err(Box::new(self.finish(k, r)));
         };
+        let (model, remote) = self.agent_model(&agent);
         if let Some(m) = agent.model.as_deref() {
-            if m != self.limits.model && !self.warned_models.iter().any(|w| w == &agent.name) {
+            if m != model && !self.warned_models.iter().any(|w| w == &agent.name) {
                 self.warned_models.push(agent.name.clone());
                 let text = NOTICE_MODEL_IGNORED
                     .replace("{agent}", &agent.name)
@@ -1095,11 +1251,8 @@ impl Run<'_, '_> {
                 self.notify(text);
             }
             if self.stopped() {
-                return self.finish(ChildResult::unstarted(
-                    &item.agent,
-                    Status::Aborted,
-                    NOT_STARTED.to_string(),
-                ));
+                let r = ChildResult::unstarted(&item.agent, Status::Aborted, NOT_STARTED.to_string());
+                return Err(Box::new(self.finish(k, r)));
             }
         }
 
@@ -1111,15 +1264,16 @@ impl Run<'_, '_> {
         };
         let soft = child_soft_tokens(self.config.soft_tokens, &self.limits);
         let mut argv: Vec<String> = vec!["--mode".into(), "json".into(), "-p".into(), "--no-session".into()];
-        if !self.limits.model.is_empty() {
+        if !model.is_empty() {
             argv.push("--model".into());
-            argv.push(self.limits.model.clone());
+            argv.push(model);
         }
         argv.push("--permission-mode".into());
         argv.push(self.cx.mode.as_str().into());
-        // O-182: the parent's YOLO state at this moment (a later child sees a later state).
-        if lock(&self.inner.yolo).as_ref().is_some_and(YoloSwitch::is_on) {
-            argv.push("--yolo".into());
+        // O-182, #202: the parent's autonomy level at this moment (a later child sees a later
+        // state), always explicit so a child never takes a higher `permissions.defaultMode`.
+        if let Some(level) = lock(&self.inner.yolo).as_ref().map(YoloSwitch::level) {
+            argv.push(format!("--{}", level.as_str()));
         }
         if let Some(tools) = agent.tools.as_ref().filter(|t| !t.is_empty()) {
             argv.push("--tools".into());
@@ -1135,215 +1289,340 @@ impl Run<'_, '_> {
             (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
             (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
         ];
-        let cwd = match &item.cwd {
-            Some(c) => self.cx.cwd.join(c),
-            None => self.cx.cwd.to_path_buf(),
+        let expected = &self.cwds[k];
+        let current = child_cwd(self.cx.cwd, item.cwd.as_deref().unwrap_or("."));
+        if &current != expected {
+            let r = ChildResult::unstarted(&item.agent, Status::Failed, CWD_CHANGED.to_string());
+            return Err(Box::new(self.finish(k, r)));
+        }
+        let cwd = match oxa_sandbox::PinnedCwd::open(expected) {
+            Ok(dir) => dir,
+            Err(e) => {
+                let r = ChildResult::unstarted(&item.agent, Status::Failed, format!("{CWD_CHANGED}: {e}"));
+                return Err(Box::new(self.finish(k, r)));
+            }
         };
+        Ok(Prepared {
+            agent: agent.name,
+            argv,
+            env,
+            cwd,
+            hint,
+            remote,
+        })
+    }
 
-        self.progress(k, "running");
-        let mut r = self.spawn_and_wait(k, &agent.name, &argv, &env, &cwd);
-        r.hint = Some(hint.clone());
-        // EG5: the child's engine state goes, whatever the outcome.
-        if let Err(e) = self.host.call(HostAction::ClearEngineHint(hint.clone())) {
+    /// After a child: clear its engine state (EG5, whatever the outcome) and record it.
+    fn cleanup(&mut self, k: usize, p: &Prepared, mut r: ChildResult) -> ChildResult {
+        r.hint = Some(p.hint.clone());
+        // A remote child holds no engine state; a local child under a remote parent does, and
+        // the host clears it whatever the parent's own capabilities say.
+        let cleared = if p.remote {
+            Ok(Value::Null)
+        } else {
+            self.host.call(HostAction::ClearEngineHint(p.hint.clone()))
+        };
+        if let Err(e) = cleared {
             let text = NOTICE_CLEAR_FAILED
-                .replace("{hint}", &hint)
+                .replace("{hint}", &p.hint)
                 .replace("{error}", &e.message);
             self.notify(text);
         }
-        let r = self.finish(r);
+        let r = self.finish(k, r);
         // Its line now reads done / failed / aborted; the next task is still queued.
-        self.progress(usize::MAX, "");
+        self.render();
         r
     }
 
-    fn spawn_and_wait(
-        &mut self,
-        k: usize,
-        agent: &str,
-        argv: &[String],
-        env: &[(String, String)],
-        cwd: &Path,
-    ) -> ChildResult {
-        let mut result = ChildResult::unstarted(agent, Status::Failed, String::new());
-        result.error_message = None;
-        let mut child = match spawn(&self.inner.oxa_bin, argv, env, cwd) {
-            Ok(c) => c,
-            Err(e) => {
-                result.error_message = Some(T::SPAWN_FAILED.replace("{error}", &e.to_string()));
-                return result;
-            }
+    /// Run task `k` (one child), its cleanup included.
+    fn child(&mut self, k: usize, item: &Item, task: &str) -> ChildResult {
+        let p = match self.prepare(k, item, task) {
+            Ok(p) => p,
+            Err(r) => return *r,
         };
-        let pgid = child.id();
-        *lock(&self.inner.child_pgid) = Some(pgid);
-
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
-        let stdout = child.stdout.take();
-        std::thread::spawn(move || {
-            let Some(out) = stdout else { return };
-            let mut reader = BufReader::new(out);
-            loop {
-                let mut line = Vec::new();
-                match reader.read_until(b'\n', &mut line) {
-                    Ok(0) | Err(_) => break,
-                    Ok(_) => {
-                        if tx.send(line).is_err() {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-        let stderr_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-        let stderr_thread = child.stderr.take().map(|mut err| {
-            let buf = stderr_buf.clone();
-            std::thread::spawn(move || {
-                let mut chunk = [0u8; 4096];
-                loop {
-                    match err.read(&mut chunk) {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => {
-                            let mut b = lock(&buf);
-                            b.extend_from_slice(&chunk[..n]);
-                            if b.len() > STDERR_KEEP * 2 {
-                                let cut = b.len() - STDERR_KEEP;
-                                b.drain(..cut);
-                            }
-                        }
-                    }
-                }
-            })
-        });
-
-        let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
-        let mut eof = false;
-        let mut term_at: Option<Instant> = None;
-        let mut killed = false;
-        loop {
-            match rx.recv_timeout(POLL) {
-                Ok(line) => self.record(k, &line, &mut result),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => eof = true,
-            }
-            if exited.is_none() {
-                if let Ok(Some(status)) = child.try_wait() {
-                    exited = Some((status, Instant::now()));
-                }
-            }
-            if term_at.is_none() && exited.is_none() && self.stopped() {
-                signal_group(pgid, "TERM");
-                term_at = Some(Instant::now());
-            }
-            if let Some(t) = term_at {
-                if !killed && t.elapsed() >= KILL_GRACE {
-                    signal_group(pgid, "KILL");
-                    killed = true;
-                }
-            }
-            if let Some((_, at)) = exited {
-                if eof || at.elapsed() >= DRAIN {
-                    break;
-                }
-            }
-        }
-        // Whatever the child left in its group (a background grandchild) goes with it.
-        if group_alive(pgid) {
-            kill_group(pgid);
-        }
-        *lock(&self.inner.child_pgid) = None;
-        while let Ok(line) = rx.try_recv() {
-            self.record(k, &line, &mut result);
-        }
-        if let Some(t) = stderr_thread {
-            // The pipe closed with the group; never wait long for it.
-            let end = Instant::now() + DRAIN;
-            while !t.is_finished() && Instant::now() < end {
-                std::thread::sleep(POLL);
-            }
-        }
-        let stderr = String::from_utf8_lossy(&lock(&stderr_buf)).into_owned();
-        result.stderr = tail(&stderr, STDERR_KEEP).to_string();
-
-        let status = exited.map(|(s, _)| s);
-        result.exit = status.and_then(|s| s.code());
-        let signal = status.and_then(|s| {
-            use std::os::unix::process::ExitStatusExt as _;
-            s.signal()
-        });
-        if term_at.is_some() {
-            result.status = Status::Aborted;
-            result.error_message.get_or_insert_with(|| ABORTED.to_string());
-        } else if let Some(sig) = signal {
-            result.status = Status::Failed;
-            result.signal = Some(sig);
-            result
-                .error_message
-                .get_or_insert_with(|| T::SIGNALLED.replace("{signal}", &sig.to_string()));
-        } else if result.exit != Some(0) {
-            result.status = Status::Failed;
-            let code = result.exit.map_or("unknown".to_string(), |c| c.to_string());
-            result
-                .error_message
-                .get_or_insert_with(|| T::EXITED.replace("{code}", &code));
-        } else {
-            result.status = match result.stop_reason.as_deref() {
-                Some("aborted") => Status::Aborted,
-                Some("error") => Status::Failed,
-                _ => Status::Completed,
-            };
-        }
-        result
+        self.progress(k, "running");
+        let (inner, cancel) = (self.inner, self.cx.cancel);
+        let r = wait_child(inner, cancel, self.host, &p, &mut |a| self.progress(k, &a));
+        self.cleanup(k, &p, r)
     }
 
-    /// One JSON-mode record of the child: collect assistant texts, show progress.
-    fn record(&mut self, k: usize, line: &[u8], result: &mut ChildResult) {
-        let text = String::from_utf8_lossy(line);
-        let text = text.trim();
-        if text.is_empty() {
-            return;
+    /// #458: a `tasks` call with remote children runs up to `limit` children at once; local
+    /// children still take the one local slot in turn. Results are in call order.
+    fn concurrent(&mut self, items: &[Item], limit: usize) -> Vec<ChildResult> {
+        let mut results: Vec<Option<ChildResult>> = vec![None; items.len()];
+        let mut ready = std::collections::VecDeque::new();
+        for (k, item) in items.iter().enumerate() {
+            match self.prepare(k, item, &item.task) {
+                Ok(p) => ready.push_back((k, p)),
+                Err(r) => results[k] = Some(*r),
+            }
         }
-        let Ok(v) = serde_json::from_str::<Value>(text) else {
-            return;
+        let workers = limit.min(ready.len());
+        let queue = Mutex::new(ready);
+        let local = Mutex::new(());
+        let (inner, cancel) = (self.inner, self.cx.cancel);
+        let host = self.host;
+        let (tx, rx) = mpsc::channel::<Event>();
+        std::thread::scope(|scope| {
+            for _ in 0..workers {
+                let (tx, queue, local) = (tx.clone(), &queue, &local);
+                scope.spawn(move || loop {
+                    let Some((k, p)) = lock(queue).pop_front() else {
+                        break;
+                    };
+                    let _slot = (!p.remote).then(|| lock(local));
+                    if cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst) {
+                        let r = ChildResult::unstarted(&p.agent, Status::Aborted, NOT_STARTED.to_string());
+                        let _ = tx.send(Event::Skipped(k, r));
+                        continue;
+                    }
+                    let _ = tx.send(Event::Activity(k, "running".to_string()));
+                    let r = wait_child(inner, cancel, host, &p, &mut |a| {
+                        let _ = tx.send(Event::Activity(k, a));
+                    });
+                    let _ = tx.send(Event::Done(k, r, p));
+                });
+            }
+            drop(tx);
+            for ev in rx {
+                match ev {
+                    Event::Activity(k, a) => self.progress(k, &a),
+                    Event::Skipped(k, r) => results[k] = Some(self.finish(k, r)),
+                    Event::Done(k, r, p) => results[k] = Some(self.cleanup(k, &p, r)),
+                }
+            }
+        });
+        results
+            .into_iter()
+            .map(|r| r.expect("every task reports a result"))
+            .collect()
+    }
+}
+
+/// Spawn one child and wait for it; `on` gets its activity. An abort (the cancel token,
+/// [`Hooks::shutdown`]) kills its process group.
+fn wait_child(
+    inner: &Inner,
+    cancel: &CancelToken,
+    host: &dyn Host,
+    p: &Prepared,
+    on: &mut dyn FnMut(String),
+) -> ChildResult {
+    let stopped = || cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst);
+    // Read at spawn, not when tasks are queued: earlier children and the park may
+    // have consumed tokens. Parallel children, like active tools, may finish in flight.
+    let mut argv = p.argv.clone();
+    let remaining = match host.call(HostAction::EngineLimits) {
+        Ok(v) => v.get("remainingTokens").and_then(Value::as_u64),
+        Err(e) => return ChildResult::unstarted(&p.agent, Status::Failed, e.message),
+    };
+    if let Some(left) = remaining {
+        if left == 0 {
+            return ChildResult::unstarted(&p.agent, Status::Aborted, NOT_STARTED.to_string());
+        }
+        // Insert before the task, leaving the worker's prompt prefix unchanged.
+        let at = argv.len() - 1;
+        argv.splice(at..at, ["--max-tokens".to_string(), left.to_string()]);
+    }
+    let mut charged = 0u64;
+    let mut rec = |line: &[u8], result: &mut ChildResult| {
+        if let Some(a) = record(line, result) {
+            on(a);
+        }
+        if remaining.is_some() {
+            if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                if v["type"] == "message_end" && v["message"]["role"] == "assistant" {
+                    let u = &v["message"]["usage"];
+                    // JSON-mode input already excludes cacheRead (oxa-rpc/events.rs).
+                    let tokens = u["input"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        .saturating_add(u["output"].as_u64().unwrap_or(0));
+                    let _ = host.call(HostAction::AccountRunTokens(tokens));
+                    charged = charged.saturating_add(tokens);
+                } else if v["type"] == "run_usage" {
+                    if let Some(total) = v["tokens"].as_u64() {
+                        // Chat is charged as it arrives (also if the child crashes).
+                        // Reconcile the final total without charging chat twice.
+                        let extra = total.saturating_sub(charged);
+                        let _ = host.call(HostAction::AccountRunTokens(extra));
+                        charged = charged.saturating_add(extra);
+                    }
+                }
+            }
+        }
+    };
+    let mut result = ChildResult::unstarted(&p.agent, Status::Failed, String::new());
+    result.error_message = None;
+    let mut child = match spawn(&inner.oxa_bin, &argv, &p.env, &p.cwd) {
+        Ok(c) => c,
+        Err(e) => {
+            result.error_message = Some(T::SPAWN_FAILED.replace("{error}", &e.to_string()));
+            return result;
+        }
+    };
+    let pgid = child.id();
+    lock(&inner.child_pgid).push(pgid);
+
+    let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let stdout = child.stdout.take();
+    std::thread::spawn(move || {
+        let Some(out) = stdout else { return };
+        let mut reader = BufReader::new(out);
+        loop {
+            let mut line = Vec::new();
+            match reader.read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+    let stderr_buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let stderr_thread = child.stderr.take().map(|mut err| {
+        let buf = stderr_buf.clone();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match err.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let mut b = lock(&buf);
+                        b.extend_from_slice(&chunk[..n]);
+                        if b.len() > STDERR_KEEP * 2 {
+                            let cut = b.len() - STDERR_KEEP;
+                            b.drain(..cut);
+                        }
+                    }
+                }
+            }
+        })
+    });
+
+    let mut exited: Option<(std::process::ExitStatus, Instant)> = None;
+    let mut eof = false;
+    let mut term_at: Option<Instant> = None;
+    let mut killed = false;
+    loop {
+        match rx.recv_timeout(POLL) {
+            Ok(line) => rec(&line, &mut result),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => eof = true,
+        }
+        if exited.is_none() {
+            if let Ok(Some(status)) = child.try_wait() {
+                exited = Some((status, Instant::now()));
+            }
+        }
+        if term_at.is_none() && exited.is_none() && stopped() {
+            signal_group(pgid, "TERM");
+            term_at = Some(Instant::now());
+        }
+        if let Some(t) = term_at {
+            if !killed && t.elapsed() >= KILL_GRACE {
+                signal_group(pgid, "KILL");
+                killed = true;
+            }
+        }
+        if let Some((_, at)) = exited {
+            if eof || at.elapsed() >= DRAIN {
+                break;
+            }
+        }
+    }
+    // Whatever the child left in its group (a background grandchild) goes with it.
+    if group_alive(pgid) {
+        kill_group(pgid);
+    }
+    lock(&inner.child_pgid).retain(|g| *g != pgid);
+    while let Ok(line) = rx.try_recv() {
+        rec(&line, &mut result);
+    }
+    if let Some(t) = stderr_thread {
+        // The pipe closed with the group; never wait long for it.
+        let end = Instant::now() + DRAIN;
+        while !t.is_finished() && Instant::now() < end {
+            std::thread::sleep(POLL);
+        }
+    }
+    let stderr = String::from_utf8_lossy(&lock(&stderr_buf)).into_owned();
+    result.stderr = tail(&stderr, STDERR_KEEP).to_string();
+
+    let status = exited.map(|(s, _)| s);
+    result.exit = status.and_then(|s| s.code());
+    let signal = status.and_then(|s| {
+        use std::os::unix::process::ExitStatusExt as _;
+        s.signal()
+    });
+    if term_at.is_some() {
+        result.status = Status::Aborted;
+        result.error_message.get_or_insert_with(|| ABORTED.to_string());
+    } else if let Some(sig) = signal {
+        result.status = Status::Failed;
+        result.signal = Some(sig);
+        result
+            .error_message
+            .get_or_insert_with(|| T::SIGNALLED.replace("{signal}", &sig.to_string()));
+    } else if result.exit != Some(0) {
+        result.status = Status::Failed;
+        let code = result.exit.map_or("unknown".to_string(), |c| c.to_string());
+        result
+            .error_message
+            .get_or_insert_with(|| T::EXITED.replace("{code}", &code));
+    } else {
+        result.status = match result.stop_reason.as_deref() {
+            Some("aborted") => Status::Aborted,
+            Some("error") => Status::Failed,
+            _ => Status::Completed,
         };
-        match v.get("type").and_then(Value::as_str).unwrap_or("") {
-            "message_end" => {
-                let Some(m) = v.get("message") else { return };
-                if m.get("role").and_then(Value::as_str) != Some("assistant") {
-                    return;
-                }
-                let first_text = m
-                    .get("content")
-                    .and_then(Value::as_array)
-                    .and_then(|blocks| {
-                        blocks
-                            .iter()
-                            .find(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-                            .and_then(|b| b.get("text").and_then(Value::as_str))
-                    })
-                    .map(str::to_string);
-                result.stop_reason = m.get("stopReason").and_then(Value::as_str).map(str::to_string);
-                result.error_message = m.get("errorMessage").and_then(Value::as_str).map(str::to_string);
-                if let Some(t) = &first_text {
-                    let activity = text_tail(t);
-                    self.progress(k, &activity);
-                }
-                result.texts.push(first_text);
+    }
+    result
+}
+
+/// One JSON-mode record of the child: collect assistant texts; the activity to show, if any.
+fn record(line: &[u8], result: &mut ChildResult) -> Option<String> {
+    let text = String::from_utf8_lossy(line);
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let v = serde_json::from_str::<Value>(text).ok()?;
+    match v.get("type").and_then(Value::as_str).unwrap_or("") {
+        "message_end" => {
+            let m = v.get("message")?;
+            if m.get("role").and_then(Value::as_str) != Some("assistant") {
+                return None;
             }
-            "tool_execution_start" => {
-                let name = v.get("toolName").and_then(Value::as_str).unwrap_or("tool");
-                let args = v.get("args").cloned().unwrap_or(Value::Null);
-                let activity = tool_activity(name, &args);
-                self.progress(k, &activity);
-            }
-            "engine_queue" => {
-                let activity = match v.get("pos").and_then(Value::as_u64) {
-                    Some(p) => format!("queued #{p}"),
-                    None => "queued".to_string(),
-                };
-                self.progress(k, &activity);
-            }
-            "compaction_start" => self.progress(k, "compacting"),
-            _ => {}
+            let first_text = m
+                .get("content")
+                .and_then(Value::as_array)
+                .and_then(|blocks| {
+                    blocks
+                        .iter()
+                        .find(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                        .and_then(|b| b.get("text").and_then(Value::as_str))
+                })
+                .map(str::to_string);
+            result.stop_reason = m.get("stopReason").and_then(Value::as_str).map(str::to_string);
+            result.error_message = m.get("errorMessage").and_then(Value::as_str).map(str::to_string);
+            let activity = first_text.as_deref().map(text_tail);
+            result.texts.push(first_text);
+            activity
         }
+        "tool_execution_start" => {
+            let name = v.get("toolName").and_then(Value::as_str).unwrap_or("tool");
+            let args = v.get("args").cloned().unwrap_or(Value::Null);
+            Some(tool_activity(name, &args))
+        }
+        "engine_queue" => Some(match v.get("pos").and_then(Value::as_u64) {
+            Some(p) => format!("queued #{p}"),
+            None => "queued".to_string(),
+        }),
+        "compaction_start" => Some("compacting".to_string()),
+        _ => None,
     }
 }
 
@@ -1401,14 +1680,18 @@ fn tail(s: &str, max: usize) -> &str {
 
 /// Spawn the child in its own process group, dying with this process (ENG-019). A just-written executable can be briefly busy
 /// (`ETXTBSY`) while another thread forks; that is retried.
-fn spawn(bin: &Path, argv: &[String], env: &[(String, String)], cwd: &Path) -> std::io::Result<Child> {
+fn spawn(
+    bin: &Path,
+    argv: &[String],
+    env: &[(String, String)],
+    cwd: &oxa_sandbox::PinnedCwd,
+) -> std::io::Result<Child> {
     let mut attempt = 0;
     loop {
         let mut cmd = Command::new(bin);
         cmd.args(argv)
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .envs(oxa_proto::offline().then_some(("OXA_OFFLINE", "1"))) // P4: the child stays offline
-            .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1416,6 +1699,7 @@ fn spawn(bin: &Path, argv: &[String], env: &[(String, String)], cwd: &Path) -> s
         // ENG-019: the child dies with this process (PR_SET_PDEATHSIG). The forking thread is the
         // tool call's thread, which blocks until the child is waited for.
         oxa_sandbox::die_with_parent(&mut cmd);
+        cwd.apply(&mut cmd)?;
         let r = cmd.spawn();
         match r {
             Err(e) if e.raw_os_error() == Some(26) && attempt < 10 => {

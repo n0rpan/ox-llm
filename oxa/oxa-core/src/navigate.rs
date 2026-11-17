@@ -1,4 +1,4 @@
-//! C4: tree navigation, fork and clone. Owner: task C4. Signatures below are frozen; bodies are yours.
+//! C4: tree navigation, fork and clone.
 // ported from pi packages/coding-agent/src/core/agent-session.ts (navigateTree, fork)
 use crate::agent_loop::persist;
 use crate::compaction::{idle_prefill, Counted};
@@ -7,8 +7,8 @@ use crate::SessionState;
 use oxa_compact::prompt::{branch_summary_user_message, BRANCH_SUMMARY_PREAMBLE};
 use oxa_compact::{branch_entries, branch_summary_request, file_lists};
 use oxa_proto::{
-    codes, rebase_why, AgentEvent, Entry, EntryBody, EventSink, HookPoint, HookReply, Level, OxaError, Part,
-    Role, TurnKind, Ui, Value, WireMsg,
+    codes, AgentEvent, Entry, EntryBody, EventSink, HookPoint, HookReply, Level, OxaError, Part, Role,
+    TurnKind, Ui, Value, WireMsg,
 };
 use oxa_session::{fork_session, SessionRef, Transcript, Tree};
 use serde_json::json;
@@ -42,7 +42,7 @@ pub fn navigate(
     }
     let target_entry = st.tree.get(target).cloned().ok_or_else(|| not_found(target))?;
     let (new_leaf, editor) = match &target_entry.body {
-        EntryBody::Msg { wire, parts } if wire.role == Role::User => {
+        EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => {
             (target_entry.parent.clone(), Some(user_text(wire, parts)))
         }
         EntryBody::CustomMessage { content, .. } => (target_entry.parent.clone(), Some(content.clone())),
@@ -260,7 +260,7 @@ pub fn fork_from(
         ForkPosition::At => (entry.to_string(), None),
         ForkPosition::Before => {
             let text = match &chosen.body {
-                EntryBody::Msg { wire, parts } if wire.role == Role::User => user_text(wire, parts),
+                EntryBody::Msg { wire, parts, .. } if wire.role == Role::User => user_text(wire, parts),
                 _ => {
                     return Err(OxaError::new(codes::INVALID, "Invalid entry ID for forking")
                         .with_hint("fork from a user message"))
@@ -371,8 +371,7 @@ pub(crate) fn branch_summary_max(st: &SessionState) -> u32 {
 /// Point the transcript at the active branch: one `leaf_move` rebase.
 fn rebase_to_leaf(st: &mut SessionState) {
     let branch = branch_of_leaf(st);
-    let head = Transcript::project(&branch).wire().to_vec();
-    st.transcript.rebase(head, rebase_why::LEAF_MOVE);
+    st.transcript.restore_persisted(Transcript::project(&branch));
 }
 
 /// The entries from the root to the active leaf, root first, owned.
@@ -392,9 +391,9 @@ fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<()
             return Err(not_found(leaf));
         }
         let branch: Vec<Entry> = tree.branch(leaf).into_iter().cloned().collect();
-        Ok((tree, Transcript::project(&branch).wire().to_vec()))
+        Ok((tree, Transcript::project(&branch)))
     })();
-    let (tree, head) = match loaded {
+    let (tree, destination) = match loaded {
         Ok(value) => value,
         Err(error) => {
             st.store.abort_lock();
@@ -403,18 +402,22 @@ fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<()
     };
     // Adopt the destination and its writer lock together, releasing the old session.
     st.store.commit_lock();
-    if head.as_slice() != st.transcript.wire() {
-        st.transcript.rebase(head, rebase_why::LEAF_MOVE);
+    if destination.wire() != st.transcript.wire() {
+        st.transcript.restore_persisted(destination);
+        // The old head's context and cache usage no longer describe the active wire.
+        st.stats.context_tokens = st.transcript.context();
+        st.last_usage = None;
     }
     st.tree = tree;
     st.sref = dst.clone();
+    crate::session::attach_ids(st);
     Ok(())
 }
 
 /// An entry as pi's session file stores it (the hook events carry entries in that form).
 fn entry_json(e: &Entry) -> Value {
     let mut bytes = Vec::new();
-    oxa_session::encode_entry(e, &mut bytes);
+    oxa_session::encode_visible_entry(e, &mut bytes);
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
@@ -459,6 +462,7 @@ mod hook_payload_tests {
             body: EntryBody::Msg {
                 wire: WireMsg::user(id),
                 parts: Vec::new(),
+                tool: None,
             },
         }
     }

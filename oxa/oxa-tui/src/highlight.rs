@@ -1,4 +1,4 @@
-//! B11: syntax highlighting of code. Owner: task B11. Signatures below are frozen; bodies are yours.
+//! B11: syntax highlighting of code.
 // ported from pi packages/coding-agent/src/modes/interactive/theme/theme.ts (highlightCode, getLanguageFromPath)
 use crate::Theme;
 use std::sync::OnceLock;
@@ -10,9 +10,34 @@ use syntect::util::LinesWithEndings;
 const PLAIN: &str = "mdCodeBlock";
 
 /// The bundled syntax set, loaded once on first use.
+static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+
 fn syntaxes() -> &'static SyntaxSet {
-    static SET: OnceLock<SyntaxSet> = OnceLock::new();
-    SET.get_or_init(SyntaxSet::load_defaults_newlines)
+    SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+/// V022 (#884): load the bundled syntax set now, so the first code block does not pay for it.
+///
+/// One bounded load per process: the set lives in a `OnceLock`, so a second call is a no-op and
+/// the highlight output is the same whether or not this ran. `true` when this call did the load.
+/// The caller decides *when*: the interactive loop is meant to call it after the first editable
+/// frame, off the UI thread, so startup never waits for it. Nothing calls it at startup.
+pub fn warm_syntaxes() -> bool {
+    warm_syntaxes_with(&SYNTAXES, SyntaxSet::load_defaults_newlines)
+}
+
+fn warm_syntaxes_with(slot: &OnceLock<SyntaxSet>, load: impl FnOnce() -> SyntaxSet) -> bool {
+    let mut initialized = false;
+    slot.get_or_init(|| {
+        initialized = true;
+        load()
+    });
+    initialized
+}
+
+/// V022 (#884): whether the bundled syntax set is loaded (the warm-up ran, or a highlight did).
+pub fn syntaxes_loaded() -> bool {
+    SYNTAXES.get().is_some()
 }
 
 /// pi-style language names that syntect knows only by another token (extension or name).
@@ -207,4 +232,41 @@ pub fn language_from_path(path: &str) -> Option<&'static str> {
 /// `true` when [`highlight_code`] knows `lang`.
 pub fn language_supported(lang: &str) -> bool {
     find_syntax(lang).is_some()
+}
+
+#[cfg(test)]
+mod warm_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Barrier,
+    };
+
+    #[test]
+    fn racing_warmups_execute_one_loader_and_report_one_initializer() {
+        let slot = OnceLock::new();
+        let loads = AtomicUsize::new(0);
+        let start = Barrier::new(8);
+        let initialized = std::thread::scope(|scope| {
+            let calls: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        warm_syntaxes_with(&slot, || {
+                            loads.fetch_add(1, Ordering::SeqCst);
+                            SyntaxSet::load_defaults_newlines()
+                        })
+                    })
+                })
+                .collect();
+            calls
+                .into_iter()
+                .map(|call| call.join().unwrap())
+                .filter(|initialized| *initialized)
+                .count()
+        });
+        assert_eq!(initialized, 1, "only the initializer reports true");
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "the expensive loader runs once");
+        assert!(!warm_syntaxes_with(&slot, || panic!("a warm set is not rebuilt")));
+    }
 }

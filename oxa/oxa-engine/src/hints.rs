@@ -1,4 +1,4 @@
-//! A2: hint headers H1-H6. Owner: task A2. Signatures below are frozen; bodies are yours.
+//! A2: hint headers H1-H6.
 use oxa_proto::Hints;
 use std::io::Read;
 use std::sync::atomic::{AtomicU64, Ordering};

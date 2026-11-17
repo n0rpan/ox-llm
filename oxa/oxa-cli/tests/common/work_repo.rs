@@ -29,6 +29,9 @@ pub fn setup(env: &TestEnv, done: &str) {
     git(env, &project, &["commit", "-m", "fixture"]);
     git(env, &project, &["remote", "add", "origin", "../remote.git"]);
     git(env, &project, &["push", "origin", "main"]);
+    oxa_perm::TrustStore::default()
+        .save(&env.agent_dir().join("trust.json"), &project, true)
+        .unwrap();
     env.write(
         "work/tasks.json",
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task"}]"#,

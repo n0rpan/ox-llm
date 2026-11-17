@@ -1,4 +1,4 @@
-//! C3 acceptance tests: Compaction orchestration. Owner: task C3.
+//! C3 acceptance tests: Compaction orchestration.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -81,6 +81,8 @@ fn build_with_store(
         gate: Default::default(),
     });
     SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks,
@@ -148,6 +150,7 @@ fn say(st: &mut SessionState, text: &str) {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user");
@@ -160,6 +163,7 @@ fn push(st: &mut SessionState, wire: WireMsg) {
         EntryBody::Msg {
             wire,
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append message");
@@ -185,6 +189,7 @@ fn calls(list: Vec<(&str, &str, &str)>) -> WireMsg {
                 args_raw: args.to_string(),
             })
             .collect(),
+        provider_history: None,
         tool_call_id: None,
     }
 }

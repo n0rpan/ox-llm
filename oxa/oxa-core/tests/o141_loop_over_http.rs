@@ -73,7 +73,12 @@ fn read_request(s: &mut TcpStream) -> String {
 
 /// One coalesced SSE response: content, finish + usage and `[DONE]` in a single write.
 fn coalesced(text: &str) -> Vec<u8> {
-    let content = json!({"choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]});
+    coalesced_field("content", text)
+}
+
+/// Same, with the text in the given delta field (`reasoning_content` for thinking).
+fn coalesced_field(field: &str, text: &str) -> Vec<u8> {
+    let content = json!({"choices":[{"index":0,"delta":{field:text},"finish_reason":null}]});
     let finish = r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}"#;
     let mut out = b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n".to_vec();
     for e in [content.to_string().as_str(), finish, "[DONE]"] {
@@ -191,4 +196,32 @@ fn coalesced_ordinary_reply_is_unaffected() {
     s.prompt("hi".into(), Vec::new(), &mut sink, &mut ui).expect("ok");
     assert!(shown(&s).is_empty());
     assert_eq!(assistant_texts(&s), vec!["A normal short answer.".to_string()]);
+}
+
+/// #513: a model that loops inside its reasoning is stopped like one that loops in its answer,
+/// instead of streaming until the output limit.
+#[test]
+fn looping_reasoning_is_stopped_shown_only_and_next_request_is_healthy() {
+    let env = TestEnv::new();
+    let para: String = (0..40).map(|i| format!("word{} ", (i * 7) % 97)).collect();
+    let looping = format!("Let me think.\n\n{}", para.repeat(8));
+    let (url, seen) = server(vec![
+        coalesced_field("reasoning_content", &looping),
+        coalesced("all good"),
+    ]);
+    let mut s = open(&env, &url);
+    let (mut sink, mut ui) = (VecSink::default(), HeadlessUi::default());
+
+    s.prompt("hi".into(), Vec::new(), &mut sink, &mut ui)
+        .expect("prompt settles");
+    assert!(!s.inner().shared.cancel.is_cancelled());
+    let sh = shown(&s);
+    assert_eq!(sh.len(), 1, "{sh:?}");
+    assert!(sh[0].contains("Response stopped: the model fell into a repetition loop"));
+    assert!(assistant_texts(&s).is_empty());
+
+    s.prompt("again".into(), Vec::new(), &mut sink, &mut ui)
+        .expect("healthy next request");
+    assert_eq!(assistant_texts(&s), vec!["all good".to_string()]);
+    assert_eq!(seen.lock().unwrap().len(), 2, "no retry of the looping request");
 }

@@ -1,4 +1,4 @@
-//! A11: the settings schema table, validation and merge rules. Owner: task A11. Signatures below are frozen; bodies are yours.
+//! A11: the settings schema table, validation and merge rules.
 // ported from pi packages/coding-agent/docs/settings.md and src/core/settings-manager.ts
 use crate::Diagnostic;
 use oxa_proto::{Level, Value};
@@ -32,7 +32,8 @@ pub struct KeyDef {
 
 /// The built-in tools enabled when no `defaultTools` is set (oxa has seven; pi's `powershell`
 /// is not among them).
-pub(crate) const DEFAULT_TOOLS: &[&str] = &["read", "bash", "edit", "write", "grep", "find", "ls"];
+// Lead-only tools are included in settings patches, but are registered by the CLI only for leads.
+pub(crate) const DEFAULT_TOOLS: &[&str] = &["read", "bash", "edit", "write", "grep", "find", "ls", "ask"];
 
 const fn key(key: &'static str, kind: Kind, default: &'static str) -> KeyDef {
     KeyDef {
@@ -140,6 +141,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
+    key("oxa.cloud", Kind::Object, "{}"),
     // V020-OPTIMIZE #7: unset = on.
     key("oxa.compaction.idleSummary", Kind::Bool, "null"),
     // L5 mid-run: unset = on.
@@ -153,8 +155,13 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
+    key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
+    key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
+    key("oxa.local", Kind::Object, "{}"),
+    key("oxa.maxTurns", Kind::Number, "null"),
     key(
         "oxa.mode",
         Kind::Enum(&["plan", "workspace", "ask"]),
@@ -183,9 +190,12 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
+    key("oxa.subagent.remoteConcurrency", Kind::Number, "4"),
     key("oxa.subagent.resultCap", Kind::Number, "6144"),
     key("oxa.subagent.smallContext", Kind::Bool, "false"),
     key("oxa.subagent.softTokens", Kind::Number, "24000"),
+    // Optional local engine cap, capability-gated; null leaves the current policy unchanged.
+    key("oxa.thinking.budget", Kind::Number, "null"),
     // Adaptive escalation of tool follow-ups (oxa-core `think.rs`): calls without progress
     // before thinking turns on; 0 = never on that ground.
     key("oxa.thinking.escalation.fruitlessCalls", Kind::Number, "6"),
@@ -210,6 +220,13 @@ const SCHEMA: &[KeyDef] = &[
         "\"brave\"",
     ),
     key("packages", Kind::Any, "[]"),
+    // #202: the permission mode at start; a project's value may only lower it
+    // (`Settings::default_permission_mode`).
+    key(
+        "permissions.defaultMode",
+        Kind::Enum(&["standard", "auto", "yolo", "plan"]),
+        "\"auto\"",
+    ),
     key("prompts", Kind::StringList, "[]"),
     key("quietStartup", Kind::Any, "false"),
     key("retry.baseDelayMs", Kind::Number, "2000"),
@@ -266,6 +283,11 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["graphics", "stack", "stars", "charge"]),
         "null",
     ),
+    key(
+        "ui.notify",
+        Kind::Enum(&["off", "unfocused", "always"]),
+        "\"unfocused\"",
+    ),
     key("ui.reducedMotion", Kind::Bool, "false"),
     key("ui.skin", Kind::Enum(&["auto", "pi", "oxa", "ascii"]), "\"auto\""),
     verdict_o("warnings.anthropicExtraUsage", Kind::Bool, "true"),
@@ -287,9 +309,17 @@ pub fn validate(v: &Value, source: &str) -> Vec<Diagnostic> {
 
 /// pi's merge: objects merge key by key, scalars and plain lists from `project` replace
 /// `user`, lists made of `+x` / `-x` entries patch the lower layer ([`apply_list_patch`]).
+/// The native `oxa.local` launch subtree replaces literally, preserving argv bytes.
 pub fn merge_settings(user: &Value, project: &Value) -> Value {
     match project {
-        Value::Object(_) => merge_value(Some(user), project),
+        Value::Object(_) => {
+            let mut merged = merge_value(Some(user), project);
+            // Native launch data is literal: argv flags are not list-patch edits.
+            if let Some(local) = project.pointer("/oxa/local") {
+                merged["oxa"]["local"] = local.clone();
+            }
+            merged
+        }
         _ => user.clone(),
     }
 }
@@ -413,7 +443,7 @@ fn check_value(v: &Value, path: &str, source: &str, diags: &mut Vec<Diagnostic>)
             ));
             return Some(v.clone());
         }
-        if kind_matches(def.kind, v) {
+        if kind_matches(def.kind, v) || (path == "oxa.thinking.budget" && v.is_null()) {
             return Some(v.clone());
         }
         diags.push(warn(

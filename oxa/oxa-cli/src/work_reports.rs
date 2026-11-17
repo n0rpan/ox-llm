@@ -57,6 +57,13 @@ fn call(runner: Runner<'_>, args: &[String]) -> Result<String, String> {
 fn words(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| s.to_string()).collect()
 }
+fn visible(text: &str) -> String {
+    text.chars().map(|ch| {
+        if (ch.is_control() && ch != '\n')
+            || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        { ch.escape_unicode().to_string() } else { ch.to_string() }
+    }).collect()
+}
 fn matches(note: &ProblemNote, candidate: &Value) -> bool {
     let title = candidate["title"].as_str().unwrap_or_default().to_lowercase();
     if title == note.title.to_lowercase() {
@@ -84,7 +91,7 @@ pub(crate) fn report(
     confirm: Confirm<'_>,
     runner: Runner<'_>,
 ) -> Result<ReportRecord, String> {
-    // Queue workers share one per-user reporting lease across draft/search/read/write.
+    // Retain the queue's per-user reporting lease across every effect.
     use std::os::unix::fs::OpenOptionsExt;
     std::fs::create_dir_all(&dirs.agent_dir).map_err(|e| e.to_string())?;
     let gate = std::fs::OpenOptions::new()
@@ -96,6 +103,11 @@ pub(crate) fn report(
         .open(dirs.agent_dir.join("work-report.lock"))
         .map_err(|e| e.to_string())?;
     gate.lock().map_err(|e| e.to_string())?;
+    let note = &ProblemNote {
+        title: visible(&note.title),
+        notes: visible(&note.notes),
+        keywords: note.keywords.iter().map(|query| visible(query)).collect(),
+    };
     let (draft, title, body) =
         save_draft(&note.title, &note.notes, dirs, ctx, runner).map_err(|e| e.to_string())?;
     let mut result = ReportRecord {
@@ -125,6 +137,13 @@ pub(crate) fn report(
         return Ok(result);
     }
     let attempt = (|| -> Result<(), String> {
+        if confirm(&format!(
+            "Search open issues and PRs in {repo} with these exact queries:\n{}\nType yes to send: ",
+            note.keywords.join("\n")
+        )) != Some(true)
+        {
+            return Err("search requires controlling-terminal confirmation; draft retained locally".into());
+        }
         let mut candidates = vec![];
         for query in &note.keywords {
             for kind in ["issue", "pr"] {
@@ -289,6 +308,39 @@ mod tests {
             serde_json::json!({"oxa":{"reportIssue":{"repo":"example/project"}}}),
             serde_json::json!({}),
         )
+    }
+    #[test]
+    fn declining_visible_queries_prevents_any_github_request() {
+        let env = TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let mut value = note();
+        value.keywords[0] = "component\u{1b}[2Jsymptom\u{200f}".into();
+        let mut calls = 0;
+        let mut approved = false;
+        let result = report(
+            &value,
+            &dirs,
+            &settings(),
+            &ScrubCtx::default(),
+            false,
+            &mut |prompt| {
+                assert!(!prompt.contains('\u{1b}') && !prompt.contains('\u{200f}'));
+                assert!(prompt.contains("\\u{1b}") && prompt.contains("\\u{200f}"));
+                approved = true;
+                Some(false)
+            },
+            &mut |program, _| {
+                if program == "gh" {
+                    calls += 1;
+                }
+                Some((0, "[]".into()))
+            },
+        )
+        .unwrap();
+        assert!(approved);
+        assert_eq!(calls, 0);
+        assert_eq!(result.disposition, "local");
+        assert!(result.draft.exists());
     }
     #[test]
     fn matching_issue_is_commented_after_all_queries_and_reads() {

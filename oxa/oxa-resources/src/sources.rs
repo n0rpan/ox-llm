@@ -1,4 +1,4 @@
-//! E10: package source strings and resource filters. Owner: task E10. Signatures below are frozen; bodies are yours.
+//! E10: package source strings and resource filters.
 // ported from pi packages/coding-agent/src/core/package-manager.ts (source parsing, filters)
 use oxa_proto::{codes, OxaError};
 use std::path::{Path, PathBuf};

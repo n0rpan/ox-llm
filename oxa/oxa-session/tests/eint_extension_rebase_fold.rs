@@ -19,6 +19,7 @@ fn msg(id: &str, wire: WireMsg) -> Entry {
         EntryBody::Msg {
             wire,
             parts: Vec::new(),
+            tool: None,
         },
     )
 }
@@ -33,6 +34,7 @@ fn assistant() -> WireMsg {
             name: "read".into(),
             args_raw: "{ \"path\" :\"a\"}".into(),
         }],
+        provider_history: None,
         tool_call_id: None,
     }
 }

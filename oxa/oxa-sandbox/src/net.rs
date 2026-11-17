@@ -21,8 +21,10 @@ pub fn sandbox_net_setting(value: Option<&str>) -> bool {
 pub struct NetSandbox {
     inner: Arc<dyn Sandbox>,
     net: bool,
-    gh_token: std::sync::OnceLock<Option<String>>,
-    gh_source: Option<Box<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// Shared by the per-session copies ([`Sandbox::for_session`]): the token is looked up
+    /// once per process, and redaction knows it in every later session.
+    gh_token: Arc<std::sync::OnceLock<Option<String>>>,
+    gh_source: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
 }
 
 /// The replacement for a redacted token in tool output.
@@ -95,7 +97,7 @@ impl NetSandbox {
         NetSandbox {
             inner,
             net: setting_on && !offline,
-            gh_token: std::sync::OnceLock::new(),
+            gh_token: Arc::new(std::sync::OnceLock::new()),
             gh_source: None,
         }
     }
@@ -107,7 +109,7 @@ impl NetSandbox {
     /// and never shown in [`Sandbox::bwrap_args`].
     pub fn with_gh_token(mut self, token: Option<String>) -> NetSandbox {
         let net = self.net;
-        self.gh_token = std::sync::OnceLock::new();
+        self.gh_token = Arc::new(std::sync::OnceLock::new());
         let _ = self.gh_token.set(Self::clean(net, token));
         self
     }
@@ -118,7 +120,7 @@ impl NetSandbox {
         mut self,
         source: impl Fn() -> Option<String> + Send + Sync + 'static,
     ) -> NetSandbox {
-        self.gh_source = Some(Box::new(source));
+        self.gh_source = Some(Arc::new(source));
         self
     }
 
@@ -126,6 +128,17 @@ impl NetSandbox {
         token
             .map(|t| t.trim().to_string())
             .filter(|t| net && !t.is_empty() && !t.chars().any(char::is_whitespace))
+    }
+
+    /// The token only for a networked command that mentions `gh` or `git` as a word (#210).
+    /// `git` is included because git over HTTPS authenticates through `gh auth git-credential`,
+    /// which needs the same token: without it push, fetch, pull and clone would lose their
+    /// credentials in the sandbox.
+    fn token_for(&self, s: &ExecSpec) -> Option<&String> {
+        if !s.net || !mentions_gh(&s.command) {
+            return None;
+        }
+        self.token()
     }
 
     fn token(&self) -> Option<&String> {
@@ -140,7 +153,7 @@ impl NetSandbox {
     /// The spec for a real run: the clamp plus the token, when the command has the network.
     fn clamp_run(&self, s: &ExecSpec) -> ExecSpec {
         let mut s = self.clamp(s);
-        if let (true, Some(t)) = (s.net, s.net.then(|| self.token()).flatten()) {
+        if let (true, Some(t)) = (s.net, self.token_for(&s)) {
             s.env.retain(|(k, _)| k != "GH_TOKEN" && k != "GH_HOST");
             s.env.push(("GH_TOKEN".into(), t.clone()));
             s.env.push(("GH_HOST".into(), "github.com".into()));
@@ -155,6 +168,10 @@ impl NetSandbox {
         run: impl FnOnce(&ExecSpec, &mut dyn FnMut(&[u8])) -> ExecResult,
     ) -> ExecResult {
         let s = self.clamp_run(spec);
+        // Injection is per command, but redaction covers every networked command once the
+        // token is known, so `cat token.txt` after `gh auth token > token.txt` is scrubbed.
+        // `self.token()` loads a lazy token here too: the first networked command may be
+        // `cat token.txt` from an earlier session.
         let Some(t) = s.net.then(|| self.token()).flatten() else {
             return run(&s, live);
         };
@@ -181,8 +198,25 @@ impl NetSandbox {
 }
 
 impl Sandbox for NetSandbox {
+    fn home(&self) -> Option<&std::path::Path> {
+        self.inner.home()
+    }
     fn persistence_notice(&self) -> Option<&str> {
         self.inner.persistence_notice()
+    }
+    fn scratch_dir(&self) -> Option<&std::path::Path> {
+        self.inner.scratch_dir()
+    }
+    fn preserves_host_path(&self, path: &std::path::Path) -> bool {
+        self.inner.preserves_host_path(path)
+    }
+    fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
+        Some(Arc::new(NetSandbox {
+            inner: self.inner.for_session()?,
+            net: self.net,
+            gh_token: self.gh_token.clone(),
+            gh_source: self.gh_source.clone(),
+        }))
     }
     fn check(&self) -> Result<(), OxaError> {
         self.inner.check()
@@ -210,6 +244,20 @@ impl Sandbox for NetSandbox {
     }
 }
 
+/// True when `gh` or `git` appears as a command word (not inside `ghost` or `a-gh`).
+/// Best-effort exposure limiting, not a security control: `echo gh; printenv GH_TOKEN` still
+/// matches. The real protection is output redaction, which covers every networked command.
+fn mentions_gh(cmd: &str) -> bool {
+    let ok = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
+    ["gh", "git"].iter().any(|w| {
+        cmd.match_indices(w).any(|(i, _)| {
+            let before = cmd[..i].chars().next_back();
+            let after = cmd[i + w.len()..].chars().next();
+            before.is_none_or(|c| !ok(c)) && after.is_none_or(|c| !ok(c))
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +279,124 @@ mod tests {
             n.run(&spec(true), &CancelToken::new(), &mut |_| {});
         }
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// #457: a session's copy wraps the inner sandbox's own session sandbox, keeps the network
+    /// decision, and shares the token: one lookup per process, and a later session still
+    /// redacts it.
+    #[test]
+    fn session_copy_wraps_the_inner_session_and_shares_the_token() {
+        struct PerSession(Arc<Echo>);
+        impl Sandbox for PerSession {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
+                Some(self.0.clone())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                vec!["process".into()]
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                panic!("a session must run in its own sandbox")
+            }
+        }
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = calls.clone();
+        let echo = Arc::new(Echo(Mutex::new(Vec::new())));
+        let n =
+            NetSandbox::new(Arc::new(PerSession(echo.clone())), true, false).with_gh_token_lazy(move || {
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some("SYNTH_SESSION_TOKEN".into())
+            });
+        for _ in 0..2 {
+            let s = n.for_session().expect("a session sandbox");
+            assert!(s.network());
+            let r = s.run(&spec(true), &CancelToken::new(), &mut |_| {});
+            let out = String::from_utf8(r.output).unwrap();
+            assert!(!out.contains("SYNTH_SESSION_TOKEN"), "{out}");
+            assert_eq!(echo.0.lock().unwrap().len(), 1);
+            echo.0.lock().unwrap().clear();
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // An inner sandbox without session state: no copy, the process sandbox is shared.
+        let plain = NetSandbox::new(Arc::new(Echo(Mutex::new(Vec::new()))), true, false);
+        assert!(plain.for_session().is_none());
+    }
+
+    #[test]
+    fn git_gets_token_but_lookalikes_do_not_and_output_stays_redacted() {
+        let inner = Arc::new(Echo(Mutex::new(Vec::new())));
+        let sb = NetSandbox::new(inner.clone(), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        let go = |cmd: &str| {
+            let mut sp = spec(true);
+            sp.command = cmd.into();
+            let r = sb.run(&sp, &CancelToken::new(), &mut |_| {});
+            let env = inner.0.lock().unwrap().pop().unwrap();
+            (
+                env.iter().any(|(k, _)| k == "GH_TOKEN"),
+                String::from_utf8(r.output).unwrap(),
+            )
+        };
+        assert!(go("git push origin x").0);
+        assert!(!go("npm install gitignore-parser").0);
+        let (inj, out) = go("curl https://example.invalid");
+        assert!(!inj);
+        assert!(!out.contains("ghp_SECRET123"));
+        // Echo only prints a token it was given; check redaction directly on a leaked value.
+        struct Leak;
+        impl Sandbox for Leak {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                l(b"ghp_SECRET123");
+                ExecResult {
+                    output: b"ghp_SECRET123".to_vec(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let sb = NetSandbox::new(Arc::new(Leak), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        let mut sp = spec(true);
+        sp.command = "cat token.txt".into();
+        let mut live = Vec::new();
+        let r = sb.run(&sp, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+        assert_eq!(String::from_utf8(r.output).unwrap(), "[redacted]");
+        assert_eq!(String::from_utf8(live).unwrap(), "[redacted]");
+    }
+
+    #[test]
+    fn lazy_token_is_redacted_from_a_first_non_gh_networked_command() {
+        struct Leak;
+        impl Sandbox for Leak {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                l(b"ghp_LAZY123");
+                ExecResult {
+                    output: b"ghp_LAZY123".to_vec(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let sb =
+            NetSandbox::new(Arc::new(Leak), true, false).with_gh_token_lazy(|| Some("ghp_LAZY123".into()));
+        let mut sp = spec(true);
+        sp.command = "cat token.txt".into();
+        let mut live = Vec::new();
+        let r = sb.run(&sp, &CancelToken::new(), &mut |b| live.extend_from_slice(b));
+        assert_eq!(String::from_utf8(r.output).unwrap(), "[redacted]");
+        assert_eq!(String::from_utf8(live).unwrap(), "[redacted]");
     }
 
     /// Records the env of each run and answers with the token echoed back.
@@ -324,7 +490,7 @@ mod tests {
 
     fn spec(net: bool) -> ExecSpec {
         ExecSpec {
-            command: "x".into(),
+            command: "gh x".into(),
             cwd: "/".into(),
             writable: true,
             net,
@@ -370,6 +536,24 @@ mod tests {
                 "{env:?}"
             );
             assert_eq!(out, "token is none\n");
+        }
+    }
+
+    #[test]
+    fn token_only_goes_to_gh_commands() {
+        let inner = Arc::new(Echo(Mutex::new(Vec::new())));
+        let sb = NetSandbox::new(inner.clone(), true, false).with_gh_token(Some("ghp_SECRET123".into()));
+        for (cmd, want) in [
+            ("curl https://example.invalid", false),
+            ("npm install ghost", false),
+            ("gh pr list", true),
+            ("cd x && gh api /user | jq", true),
+        ] {
+            let mut sp = spec(true);
+            sp.command = cmd.into();
+            sb.run(&sp, &CancelToken::new(), &mut |_| {});
+            let env = inner.0.lock().unwrap().pop().unwrap();
+            assert_eq!(env.iter().any(|(k, _)| k == "GH_TOKEN"), want, "{cmd}");
         }
     }
 

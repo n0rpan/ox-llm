@@ -79,6 +79,8 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Arc<Recorder>) -> Sessio
         gate: Default::default(),
     });
     let st = SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks: vec![hooks as Arc<dyn Hooks>],
@@ -132,6 +134,7 @@ fn push(st: &mut SessionState, wire: WireMsg) {
         EntryBody::Msg {
             wire,
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append");
