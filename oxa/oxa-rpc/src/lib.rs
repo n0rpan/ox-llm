@@ -19,6 +19,9 @@
 //!   does. stdin close = shutdown.
 #![forbid(unsafe_code)]
 
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+mod a2a_control;
+
 mod client;
 mod cmd_run;
 mod cmd_session;

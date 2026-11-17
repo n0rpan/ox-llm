@@ -38,6 +38,8 @@ pub fn no_tool_alias(flag: &str) -> Option<&'static str> {
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    /// Typed commands admitted by the shared registry; arguments never enter Debug output.
+    Registered(oxa_interactive::command_registry::CommandId, RegistryArgs),
     #[cfg(feature = "share")]
     Share(Vec<String>),
     /// Read the live snapshot of a saved session.
@@ -60,6 +62,19 @@ pub enum Subcommand {
     Wipe(Vec<String>),
     /// Publish a follow-up to a session's file inbox.
     Send(Vec<String>),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RegistryArgs(pub Vec<String>);
+impl std::fmt::Debug for RegistryArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RegistryArgs([redacted])")
+    }
+}
+
+pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
+    use oxa_interactive::command_registry::CommandId;
+    !matches!(id, CommandId::Help | CommandId::WorkStatus | CommandId::WorkBoard)
 }
 
 /// Login words can contain a mistakenly pasted callback. Never expose them
@@ -467,6 +482,27 @@ fn usage(message: impl Into<String>) -> OxaError {
 
 /// The first word of a subcommand. `None` when the word is an ordinary prompt.
 fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaError> {
+    use oxa_interactive::command_registry::{parse_cli, COMMANDS};
+    let words: Vec<_> = std::iter::once(word.to_owned())
+        .chain(rest.iter().cloned())
+        .collect();
+    if let Some(invocation) = parse_cli(&words).filter(|i| registry_owned(i.command.id)) {
+        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
+            && !invocation.args.is_empty()
+        {
+            return Err(usage("registered command arguments are unavailable"));
+        }
+        return Ok(Some(Subcommand::Registered(
+            invocation.command.id,
+            RegistryArgs(invocation.args.to_vec()),
+        )));
+    }
+    if COMMANDS
+        .iter()
+        .any(|entry| registry_owned(entry.id) && entry.path.first() == Some(&word))
+    {
+        return Err(usage("registered command is unavailable on this surface"));
+    }
     Ok(Some(match word {
         "login" => Subcommand::Login(false, LoginArgs(rest.to_vec())),
         "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
@@ -596,14 +632,29 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
         let arg = argv[i].as_str();
         i += 1;
         if !stop && i == 1 && arg == "lead" {
-            a.lead = true;
-            continue;
+            let reserved_child = oxa_interactive::command_registry::COMMANDS.iter().any(|entry| {
+                entry.path.first() == Some(&arg)
+                    && entry
+                        .path
+                        .get(1)
+                        .is_some_and(|part| argv.get(i).map(String::as_str) == Some(*part))
+            });
+            if !reserved_child
+                && argv[i..]
+                    .iter()
+                    .any(|word| word.split('=').next() == Some("--shadow"))
+            {
+                a.lead = true;
+                continue;
+            }
         }
         // These commands accept leading offline switches so their own guards
         // can report the refusal. A prompt, another option or `--` ends that prefix.
         if !stop
             && (i == 1
-                || (matches!(arg, "send" | "work" | "share")
+                || ((matches!(arg, "send" | "work" | "share")
+                    || oxa_interactive::command_registry::parse_cli(&argv[i - 1..])
+                        .is_some_and(|invocation| registry_owned(invocation.command.id)))
                     && argv[..i - 1].iter().all(|word| word == "--offline")))
         {
             if let Some(sub) = subcommand(arg, &argv[i..])? {
@@ -1032,6 +1083,11 @@ pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
     out.push_str("Commands:\n");
     for (left, desc) in COMMANDS {
         out.push_str(&format!("  {left:<36}{desc}\n"));
+    }
+    for entry in oxa_interactive::command_registry::entries(oxa_interactive::command_registry::Surface::Cli)
+        .filter(|entry| registry_owned(entry.id))
+    {
+        out.push_str(&format!("  oxa {:<32}{}\n", entry.path.join(" "), entry.summary));
     }
     out.push_str("\nOptions:\n");
     for (left, desc) in OPTIONS {
