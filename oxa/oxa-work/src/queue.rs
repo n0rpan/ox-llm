@@ -374,6 +374,33 @@ pub fn run_queue(
 mod tests {
     use super::*;
     #[test]
+    fn archiving_an_unadmitted_file_cancels_its_pending_job() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxa-queue-pending-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("task.json");
+        fs::write(
+            &path,
+            r#"[{"id":"queued","branch":"agent/queued","model":"fake","prompt":"Synthetic task"}]"#,
+        )
+        .unwrap();
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        scan(&dir, &mut pending, &mut inputs, &mut |_| Ok(())).unwrap();
+        assert_eq!(pending.len(), 1);
+        fs::rename(&path, dir.join("archived")).unwrap();
+        scan(&dir, &mut pending, &mut inputs, &mut |_| Ok(())).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(pending.is_empty(), "archived input must not be dispatched");
+        assert!(!inputs.tasks.contains_key("queued"));
+    }
+    #[test]
     fn archiving_between_directory_read_and_metadata_is_not_a_controller_error() {
         let dir = std::env::temp_dir().join(format!(
             "oxa-queue-scan-{}-{}",
