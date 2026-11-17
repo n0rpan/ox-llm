@@ -14,10 +14,29 @@ pub enum GoalControl {
     Cancel,
 }
 
+/// Goal status and revision, bound to the owner's full session reference.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GoalObservation<'a> {
+    /// Frontend-private identity. Exclude it from shared summaries.
+    pub session: &'a SessionRef,
+    pub revision: u64,
+    pub status: Option<GoalStatus>,
+}
+
 impl crate::Session {
     /// The saved goal revision, scoped to the owner's current session reference.
     pub fn goal_revision(&self) -> u64 {
         Goal::revision(self.inner().tree.entries())
+    }
+
+    /// Read status and revision together without copying objective or evidence text.
+    /// Use the full reference when comparing observations or requesting a control.
+    pub fn goal_observation(&self) -> GoalObservation<'_> {
+        GoalObservation {
+            session: &self.inner().sref,
+            revision: self.goal_revision(),
+            status: self.inner().goal.as_ref().map(|goal| goal.status()),
+        }
     }
 
     /// Apply a lifecycle request on the idle session owner. The frontend
@@ -68,6 +87,12 @@ impl crate::Session {
                 "The goal revision advanced. Confirm durability before acknowledging the transition.",
             )
         })?;
+        crate::progress::notify(
+            state,
+            crate::Progress::GoalControlCommitted {
+                revision: applied_revision,
+            },
+        );
         result.map_err(|error| {
             OxaError::new("goal_applied_prefix_failed", error.message)
                 .with_hint("The goal transition was saved. Refresh the session prefix before running again.")
@@ -99,7 +124,10 @@ impl GoalRuntime {
         self.lock().goal.clone()
     }
     pub fn pursuing(&self) -> bool {
-        self.lock().goal.status == GoalStatus::Pursuing
+        self.status() == GoalStatus::Pursuing
+    }
+    fn status(&self) -> GoalStatus {
+        self.lock().goal.status
     }
     pub(crate) fn begin(&self, tokens: u64) {
         let mut state = self.lock();

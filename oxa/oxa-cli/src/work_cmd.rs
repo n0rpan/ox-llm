@@ -248,12 +248,29 @@ pub(crate) fn run(
                     .ok_or("no trusted gh executable outside the source project")?;
                     let mut task =
                         oxa_work::issue_task(&root, &gh, &policy.host_path, number, model.clone())?;
-                    task.prompt.insert_str(0, oxa_work::ISSUE_RUNNER_GUIDANCE);
+                    task.prompt.insert_str(0, &oxa_work::github_runner_guidance("issue"));
                     vec![task]
                 }
             }
+            [flag, number, model_flag, model] if flag == "--pr" && model_flag == "--model" => {
+                if oxa_proto::offline() {
+                    return Err("GitHub pull request lookup is unavailable in offline mode".into());
+                }
+                if !is_trusted {
+                    return Err("source project is not trusted; approve it before pull request lookup".into());
+                }
+                let gh = crate::netguard::trusted_executable_for(
+                    "gh",
+                    Some(policy.host_path.as_os_str()),
+                    Some(&root),
+                    Some(&dirs.home),
+                )
+                .ok_or("no trusted gh executable outside the source project")?;
+                let number = number.parse().map_err(|_| "invalid pull request number")?;
+                vec![oxa_work::pull_request_task(&root, &gh, &policy, number, model.clone())?]
+            }
             _ => return Err(
-                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | status [--json]"
+                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | --pr N --model MODEL [--rerun] | status [--json]"
                     .into(),
             ),
         };
