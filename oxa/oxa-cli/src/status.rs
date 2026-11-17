@@ -193,7 +193,7 @@ impl StatusWriter {
         if let Some(billing) = self.billing.as_ref().and_then(|b| b.last_billing()) {
             record["last_billing"] = billing.record();
         }
-        if let Some(engine) = self.local_policy.as_ref().filter(|_| !snapshot.remote) {
+        if let Some(engine) = self.local_policy.as_ref() {
             if let Some(policy) = engine.upgrade().and_then(|e| e.local_memory_policy("")) {
                 record["local_memory_policy"] = policy.into();
             }
