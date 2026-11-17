@@ -325,3 +325,43 @@ fn mock_reply_diagnostics_preserve_wire_flush_and_transfer_truncation() {
         assert_eq!(writer.calls, if truncate { 7 } else { 8 });
     }
 }
+
+/// A peer that closes after a flushed semantic end, before a later HTTP-tail write.
+#[derive(Default)]
+struct CloseOnDoneFlush {
+    bytes: Vec<u8>,
+    closed: bool,
+}
+impl Write for CloseOnDoneFlush {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.closed {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.closed = self
+            .bytes
+            .windows(b"data: [DONE]".len())
+            .any(|w| w == b"data: [DONE]");
+        Ok(())
+    }
+}
+#[test]
+fn mock_finishes_http_before_final_done_flush_can_close_the_peer() {
+    let reply = Reply::raw(200, "text/event-stream", b"data: [DONE]\r\n\r\n".to_vec(), vec![]);
+    let mut peer = CloseOnDoneFlush::default();
+    openai::write_reply(&mut peer, &reply).expect("HTTP framing must be complete at final flush");
+    assert!(peer.closed);
+    assert!(peer.bytes.ends_with(b"\r\n0\r\n\r\n"));
+}
+#[test]
+fn mock_still_rejects_peer_close_before_later_payload_chunks() {
+    let mut body = b"data: [DONE]\r\n\r\n".to_vec();
+    body.extend(std::iter::repeat_n(b'x', 2048));
+    let reply = Reply::raw(200, "text/event-stream", body, vec![]);
+    let failure = openai::write_reply(&mut CloseOnDoneFlush::default(), &reply).unwrap_err();
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(failure.part, Some(openai::ReplyPart::ChunkHeader));
+}
