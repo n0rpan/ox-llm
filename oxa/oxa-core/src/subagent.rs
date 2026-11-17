@@ -282,6 +282,7 @@ impl Default for Config {
 struct Inner {
     oxa_bin: PathBuf,
     agents: Vec<AgentDef>,
+    excluded_tools: Mutex<Vec<String>>,
     config: Mutex<Config>,
     host: Mutex<Option<Arc<dyn Host>>>,
     /// The context window of the session's model, as last learned through the host.
@@ -329,6 +330,7 @@ impl SubagentHooks {
         let inner = Arc::new(Inner {
             oxa_bin,
             agents,
+            excluded_tools: Mutex::new(Vec::new()),
             config: Mutex::new(Config::default()),
             host: Mutex::new(None),
             context_window: Mutex::new(None),
@@ -371,6 +373,12 @@ impl SubagentHooks {
     /// when the child starts (`--standard`, `--auto` or `--yolo`).
     pub fn with_yolo(self, switch: YoloSwitch) -> SubagentHooks {
         *lock(&self.inner.yolo) = Some(switch);
+        self
+    }
+
+    /// Explicit parent exclusions remain denied even when an agent requests those tools.
+    pub fn with_tool_exclusions(self, excluded: Vec<String>) -> SubagentHooks {
+        *lock(&self.inner.excluded_tools) = excluded;
         self
     }
 
@@ -1275,6 +1283,12 @@ impl Run<'_, '_> {
             argv.push("--tools".into());
             argv.push(tools.join(","));
         }
+        let excluded = lock(&self.inner.excluded_tools);
+        if !excluded.is_empty() {
+            argv.push("--exclude-tools".into());
+            argv.push(excluded.join(","));
+        }
+        drop(excluded);
         if !agent.system_prompt.trim().is_empty() {
             argv.push("--append-system-prompt".into());
             argv.push(agent.system_prompt.clone());
