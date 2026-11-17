@@ -5,6 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 mod claims;
 pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, ReleaseRecord};
 pub mod assignment;
+mod intake;
+pub mod landing;
+pub use intake::{ImportState, Issue, Snapshot};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -13,11 +16,13 @@ pub enum Action {
     FixRequiredCi,
     ResolveConflict,
     AddRemoves,
+    BuildIssue,
     PromoteDraft,
     Ready,
     WaitRequiredCi,
     WaitMergeability,
     WaitReview,
+    WaitIssue,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -71,7 +76,16 @@ impl std::fmt::Debug for PullRequest {
 
 /// The adapter must return the complete open-PR snapshot or fail, never a partial page.
 pub trait GitHub {
-    fn open_pull_requests(&mut self) -> crate::Result<Vec<PullRequest>>;
+    fn open_pull_requests(&mut self) -> crate::Result<Vec<PullRequest>> {
+        Err("adapter must implement a complete board snapshot".into())
+    }
+    /// One complete, caller-partitioned PR AND issue intake. Legacy PR adapters remain valid.
+    fn snapshot(&mut self) -> crate::Result<Snapshot> {
+        Ok(Snapshot {
+            pull_requests: self.open_pull_requests()?,
+            issues: vec![],
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -89,7 +103,7 @@ pub fn valid_worker_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 128 && id.split([':', '/']).all(crate::valid_task_id)
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct AttemptState {
     pub utc_day: u64,
     pub attempts: u32,
@@ -114,6 +128,7 @@ impl Default for Policy {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Entry {
     pub number: u64,
+    /// PR head, or frozen issue-source revision for BuildIssue/WaitIssue. Never a fabricated PR.
     pub head: String,
     pub release_pinned: bool,
     pub action: Action,
@@ -121,6 +136,9 @@ pub struct Entry {
     pub attempts_today: u32,
     pub eligible: bool,
 }
+
+/// Maximum open pull requests in a complete repository board observation.
+pub const MAX_OPEN_PULL_REQUESTS: usize = 1_000;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Board {
@@ -145,7 +163,8 @@ impl Board {
             return Ok(board);
         }
         let mut seen = BTreeSet::new();
-        for pr in github.open_pull_requests()? {
+        let snapshot = github.snapshot()?;
+        for pr in snapshot.pull_requests {
             if pr.number == 0 || pr.head.is_empty() || !seen.insert(pr.number) {
                 return Err("invalid or duplicate pull request in board snapshot".into());
             }
@@ -174,25 +193,34 @@ impl Board {
             } else {
                 Action::WaitReview
             };
-            let saved = state.get(&pr.number);
-            let attempts_today = saved
-                .filter(|s| s.utc_day >= now / 86_400)
-                .map_or(0, |s| s.attempts);
-            let lease = saved.and_then(|s| s.lease.clone());
-            let eligible = !matches!(
+            board.entries.push(intake::entry(
+                pr.number,
+                pr.head,
+                pr.release_pinned,
                 action,
-                Action::WaitReview | Action::WaitRequiredCi | Action::WaitMergeability
-            ) && attempts_today < policy.max_attempts_per_day
-                && lease.as_ref().is_none_or(|l| l.expires_at <= now);
-            board.entries.push(Entry {
-                number: pr.number,
-                head: pr.head,
-                release_pinned: pr.release_pinned,
+                state.get(&pr.number),
+                policy,
+                now,
+            ));
+        }
+        for issue in snapshot.issues {
+            if issue.number == 0 || issue.revision.is_empty() || !seen.insert(issue.number) {
+                return Err("invalid or duplicate issue in board snapshot".into());
+            }
+            let action = if issue.approved && !issue.has_open_pull_request {
+                Action::BuildIssue
+            } else {
+                Action::WaitIssue
+            };
+            board.entries.push(intake::entry(
+                issue.number,
+                issue.revision,
+                issue.release_pinned,
                 action,
-                lease,
-                attempts_today,
-                eligible,
-            });
+                state.get(&issue.number),
+                policy,
+                now,
+            ));
         }
         board
             .entries

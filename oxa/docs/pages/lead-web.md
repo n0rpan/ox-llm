@@ -21,14 +21,34 @@ Only a loopback `bind` is accepted: a wider address is a configuration error, an
 the access check refuses any request whose peer is not loopback.
 No provider is enabled implicitly; the shipped unverified adapter always refuses.
 
+The explicit proxy adapter uses user-only `proxy.uid` and `proxy.authority` fields
+inside `oxa.lead.serve`. Authority is configured independently of HTTP headers;
+the accepted loopback stream's kernel owner must match the configured UID before
+its login header can supply identity. Trust applies to every process with that
+UID, so choose a principal dedicated to trusted proxy workloads. The kernel fallback
+UID cannot identify a proxy principal: it can represent unmapped owners.
+This adapter is Linux-only; other platforms refuse before binding. Missing trust also refuses.
+Configuration does not install a listener or deploy a proxy.
+
+Consumer integration must call `proxy::pre_bind` before binding, then
+`proxy::verify` on the actual accepted stream and this request's single login
+header. Reject duplicate/ambiguous identity and Host headers. Pass the resulting
+proof, unchanged login and raw request authority to the existing `read_only`
+boundary. A verification error refuses; it never permits a raw-header fallback.
+The owner must read this producer before any consumer listener or exposure.
+
 After a reviewed listener and trusted proxy adapter are available, configure the
 user layer for your own identity and chosen ports, leaving it off until ready:
 
 ```json
 {"oxa":{"lead":{"serve":{"enabled":false,"identity":"tailscale",
   "bind":"127.0.0.1","port":8743,
-  "allowed_identities":["YOUR_LOGIN_IDENTITY"]}}}}
+  "allowed_identities":["YOUR_LOGIN_IDENTITY"],
+  "proxy":{"uid":12345,"authority":"lead.example.invalid:9448"}}}}}
 ```
+
+The proxy UID and external authority above are synthetic examples. Replace them
+with your trusted proxy principal and the exact authority the browser will send.
 
 Operator guidance for Tailscale Serve (not an oxa command), using ports you selected:
 

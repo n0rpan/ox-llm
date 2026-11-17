@@ -16,6 +16,53 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
     .map_err(|e| e.to_string())
 }
 
+// Keep owner state outside every worker Git bind.
+fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
+    if !storage.is_absolute()
+        || storage
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err("runner storage must have an absolute canonical path".into());
+    }
+    let existing = storage
+        .ancestors()
+        .find(|path| path.exists())
+        .ok_or("runner storage has no existing parent")?;
+    let resolved = existing
+        .canonicalize()
+        .map_err(|_| "cannot resolve runner storage")?
+        .join(
+            storage
+                .strip_prefix(existing)
+                .map_err(|_| "cannot resolve runner storage")?,
+        );
+    let git_repo = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().ok_or("Git directory has no parent")?
+    } else {
+        common
+    };
+    let trees = git_repo
+        .parent()
+        .ok_or("repository has no worktree parent")?
+        .join(".oxa-worktrees")
+        .join(git_repo.file_name().ok_or("repository has no name")?);
+    if resolved.starts_with(repo) || resolved.starts_with(common) || resolved.starts_with(trees) {
+        return Err("runner storage must be outside repositories and task worktrees".into());
+    }
+    for parent in resolved.ancestors() {
+        if parent.join(".git").exists()
+            || (parent.join("HEAD").is_file()
+                && parent.join("config").is_file()
+                && parent.join("objects").is_dir()
+                && parent.join("refs").is_dir())
+        {
+            return Err("runner storage must be outside Git metadata and worktrees".into());
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn run(
     args: &[String],
     cwd: &Path,
@@ -102,6 +149,7 @@ pub(crate) fn run(
             offline: oxa_proto::offline(),
             storage: dirs.agent_dir.join("work").join(key),
         };
+        protected_storage(&policy.storage, &root, &common)?;
         if args.first().is_some_and(|arg| arg == "board") {
             return crate::work_board::run(&args[1..], &root, env, dirs, &policy);
         }
@@ -132,6 +180,28 @@ pub(crate) fn run(
                 }
             }
             return Ok(0);
+        }
+        if let [command, id] = args {
+            if command == "verify" {
+                if !trusted(&root, env, dirs)? {
+                    return Err(
+                        "source project is not trusted; approve it before running saved checks".into(),
+                    );
+                }
+                let verified = oxa_work::verify_saved_task(&root, &binary, &policy, id)?;
+                let record = verified.record();
+                serde_json::to_writer(
+                    &mut *out,
+                    &serde_json::json!({
+                        "type":"oxa_committed_acceptance", "version":1, "task":record.id,
+                        "head_sha":record.head_sha, "tree_sha":record.tree_sha, "base_sha":record.base_sha,
+                        "checked_at_ms":verified.checked_at_ms(),
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+                writeln!(out).map_err(|error| error.to_string())?;
+                return Ok(0);
+            }
         }
         let (mut rerun, mut publish, mut reports) = (false, false, false);
         let mut end = args.len();

@@ -29,9 +29,7 @@ pub struct Worker {
     pub roles: BTreeSet<Role>,
 }
 
-pub fn valid_worker_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 128 && id.split([':', '/']).all(crate::valid_task_id)
-}
+pub use super::valid_worker_id;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
@@ -101,9 +99,11 @@ impl AssignmentPolicy {
     /// A manual pin narrows eligibility; it cannot bypass skills or action authority.
     pub fn allows(&self, worker: &Worker, action: Action) -> bool {
         let base_role = match action {
-            Action::FixFindings | Action::FixRequiredCi | Action::ResolveConflict | Action::AddRemoves => {
-                Role::Builder
-            }
+            Action::FixFindings
+            | Action::FixRequiredCi
+            | Action::ResolveConflict
+            | Action::AddRemoves
+            | Action::BuildIssue => Role::Builder,
             Action::PromoteDraft | Action::Ready => Role::Orchestrator,
             _ => return false,
         };
