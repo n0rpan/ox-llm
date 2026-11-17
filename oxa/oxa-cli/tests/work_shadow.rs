@@ -90,6 +90,36 @@ fn sample(env: &TestEnv, detail: &serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
+fn shared_or_redirected_board_storage_is_refused_before_github() {
+    let mut accepted = Vec::new();
+    for fault in ["readable", "writable", "symlink"] {
+        let (env, _) = fixture();
+        let args = "work board --shadow --repo example/repo --once";
+        assert!(invoke(&env, args).status.success());
+        let log = log_for(&env, "example/repo");
+        let directory = log.parent().unwrap();
+        let before = fs::read(&log).unwrap();
+        let calls = fs::read(env.work().join("gh-calls")).unwrap();
+        if fault == "symlink" {
+            let target = directory.with_file_name("retained-board-storage");
+            fs::rename(directory, &target).unwrap();
+            std::os::unix::fs::symlink(target, directory).unwrap();
+        } else {
+            let mode = if fault == "readable" { 0o755 } else { 0o770 };
+            fs::set_permissions(directory, fs::Permissions::from_mode(mode)).unwrap();
+        }
+        let out = invoke(&env, args);
+        if out.status.success()
+            || fs::read(&log).unwrap() != before
+            || fs::read(env.work().join("gh-calls")).unwrap() != calls
+        {
+            accepted.push(fault);
+        }
+    }
+    assert!(accepted.is_empty(), "unprotected storage accepted: {accepted:?}");
+}
+
+#[test]
 fn real_cli_requires_opt_in_and_offline_never_reads_github() {
     let (env, mut detail) = fixture();
     for args in [
