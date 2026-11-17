@@ -341,7 +341,13 @@ fn write_reply(stream: &mut impl Write, reply: &Reply) -> io::Result<()> {
     // payload and the HTTP tail leave in one write: a client that stops at its
     // own terminal event (an OpenAI-style `[DONE]`) closes the peer as soon as
     // it sees that byte, and a later tail write would be a false failure.
-    let tail: &[u8] = if reply.terminal { b"" } else { b"\r\n0\r\n\r\n" };
+    let tail: &[u8] = if reply.terminal {
+        b""
+    } else if reply.bytes.is_empty() {
+        b"0\r\n\r\n"
+    } else {
+        b"\r\n0\r\n\r\n"
+    };
     write_fragments(stream, &reply.bytes[..split], reply.fragment, false, tail)?;
     if reply.stop_delay >= DEADLINE {
         return Err(io::ErrorKind::InvalidInput.into());
