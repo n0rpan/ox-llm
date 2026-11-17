@@ -328,6 +328,70 @@ fn offline_publication_never_starts_gh_or_push() {
     assert!(!env.home().join("push-calls").exists());
 }
 #[test]
+fn publication_drift_requires_fresh_checks_on_explicit_rerun() {
+    let env = TestEnv::new();
+    setup(&env, r#"["test ! -f later.txt"]"#);
+    let path = configure(&env);
+    let done = run(&env, edits());
+    let tree = PathBuf::from(done["worktree"].as_str().unwrap());
+    fs::write(tree.join("later.txt"), "unchecked\n").unwrap();
+    git(&env, &tree, &["add", "."]);
+    git(
+        &env,
+        &tree,
+        &["commit", "-m", "Synthetic acceptance-breaking drift"],
+    );
+    let blocked = run_args(
+        &env,
+        vec![],
+        &["work", "../tasks.json", "--publish"],
+        Some(path.clone()),
+    );
+    assert_eq!(blocked["step"], "publishing", "{blocked}");
+    let (retry, requests) = work::run_observed(
+        &env,
+        vec![ScriptTurn::text("done"), ScriptTurn::text("done")],
+        &["work", "../tasks.json", "--rerun", "--publish"],
+        Some(path),
+    );
+    assert_eq!(retry["outcome"], "red", "{retry}");
+    assert_eq!(
+        requests.len(),
+        2,
+        "fresh execution plus the existing repair attempt"
+    );
+    assert!(!env.home().join("push-calls").exists());
+}
+
+#[test]
+fn ordinary_run_cannot_reseal_a_failed_publication_checkpoint() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let path = configure(&env);
+    let done = run(&env, edits());
+    let tree = PathBuf::from(done["worktree"].as_str().unwrap());
+    fs::write(tree.join("later.txt"), "unchecked\n").unwrap();
+    git(&env, &tree, &["add", "."]);
+    git(&env, &tree, &["commit", "-m", "Synthetic publication drift"]);
+    let blocked = run_args(
+        &env,
+        vec![],
+        &["work", "../tasks.json", "--publish"],
+        Some(path.clone()),
+    );
+    assert_eq!(blocked["step"], "publishing", "{blocked}");
+    let (retry, requests) = work::run_observed(&env, vec![], &["work", "../tasks.json"], Some(path.clone()));
+    assert_eq!(
+        retry["head_sha"], done["head_sha"],
+        "a normal run cannot certify a new head"
+    );
+    assert!(requests.is_empty());
+    let retry = run_args(&env, vec![], &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(retry["outcome"], "blocked", "{retry}");
+    assert!(!env.home().join("push-calls").exists());
+}
+
+#[test]
 fn branch_drift_after_acceptance_cannot_publish_unchecked_commits() {
     let env = TestEnv::new();
     setup(&env, "[]");
