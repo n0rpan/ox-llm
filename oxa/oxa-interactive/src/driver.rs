@@ -1436,13 +1436,12 @@ impl<'a> Loop<'a> {
             }
             self.editor.set_text("");
             self.editor.add_history(&text);
-            if self.running() {
+            if self.running() && !self.abort_requested {
                 self.handle.follow_up(text);
                 self.wake_queued();
                 self.sync_queue();
             } else {
-                let parts = self.take_attachments();
-                self.send(SessionCmd::Prompt { text, parts });
+                self.send_prompt(text);
             }
             return;
         }
@@ -1715,18 +1714,23 @@ impl<'a> Loop<'a> {
             self.wake_queued();
             self.sync_queue();
         } else {
-            let recovering = std::mem::take(&mut self.abort_requested);
-            let parts = self.take_attachments();
-            self.send(if recovering {
-                SessionCmd::RecoveryPrompt {
-                    handle: self.handle.clone(),
-                    text: trimmed,
-                    parts,
-                }
-            } else {
-                SessionCmd::Prompt { text: trimmed, parts }
-            });
+            self.send_prompt(trimmed);
         }
+    }
+
+    /// Both Enter forms use the same explicit recovery path and retain attachments.
+    fn send_prompt(&mut self, text: String) {
+        let recovering = std::mem::take(&mut self.abort_requested);
+        let parts = self.take_attachments();
+        self.send(if recovering {
+            SessionCmd::RecoveryPrompt {
+                handle: self.handle.clone(),
+                text,
+                parts,
+            }
+        } else {
+            SessionCmd::Prompt { text, parts }
+        });
     }
 
     /// Run a built-in slash command line; `false` when it is not one.
