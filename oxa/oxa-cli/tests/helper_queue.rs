@@ -1,5 +1,5 @@
 use oxa_fake::TestEnv;
-use oxa_work::{board::Policy, queue::publish};
+use oxa_work::{board::Policy, helper_queue::publish};
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 const TASK: &str =
