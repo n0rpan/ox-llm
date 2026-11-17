@@ -96,7 +96,7 @@ impl<'a> Reader<'a> {
             }
             let connection = &page["pullRequests"];
             let total = connection["totalCount"].as_u64().ok_or("missing PR count")?;
-            if total > 1000
+            if total > oxa_work::board::MAX_OPEN_PULL_REQUESTS as u64
                 || connection["totalCount"] != result["pullRequests"]["totalCount"]
                 || page["mergeQueue"] != result["mergeQueue"]
             {
