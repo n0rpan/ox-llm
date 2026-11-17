@@ -131,6 +131,28 @@ fn absent_or_unverified_evidence_never_creates_a_rejection() {
 }
 
 #[test]
+fn impossible_utc_times_do_not_establish_rejection_evidence() {
+    let path = "/p42/timelineItems/nodes/0";
+    let mut invalid_removal = fixture("FAILURE");
+    invalid_removal.pointer_mut(path).unwrap()["createdAt"] = json!("2026-04-31T00:00:01Z");
+
+    let mut invalid_checks = fixture("FAILURE");
+    let runs = invalid_checks
+        .pointer_mut(&format!("{path}/beforeCommit/statusCheckRollup/contexts/nodes"))
+        .unwrap()
+        .as_array_mut()
+        .unwrap();
+    for run in runs.iter_mut().filter(|run| run["__typename"] == "CheckRun") {
+        run["completedAt"] = json!("2025-02-29T00:00:00Z");
+    }
+
+    for inputs in [invalid_removal, invalid_checks] {
+        let evidence = queue::read(&board(), |_| Ok((inputs.clone(), 4096))).unwrap();
+        assert!(evidence.is_empty());
+    }
+}
+
+#[test]
 fn changed_pr_head_refuses_the_snapshot() {
     let mut data = fixture("FAILURE");
     data["p42"]["headRefOid"] = json!(GROUP);
