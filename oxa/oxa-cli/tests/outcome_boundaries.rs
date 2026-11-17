@@ -62,6 +62,9 @@ fn explicit_headless_modes_still_report_argument_errors_as_typed_outcomes() {
         vec!["-p", "--thinking", "invalid"],
         vec!["--mode", "rpc", "--thinking", "invalid"],
         vec!["--mode=json", "--thinking", "invalid"],
+        // #874: the `--output-format` alias is the same mode, so it keeps the same contract.
+        vec!["--output-format", "rpc", "--thinking", "invalid"],
+        vec!["--output-format=json", "--thinking", "invalid"],
     ] {
         let err = argument_error(&args, true);
         let result: Value = err
