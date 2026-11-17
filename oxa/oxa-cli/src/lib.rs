@@ -28,6 +28,7 @@ mod hooks;
 mod identity_cmd;
 mod in_process;
 pub mod lead_access;
+pub mod lead_page;
 mod limits;
 mod login_cmd;
 mod mcp_cmd;
