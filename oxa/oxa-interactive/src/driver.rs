@@ -1405,11 +1405,6 @@ impl<'a> Loop<'a> {
             return;
         }
         if has("app.message.followUp") {
-            if !self.running() {
-                // Idle: Alt+Enter adds a line instead of sending (queueing is for a live run).
-                self.editor.insert("\n");
-                return;
-            }
             let text = self.editor.expanded_text();
             if text.trim().is_empty() {
                 return;
