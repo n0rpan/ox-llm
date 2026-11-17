@@ -32,6 +32,22 @@ pub fn valid_inbox_id(id: &str) -> bool {
 // All subsequent operations are relative to a pinned directory inode. O_NOFOLLOW at each
 // inbox component prevents a symlink from redirecting reads, writes, chmod or watch setup.
 struct Directory(File);
+
+fn sync_directory(file: &File) -> io::Result<()> {
+    #[cfg(test)]
+    {
+        let meta = file.metadata()?;
+        if FAILED_DIRECTORY.with(|target| target.get() == Some((meta.dev(), meta.ino()))) {
+            return Err(io::Error::from_raw_os_error(libc::EIO));
+        }
+    }
+    file.sync_all()
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAILED_DIRECTORY: std::cell::Cell<Option<(u64, u64)>> = const { std::cell::Cell::new(None) };
+}
 impl Directory {
     fn open(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
@@ -140,13 +156,81 @@ pub fn send_inbox(agent_dir: &Path, id: &str, text: &str) -> io::Result<String> 
         file.write_all(text.as_bytes())?;
         file.sync_data()?;
         fs::rename(&temp, ready)?;
-        dir.0.sync_all()?;
+        sync_directory(&dir.0)?;
         Ok(name)
     })();
     if result.is_err() {
         let _ = fs::remove_file(temp);
     }
     result
+}
+
+#[cfg(test)]
+mod durability_tests {
+    use super::*;
+
+    fn fail_sync<T>(path: &Path, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        let meta = fs::metadata(path).unwrap();
+        FAILED_DIRECTORY.with(|target| target.set(Some((meta.dev(), meta.ino()))));
+        let result = operation();
+        FAILED_DIRECTORY.with(|target| target.set(None));
+        result
+    }
+
+    #[test]
+    fn parent_sync_failure_refuses_inbox_publication() {
+        for parent in ["agent-parent", "agent", "inbox"] {
+            let env = oxa_fake::TestEnv::new();
+            let agent = env.work().join("new-agent");
+            let failed = match parent {
+                "agent-parent" => env.work(),
+                "agent" => {
+                    fs::create_dir(&agent).unwrap();
+                    agent.clone()
+                }
+                _ => {
+                    fs::create_dir_all(agent.join("inbox")).unwrap();
+                    agent.join("inbox")
+                }
+            };
+            let result = fail_sync(&failed, || send_inbox(&agent, "session", "synthetic message"));
+            assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EIO), "{parent}");
+            assert_eq!(
+                Inbox::take(&agent, "session").unwrap(),
+                None,
+                "no publication after failed {parent} sync"
+            );
+            // A failed mkdir-sync may have left a directory behind: retry must sync it too.
+            let result = fail_sync(&failed, || send_inbox(&agent, "session", "retry"));
+            assert_eq!(
+                result.unwrap_err().raw_os_error(),
+                Some(libc::EIO),
+                "retry {parent}"
+            );
+            let id = send_inbox(&agent, "session", "recovered").unwrap();
+            assert_eq!(
+                Inbox::take(&agent, "session").unwrap(),
+                Some((id.clone(), "recovered".into()))
+            );
+            assert!(Inbox::receipt(&agent, "session", &id).unwrap());
+        }
+    }
+
+    #[test]
+    fn parent_sync_failure_cannot_acknowledge_pickup() {
+        let env = oxa_fake::TestEnv::new();
+        let id = send_inbox(&env.agent_dir(), "session", "pending").unwrap();
+        let result = fail_sync(&env.agent_dir().join("inbox"), || {
+            Inbox::take(&env.agent_dir(), "session")
+        });
+        assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EIO));
+        assert!(!Inbox::receipt(&env.agent_dir(), "session", &id).unwrap());
+        assert_eq!(
+            Inbox::take(&env.agent_dir(), "session").unwrap(),
+            Some((id.clone(), "pending".into()))
+        );
+        assert!(Inbox::receipt(&env.agent_dir(), "session", &id).unwrap());
+    }
 }
 
 /// Owns the event-driven receiver. Dropping it wakes and joins its thread, so an old

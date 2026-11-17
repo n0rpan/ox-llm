@@ -119,9 +119,9 @@ impl Inbox {
                 .open(&temp)?;
             marker.sync_all()?;
             fs::rename(&temp, dir.path().join(format!("{id}.taken")))?;
-            dir.0.sync_all()?;
+            sync_directory(&dir.0)?;
             fs::remove_file(path)?;
-            dir.0.sync_all()?;
+            sync_directory(&dir.0)?;
             Ok(Some((id, text)))
         })();
         if result.is_err() {
