@@ -145,7 +145,6 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
-            Subcommand::LeadServe(words) => crate::lead_web::run(&words, &dirs, env, &mut *stdout),
             #[cfg(feature = "share")]
             Subcommand::Share(words) => {
                 // Env::get treats empty values as unset; owner-command policy

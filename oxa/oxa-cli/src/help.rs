@@ -20,12 +20,6 @@ pub struct Entry {
 
 const BASE: &[Entry] = &[
     Entry {
-        path: &["lead", "serve"],
-        summary: "Serve the owner-only lead web endpoint through Tailscale Serve",
-        usage: &["oxa lead serve --enable-web"],
-        example: "oxa lead serve --enable-web",
-    },
-    Entry {
         path: &["help"],
         summary: "Show help for a command and exit",
         usage: &["oxa help [command]"],
