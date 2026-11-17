@@ -220,3 +220,26 @@ fn queue_clones_serialize_concurrent_engine_work() {
     assert_eq!(queue.waiting(), 0);
     assert!(queue.try_acquire().is_ok());
 }
+
+#[test]
+fn queued_owner_runs_before_guest_without_preempting_active_guest() {
+    let queue = RequestQueue::new(3);
+    let active_guest = queue.try_acquire().unwrap();
+    let mut guest = Box::pin(queue.acquire());
+    let mut first_owner = Box::pin(queue.acquire());
+    let mut second_owner = Box::pin(queue.acquire());
+
+    assert!(poll(guest.as_mut()).is_pending());
+    assert!(poll(first_owner.as_mut()).is_pending());
+    assert!(poll(second_owner.as_mut()).is_pending());
+
+    drop(active_guest);
+    assert!(poll(guest.as_mut()).is_pending());
+    assert!(poll(second_owner.as_mut()).is_pending());
+    let first = ready(poll(first_owner.as_mut())).unwrap();
+    drop(first);
+    assert!(poll(guest.as_mut()).is_pending());
+    let second = ready(poll(second_owner.as_mut())).unwrap();
+    drop(second);
+    assert!(ready(poll(guest.as_mut())).is_ok());
+}
