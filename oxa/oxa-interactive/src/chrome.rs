@@ -1,6 +1,6 @@
 //! D6: footer, header and title.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{footer.ts,status-indicator.ts,keybinding-hints.ts}
-use crate::{Activity, StatusModel, ViewModel};
+use crate::{subagent_detail, Activity, StatusModel, ViewModel};
 use oxa_config::Keymap;
 use oxa_tui::{truncate_to_width, visible_width, Theme};
 
@@ -310,14 +310,17 @@ pub fn activity_text(status: &StatusModel) -> Option<String> {
         Activity::Prefill { done, total, secs } => Some(format!("Prefill {done}/{total} ({secs}s)")),
         Activity::Thinking | Activity::Streaming => Some(working("Working...".to_string())),
         Activity::Tool(name) => Some(working(format!("Running {name}..."))),
+        Activity::Subagent(s) => Some(working(format!("Subagent {}...", subagent_detail(s)))),
         Activity::Compacting => Some("Compacting...".to_string()),
         Activity::Retrying {
             attempt,
             max_attempts,
             delay_ms,
+            reason,
         } => {
             let secs = delay_ms.div_ceil(1000);
-            Some(format!("Retrying in {secs}s ({attempt}/{max_attempts})"))
+            let why = reason.map(|r| format!(": {r}")).unwrap_or_default();
+            Some(format!("Retrying in {secs}s ({attempt}/{max_attempts}){why}"))
         }
         Activity::Blocked => Some("Waiting for input...".to_string()),
         Activity::Queued { .. } => queued_text(&status.activity),

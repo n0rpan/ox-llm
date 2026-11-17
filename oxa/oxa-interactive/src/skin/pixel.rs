@@ -28,6 +28,8 @@ pub enum PixelState {
     Write,
     /// A tool runs; the index of its crate icon.
     Tool(u8),
+    /// A `subagent` call runs (#871); how many children it reports (1..=3).
+    Agents(u8),
     Compact,
     /// Prefill progress in sixteenths.
     Prefill(u8),
@@ -78,6 +80,10 @@ pub fn pixel_key(st: &StatusModel, run: &ArcadeRun, cells: usize) -> Option<Pixe
                     let index = ICON_CHARS.chars().position(|c| c == icon).unwrap_or(8);
                     (PixelState::Tool(index as u8), f % 8)
                 }
+                Activity::Subagent(s) => (
+                    PixelState::Agents(s.children.unwrap_or(1).clamp(1, 3) as u8),
+                    f % 8,
+                ),
                 Activity::Compacting => (PixelState::Compact, f % 8),
                 Activity::Prefill { done, total, .. } => {
                     let step = if *total > 0 {
@@ -390,6 +396,26 @@ pub fn pixel_frame(key: PixelKey, theme: &Theme, scale: u32) -> PixelImage {
                 coin(&mut c, &p, crate_x + 14, GROUND - 9 - (step - 2) * 4, f);
             }
         }
+        // A subagent: the ox butts one crate per child it reports (#871).
+        PixelState::Agents(children) => {
+            backdrop(&mut c, &p, 0, f);
+            let step = f / 2 % 4;
+            let lunge = [0, 5, 9, 4][step as usize];
+            for k in 0..i32::from(children.clamp(1, 3)) {
+                let x = 6 + OX_W + 9 + k * 16;
+                if x + 14 < wi {
+                    tool_crate(&mut c, &p, x, 6);
+                }
+            }
+            ox(
+                &mut c,
+                &p,
+                6 + lunge,
+                0,
+                if step == 0 { 0 } else { 1 + step as usize % 3 },
+                false,
+            );
+        }
         // Compacting: blocks are pushed into the save chip; its light answers.
         PixelState::Compact => {
             backdrop(&mut c, &p, 0, f);
@@ -565,7 +591,7 @@ pub fn oxa_pixel_line(
         let (how, _) = run.finish?;
         return Some(finish_line(lead, how, run, width, theme, skin));
     }
-    if run.coins > 0 && matches!(key.state, PixelState::Tool(_)) {
+    if run.coins > 0 && matches!(key.state, PixelState::Tool(_) | PixelState::Agents(_)) {
         let coins = format!("{}{}", glyphs(skin).diamond, run.coins.min(999));
         lead.push_str(&format!(" {}", theme.fg("warning", &coins)));
     }

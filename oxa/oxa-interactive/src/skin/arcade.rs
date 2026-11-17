@@ -12,7 +12,7 @@
 //!   elements with `Skin::Oxa`, plain ASCII with `Skin::OxaAscii`; a plain theme (`NO_COLOR`,
 //!   `TERM=dumb`) and `ui.animation = "off"` give the static badge and no scene at all.
 //! * No sound, ever.
-use super::chrome::{activity_line_lead, activity_style};
+use super::chrome::{activity_line_lead, activity_style, elapsed_text};
 use super::{badge, glyphs, oxa_activity_line_with, SPRITE_FRAME_MS};
 use crate::{Activity, Block, Skin, StatusModel};
 use oxa_config::Keymap;
@@ -109,6 +109,9 @@ pub struct ArcadeRun {
     /// The closing scene and the milliseconds it has been showing; `None` while a run is in
     /// progress and once the closing scene is over.
     pub finish: Option<(Finish, u64)>,
+    /// How long the run took, once it ended (#871): the closing line reports it. `None` while
+    /// the run is in progress.
+    pub elapsed_ms: Option<u64>,
 }
 
 /// How long the closing scene shows.
@@ -121,6 +124,10 @@ pub struct ArcadeState {
     coins: u32,
     was_running: bool,
     finish: Option<(Finish, u64)>,
+    /// When the current run started (`observe`'s `now_ms`), for the elapsed time.
+    started: Option<u64>,
+    /// How long the last run took, once it ended.
+    elapsed_ms: Option<u64>,
 }
 
 impl ArcadeState {
@@ -130,6 +137,8 @@ impl ArcadeState {
     pub fn observe(&mut self, running: bool, blocks: &[Block], now_ms: u64) {
         if running && !self.was_running {
             self.finish = None;
+            self.started = Some(now_ms);
+            self.elapsed_ms = None;
         }
         if running || self.was_running {
             let calls = blocks
@@ -142,6 +151,7 @@ impl ArcadeState {
         }
         if !running && self.was_running {
             self.finish = finish_of(blocks.last()).map(|f| (f, now_ms));
+            self.elapsed_ms = self.started.map(|s| now_ms.saturating_sub(s));
         }
         self.was_running = running;
     }
@@ -155,6 +165,7 @@ impl ArcadeState {
         ArcadeRun {
             coins: self.coins,
             finish,
+            elapsed_ms: self.elapsed_ms,
         }
     }
 
@@ -409,6 +420,19 @@ fn tool_crate(c: &mut Canvas, x: usize, name: &str, ascii: bool, art: &Art) {
     c.put(x + 2, art.crate_r, Ink::Crate);
 }
 
+/// One crate per child of a `subagent` call (#871), starting at `x0` and as many as the row
+/// holds; a plain tool draws exactly one crate, so the two states never look alike.
+fn child_crates(c: &mut Canvas, x0: usize, children: Option<u32>, ascii: bool, art: &Art) {
+    let n = children.unwrap_or(1).clamp(1, 3) as usize;
+    for i in 0..n {
+        let x = x0 + 3 * i;
+        if x + 2 >= c.len {
+            break;
+        }
+        tool_crate(c, x, crate::SUBAGENT_TOOL, ascii, art);
+    }
+}
+
 /// The charging ox, by activity.
 fn charge(c: &mut Canvas, st: &StatusModel, run: &ArcadeRun, f: u64, ascii: bool, art: &Art) {
     let w = c.len;
@@ -450,6 +474,14 @@ fn charge(c: &mut Canvas, st: &StatusModel, run: &ArcadeRun, f: u64, ascii: bool
             let lunge = usize::from(step == 1 || step == 2);
             let knocked = usize::from(step == 2 && w >= 12);
             tool_crate(c, 5 + knocked, name, ascii, art);
+            ox(c, lunge, f, art);
+            coins(c, run.coins, art);
+        }
+        // A subagent: the ox butts one crate per child it reports (#871).
+        Activity::Subagent(s) => {
+            let step = f % 4;
+            let lunge = usize::from(step == 1 || step == 2);
+            child_crates(c, 5, s.children, ascii, art);
             ox(c, lunge, f, art);
             coins(c, run.coins, art);
         }
@@ -534,6 +566,13 @@ fn stars(c: &mut Canvas, st: &StatusModel, run: &ArcadeRun, f: u64, ascii: bool,
             tool_crate(c, 5, name, ascii, art);
             coins(c, run.coins, art);
         }
+        Activity::Subagent(s) => {
+            // Docked at the children's station, one crate each (#871).
+            let dock = usize::from(f % 4 < 2);
+            c.text(2 + dock, art.ship, Ink::Hero);
+            child_crates(c, 5, s.children, ascii, art);
+            coins(c, run.coins, art);
+        }
         _ => {
             let bob = usize::from(f / 4 % 2 == 1);
             c.put(0, ' ', Ink::Dim);
@@ -545,10 +584,14 @@ fn stars(c: &mut Canvas, st: &StatusModel, run: &ArcadeRun, f: u64, ascii: bool,
 /// The stacking columns.
 fn stack(c: &mut Canvas, st: &StatusModel, run: &ArcadeRun, f: u64, ascii: bool, art: &Art) {
     let tool = match &st.activity {
-        Activity::Tool(name) => Some(name),
+        Activity::Tool(name) => Some(name.as_str()),
         _ => None,
     };
-    let cols = if tool.is_some() {
+    let children = match &st.activity {
+        Activity::Subagent(s) => Some(s.children),
+        _ => None,
+    };
+    let cols = if tool.is_some() || children.is_some() {
         c.len
             .saturating_sub(if run.coins > 0 && c.len >= 12 { 7 } else { 4 })
     } else {
@@ -577,6 +620,9 @@ fn stack(c: &mut Canvas, st: &StatusModel, run: &ArcadeRun, f: u64, ascii: bool,
     }
     if let Some(name) = tool {
         tool_crate(c, cols + 1, name, ascii, art);
+        coins(c, run.coins, art);
+    } else if let Some(children) = children {
+        child_crates(c, cols + 1, children, ascii, art);
         coins(c, run.coins, art);
     }
 }
@@ -622,7 +668,7 @@ pub fn arcade_scene(
     // The states only the ox has a picture for play as the charge scene everywhere.
     let own = matches!(
         st.activity,
-        Activity::Thinking | Activity::Streaming | Activity::Tool(_)
+        Activity::Thinking | Activity::Streaming | Activity::Tool(_) | Activity::Subagent(_)
     );
     match scene {
         ArcadeScene::Stars if own => stars(&mut c, st, run, f, ascii, art),
@@ -632,8 +678,8 @@ pub fn arcade_scene(
     Some(c.paint(token, st.yolo, theme))
 }
 
-/// The closing line behind `lead` (a scene, already styled): the `CLEAR` / `FAILED` badge and
-/// the coins of the run.
+/// The closing line behind `lead` (a scene, already styled): the `CLEAR` / `FAILED` badge, the
+/// coins of the run and how long it took (#871).
 pub(super) fn finish_line(
     lead: String,
     how: Finish,
@@ -655,6 +701,9 @@ pub(super) fn finish_line(
             theme.fg("warning", &format!("{}{}", g.diamond, run.coins)),
             theme.fg("muted", tools)
         ));
+    }
+    if let Some(elapsed) = run.elapsed_ms.and_then(elapsed_text) {
+        line.push_str(&format!("  {}", theme.fg("muted", &elapsed)));
     }
     truncate_to_width(&line, usize::from(width), "...")
 }

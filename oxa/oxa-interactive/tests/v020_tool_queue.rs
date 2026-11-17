@@ -218,6 +218,7 @@ fn a_batch_of_four_shows_its_size_and_every_pending_call_before_the_first_result
         &ArcadeRun {
             coins: 4,
             finish: None,
+            elapsed_ms: None,
         },
         100,
         &theme,

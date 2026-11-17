@@ -36,6 +36,7 @@ fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 const RUN: ArcadeRun = ArcadeRun {
     coins: 3,
     finish: None,
+    elapsed_ms: None,
 };
 
 fn line(
@@ -238,6 +239,7 @@ fn golden_activity_line_with_the_pixel_scene() {
     let done = ArcadeRun {
         coins: 3,
         finish: Some((Finish::Clear, 0)),
+        elapsed_ms: None,
     };
     let l = line(&status(Activity::Idle, 0), &done, 80, &mut stage, &mut out).expect("a line");
     assert_eq!(strip_ansi(&l), format!(" {row}  CLEAR   ◆3 tools"));
@@ -399,6 +401,7 @@ fn every_state_has_its_own_moving_picture() {
                 attempt: 1,
                 max_attempts: 3,
                 delay_ms: 100,
+                reason: None,
             },
             4,
         ),
@@ -444,6 +447,7 @@ fn every_state_has_its_own_moving_picture() {
         let run = ArcadeRun {
             coins: 1,
             finish: Some((Finish::Clear, ms)),
+            elapsed_ms: None,
         };
         pixel_key(&status(Activity::Idle, 0), &run, 12).map(|k| (k.state, k.frame))
     };
@@ -507,6 +511,7 @@ fn pixel_cost_and_previews() {
     let done = |how: Finish, f: u64| ArcadeRun {
         coins: 3,
         finish: Some((how, f * SPRITE_FRAME_MS)),
+        elapsed_ms: None,
     };
     let mut shots: Vec<(String, StatusModel, ArcadeRun)> = Vec::new();
     for (name, activity, picks) in [
@@ -531,6 +536,7 @@ fn pixel_cost_and_previews() {
                 attempt: 1,
                 max_attempts: 3,
                 delay_ms: 0,
+                reason: None,
             },
             vec![0, 1],
         ),

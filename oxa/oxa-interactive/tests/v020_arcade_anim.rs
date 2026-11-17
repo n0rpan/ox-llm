@@ -40,6 +40,7 @@ fn activities() -> Vec<Activity> {
             attempt: 1,
             max_attempts: 3,
             delay_ms: 2000,
+            reason: None,
         },
         Activity::Queued {
             pos: Some(2),
@@ -52,6 +53,7 @@ const SCENES: [ArcadeScene; 3] = [ArcadeScene::Charge, ArcadeScene::Stars, Arcad
 const RUN: ArcadeRun = ArcadeRun {
     coins: 3,
     finish: None,
+    elapsed_ms: None,
 };
 
 /// The frames `0..n` of a scene, unstyled, each between bars.
@@ -186,6 +188,7 @@ fn golden_frames_of_the_charging_ox() {
             attempt: 1,
             max_attempts: 3,
             delay_ms: 2000,
+            reason: None,
         },
         Skin::Oxa,
         12,
@@ -366,6 +369,7 @@ fn golden_frames_in_ascii() {
             attempt: 1,
             max_attempts: 3,
             delay_ms: 2000,
+            reason: None,
         },
         Skin::OxaAscii,
         12,
@@ -554,6 +558,7 @@ fn golden_closing_scenes() {
         let run = ArcadeRun {
             coins,
             finish: Some((how, frame * SPRITE_FRAME_MS)),
+            elapsed_ms: None,
         };
         strip_ansi(&line(&st, Animation::Arcade, &run, 80, &colour(), skin).unwrap_or_default())
     };
@@ -587,6 +592,7 @@ fn golden_closing_scenes() {
     let done = ArcadeRun {
         coins: 3,
         finish: Some((Finish::Clear, 0)),
+        elapsed_ms: None,
     };
     assert!(line(&st, Animation::Off, &done, 80, &colour(), Skin::Oxa).is_none());
     assert!(line(&st, Animation::Minimal, &done, 80, &colour(), Skin::Oxa).is_none());
@@ -675,6 +681,7 @@ fn a_tool_has_its_crate_and_the_run_its_coins() {
         let run = ArcadeRun {
             coins: n,
             finish: None,
+            elapsed_ms: None,
         };
         let row = arcade_scene(
             ArcadeScene::Charge,

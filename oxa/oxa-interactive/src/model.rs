@@ -149,12 +149,17 @@ pub enum Activity {
     Streaming,
     /// A tool runs; carries the tool name.
     Tool(String),
+    /// A `subagent` call runs (#871): the children it reports and what the running one does.
+    /// All of it comes from the tool's own progress lines, bounded and single-line; the
+    /// call's arguments never reach the screen.
+    Subagent(SubagentProgress),
     Compacting,
-    /// Waiting to retry; attempt and delay.
+    /// Waiting to retry; attempt, delay and the bounded reason ([`retry_reason`]).
     Retrying {
         attempt: u32,
         max_attempts: u32,
         delay_ms: u64,
+        reason: Option<&'static str>,
     },
     /// A dialog waits for the user.
     Blocked,
@@ -165,6 +170,108 @@ pub enum Activity {
         pos: Option<u32>,
         wait_s: u32,
     },
+}
+
+/// The tool name of the builtin subagent call (`oxa_tools::descriptions::subagent::NAME`,
+/// spelled here so this crate keeps no dependency on the tools crate).
+pub const SUBAGENT_TOOL: &str = "subagent";
+
+/// What a running `subagent` call reports (#871), read from the tool's own progress block:
+/// the lines `subagent 1/2 <agent>: <activity>`, `subagent 2/2, queued` and
+/// `subagent 1/2 <agent>: done`. Every part is bounded and single-line.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SubagentProgress {
+    /// The child agent's name, when its progress line names one.
+    pub name: Option<String>,
+    /// What the running child reports ("running", "reading a file").
+    pub progress: Option<String>,
+    /// How many children the call reports (`n` of `k/n`); `None` when it does not say.
+    pub children: Option<u32>,
+}
+
+/// The longest child name and progress text kept for display: the line is truncated to the
+/// terminal anyway, and a chatty child must not grow the view model.
+const SUBAGENT_NAME_MAX: usize = 24;
+const SUBAGENT_PROGRESS_MAX: usize = 48;
+
+/// One line, at most `max` characters, control characters replaced by spaces.
+fn bounded(text: &str, max: usize) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .take(max)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// The children a `subagent` call reports, read from the tool's progress block (#871). Only
+/// the first (running) line is read; anything that does not look like a progress line is kept
+/// as the progress text.
+pub fn subagent_progress(partial: &str) -> SubagentProgress {
+    let Some(line) = partial.lines().map(str::trim).find(|l| !l.is_empty()) else {
+        return SubagentProgress::default();
+    };
+    let Some(rest) = line.strip_prefix("subagent ") else {
+        return SubagentProgress {
+            progress: Some(bounded(line, SUBAGENT_PROGRESS_MAX)),
+            ..SubagentProgress::default()
+        };
+    };
+    // `k/n` first, then either ` <agent>: <activity>` or `, <state>`.
+    let (count, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+    let children = count
+        .trim_end_matches(',')
+        .split_once('/')
+        .and_then(|(_, n)| n.trim().parse::<u32>().ok());
+    let rest = rest.trim();
+    match rest.split_once(':') {
+        Some((name, activity)) => SubagentProgress {
+            name: Some(bounded(name, SUBAGENT_NAME_MAX)),
+            progress: Some(bounded(activity, SUBAGENT_PROGRESS_MAX)),
+            children,
+        },
+        None => SubagentProgress {
+            progress: Some(bounded(
+                rest.trim_start_matches(',').trim(),
+                SUBAGENT_PROGRESS_MAX,
+            )),
+            children,
+            ..SubagentProgress::default()
+        },
+    }
+}
+
+/// The detail text of a subagent activity: `agent: activity`, whichever part is known.
+pub fn subagent_detail(s: &SubagentProgress) -> String {
+    match (s.name.as_deref(), s.progress.as_deref()) {
+        (Some(name), Some(progress)) => format!("{name}: {progress}"),
+        (Some(name), None) => name.to_string(),
+        (None, Some(progress)) => progress.to_string(),
+        (None, None) => "running".to_string(),
+    }
+}
+
+/// A bounded reason for a retry, classified from the retry event's message (#871): only known
+/// phrases map to one of these fixed labels, so a provider's own text, URL or key never
+/// reaches the screen. The messages are the ones the engine layer really produces, hint
+/// included (`the engine answered HTTP 503: ...` + `the engine is busy (its queue is full)`).
+pub fn retry_reason(message: &str) -> &'static str {
+    let m = message.to_ascii_lowercase();
+    if m.contains("429") || m.contains("rate limit") {
+        "rate limited"
+    } else if m.contains("503") || m.contains("queue") || m.contains("busy") {
+        "engine busy"
+    } else if m.contains("http 5") {
+        "engine error"
+    } else if m.contains("timed out") || m.contains("timeout") {
+        "timeout"
+    } else if m.contains("credential") {
+        "credentials"
+    } else if m.contains("stream") || m.contains("connection") || m.contains("reset") || m.contains("reach") {
+        "connection lost"
+    } else {
+        "transient error"
+    }
 }
 
 impl StatusModel {

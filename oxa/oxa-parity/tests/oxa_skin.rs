@@ -3,8 +3,9 @@
 //! (`oxa_parity::pty` sets `OXA_SKIN=pi`); these tests set `OXA_SKIN=oxa`.
 //! Build the binaries first: `cargo build -p oxa-cli -p oxa-fake`.
 #![cfg(target_os = "linux")]
-use oxa_fake::{parse_script, FakeOpts, FakeServer, TestEnv};
+use oxa_fake::{parse_script, FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use oxa_parity::pty::{PtyOpts, PtySession, Screen};
+use serde_json::json;
 use std::time::Duration;
 
 const REPLY: &str = "PONG from the fake engine";
@@ -55,6 +56,32 @@ fn start(extra_env: &[(&str, &str)], fake: FakeOpts) -> Rig {
         r#"{"oxa":{"bootPreload":false}}"#,
     );
     start_in(env, extra_env, fake)
+}
+
+/// [`start_in`] with a script of its own (the #871 receipts need a fault and a tool call).
+fn start_script(env: TestEnv, extra_env: &[(&str, &str)], script: Vec<ScriptTurn>, fake: FakeOpts) -> Rig {
+    let server = FakeServer::start(script, fake).expect("start fake engine");
+    let mut vars = vec![
+        ("OXA_SKIN".to_string(), "oxa".to_string()),
+        ("LANG".to_string(), "C.UTF-8".to_string()),
+    ];
+    vars.extend(extra_env.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    let pty = PtySession::spawn_with(
+        &env,
+        &server.url(),
+        &[],
+        PtyOpts {
+            size: (30, 110),
+            env: vars,
+            ..PtyOpts::default()
+        },
+    );
+    pty.wait_ready().unwrap();
+    Rig {
+        pty,
+        _server: server,
+        env,
+    }
 }
 
 fn splash_on(s: &Screen) -> bool {
@@ -334,6 +361,89 @@ fn desktop_theme_change_repaints_a_running_session() {
         before,
         "the logo is drawn in the new accent"
     );
+}
+
+/// #871: a retry names a bounded reason next to its attempt and delay, in the real UI.
+#[test]
+fn a_retry_names_its_reason_on_screen() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"bootPreload":false}}"#,
+    );
+    let rig = start_script(
+        env,
+        &[],
+        vec![
+            ScriptTurn::fault(Fault::Busy { retry_after: Some(3) }),
+            ScriptTurn::text(REPLY),
+        ],
+        FakeOpts::default(),
+    );
+    rig.pty.wait_for_text("● READY").unwrap();
+    rig.pty.send_text("ping");
+    rig.pty.send_key("enter");
+    let retrying = rig
+        .pty
+        .wait_for_named("the retry line", |s| s.contains("RETRY"), WAIT)
+        .unwrap();
+    let row = retrying
+        .find_row("RETRY")
+        .map(|r| retrying.row(r))
+        .expect("the retry row");
+    assert!(row.contains("1/3"), "the attempt and its cap: {row:?}");
+    assert!(row.contains("in 3s"), "the wait: {row:?}");
+    assert!(row.contains("engine busy"), "the bounded reason: {row:?}");
+    assert!(
+        !row.contains("queue_full") && !row.contains("Too many requests"),
+        "no provider text: {row:?}"
+    );
+    rig.pty.wait_for_text(REPLY).unwrap();
+}
+
+/// #871: a `subagent` call is its own activity, with the child's name on screen.
+#[test]
+fn a_subagent_call_shows_the_child_on_screen() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"bootPreload":false}}"#,
+    );
+    env.write(
+        "home/.oxa/agent/agents/scout.md",
+        "---\nname: scout\ndescription: Looks around\ntools: read\n---\nYou are a scout.\n",
+    );
+    let rig = start_script(
+        env,
+        &[],
+        vec![
+            ScriptTurn::tool(
+                "sub_1",
+                "subagent",
+                &json!({"tasks": [{"agent": "scout", "task": "look around"}]}).to_string(),
+            ),
+            ScriptTurn::text("child done"),
+            ScriptTurn::text(REPLY),
+        ],
+        FakeOpts {
+            // The child's request is held, so its progress line stays on screen.
+            hold_headers_ms: 2500,
+            ..FakeOpts::default()
+        },
+    );
+    rig.pty.wait_for_text("● READY").unwrap();
+    rig.pty.send_text("ping");
+    rig.pty.send_key("enter");
+    let running = rig
+        .pty
+        .wait_for_named("the subagent line", |s| s.contains("AGENTS"), WAIT)
+        .unwrap();
+    let row = running
+        .find_row("AGENTS")
+        .map(|r| running.row(r))
+        .expect("the subagent row");
+    assert!(row.contains("scout"), "the child's name: {row:?}");
+    rig.pty.wait_for_text(REPLY).unwrap();
 }
 
 /// The process ends cleanly with the palette watch active (there is no watcher thread to

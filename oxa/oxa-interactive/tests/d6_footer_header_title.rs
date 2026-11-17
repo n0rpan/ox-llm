@@ -277,6 +277,7 @@ fn activity_text_states() {
         attempt: 1,
         max_attempts: 3,
         delay_ms: 1500,
+        reason: None,
     };
     assert_eq!(activity_text(&st).as_deref(), Some("Retrying in 2s (1/3)"));
     st.activity = Activity::Compacting;

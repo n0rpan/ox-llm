@@ -182,6 +182,8 @@ pub enum Sprite {
     Write,
     /// A tool runs (also prefill, compaction, retry, queue): the ox walks.
     Work,
+    /// A `subagent` call runs (#871): the ox and the children it spawns, one dot each.
+    Agents,
     /// YOLO is on: flames.
     Fire,
 }
@@ -206,6 +208,8 @@ const WORK_FRAMES: [&str; 8] = [
     "▟█▛   ",
 ];
 const FIRE_FRAMES: [&str; 6] = ["▁▃▅▇▅▃", "▃▅▇▅▃▁", "▅▇▅▃▁▃", "▇▅▃▁▃▅", "▅▃▁▃▅▇", "▃▁▃▅▇▅"];
+/// A `subagent` call (#871): the ox, then one dot per child it reports, up to three.
+const AGENTS_FRAMES: [&str; 6] = ["▜█▙▪  ", "▜█▙▪▪ ", "▜█▙▪▪▪", "▜█▙▪▪ ", "▜█▙▪  ", "▜█▙▪▪ "];
 
 /// The frame of `sprite` after `ms` milliseconds of the current activity.
 pub fn sprite_frame(sprite: Sprite, ms: u64) -> &'static str {
@@ -213,6 +217,7 @@ pub fn sprite_frame(sprite: Sprite, ms: u64) -> &'static str {
         Sprite::Think => &THINK_FRAMES,
         Sprite::Write => &WRITE_FRAMES,
         Sprite::Work => &WORK_FRAMES,
+        Sprite::Agents => &AGENTS_FRAMES,
         Sprite::Fire => &FIRE_FRAMES,
     };
     let index = (ms / SPRITE_FRAME_MS) as usize % frames.len().max(1);

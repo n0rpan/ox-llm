@@ -79,6 +79,7 @@ fn all_activities() -> Vec<Activity> {
             attempt: 2,
             max_attempts: 3,
             delay_ms: 1500,
+            reason: None,
         },
         Activity::Blocked,
         Activity::Queued {
@@ -658,6 +659,7 @@ fn activity_details() {
                 attempt: 2,
                 max_attempts: 3,
                 delay_ms: 1500,
+                reason: None,
             },
             0,
         ),

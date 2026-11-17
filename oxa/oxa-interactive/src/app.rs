@@ -2,8 +2,9 @@
 // ported from pi packages/coding-agent/src/modes/interactive/interactive-mode.ts
 use crate::driver::Loop;
 use crate::{
-    render_block, Activity, Block, ImageRef, InteractiveOpts, Reopen, ReopenFn, SessionCmd, SessionInfo,
-    StatusModel, ToolBlock, ToolState, UiProxy, UiRequest, ViewCx, ViewModel, ViewSettings, WorkerMsg,
+    render_block, retry_reason, subagent_progress, Activity, Block, ImageRef, InteractiveOpts, Reopen,
+    ReopenFn, SessionCmd, SessionInfo, StatusModel, SubagentProgress, ToolBlock, ToolState, UiProxy,
+    UiRequest, ViewCx, ViewModel, ViewSettings, WorkerMsg, SUBAGENT_TOOL,
 };
 use oxa_config::Keymap;
 use oxa_core::{expand_input, Expanded, Handle, OverCap, Session, State, Stats, SwitchPlan};
@@ -864,7 +865,11 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             tool_name,
             args,
         } => {
-            vm.status.activity = Activity::Tool(tool_name.clone());
+            vm.status.activity = if tool_name == SUBAGENT_TOOL {
+                Activity::Subagent(SubagentProgress::default())
+            } else {
+                Activity::Tool(tool_name.clone())
+            };
             match tool_index(vm, tool_call_id) {
                 Some(i) => {
                     if let Block::Tool(t) = &mut vm.blocks[i] {
@@ -886,19 +891,26 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             tool_name,
             args,
             partial,
-        } => match tool_index(vm, tool_call_id) {
-            Some(i) => {
-                if let Block::Tool(t) = &mut vm.blocks[i] {
+        } => {
+            // #871: the subagent tool's progress block is its child status; keep it as the
+            // activity's bounded name and progress, not as raw tool output.
+            if tool_name == SUBAGENT_TOOL {
+                vm.status.activity = Activity::Subagent(subagent_progress(partial));
+            }
+            match tool_index(vm, tool_call_id) {
+                Some(i) => {
+                    if let Block::Tool(t) = &mut vm.blocks[i] {
+                        t.partial = partial.clone();
+                        t.state = ToolState::Running;
+                    }
+                }
+                None => {
+                    let mut t = new_tool(tool_call_id, tool_name, args.clone(), ToolState::Running);
                     t.partial = partial.clone();
-                    t.state = ToolState::Running;
+                    vm.blocks.push(Block::Tool(t));
                 }
             }
-            None => {
-                let mut t = new_tool(tool_call_id, tool_name, args.clone(), ToolState::Running);
-                t.partial = partial.clone();
-                vm.blocks.push(Block::Tool(t));
-            }
-        },
+        }
         AgentEvent::ToolExecutionEnd {
             tool_call_id,
             tool_name,
@@ -928,10 +940,17 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             }
             // Calls of one reply may run side by side: while another one runs, a tool runs.
             let running = vm.blocks.iter().rev().find_map(|b| match b {
-                Block::Tool(t) if t.state == ToolState::Running => Some(t.name.clone()),
+                Block::Tool(t) if t.state == ToolState::Running => Some((t.name.clone(), t.partial.clone())),
                 _ => None,
             });
-            vm.status.activity = running.map_or(Activity::Thinking, Activity::Tool);
+            vm.status.activity = match running {
+                // #871: a subagent that is still running keeps its own state and progress.
+                Some((name, partial)) if name == SUBAGENT_TOOL => {
+                    Activity::Subagent(subagent_progress(&partial))
+                }
+                Some((name, _)) => Activity::Tool(name),
+                None => Activity::Thinking,
+            };
         }
         AgentEvent::CompactionStart { .. } => vm.status.activity = Activity::Compacting,
         AgentEvent::CompactionEnd {
@@ -966,12 +985,16 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             attempt,
             max_attempts,
             delay_ms,
+            error_message,
             ..
         } => {
+            // #871: the retry line names the reason, classified from the event's message so
+            // the provider's own text (and any key in it) never reaches the screen.
             vm.status.activity = Activity::Retrying {
                 attempt: *attempt,
                 max_attempts: *max_attempts,
                 delay_ms: *delay_ms,
+                reason: Some(retry_reason(error_message)),
             };
             vm.status.activity_ms = 0;
         }

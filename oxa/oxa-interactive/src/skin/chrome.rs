@@ -1,6 +1,6 @@
 //! U2: the chrome of the OXA skin: splash, HUD line, hint bar, activity line, window title.
 //! Spec: OXA-UI-DESIGN.md sec. 4.
-use crate::{Activity, HeaderInfo, Skin, StatusModel, ViewModel};
+use crate::{subagent_detail, Activity, HeaderInfo, Skin, StatusModel, ViewModel};
 use oxa_config::Keymap;
 use oxa_tui::{truncate_to_width, visible_width, Theme};
 
@@ -590,6 +590,7 @@ fn activity_sprite(st: &StatusModel) -> Option<Sprite> {
         Activity::Idle | Activity::Blocked => None,
         Activity::Thinking => Some(Sprite::Think),
         Activity::Streaming => Some(Sprite::Write),
+        Activity::Subagent(_) => Some(Sprite::Agents),
         _ => Some(Sprite::Work),
     }
 }
@@ -667,6 +668,7 @@ pub(super) fn activity_style(activity: &Activity) -> Option<(&'static str, &'sta
         Activity::Thinking => ("THINKING", "thinkingHigh"),
         Activity::Streaming => ("WRITING", "accent"),
         Activity::Tool(_) => ("TOOL", "warning"),
+        Activity::Subagent(_) => ("AGENTS", "accent"),
         Activity::Compacting => ("COMPACTING", "accent"),
         Activity::Retrying { .. } => ("RETRY", "warning"),
         Activity::Blocked => ("WAITING", "warning"),
@@ -690,14 +692,19 @@ fn activity_detail(activity: &Activity, working: Option<&str>, g: &Glyphs) -> Op
         }
         Activity::Thinking | Activity::Streaming => working,
         Activity::Tool(name) => working.or_else(|| clean_opt(Some(name))),
+        Activity::Subagent(s) => Some(subagent_detail(s)),
         Activity::Retrying {
             attempt,
             max_attempts,
             delay_ms,
-        } => Some(format!(
-            "{attempt}/{max_attempts} in {}s",
-            delay_ms.div_ceil(1000)
-        )),
+            reason,
+        } => {
+            let mut detail = format!("{attempt}/{max_attempts} in {}s", delay_ms.div_ceil(1000));
+            if let Some(reason) = reason {
+                detail.push_str(&format!(" {} {reason}", g.mid));
+            }
+            Some(detail)
+        }
         Activity::Blocked => Some("for your answer".to_string()),
         Activity::Queued { pos: Some(pos), .. } => Some(format!("#{pos}")),
         Activity::Queued { pos: None, .. } => None,
@@ -705,7 +712,7 @@ fn activity_detail(activity: &Activity, working: Option<&str>, g: &Glyphs) -> Op
 }
 
 /// `<n>s` from 1 s, `<m>m<ss>s` from 60 s; `None` under 1 s.
-fn elapsed_text(ms: u64) -> Option<String> {
+pub(super) fn elapsed_text(ms: u64) -> Option<String> {
     let secs = ms / 1000;
     if secs == 0 {
         None
