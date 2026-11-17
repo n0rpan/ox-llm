@@ -881,8 +881,12 @@ fn prepare(
         no_tools: a.no_tools,
         default_edits: settings.default_tools_edits(),
     };
-    let status = (!a.no_session).then(|| Arc::new(crate::status::StatusWriter::new(a.stall_timeout)));
-    let result_facts = Arc::new(crate::result_facts::ResultFacts::new(status.clone()));
+    let status = (!a.no_session).then(|| {
+        Arc::new(crate::status::StatusWriter::new(a.stall_timeout).with_billing(cloud_diagnostics.clone()))
+    });
+    let result_facts = Arc::new(
+        crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
+    );
     let built = Built {
         status,
         result_facts,

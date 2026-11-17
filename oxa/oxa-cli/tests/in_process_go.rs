@@ -203,6 +203,126 @@ fn native_go_plus_usage_on_finish_settles_subscription() {
     mock.assert_healthy();
 }
 #[test]
+fn native_go_records_bounded_plan_labels_in_usage_and_status() {
+    for (source, expected) in [
+        (json!("go"), "go"),
+        (json!("go-plus"), "go-plus"),
+        (json!("future-plan"), "future-plan"),
+        (json!("bad plan"), "unknown"),
+        (json!(CREDENTIAL), "unknown"),
+        (Value::Null, "unknown"),
+        (json!("x".repeat(33)), "unknown"),
+    ] {
+        check_go_billing(source, expected, 0.0, true);
+    }
+}
+#[test]
+fn native_go_paid_balance_settles_cost_and_caps_new_process() {
+    check_go_billing(json!("balance"), "balance", 0.01, true);
+}
+#[test]
+fn native_go_subcent_paid_cost_reaches_exact_cap_after_restart() {
+    check_go_billing(json!("balance"), "balance", 4e-9, true);
+}
+#[test]
+fn native_go_paid_byok_without_usd_cap_keeps_existing_admission() {
+    check_go_billing(json!("byok"), "byok", 0.01, false);
+}
+fn check_go_billing(source: Value, expected: &str, cost: f64, cap: bool) {
+    let env = TestEnv::new();
+    let mut final_usage = usage();
+    final_usage["opencode"]["billing_source"] = source;
+    final_usage["cost"] = json!(cost);
+    let mock = MockOpenAi::start_with(|base| {
+        let reply = || {
+            terminal_frames(
+                &[
+                    json!({"choices":[{"index":0,"delta":{"content":"Synthetic billing result"},"finish_reason":"stop"}],"usage":final_usage}),
+                ],
+                true,
+            )
+        };
+        vec![
+            Reply::json(discovery(base)),
+            reply(),
+            Reply::json(discovery(base)),
+            reply(),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    if cap {
+        settings["oxa"]["cloud"]["daily_budget_usd"] = json!(if cost > 0.0 { cost } else { 0.01 });
+    }
+    fs::write(path, settings.to_string()).unwrap();
+    let output = run(&env, &["--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["opencode"]["billing_source"], expected);
+    assert_eq!(ledger[0]["cost_usd"], cost);
+    assert_eq!(ledger[0]["settled"], "usage");
+    let last = &terminal(&output)["last_billing"];
+    assert_eq!(last["plan"], expected);
+    assert_eq!(last["cost_usd"], cost);
+    assert_eq!(
+        last["display"],
+        if cost > 0.0 {
+            format!("billed USD {cost:.2}")
+        } else {
+            format!("plan {expected}")
+        }
+    );
+    let session = terminal(&output)["session_id"].as_str().unwrap().to_string();
+    let status = run(&env, &["status", &session]);
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["last_billing"], *last);
+
+    assert_eq!(
+        ledger[0]["billing"],
+        if cost > 0.0 { "metered" } else { "subscription" }
+    );
+    if cost > 0.0 && cap {
+        let next = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic next request"],
+        );
+        assert_eq!(terminal(&next)["error_class"], "budget_exhausted");
+        assert_eq!(mock.requests().len(), 3);
+        assert_eq!(rows(&env)[0]["cost_usd"], cost);
+    } else if cost > 0.0 {
+        let next = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic next request"],
+        );
+        assert_eq!(
+            next.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&next.stderr)
+        );
+        assert_eq!(mock.requests().len(), 4);
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 2);
+        assert_eq!(ledger[0]["cost_usd"], cost);
+        assert_eq!(ledger[1]["cost_usd"], cost);
+    } else {
+        assert_eq!(mock.requests().len(), 2);
+    }
+    mock.assert_healthy();
+}
+#[test]
 fn region_and_rate_refusals_stay_typed_without_paid_fallback() {
     for (status,message,expected) in [(400,"Model is hosted outside Europe and the United States; https://example.invalid/workspaces/synthetic","region_blocked"),
         (429,"Synthetic subscription allowance exhausted","cloud_rate_limited")] {
@@ -1525,8 +1645,8 @@ fn go_private_terminal_usage_record_invalid() {
     for mutation in 0..6 {
         let mut invalid = usage();
         match mutation {
-            0 => invalid["opencode"]["billing_source"] = json!("synthetic-private-frame"),
-            1 => invalid["cost"] = json!(1),
+            0 => invalid["cost"] = json!("synthetic-private-frame"),
+            1 => invalid["cost"] = json!(-1),
             2 => invalid["opencode"]["allowance"] = json!("synthetic-private-frame"),
             3 => {
                 invalid.as_object_mut().unwrap().remove("prompt_tokens");
