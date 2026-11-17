@@ -201,6 +201,11 @@ pub trait Engine: Send + Sync {
     /// target's, read before its first request even when it is not loaded
     /// (`EngineInfo::limits_for` says which). Never loads a model.
     fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError>;
+    /// Observed local child policy without I/O; empty model means the resident child.
+    /// Remote engines return None.
+    fn local_memory_status(&self, _model: &str) -> Option<(u32, &'static str, u64)> {
+        None
+    }
     /// One warning line when the server advertises a newer protocol than this oxa understands,
     /// or lacks a capability oxa expects, as read by the last [`Engine::info`] (no request of
     /// its own). `None` = nothing to say, or an engine that does not check.
