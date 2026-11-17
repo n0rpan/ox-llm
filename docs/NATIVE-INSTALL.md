@@ -1,7 +1,8 @@
 # Native v0.2.1 install and upgrade
 
 v0.2.1 is the Rust-only release target tracked by [#763](https://github.com/oxstack/ox-llm/issues/763).
-Its model runtime is `oxa` plus `oxe-server`: no Python runtime, controller
+Its model runtime is `oxa` plus `oxe-server`, with the approved native
+`local-ai-memlat-boot` utility and inert MEMLAT templates: no Python runtime, controller
 daemon, `oxc` command wrapper or service on port 8092. Release qualification and
 publication are separate owner steps; this guide does not declare an unpublished
 candidate ready. v0.2.0 remains the legacy install.
@@ -127,8 +128,7 @@ stale token backup over a refreshed record or delete user data to switch version
 LAN sharing, panel, Studio/images, the lead layer and a controller/HTTP daemon are
 outside v0.2.1. See [release qualification and upgrade boundary](https://github.com/oxstack/ox-llm/blob/main/docs/RELEASE.md#v021-rust-only-upgrade-boundary).
 
-If the selected artifact includes native MEMLAT tooling or templates, those
-templates remain inert data under `/usr/share/ox-llm/memlat/`. This upgrade does
-not activate hooks, install a service, change boot defaults or write to the ESP.
-Activation is a separate owner operation; consult the selected artifact's
-manifest for its exact utility payload.
+The approved native `local-ai-memlat-boot` utility is retained. The four MEMLAT
+hook/script templates ship as inert data under `/usr/share/ox-llm/memlat/`.
+This upgrade does not activate hooks, install a service, change boot defaults or
+write to the ESP. Activation is a separate owner operation.
