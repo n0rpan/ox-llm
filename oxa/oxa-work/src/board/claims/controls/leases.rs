@@ -36,6 +36,33 @@ impl Claims {
         })
     }
 
+    /// Retain the original queue receipt after idle reservation and before publication.
+    /// Holds only the Claims directory lock through the exact-lease comparison and
+    /// durable save. The caller may hold the spool lock for the full publication.
+    pub fn retain_queue_receipt(&self, number: u64, worker_id: &str, key: &str, lease: &Lease) -> Result<()> {
+        if !valid_queue_key(key) || !valid_worker_id(worker_id) || worker_id != lease.holder {
+            return Err("invalid board queue receipt or authenticated worker".into());
+        }
+        let _lock = self.lock(number)?;
+        let mut row = self.load(number)?;
+        if row.state.lease.as_ref() != Some(lease) {
+            return Err("board queue lease changed before receipt retention".into());
+        }
+        match row.data.queue_admission.as_ref() {
+            Some(QueueAdmission::Reserved) => {}
+            Some(QueueAdmission::Retained {
+                key: retained_key,
+                lease: retained_lease,
+            }) if retained_key == key && retained_lease == lease => return Ok(()),
+            _ => return Err("board queue admission did not reserve this receipt".into()),
+        }
+        row.data.queue_admission = Some(QueueAdmission::Retained {
+            key: key.into(),
+            lease: lease.clone(),
+        });
+        self.save(number, row, true)
+    }
+
     /// The trusted worker frontend supplies identity; knowing a lease is not authority to release it.
     pub fn release_for(
         &self,
@@ -94,6 +121,7 @@ impl Claims {
         if lease.claimed_at.is_none_or(|at| at > now) {
             return Err("board release clock moved backwards".into());
         }
+        row.data.queue_admission = None;
         row.data.last_release = Some(ReleaseRecord {
             holder: lease.holder,
             released_at: now,

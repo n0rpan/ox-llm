@@ -15,6 +15,31 @@ pub struct AssignmentData {
     pub import_hold: bool,
     #[serde(default)]
     pub last_release: Option<ReleaseRecord>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_admission: Option<QueueAdmission>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QueueAdmission {
+    Reserved,
+    Retained { key: String, lease: Lease },
+}
+
+fn valid_queue_key(key: &str) -> bool {
+    key.len() == 64
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+impl QueueAdmission {
+    pub(super) fn matches_lease(&self, current: Option<&Lease>) -> bool {
+        match self {
+            Self::Reserved => current.is_some(),
+            Self::Retained { key, lease } => valid_queue_key(key) && current == Some(lease),
+        }
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -95,7 +120,7 @@ impl Claims {
         for entry in &mut board.entries {
             if assignments
                 .get(&entry.number)
-                .is_some_and(|row| row.data.import_hold)
+                .is_some_and(|row| row.data.import_hold || row.data.queue_admission.is_some())
             {
                 entry.eligible = false;
             }
@@ -191,7 +216,11 @@ impl Claims {
                 return Ok(false);
             }
             let controls = row.data.policy.get_or_insert_with(AssignmentPolicy::default);
-            Ok(controls.allows(worker, entry.action))
+            if !controls.allows(worker, entry.action) {
+                return Ok(false);
+            }
+            row.data.queue_admission = Some(QueueAdmission::Reserved);
+            Ok(true)
         })
     }
 }
