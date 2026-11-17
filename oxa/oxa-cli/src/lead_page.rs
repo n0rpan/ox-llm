@@ -63,7 +63,7 @@ pub fn document(view: &View<'_>, now: u64) -> String {
 
 /// Allow-listed HTML fragment, also used by SSE. No worktrees, sessions, errors or headers.
 pub fn content(view: &View<'_>, now: u64) -> String {
-    let mut html = String::from("<main id=main tabindex=-1><h1>Status</h1>");
+    let mut html = String::from("<main><h1 id=main tabindex=-1>Status</h1>");
     let ask_count = view.situation.map_or(0, |s| s.asks.len());
     let overdue: Vec<_> = view
         .queue
