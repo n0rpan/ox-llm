@@ -8,12 +8,17 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+mod controls;
+pub use controls::{Assignment, AssignmentBoard, AssignmentData};
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Saved {
     version: u8,
     number: u64,
     state: AttemptState,
+    #[serde(default)]
+    data: AssignmentData,
 }
 
 fn io<T>(value: std::io::Result<T>) -> Result<T> {
@@ -83,13 +88,18 @@ impl Claims {
 
     /// First access to a PR counts. A state file lost after a marker exists is still
     /// corruption, so a vanished marker must not reset the cap by faking a first access.
-    fn load(&self, number: u64) -> Result<AttemptState> {
+    fn load(&self, number: u64) -> Result<Saved> {
         let path = self.path(number);
         let created = self.root.join(format!("{number}.board-claim.created"));
         match fs::symlink_metadata(&path) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return match fs::symlink_metadata(&created) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AttemptState::default()),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Saved {
+                        version: 1,
+                        number,
+                        state: AttemptState::default(),
+                        data: AssignmentData::default(),
+                    }),
                     Ok(_) => Err("board claim state is missing; recovery is required".into()),
                     Err(e) => io(Err(e)),
                 };
@@ -115,16 +125,19 @@ impl Claims {
         {
             return Err("invalid board claim identity or lease".into());
         }
-        Ok(saved.state)
+        Ok(saved)
     }
 
-    fn save(&self, number: u64, state: AttemptState, replacing: bool) -> Result<()> {
-        let bytes = serde_json::to_vec(&Saved {
-            version: 1,
-            number,
-            state,
-        })
-        .map_err(|_| "cannot encode board claim state")?;
+    fn save(&self, number: u64, mut saved: Saved, replacing: bool) -> Result<()> {
+        saved.data.revision = saved
+            .data
+            .revision
+            .checked_add(1)
+            .ok_or("assignment revision exhausted")?;
+        let bytes = serde_json::to_vec(&saved).map_err(|_| "cannot encode board claim state")?;
+        if bytes.len() > 4096 {
+            return Err("board claim file exceeds capacity".into());
+        }
         crate::checkpoint::write_atomic(&self.path(number), &bytes, replacing)
             .map_err(|_| "cannot durably reserve board claim".into())
     }
@@ -141,7 +154,7 @@ impl Claims {
     }
 
     /// Atomic replacements permit a coherent per-PR read without taking execution leases.
-    pub fn snapshot(&self) -> Result<BTreeMap<u64, AttemptState>> {
+    fn rows(&self) -> Result<BTreeMap<u64, Saved>> {
         Self::open(&self.root)?;
         let lock = io(File::open(&self.root))?;
         io(lock.lock())?;
@@ -164,6 +177,14 @@ impl Claims {
         Ok(states)
     }
 
+    pub fn snapshot(&self) -> Result<BTreeMap<u64, AttemptState>> {
+        Ok(self
+            .rows()?
+            .into_iter()
+            .map(|(number, row)| (number, row.state))
+            .collect())
+    }
+
     /// Reserve before dispatch. A crash after reservation consumes an attempt conservatively.
     /// The caller must use a fresh GitHub entry and revalidate its head before external effects.
     pub fn claim(
@@ -174,6 +195,20 @@ impl Claims {
         now: u64,
         ttl: u64,
     ) -> Result<Option<Lease>> {
+        self.claim_checked(entry, policy, holder, (now, ttl), |row| {
+            Ok(row.data.policy.is_none())
+        })
+    }
+
+    fn claim_checked(
+        &self,
+        entry: &Entry,
+        policy: &Policy,
+        holder: &str,
+        timing: (u64, u64),
+        authorize: impl FnOnce(&mut Saved) -> Result<bool>,
+    ) -> Result<Option<Lease>> {
+        let (now, ttl) = timing;
         if !policy.enabled
             || policy.max_attempts_per_day == 0
             || !entry.eligible
@@ -192,7 +227,11 @@ impl Claims {
             return Err("invalid board claim request".into());
         }
         let _lock = self.lock(entry.number)?;
-        let mut state = self.load(entry.number)?;
+        let mut row = self.load(entry.number)?;
+        if !authorize(&mut row)? {
+            return Ok(None);
+        }
+        let state = &mut row.state;
         let day = now / 86_400;
         if state.utc_day > day {
             return Err("board claim clock moved backwards".into());
@@ -219,7 +258,7 @@ impl Claims {
         };
         state.lease = Some(lease.clone());
         let replacing = self.established(entry.number)?;
-        self.save(entry.number, state, replacing)?;
+        self.save(entry.number, row, replacing)?;
         self.mark(entry.number)?;
         Ok(Some(lease))
     }
@@ -252,12 +291,12 @@ impl Claims {
             Ok(_) => {}
         }
         let _lock = self.lock(number)?;
-        let mut state = self.load(number)?;
-        if state.lease.as_ref() != Some(lease) {
+        let mut row = self.load(number)?;
+        if row.state.lease.as_ref() != Some(lease) {
             return Ok(false);
         }
-        state.lease = None;
-        self.save(number, state, true)?;
+        row.state.lease = None;
+        self.save(number, row, true)?;
         Ok(true)
     }
 }
