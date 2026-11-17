@@ -47,9 +47,30 @@ Price refresh (#628) and owner LAN controls (#688) remain MISSING but excluded f
 
 Remaining deletion users differ from release blockers: controller CI and the two contract runners retain Python mocks; tiny_real retains benchmark/conversion tooling; the MEMLAT differential retains its Python oracle. Preserve these until their actual consumers are replaced. Synthetic path fixtures are not imports. The native packaging candidate still consumes four inert MEMLAT templates and a license under oxc/; those non-Python paths do not imply a runtime Python dependency. No module is classified UNUSED from a caller search alone.
 
+## Python alert-file retirement audit
+
+At source `7e6e4b04`, the historical Python alert rows 5–13 in [the tracked triage](security/code-scanning-triage.md) identify **four unique files**, including the extensionless Studio entry point. The worker App cannot read current alert state (403); this maps the recorded IDs, not a new open-alert export or security verdict. These rows authorize no deletion or dismissal.
+
+| File / bounded feature | Recorded alerts | Status | Replacement or retirement evidence; remaining deletion gate |
+|---|---|---|---|
+| `oxc/src/oxc/runtime/ctl_http.py` — legacy default controller HTTP front | 5 | DROPPED | [#681](https://github.com/oxstack/ox-llm/issues/681) / [#763](https://github.com/oxstack/ox-llm/issues/763) retire the Python controller daemon from the native default; [retirement index](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6955874053). This does not claim that in-process providers implement HTTP Host/Origin/CORS parity. `controller.py` and Python cloud/mock tests still import the front; qualify retained contracts before deleting it. The existing `oxc/tests/test_openai_api.py::KeyAndCors::test_cors_never_echoes_a_line_break_into_a_header` covers the earlier #479 fix, not Rust replacement or a fresh alert verdict. |
+| `oxc/src/oxc/runtime/studio` — HTTP/UI/job/image pipeline | 11, 12, 13 | MISSING | [Module blocker #1118](https://github.com/oxstack/ox-llm/issues/1118). #681 says rebuilt later; release exclusion is not permanent feature retirement. Native image executables alone do not replace the application. The legacy Studio unit, package-data declaration, `test_controller_behaviour.py` and `test_studio_*` still consume it. No native application parity receipt is established here. |
+| `oxc/tools/session_replay.py` — HTTP recording, equal-work replay, comparison and summaries | 8, 9, 10 | MISSING | [Module blocker #1119](https://github.com/oxstack/ox-llm/issues/1119). `test_session_replay.py`, `test_session_replay_output_proof.py` and `oxc/docs/HARNESSES.md` retain this workflow. Native conversation continuation is not an equal-work recording/replay replacement. Preserve the retained contracts or record explicit retirement before deletion. |
+| `oxc/tools/interim/recording_proxy.py` — metadata recorder and listener-ownership helpers | 6, 7 | MISSING | [Module blocker #1120](https://github.com/oxstack/ox-llm/issues/1120). `oxc/tools/interim/real_use_session.py`, `test_interim_adapters.py` and `test_explore1_observer.py` import it. These executable callers prevent UNUSED; no equivalent Rust consumer/test receipt was identified. |
+
+MISSING blocks only the named module's deletion. None of these four files is marked PORTED or UNUSED, and none is deleted. The separate module blockers do not add a v0.2.1 feature promise.
+
+### Installed payload versus build-source archive
+
+Current inspected #824 source is `84f1928bf627ec555e22a59e6f0f9c25fff4f17e`. Its `packaging/release/stage.py` stages three native commands, four inert MEMLAT templates, licenses and the native guide; it does not stage any of the four alert files. That staging blob matches executed source `2f84770eddd55e1443b412b70fa67636c804f7e7` (SHA-256 `8ce2f62c2631d1b089882d194dbb80ec811b63e5096ecccda4b1674d48f66901`).
+
+The [four-boundary artifact receipt](https://github.com/oxstack/ox-llm/pull/824#issuecomment-6954487105) binds runtime tarballs and both Arch variants to **2f84770e**: each inherited proof passed 15/15, native payload/manifests were checked, and Arch runtime dependencies exclude Python. [Run 44121115282](https://github.com/oxstack/ox-llm/actions/runs/44121115282) nevertheless ended FAILURE on separate real-scope setup. This is historical installed-payload evidence, not qualification of the newer 84f1928b artifact or the whole release.
+
+The same release workflow also creates a full `git archive HEAD` build-source tarball. A source-only archive inventory at 84f1928b includes **all four alert files**. Therefore neither “absent from every release artifact” nor “alerts fixed by removal” is established. Fresh exact-head artifact qualification remains with #824; repository-source remediation/removal remains with #951 / #477.
+
 ## Complete module inventory awaiting feature-level qualification
 
-Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The three provider modules, two MEMLAT modules and explicitly retired installer/bootstrap modules already mapped above are omitted here. Partial-feature rows do not qualify a whole module. Extensionless entry points oxc/src/oxc/runtime/oxc and studio also need explicit launcher/feature rows.
+Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The provider, MEMLAT, retired installer/bootstrap and alert-file rows already mapped above are omitted here. Partial-feature rows do not qualify a whole module. The extensionless entry point oxc/src/oxc/runtime/oxc still needs an explicit launcher/feature row; Studio is tracked by #1118 above.
 
 - `oxc/benchmarks/classic/loopback_bridge.py`
 - `oxc/benchmarks/classic/screen.py`
@@ -98,7 +119,6 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/src/oxc/runtime/ctl_engines.py`
 - `oxc/src/oxc/runtime/ctl_env.py`
 - `oxc/src/oxc/runtime/ctl_host.py`
-- `oxc/src/oxc/runtime/ctl_http.py`
 - `oxc/src/oxc/runtime/ctl_lease.py`
 - `oxc/src/oxc/runtime/ctl_lifecycle.py`
 - `oxc/src/oxc/runtime/ctl_manager.py`
@@ -364,7 +384,6 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/tools/interim/flash_smoke.py`
 - `oxc/tools/interim/keepwarm_fixture.py`
 - `oxc/tools/interim/real_use_session.py`
-- `oxc/tools/interim/recording_proxy.py`
 - `oxc/tools/interim/rehearse_interim.py`
 - `oxc/tools/interim/soak_slope.py`
 - `oxc/tools/interim/thermal_aa.py`
@@ -386,7 +405,6 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/tools/run_synthetic_screen.py`
 - `oxc/tools/scrub_receipts.py`
 - `oxc/tools/session_history_stability.py`
-- `oxc/tools/session_replay.py`
 - `oxc/tools/stage_rollback_guard.py`
 - `oxc/tools/stage_shared.py`
 - `oxc/tools/stage_sources.py`
