@@ -354,6 +354,12 @@ pub fn report_notes(
 ) -> Result<Record> {
     let (mut writer, lock, mut value) = context(task, policy, observer)?;
     let prior_step = value.record.step;
+    // Reporting is ancillary: a failed save/publication remains recoverable even
+    // if reporting is interrupted between durable report receipts.
+    let reporting_step = match prior_step {
+        Step::Saving | Step::Publishing => prior_step,
+        _ => Step::Reporting,
+    };
     for index in 0..value.record.problem_notes.len() {
         if value
             .record
@@ -363,7 +369,7 @@ pub fn report_notes(
         {
             continue;
         }
-        writer.save(&mut value, Step::Reporting, observer)?;
+        writer.save(&mut value, reporting_step, observer)?;
         let report =
             reporter(&value.record.problem_notes[index], &lock, policy.offline).unwrap_or_else(|detail| {
                 super::ReportRecord {
@@ -378,12 +384,12 @@ pub fn report_notes(
         } else {
             value.record.reports.push(report);
         }
-        writer.save(&mut value, Step::Reporting, observer)?;
+        writer.save(&mut value, reporting_step, observer)?;
     }
     writer.save(
         &mut value,
-        if prior_step == Step::Publishing {
-            Step::Publishing
+        if matches!(prior_step, Step::Saving | Step::Publishing) {
+            prior_step
         } else {
             Step::Finished
         },

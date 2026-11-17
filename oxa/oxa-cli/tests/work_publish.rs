@@ -116,6 +116,13 @@ fn a_real_save_failure_retries_without_another_worker() {
             first.worker.as_ref().unwrap().outcome,
             oxa_work::WorkerOutcome::Done
         ));
+        let reported =
+            oxa_work::report_notes(&task, &policy, &|_: &oxa_work::Record| Ok(()), &mut |_, _, _| {
+                panic!("no notes were emitted by this worker")
+            })
+            .unwrap();
+        assert_eq!(reported.step, oxa_work::Step::Saving, "{reported:?}");
+        assert_eq!(reported.session_id, first.session_id);
         fs::remove_file(lock_path.into_inner().unwrap().unwrap()).unwrap();
         let plan = oxa_work::plan_task_for_run(&project, task, &policy, false).unwrap();
         let retry = oxa_work::run_task_with_policy(&project, binary, &plan, &policy).unwrap();
