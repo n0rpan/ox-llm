@@ -1570,7 +1570,12 @@ async fn codex_shaped_refresh_without_expires_in_is_stored_before_forwarding() {
 #[tokio::test]
 async fn optional_refresh_rotation_preserves_the_grant_before_forwarding() {
     for rejected in [false, true] {
-        for rotation in [None, Some(Value::Null), Some(json!("")), Some(json!("synthetic-next-refresh"))] {
+        for rotation in [
+            None,
+            Some(Value::Null),
+            Some(json!("")),
+            Some(json!("synthetic-next-refresh")),
+        ] {
             let fixture = Fixture::new();
             let path = fixture.token_path(rejected);
             let expected = rotation
