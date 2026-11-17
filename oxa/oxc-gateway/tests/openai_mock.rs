@@ -222,6 +222,10 @@ fn mock_read_failure_diagnostics_are_finite_and_health_remains_strict() {
             message.contains(&format!("kind=Some({expected})")),
             "finite I/O kind missing"
         );
+        assert!(
+            message.contains("part=None"),
+            "non-write failures must not invent a reply part"
+        );
         assert!(!message.contains("synthetic-private-header"));
         assert!(
             mock.requests().is_empty(),
