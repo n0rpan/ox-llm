@@ -1487,6 +1487,8 @@ dependencies = [
 name = "oxc-local"
 version = "0.2.1"
 dependencies = [
+ "async-io",
+ "futures-lite",
  "nix",
  "oxa-engine",
  "oxa-fake",

@@ -2,7 +2,7 @@
 use crate::lifecycle::MemorySample;
 #[cfg(target_os = "linux")]
 use crate::memory::MemorySource;
-use std::{fmt, io};
+use std::{fmt, io, time::Instant};
 
 /// Attach an already owned child and validate its platform memory policy before readiness.
 /// macOS supplies a separate implementation; Linux cgroup rules are not portable.
@@ -10,7 +10,7 @@ pub trait PlatformLauncher: Send + Sync {
     fn requires_scope(&self) -> io::Result<bool> {
         Ok(false)
     }
-    fn attach(&self, pid: u32, gated: bool) -> io::Result<Attachment>;
+    fn attach(&self, pid: u32, gated: bool, deadline: Instant) -> io::Result<Attachment>;
 }
 #[derive(Debug)]
 pub struct Attachment {
@@ -82,8 +82,10 @@ impl LinuxLauncher {
         &self,
         pid: u32,
         gated: bool,
+        deadline: Instant,
         start: impl FnOnce(u32, &str) -> io::Result<()>,
     ) -> io::Result<Attachment> {
+        before_startup_deadline(deadline)?;
         if !gated {
             return no_swap(self.0.sample_child(pid)?).map(|sample| Attachment { sample, scope: None });
         }
@@ -98,18 +100,20 @@ impl LinuxLauncher {
             NEXT.fetch_add(1, Ordering::Relaxed)
         );
         start(pid, &unit)?;
-        let until = Instant::now() + Duration::from_secs(3);
+        let deadline = deadline.min(Instant::now() + Duration::from_secs(3));
         loop {
+            before_startup_deadline(deadline)?;
             if self.0.child_in_scope(pid, &unit)? {
-                return no_swap(self.0.sample_child(pid)?).map(|sample| Attachment {
+                let sample = no_swap(self.0.sample_child(pid)?)?;
+                before_startup_deadline(deadline)?;
+                return Ok(Attachment {
                     sample,
                     scope: Some(unit),
                 });
             }
-            if Instant::now() >= until {
-                return Err(refused("engine child attached to requested no-swap scope"));
-            }
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(
+                Duration::from_millis(10).min(deadline.saturating_duration_since(Instant::now())),
+            );
         }
     }
 }
@@ -121,22 +125,67 @@ impl PlatformLauncher for LinuxLauncher {
             .map(|s| no_swap(s).is_err())
             .map_err(|_| refused("caller cgroup v2 no-swap policy readable"))
     }
-    fn attach(&self, pid: u32, gated: bool) -> io::Result<Attachment> {
-        self.attach_with(pid, gated, |pid, unit| {
-            use zbus::zvariant::Value;
-            let bus = user_bus()?;
-            let properties = scope_properties(pid);
-            let auxiliary: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
-            bus.call_method(
-                Some("org.freedesktop.systemd1"),
-                "/org/freedesktop/systemd1",
-                Some("org.freedesktop.systemd1.Manager"),
-                "StartTransientUnit",
-                &(unit, "fail", properties, auxiliary),
-            )
-            .map_err(|_| refused("systemd StartTransientUnit with delegated MemorySwapMax=0"))?;
-            Ok(())
+    fn attach(&self, pid: u32, gated: bool, deadline: Instant) -> io::Result<Attachment> {
+        self.attach_with(pid, gated, deadline, |pid, unit| {
+            let deadline = deadline.min(Instant::now() + std::time::Duration::from_secs(3));
+            within_startup(deadline, async {
+                use zbus::zvariant::Value;
+                let address = format!("unix:path=/run/user/{}/bus", nix::unistd::geteuid());
+                let bus = zbus::connection::Builder::address(address.as_str())
+                    .map_err(|_| bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir()))?
+                    .auth_mechanism(zbus::connection::AuthMechanism::External)
+                    .method_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .build()
+                    .await
+                    .map_err(|_| bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir()))?;
+                let properties = scope_properties(pid);
+                let auxiliary: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
+                bus.call_method(
+                    Some("org.freedesktop.systemd1"),
+                    "/org/freedesktop/systemd1",
+                    Some("org.freedesktop.systemd1.Manager"),
+                    "StartTransientUnit",
+                    &(unit, "fail", properties, auxiliary),
+                )
+                .await
+                .map_err(|_| refused("systemd StartTransientUnit with delegated MemorySwapMax=0"))?;
+                Ok(())
+            })
         })
+    }
+}
+
+/// One deadline covers user-bus connection/authentication and StartTransientUnit.
+#[cfg(target_os = "linux")]
+fn within_startup<T>(
+    deadline: Instant,
+    work: impl std::future::Future<Output = io::Result<T>>,
+) -> io::Result<T> {
+    before_startup_deadline(deadline)?;
+    async_io::block_on(futures_lite::future::or(
+        async {
+            async_io::Timer::at(deadline).await;
+            Err(startup_timeout())
+        },
+        work,
+    ))
+}
+
+fn startup_timeout() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::TimedOut,
+        Predicate(
+            "engine child scope startup deadline not exceeded",
+            "inspect the user manager or increase the user-only local startup timeout",
+        ),
+    )
+}
+
+pub(crate) fn before_startup_deadline(deadline: Instant) -> io::Result<()> {
+    if Instant::now() >= deadline {
+        Err(startup_timeout())
+    } else {
+        Ok(())
     }
 }
 
@@ -240,6 +289,30 @@ mod tests {
         (env, LinuxLauncher(source))
     }
     #[test]
+    fn startup_timeout_bounds_an_unresponsive_bus_future() {
+        let until = Instant::now() + std::time::Duration::from_millis(1);
+        let error = within_startup::<()>(until, std::future::pending()).unwrap_err();
+        assert!(error.to_string().contains("startup deadline"));
+        assert!(Instant::now() >= until);
+        assert_eq!(
+            within_startup(until + std::time::Duration::from_secs(10), async { Ok(42) }).unwrap(),
+            42
+        );
+    }
+    #[test]
+    fn expired_startup_deadline_refuses_before_direct_or_scope_attachment() {
+        let (_env, launcher) = fixture(true);
+        let past = Instant::now() - std::time::Duration::from_secs(1);
+        for gated in [false, true] {
+            let error = launcher
+                .attach_with(42, gated, past, |_, _| {
+                    panic!("expired startup must not invoke the user manager")
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("startup deadline"));
+        }
+    }
+    #[test]
     fn delegation_remediation_keeps_all_controllers_in_one_shell_argument() {
         let message = refused("child controller delegation").to_string();
         assert!(message.contains("\"Delegate=cpu memory pids\""), "{message}");
@@ -262,11 +335,21 @@ mod tests {
         let (env, launcher) = fixture(true);
         assert!(!launcher.requires_scope().unwrap());
         assert!(launcher
-            .attach_with(42, false, |_, _| panic!("must not need user bus"))
+            .attach_with(
+                42,
+                false,
+                Instant::now() + std::time::Duration::from_secs(3),
+                |_, _| panic!("must not need user bus")
+            )
             .is_ok());
         env.write("work/cgroup/child/memory.swap.max", "max");
         let error = launcher
-            .attach_with(42, false, |_, _| panic!("inherited path"))
+            .attach_with(
+                42,
+                false,
+                Instant::now() + std::time::Duration::from_secs(3),
+                |_, _| panic!("inherited path"),
+            )
             .unwrap_err();
         assert!(error.to_string().contains("engine child memory.swap.max == 0"));
     }
@@ -274,16 +357,21 @@ mod tests {
     fn scope_attachment_uses_new_child_group_and_new_baseline() {
         let (env, launcher) = fixture(false);
         let sample = launcher
-            .attach_with(42, true, |pid, unit| {
-                assert_eq!(pid, 42);
-                assert!(unit.starts_with("oxa-local-") && unit.ends_with(".scope"));
-                std::fs::rename(
-                    env.work().join("cgroup/child"),
-                    env.work().join("cgroup").join(unit),
-                )?;
-                env.write("work/proc/42/cgroup", &format!("0::/{unit}\n"));
-                Ok(())
-            })
+            .attach_with(
+                42,
+                true,
+                Instant::now() + std::time::Duration::from_secs(3),
+                |pid, unit| {
+                    assert_eq!(pid, 42);
+                    assert!(unit.starts_with("oxa-local-") && unit.ends_with(".scope"));
+                    std::fs::rename(
+                        env.work().join("cgroup/child"),
+                        env.work().join("cgroup").join(unit),
+                    )?;
+                    env.write("work/proc/42/cgroup", &format!("0::/{unit}\n"));
+                    Ok(())
+                },
+            )
             .unwrap();
         assert!(sample.sample.swap_limit_zero);
         assert!(sample.scope.unwrap().ends_with(".scope"));
@@ -294,7 +382,12 @@ mod tests {
         for manager in [false, true] {
             let (_env, launcher) = fixture(false);
             let error = launcher
-                .attach_with(42, true, |_, _| Err(bus_unavailable(manager)))
+                .attach_with(
+                    42,
+                    true,
+                    Instant::now() + std::time::Duration::from_secs(3),
+                    |_, _| Err(bus_unavailable(manager)),
+                )
                 .unwrap_err();
             let message = error.to_string();
             assert!(message.contains("StartTransientUnit(MemorySwapMax=0)"));

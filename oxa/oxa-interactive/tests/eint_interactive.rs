@@ -1026,11 +1026,12 @@ fn local_policy_refreshes_after_prompt_and_idle_unload() {
         )
         .unwrap();
         let w = spawn_worker(session, no_reopen());
-        let initial = match w.msgs.recv_timeout(Duration::from_secs(5)).unwrap() {
-            WorkerMsg::Session(info) => info.engine_url,
+        let first = w.msgs.recv_timeout(Duration::from_secs(5)).unwrap();
+        let (initial_url, initial_policy) = match first {
+            WorkerMsg::Session(info) => (info.engine_url, info.memory_policy),
             _ => panic!("initial session"),
         };
-        assert!(!initial.contains("(scope)"));
+        assert_eq!(initial_policy, None);
         w.cmds
             .send(SessionCmd::Prompt {
                 text: "hello".into(),
@@ -1043,14 +1044,16 @@ fn local_policy_refreshes_after_prompt_and_idle_unload() {
                 .recv_timeout(Duration::from_secs(5))
                 .expect("policy session update")
             {
-                WorkerMsg::Session(info) => break info.engine_url,
+                WorkerMsg::Session(info) => break (info.engine_url, info.memory_policy),
                 WorkerMsg::Done(result) => result.unwrap(),
                 _ => {}
             }
         };
-        assert_eq!(next_session(), format!("{initial} (scope)"));
+        // The endpoint keeps its own name; only the observed policy changes, so endpoint
+        // labels that compare URLs still resolve while the policy is shown.
+        assert_eq!(next_session(), (initial_url.clone(), Some("scope")));
         engine.loaded.store(false, Ordering::SeqCst);
-        assert_eq!(next_session(), initial);
+        assert_eq!(next_session(), (initial_url, None));
         w.cmds.send(SessionCmd::Shutdown).unwrap();
         w.done.recv_timeout(Duration::from_secs(5)).unwrap();
     });

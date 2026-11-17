@@ -732,6 +732,14 @@ mod tests {
             "local_engine_pid": u32::MAX,
             "local_launcher_us": 7,
         });
+        // A complete claim is still unproven while `/proc` cannot show a child of this
+        // process under a no-swap policy, so it keeps none of the local facts either.
+        atomic(&path, &serde_json::to_vec(&full).unwrap()).unwrap();
+        let mut read = read_snapshot(&path).unwrap();
+        strip_unproven_local(&mut read);
+        for field in LOCAL_FIELDS {
+            assert!(read.get(field).is_none(), "unproven record must strip {field}");
+        }
         // Every field is required; a record missing any one of them keeps none of them.
         for missing in LOCAL_FIELDS {
             let mut record = full.clone();

@@ -789,10 +789,12 @@ fn session_info(s: &Session) -> SessionInfo {
         file: state.session_file,
         id: state.session_id,
         commands: s.commands(),
-        engine_url: match s.inner().engine.local_memory_status(&state.model) {
-            Some((_, policy, _)) => format!("{} ({policy})", info.base_url),
-            None => info.base_url.clone(),
-        },
+        engine_url: info.base_url.clone(),
+        memory_policy: s
+            .inner()
+            .engine
+            .local_memory_status(&state.model)
+            .map(|(_, policy, _)| policy),
         models,
         queue: info.queue,
         shortcuts: s

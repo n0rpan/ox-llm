@@ -146,7 +146,7 @@ impl Supervisor {
                 .transpose()?
                 .unwrap_or(false);
             let mut command = if gated {
-                let mut command = Command::new(std::env::current_exe()?);
+                let mut command = gate_command()?;
                 command.arg(platform::CHILD_GATE).arg(&self.config.executable);
                 command
             } else {
@@ -211,6 +211,7 @@ impl Supervisor {
     }
     pub(crate) fn release(&mut self) -> io::Result<()> {
         use std::io::Write;
+        platform::before_startup_deadline(self.deadline)?;
         if let Some(pipe) = self.child.as_mut().and_then(|child| child.stdin.take()) {
             let mut pipe = pipe;
             pipe.write_all(&[0xa7])
@@ -314,6 +315,19 @@ impl Supervisor {
     }
 }
 
+fn gate_command() -> io::Result<Command> {
+    #[cfg(target_os = "linux")]
+    {
+        // Resolve in the forked child while it still runs this image. Never turn
+        // this kernel reference back into a replaceable workspace pathname.
+        Ok(Command::new("/proc/self/exe"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(platform::refused("Linux executable-image scope gate available"))
+    }
+}
+
 impl Drop for Supervisor {
     fn drop(&mut self) {
         if self.child.is_some() {
@@ -342,7 +356,7 @@ mod platform_retry_tests {
                 Ok(false)
             }
         }
-        fn attach(&self, _: u32, _: bool) -> io::Result<platform::Attachment> {
+        fn attach(&self, _: u32, _: bool, _: Instant) -> io::Result<platform::Attachment> {
             panic!("no child may be attached after launch refusal")
         }
     }
@@ -381,5 +395,56 @@ mod platform_retry_tests {
             s.poll(now + backoff * 2, || panic!("no live engine")).unwrap(),
             State::Failed
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod gate_image_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn gate_reexec_keeps_running_image_after_replace_or_unlink() {
+        const MODE: &str = "OXA_TEST_GATE_IMAGE";
+        const TEST: &str = "gate_image_tests::gate_reexec_keeps_running_image_after_replace_or_unlink";
+        if let Ok(mode) = std::env::var(MODE) {
+            if mode == "probe" {
+                return;
+            }
+            // Capture the actual shared launch command before the hostile pathname change.
+            let mut command = gate_command().unwrap();
+            let host = std::env::current_exe().unwrap();
+            std::fs::remove_file(&host).unwrap();
+            if mode == "replace" {
+                std::fs::write(&host, "#!/bin/sh\nexit 91\n").unwrap();
+                std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+            }
+            assert!(
+                command
+                    .args(["--exact", TEST])
+                    .env_clear()
+                    .env(MODE, "probe")
+                    .status()
+                    .unwrap()
+                    .success(),
+                "must execute the running image, never the replaced path"
+            );
+            return;
+        }
+        let env = oxa_fake::TestEnv::new();
+        for mode in ["replace", "unlink"] {
+            let host = env.work().join(format!("gate-host-{mode}"));
+            std::fs::copy(std::env::current_exe().unwrap(), &host).unwrap();
+            assert!(
+                Command::new(&host)
+                    .args(["--exact", TEST])
+                    .env_clear()
+                    .env(MODE, mode)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "{mode} must retain the original executable image"
+            );
+        }
     }
 }

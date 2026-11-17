@@ -557,6 +557,10 @@ pub struct SessionInfo {
     pub commands: Vec<oxa_proto::CommandSpec>,
     /// The engine endpoint and the models it can serve (`EngineInfo`).
     pub engine_url: String,
+    /// The observed memory policy of an in-process local engine child (`scope`, or
+    /// `inherited` under a no-swap service). `None` for an engine that does not observe one.
+    /// Separate from `engine_url`, which stays the endpoint's own name for comparison.
+    pub memory_policy: Option<&'static str>,
     pub models: Vec<String>,
     /// Requests waiting on the engine, as of the last `Engine::info`.
     pub queue: u32,
