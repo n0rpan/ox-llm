@@ -257,6 +257,11 @@ fn longest(words: &[&str]) -> Option<&'static Entry> {
 /// (`oxa mcp add demo -- server --help` must still save `server --help` as that command).
 /// `None` when no word before the separator asks for help.
 pub fn requested(name: &str, words: &[String]) -> Option<String> {
+    // `send` takes exactly two positional words and has no options. In a complete
+    // invocation the second word is message data, including literal --help/-h.
+    if name == "send" && words.len() == 2 {
+        return None;
+    }
     let own = match words.iter().position(|w| w == "--") {
         Some(end) => &words[..end],
         None => words,
