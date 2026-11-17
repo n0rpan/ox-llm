@@ -54,6 +54,46 @@ fn fields() -> Value {
         "cached_tokens":80,"cache_write_tokens":10,"finish_reason":"stop"})
 }
 #[test]
+#[cfg(feature = "anthropic-client")]
+fn go_allowance_receipts_accept_only_checked_numeric_fields() {
+    let home = Home::new();
+    let daily = Ledger::open(&home.0).unwrap().day("20260102").unwrap();
+    let mut fields = json!({"remote":true,"remote_provider":"opencode","remote_model":"synthetic",
+        "cost_usd":0.0,"billing":"subscription","settled":"usage","subscription_requests":1,"subscription_tokens":5,
+        "opencode":{"allowance":0.01,"list_cost":0.02,"tokens":{"input":1,"output":4,"reasoning":2,"cache_read":0,"cache_write_5m":0,"cache_write_1h":0}}});
+    let row = daily
+        .entry("synthetic", Context::default())
+        .unwrap()
+        .append(&fields, 200, None, None)
+        .unwrap();
+    assert_eq!(row["opencode"], fields["opencode"]);
+    for (pointer, value) in [
+        ("/opencode/allowance", json!("synthetic-private-content")),
+        ("/opencode/list_cost", json!(-1)),
+        ("/opencode/tokens/input", json!(-1)),
+        ("/remote_provider", json!("chatgpt")),
+        ("/billing", json!("metered")),
+    ] {
+        let mut invalid = fields.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            daily
+                .entry("synthetic", Context::default())
+                .unwrap()
+                .append(&invalid, 200, None, None)
+                .is_err(),
+            "{pointer}"
+        );
+    }
+    fields["opencode"]["prompt"] = json!("synthetic-private-content");
+    assert!(daily
+        .entry("synthetic", Context::default())
+        .unwrap()
+        .append(&fields, 200, None, None)
+        .is_err());
+    assert_eq!(home.rows("20260102").len(), 1);
+}
+#[test]
 #[cfg(feature = "anthropic-gateway")]
 fn history_authentication_binds_native_items_route_account_and_exact_visible_prefix() {
     use oxa_proto::{FrozenPrefix, ProviderHistory, ToolCall, WireMsg};
