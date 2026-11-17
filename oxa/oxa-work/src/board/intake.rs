@@ -11,13 +11,11 @@ pub struct Issue {
     pub approved: bool,
     pub has_open_pull_request: bool,
 }
-
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Snapshot {
     pub pull_requests: Vec<PullRequest>,
     pub issues: Vec<Issue>,
 }
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ImportState {
     pub state: AttemptState,
