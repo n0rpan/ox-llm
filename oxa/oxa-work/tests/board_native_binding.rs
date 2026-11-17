@@ -152,6 +152,10 @@ fn old_rows_remain_readable_and_malformed_saved_bindings_fail_closed() {
         fs::write(&path, serde_json::to_vec(&corrupt).unwrap()).unwrap();
         assert!(Claims::open(dir.path()).unwrap().assignments().is_err());
     }
+    let mut mismatched = saved;
+    mismatched["data"]["native_binding"]["lease"]["expires_at"] = serde_json::json!(31);
+    fs::write(&path, serde_json::to_vec(&mismatched).unwrap()).unwrap();
+    assert!(store.assignments().is_err());
 }
 
 #[test]
@@ -216,4 +220,22 @@ fn a_live_or_expired_binding_cannot_be_reused_for_another_item() {
         .unwrap());
     assert!(store.bind_native(&worker().id, &same_branch).unwrap());
     assert!(!store.bind_native(&worker().id, &original).unwrap());
+}
+
+#[test]
+fn a_failed_binding_write_preserves_the_reservation_without_refund() {
+    let (dir, store, lease) = setup();
+    let path = dir.path().join("1.board-claim.json");
+    let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["data"]["revision"] = serde_json::json!(u64::MAX);
+    let before = serde_json::to_vec(&saved).unwrap();
+    fs::write(&path, &before).unwrap();
+    assert!(store.bind_native(&worker().id, &binding(&lease)).is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(store.snapshot().unwrap()[&1].lease, Some(lease));
+    assert_eq!(store.snapshot().unwrap()[&1].attempts, 1);
+    assert!(store
+        .claim_idle_for(&entry(), &policy(), &worker(), 40, 20)
+        .unwrap()
+        .is_none());
 }
