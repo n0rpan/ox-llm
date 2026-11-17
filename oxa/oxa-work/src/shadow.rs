@@ -3,7 +3,7 @@ use crate::board::{Board, Entry};
 use crate::Result;
 use serde::Serialize;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -25,8 +25,8 @@ pub fn open_log(path: &Path) -> Result<File> {
     open_log_for_owner(path, unsafe { libc::geteuid() })
 }
 
-fn open_log_for_owner(path: &Path, _owner: u32) -> Result<File> {
-    let file = OpenOptions::new()
+fn open_log_for_owner(path: &Path, owner: u32) -> Result<File> {
+    let mut file = OpenOptions::new()
         .read(true)
         .append(true)
         .create(true)
@@ -35,11 +35,76 @@ fn open_log_for_owner(path: &Path, _owner: u32) -> Result<File> {
         .open(path)
         .map_err(|_| "cannot open private shadow log")?;
     let metadata = file.metadata().map_err(|_| "cannot inspect shadow log")?;
-    if !metadata.is_file() || metadata.nlink() != 1 || metadata.permissions().mode() & 0o077 != 0 {
+    if !metadata.is_file()
+        || metadata.nlink() != 1
+        || metadata.uid() != owner
+        || metadata.permissions().mode() & 0o077 != 0
+    {
         return Err("shadow log must be a private regular file with one link".into());
     }
     file.try_lock().map_err(|_| "shadow log is already in use")?;
+    recover_tail(&mut file, path)?;
     Ok(file)
+}
+
+/// Preserve interrupted bytes durably before removing them from the JSONL stream.
+fn recover_tail(file: &mut File, path: &Path) -> Result<()> {
+    let length = file.metadata().map_err(|_| "cannot inspect shadow log")?.len();
+    if length > MAX_LOG_BYTES {
+        return Err("shadow log reached its size limit; rotate it while stopped".into());
+    }
+    if length == 0 {
+        return Ok(());
+    }
+    let mut cursor = length;
+    let cut = loop {
+        let start = cursor.saturating_sub(8192);
+        let mut chunk = vec![0; (cursor - start) as usize];
+        file.seek(SeekFrom::Start(start))
+            .map_err(|_| "cannot seek shadow log")?;
+        file.read_exact(&mut chunk)
+            .map_err(|_| "cannot inspect shadow tail")?;
+        if let Some(offset) = chunk.iter().rposition(|b| *b == b'\n') {
+            break start + offset as u64 + 1;
+        }
+        if start == 0 {
+            break 0;
+        }
+        cursor = start;
+    };
+    if cut == length {
+        return Ok(());
+    }
+    let mut fragment = vec![0; (length - cut) as usize];
+    file.seek(SeekFrom::Start(cut))
+        .map_err(|_| "cannot seek shadow tail")?;
+    file.read_exact(&mut fragment)
+        .map_err(|_| "cannot read shadow tail")?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "invalid clock")?
+        .as_nanos();
+    let quarantine = path.with_extension(format!("jsonl.incomplete-{}-{nonce}", std::process::id()));
+    let mut saved = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(quarantine)
+        .map_err(|_| "cannot preserve shadow tail")?;
+    saved
+        .write_all(&fragment)
+        .and_then(|_| saved.sync_all())
+        .map_err(|_| "cannot preserve shadow tail")?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    File::open(parent)
+        .and_then(|dir| dir.sync_all())
+        .map_err(|_| "cannot sync preserved shadow tail")?;
+    file.set_len(cut)
+        .and_then(|_| file.sync_data())
+        .map_err(|_| "cannot restore shadow JSONL boundary")
 }
 
 #[cfg(test)]
@@ -102,6 +167,10 @@ pub fn run(
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         line.push(b'\n');
+        let length = log.metadata().map_err(|_| "cannot inspect shadow log")?.len();
+        if length.saturating_add(line.len() as u64) > MAX_LOG_BYTES {
+            return Err("shadow log reached its size limit; rotate it while stopped".into());
+        }
         log.write_all(&line).map_err(|_| "cannot append shadow board")?;
         log.sync_data().map_err(|_| "cannot sync shadow board")?;
         if once {
