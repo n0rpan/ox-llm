@@ -273,10 +273,16 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let user = Settings::load(&dirs, &cwd, false);
-        let engine = match crate::in_process::select(&user, &user, &dirs, || engine_for(&endpoint)) {
-            Ok(e) => e,
+        let (engine, go) = match crate::in_process::select(&user, &user, &dirs, || engine_for(&endpoint)) {
+            Ok(selected) => selected,
             Err(e) => return report(&mut *stderr, &e),
         };
+        if go == Some(oxc_gateway::opencode::cache::State::Stale) {
+            write_diagnostics(
+                &mut *stderr,
+                std::iter::once((Level::Info, crate::in_process::STALE_GO_CATALOG.to_string())),
+            );
+        }
         let result = list_models(
             engine.as_ref(),
             &endpoint.name,
@@ -678,13 +684,17 @@ fn prepare(
     }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
-    let engine = child.wrap(crate::in_process::select_observed(
+    let (engine, go) = crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         || engine_with_settings(&endpoint, &settings),
-    )?);
+    )?;
+    if go == Some(oxc_gateway::opencode::cache::State::Stale) {
+        notices.push((Level::Info, crate::in_process::STALE_GO_CATALOG.to_string()));
+    }
+    let engine = child.wrap(engine);
 
     let opts = discover_opts(a, dirs, cwd, trusted)?;
     // O-152: the built-in skills' files, so the model can read their bodies (written only

@@ -14,6 +14,11 @@ use std::{sync::Arc, time::Duration};
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 
+/// Shown when a stale Go catalog entry is in use: the entry is past its fresh
+/// window, so it is used now and exactly one refresh runs in the background.
+pub(crate) const STALE_GO_CATALOG: &str =
+    "the Go model catalog came from a cached entry past its fresh window; it is in use now and one refresh is running in the background";
+
 pub(crate) fn credential_path(dirs: &Dirs) -> std::path::PathBuf {
     dirs.home.join(".config/oxc/llm/cloud-secrets.json")
 }
@@ -81,12 +86,16 @@ fn limit(value: &Value, field: &str) -> Result<u32, OxaError> {
         .ok_or_else(invalid)
 }
 
+/// The engine plus how the Go catalog was obtained, so the caller can show a
+/// stale entry explicitly. `None` means no Go catalog was requested at all.
+pub(crate) type Selected = (Arc<dyn Engine>, Option<oxc_gateway::opencode::cache::State>);
+
 pub(crate) fn select(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
-) -> Result<Arc<dyn Engine>, OxaError> {
+) -> Result<Selected, OxaError> {
     select_observed(user, effective, dirs, None, http)
 }
 
@@ -96,7 +105,7 @@ pub(crate) fn select_observed(
     dirs: &Dirs,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
-) -> Result<Arc<dyn Engine>, OxaError> {
+) -> Result<Selected, OxaError> {
     if user.bool(oxc_local::LOCAL_SETTING, false) {
         return oxc_local::configured_engine(
             user.get("oxa.local"),
@@ -106,10 +115,11 @@ pub(crate) fn select_observed(
                     .unwrap_or(365 * 24 * 3600 * 1000),
                 ..oxa_engine::StreamOpts::default()
             },
-        );
+        )
+        .map(|engine| (engine, None));
     }
     if !user.bool(SETTING, false) {
-        return http();
+        return http().map(|engine| (engine, None));
     }
     if oxa_proto::offline() {
         return Err(oxa_proto::offline_error("the in-process cloud gateway"));
@@ -122,7 +132,7 @@ fn open(
     effective: &Settings,
     dirs: &Dirs,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
-) -> Result<Arc<dyn Engine>, OxaError> {
+) -> Result<Selected, OxaError> {
     let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
     let go_enabled = cloud.pointer("/opencode/enabled") == Some(&Value::Bool(true));
     let empty = serde_json::Map::new();
@@ -197,19 +207,34 @@ fn open(
         let refusal = e.refusal();
         OxaError::new(refusal.code, e.to_string())
     })?;
+    let mut go = None;
     if go_enabled {
         let base = cloud
             .pointer("/opencode/base_url")
             .map_or(Some(oxc_gateway::opencode::GO_BASE), Value::as_str)
             .ok_or_else(invalid)?;
-        gateway
+        let state = gateway
             .discover_opencode(base, Duration::from_secs(30))
             .map_err(|e| {
                 let refusal = e.refusal();
                 OxaError::new(refusal.code, e.to_string())
             })?;
+        go = Some(state);
+        if state == oxc_gateway::opencode::cache::State::Stale {
+            // The stale entry is already in use, so the first editable frame is
+            // never behind the network. This one bounded refresh shares the
+            // gateway's existing HTTP pool, only replaces the cache file for the
+            // next start, and its failure is never fatal to any other route.
+            let gateway = Arc::new(gateway);
+            let refresh = Arc::clone(&gateway);
+            let base = base.to_owned();
+            std::thread::spawn(move || {
+                let _ = refresh.refresh_opencode(&base, Duration::from_secs(30));
+            });
+            return Ok((Arc::new(EmbeddedEngine::from_shared_gateway(gateway)), go));
+        }
     }
-    Ok(Arc::new(EmbeddedEngine::from_gateway(gateway)))
+    Ok((Arc::new(EmbeddedEngine::from_gateway(gateway)), go))
 }
 
 // One canonical cap object shared with the other subscription routes. Refresh

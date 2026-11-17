@@ -1436,3 +1436,183 @@ fn go_private_terminal_valid_usage_has_no_diagnostic_and_settles_exactly() {
     assert_eq!(mock.requests().len(), 2);
     mock.assert_healthy();
 }
+
+/// The bounded stale-aware Go catalog cache, through the real CLI.
+fn cache_path(env: &TestEnv) -> std::path::PathBuf {
+    env.home().join(".oxa/agent/go-catalog-cache.json")
+}
+fn write_cache(env: &TestEnv, base: &str, age_seconds: u64, data: Value) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    fs::write(
+        cache_path(env),
+        json!({"base": base, "fetched_at": now - age_seconds, "data": data}).to_string(),
+    )
+    .unwrap();
+}
+fn cached_data(mock: &MockOpenAi) -> Value {
+    discovery(&format!("http://{}", mock.address()))["data"].clone()
+}
+const STALE_NOTICE: &str = "cached entry past its fresh window";
+
+#[test]
+fn a_fresh_go_catalog_cache_serves_the_next_start_without_discovery() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let first = run(&env, &["--list-models"]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains(MODEL));
+    assert_eq!(mock.requests().len(), 1, "the first start discovers live");
+    assert!(cache_path(&env).is_file(), "live discovery publishes an entry");
+    let second = run(&env, &["--list-models"]);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(String::from_utf8_lossy(&second.stdout).contains(MODEL));
+    assert_eq!(
+        mock.requests().len(),
+        1,
+        "a fresh entry is consumed without a network call"
+    );
+    assert!(!String::from_utf8_lossy(&second.stderr).contains(STALE_NOTICE));
+    mock.assert_healthy();
+}
+
+#[test]
+fn a_stale_go_catalog_cache_is_used_now_and_shown_explicitly() {
+    let env = TestEnv::new();
+    // The mock serves a different catalog, so the foreground output proves
+    // whether startup waited for the network or used the entry it already had.
+    let mock = MockOpenAi::start_with(|base| {
+        vec![Reply::json(
+            json!({"data":[{"id":"synthetic-refreshed","canonical_id":"synthetic/refreshed",
+            "limit":{"context":32768,"output":512},
+            "api":{"chat-completions":{"base_url":format!("{base}/inference/go/openai/v1")}}}]}),
+        )]
+    });
+    let base = format!("http://{}/inference/go", mock.address());
+    setup(&env, &base);
+    write_cache(&env, &base, 20 * 60, cached_data(&mock));
+    let output = run(&env, &["--list-models"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(MODEL),
+        "the cached catalog is in use now: {stdout}"
+    );
+    assert!(
+        !stdout.contains("synthetic-refreshed"),
+        "the first frame never waits for the network: {stdout}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(STALE_NOTICE),
+        "stale state is shown explicitly: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        mock.requests().len() <= 1,
+        "at most the one bounded background refresh"
+    );
+    mock.assert_healthy();
+}
+
+#[test]
+fn an_expired_malformed_oversized_or_foreign_go_catalog_cache_discovers_live() {
+    for case in ["expired", "malformed", "oversized", "foreign-base"] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
+        let base = format!("http://{}/inference/go", mock.address());
+        setup(&env, &base);
+        match case {
+            "expired" => write_cache(&env, &base, 25 * 60 * 60, cached_data(&mock)),
+            "malformed" => fs::write(cache_path(&env), b"{not json").unwrap(),
+            "oversized" => fs::write(cache_path(&env), vec![b'x'; 1024 * 1024 + 1]).unwrap(),
+            "foreign-base" => write_cache(&env, "http://127.0.0.1:9/inference/go", 0, cached_data(&mock)),
+            _ => unreachable!(),
+        }
+        let output = run(&env, &["--list-models"]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{case}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(MODEL), "{case}");
+        assert_eq!(
+            mock.requests().len(),
+            1,
+            "{case}: live discovery runs exactly once"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains(STALE_NOTICE),
+            "{case}: an unusable entry is never reported as stale"
+        );
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn a_cached_go_catalog_never_authorizes_an_offline_or_cloud_off_start() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
+    let base = format!("http://{}/inference/go", mock.address());
+    setup(&env, &base);
+    write_cache(&env, &base, 0, cached_data(&mock));
+    let output = run(&env, &["--offline", "-p", "Synthetic request"]);
+    assert_eq!(terminal(&output)["error_class"], "offline");
+    assert!(
+        mock.requests().is_empty(),
+        "offline precedes the cache and the network"
+    );
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(false);
+    fs::write(&path, settings.to_string()).unwrap();
+    let output = run(&env, &["--list-models"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains(MODEL),
+        "cloud off hides the cached catalog"
+    );
+    assert!(mock.requests().is_empty());
+    mock.assert_healthy();
+}
+
+#[test]
+fn a_fresh_go_catalog_cache_still_precedes_a_broken_credential_store() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
+    let base = format!("http://{}/inference/go", mock.address());
+    setup(&env, &base);
+    write_cache(&env, &base, 0, cached_data(&mock));
+    fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(terminal(&output)["error_class"], "cloud_credentials_unavailable");
+    assert!(
+        mock.requests().is_empty(),
+        "the local guard still precedes the cache and any HTTP"
+    );
+    mock.assert_healthy();
+}
