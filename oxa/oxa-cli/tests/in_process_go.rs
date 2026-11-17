@@ -221,6 +221,10 @@ fn native_go_paid_balance_settles_cost_and_caps_new_process() {
     check_go_billing(json!("balance"), "balance", 0.01, true);
 }
 #[test]
+fn native_go_subcent_paid_cost_reaches_exact_cap_after_restart() {
+    check_go_billing(json!("balance"), "balance", 4e-9, true);
+}
+#[test]
 fn native_go_paid_byok_without_usd_cap_keeps_existing_admission() {
     check_go_billing(json!("byok"), "byok", 0.01, false);
 }
@@ -249,7 +253,7 @@ fn check_go_billing(source: Value, expected: &str, cost: f64, cap: bool) {
     let path = env.home().join(".oxa/agent/settings.json");
     let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
     if cap {
-        settings["oxa"]["cloud"]["daily_budget_usd"] = json!(0.01);
+        settings["oxa"]["cloud"]["daily_budget_usd"] = json!(if cost > 0.0 { cost } else { 0.01 });
     }
     fs::write(path, settings.to_string()).unwrap();
     let output = run(&env, &["--no-tools", "-p", "Synthetic request"]);
@@ -270,7 +274,7 @@ fn check_go_billing(source: Value, expected: &str, cost: f64, cap: bool) {
     assert_eq!(
         last["display"],
         if cost > 0.0 {
-            "billed USD 0.01".to_string()
+            format!("billed USD {cost:.2}")
         } else {
             format!("plan {expected}")
         }
