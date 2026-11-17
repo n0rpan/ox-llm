@@ -38,29 +38,6 @@ The native cloud tool-loop test uses `strace -f -e trace=execve` to verify that 
 and its descendants never launch Python; running without the tracer is not a valid substitute.
 Hosted CI installs both prerequisites too.
 
-If system packages cannot be installed, build the tracer inside the checkout instead
-(requires a C compiler, `make`, `curl` and `tar`; run from the repository root):
-
-```sh
-mkdir -p .test-tools
-curl --fail --location https://strace.io/files/6.18/strace-6.18.tar.xz \
-  -o .test-tools/strace-6.18.tar.xz
-tar -xJf .test-tools/strace-6.18.tar.xz -C .test-tools
-(cd .test-tools/strace-6.18 && \
-  ./configure --prefix="$(pwd)/../installed" --enable-mpers=no --enable-bundled=yes && \
-  make -j2 && make install)
-export PATH="$PWD/.test-tools/installed/bin:$PATH"
-(cd oxa && cargo test -p oxa-cli --test in_process_cloud \
-  native_discovery_tool_loop_and_budget_settlement_use_no_python_process -- --exact)
-```
-
-The bundled headers avoid incompatibilities with the host's Linux headers. This
-build traces native processes only (sufficient for this test's native Rust binary).
-`.test-tools/` is ignored: do not commit downloaded sources or built binaries.
-Keep that `PATH` in the environment of any subsequent test runner, including outside
-checks; a checkout-local installation is not automatically on `PATH` in a new shell.
-The test must still fail if the tracer is missing or tracing is not permitted.
-
 ```sh
 cd oxc && ./tools/run_lab_tests.sh                       # lab
 cd engine && cargo test --release --locked --workspace --exclude qwen4exp   # engine (Flash: see engine/CONTRIBUTING.md)
