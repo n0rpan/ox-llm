@@ -170,6 +170,30 @@ fn identical_matching_remote_tips_keep_the_published_head_eligible() {
 }
 
 #[test]
+fn published_branch_creation_keeps_required_reference_hook_policy() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    published_task(&env);
+    let hook = env.write("work/project/.git/hooks/reference-transaction", "#!/bin/sh\nwhile read old new reference; do if test \"$reference\" = refs/heads/agent/test; then echo required-published-reference-policy >&2; exit 1; fi; done\n");
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(requests.is_empty());
+    assert!(record["detail"]
+        .as_str()
+        .unwrap()
+        .contains("required-published-reference-policy"));
+    assert_eq!(
+        git(
+            &env,
+            &project(&env),
+            &["for-each-ref", "--format=%(refname)", "refs/heads/agent/test"]
+        ),
+        ""
+    );
+}
+
+#[test]
 fn unrelated_published_tip_keeps_the_base() {
     let env = TestEnv::new();
     setup(&env, "[]");
