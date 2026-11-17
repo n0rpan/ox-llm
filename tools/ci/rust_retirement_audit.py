@@ -33,7 +33,7 @@ def main():
     public = []
     allowances = []
     declaration = re.compile(
-        r"\bpub\s+(?:\([^)]*\)\s*)?(?:(?:async|unsafe|const)\s+)*"
+        r"\bpub(?:\s*\([^)]*\))?\s+(?:(?:async|unsafe|const)\s+)*"
         r"(?:fn|struct|enum|trait|type|const|static|mod)\s+(\w+)"
     )
     for name, text in sources.items():
