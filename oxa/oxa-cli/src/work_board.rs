@@ -6,7 +6,7 @@ use std::{
     io::{BufRead, IsTerminal, Read},
     path::Path,
     process::Command,
-    time::SystemTime,
+    time::{Duration, SystemTime},
 };
 
 fn token_line(input: &mut dyn BufRead) -> Result<String, String> {
@@ -34,9 +34,41 @@ struct Reader<'a> {
     token: &'a str,
 }
 
+const MAX_RESPONSE: usize = 4 * 1024 * 1024;
+
+enum QueryError {
+    Http(u16),
+    Other(&'static str),
+}
+impl QueryError {
+    fn retryable(&self) -> bool {
+        matches!(self, Self::Http(502 | 503 | 504))
+    }
+    fn message(self) -> String {
+        match self {
+            Self::Http(status) => format!("GitHub read failed (HTTP {status})"),
+            Self::Other(message) => message.into(),
+        }
+    }
+}
+
 impl Reader<'_> {
-    fn query(&self, fields: &str) -> Result<Value, String> {
-        let (owner, name) = self.repo.split_once('/').ok_or("expected OWNER/REPO")?;
+    fn query(&self, fields: &str) -> Result<(Value, usize), QueryError> {
+        let mut retries = 0;
+        loop {
+            match self.query_once(fields) {
+                Err(error) if error.retryable() && retries < 2 => {
+                    std::thread::sleep(Duration::from_millis(200 << retries));
+                    retries += 1;
+                }
+                result => return result,
+            }
+        }
+    }
+
+    fn query_once(&self, fields: &str) -> Result<(Value, usize), QueryError> {
+        let invalid = QueryError::Other;
+        let (owner, name) = self.repo.split_once('/').ok_or(invalid("expected OWNER/REPO"))?;
         let query = format!("query{{repository(owner:{owner:?},name:{name:?}){{{fields}}}}}");
         let mut command = Command::new(self.gh);
         command
@@ -45,26 +77,49 @@ impl Reader<'_> {
             .env_remove("GH_DEBUG")
             .args([
                 "api",
+                "--include",
                 "--hostname",
                 "github.com",
                 "graphql",
                 "-f",
                 &format!("query={query}"),
             ]);
-        let (code, text) = crate::report_cmd::command_runner(command, Some(4 * 1024 * 1024))
-            .ok_or("GitHub read failed, exceeded its byte limit or timed out")?;
-        if code != 0 {
-            return Err("GitHub read failed".into());
+        let (code, text) = crate::report_cmd::command_runner(command, Some(MAX_RESPONSE)).ok_or(invalid(
+            "GitHub read failed, exceeded its byte limit or timed out",
+        ))?;
+        let (headers, body) = text
+            .split_once("\r\n\r\n")
+            .or_else(|| text.split_once("\n\n"))
+            .ok_or(invalid("GitHub command failed without an HTTP response"))?;
+        let status = headers
+            .lines()
+            .next()
+            .filter(|line| line.starts_with("HTTP/"))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|value| (100..600).contains(value))
+            .ok_or(invalid("invalid GitHub HTTP status"))?;
+        if !(200..300).contains(&status) {
+            return Err(QueryError::Http(status));
         }
-        let result: Value = serde_json::from_str(&text).map_err(|_| "invalid GitHub response")?;
+        let result: Value = serde_json::from_str(body).map_err(|_| invalid("invalid GitHub response"))?;
         if result.get("errors").is_some() {
-            return Err("incomplete GitHub response".into());
+            return Err(invalid(match result["errors"][0]["type"].as_str() {
+                Some("FORBIDDEN") => "GitHub GraphQL error (FORBIDDEN)",
+                Some("RATE_LIMITED") => "GitHub GraphQL error (RATE_LIMITED)",
+                Some("NOT_FOUND") => "GitHub GraphQL error (NOT_FOUND)",
+                _ => "GitHub GraphQL error",
+            }));
         }
-        result
+        if code != 0 {
+            return Err(QueryError::Http(status));
+        }
+        let repository = result
             .pointer("/data/repository")
             .filter(|v| v.is_object())
             .cloned()
-            .ok_or("missing GitHub repository".into())
+            .ok_or(invalid("missing GitHub repository"))?;
+        Ok((repository, text.len()))
     }
 }
 
@@ -105,14 +160,30 @@ fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
 
 impl GitHub for Reader<'_> {
     fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
-        // One list plus one batched detail query, never per-PR polling. Fail on truncation.
+        // Small detail batches retain every field and recheck the complete open set.
         const LIST: &str = "pullRequests(first:100,states:OPEN){totalCount nodes{number}}";
-        let list = self.query(&format!("{LIST} mergeQueue(branch:\"main\"){{id}}"))?;
+        let (list, _) = self
+            .query(&format!("{LIST} mergeQueue(branch:\"main\"){{id}}"))
+            .map_err(QueryError::message)?;
         let has_queue = list["mergeQueue"].is_object();
-        let mut fields = LIST.to_owned();
-        for pr in nodes(&list["pullRequests"])? {
-            let n = pr["number"].as_u64().ok_or("missing PR number")?;
-            fields.push_str(&format!(
+        let numbers: Vec<u64> = nodes(&list["pullRequests"])?
+            .iter()
+            .map(|pr| pr["number"].as_u64().ok_or("missing PR number"))
+            .collect::<Result<_, _>>()?;
+        let ids = |connection: &Value| -> Result<BTreeSet<u64>, String> {
+            nodes(connection)?
+                .iter()
+                .map(|pr| pr["number"].as_u64().ok_or("missing PR number".into()))
+                .collect()
+        };
+        let expected = ids(&list["pullRequests"])?;
+        let mut details = serde_json::json!({});
+        let (mut offset, mut size, mut bytes) = (0, 15, 0usize);
+        loop {
+            let end = numbers.len().min(offset + size);
+            let mut fields = LIST.to_owned();
+            for n in &numbers[offset..end] {
+                fields.push_str(&format!(
                 r#"p{n}:pullRequest(number:{n}){{number headRefOid baseRefName state body isDraft reviewDecision mergeable mergeStateStatus
                 baseRef{{refUpdateRule{{requiredStatusCheckContexts}} rules(first:100){{totalCount nodes{{type parameters{{... on RequiredStatusChecksParameters{{requiredStatusChecks{{context}}}}}}}}}}}}
                 labels(first:100){{totalCount nodes{{name}}}}
@@ -123,17 +194,34 @@ impl GitHub for Reader<'_> {
                     ... on CheckRun{{name isRequired(pullRequestNumber:{n}) status conclusion}}
                     ... on StatusContext{{context isRequired(pullRequestNumber:{n}) state}}
                 }}}}}}}}}}}}}}"#
-            ));
-        }
-        let details = self.query(&fields)?;
-        let ids = |connection: &Value| -> Result<BTreeSet<u64>, String> {
-            nodes(connection)?
-                .iter()
-                .map(|pr| pr["number"].as_u64().ok_or("missing PR number".into()))
-                .collect()
-        };
-        if ids(&list["pullRequests"])? != ids(&details["pullRequests"])? {
-            return Err("open PR set changed during snapshot; retry later".into());
+                ));
+            }
+            let (page, read) = match self.query(&fields) {
+                Ok(page) => page,
+                Err(error) if error.retryable() && end - offset > 1 => {
+                    size = (end - offset) / 2;
+                    continue;
+                }
+                Err(error) => return Err(error.message()),
+            };
+            bytes = bytes
+                .checked_add(read)
+                .filter(|total| *total <= MAX_RESPONSE)
+                .ok_or("GitHub detail snapshot exceeds byte limit")?;
+            if ids(&page["pullRequests"])? != expected {
+                return Err("open PR set changed during snapshot; retry later".into());
+            }
+            for n in &numbers[offset..end] {
+                let row = &page[format!("p{n}")];
+                if row["number"].as_u64() != Some(*n) {
+                    return Err("missing or mismatched PR details".into());
+                }
+                details[format!("p{n}")] = row.clone();
+            }
+            offset = end;
+            if offset == numbers.len() {
+                break;
+            }
         }
         nodes(&list["pullRequests"])?
             .iter()
@@ -219,7 +307,7 @@ impl GitHub for Reader<'_> {
                             && f["path"].as_str().is_some_and(|p| {
                                 [
                                     ".rs", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".sh", ".c", ".cc",
-                                    ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".qml",
+                                    ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc", ".qml",
                                 ]
                                 .iter()
                                 .any(|ext| p.ends_with(ext))

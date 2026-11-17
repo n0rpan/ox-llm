@@ -101,9 +101,11 @@ impl AssignmentPolicy {
     /// A manual pin narrows eligibility; it cannot bypass skills or action authority.
     pub fn allows(&self, worker: &Worker, action: Action) -> bool {
         let base_role = match action {
-            Action::FixFindings | Action::FixRequiredCi | Action::ResolveConflict | Action::AddRemoves => {
-                Role::Builder
-            }
+            Action::FixFindings
+            | Action::FixRequiredCi
+            | Action::ResolveConflict
+            | Action::AddRemoves
+            | Action::BuildIssue => Role::Builder,
             Action::PromoteDraft | Action::Ready => Role::Orchestrator,
             _ => return false,
         };
