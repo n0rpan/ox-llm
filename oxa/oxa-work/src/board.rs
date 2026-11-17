@@ -137,6 +137,9 @@ pub struct Entry {
     pub eligible: bool,
 }
 
+/// Maximum open pull requests in a complete repository board observation.
+pub const MAX_OPEN_PULL_REQUESTS: usize = 1_000;
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Board {
     pub observed_at: u64,
