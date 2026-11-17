@@ -5,7 +5,7 @@
 use oxa_config::Keymap;
 use oxa_interactive::{
     apply_event, arcade_scene, oxa_activity_line_with, oxa_arcade_line, retry_reason, Activity, Animation,
-    ArcadeScene, ArcadeState, Block, Skin, StatusModel, ToolBlock, ToolState, ViewModel,
+    ArcadeScene, ArcadeState, Block, Skin, StatusModel, ToolBlock, ToolState, ViewModel, SUBAGENT_TOOL,
 };
 use oxa_proto::{AgentEvent, ToolOutput, Value};
 use oxa_tui::{strip_ansi, visible_width, ColorMode, Theme};
@@ -452,4 +452,72 @@ fn the_subagent_scene_shows_a_crate_per_child() {
     let mut tool = details();
     apply_event(&mut tool, &start_call("c1", "read"));
     assert_eq!(crates(&tool.status), 1, "a plain tool is one crate");
+}
+
+/// What a child reports is bounded and single-line, and the call's own arguments never reach
+/// the screen: a child that echoes a path, a key-shaped string or a multi-line blob can only
+/// change the name and the progress text, one line each and no longer than the cap.
+#[test]
+fn the_child_text_is_bounded_and_the_arguments_never_show() {
+    let args = "{\"tasks\":[{\"agent\":\"scout\",\"task\":\"grep for sk-live-abc123 in ~/secret\"}]}";
+    let mut vm = details();
+    apply_event(
+        &mut vm,
+        &AgentEvent::ToolExecutionStart {
+            tool_call_id: "c1".to_string(),
+            tool_name: SUBAGENT_TOOL.to_string(),
+            args: serde_json::from_str(args).expect("the call's arguments"),
+        },
+    );
+    // The call's arguments are on screen nowhere while it runs.
+    let line = text_line(&vm.status, 200);
+    assert!(!line.contains("sk-live-abc123"), "no argument text: {line:?}");
+    assert!(!line.contains("~/secret"), "no argument text: {line:?}");
+
+    // A chatty, multi-line child is one line, capped, with its control characters gone.
+    let long = "a".repeat(200);
+    apply_event(
+        &mut vm,
+        &update_call(
+            "c1",
+            SUBAGENT_TOOL,
+            &format!("subagent 1/1 scout: {long}\u{1b}[31mred\nsecond line\tmore"),
+        ),
+    );
+    let progress = match &vm.status.activity {
+        Activity::Subagent(s) => s.clone(),
+        other => panic!("a subagent state while the call runs: {other:?}"),
+    };
+    let text = progress.progress.expect("the running child's text");
+    let kept = text.chars().count();
+    assert!(
+        (40..=48).contains(&kept),
+        "kept, and capped to at most 48 characters: {text:?}"
+    );
+    assert!(text.chars().all(|c| !c.is_control()), "one line: {text:?}");
+    assert!(!text.contains("second line"), "one line only: {text:?}");
+    let line = text_line(&vm.status, 200);
+    assert_eq!(line.lines().count(), 1, "the line stays one line: {line:?}");
+
+    // A child whose name alone is capped keeps the progress separate from the name.
+    apply_event(
+        &mut vm,
+        &update_call(
+            "c1",
+            SUBAGENT_TOOL,
+            &format!("subagent 1/1 {}: reading", "n".repeat(100)),
+        ),
+    );
+    let line = text_line(&vm.status, 200);
+    assert!(line.contains(": reading"), "the progress survives: {line:?}");
+    let name = "n".repeat(24);
+    assert!(line.contains(&name), "the name is capped, not dropped: {line:?}");
+    assert!(!line.contains(&"n".repeat(25)), "the name is capped: {line:?}");
+}
+
+/// The tool name this crate recognises is the one the tools crate publishes: a `subagent`
+/// call is only its own activity while the two agree.
+#[test]
+fn the_subagent_tool_name_is_the_published_one() {
+    assert_eq!(SUBAGENT_TOOL, oxa_tools::descriptions::subagent::NAME);
 }
