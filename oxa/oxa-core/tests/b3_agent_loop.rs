@@ -123,6 +123,8 @@ fn build(
         gate: Default::default(),
     });
     SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks,
@@ -818,6 +820,7 @@ fn scripted_engine_answers_trailing_assistant_like_the_real_engine() {
         max_tokens: u32,
     ) -> ChatRequest<'a> {
         ChatRequest {
+            output_schema: None,
             prefix,
             messages,
             model: "fake-model",
@@ -946,6 +949,7 @@ fn length_stop_over_http_sends_no_unsupported_request() {
         snapshot_keep: false,
     };
     let req = |max_tokens| ChatRequest {
+        output_schema: None,
         prefix: &st.prefix,
         messages: &wire,
         model: "fake-model",

@@ -31,6 +31,67 @@ fn spec(name: &str, boolean: bool) -> FlagSpec {
     }
 }
 
+/// Inbox delivery and the commands added on main must all remain subcommands.
+#[test]
+fn send_status_and_work_preserve_subcommand_arguments() {
+    let cases = [
+        (
+            ["send", "session-123", "follow up"],
+            Subcommand::Send(argv(&["session-123", "follow up"])),
+        ),
+        (
+            ["status", "session-123", "--json"],
+            Subcommand::Status(argv(&["session-123", "--json"])),
+        ),
+        (
+            ["work", "task.toml", "--offline"],
+            Subcommand::Work(argv(&["task.toml", "--offline"])),
+        ),
+    ];
+    for (words, expected) in cases {
+        let args = parse(&words);
+        assert_eq!(args.subcommand, Some(expected), "{words:?}");
+        assert!(args.messages.is_empty(), "not a model prompt: {words:?}");
+    }
+}
+
+/// A leading offline switch must not turn inbox delivery into a model prompt.
+#[test]
+fn offline_send_preserves_subcommand_arguments() {
+    for words in [
+        vec!["--offline", "send", "session-733", "follow up"],
+        vec![
+            "--offline",
+            "--offline",
+            "send",
+            "session-733",
+            "@literal --offline",
+        ],
+        vec!["--offline", "send", "session-733", "--offline"],
+        vec!["send", "session-733", "--offline"],
+        vec!["send", "session-733", "@literal"],
+    ] {
+        let args = parse(&words);
+        assert_eq!(args.offline, words[0] == "--offline", "{words:?}");
+        assert_eq!(
+            args.subcommand,
+            Some(Subcommand::Send(argv(&words[words.len() - 2..])))
+        );
+        assert!(args.messages.is_empty());
+        assert!(args.files.is_empty());
+    }
+    // Explicit prompts and the option terminator must still allow the word "send".
+    for words in [
+        vec!["--offline", "--", "send", "session-733", "follow up"],
+        vec!["--offline", "explain", "send"],
+        vec!["-p", "send"],
+    ] {
+        let args = parse(&words);
+        assert_eq!(args.subcommand, None, "{words:?}");
+        assert!(args.messages.iter().any(|word| word == "send"));
+    }
+}
+
 /// table test, long and short spellings
 #[test]
 fn every_flag_of_cli_md() {
@@ -389,6 +450,53 @@ fn subcommands_split() {
     assert_eq!(a.messages, ["summarise", "install"]);
 }
 
+#[test]
+fn agent_options_keep_command_words_as_prompts() {
+    for word in [
+        "mcp",
+        "install",
+        "remove",
+        "update",
+        "list",
+        "config",
+        "identity",
+        "report-issue",
+        "wipe",
+        "work",
+        "auth",
+        "login",
+        "logout",
+    ] {
+        for flags in [&["--model", "m"][..], &["-c"][..]] {
+            let mut words = flags.to_vec();
+            words.extend([word, "example"]);
+            let a = parse(&words);
+            assert_eq!(a.subcommand, None, "{words:?}");
+            assert_eq!(a.messages, [word, "example"]);
+        }
+        if word != "work" {
+            let a = parse(&["--offline", word, "example"]);
+            assert_eq!(a.subcommand, None, "{word}");
+            assert_eq!(a.messages, [word, "example"]);
+        }
+    }
+}
+
+#[test]
+fn only_the_offline_work_prefix_dispatches_after_options() {
+    let a = parse(&["--offline", "work", "tasks.json"]);
+    assert!(a.offline);
+    assert_eq!(a.subcommand, Some(Subcommand::Work(argv(&["tasks.json"]))));
+    for flags in [&["-p"][..], &["--model", "m"][..], &["--"][..]] {
+        let mut words = vec!["--offline"];
+        words.extend(flags);
+        words.extend(["work", "tasks.json"]);
+        let a = parse(&words);
+        assert_eq!(a.subcommand, None, "{words:?}");
+        assert_eq!(a.messages, ["work", "tasks.json"]);
+    }
+}
+
 /// Extra: help lists the flags and the extension flags.
 #[test]
 fn usage_text_lists_flags_and_extension_flags() {
@@ -457,5 +565,17 @@ fn max_time_accepts_fractional_seconds_and_rejects_invalid_durations() {
     );
     for value in ["0", "-1", "NaN", "inf", "1e100", "invalid"] {
         assert_eq!(parse_err(&["--max-time", value]).code, codes::USAGE, "{value}");
+    }
+}
+
+#[test]
+fn max_tokens_requires_a_positive_integer() {
+    assert_eq!(parse(&["--max-tokens", "42", "-p", "go"]).max_tokens, Some(42));
+    assert_eq!(
+        parse(&["--max-tokens=18446744073709551615"]).max_tokens,
+        Some(u64::MAX)
+    );
+    for value in ["0", "-1", "NaN", "inf", "1.5", "18446744073709551616", "invalid"] {
+        assert_eq!(parse_err(&["--max-tokens", value]).code, codes::USAGE, "{value}");
     }
 }

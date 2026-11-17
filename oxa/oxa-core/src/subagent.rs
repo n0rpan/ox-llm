@@ -389,12 +389,16 @@ impl SubagentHooks {
         self
     }
 
-    /// O-146: whether the tool is declared for a model with this context window (`None` =
-    /// unknown) on this engine. Explicit `oxa.subagent.enabled` wins (`true` declares it on any
+    /// Whether the tool is declared: at least one agent must be available (#696).
+    /// O-146: for a model with this context window (`None` = unknown) on this engine,
+    /// explicit `oxa.subagent.enabled` wins (`true` declares it on any
     /// model, `false` never); otherwise it is on, except on the Rust Flash engine and below
     /// [`MIN_CONTEXT`] (the served model's `model_limits` cap), where `smallContext: true` still
     /// declares it. An unknown window counts as large.
     pub fn declared_for(&self, window: Option<u32>, flash: bool) -> bool {
+        if self.inner.agents.is_empty() {
+            return false;
+        }
         let c = *lock(&self.inner.config);
         match c.enabled {
             Some(on) => on,
@@ -696,6 +700,17 @@ fn parse_items(v: Option<&Value>) -> Vec<Item> {
         .unwrap_or_default()
 }
 
+/// Resolve symlinks before `..`, just as the OS does when starting the child. Both access
+/// checking and spawning use this path. If resolution fails, preserve the original path so
+/// spawning fails too, rather than silently running in a lexically normalised directory.
+fn child_cwd(session_cwd: &Path, c: &str) -> PathBuf {
+    let dir = session_cwd.join(c);
+    std::fs::canonicalize(&dir).unwrap_or(dir)
+}
+
+const CWD_CHANGED: &str =
+    "the subagent working directory changed after the permission check; no child was started there";
+
 fn available_list(agents: &[AgentDef]) -> String {
     let list: Vec<String> = agents
         .iter()
@@ -714,11 +729,33 @@ impl Tool for SubagentTool {
     }
     /// One child process per task, sandboxed like the session itself: `Exec`, so plan mode
     /// refuses it and the loop runs it serially (never in a parallel read batch).
-    fn access(&self, _args: &Value, _cx: &ToolCtx) -> Result<Vec<Access>, String> {
-        Ok(vec![Access::Exec {
+    ///
+    /// #509: the model chooses each child's `cwd`, and the child's sandbox and project trust
+    /// follow it. A `cwd` that leaves the session's directory is also a `Write` of that
+    /// directory, so the permission layer decides (ask, grant, deny-list); one inside it adds
+    /// nothing.
+    fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
+        let mut out = vec![Access::Exec {
             command: TOOL_NAME.to_string(),
             net: false,
-        }])
+        }];
+        let mut cwds: Vec<&str> = Vec::new();
+        for key in ["chain", "tasks"] {
+            if let Some(items) = args.get(key).and_then(Value::as_array) {
+                cwds.extend(items.iter().filter_map(|x| x.get("cwd").and_then(Value::as_str)));
+            }
+        }
+        cwds.extend(args.get("cwd").and_then(Value::as_str));
+        for c in cwds {
+            let dir = child_cwd(cx.cwd, c);
+            let w = Access::Write(dir.clone());
+            // Pin in-project roots too: an earlier child can retarget their symlinks.
+            // Workspace writes inside the session remain allowed without a prompt.
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+        Ok(out)
     }
     fn run(&self, args: &Value, cx: &ToolCtx, live: &mut dyn FnMut(&str)) -> ToolOutput {
         let mut ui = oxa_proto::HeadlessUi::default();
@@ -770,6 +807,22 @@ impl Tool for SubagentTool {
             )
         };
 
+        // Resolve the entire call before any child runs, not one chain step at a time.
+        // When called through the executor, each explicit cwd must still be a location
+        // the permission check pinned. Direct tool calls have no checked paths.
+        let mut cwds = Vec::with_capacity(items.len());
+        for item in &items {
+            let dir = item
+                .cwd
+                .as_deref()
+                .map(|c| child_cwd(cx.cwd, c))
+                .unwrap_or_else(|| child_cwd(cx.cwd, "."));
+            if item.cwd.is_some() && !cx.checked.is_empty() && cx.checked_real(&dir) != Some(dir.as_path()) {
+                return ToolOutput::error(CWD_CHANGED);
+            }
+            cwds.push(dir);
+        }
+
         let Some(host) = lock(&inner.host).clone() else {
             return ToolOutput::error(NOT_ATTACHED);
         };
@@ -806,6 +859,7 @@ impl Tool for SubagentTool {
             warned_models: Vec::new(),
             remote_models: HashMap::new(),
             n: items.len(),
+            cwds,
             agents: items.iter().map(|i| i.agent.clone()).collect(),
             done: vec![None; items.len()],
             activity: vec![None; items.len()],
@@ -971,6 +1025,8 @@ struct Run<'a, 'b> {
     remote_models: HashMap<String, bool>,
     /// Number of tasks and their agents (for the progress lines).
     n: usize,
+    /// Resolved before any child starts; never rebase a later step onto a changed symlink.
+    cwds: Vec<PathBuf>,
     agents: Vec<String>,
     /// Status of each finished task.
     done: Vec<Option<Status>>,
@@ -1033,7 +1089,7 @@ struct Prepared {
     agent: String,
     argv: Vec<String>,
     env: Vec<(String, String)>,
-    cwd: PathBuf,
+    cwd: oxa_sandbox::PinnedCwd,
     hint: String,
     /// Its model runs at a cloud provider (it does not take the local engine's slot).
     remote: bool,
@@ -1233,9 +1289,18 @@ impl Run<'_, '_> {
             (ENV_SUBAGENT_DEPTH.to_string(), "1".to_string()),
             (ENV_CHILD_SOFT_TOKENS.to_string(), soft.to_string()),
         ];
-        let cwd = match &item.cwd {
-            Some(c) => self.cx.cwd.join(c),
-            None => self.cx.cwd.to_path_buf(),
+        let expected = &self.cwds[k];
+        let current = child_cwd(self.cx.cwd, item.cwd.as_deref().unwrap_or("."));
+        if &current != expected {
+            let r = ChildResult::unstarted(&item.agent, Status::Failed, CWD_CHANGED.to_string());
+            return Err(Box::new(self.finish(k, r)));
+        }
+        let cwd = match oxa_sandbox::PinnedCwd::open(expected) {
+            Ok(dir) => dir,
+            Err(e) => {
+                let r = ChildResult::unstarted(&item.agent, Status::Failed, format!("{CWD_CHANGED}: {e}"));
+                return Err(Box::new(self.finish(k, r)));
+            }
         };
         Ok(Prepared {
             agent: agent.name,
@@ -1277,7 +1342,7 @@ impl Run<'_, '_> {
         };
         self.progress(k, "running");
         let (inner, cancel) = (self.inner, self.cx.cancel);
-        let r = wait_child(inner, cancel, &p, &mut |a| self.progress(k, &a));
+        let r = wait_child(inner, cancel, self.host, &p, &mut |a| self.progress(k, &a));
         self.cleanup(k, &p, r)
     }
 
@@ -1296,6 +1361,7 @@ impl Run<'_, '_> {
         let queue = Mutex::new(ready);
         let local = Mutex::new(());
         let (inner, cancel) = (self.inner, self.cx.cancel);
+        let host = self.host;
         let (tx, rx) = mpsc::channel::<Event>();
         std::thread::scope(|scope| {
             for _ in 0..workers {
@@ -1311,7 +1377,7 @@ impl Run<'_, '_> {
                         continue;
                     }
                     let _ = tx.send(Event::Activity(k, "running".to_string()));
-                    let r = wait_child(inner, cancel, &p, &mut |a| {
+                    let r = wait_child(inner, cancel, host, &p, &mut |a| {
                         let _ = tx.send(Event::Activity(k, a));
                     });
                     let _ = tx.send(Event::Done(k, r, p));
@@ -1335,16 +1401,60 @@ impl Run<'_, '_> {
 
 /// Spawn one child and wait for it; `on` gets its activity. An abort (the cancel token,
 /// [`Hooks::shutdown`]) kills its process group.
-fn wait_child(inner: &Inner, cancel: &CancelToken, p: &Prepared, on: &mut dyn FnMut(String)) -> ChildResult {
+fn wait_child(
+    inner: &Inner,
+    cancel: &CancelToken,
+    host: &dyn Host,
+    p: &Prepared,
+    on: &mut dyn FnMut(String),
+) -> ChildResult {
     let stopped = || cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst);
+    // Read at spawn, not when tasks are queued: earlier children and the park may
+    // have consumed tokens. Parallel children, like active tools, may finish in flight.
+    let mut argv = p.argv.clone();
+    let remaining = match host.call(HostAction::EngineLimits) {
+        Ok(v) => v.get("remainingTokens").and_then(Value::as_u64),
+        Err(e) => return ChildResult::unstarted(&p.agent, Status::Failed, e.message),
+    };
+    if let Some(left) = remaining {
+        if left == 0 {
+            return ChildResult::unstarted(&p.agent, Status::Aborted, NOT_STARTED.to_string());
+        }
+        // Insert before the task, leaving the worker's prompt prefix unchanged.
+        let at = argv.len() - 1;
+        argv.splice(at..at, ["--max-tokens".to_string(), left.to_string()]);
+    }
+    let mut charged = 0u64;
     let mut rec = |line: &[u8], result: &mut ChildResult| {
         if let Some(a) = record(line, result) {
             on(a);
         }
+        if remaining.is_some() {
+            if let Ok(v) = serde_json::from_slice::<Value>(line) {
+                if v["type"] == "message_end" && v["message"]["role"] == "assistant" {
+                    let u = &v["message"]["usage"];
+                    // JSON-mode input already excludes cacheRead (oxa-rpc/events.rs).
+                    let tokens = u["input"]
+                        .as_u64()
+                        .unwrap_or(0)
+                        .saturating_add(u["output"].as_u64().unwrap_or(0));
+                    let _ = host.call(HostAction::AccountRunTokens(tokens));
+                    charged = charged.saturating_add(tokens);
+                } else if v["type"] == "run_usage" {
+                    if let Some(total) = v["tokens"].as_u64() {
+                        // Chat is charged as it arrives (also if the child crashes).
+                        // Reconcile the final total without charging chat twice.
+                        let extra = total.saturating_sub(charged);
+                        let _ = host.call(HostAction::AccountRunTokens(extra));
+                        charged = charged.saturating_add(extra);
+                    }
+                }
+            }
+        }
     };
     let mut result = ChildResult::unstarted(&p.agent, Status::Failed, String::new());
     result.error_message = None;
-    let mut child = match spawn(&inner.oxa_bin, &p.argv, &p.env, &p.cwd) {
+    let mut child = match spawn(&inner.oxa_bin, &argv, &p.env, &p.cwd) {
         Ok(c) => c,
         Err(e) => {
             result.error_message = Some(T::SPAWN_FAILED.replace("{error}", &e.to_string()));
@@ -1570,14 +1680,18 @@ fn tail(s: &str, max: usize) -> &str {
 
 /// Spawn the child in its own process group, dying with this process (ENG-019). A just-written executable can be briefly busy
 /// (`ETXTBSY`) while another thread forks; that is retried.
-fn spawn(bin: &Path, argv: &[String], env: &[(String, String)], cwd: &Path) -> std::io::Result<Child> {
+fn spawn(
+    bin: &Path,
+    argv: &[String],
+    env: &[(String, String)],
+    cwd: &oxa_sandbox::PinnedCwd,
+) -> std::io::Result<Child> {
     let mut attempt = 0;
     loop {
         let mut cmd = Command::new(bin);
         cmd.args(argv)
             .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .envs(oxa_proto::offline().then_some(("OXA_OFFLINE", "1"))) // P4: the child stays offline
-            .current_dir(cwd)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1585,6 +1699,7 @@ fn spawn(bin: &Path, argv: &[String], env: &[(String, String)], cwd: &Path) -> s
         // ENG-019: the child dies with this process (PR_SET_PDEATHSIG). The forking thread is the
         // tool call's thread, which blocks until the child is waited for.
         oxa_sandbox::die_with_parent(&mut cmd);
+        cwd.apply(&mut cmd)?;
         let r = cmd.spawn();
         match r {
             Err(e) if e.raw_os_error() == Some(26) && attempt < 10 => {

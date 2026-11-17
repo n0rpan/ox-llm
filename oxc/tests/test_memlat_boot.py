@@ -200,6 +200,54 @@ class BootDefaultTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 m.remove_owned_block(changed, policy)
 
+    # A snapshot boot (or rollback) restores an older /etc policy while the ESP
+    # menu keeps the entry a later rebuild wrote. The update hooks must still
+    # treat that auto-generated entry as their own, or a kernel update keeps a
+    # MEMLAT image whose modules were just replaced as the default.
+    STALE_AUTO = ('\n/Local AI memlat (newer-kernel)\n'
+                  'comment: Auto-rebuilt Yoga MEMLAT; stock fallback Omarchy/linux-omarchy\n'
+                  'protocol: efi\npath: boot():/omarchy-memlat-newer-kernel-abc.efi\n')
+
+    def stale_fixture(self, directory):
+        policy = self.fixture(directory)
+        config = Path(policy['config'])
+        config.write_text(MENU.replace('default_entry: 2', 'default_entry: Local AI memlat (newer-kernel)') + self.STALE_AUTO)
+        return policy
+
+    def test_update_falls_back_from_auto_entry_unknown_to_restored_policy(self):
+        for action in ('prepare-update', 'fallback', 'check'):
+            with tempfile.TemporaryDirectory() as directory, patch.object(m, 'verify_entry'):
+                policy = self.stale_fixture(directory)
+                result = m.apply(policy, action)
+                self.assertEqual(result['default'], 'Omarchy/linux-omarchy', action)
+                text = Path(policy['config']).read_text()
+                self.assertEqual(m.selected(text, m.entries(text)), 'Omarchy/linux-omarchy')
+
+    def test_lookalike_user_entry_is_not_adopted(self):
+        # Only entries in the generator's exact shape count; a user entry with
+        # a similar name, or one outside the image directory, stays the default.
+        for block in (self.STALE_AUTO.replace('comment: Auto-rebuilt', 'comment: Hand-made'),
+                      self.STALE_AUTO.replace('boot():/omarchy-memlat-', 'boot():/elsewhere/omarchy-memlat-')):
+            with tempfile.TemporaryDirectory() as directory, patch.object(m, 'verify_entry'):
+                policy = self.fixture(directory)
+                config = Path(policy['config'])
+                config.write_text(MENU.replace('default_entry: 2', 'default_entry: Local AI memlat (newer-kernel)') + block)
+                self.assertFalse(m.apply(policy, 'prepare-update')['changed'])
+
+    def test_rebuild_replaces_auto_entry_unknown_to_restored_policy(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(m, 'verify_entry'), patch.object(m, 'build_image', side_effect=self.build_stub):
+            policy = self.stale_fixture(directory)
+            policy['automatic_entry_block'] = '\n/Local AI memlat (old-kernel)\ncomment: Auto-rebuilt Yoga MEMLAT; stock fallback Omarchy/linux-omarchy\nprotocol: efi\npath: boot():/omarchy-memlat-old-kernel-def.efi\n'
+            policy['memlat_entry'] = 'Local AI memlat (old-kernel)'
+            path = Path(directory) / 'policy'
+            path.write_text(json.dumps(policy))
+            m.apply(policy, 'prepare-update')
+            result = m.rebuild(path, policy)
+            self.assertEqual(result['default'], 'Local AI memlat (new-kernel)')
+            menu = m.entries(Path(policy['config']).read_text())
+            self.assertNotIn('Local AI memlat (newer-kernel)', menu)
+            self.assertIn(OWN, menu)
+
     def test_empty_command_line_does_not_consume_the_next_field(self):
         text = MENU.replace('  protocol: efi', '  cmdline:\n  protocol: efi', 1)
         self.assertEqual(m.entries(text)['Omarchy/linux-omarchy']['cmdline'], '')

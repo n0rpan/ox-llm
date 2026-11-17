@@ -55,6 +55,8 @@ fn state(
         gate: Default::default(),
     });
     let st = SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks: Vec::new(),

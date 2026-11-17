@@ -24,6 +24,7 @@ import errno
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -181,7 +182,8 @@ def destination_ok(secrets_file):
 def _claims(token):
     try:
         part = token.split('.')[1]
-        return json.loads(base64.urlsafe_b64decode(part + '=' * (-len(part) % 4)))
+        value = json.loads(base64.urlsafe_b64decode(part + '=' * (-len(part) % 4)))
+        return value if isinstance(value, dict) else {}
     except (AttributeError, IndexError, ValueError, UnicodeDecodeError):
         return {}
 
@@ -194,11 +196,23 @@ def account_of(*tokens):
     return None
 
 
+def _finite_number(value):
+    try:
+        return type(value) in (int, float) and math.isfinite(value)
+    except OverflowError:
+        return False
+
+
 def _expiry(access, expires_in=None):
-    if type(expires_in) in (int, float) and expires_in > 0:
-        return time.time() + expires_in
-    exp = _claims(access).get('exp')
-    return float(exp) if type(exp) in (int, float) else time.time() + 3600
+    # An OAuth TTL must never extend the access JWT's own validity. Claims are
+    # only a conservative expiry hint, never an account/authority decision.
+    expiry = _claims(access).get('exp')
+    choices = []
+    if _finite_number(expiry):
+        choices.append(float(expiry))
+    if _finite_number(expires_in) and expires_in > 0:
+        choices.append(time.time() + expires_in)
+    return min(choices) if choices else time.time() + 3600
 
 
 def _record(reply, previous=None):
@@ -270,8 +284,11 @@ def _credentials(secrets_file, value):
 
 def _fresh(tokens):
     expires = tokens.get('expires_at')
+    jwt_expiry = _claims(tokens.get('access_token')).get('exp')
+    if _finite_number(expires) and _finite_number(jwt_expiry):
+        expires = min(expires, jwt_expiry)
     return (isinstance(tokens.get('access_token'), str) and isinstance(tokens.get('account_id'), str)
-            and type(expires) in (int, float) and expires - REFRESH_MARGIN > time.time())
+            and _finite_number(expires) and expires - REFRESH_MARGIN > time.time())
 
 
 # ---------------------------------------------------------------- requests

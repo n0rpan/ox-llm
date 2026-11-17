@@ -1355,11 +1355,11 @@ fn set_017() {
         "a project-level defaultProjectTrust is ignored: {}",
         stderr(&out)
     );
-    // oxa's default set on the fake's default (large, non-Flash) model: the seven built-ins and
-    // `subagent` (O-146, SET-018), not the project's `["ls"]`.
+    // No agents are installed: the lead defaults include ask, but not subagent or the
+    // untrusted project's replacement ["ls"].
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "write"],
         "the project's defaultTools is not applied"
     );
 }
@@ -1367,43 +1367,51 @@ fn set_017() {
 /// SET-018: `defaultTools`: plain names replace the defaults, `+name` adds, `-name` removes.
 #[test]
 fn set_018() {
-    // invariant: the default set is all seven built-ins (oxa has no powershell) plus `subagent`
+    fn with_agent(args: &[&str]) -> Rig {
+        let rig = Rig::with_fake(&[text("ok")], args);
+        rig.env.write(
+            "home/.oxa/agent/agents/worker.md",
+            "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+        );
+        rig
+    }
+    // invariant: with an available agent, the lead defaults include ask plus subagent
     // where O-146 offers it (not on the Rust Flash engine, not below a 32K window); the selection
     // is resolved once per prefix epoch (W3), so it is visible on the first request.
-    let rig = Rig::new(&[text("ok")]);
+    let rig = with_agent(&[]);
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
-        "the default set on a large non-Flash model: the seven built-ins and subagent"
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
+        "the default set on a large non-Flash model: eight lead built-ins and subagent"
     );
     let flash = ["--model", "flash", "--model-row", "flash:65536:2048:flash"];
     let small = ["--n-ctx", "16384"];
     for (what, fake_args) in [("Flash", &flash[..]), ("below 32K", &small[..])] {
-        let rig = Rig::with_fake(&[text("ok")], fake_args);
+        let rig = with_agent(fake_args);
         ok(&rig.print(&[]));
         assert_eq!(
             tools(&rig.bodies()[0]),
-            ["bash", "edit", "find", "grep", "ls", "read", "write"],
-            "{what}: the default set is the seven built-ins"
+            ["ask", "bash", "edit", "find", "grep", "ls", "read", "write"],
+            "{what}: the default set is the eight lead built-ins"
         );
     }
 
     // `-name` edits the default selection (which includes `subagent`).
-    let rig = Rig::new(&[text("ok")]);
+    let rig = with_agent(&[]);
     rig.user_settings(json!({ "defaultTools": ["-bash"] }));
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["edit", "find", "grep", "ls", "read", "subagent", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "subagent", "write"],
         "-name removes"
     );
-    let rig = Rig::with_fake(&[text("ok")], &small);
+    let rig = with_agent(&small);
     rig.user_settings(json!({ "defaultTools": ["-bash"] }));
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["edit", "find", "grep", "ls", "read", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "write"],
         "-name removes (below 32K)"
     );
 

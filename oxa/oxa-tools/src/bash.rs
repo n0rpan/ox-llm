@@ -147,6 +147,8 @@ enum BashArgs {
 
 /// #150 (2): the longest `wait_s` a job read blocks for; a larger value is cut to it.
 pub const WAIT_CAP_S: f64 = 60.0;
+/// #618: keep PID isolation; explain why a separate process listing cannot inspect a job.
+const JOB_PROCESS_VISIBILITY: &str = "Each bash command runs in a separate PID namespace; ps in another bash call cannot see this job. Use the job interface for status and captured output, not cross-call process inspection.";
 const BAD_WAIT: &str = "\"wait_s\" must be a number of seconds, zero or more";
 const WAIT_NEEDS_JOB: &str = "\"wait_s\" applies to a job read; provide \"job\" with it";
 
@@ -525,7 +527,7 @@ impl BashTool {
         match self.jobs.spawn(spec) {
             Ok(id) => ToolOutput {
                 text: format!(
-                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}."
+                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}"
                 ),
                 is_error: false,
                 ui: json!({ "job": id }),
@@ -1503,6 +1505,38 @@ echo '\''a'\'''"#
             out.text
         );
         jobs.kill_all();
+    }
+
+    /// #618: process isolation is intentional, but must not make a running job look lost.
+    #[test]
+    fn background_job_responses_explain_process_visibility() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let started = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+        let running = run_job_tool(&tool, &*sb, json!({"job": "job-1"}));
+        jobs.kill_all();
+
+        assert!(!started.is_error, "{}", started.text);
+        assert!(started.text.contains(JOB_PROCESS_VISIBILITY), "{}", started.text);
+        assert!(
+            started.text.contains("bash {\"job\": \"job-1\"}"),
+            "{}",
+            started.text
+        );
+        assert!(!running.is_error, "{}", running.text);
+        assert!(running.text.contains("Still running"), "{}", running.text);
+        assert!(
+            running.text.contains("bash {\"job\": \"job-1\", \"wait_s\": 30}"),
+            "{}",
+            running.text
+        );
+        assert!(!running.text.contains("separate PID namespace"));
+        assert!(!running.text.contains("ps in another bash call"));
+        assert!(!running.text.contains("Use the job interface"));
     }
 
     #[test]
