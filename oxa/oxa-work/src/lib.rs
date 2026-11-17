@@ -183,6 +183,16 @@ pub fn github_runner_guidance(kind: &str) -> String {
 
 pub const RUNNER_GITHUB_ENV: &str = "OXA_RUNNER_OWNS_GITHUB";
 
+fn restrict_child_github(command: &mut Command) {
+    command
+        .env(RUNNER_GITHUB_ENV, "1")
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_ENTERPRISE_TOKEN")
+        .env_remove("GITHUB_ENTERPRISE_TOKEN")
+        .env_remove("GH_CONFIG_DIR");
+}
+
 impl Task {
     fn matches_issue_packet(&self, number: u64) -> bool {
         let packet = self
@@ -197,7 +207,7 @@ impl Task {
             && packet.starts_with(&format!("Implement issue #{number}: "))
     }
 
-    // Derive the worker restriction from the frozen task on every launch. This
+    // Derive the subprocess restriction from the frozen task on every launch. This
     // also covers old issue checkpoints resumed through an identical task file.
     fn runner_owns_github(&self) -> bool {
         self.prompt.starts_with(GITHUB_RUNNER_LEAD)
@@ -583,6 +593,8 @@ pub struct RunPolicy {
     pub host_path: std::ffi::OsString,
     pub terminate_binary: Option<PathBuf>,
     pub offline: bool,
+    /// Set by the runner from the immutable packet before launching its children.
+    pub runner_owns_github: bool,
     pub storage: PathBuf,
 }
 
@@ -616,6 +628,9 @@ fn supervise(
     isolate_git_environment(&mut command);
     if policy.offline {
         command.arg("--offline");
+    }
+    if policy.runner_owns_github {
+        restrict_child_github(&mut command);
     }
     command
         .env("PATH", &policy.host_path)
@@ -891,6 +906,7 @@ pub fn run_task_with_observer(
     state.offline |= policy.offline;
     let policy = RunPolicy {
         offline: state.offline,
+        runner_owns_github: state.task.runner_owns_github(),
         ..policy.clone()
     };
     // Replaying the prior checkpoint precedes this first new checkpoint or action.

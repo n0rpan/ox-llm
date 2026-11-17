@@ -147,6 +147,7 @@ pub(crate) fn run(
             host_path,
             terminate_binary,
             offline: oxa_proto::offline(),
+            runner_owns_github: false,
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
