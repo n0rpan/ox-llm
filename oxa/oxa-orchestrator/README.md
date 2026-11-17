@@ -18,6 +18,15 @@ self-dependency enables it so ordinary hosted crate tests exercise the port.
 
 ## Existing core foundations
 
+The `a2a`-gated `follow::publisher::Publisher` ports #129 `f89ba2e`'s
+session-bound publisher onto the retained history. Owner-supplied status updates
+coalesce without advancing event cursors; reply events carry explicit bounded
+UTF-8 previews and the identity observed when published. Latest observations and
+individual bindings are byte-bounded; invalid publication changes neither cursor
+nor latest observation. Clones share one owner's history. Callers still approve
+summaries and enforce disclosure authority. No transport, task/goal state owner,
+CLI integration or automatic transcript capture is introduced.
+
 Independently testable foundations from rollup #88 for [issue #282](https://github.com/oxstack/ox-llm/issues/282).
 Private audit storage, approved text snapshots and private review copies are
 present here. No worker, listener, CLI command,
