@@ -100,8 +100,8 @@ pub fn run_wipe(
     let plan = parse(words)?;
     let sessions = sessions_dir(dirs, env, plan.session_dir.as_deref(), cwd)?;
     match &plan.session {
-        Some(query) => wipe_one(query, plan.engine, dirs, &sessions, env, io),
-        None => wipe_all(&plan, dirs, &sessions, env, io),
+        Some(query) => wipe_one(query, plan.engine, dirs, &sessions, cwd, env, io),
+        None => wipe_all(&plan, dirs, &sessions, cwd, env, io),
     }
 }
 
@@ -119,6 +119,7 @@ fn wipe_one(
     engine: bool,
     dirs: &Dirs,
     sessions: &Path,
+    cwd: &Path,
     env: &Env,
     io: WipeIo<'_>,
 ) -> Result<i32, OxaError> {
@@ -209,13 +210,20 @@ fn wipe_one(
         }
     }
     if engine {
-        ok &= clear_engine(dirs, env, std::slice::from_ref(&id), out, err);
+        ok &= clear_engine(dirs, cwd, env, std::slice::from_ref(&id), out, err);
     }
     Ok(if ok { 0 } else { 1 })
 }
 
 /// `--all`: remove every session file and the whole spill directory, after a confirmation.
-fn wipe_all(plan: &Plan, dirs: &Dirs, sessions: &Path, env: &Env, io: WipeIo<'_>) -> Result<i32, OxaError> {
+fn wipe_all(
+    plan: &Plan,
+    dirs: &Dirs,
+    sessions: &Path,
+    cwd: &Path,
+    env: &Env,
+    io: WipeIo<'_>,
+) -> Result<i32, OxaError> {
     let WipeIo {
         stdin,
         stdin_is_tty,
@@ -297,16 +305,23 @@ fn wipe_all(plan: &Plan, dirs: &Dirs, sessions: &Path, env: &Env, io: WipeIo<'_>
         }
     }
     if plan.engine && !ids.is_empty() {
-        ok &= clear_engine(dirs, env, &ids, out, err);
+        ok &= clear_engine(dirs, cwd, env, &ids, out, err);
     }
     Ok(if ok { 0 } else { 1 })
 }
 
 /// `--engine`: ask the engine to drop the state of each session hint, through the same
-/// `Engine::clear_hint` call the session uses for its finished children (the controller's
-/// `POST /_local/cache/clear`). Offline mode and the endpoint guard apply: `engine_for` checks
-/// the loopback rule before anything connects. Returns `false` when any clear did not happen.
-fn clear_engine(dirs: &Dirs, env: &Env, ids: &[String], out: &mut dyn Write, err: &mut dyn Write) -> bool {
+/// selector and `Engine::clear_hint` boundary used by normal sessions. Native local
+/// clearing retains its owned-child/inert-cold contract; explicit HTTP selection
+/// retains the loopback guard. Offline refusal is unchanged.
+fn clear_engine(
+    dirs: &Dirs,
+    cwd: &Path,
+    env: &Env,
+    ids: &[String],
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> bool {
     if oxa_proto::offline() {
         let _ = writeln!(
             err,
@@ -314,8 +329,12 @@ fn clear_engine(dirs: &Dirs, env: &Env, ids: &[String], out: &mut dyn Write, err
         );
         return false;
     }
-    let (models, _) = ModelsConfig::load(dirs, env);
-    let engine: std::sync::Arc<dyn Engine> = match default_endpoint(&models).and_then(|ep| engine_for(&ep)) {
+    // Project settings cannot choose a native binary/provider for a privacy command.
+    let user = Settings::load(dirs, cwd, false);
+    let engine: std::sync::Arc<dyn Engine> = match crate::in_process::select(&user, &user, dirs, None, || {
+        let (models, _) = ModelsConfig::load(dirs, env);
+        default_endpoint(&models).and_then(|ep| engine_for(&ep))
+    }) {
         Ok(engine) => engine,
         Err(e) => {
             let _ = writeln!(err, "engine-side state not cleared: {}", e.message);

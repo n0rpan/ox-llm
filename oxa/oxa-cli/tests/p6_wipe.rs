@@ -458,23 +458,38 @@ fn native_local_settings(env: &TestEnv, valid: bool) {
 #[test]
 fn native_engine_flag_uses_existing_cold_owned_clear_without_controller() {
     let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let env = fixture();
-    native_local_settings(&env, true);
-    let server = FakeServer::start(parse_script("").unwrap(), FakeOpts::default()).unwrap();
-    let r = wipe_with_engine(&env, &server.url(), &[], false, "", &["--session", A, "--engine"]);
-    assert_eq!(r.code, 0, "{}", r.err);
-    assert!(r
-        .out
-        .contains(&format!("engine: cleared the state of session {A}")));
-    assert!(
-        server.clears().is_empty(),
-        "native selection must not clear via the controller"
-    );
-    assert_eq!(server.hits("GET", "/v1/models"), 0);
-    // No owned child is loaded in standalone wipe: the existing native clear
-    // operation is inert, rather than launching/attaching a process to clear it.
-    assert!(!env.agent_dir().join("local-engine").exists());
-    assert_no_trace(env.root(), A);
+    for all in [false, true] {
+        for cloud in [false, true] {
+            let env = fixture();
+            native_local_settings(&env, true);
+            let settings_path = env.home().join(".oxa/agent/settings.json");
+            let mut settings: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&settings_path).unwrap()).unwrap();
+            settings["oxa"]["engine"]["inProcessCloud"] = serde_json::json!(cloud);
+            std::fs::write(settings_path, settings.to_string()).unwrap();
+            let server = FakeServer::start(parse_script("").unwrap(), FakeOpts::default()).unwrap();
+            let words = if all {
+                vec!["--all", "--yes", "--engine"]
+            } else {
+                vec!["--session", A, "--engine"]
+            };
+            let r = wipe_with_engine(&env, &server.url(), &[], false, "", &words);
+            assert_eq!(r.code, 0, "{}", r.err);
+            assert!(r
+                .out
+                .contains(&format!("engine: cleared the state of session {A}")));
+            assert!(
+                server.clears().is_empty(),
+                "native selection must not clear via the controller"
+            );
+            assert_eq!(server.hits("GET", "/v1/models"), 0);
+            // The existing cold native clear neither launches nor attaches a child.
+            assert!(!env.agent_dir().join("local-engine").exists());
+            for id in if all { vec![A, B, C] } else { vec![A] } {
+                assert_no_trace(env.root(), id);
+            }
+        }
+    }
 }
 
 #[test]
