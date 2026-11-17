@@ -255,12 +255,14 @@ fn spent_token_or_turn_budget_can_cancel_but_cannot_resume() {
     ] {
         let env = TestEnv::new();
         let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("Progress")]));
-        let store = Arc::new(MemStore::new());
-        let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+        let root = env.root().join("sessions");
+        let store = Arc::new(FsStore::new(root.clone()));
+        let mut session = Session::open(deps(&env, store, engine.clone()), Open::New).unwrap();
         let mut sink = VecSink::default();
+        let mut ui = HeadlessUi::default();
         session.set_goal(Some(objective(budget)), &mut sink).unwrap();
         session
-            .prompt("Start".into(), vec![], &mut sink, &mut HeadlessUi::default())
+            .prompt("Start".into(), vec![], &mut sink, &mut ui)
             .unwrap();
         assert_eq!(session.stats().outcome, RunOutcome::Blocked("goal_blocked"));
         let mut expected = session.goal().unwrap();
@@ -280,10 +282,14 @@ fn spent_token_or_turn_budget_can_cancel_but_cannot_resume() {
         assert!(canceled_revision > revision);
         expected.status = GoalStatus::Canceled;
         assert_eq!(session.goal(), Some(expected.clone()));
-        assert_eq!(
-            Goal::latest(&store.load(&bound).unwrap()).unwrap(),
-            Some(expected)
-        );
+        session.shutdown(&mut ui);
+        drop(session);
+
+        let store = Arc::new(FsStore::new(root));
+        let mut reopened = Session::open(deps(&env, store, engine), Open::Resume(bound)).unwrap();
+        assert_eq!(reopened.goal(), Some(expected));
+        assert_eq!(reopened.goal_revision(), canceled_revision);
+        reopened.shutdown(&mut ui);
     }
 }
 
