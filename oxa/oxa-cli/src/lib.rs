@@ -32,6 +32,7 @@ pub mod lead_input;
 pub mod lead_page;
 pub mod lead_panels;
 pub mod lead_peer;
+mod lead_preset;
 pub mod lead_runs;
 mod limits;
 mod login_cmd;

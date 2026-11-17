@@ -25,6 +25,11 @@ it retains no unbounded per-task tombstones. Retrying the latest source/revision
 fact returns its original event and timestamp, even after journal rotation. Different facts
 under that identity and stale revisions are errors. Sequence exhaustion is an error.
 
+Standing initialization reserves one of those 16 slots before its first mutation;
+ordinary producers cannot consume that reservation. The `standing` checkpoint
+source, `StandingChanged` observations and `standing:` ask-ID namespace belong
+to the standing store's protected prepared-append path, not public `Facts::append`.
+
 Each append validates the projected situation before reserving the event. It then saves a
 pending observation in `facts.json`, appends and syncs the journal line, commits the source
 cursor and atomically replaces `situation.json`. Atomic replacements sync the file and directory.
