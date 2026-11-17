@@ -227,8 +227,8 @@ impl Claims {
             .open(&path)
         {
             Ok(mut file) => {
-                io(io(file.write_all(b"1\n"))?.sync_all())?;
-                io(File::open(&self.root)?.sync_all())?;
+                io(file.write_all(b"1\n").and_then(|()| file.sync_all()))?;
+                io(io(File::open(&self.root))?.sync_all())?;
                 Ok(())
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
@@ -243,7 +243,7 @@ impl Claims {
             Err(e) => return io(Err(e)),
             Ok(_) => {}
         }
-        let (_lock, _) = self.lock(number)?;
+        let _lock = self.lock(number)?;
         let mut state = self.load(number)?;
         if state.lease.as_ref() != Some(lease) {
             return Ok(false);

@@ -138,7 +138,7 @@ fn lost_marker_keeps_the_cap_but_lost_state_still_fails_closed() {
     // A disposable-looking marker must not decide whether the attempts on disk count.
     fs::remove_file(fixture.0.join("1.board-claim.lock")).unwrap();
     assert!(fixture.claim(20, 10).is_some());
-    assert_eq!(fixture.store().snapshot().unwrap()[&1].attempts, 2);
+    assert_eq!(store.snapshot().unwrap()[&1].attempts, 2);
     // The reverse is corruption: attempts whose state file vanished are never reset.
     let vanished = Fixture::new();
     assert!(vanished.claim(10, 10).is_some());
