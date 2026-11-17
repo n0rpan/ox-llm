@@ -1319,6 +1319,7 @@ fn run_headless(
         max_time,
         max_tokens,
         built.supervised_child,
+        built.hook_sets.subagent.as_deref(),
     ) {
         Ok(limit) => limit,
         Err(error) => {
@@ -1390,6 +1391,7 @@ fn run_rpc(
         max_time,
         max_tokens,
         built.supervised_child,
+        built.hook_sets.subagent.as_deref(),
     ) {
         Ok(limit) => limit,
         Err(error) => {
