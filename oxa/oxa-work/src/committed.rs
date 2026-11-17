@@ -634,7 +634,7 @@ mod tests {
             &fixture.source,
             &retained,
             &task,
-            &fixture.head,
+            (&fixture.head, None),
             &fixture.root.join("unavailable-worker"),
             &fixture.policy,
             &lock,
