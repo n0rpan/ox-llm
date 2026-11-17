@@ -80,13 +80,25 @@ impl Error {
             },
         }
     }
+    pub fn retry_after(&self) -> Option<u32> {
+        match self {
+            Self::OpenCode(crate::opencode::client::Error::Refused(
+                crate::opencode::Refusal::RateLimited { retry_after },
+            )) => *retry_after,
+            _ => None,
+        }
+    }
     pub fn body(&self) -> Value {
         self.refusal().body()
     }
 }
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.refusal().message)
+        f.write_str(self.refusal().message)?;
+        if let Some(seconds) = self.retry_after() {
+            write!(f, " (retry after {seconds} s)")?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for Error {}
@@ -319,7 +331,20 @@ impl Gateway {
                 } else {
                     Outcome::Failed
                 };
-                (outcome, refusal.status, Some(refusal.code))
+                // The ledger's clean-refusal guard requires the actual 4xx.
+                // Go auth is intentionally public503, but upstream401 is known
+                // before generation; do not poison accounting with public503.
+                let status = if matches!(
+                    error,
+                    Error::OpenCode(crate::opencode::client::Error::Refused(
+                        crate::opencode::Refusal::Unauthenticated
+                    ))
+                ) {
+                    401
+                } else {
+                    refusal.status
+                };
+                (outcome, status, Some(refusal.code))
             }
         };
         let pending = match (&result, history) {
@@ -408,52 +433,26 @@ impl Gateway {
         // Parsed terminal usage survives cancellation before public delivery.
         // Meter it privately before consuming the hold, just as for Anthropic.
         call.metered_go(usage.as_ref());
-        let (outcome, status, code) = match &result {
-            Ok(_) => (Outcome::Complete, 200, None),
-            Err(GoError::Cancelled) => (
-                if usage.is_some() {
-                    Outcome::Cancelled {
-                        request_bytes: 0,
-                        streamed_bytes: 0,
-                        usage_final: true,
-                        elapsed: Duration::ZERO,
-                    }
+        // Go chat completions have no native replay items. The common request
+        // path already verifies incoming history before dispatch; the common
+        // finish path owns durable settlement and the final Done transition.
+        let result = result
+            .map(|completed| Completed {
+                assistant: completed.assistant,
+                usage: None,
+                output_items: Arc::from([]),
+                replay_items: Arc::from([]),
+                finish_reason: completed.finish_reason,
+                history: None,
+            })
+            .map_err(|error| {
+                if error == GoError::Cancelled {
+                    Error::Upstream(anthropic_client::Error::Cancelled)
                 } else {
-                    Outcome::Failed
-                },
-                499,
-                Some("request_cancelled"),
-            ),
-            Err(error) => {
-                let refusal = go_refusal(*error);
-                let outcome = if usage.is_some() {
-                    Outcome::Complete
-                } else if matches!(
-                    error,
-                    GoError::Refused(
-                        crate::opencode::Refusal::RegionBlocked
-                            | crate::opencode::Refusal::LimitReached
-                            | crate::opencode::Refusal::Unauthenticated
-                            | crate::opencode::Refusal::Forbidden
-                    )
-                ) {
-                    Outcome::Refused
-                } else {
-                    Outcome::Failed
-                };
-                (outcome, refusal.status, Some(refusal.code))
-            }
-        };
-        call.finish(outcome, status, code).map_err(Error::Refused)?;
-        let completed = result.map_err(|error| {
-            if error == GoError::Cancelled {
-                Error::Upstream(anthropic_client::Error::Cancelled)
-            } else {
-                Error::OpenCode(error)
-            }
-        })?;
-        let _ = on(Event::Done);
-        Ok(completion::anthropic(completed))
+                    Error::OpenCode(error)
+                }
+            });
+        self.finish(call, result, None, usage.is_some(), on)
     }
 }
 
@@ -513,10 +512,10 @@ fn go_refusal(error: crate::opencode::client::Error) -> Refusal {
             "region_blocked",
             "This Go model is blocked by the workspace region policy.",
         ),
-        E::Refused(R::LimitReached) => (
+        E::Refused(R::RateLimited { .. }) => (
             429,
-            "subscription_limit_reached",
-            "The Go subscription limit was reached; no paid fallback was attempted.",
+            "cloud_rate_limited",
+            "The Go model is rate limited; the request can be retried.",
         ),
         E::Refused(R::Unauthenticated) => (
             503,

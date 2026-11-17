@@ -26,6 +26,9 @@ fn normalize(error: Error) -> OxaError {
     if refusal.status == 499 && refusal.code == "request_cancelled" {
         return OxaError::new(codes::ABORTED, "request cancelled");
     }
+    if refusal.code == "cloud_rate_limited" {
+        return OxaError::new("cloud_rate_limited", format!("HTTP 429: {error}"));
+    }
     if refusal.code == "cloud_signed_out" {
         return OxaError::new("cloud_signed_out", "HTTP 401: ChatGPT is signed out.")
             .with_hint("Sign in to ChatGPT, then retry.");

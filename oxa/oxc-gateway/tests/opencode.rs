@@ -165,9 +165,18 @@ fn headers_are_agent_specific_stable_and_carry_only_the_supplied_private_digest(
 fn refusals_are_typed_and_never_return_provider_messages_or_workspace_urls() {
     let body = json!({"error":{"type":"invalid_request_error", "message":"Model is hosted outside Europe and the United States; see https://example.invalid/workspaces/synthetic"}});
     assert_eq!(opencode::refusal(400, &body), Refusal::RegionBlocked);
-    assert_eq!(opencode::refusal(429, &body), Refusal::LimitReached);
+    assert_eq!(opencode::refusal(429, &body).code(), "cloud_rate_limited");
     assert_eq!(opencode::refusal(401, &body), Refusal::Unauthenticated);
     assert_eq!(opencode::refusal(403, &body), Refusal::Forbidden);
     assert!(!format!("{:?}", opencode::refusal(400, &body)).contains("workspaces"));
     assert_eq!(opencode::refusal(400, &json!({})), Refusal::Other(400));
+}
+
+#[test]
+fn model_throttling_is_not_reported_as_subscription_allowance_exhaustion() {
+    let body = json!({"error":{"type":"RateLimit.Exceeded","message":"Synthetic model throttle"}});
+    assert_eq!(opencode::refusal(429, &body).code(), "cloud_rate_limited");
+    let inference = json!({"error":{"type":"inference_failed","message":"Synthetic request failure"}});
+    assert_eq!(opencode::refusal(400, &inference), Refusal::Other(400));
+    assert!(!format!("{:?}", opencode::refusal(429, &body)).contains("Synthetic model"));
 }
