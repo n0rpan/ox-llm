@@ -3092,6 +3092,10 @@ fn key_010() {
     t.wait_chats(1);
     t.key("escape");
     t.wait("the abort is shown", |s| s.contains("aborted"));
+    // The stored aborted block is on screen before the run settles: a prompt entered in that
+    // window still steers the dying run, which retains queued input for explicit recovery
+    // instead of sending it. Wait for the busy indicator to clear, as `Tui::prompt` does.
+    t.wait("the aborted run settled", |s| !s.contains("Working"));
     t.prompt("again", "second answer");
     let s = t.screen();
     assert!(!s.contains("never shown"), "{s:?}");
