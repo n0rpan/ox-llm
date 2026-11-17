@@ -374,9 +374,7 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
-#[path = "../../tests/common/openai.rs"]
-mod mock;
+use crate::mock_openai as mock;
 #[cfg(test)]
 mod tests {
     use super::*;
