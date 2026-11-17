@@ -292,6 +292,114 @@ fn production_both_modes_execute_done_only_tools_resume_and_settle_without_pytho
 }
 
 #[test]
+fn new_process_chatgpt_continuation_is_pinned_to_the_saved_account() {
+    let env = TestEnv::new();
+    let reply = |text: &str| {
+        mock::Reply::events(vec![json!({
+            "type":"response.completed","response":{"status":"completed",
+            "output":[{"type":"reasoning","id":"rs_account_pin","encrypted_content":"opaque-account-pin-fixture"},
+                {"type":"message","id":"msg_account_pin","role":"assistant",
+                 "content":[{"type":"output_text","text":text}]}],
+            "usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}
+        })])
+    };
+    let peer = mock::MockOpenAi::start(vec![reply("First pinned answer"), reply("Same account answer")]);
+    settings(&env, &peer.base_url(), true);
+    let token = env.home().join(".config/oxc/llm/chatgpt-auth.json");
+    let record = |account: &str| {
+        json!({"access_token":KEY,
+        "refresh_token":"synthetic-refresh","account_id":account,"expires_at":2_000_000_000})
+        .to_string()
+    };
+    private_file(&token, &record("synthetic-account-a"));
+    let args = [
+        "-p",
+        "--no-tools",
+        "--no-mcp",
+        "--no-extensions",
+        "--no-context-files",
+    ];
+    let first = run(
+        &env,
+        &[args.as_slice(), &["Start the pinned task"]].concat(),
+        None,
+    );
+    success(&first);
+    let session = terminal(&first)["session_id"].as_str().unwrap().to_owned();
+    let continuation = format!("--continue={session}");
+    let same = run(
+        &env,
+        &[
+            args.as_slice(),
+            &[&continuation, "Continue with the same account"],
+        ]
+        .concat(),
+        None,
+    );
+    success(&same);
+    assert!(peer.requests()[1].body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item["id"] == "rs_account_pin"
+            && item["encrypted_content"] == "opaque-account-pin-fixture"));
+    assert!(peer
+        .requests()
+        .iter()
+        .all(|request| request.header("chatgpt-account-id") == Some("synthetic-account-a")));
+
+    // A third allowance remains: this must be a history/account refusal, not
+    // the exhausted-budget negative control in the existing composition test.
+    private_file(&token, &record("synthetic-account-b"));
+    let before = fs::read(&token).unwrap();
+    let changed = run(
+        &env,
+        &[
+            args.as_slice(),
+            &[&continuation, "Do not cross the account boundary"],
+        ]
+        .concat(),
+        None,
+    );
+    assert!(!changed.status.success());
+    assert_eq!(terminal(&changed)["outcome"], "failed");
+    assert_eq!(
+        peer.requests().len(),
+        2,
+        "account switch must not contact the upstream"
+    );
+    assert_eq!(
+        fs::read(&token).unwrap(),
+        before,
+        "refusal must not replace the selected account"
+    );
+    let settled = rows(&env);
+    assert_eq!(settled.len(), 3);
+    assert_eq!(settled[2]["status"], 400);
+    assert_eq!(settled[2]["error"], "provider_history_mismatch");
+    assert_eq!(settled[2]["cost_usd"], 0.0);
+    for output in [&first, &same, &changed] {
+        let visible = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for private in [
+            KEY,
+            "synthetic-account-a",
+            "synthetic-account-b",
+            "opaque-account-pin-fixture",
+        ] {
+            assert!(
+                !visible.contains(private),
+                "private account/replay data reached terminal output"
+            );
+        }
+    }
+    peer.assert_healthy();
+}
+
+#[test]
 fn both_provider_clients_honor_the_selected_silence_timeout() {
     for subscription in [false, true] {
         for disabled in [false, true] {
