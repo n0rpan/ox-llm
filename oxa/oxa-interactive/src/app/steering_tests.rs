@@ -432,3 +432,8 @@ fn explicit_prompt_after_ctrl_c_is_not_stranded_before_settlement() {
 fn explicit_recovery_overtaken_by_rebind_returns_text_and_attachments() {
     gated_prompt(Window::AfterExplicitAbort, None, false, true);
 }
+
+#[test]
+fn explicit_follow_up_after_ctrl_c_is_not_stranded_before_settlement() {
+    gated_prompt(Window::AfterExplicitAbort, None, true, false);
+}
