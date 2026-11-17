@@ -102,6 +102,8 @@ impl WrapUpReason {
 pub struct Gate {
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
+    /// Foreground work, excluding settlement after a dropped reply.
+    pub running: std::sync::atomic::AtomicBool,
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
@@ -524,6 +526,10 @@ impl Handle {
     /// Abort a pending retry wait without aborting anything else.
     pub fn abort_retry(&self) {
         self.shared.cancel_retry.cancel();
+    }
+    /// A foreground operation still accepts input, even before its start event is consumed.
+    pub fn is_running(&self) -> bool {
+        self.shared.gate.running.load(Ordering::SeqCst)
     }
     pub fn is_busy(&self) -> bool {
         self.shared.busy.load(Ordering::SeqCst)

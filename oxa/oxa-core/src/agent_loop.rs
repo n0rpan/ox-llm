@@ -69,6 +69,10 @@ pub fn run_loop(
 ) -> Result<RunEnd, OxaError> {
     crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
+    st.shared
+        .gate
+        .running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     sink.emit(&AgentEvent::AgentStart);
     observe_hooks(st, HookPoint::AgentStart, &Value::Null, sink, ui);
     let mut run_msgs: Vec<EventMessage> = Vec::new();
@@ -813,6 +817,13 @@ pub(crate) fn persist(
     sink: &mut dyn EventSink,
 ) -> Result<Entry, OxaError> {
     let entry = append_entry(st, body)?;
+    if matches!(&entry.body, EntryBody::Shown { why, .. } if [shown_why::ABORTED, shown_why::FAILED, shown_why::CUT].contains(why))
+    {
+        st.shared
+            .gate
+            .running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
     sink.emit(&AgentEvent::EntryAppended { entry: entry.clone() });
     Ok(entry)
 }

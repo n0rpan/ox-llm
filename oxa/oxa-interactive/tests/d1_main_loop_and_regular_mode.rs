@@ -547,17 +547,17 @@ fn escape_aborts_and_restores_queue() {
         vec![WorkerMsg::Event(AgentEvent::AgentStart)],
     );
     assert_eq!(d.code, 0);
-    // Escape took the queued message back into the editor; Enter sent it again as a steer.
+    // Escape restores queued input; explicit resubmission is a new recovery prompt.
     let (steering, follow_up) = s.handle().queued();
     assert_eq!(
         steering,
-        vec!["q1".to_string()],
-        "the queued message is back in the editor and resubmitted"
+        Vec::<String>::new(),
+        "restored input must not return to the canceled run queue"
     );
     assert!(follow_up.is_empty());
     assert!(
-        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
-        "resubmitting restored input retains one consumer on its original handle"
+        matches!(d.cmds.as_slice(), [SessionCmd::RecoveryPrompt { handle, text, .. }] if handle.same_instance(&s.handle()) && text == "q1"),
+        "restored input retains its original handle and explicit recovery boundary"
     );
 }
 
@@ -604,6 +604,75 @@ fn input_before_agent_start_is_consumed_steers_the_claimed_run() {
     assert!(
         matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(owner)] if owner.same_instance(&handle)),
         "a claimed foreground request must not be mistaken for an idle prompt"
+    );
+}
+
+#[test]
+fn dropped_failure_does_not_reactivate_the_busy_settlement_claim() {
+    struct HeldFailure {
+        entered: Sender<()>,
+        release: Receiver<()>,
+    }
+    impl oxa_proto::EventSink for HeldFailure {
+        fn emit(&mut self, event: &AgentEvent) {
+            if matches!(event, AgentEvent::EntryAppended { entry }
+                if matches!(&entry.body, EntryBody::Shown { why, .. } if *why == oxa_proto::shown_why::FAILED))
+            {
+                let _ = self.entered.send(());
+                let _ = self.release.recv();
+            }
+        }
+    }
+    let env = TestEnv::new();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let mut s = session_deps(
+        &env,
+        Arc::new(ScriptedEngine::new(vec![oxa_fake::ScriptTurn::fault(
+            oxa_fake::Fault::Http {
+                status: 400,
+                body: "synthetic failure".into(),
+            },
+        )])),
+        Arc::new(MemStore::new()),
+        Open::Ephemeral,
+    );
+    let handle = s.handle();
+    let run = std::thread::spawn(move || {
+        s.prompt(
+            "first".into(),
+            Vec::new(),
+            &mut HeldFailure {
+                entered: entered_tx,
+                release: release_rx,
+            },
+            &mut oxa_proto::HeadlessUi::default(),
+        )
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("failed reply persisted");
+    assert!(
+        handle.is_busy(),
+        "hold the original operation through its terminal event"
+    );
+    assert!(
+        !handle.is_aborting(),
+        "this is a failure, not the cancellation-token guard"
+    );
+    let d = drive_handle(
+        handle.clone(),
+        &env,
+        vec![vec![ch('x'), key("enter")], vec![key("ctrl+d")]],
+        Vec::new(),
+    );
+    let queued = handle.queued();
+    drop(release_tx);
+    let _ = run.join().expect("run thread");
+    assert_eq!(queued, (Vec::new(), Vec::new()));
+    assert!(
+        matches!(d.cmds.as_slice(), [SessionCmd::Prompt { text, .. }] if text == "x"),
+        "the busy settlement claim must not take new input as steering"
     );
 }
 

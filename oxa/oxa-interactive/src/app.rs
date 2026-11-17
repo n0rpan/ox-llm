@@ -584,18 +584,25 @@ pub fn worker_loop_with(
                 if preload_due {
                     preload_due = false;
                     if let Some(s) = session.as_mut() {
-                        run_boot_preload(s, &out, &mut ui_proxy, &stop);
+                        run_boot_preload(s, &out, &mut ui_proxy, &stop, &cmds, &mut backlog);
                     }
                 }
-                match cmds.recv_timeout(WORKER_IDLE_TICK) {
-                    Ok(cmd) => cmd,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if let Some(s) = session.as_mut() {
-                            idle_tick(s, &out, &mut ui_proxy, &mut last, &stop);
+                if stop.is_stopped() || backlog.iter().any(|c| matches!(c, SessionCmd::Shutdown)) {
+                    break;
+                }
+                if let Some(cmd) = backlog.pop_front() {
+                    cmd
+                } else {
+                    match cmds.recv_timeout(WORKER_IDLE_TICK) {
+                        Ok(cmd) => cmd,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if let Some(s) = session.as_mut() {
+                                idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog);
+                            }
+                            continue;
                         }
-                        continue;
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
         };
@@ -612,7 +619,7 @@ pub fn worker_loop_with(
             SessionCmd::Wake => {
                 pending.store(false, Ordering::SeqCst);
                 if let Some(s) = session.as_mut() {
-                    idle_tick(s, &out, &mut ui_proxy, &mut last, &stop);
+                    idle_tick(s, &out, &mut ui_proxy, &mut last, &stop, &cmds, &mut backlog);
                 }
             }
             SessionCmd::Reopen(how) => {
@@ -760,9 +767,25 @@ pub fn worker_loop_with(
 /// invisible: its progress events are not shown (they would set the foreground activity and
 /// make the UI treat the next prompt as steering), and the UI cancels it on input
 /// (`WorkerStop::is_preloading`).
-fn run_boot_preload(s: &mut Session, out: &Sender<WorkerMsg>, ui: &mut UiProxy, stop: &WorkerStop) {
+fn run_boot_preload(
+    s: &mut Session,
+    out: &Sender<WorkerMsg>,
+    ui: &mut UiProxy,
+    stop: &WorkerStop,
+    cmds: &Receiver<SessionCmd>,
+    backlog: &mut VecDeque<SessionCmd>,
+) {
     stop.set_preloading(true);
-    s.preload_prefix(&mut PreloadSink(ChanSink(out.clone())), ui);
+    s.preload_prefix_if(&mut PreloadSink(ChanSink(out.clone())), ui, || {
+        loop {
+            match cmds.try_recv() {
+                Ok(cmd) => backlog.push_back(cmd),
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => return false,
+            }
+        }
+        backlog.is_empty() && !stop.is_stopped()
+    });
     stop.set_preloading(false);
 }
 
@@ -775,10 +798,15 @@ fn idle_tick(
     ui: &mut UiProxy,
     last: &mut StatusModel,
     stop: &WorkerStop,
+    cmds: &Receiver<SessionCmd>,
+    backlog: &mut VecDeque<SessionCmd>,
 ) {
     // O-386: the preload is due before the worker's first wait (see `worker_loop_with`); this
     // call is the retry for a session whose hook set had requests pending then.
-    run_boot_preload(s, out, ui, stop);
+    run_boot_preload(s, out, ui, stop, cmds, backlog);
+    if !backlog.is_empty() || stop.is_stopped() {
+        return;
+    }
     let mut sink = CountingSink {
         inner: ChanSink(out.clone()),
         count: 0,

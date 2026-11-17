@@ -686,17 +686,13 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// A run is active: the worker reported a non-idle activity. The boot preload (O-152)
-    /// claims the session too, but is not a run: input is a prompt. V020-OPTIMIZE #13: so is a
-    /// draft prefill. Both keep the activity idle (their progress events are dropped), so the
-    /// activity alone answers the question.
-    ///
-    /// The session's claim is not the signal: it is held past the end of the run, for the
-    /// settle work (hooks, the front end's status file). A reply the core dropped (an abort, a
-    /// failure, a cut) ends the run and clears the activity at once, so a prompt typed after
-    /// the dropped reply is a prompt and not steering on a run that has already ended (#699).
+    /// Foreground activity, including the interval before its start event reaches the UI.
+    /// Background prefix/draft claims are excluded. The shared foreground signal ends when
+    /// a failed, aborted or cut reply is persisted, so settlement's remaining busy claim does
+    /// not turn later input into steering for a finished turn.
     fn running(&self) -> bool {
         self.vm.status.activity != Activity::Idle
+            || (self.handle.is_running() && !self.worker.is_preloading() && !self.worker.is_drafting())
     }
 
     /// Whether Enter / Alt+Enter queue the text (steering / follow-up) rather than start a run:
@@ -729,6 +725,12 @@ impl<'a> Loop<'a> {
         }
         if self.cmds.send(cmd).is_err() {
             self.quit = Some(1);
+        }
+        // A background claim may have reset its tokens between the first cancellation
+        // and publication. Once the command is visible, cancel any still-armed background
+        // work again; this never cancels the foreground command itself.
+        if self.worker.is_preloading() || self.worker.is_drafting() {
+            self.handle.cancel_background();
         }
     }
 
@@ -1438,6 +1440,7 @@ impl<'a> Loop<'a> {
                 return;
             }
             if self.running() {
+                self.abort_requested = true;
                 self.handle.abort();
             }
             if matches!(self.vm.status.activity, Activity::Retrying { .. }) {
