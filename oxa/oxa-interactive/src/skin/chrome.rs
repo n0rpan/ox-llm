@@ -876,7 +876,8 @@ fn budget_segment(b: &BudgetMeter, theme: &Theme) -> String {
         theme.fg(token, &body)
     );
     if let Some(pct) = pct {
-        s.push_str(&format!(" {}", theme.fg(token, &format!("{pct}%"))));
+        let displayed_pct = pct.round().max(0.0) as u64;
+        s.push_str(&format!(" {}", theme.fg(token, &format!("{displayed_pct}%"))));
     }
     if let Some(word) = budget_warning(pct) {
         s.push_str(&format!(" {}", theme.fg(token, word)));
@@ -884,30 +885,30 @@ fn budget_segment(b: &BudgetMeter, theme: &Theme) -> String {
     s
 }
 
-/// The used percentage of a budget, rounded; `None` without a positive cap or without a
-/// settled used value (a zero cap has no percentage: nothing fits in it).
-fn budget_percent(used: Option<f64>, cap: Option<f64>) -> Option<u64> {
+/// The unrounded used percentage of a budget, so warnings never trigger early. `None`
+/// without a positive cap or a settled used value (a zero cap has no percentage).
+fn budget_percent(used: Option<f64>, cap: Option<f64>) -> Option<f64> {
     let (used, cap) = (used?, cap?);
     if !used.is_finite() || !cap.is_finite() || cap <= 0.0 {
         return None;
     }
-    Some((used / cap * 100.0).round().max(0.0) as u64)
+    Some(used / cap * 100.0)
 }
 
 /// The steady warning word of a budget: `near cap` from 80 %, `over cap` at or above the cap.
-fn budget_warning(pct: Option<u64>) -> Option<&'static str> {
+fn budget_warning(pct: Option<f64>) -> Option<&'static str> {
     match pct? {
-        pct if pct >= 100 => Some("over cap"),
-        pct if pct >= 80 => Some("near cap"),
+        pct if pct >= 100.0 => Some("over cap"),
+        pct if pct >= 80.0 => Some("near cap"),
         _ => None,
     }
 }
 
 /// The colour of a budget: `error` at or above the cap, `warning` from 80 %, else plain text.
-fn budget_token(pct: Option<u64>) -> &'static str {
+fn budget_token(pct: Option<f64>) -> &'static str {
     match pct {
-        Some(pct) if pct >= 100 => "error",
-        Some(pct) if pct >= 80 => "warning",
+        Some(pct) if pct >= 100.0 => "error",
+        Some(pct) if pct >= 80.0 => "warning",
         _ => "text",
     }
 }

@@ -396,6 +396,35 @@ fn hud_budget_thresholds() {
 }
 
 #[test]
+fn hud_budget_warnings_use_unrounded_usage() {
+    let theme = colour();
+    for (used, pct, token, warning) in [
+        (7.95, 80, "text", ""),
+        (8.0, 80, "warning", " near cap"),
+        (8.01, 80, "warning", " near cap"),
+        (9.96, 100, "warning", " near cap"),
+        (10.0, 100, "error", " over cap"),
+        (10.01, 100, "error", " over cap"),
+    ] {
+        let line = hud(&with_budget(usd(used, Some(10.0))), 200, &theme);
+        assert_eq!(
+            budget_part(&line).trim(),
+            format!("day $ {used:.2}/10.00 {pct}%{warning}"),
+            "warnings must use the actual usage, not the rounded {pct}%"
+        );
+        for text in [format!("{used:.2}/10.00"), format!("{pct}%")] {
+            assert!(
+                line.contains(&theme.fg(token, &text)),
+                "{used}/10 should use {token} for {text:?}: {line:?}"
+            );
+        }
+        if !warning.is_empty() {
+            assert!(line.contains(&theme.fg(token, warning.trim())));
+        }
+    }
+}
+
+#[test]
 fn hud_budget_unknown_settlement_shows_question_mark() {
     let unknown = BudgetMeter {
         used: None,
