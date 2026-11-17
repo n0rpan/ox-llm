@@ -121,7 +121,7 @@ jobs:
         run: |
           base=$(git merge-base origin/main HEAD)
           if git diff --quiet "$base" HEAD -- \
-            'oxa/oxa-cli/**' 'oxa/oxc-gateway/src/share/**'; then
+            'oxa/oxa-cli/**' 'oxa/oxc-gateway/src/share/**' .github/workflows/lane.yml; then
             echo 'CLI share-key controls: no affected share paths.' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
