@@ -61,11 +61,14 @@ only retained state is:
    (`lib.rs:82` → `gitdirs::resolve`, `gitdirs.rs:124`). This is a session-scoped list of git
    dirs, alternates and protected entries, not a config cache; the per-command checks above
    re-validate the protected entries against the current file system.
-3. **Host-side empty files** created just before a run by `create_missing_git_files`
+3. **Host-side placeholder files** created just before a run by `create_missing_git_files`
    (`bwrap.rs:567`, called from `lib.rs:140`, `:151`, `:164`): a missing `config`,
-   `config.worktree`, `commondir` or `gitdir` is created empty on the host so it can be bound
-   read-only. This is a durable side effect on the repository, not a cache, and the module
-   comment (`gitdirs.rs:41`–`:43`) explains why removing it after the run is not sound.
+   `config.worktree` or `gitdir` is created as an empty file on the host so it can be bound
+   read-only, while a missing `commondir` is created containing `.\n` (`bwrap.rs:604`–`:610`):
+   git dies on an empty `commondir`, and `.` names the git directory itself, which is what an
+   absent `commondir` means. These are durable side effects on the repository, not a cache,
+   and the module comment (`gitdirs.rs:41`–`:43`) explains why removing them after the run is
+   not sound.
 
 ## 3. Ownership
 
@@ -108,9 +111,15 @@ command:
 - timeout or cancel sends `SIGTERM` to the process group (`signal_group`, `run.rs:176`), then
   `SIGKILL` after `KILL_GRACE` = 2 s (`run.rs:16`) or as soon as the group is gone
   (`group_alive`, `run.rs:183`);
-- the loop ends when the child has exited, the pipe has reached EOF, and either no signal was
-  sent or the hard kill happened; a still-open pipe (a background process holding it) may hold
-  the call for at most `DRAIN` = 200 ms after exit (`run.rs:12`, `:292`);
+- the loop ends on child exit only once `settled` and either EOF or `DRAIN` after the exit
+  (`run.rs:292`–`:297`). Without a termination signal `settled` is true at once, so a
+  still-open pipe (a background process holding it) bounds the wait after a normal exit at
+  `DRAIN` = 200 ms (`run.rs:12`). During cancel or timeout `settled` is false until the hard
+  kill (`run.rs:286`–`:291`), so ordinary-exit draining does not apply: a child that exits on
+  `SIGTERM` while a surviving process holds the pipe open keeps the call inside the loop until
+  `KILL_GRACE` = 2 s after `SIGTERM` (or until the child has exited and the whole group is
+  gone, `group_alive`). The 200 ms `DRAIN` is therefore an ordinary-exit bound, not a
+  whole-call bound once a termination signal was sent;
 - output is bounded by `CAPTURE_CAP` = 16 MiB, head and tail halves with a dropped-byte count
   (`Capture`, `run.rs:125`);
 - stdin, when given, is written from its own thread so a child that writes before it reads
