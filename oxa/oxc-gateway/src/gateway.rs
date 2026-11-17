@@ -250,7 +250,7 @@ impl Gateway {
                 on(Event::Chunk(chunk))
             }
         };
-        let result = if model.info().provider == crate::catalog::Provider::OpenRouter {
+        let result = if model.info().provider == Provider::OpenRouter {
             self.client
                 .stream_openrouter(
                     request,
@@ -284,7 +284,7 @@ impl Gateway {
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
             call.metered(usage);
-            if model.info().provider == crate::catalog::Provider::OpenRouter {
+            if model.info().provider == Provider::OpenRouter {
                 call.metered_cost(terminal_reported_cost);
             }
         }
