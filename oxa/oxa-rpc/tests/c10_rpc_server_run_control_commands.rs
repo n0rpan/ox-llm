@@ -95,8 +95,12 @@ impl Engine for GatedEngine {
 
 /// A session over `engine`, stored under the test's own agent directory.
 fn open_session(env: &TestEnv, engine: Arc<dyn Engine>) -> Session {
+    Session::open(session_deps(env, engine), Open::New).expect("the session opens over the engine")
+}
+
+fn session_deps(env: &TestEnv, engine: Arc<dyn Engine>) -> Deps {
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(env.agent_dir().join("sessions")));
-    let deps = Deps {
+    Deps {
         engine,
         store,
         tools: Vec::new(),
@@ -117,8 +121,101 @@ fn open_session(env: &TestEnv, engine: Arc<dyn Engine>) -> Session {
         mode: None,
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[test]
+fn file_control_receipts_report_revisioned_and_durable_owner_transitions() {
+    use oxa_orchestrator::control::Request;
+    use oxa_proto::{HeadlessUi, NullSink};
+    use oxa_session::{send_inbox_control, Goal, GoalBudget, GoalStatus, SessionRef};
+
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut owner = open_session(&env, engine.clone());
+    let mut sink = NullSink;
+    let goal = Goal::new("Review synthetic work.".into(), GoalBudget::default(), 1000).unwrap();
+    owner.set_goal(Some(goal), &mut sink).unwrap();
+    let bound = owner.inner().sref.clone();
+    let original = owner.goal_revision();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let mut rpc = Rpc::start(owner, &env);
+    let ready = rpc.call("ready", json!({"type":"get_state"}));
+    assert_eq!(ready["data"]["goalRevision"], original);
+    let enqueue = |method: &str, id: &str, revision| {
+        let packet = json!({"method": method, "id": id, "revision": revision});
+        send_inbox_control(&agent, &bound, &packet.to_string()).unwrap();
     };
-    Session::open(deps, Open::New).expect("the session opens over the engine")
+    let receipt = |rpc: &Rpc, id: &str| {
+        rpc.wait_for(id, |record| {
+            record["type"] == "goal_control_receipt" && record["data"]["id"] == id
+        })["data"]
+            .clone()
+    };
+
+    let other = SessionRef {
+        id: bound.id.clone(),
+        path: bound.path.with_file_name("other.jsonl"),
+    };
+    let misdirected = json!({"method":"cancel","id":"other","revision":original});
+    send_inbox_control(&agent, &other, &misdirected.to_string()).unwrap();
+    let malformed = json!({
+        "method":"cancel", "id":"malformed", "revision":original, "session_file":"packet-selected.jsonl"
+    });
+    send_inbox_control(&agent, &bound, &malformed.to_string()).unwrap();
+    let rejection = rpc.wait_for("malformed control receipt", |record| {
+        record["type"] == "goal_control_receipt" && record["data"]["error"] == "invalid_request"
+    });
+    assert_eq!(rejection["data"], json!({"error":"invalid_request"}));
+
+    let steer = Request::Steer {
+        id: "steer".into(),
+        revision: original,
+        text: "Synthetic steering.".into(),
+    };
+    send_inbox_control(&agent, &bound, &serde_json::to_string(&steer).unwrap()).unwrap();
+    assert_eq!(
+        receipt(&rpc, "steer"),
+        json!({"id":"steer","error":"unsupported_control"})
+    );
+
+    enqueue("pause", "pause", original);
+    let paused = receipt(&rpc, "pause");
+    let paused_revision = paused["revision"].as_u64().unwrap();
+    assert!(paused_revision > original);
+    assert_eq!(
+        paused,
+        json!({"id":"pause","applied":true,"revision":paused_revision})
+    );
+    let state = rpc.call("after_pause", json!({"type":"get_state"}));
+    assert_eq!(state["data"]["goalRevision"], paused_revision);
+    enqueue("cancel", "stale", original);
+    assert_eq!(
+        receipt(&rpc, "stale"),
+        json!({"id":"stale","error":"goal_revision_conflict"})
+    );
+    enqueue("resume", "resume", paused_revision);
+    let resumed_revision = receipt(&rpc, "resume")["revision"].as_u64().unwrap();
+    assert!(resumed_revision > paused_revision);
+    enqueue("cancel", "cancel", resumed_revision);
+    let canceled_revision = receipt(&rpc, "cancel")["revision"].as_u64().unwrap();
+    assert!(canceled_revision > resumed_revision);
+    enqueue("resume", "after_cancel", canceled_revision);
+    assert!(receipt(&rpc, "after_cancel")["error"].is_string());
+
+    let (_, records) = rpc.finish();
+    assert!(!records.iter().any(|record| record["data"]["id"] == "other"));
+    assert_eq!(
+        std::fs::read_dir(agent.join("inbox").join(&bound.id))
+            .unwrap()
+            .count(),
+        1
+    );
+    let mut owner = Session::open(session_deps(&env, engine), Open::Resume(bound)).unwrap();
+    assert_eq!(owner.goal_revision(), canceled_revision);
+    assert_eq!(owner.goal().unwrap().status, GoalStatus::Canceled);
+    owner.shutdown(&mut HeadlessUi::default());
 }
 
 /// A `Write` that appends to a shared buffer: the server's stdout in the tests.
