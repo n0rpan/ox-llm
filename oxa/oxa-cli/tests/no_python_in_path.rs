@@ -21,10 +21,18 @@ use std::time::{Duration, Instant};
 // Normal workspace checks retain the Cargo-built binary; an explicit bad artifact
 // never falls back to that binary and silently turns into a development proof.
 fn proof_binary(release: Option<&Path>, required: bool) -> Result<PathBuf, &'static str> {
+    select_proof_binary(release, required, Path::new(env!("CARGO_BIN_EXE_oxa")))
+}
+
+fn select_proof_binary(
+    release: Option<&Path>,
+    required: bool,
+    development: &Path,
+) -> Result<PathBuf, &'static str> {
     let path = match release {
         Some(path) => path,
         None if required => return Err("release artifact binary is required"),
-        None => Path::new(env!("CARGO_BIN_EXE_oxa")),
+        None => development,
     };
     if !path.is_absolute() {
         return Err("proof binary path must be absolute");
@@ -44,10 +52,24 @@ fn required_release_artifact_cannot_fall_back_to_development_binary() {
     assert!(proof_binary(Some(&env.root().join("missing-artifact")), false).is_err());
     assert!(proof_binary(Some(Path::new("relative-oxa")), true).is_err());
     assert!(proof_binary(Some(env.root()), true).is_err());
+    // The uploaded harness runs without its build tree. Exercise selection with
+    // owned files so these controls also run under the dedicated fixture UIDs.
+    let development = env.write("development-oxa", "development fixture");
+    let artifact = env.write("release-oxa", "release fixture");
+    let unavailable = env.root().join("unavailable-development-oxa");
     assert_eq!(
-        proof_binary(Some(Path::new(env!("CARGO_BIN_EXE_oxa"))), true).unwrap(),
-        proof_binary(None, false).unwrap()
+        select_proof_binary(None, false, &development).unwrap(),
+        development
     );
+    assert!(select_proof_binary(None, true, &development).is_err());
+    assert!(select_proof_binary(Some(&unavailable), false, &development).is_err());
+    assert!(select_proof_binary(None, false, &unavailable).is_err());
+    for required in [false, true] {
+        assert_eq!(
+            select_proof_binary(Some(&artifact), required, &unavailable).unwrap(),
+            artifact
+        );
+    }
 }
 
 fn verified_artifact(path: Option<&Path>, expected: Option<&str>) -> Result<PathBuf, &'static str> {
