@@ -968,6 +968,7 @@ echo '\''a'\'''"#
 
     #[test]
     fn no_note_for_quoted_text_that_is_not_a_failed_command() {
+        let cwd = Path::new("/home/u/proj");
         let json = r#"{"body":"it failed: /home/u/.venv/bin/python: No such file or directory\nthen we retried","comments":[]}"#;
         assert!(unmounted_home_note(json, "/home/u", cwd).is_none());
         let prose = "The old error was /home/u/.venv/bin/python: No such file or directory when run.\n";
