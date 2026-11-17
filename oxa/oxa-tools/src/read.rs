@@ -44,7 +44,7 @@ impl Tool for ReadTool {
     /// `[Access::Read(path)]`.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
         let path = arg_path(args)?;
-        Ok(vec![Access::Read(crate::resolve_path(cx.cwd, path))])
+        Ok(vec![Access::Read(crate::resolve_tool_path(cx, path))])
     }
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         match read_file(args, cx) {
@@ -77,7 +77,7 @@ fn read_file(args: &Value, cx: &ToolCtx) -> Result<String, String> {
     let path = arg_path(args)?;
     let offset = arg_number(args, "offset")?;
     let limit = arg_number(args, "limit")?;
-    let abs = crate::resolve_path(cx.cwd, path);
+    let abs = crate::resolve_tool_path(cx, path);
     let meta = match std::fs::metadata(&abs) {
         Ok(m) => m,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(errors::path_not_found(path)),

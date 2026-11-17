@@ -32,7 +32,7 @@ pub fn backoff_ms(attempt: u32, p: &RetryPolicy) -> u64 {
 
 /// `request` with pi's retry behaviour, adapted (plan sec. 1 "Queue, retry"):
 /// * Retryable: `engine_down`, `engine_busy` (after its `retry after <n> s` when given, capped
-///   at `max_delay_ms`), `engine_http` 5xx / 429, `stream_broken` **before any data byte**.
+///   at `max_delay_ms`), `cloud_rate_limited`, `engine_http` 5xx / 429, `stream_broken` **before any data byte**.
 ///   The same idempotency key is reused. Emits `AutoRetryStart` / `AutoRetryEnd`; the wait is
 ///   interruptible by `Shared::cancel_retry` and `cancel`.
 /// * `stream_broken` after output: not replayed here; returned as the error. The agent loop
@@ -358,6 +358,7 @@ fn retryable(e: &OxaError, got_data: bool) -> bool {
         | codes::ENGINE_BUSY
         | codes::STREAM_BROKEN
         | codes::TIMEOUT
+        | "cloud_rate_limited"
         | "cloud_credentials_unavailable"
         | "cloud_ledger_unavailable" => true,
         codes::ENGINE_HTTP => matches!(http_status(&e.message), Some(s) if s >= 500 || s == 429),
@@ -513,6 +514,7 @@ mod fit_tests {
             (codes::ENGINE_BUSY, "HTTP 503: busy"),
             (codes::ENGINE_DOWN, "connection reset"),
             (codes::ENGINE_HTTP, "HTTP 429: rate limited"),
+            ("cloud_rate_limited", "HTTP 429: rate limited"),
             (codes::TIMEOUT, "timed out"),
             ("cloud_credentials_unavailable", "credentials unavailable"),
             ("cloud_ledger_unavailable", "ledger unavailable"),
@@ -530,6 +532,9 @@ mod fit_tests {
             "the engine answered HTTP 503: queue full (retry after 30 s)",
         );
         assert!(retryable(&busy, false));
+        let rate = OxaError::new("cloud_rate_limited", "HTTP 429: retry after 7 s");
+        assert!(retryable(&rate, false));
+        assert_eq!(retry_after_ms(&rate.message), Some(7000));
         let bad = OxaError::new(codes::ENGINE_HTTP, "the engine answered HTTP 400: bad");
         assert!(!retryable(&bad, false));
         let gone = OxaError::new(codes::ENGINE_HTTP, "the engine answered HTTP 500: oops");

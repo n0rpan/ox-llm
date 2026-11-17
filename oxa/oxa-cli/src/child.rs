@@ -212,6 +212,7 @@ mod tests {
         };
         let send = |kind: TurnKind, snapshot_keep: bool| {
             let r = ChatRequest {
+                output_schema: None,
                 prefix: &prefix,
                 messages: &[],
                 model: "m",

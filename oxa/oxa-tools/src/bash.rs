@@ -2,7 +2,7 @@
 // ported from pi packages/coding-agent/src/core/tools/bash.ts (execution replaced by the sandbox)
 use crate::descriptions::{self, errors};
 use crate::jobs::{JobRegistry, JobStatus};
-use oxa_proto::{Access, ExecSpec, Mode, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
+use oxa_proto::{Access, ExecSpec, Mode, Sandbox, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -14,6 +14,19 @@ pub struct BashTool {
     spec: ToolSpec,
     shell: ShellConfig,
     jobs: Arc<JobRegistry>,
+    /// #202: the sandbox the tool runs through instead of `ToolCtx::sandbox` (the session's
+    /// `oxa_sandbox::FullAccess`, which drops bwrap under `yolo`). `None` = `ToolCtx::sandbox`.
+    sandbox: Option<OwnSandbox>,
+}
+
+/// An own sandbox of the tool (no `Debug` on `dyn Sandbox`).
+#[derive(Clone)]
+struct OwnSandbox(Arc<dyn Sandbox>);
+
+impl std::fmt::Debug for OwnSandbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OwnSandbox")
+    }
 }
 
 impl BashTool {
@@ -22,6 +35,7 @@ impl BashTool {
             spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell: ShellConfig::default(),
             jobs: Arc::new(JobRegistry::new()),
+            sandbox: None,
         }
     }
     /// H: the tool with pi's `shellPath` / `shellCommandPrefix` settings.
@@ -30,6 +44,7 @@ impl BashTool {
             spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell,
             jobs: Arc::new(JobRegistry::new()),
+            sandbox: None,
         }
     }
     /// Issue #127 (b): the tool with `shell` and a shared [`JobRegistry`] (the session's).
@@ -38,6 +53,18 @@ impl BashTool {
             spec: crate::spec_of(&descriptions::builtin_specs::BASH_DEFAULT),
             shell,
             jobs,
+            sandbox: None,
+        }
+    }
+    /// #202: run through `sandbox` instead of `ToolCtx::sandbox`.
+    pub fn with_sandbox(mut self, sandbox: Arc<dyn Sandbox>) -> BashTool {
+        self.sandbox = Some(OwnSandbox(sandbox));
+        self
+    }
+    fn sandbox<'a>(&'a self, cx: &'a ToolCtx) -> &'a dyn Sandbox {
+        match &self.sandbox {
+            Some(OwnSandbox(s)) => s.as_ref(),
+            None => cx.sandbox,
         }
     }
 }
@@ -120,6 +147,8 @@ enum BashArgs {
 
 /// #150 (2): the longest `wait_s` a job read blocks for; a larger value is cut to it.
 pub const WAIT_CAP_S: f64 = 60.0;
+/// #618: keep PID isolation; explain why a separate process listing cannot inspect a job.
+const JOB_PROCESS_VISIBILITY: &str = "Each bash command runs in a separate PID namespace; ps in another bash call cannot see this job. Use the job interface for status and captured output, not cross-call process inspection.";
 const BAD_WAIT: &str = "\"wait_s\" must be a number of seconds, zero or more";
 const WAIT_NEEDS_JOB: &str = "\"wait_s\" applies to a job read; provide \"job\" with it";
 
@@ -308,6 +337,18 @@ pub(crate) fn git_config_note(output: &str, exit: Option<i32>) -> Option<String>
     }
 }
 
+/// #290: keep shared git metadata protected, but offer an exclusion route that needs no
+/// tracked-file edits. Only a failed shell redirection diagnostic counts, not quoted issue text.
+pub(crate) fn git_exclude_note(output: &str, exit: Option<i32>) -> Option<String> {
+    if !exit.is_some_and(|code| code != 0) {
+        return None;
+    }
+    output.lines().find(|line| {
+        line.starts_with("bash: ") && line.trim_end().ends_with("/info/exclude: Read-only file system")
+    })?;
+    Some("Git's info/exclude is shared git metadata and stays read-only in a worktree sandbox. To ignore a local scratch directory without changing tracked files, put a .gitignore inside that directory, for example `printf '*\\n' > .venv-test/.gitignore` (the directory must already exist). This ignores its contents, including that .gitignore; do not overwrite an existing tracked .gitignore. For individual files, use `git -c core.excludesFile=<local-ignore-file> status` with patterns in a writable local file; that override applies only to that git invocation".to_string())
+}
+
 /// #253: when stdout is not a terminal, `gh issue view --comments` (also `gh pr view`) prints the
 /// comments only, so an issue without comments gives an empty, successful result that reads as a
 /// failure of the sandbox. Say what happened and how to get the text. Only for a successful
@@ -430,7 +471,7 @@ impl BashTool {
 
     /// Issue #127 (b): start `command` detached and return its job id at once.
     fn start_job(&self, command: &str, timeout_s: Option<u32>, cx: &ToolCtx) -> ToolOutput {
-        if let Err(e) = cx.sandbox.check() {
+        if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
         let command = match self.shell.command(command) {
@@ -441,7 +482,7 @@ impl BashTool {
             command,
             cwd: cx.cwd.to_path_buf(),
             writable: !matches!(cx.mode, Mode::Plan),
-            net: net_for(cx.mode, cx.sandbox.network()),
+            net: net_for(cx.mode, self.sandbox(cx).network()),
             // A background job has no timeout unless the call names one: it runs until it
             // exits, is killed (`bash {job, kill: true}`) or the session ends.
             timeout_s,
@@ -450,7 +491,7 @@ impl BashTool {
         match self.jobs.spawn(spec) {
             Ok(id) => ToolOutput {
                 text: format!(
-                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}."
+                    "Started background job {id}. Read its status and output with bash {{\"job\": \"{id}\"}}.\n{JOB_PROCESS_VISIBILITY}"
                 ),
                 is_error: false,
                 ui: json!({ "job": id }),
@@ -469,7 +510,7 @@ impl BashTool {
         cx: &ToolCtx,
         live: &mut dyn FnMut(&str),
     ) -> ToolOutput {
-        if let Err(e) = cx.sandbox.check() {
+        if let Err(e) = self.sandbox(cx).check() {
             return ToolOutput::error(e.to_string());
         }
         let backgrounded = looks_backgrounded(command);
@@ -482,7 +523,7 @@ impl BashTool {
             command,
             cwd: cx.cwd.to_path_buf(),
             writable: !matches!(cx.mode, Mode::Plan),
-            net: net_for(cx.mode, cx.sandbox.network()),
+            net: net_for(cx.mode, self.sandbox(cx).network()),
             // F5: the call's own timeout wins; else the epoch's default (0 = none, pi).
             timeout_s: timeout_s.or_else(|| (cx.tune.bash_timeout_s > 0).then_some(cx.tune.bash_timeout_s)),
             env: cx.env.to_vec(),
@@ -495,7 +536,7 @@ impl BashTool {
                 live(&text);
             }
         };
-        let res = cx.sandbox.run(&spec, cx.cancel, &mut sink);
+        let res = self.sandbox(cx).run(&spec, cx.cancel, &mut sink);
         if !pending.is_empty() {
             live(&String::from_utf8_lossy(&pending));
         }
@@ -512,7 +553,11 @@ impl BashTool {
                 ]
                 .iter()
                 .any(|error| output.to_ascii_lowercase().contains(error)));
-        if let Some(notice) = cx.sandbox.persistence_notice().filter(|_| persistence_relevant) {
+        if let Some(notice) = self
+            .sandbox(cx)
+            .persistence_notice()
+            .filter(|_| persistence_relevant)
+        {
             output.push_str("\n\n");
             output.push_str(notice);
         }
@@ -538,6 +583,7 @@ impl BashTool {
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
         let note = note.or_else(|| git_config_note(&output, res.exit));
+        let note = note.or_else(|| git_exclude_note(&output, res.exit));
         let note = note.or_else(|| gh_comments_note(raw_command, &output, res.exit).map(str::to_string));
         let shown = if output.is_empty() {
             match note {
@@ -833,6 +879,48 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert!(!res.text.contains("sandbox"), "{}", res.text);
+    }
+
+    #[test]
+    fn git_exclude_write_failure_explains_local_directory_ignore() {
+        let output = b"bash: line 1: /repo/.git/info/exclude: Read-only file system\n";
+        let sb = Fake::ok(output, Some(1));
+        let (res, _) = run_with(
+            &sb,
+            json!({"command": "printf '.venv-test/\\n' >> \"$(git rev-parse --git-path info/exclude)\""}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(res.is_error);
+        assert!(res.text.contains("shared git metadata"), "{}", res.text);
+        assert!(
+            res.text.contains("printf '*\\n' > .venv-test/.gitignore"),
+            "{}",
+            res.text
+        );
+        assert!(
+            res.text.contains("without changing tracked files"),
+            "{}",
+            res.text
+        );
+
+        for (out, exit) in [
+            (output.as_slice(), Some(0)),
+            (b"bash: /repo/log: Read-only file system\n".as_slice(), Some(1)),
+            (
+                b"quoted: /repo/.git/info/exclude: Permission denied\n".as_slice(),
+                Some(1),
+            ),
+        ] {
+            let sb = Fake::ok(out, exit);
+            let (res, _) = run_with(
+                &sb,
+                json!({"command": "cat log"}),
+                Mode::Workspace,
+                &CancelToken::new(),
+            );
+            assert!(!res.text.contains("shared git metadata"), "{}", res.text);
+        }
     }
 
     /// #253: an issue without comments prints nothing under `--comments` when piped; the result
@@ -1340,6 +1428,38 @@ echo '\''a'\'''"#
             out.text
         );
         jobs.kill_all();
+    }
+
+    /// #618: process isolation is intentional, but must not make a running job look lost.
+    #[test]
+    fn background_job_responses_explain_process_visibility() {
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Blocking {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let started = run_job_tool(&tool, &*sb, json!({"command": "sleep 100", "background": true}));
+        let running = run_job_tool(&tool, &*sb, json!({"job": "job-1"}));
+        jobs.kill_all();
+
+        assert!(!started.is_error, "{}", started.text);
+        assert!(started.text.contains(JOB_PROCESS_VISIBILITY), "{}", started.text);
+        assert!(
+            started.text.contains("bash {\"job\": \"job-1\"}"),
+            "{}",
+            started.text
+        );
+        assert!(!running.is_error, "{}", running.text);
+        assert!(running.text.contains("Still running"), "{}", running.text);
+        assert!(
+            running.text.contains("bash {\"job\": \"job-1\", \"wait_s\": 30}"),
+            "{}",
+            running.text
+        );
+        assert!(!running.text.contains("separate PID namespace"));
+        assert!(!running.text.contains("ps in another bash call"));
+        assert!(!running.text.contains("Use the job interface"));
     }
 
     #[test]

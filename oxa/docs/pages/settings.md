@@ -27,7 +27,7 @@ Settings that older files may contain but oxa does not implement are not listed 
 
 Where the user file alone counts, the table says so:
 
-- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
+- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
 - project settings are trust-gated. In an untrusted project they are not read. Project files that run or load code (`hooks`, `shellPath`, `shellCommandPrefix`, `packages`, `extensions`, `skills`, `prompts`) also need the content approval described in [security.md](security.md#project-trust).
 
 Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file.
@@ -45,6 +45,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `ui.animation` | `arcade` / `minimal` / `off` | `arcade` | what moves on the activity line of the `oxa` skin while a run is in progress: `arcade` is a one-row animated scene with a short `CLEAR` when the run is done; `minimal` is the small six-cell sprite; `off` is the static text badge. Never any sound. `ui.reducedMotion`, `NO_COLOR` and `TERM=dumb` give `off` |
 | `ui.animationGraphics` | `auto` / `off` | `auto` | `auto` draws the scene as pixel art when the terminal answers the kitty graphics query at start and is kitty or Ghostty (every frame is sent once and deleted again on exit); `off` keeps the scene in text everywhere |
 | `ui.animationScene` | `graphics` / `stack` / `stars` / `charge` | `null` | the scene of `ui.animation = "arcade"`. Unset: the pixel-art scene where the terminal can draw it, else `stack` (stacking columns). `stack`, `stars` (a ship in a starfield) and `charge` (the ox, in block characters) are the text scenes; `graphics` asks for the pixel-art scene on any terminal that answers the graphics query |
+| `ui.notify` | `off` / `unfocused` / `always` | `unfocused` | terminal notification when a run settles (including errors/aborts) or a permission dialog opens. `unfocused` requires a terminal focus-out report; terminals without focus reporting stay quiet. Uses OSC 9 and a BEL fallback from oxa itself, with generic text (no prompt or file details); any sound is controlled by the terminal. `off` disables both |
 | `ui.reducedMotion` | bool | `false` | no animation in the `oxa` skin: the working sprite and the YOLO flames are replaced by the static text badge. The environment variable `OXA_REDUCED_MOTION=1` does the same for one run; `NO_COLOR` and `TERM=dumb` imply it |
 | `ui.skin` | `auto` / `pi` / `oxa` / `ascii` | `auto` | the look of the interactive UI: `oxa` is OXA's own (frames, a status line with meters, a key hint bar), `pi` is the plain look, `ascii` is `oxa` with ASCII glyphs only, and `auto` is `oxa` (ASCII when the locale is not UTF-8 or `TERM` is `linux`/`dumb`). With the `oxa` skin, `NO_COLOR` turns all colour off |
 | `themes` | list | `[]` | extra theme files or directories |
@@ -124,6 +125,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `skills` | list | `[]` | skill files and directories to load |
 | `prompts` | list | `[]` | prompt template files and directories to load |
 | `packages` | list | `[]` | installed package sources; `oxa install` edits this |
+| `permissions.defaultMode` | `standard` / `auto` / `yolo` / `plan` | `auto` | permission mode at start ([security.md](security.md#standard-auto-and-yolo)); command-line flags win for one run; a project may lower it, never raise it |
 
 ### Sessions and compaction
 
@@ -161,15 +163,93 @@ The compaction rules are in [compaction.md](compaction.md).
 | Key | Type | Default | Meaning |
 |---|---|---|---|
 | `oxa.allowHomeCwd` | bool | `false` | allow oxa to start in the home directory, `/` or a parent of home. Without it print, JSON and RPC modes refuse and interactive mode asks; the environment variable `OXA_ALLOW_HOME_CWD` also allows it. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
-| `oxa.mode` | `plan` / `workspace` / `ask` | `workspace` | permission mode at start |
+| `oxa.mode` | `plan` / `workspace` / `ask` | `workspace` | table mode at start |
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
+| `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
+| `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
+| `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
+| `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
 | `oxa.sandbox.readPaths` | list | `[]` | extra read-only paths for bash; `~/` is expanded; user settings only |
 | `oxa.sandbox.writePaths` | list | `[]` | extra writable paths for bash; `~/` is expanded; user settings only |
+
+### Native cloud gateway
+
+See [Run oxa without Python](no-python.md) for setup, remaining Python dependencies
+and a loopback-only manual check.
+
+Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
+gateway for sessions and `--list-models`. The default is `false`. Offline mode
+refuses before opening the gateway; configuration or gateway failures are returned
+directly. Project settings cannot enable this transport or change its cloud policy.
+
+Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes
+under `oxa.cloud.models`, keyed by the model name used
+with `--model`. Supply the upstream model, context/output limits and current
+provider prices. This example uses an illustrative model and prices:
+
+```json
+{
+  "oxa": {
+    "engine": { "inProcessCloud": true },
+    "cloud": {
+      "daily_budget_usd": 10,
+      "models": {
+        "example-cloud": {
+          "provider": "anthropic",
+          "upstream_model": "replace-with-your-model",
+          "context_window": 128000,
+          "max_output": 8192,
+          "pricing": {
+            "input_per_million": 2,
+            "output_per_million": 3,
+            "cache_read_per_million": 0.2,
+            "cache_write_per_million": 2.5
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The key is read for each request from the existing private
+`~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
+Keep keys out of settings. The file uses the existing provider-key JSON format.
+Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
+reads neither the key nor the ledger and contacts no provider. A missing price or
+daily budget refuses a request before credentials or provider I/O. Requests retain
+their budget reservation until the private row is durable.
+
+An `openai` route uses the same model/price fields, reads the `openai` key from
+that key file, and defaults to `https://api.openai.com/v1`. Both native providers
+preserve tool argument strings, including arguments supplied only by final
+provider events. Completed native replay is authenticated to the provider,
+model, account and exact visible history. It is stored only in private session
+records, omitted from public output, and dropped when compaction changes context.
+An invalid saved binding refuses the request before provider I/O.
+
+A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
+existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
+other applications' credentials or start a sign-in. Configure the user-only
+`oxa.cloud.subscription_limits` object with positive integer `daily_requests`
+and `daily_tokens`. The separate optional `oxa.cloud.subscription` refresh object
+accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the
+experimental public identity approved in #252. The refresh endpoint is fixed at
+`https://auth.openai.com/oauth/token` and cannot be overridden in settings.
+`refresh_timeout_ms` defaults to 15000, must be positive and is bounded by the
+client's 30-second maximum. These settings contain no access or refresh token.
+Client transport tests inject loopback endpoints privately; production refresh
+configuration never supplies one.
+
+Subscription calls require their own positive request/token caps, retain actual
+token usage and settle zero USD. Unknown paid work retains its full token bound;
+the cap includes concurrent and crashed-process reservations. It never falls back
+to a paid API balance. Missing metered pricing still refuses metered requests.
 
 ### Other
 
