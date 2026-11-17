@@ -107,6 +107,36 @@ fn rows(env: &TestEnv) -> Vec<Value> {
 }
 
 #[test]
+fn chatgpt_token_read_failure_does_not_claim_an_api_key_store_failure() {
+    let env = TestEnv::new();
+    let upstream = mock::MockOpenAi::start(vec![]);
+    settings(&env, &upstream.base_url(), true);
+    let key = env.home().join(".config/oxc/llm/cloud-secrets.json");
+    private_file(&key, &json!({"openai":KEY}).to_string());
+    private_file(
+        &key.parent().unwrap().join("chatgpt-auth.json"),
+        "invalid synthetic JSON",
+    );
+    let output = run(
+        &env,
+        &["--no-tools", "--mode", "json", "-p", "Synthetic request"],
+        None,
+    );
+    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(terminal(&output)["error_class"], "cloud_credentials_unavailable");
+    for bytes in [&output.stdout, &output.stderr] {
+        let text = String::from_utf8_lossy(bytes);
+        assert!(!text.contains("attempted protected store"), "{text}");
+        assert!(!text.contains("native diagnostic"), "{text}");
+        assert!(!text.contains(key.to_str().unwrap()));
+        assert!(!text.contains(KEY));
+    }
+    assert!(upstream.requests().is_empty());
+    assert_eq!(rows(&env)[0]["settled"], "not_forwarded");
+    upstream.assert_healthy();
+}
+
+#[test]
 fn production_both_modes_execute_done_only_tools_resume_and_settle_without_python() {
     for subscription in [false, true] {
         let env = TestEnv::new();
