@@ -34,34 +34,7 @@ env:
   CARGO_BUILD_JOBS: '2'
 
 jobs:
-  ram_arm:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    timeout-minutes: 5
-    name: Measure ARM runner RAM for container budget
-    runs-on: ubuntu-24.04-arm
-    outputs:
-      bytes: ${{ steps.ram.outputs.bytes }}
-    steps:
-      - id: ram
-        run: |
-          bytes=$(awk '/^MemTotal:/ { printf "%.0f", int($2 * 3 / 4 / 1024) * 1048576 }' /proc/meminfo)
-          test "$bytes" -gt 0
-          echo "bytes=$bytes" >> "$GITHUB_OUTPUT"
-  ram_x64:
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    timeout-minutes: 5
-    name: Measure x64 runner RAM for container budget
-    runs-on: ubuntu-latest
-    outputs:
-      bytes: ${{ steps.ram.outputs.bytes }}
-    steps:
-      - id: ram
-        run: |
-          bytes=$(awk '/^MemTotal:/ { printf "%.0f", int($2 * 3 / 4 / 1024) * 1048576 }' /proc/meminfo)
-          test "$bytes" -gt 0
-          echo "bytes=$bytes" >> "$GITHUB_OUTPUT"
   binaries:
-    needs: [ram_arm, ram_x64]
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: CPU artifacts (${{ matrix.arch }})
     strategy:
@@ -73,23 +46,39 @@ jobs:
           - arch: x86_64
             runner: ubuntu-latest
     runs-on: ${{ matrix.runner }}
-    container:
-      image: fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e
-      # Probe the runner class before container creation; verify against this host below.
-      options: >-
-        --memory=${{ matrix.arch == 'aarch64' && needs.ram_arm.outputs.bytes || needs.ram_x64.outputs.bytes }}
-        --memory-swap=${{ matrix.arch == 'aarch64' && needs.ram_arm.outputs.bytes || needs.ram_x64.outputs.bytes }}
-        --cgroupns=private
+    env:
+      RELEASE_CONTAINER: ox-release-${{ github.run_id }}-${{ matrix.arch }}
+    defaults:
+      run:
+        shell: docker exec --env GITHUB_OUTPUT --env GITHUB_ENV --env GITHUB_PATH --env SOURCE_DATE_EPOCH ox-release-${{ github.run_id }}-${{ matrix.arch }} /bin/bash --noprofile --norc -e -o pipefail {0}
     timeout-minutes: 180
     outputs:
       source_commit: ${{ steps.source.outputs.commit }}
       source_epoch: ${{ steps.source.outputs.epoch }}
     steps:
       - name: Git before checkout (prevent REST archive fallback)
-        run: dnf -y -q install --setopt=install_weak_deps=False git-core
+        shell: bash
+        run: command -v git
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Create qualification container from this runner's actual RAM
+        shell: bash
+        run: |
+          set -euo pipefail
+          host_bytes=$(awk '/^MemTotal:/ { printf "%.0f", $2 * 1024 }' /proc/meminfo)
+          memory_bytes=$(awk '/^MemTotal:/ { printf "%.0f", int($2 * 3 / 4 / 1024) * 1048576 }' /proc/meminfo)
+          test "$memory_bytes" -gt 0
+          printf 'NATIVE-RUNNER-MEMORY host_bytes=%s budget_bytes=%s\n' "$host_bytes" "$memory_bytes"
+          docker create --name "$RELEASE_CONTAINER" \
+            --memory="$memory_bytes" --memory-swap="$memory_bytes" --cgroupns=private \
+            -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -v "$RUNNER_TEMP:$RUNNER_TEMP" \
+            -w "$GITHUB_WORKSPACE" \
+            -e GITHUB_WORKSPACE -e GITHUB_SHA -e VERSION -e CARGO_HOME -e RUSTUP_HOME -e CARGO_BUILD_JOBS \
+            -e "NATIVE_MEMORY_BUDGET=$memory_bytes" -e "NATIVE_RUNNER_MEMORY=$host_bytes" \
+            -e PATH=/opt/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            fedora:44@sha256:15da97ed9aa94dd3d92c3925eb89520f6c80e07ea7ee24cba848d1f8b6912b3e sleep infinity
+          docker start "$RELEASE_CONTAINER"
       - name: GCC 16 and pinned Rust 1.99.1
         run: packaging/release/setup.sh
       - name: Verify inherited native no-swap policy
@@ -102,13 +91,12 @@ jobs:
           require test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
           predicate='memory.swap.current must be 0'
           require test "$(cat /sys/fs/cgroup/memory.swap.current)" = 0
-          host_budget=$(awk '/^MemTotal:/ { printf "%.0f", int($2 * 3 / 4 / 1024) * 1048576 }' /proc/meminfo)
           limit=$(cat /sys/fs/cgroup/memory.max)
-          predicate='memory.max must be a positive numeric cap within three quarters of actual host RAM'
+          printf 'NATIVE-MEMORY-BUDGET limit=%s expected=%s measured_host=%s\n' "$limit" "$NATIVE_MEMORY_BUDGET" "$NATIVE_RUNNER_MEMORY"
+          predicate='memory.max must equal the positive budget measured on this runner before container creation'
           [[ $limit =~ ^[0-9]+$ ]] || { printf 'NATIVE-MEMORY-REFUSAL: %s\n' "$predicate" >&2; exit 1; }
           require test "$limit" -gt 0
-          require test "$limit" -le "$host_budget"
-          printf 'NATIVE-MEMORY-BUDGET limit=%s host_budget=%s\n' "$limit" "$host_budget"
+          require test "$limit" = "$NATIVE_MEMORY_BUDGET"
       - name: Immutable source archive
         id: source
         run: |
@@ -140,9 +128,9 @@ jobs:
             > "$GITHUB_WORKSPACE/dist/TOOLCHAIN.txt"
       - name: No-Python proof on the exact release tarball binary
         id: native_proof
-        working-directory: /build/first
         run: |
           set -euo pipefail
+          cd /build/first
           source packaging/release/environment.sh
           artifact="$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).tar.gz"
           extracted=$(mktemp -d)
@@ -169,9 +157,9 @@ jobs:
             2>&1 | tee -a "$receipt"
       - name: Preserve the exact-source x64 proof harness
         if: matrix.arch == 'x86_64'
-        working-directory: /build/first/oxa
         run: |
           set -euo pipefail
+          cd /build/first/oxa
           mapfile -d '' harnesses < <(find target/ci/deps -maxdepth 1 -name 'no_python_in_path-*' -type f -perm -100 -print0)
           test "${#harnesses[@]}" = 1
           mkdir "$GITHUB_WORKSPACE/proof-harness"
@@ -229,8 +217,7 @@ jobs:
           print('NATIVE-MEMORY-DIAGNOSTIC ' + json.dumps(report, sort_keys=True))
           PY
       - name: Model-free source tests
-        working-directory: /build/first
-        run: packaging/release/check.sh
+        run: cd /build/first && packaging/release/check.sh
       - name: CycloneDX SBOM and checksums
         run: |
           cd /build/first
@@ -256,6 +243,13 @@ jobs:
           path: dist/
           if-no-files-found: error
           retention-days: 7
+      - name: Remove this job's qualification container
+        if: always()
+        shell: bash
+        run: |
+          if docker container inspect "$RELEASE_CONTAINER" >/dev/null 2>&1; then
+            docker rm --force "$RELEASE_CONTAINER"
+          fi
 
   arch-clean-install:
     name: Arch source + binary packages, namcap, clean install and removal
