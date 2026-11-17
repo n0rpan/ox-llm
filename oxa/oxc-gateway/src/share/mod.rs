@@ -3,6 +3,7 @@ pub mod admission;
 pub mod command;
 pub mod keys;
 pub mod listener;
+pub mod native;
 mod protocol;
 pub mod status;
 pub mod tailnet;

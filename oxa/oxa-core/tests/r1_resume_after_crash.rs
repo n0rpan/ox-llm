@@ -11,7 +11,7 @@ use oxa_proto::{codes, EntryBody, Finish, HeadlessUi, OxaError, Role, ToolCall, 
 use oxa_session::{FsStore, Goal, GoalBudget, GoalStatus, SessionRef};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn deps(env: &TestEnv, engine: Arc<ScriptedEngine>) -> Deps {
     Deps {
@@ -243,11 +243,12 @@ fn a_second_resume_appends_nothing_more() {
 }
 
 /// Counts sync calls and can inject failures at the durability and prefix boundaries.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct CountingStore {
     inner: oxa_session::MemStore,
     syncs: AtomicUsize,
     goal_revision_at_sync: AtomicU64,
+    confirmed_goal_revision: AtomicU64,
     fail_sync: AtomicBool,
     fail_prefix: AtomicBool,
 }
@@ -284,11 +285,12 @@ impl oxa_session::SessionStore for CountingStore {
     }
     fn sync(&self, s: &SessionRef) -> Result<(), oxa_proto::OxaError> {
         self.syncs.fetch_add(1, Ordering::SeqCst);
-        self.goal_revision_at_sync
-            .store(Goal::revision(&self.inner.load(s)?), Ordering::SeqCst);
+        let revision = Goal::revision(&self.inner.load(s)?);
+        self.goal_revision_at_sync.store(revision, Ordering::SeqCst);
         if self.fail_sync.load(Ordering::SeqCst) {
             return Err(OxaError::new(codes::IO, "synthetic sync failure"));
         }
+        self.confirmed_goal_revision.store(revision, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -312,6 +314,24 @@ fn the_session_file_is_synced_once_per_turn_and_fs_sync_works() {
     oxa_session::SessionStore::sync(&fs, &sref).unwrap();
 }
 
+#[derive(Debug)]
+struct GoalCommits {
+    store: Arc<CountingStore>,
+    seen: Mutex<Vec<(SessionRef, u64, u64)>>,
+}
+
+impl oxa_core::ProgressObserver for GoalCommits {
+    fn notify(&self, session: &SessionRef, progress: oxa_core::Progress<'_>) {
+        if let oxa_core::Progress::GoalControlCommitted { revision } = progress {
+            let confirmed = self.store.confirmed_goal_revision.load(Ordering::SeqCst);
+            self.seen
+                .lock()
+                .unwrap()
+                .push((session.clone(), revision, confirmed));
+        }
+    }
+}
+
 #[test]
 fn goal_control_syncs_before_ack_and_distinguishes_partial_failures() {
     for (fail_sync, fail_prefix, expected_error) in [
@@ -329,6 +349,11 @@ fn goal_control_syncs_before_ack_and_distinguishes_partial_failures() {
         session.set_goal(Some(goal), &mut sink).unwrap();
         let bound = session.inner().sref.clone();
         let before = session.goal_revision();
+        let commits = Arc::new(GoalCommits {
+            store: store.clone(),
+            seen: Mutex::new(Vec::new()),
+        });
+        session.set_progress_observer(commits.clone());
         store.fail_sync.store(fail_sync, Ordering::SeqCst);
         store.fail_prefix.store(fail_prefix, Ordering::SeqCst);
 
@@ -346,6 +371,12 @@ fn goal_control_syncs_before_ack_and_distinguishes_partial_failures() {
         assert_eq!(retry.unwrap_err().code, "goal_revision_conflict");
         assert_eq!(session.goal_revision(), after);
         assert_eq!(store.syncs.load(Ordering::SeqCst), 1);
+        let expected = if fail_sync {
+            vec![]
+        } else {
+            vec![(bound, after, after)]
+        };
+        assert_eq!(*commits.seen.lock().unwrap(), expected);
         session.shutdown(&mut HeadlessUi::default());
     }
 }
