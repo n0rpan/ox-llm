@@ -398,7 +398,7 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
             "first instruction",
             "later instruction",
             "--max-time",
-            TIME_LIMIT,
+            "0.2",
         ])
         .output()
         .unwrap();
@@ -561,7 +561,8 @@ fn sigterm_during_wrap_up_restores_default_termination() {
             FakeOpts::default(),
         )
         .unwrap();
-        let mut child = start_with_max_time(&env, &server, "print", limit.then_some(TIME_LIMIT));
+        // This control sends the next signal after 300ms; keep its original 200ms deadline.
+        let mut child = start_with_max_time(&env, &server, "print", limit.then_some("0.2"));
         let started = Instant::now();
         while !env.work().join("started").exists() && started.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(5));
