@@ -16,7 +16,7 @@ const MAX_VIEW: usize = 256 * 1024;
 const MAX_ACTIVE: usize = 128;
 const HISTORY: usize = 16;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Read {
     pub revision: u64,
@@ -219,12 +219,11 @@ impl Read {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Standing {
     root: Root,
     facts: Facts,
 }
-#[derive(Debug)]
 pub enum GuardError {
     Storage(String),
     Refused(Refusal),
@@ -258,6 +257,7 @@ pub struct Verification {
     pub at: u64,
     pub evidence: String,
 }
+private_debug!(Read, Standing, GuardError);
 
 impl Standing {
     /// Explicit owner initialization at a protected per-repository configuration root.
@@ -273,6 +273,7 @@ impl Standing {
         if facts.situation()?.standing_revision != 0 {
             return Err("standing facts already exist".into());
         }
+        facts.reserve_standing()?;
         let document = Document {
             version: 1,
             current: Read {
@@ -293,6 +294,7 @@ impl Standing {
             facts,
         };
         standing.read()?;
+        standing.facts.reserve_standing()?;
         Ok(standing)
     }
     pub fn read(&self) -> Result<Read> {
@@ -630,7 +632,7 @@ impl Standing {
         let before = self.load()?;
         let mut after = before.next(expected, at)?;
         let ask = Ask {
-            id: format!("A-{}", after.revision),
+            id: format!("standing:A-{}", after.revision),
             revision: after.revision,
             scope: request.scope,
             question: request.question,

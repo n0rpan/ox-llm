@@ -10,7 +10,7 @@ pub enum Action {
     Update,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -28,7 +28,7 @@ pub enum Scope {
 
 /// Identity resolved by the trusted frontend, not tool JSON. None means checked absence.
 /// Supply the current PR whenever one exists; its head is deliberately not an identity field.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Subject<'a> {
     pub pr: Option<u64>,
     pub task: Option<&'a str>,
@@ -43,7 +43,7 @@ pub enum RefusalReason {
     InvalidSubject,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Refusal {
     pub revision: u64,
     pub rule_id: Option<String>,
@@ -233,3 +233,5 @@ mod tests {
         }
     }
 }
+
+private_debug!(Scope, Subject<'_>, Refusal);

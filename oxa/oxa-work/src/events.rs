@@ -28,6 +28,8 @@ struct State {
     // A cross-store reservation is unpublished until its owner syncs prepared data.
     #[serde(default, skip_serializing_if = "not_preparing")]
     preparing: bool,
+    #[serde(default, skip_serializing_if = "not_preparing")]
+    standing_reserved: bool,
 }
 fn not_preparing(value: &bool) -> bool {
     !value
@@ -148,7 +150,32 @@ impl Facts {
     /// Stop before the next action if this call fails. Replaying the same checkpoint repairs
     /// a lost acknowledgement, a torn last line or an interrupted snapshot replacement.
     pub fn append(&self, checkpoint: Checkpoint, at_ms: u64, fact: Fact) -> Result<Event> {
+        let reserved_ask = match &fact {
+            Fact::AskOpened(ask) => ask.id.starts_with("standing:"),
+            Fact::AskClosed(ask) => ask.id.starts_with("standing:"),
+            _ => false,
+        };
+        if checkpoint.source == "standing" || matches!(fact, Fact::StandingChanged(_)) || reserved_ask {
+            return Err("standing observations require the protected prepared path".into());
+        }
         self.append_with(checkpoint, at_ms, fact, None::<fn(&Event) -> Result<()>>)
+    }
+    /// Reserve capacity under the facts lock without inventing a standing event.
+    /// A failed initialization can retry the same reservation; ordinary stores
+    /// retain their full source capacity until standing explicitly claims a slot.
+    pub(crate) fn reserve_standing(&self) -> Result<()> {
+        let _lock = self.root.lock(LOCK)?;
+        let (mut state, _, _) = self.recover()?;
+        let sources = state.sources()?;
+        if !sources.iter().any(|event| event.checkpoint.source == "standing") && sources.len() == MAX_SOURCES
+        {
+            return Err("facts source capacity unavailable for standing".into());
+        }
+        if !state.standing_reserved {
+            state.standing_reserved = true;
+            self.root.atomic(STATE, &state.bytes()?)?;
+        }
+        Ok(())
     }
     /// Durably reserve capacity before the protected store prepares its mutation. A failed
     /// preparation blocks other appenders until that store commits or cancels the reservation.
@@ -169,7 +196,8 @@ impl Facts {
         fact: Fact,
         prepare: Option<impl FnOnce(&Event) -> Result<()>>,
     ) -> Result<Event> {
-        if prepare.is_some() && !matches!(fact, Fact::StandingChanged(_)) {
+        if prepare.is_some() && (!matches!(fact, Fact::StandingChanged(_)) || checkpoint.source != "standing")
+        {
             return Err("only standing observations use protected preparation".into());
         }
         let _lock = self.root.lock(LOCK)?;
@@ -201,7 +229,12 @@ impl Facts {
                 if checkpoint.revision < previous.checkpoint.revision {
                     return Err("stale facts checkpoint".into());
                 }
-            } else if sources.len() == MAX_SOURCES {
+            } else if sources.len() == MAX_SOURCES
+                || (state.standing_reserved
+                    && checkpoint.source != "standing"
+                    && !sources.iter().any(|event| event.checkpoint.source == "standing")
+                    && sources.len() == MAX_SOURCES - 1)
+            {
                 return Err("facts source capacity exceeded".into());
             }
             Event {

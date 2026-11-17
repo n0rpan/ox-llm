@@ -28,14 +28,14 @@ pub enum Kind {
 }
 
 /// A source reference is selected/checked by the frontend, never inferred from tool success.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Source {
     Command { command: String },
     SessionEntry { session_id: String, entry_id: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -61,7 +61,7 @@ pub enum Value {
         classes: Vec<ReservedClass>,
     },
 }
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -98,7 +98,7 @@ pub enum ReservedClass {
     Desktop,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     pub kind: Kind,
@@ -109,7 +109,7 @@ pub struct Rule {
     pub supersedes: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum EntryState {
     Stored,
@@ -117,7 +117,7 @@ pub enum EntryState {
     Superseded,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entry {
     pub id: String,
@@ -136,7 +136,7 @@ pub struct Entry {
     // into its own hold and then release it. Request source remains attributed separately.
     pub(super) authority: Authority,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reminder {
     pub at: u64,
@@ -298,3 +298,5 @@ impl Entry {
         Ok(())
     }
 }
+
+private_debug!(Source, Value, Condition, Rule, EntryState, Entry, Reminder);

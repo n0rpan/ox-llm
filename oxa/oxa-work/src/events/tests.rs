@@ -464,7 +464,12 @@ fn large_valid_events_page_by_bytes_and_keep_advancing_across_retention_gaps() {
     };
     for revision in 1..=64 {
         let event = facts
-            .append(checkpoint("standing", revision), revision, observation(revision))
+            .append_prepared(
+                checkpoint("standing", revision),
+                revision,
+                observation(revision),
+                |_| Ok(()),
+            )
             .unwrap();
         assert!(event.to_json().unwrap().len() <= MAX_EVENT_BYTES);
     }
@@ -486,7 +491,12 @@ fn large_valid_events_page_by_bytes_and_keep_advancing_across_retention_gaps() {
     assert_eq!(seen, (1..=64).collect::<Vec<_>>());
     for revision in 65..=180 {
         facts
-            .append(checkpoint("standing", revision), revision, observation(revision))
+            .append_prepared(
+                checkpoint("standing", revision),
+                revision,
+                observation(revision),
+                |_| Ok(()),
+            )
             .unwrap();
     }
     let page = facts.events_after(0, 64).unwrap();

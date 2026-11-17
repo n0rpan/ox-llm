@@ -2,14 +2,14 @@ use super::{types, Rule, Scope, Source};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct QuestionOption {
     pub label: String,
     pub detail: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Question {
     pub scope: Scope,
     pub question: String,
@@ -19,7 +19,7 @@ pub struct Question {
     pub meanwhile: Option<String>,
     pub source: Source,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(
     tag = "kind",
     content = "value",
@@ -30,7 +30,7 @@ pub enum Choice {
     Option(String),
     Text(String),
 }
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Answer {
     pub revision: u64,
@@ -47,13 +47,13 @@ pub struct AnswerRequest {
     pub source: Source,
     pub said: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Proposal {
     pub rule: Rule,
     pub accept_label: String,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Ask {
     pub id: String,
@@ -151,3 +151,5 @@ impl Ask {
         }
     }
 }
+
+private_debug!(QuestionOption, Question, Choice, Answer, Proposal, Ask);
