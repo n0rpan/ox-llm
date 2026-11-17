@@ -542,3 +542,97 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
         "controller returned before its admitted worker finished"
     );
 }
+
+#[test]
+fn duplicate_branches_in_separate_files_are_rejected_before_admission() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    task_file(&env, "first", "first", 2);
+    env.write(
+        "work/queue/second.json",
+        r#"[{"id":"second","model":"fake","branch":"agent/first","prompt":"Synthetic duplicate branch"}]"#,
+    );
+    let server = FakeServer::start(vec![ScriptTurn::text("done"); 2], FakeOpts::default()).unwrap();
+    let out = finish(command(&env, &server.url(), "1"));
+    let events = rows(&out);
+    assert!(
+        events.iter().any(|row| row["event"] == "error"
+            && row["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains("branch"))),
+        "{events:?}"
+    );
+    assert!(!events
+        .iter()
+        .any(|row| row["event"] == "task" && row["id"] == "second"));
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn a_full_common_git_volume_blocks_admission_independently() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    task_file(&env, "input", "input", 1);
+    let df = env.write("tmp/df", "#!/bin/sh\nfor arg do checked=$arg; done\nif test \"$checked\" = \"$OXA_TEST_COMMON_GIT\"; then printf '0\\n'; else printf '1000000000000\\n'; fi\n");
+    fs::set_permissions(df, fs::Permissions::from_mode(0o755)).unwrap();
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let mut cmd = command(&env, &server.url(), "1");
+    cmd.args(["--min-free-mib", "512"])
+        .env(
+            "OXA_TEST_COMMON_GIT",
+            env.work().join("project/.git").canonicalize().unwrap(),
+        )
+        .env(
+            "PATH",
+            format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
+        );
+    let out = finish(cmd);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(rows(&out).last().unwrap()["disk_blocked"], true);
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn a_retained_busy_lease_without_an_input_counts_against_max() {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    task_file(&env, "next", "next", 1);
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(storage(&env))
+        .unwrap();
+    let lease = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(storage(&env).join("retained.lock"))
+        .unwrap();
+    lease.try_lock().unwrap();
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("done")],
+        FakeOpts {
+            hold_headers_ms: 700,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut child = command(&env, &server.url(), "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let status = env.work().join("queue/.oxa-queue-status.json");
+    until(|| status.exists());
+    let before: serde_json::Value = serde_json::from_slice(&fs::read(status).unwrap()).unwrap();
+    let requests = server.requests().len();
+    drop(lease);
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(before["active"], serde_json::json!(["retained"]), "{before}");
+    assert_eq!(requests, 0, "a retained lease must block another admission");
+    assert_eq!(server.requests().len(), 1);
+}
