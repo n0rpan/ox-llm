@@ -834,3 +834,80 @@ fn artifacts_are_private_and_source_capacity_does_not_consume_a_sequence() {
     assert!(facts.append(checkpoint("too-many", 1), 0, mechanical()).is_err());
     assert_eq!(facts.situation().unwrap().as_of_seq, MAX_SOURCES as u64);
 }
+
+#[test]
+fn digest_uses_durable_changes_and_the_current_ask_count() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let pr = PullRequest {
+        number: 3,
+        head: "a".repeat(40),
+    };
+    let subject = Subject::PullRequest(pr.number);
+    let merged = Landed {
+        pr,
+        merge_commit: "b".repeat(40),
+        merged_at_ms: 4,
+    };
+    let observations = [
+        mechanical(),
+        Fact::Blocked(Blocked {
+            subject: subject.clone(),
+            code: "waiting".into(),
+            ask_id: None,
+        }),
+        Fact::Unblocked(subject.clone()),
+        Fact::PrMerged(merged.clone()),
+        Fact::AskOpened(Ask {
+            id: "fixture-ask".into(),
+            subject: Subject::Repository,
+            question: "Choose one option".into(),
+        }),
+    ];
+    for (index, fact) in observations.into_iter().enumerate() {
+        let revision = index as u64 + 1;
+        facts
+            .append(checkpoint("digest", revision), revision, fact)
+            .unwrap();
+    }
+    let reopened = Facts::open(&fixture.root()).unwrap();
+    let Digest::Changes(changes) = reopened.digest_since(1).unwrap() else {
+        panic!("complete retained interval must produce a digest");
+    };
+    assert_eq!(changes.after, 1);
+    assert_eq!(changes.through, 5);
+    assert_eq!(changes.merged, [merged]);
+    assert!(changes.blocked.is_empty());
+    assert_eq!(changes.cleared, [subject]);
+    assert_eq!(changes.asks_waiting, 1);
+    facts.append(checkpoint("digest", 6), 6, mechanical()).unwrap();
+    assert_eq!(reopened.digest_since(5).unwrap(), Digest::Quiet { through: 6 });
+}
+
+#[test]
+fn digest_reports_a_fresh_snapshot_for_incomplete_intervals() {
+    let fixture = Fixture::new();
+    let mut facts = fixture.facts();
+    for revision in 1..=65 {
+        facts
+            .append(checkpoint("digest", revision), revision, mechanical())
+            .unwrap();
+    }
+    assert!(matches!(
+        facts.digest_since(0).unwrap(),
+        Digest::SnapshotOnly { snapshot, reason: DigestGap::PageLimit } if snapshot.as_of_seq == 65
+    ));
+
+    let fixture = Fixture::new();
+    facts = fixture.facts();
+    facts.journal_bytes = 512;
+    for revision in 1..=20 {
+        facts
+            .append(checkpoint("digest", revision), revision, mechanical())
+            .unwrap();
+    }
+    assert!(matches!(
+        facts.digest_since(0).unwrap(),
+        Digest::SnapshotOnly { snapshot, reason: DigestGap::Retention } if snapshot.as_of_seq == 20
+    ));
+}
