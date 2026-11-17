@@ -317,6 +317,8 @@ pub(crate) struct Loop<'a> {
     /// Assume focus until the terminal reports otherwise (unsupported terminals stay quiet).
     focused: bool,
     run_finished: bool,
+    /// Enter after explicit Ctrl+C starts a new prompt, even before settlement is observed.
+    abort_requested: bool,
     pub(crate) dirty: bool,
     /// Ctrl+C was pressed on an empty editor; a second press within two seconds quits.
     armed: bool,
@@ -449,6 +451,7 @@ impl<'a> Loop<'a> {
             sent_title: None,
             focused: true,
             run_finished: false,
+            abort_requested: false,
             dirty: true,
             armed: false,
             armed_at: None,
@@ -745,6 +748,7 @@ impl<'a> Loop<'a> {
                         inbox.retry();
                     }
                     self.run_finished = true;
+                    self.abort_requested = false;
                 }
                 apply_event(&mut self.vm, &e);
             }
@@ -802,6 +806,7 @@ impl<'a> Loop<'a> {
     /// and its tree, selectors and attachments are closed. Abort, steer and follow-up target
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
+        self.abort_requested = false;
         // Join the old callback before draining its queue back into the editor.
         self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
@@ -1304,6 +1309,7 @@ impl<'a> Loop<'a> {
         if self.opts.keymap.actions_for(&key.id).contains(&"app.clear")
             && (self.running() || matches!(self.vm.status.activity, Activity::Retrying { .. }))
         {
+            self.abort_requested = true;
             self.handle.abort();
             self.handle.abort_retry();
             self.dialogs.key(&key, &self.opts.keymap);
@@ -1682,11 +1688,15 @@ impl<'a> Loop<'a> {
         if self.fullscreen {
             self.viewport.scroll_to_bottom();
         }
-        if self.running() {
+        // Explicit input after Ctrl+C is a new prompt, not steering for the canceled run.
+        // The worker channel runs it after that operation releases the session. Ordinary
+        // queued input still uses the existing unsuccessful-outcome guard.
+        if self.running() && !self.abort_requested {
             self.handle.steer(trimmed);
             self.wake_queued();
             self.sync_queue();
         } else {
+            self.abort_requested = false;
             let parts = self.take_attachments();
             self.send(SessionCmd::Prompt { text: trimmed, parts });
         }
