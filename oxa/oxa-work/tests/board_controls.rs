@@ -18,6 +18,23 @@ impl Fixture {
     fn store(&self) -> Claims {
         Claims::open(&self.0).unwrap()
     }
+    fn establish(&self, numbers: impl IntoIterator<Item = u64>) {
+        let incoming = numbers
+            .into_iter()
+            .map(|number| {
+                (
+                    number,
+                    ImportState {
+                        state: AttemptState::default(),
+                        excluded: false,
+                    },
+                )
+            })
+            .collect();
+        self.store()
+            .import_snapshot(Some(ManualAuthority::Owner), &incoming, 10)
+            .unwrap();
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -216,6 +233,10 @@ fn typed_issue_intake_uses_one_snapshot_and_builder_authority() {
     worker.roles = [Role::Reviewer].into();
     let denied = store.claim_for(issue, &policy(), &worker, 10, 10).unwrap();
     assert!(denied.is_none());
+    assert!(store
+        .claim_idle_for(issue, &policy(), &worker, 10, 10)
+        .unwrap()
+        .is_none());
     let legacy = store.claim(issue, &policy(), &worker.id, 10, 10).unwrap();
     assert!(legacy.is_none());
     worker.roles = [Role::Builder].into();
@@ -292,6 +313,10 @@ fn import_resumes_without_resetting_attempts_or_admitting_preserved_jobs() {
     issue.action = Action::BuildIssue;
     assert!(store
         .claim_for(&issue, &policy(), &worker, 21, 10)
+        .unwrap()
+        .is_none());
+    assert!(store
+        .claim_idle_for(&issue, &policy(), &worker, 21, 10)
         .unwrap()
         .is_none());
     assert!(store
@@ -655,4 +680,129 @@ fn review_reservations_survive_reopening_and_head_changes() {
         Dispatch::AlreadyReserved
     );
     assert_eq!(remote.submissions, 1);
+}
+
+#[test]
+fn idle_claims_preserve_expired_work_until_fenced_completion() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let worker = worker("slot-1");
+    let first = entry();
+    let mut next = first.clone();
+    next.number = 2;
+    assert!(store
+        .claim_idle_for(&next, &Policy::default(), &worker, 10, 10)
+        .unwrap()
+        .is_none());
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    fixture.establish([1, 2, 6]);
+    let lease = store
+        .claim_for(&first, &policy(), &worker, 10, 10)
+        .unwrap()
+        .unwrap();
+    // Expiry is not evidence that the existing helper actually finished.
+    assert!(store
+        .claim_idle_for(&next, &policy(), &worker, 20, 10)
+        .unwrap()
+        .is_none());
+    assert_eq!(store.snapshot().unwrap()[&2].attempts, 0);
+    let other = crate::worker("slot-2");
+    assert!(store
+        .claim_idle_for(&first, &policy(), &other, 20, 10)
+        .unwrap()
+        .is_none());
+    let mut independent = first.clone();
+    independent.number = 1;
+    assert!(store
+        .claim_idle_for(&independent, &policy(), &other, 20, 10)
+        .unwrap()
+        .is_some());
+    assert!(store
+        .release_for(3, &worker.id, &lease, 20, "verified completion")
+        .unwrap());
+    let next_lease = store
+        .claim_idle_for(&next, &policy(), &worker, 20, 10)
+        .unwrap()
+        .unwrap();
+    let rows = fixture.store().assignments().unwrap();
+    assert_eq!(rows[&3].state.attempts, 1);
+    assert_eq!(rows[&2].state.attempts, 1);
+    assert_eq!(rows[&2].state.lease, Some(next_lease));
+    assert!(rows[&3].state.lease.is_none());
+    // Losing another worker's established state must fail the complete idle check closed.
+    fs::remove_file(fixture.0.join("1.board-claim.json")).unwrap();
+    next.number = 6;
+    let untouched = fs::read(fixture.0.join("6.board-claim.json")).unwrap();
+    assert!(store
+        .claim_idle_for(&next, &policy(), &crate::worker("slot-3"), 21, 10)
+        .is_err());
+    assert_eq!(fs::read(fixture.0.join("6.board-claim.json")).unwrap(), untouched);
+}
+
+#[test]
+fn concurrent_idle_reservations_share_one_worker_fence_across_refs() {
+    let fixture = Fixture::new();
+    fixture.establish(1..=6);
+    let barrier = std::sync::Barrier::new(6);
+    let winners = std::thread::scope(|scope| {
+        let mut pending = vec![];
+        for number in 1..=6 {
+            let store = fixture.store();
+            let worker = worker("shared-slot");
+            let mut candidate = entry();
+            candidate.number = number;
+            let barrier = &barrier;
+            pending.push(scope.spawn(move || {
+                barrier.wait();
+                store
+                    .claim_idle_for(&candidate, &policy(), &worker, 10, 10)
+                    .unwrap()
+            }));
+        }
+        pending
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .filter(Option::is_some)
+            .count()
+    });
+    assert_eq!(winners, 1);
+    let rows = fixture.store().assignments().unwrap();
+    assert_eq!(rows.values().map(|row| row.state.attempts).sum::<u32>(), 1);
+    assert_eq!(rows.values().filter(|row| row.state.lease.is_some()).count(), 1);
+}
+
+#[test]
+fn idle_claims_require_saved_state_not_a_denied_claim_marker() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let mut candidate = entry();
+    candidate.number = 44;
+    candidate.action = Action::BuildIssue;
+    let builder = worker("slot-1");
+    let reviewer = Worker {
+        roles: [Role::Reviewer].into(),
+        ..builder.clone()
+    };
+    assert!(store
+        .claim_for(&candidate, &policy(), &reviewer, 10, 10)
+        .unwrap()
+        .is_none());
+    assert!(fixture.0.join("44.board-claim.lock").exists());
+    assert!(!fixture.0.join("44.board-claim.json").exists());
+    assert!(store
+        .claim_idle_for(&candidate, &policy(), &builder, 10, 10)
+        .unwrap()
+        .is_none());
+    assert!(!fixture.0.join("44.board-claim.json").exists());
+    fixture.establish([44]);
+    assert!(store
+        .claim_idle_for(&candidate, &policy(), &reviewer, 10, 10)
+        .unwrap()
+        .is_none());
+    assert_eq!(store.snapshot().unwrap()[&44].attempts, 0);
+    assert!(store
+        .claim_idle_for(&candidate, &policy(), &builder, 10, 10)
+        .unwrap()
+        .is_some());
+    assert_eq!(fixture.store().snapshot().unwrap()[&44].attempts, 1);
 }
