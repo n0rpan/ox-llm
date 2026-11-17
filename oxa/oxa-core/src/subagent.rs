@@ -37,10 +37,11 @@
 //!   a fixed note naming the spill file that holds the full text.
 //! * **Abort.** The tool's cancel token and [`Hooks::shutdown`] kill the child's process group
 //!   (SIGTERM, SIGKILL after [`KILL_GRACE`]); queued tasks never start.
-//! * **Parent `--max-time` (#508).** `hooks.rs` hands the parent's `--max-time` in as a deadline
-//!   ([`SubagentHooks::with_deadline`]); a child is started with the time that is left as its
+//! * **Parent `--max-time` (#508).** The parent's limit watcher publishes its actual deadline
+//!   ([`SubagentHooks::set_deadline`]); a child is started with the time that is left as its
 //!   own `--max-time`, re-read after it takes a worker or the local slot, and a child whose time
-//!   is gone does not start at all. Everything else about a child (its `--max-tokens` run
+//!   is gone does not start at all. The parent cancels an active child group at that deadline,
+//!   including startup before the child's timer exists. Everything else (its `--max-tokens` run
 //!   budget, `OXA_CHILD_SOFT_TOKENS`, permission mode, tools, cancellation) is unchanged, and
 //!   without the flag nothing is added to its argv.
 //! * **Small models.** Not declared in an epoch whose model's context window is below
