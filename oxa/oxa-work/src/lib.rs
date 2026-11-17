@@ -1,7 +1,7 @@
 //! Opt-in, sequential unattended task execution. Worktrees are retained on every outcome.
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -151,6 +151,11 @@ pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: boo
 }
 
 fn load_task_checkpoint(policy: &RunPolicy, id: &str) -> Result<Option<state::State>> {
+    match verify_task_storage(&policy.storage) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("task storage: {error}")),
+    }
     let path = policy.storage.join(format!("{id}.json"));
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -650,19 +655,33 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
     }
 }
 
+fn verify_task_storage(path: &Path) -> std::io::Result<()> {
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = directory.metadata()?;
+    // SAFETY: geteuid has no arguments or preconditions.
+    let owner = unsafe { libc::geteuid() };
+    if metadata.uid() != owner || metadata.mode() & 0o022 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "must be owned by this user and protected from group or other writes",
+        ));
+    }
+    Ok(())
+}
+
 /// Recover the bounded pending observation before opening a lead's facts view.
 /// This never acquires a task lock, changes a task file or starts a worker.
 pub fn recover_checkpoints(
     storage: &Path,
     observer: &dyn CheckpointObserver,
 ) -> std::result::Result<(), RunError> {
-    match fs::metadata(storage) {
+    match verify_task_storage(storage) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(RunError::Checkpoint(error.to_string())),
-        Ok(metadata) if !metadata.is_dir() => {
-            return Err(RunError::Checkpoint("checkpoint root is not a directory".into()))
-        }
-        Ok(_) => {}
+        Err(error) => return Err(RunError::Checkpoint(format!("task storage: {error}"))),
+        Ok(()) => {}
     }
     checkpoint::Repository::open(storage, observer)
         .map(|_| ())
@@ -676,6 +695,30 @@ pub fn run_task_with_policy(
 ) -> Result<Record> {
     run_task_with_observer(repo, binary, planned, policy, false, &|_: &Record| Ok(()))
         .map_err(|e| e.to_string())
+}
+
+fn lock_task(policy: &RunPolicy, id: &str) -> Result<fs::File> {
+    let lock_path = policy.storage.join(format!("{id}.lock"));
+    let lock_file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .mode(0o600)
+        .custom_flags(shadow::OWNER_FILE_FLAGS)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| format!("cannot lock task {id}: {e}"))?;
+    let lock_metadata = lock_file
+        .metadata()
+        .map_err(|e| format!("cannot inspect task lock: {e}"))?;
+    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+    if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
+        return Err("cannot lock task: lock must be an owner-controlled regular file".into());
+    }
+    lock_file
+        .try_lock()
+        .map_err(|e| format!("task {id} is already running: {e}"))?;
+    Ok(lock_file)
 }
 
 /// Checkpoint/observer failures are fatal to the batch; ordinary task failures
@@ -700,27 +743,9 @@ pub fn run_task_with_observer(
         .recursive(true)
         .mode(0o700)
         .create(&policy.storage)
-        .map_err(|e| e.to_string())?;
-    let lock_path = policy.storage.join(format!("{}.lock", task.id));
-    let lock_file = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .mode(0o600)
-        .custom_flags(shadow::OWNER_FILE_FLAGS)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
-    let lock_metadata = lock_file
-        .metadata()
-        .map_err(|e| format!("cannot inspect task lock: {e}"))?;
-    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
-    if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
-        return Err("cannot lock task: lock must be an owner-controlled regular file".into());
-    }
-    lock_file
-        .try_lock()
-        .map_err(|e| format!("task {} is already running: {e}", task.id))?;
+        .and_then(|()| verify_task_storage(&policy.storage))
+        .map_err(|error| format!("task storage: {error}"))?;
+    let lock_file = lock_task(policy, &task.id)?;
     // The inherited lock retains its inode; status never tries to acquire it.
     let receipt = policy.storage.join(format!("{}.json", task.id));
     let replacing = receipt.exists();

@@ -505,7 +505,7 @@ fn pull_request_packet_carries_reviews_and_failing_checks() {
 
     let connection =
         |nodes: Vec<serde_json::Value>| serde_json::json!({"totalCount": nodes.len(), "nodes": nodes});
-    let reply = serde_json::json!({
+    let mut reply = serde_json::json!({
         "data": {"repository": {"pullRequest": {
             "title": "Synthetic PR", "body": "Fix the PR fixture",
             "headRefOid": head, "headRefName": "agent/review-fixes", "isCrossRepository": false,
@@ -601,6 +601,60 @@ exec /bin/cat "${0%/*}/pr-packet.json"
     }
     assert!(!prompt.contains("Resolved finding"), "{prompt}");
     assert!(!prompt.contains("checks / docs"), "{prompt}");
+
+    std::fs::write(tree.join("second-round.txt"), "Review revision").unwrap();
+    git(&env, tree, &["add", "second-round.txt"]);
+    git(&env, tree, &["commit", "-m", "Apply review feedback"]);
+    let next_head = git(&env, tree, &["rev-parse", "HEAD"]);
+    let packet = &mut reply["data"]["repository"]["pullRequest"];
+    packet["headRefOid"] = serde_json::json!(next_head);
+    packet["commits"]["nodes"][0]["commit"]["oid"] = serde_json::json!(next_head);
+    packet["body"] = serde_json::json!("Second review round");
+    env.write("tmp/trusted-tools/pr-packet.json", &reply.to_string());
+
+    let next = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    command.envs(env.envs(&next.url())).env("PATH", &path);
+    let uncommitted = tree.join("local-notes.txt");
+    std::fs::write(&uncommitted, "Retain these notes").unwrap();
+    let blocked = command.output().unwrap();
+    assert!(!blocked.status.success());
+    let blocked: serde_json::Value = serde_json::from_slice(&blocked.stdout).unwrap();
+    assert!(
+        blocked["detail"].as_str().unwrap().contains("uncommitted"),
+        "{blocked}"
+    );
+    assert!(next.requests().is_empty());
+    assert_eq!(
+        git(&env, tree, &["branch", "--show-current"]),
+        "agent/review-fixes"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&uncommitted).unwrap(),
+        "Retain these notes"
+    );
+    std::fs::remove_file(uncommitted).unwrap();
+
+    let second = command.output().unwrap();
+    assert!(second.status.success(), "{second:?}");
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(second["id"], format!("pr-42-{next_head}"));
+    let second_tree = Path::new(second["worktree"].as_str().unwrap());
+    assert_ne!(second_tree, tree);
+    assert_eq!(git(&env, second_tree, &["rev-parse", "HEAD"]), next_head);
+    assert_eq!(
+        git(&env, second_tree, &["branch", "--show-current"]),
+        "agent/review-fixes"
+    );
+    assert!(git(&env, tree, &["branch", "--show-current"]).is_empty());
+    assert!(tree.join("second-round.txt").exists());
+    let requests = next.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].messages.iter().any(|message| {
+        message
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("Second review round"))
+    }));
 }
 
 #[test]

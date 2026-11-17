@@ -84,6 +84,9 @@ set the local PR branch to it before running. The runner refuses a missing or
 different local tip. The worker starts at the reviewed commit and keeps the same
 tool restrictions as an issue worker. Truncated sections request missing data
 from the runner. Each reviewed commit has its own task ID and frozen packet.
+When a newer reviewed commit is already on the local branch, a finished clean
+task worktree for the same PR is left in place at a detached HEAD. The next round
+gets its own worktree. Uncommitted changes or an active task block the transition.
 
 Branches must be literal names; checkout-history aliases such as `@{-1}` are refused.
 Every base and acceptance command list is resolved before any task in the batch

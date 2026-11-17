@@ -745,6 +745,63 @@ fn acceptance_time_cannot_give_the_repair_worker_a_fresh_time_budget() {
 }
 
 #[test]
+fn task_storage_refuses_shared_or_linked_destinations() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    for linked in [false, true] {
+        let env = TestEnv::new();
+        setup(&env, "[]");
+        let storage = storage(&env);
+        fs::create_dir_all(storage.parent().unwrap()).unwrap();
+        if linked {
+            symlink(env.tmp(), &storage).unwrap();
+        } else {
+            fs::create_dir(&storage).unwrap();
+            fs::set_permissions(&storage, fs::Permissions::from_mode(0o770)).unwrap();
+        }
+        let (record, requests) = run_observed(
+            &env,
+            vec![ScriptTurn::text("done")],
+            &["work", "../tasks.json"],
+            None,
+        );
+        assert_eq!(record["outcome"], "blocked", "{record}");
+        assert!(
+            record["detail"].as_str().unwrap().contains("task storage"),
+            "{record}"
+        );
+        assert!(requests.is_empty());
+        assert!(!storage.join("test.lock").exists());
+    }
+}
+
+#[test]
+fn saved_issue_task_refuses_shared_storage_before_reading_the_checkpoint() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let storage = storage(&env);
+    fs::create_dir_all(&storage).unwrap();
+    fs::write(storage.join("issue-42.json"), b"{}").unwrap();
+    fs::set_permissions(&storage, fs::Permissions::from_mode(0o770)).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(project(&env))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("task storage: must be owned by this user and protected from group or other writes"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn a_restart_keeps_the_original_deadline_instead_of_starting_another_budget() {
     let env = TestEnv::new();
     setup(&env, "[]");
