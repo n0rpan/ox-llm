@@ -302,3 +302,139 @@ fn max_tokens_wraps_up_child_and_parent_without_starting_queued_child() {
     }
     assert!(String::from_utf8_lossy(&out.stdout).contains("parent wrap-up"));
 }
+
+#[test]
+fn child_cannot_regain_parent_excluded_tools() {
+    for (tools, flags, denied) in [
+        ("tools: bash,read\n", vec!["--no-bash"], vec!["bash"]),
+        ("", vec!["--exclude-tools", "b*"], vec!["bash"]),
+        (
+            "tools: bash,read,grep\n",
+            vec!["--no-bash", "-xt", "grep"],
+            vec!["bash", "grep"],
+        ),
+        ("tools: bash,read\n", vec![], vec![]),
+    ] {
+        let env = TestEnv::new();
+        setup(&env);
+        env.write(
+            "home/.oxa/agent/agents/scout.md",
+            &format!("---\nname: scout\ndescription: Looks around\n{tools}---\nYou are a scout.\n"),
+        );
+        let server = FakeServer::start(
+            vec![
+                ScriptTurn::tool("c1", "subagent", r#"{"agent":"scout","task":"look around"}"#),
+                ScriptTurn::text("child done"),
+                ScriptTurn::text("parent done"),
+            ],
+            FakeOpts::default(),
+        )
+        .expect("fake engine");
+        let mut words = vec!["-p"];
+        words.extend(flags);
+        words.push("delegate this");
+        let out = oxa(&env, &server.url(), &words);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let reqs = requests(&server);
+        let child = reqs.iter().find(|r| r.kind == "subagent").expect("child request");
+        for request in [&reqs[0], child] {
+            for name in &denied {
+                assert!(
+                    !request.tools_json.contains(&format!("\"name\":\"{name}\"")),
+                    "{words:?}: {}",
+                    request.tools_json
+                );
+            }
+            assert!(request.tools_json.contains("\"name\":\"read\""));
+        }
+        if denied.is_empty() {
+            assert!(
+                child.tools_json.contains("\"name\":\"bash\""),
+                "unrestricted child keeps bash"
+            );
+        }
+    }
+}
+
+/// A session-start hook consumes startup time, not the parent's run allowance.
+#[test]
+fn slow_session_initialization_does_not_expire_the_child_deadline() {
+    let env = TestEnv::new();
+    setup(&env);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"subagent":{"enabled":true}},"hooks":{"session_start":"if [ ! -e startup-held ]; then sleep 4; printf done > startup-held; fi"}}"#,
+    );
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool("c1", "subagent", r#"{"agent":"scout","task":"look around"}"#),
+            ScriptTurn::text("the child found three files"),
+            ScriptTurn::text("parent done"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let out = oxa(
+        &env,
+        &server.url(),
+        &["-p", "--max-time", "3", "delegate after startup"],
+    );
+    assert!(env.work().join("startup-held").exists(), "startup hook must run");
+    let reqs = requests(&server);
+    assert!(
+        reqs.iter()
+            .any(|r| r.session.ends_with(".s1") && r.max_tokens > 0),
+        "the child must start within the parent's fresh run allowance: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("parent done"));
+}
+
+#[test]
+fn parent_deadline_cancels_a_child_still_in_session_initialization() {
+    let env = TestEnv::new();
+    setup(&env);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"subagent":{"enabled":true}},"hooks":{"session_start":"if [ -e parent-startup ]; then printf started > child-startup; sleep 4; printf finished > child-startup-finished; else printf started > parent-startup; fi"}}"#,
+    );
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::tool("c1", "subagent", r#"{"agent":"scout","task":"look around"}"#),
+            ScriptTurn::text("parent final reply"),
+            ScriptTurn::text("parent final reply"),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let out = oxa(&env, &server.url(), &["-p", "--max-time", "2", "delegate"]);
+    assert!(env.work().join("child-startup").exists(), "child hook must start");
+    assert!(
+        !env.work().join("child-startup-finished").exists(),
+        "parent deadline must cancel the child's startup process group"
+    );
+    assert!(
+        !requests(&server)
+            .iter()
+            .any(|r| r.session.ends_with(".s1") && r.max_tokens > 0),
+        "the expired child must not make an engine request after startup"
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(130),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("parent final reply"));
+    assert_eq!(
+        requests(&server).iter().filter(|r| r.max_tokens > 0).count(),
+        2,
+        "the parent gets exactly one final turn after its interrupted tool"
+    );
+}

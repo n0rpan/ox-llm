@@ -1,0 +1,338 @@
+//! Durable facts journal and its bounded read view. Never opens runner task-state files.
+use crate::facts_io::Root;
+use crate::{situation, Result};
+use oxa_proto::work::{Checkpoint, Event, EventPage, Fact, Snapshot, MAX_EVENT_BYTES, MAX_SNAPSHOT_BYTES};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::path::Path;
+
+const CURRENT: &str = "events.jsonl";
+const PREVIOUS: &str = "events.previous.jsonl";
+const STATE: &str = "facts.json";
+const SITUATION: &str = "situation.json";
+const LOCK: &str = ".facts.lock";
+const JOURNAL_BYTES: usize = 256 * 1024;
+const STATE_BYTES: usize = 256 * 1024;
+const MAX_SOURCES: usize = 16;
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct State {
+    version: u32,
+    last_seq: u64,
+    last_by_source: Vec<Value>,
+    // Write-ahead observation: a crash can replay it even if the journal line was torn.
+    pending: Option<Value>,
+}
+impl State {
+    fn sources(&self) -> Result<Vec<Event>> {
+        if self.version != 1 || self.last_by_source.len() > MAX_SOURCES {
+            return Err("unsupported facts metadata or source capacity".into());
+        }
+        let events: Vec<Event> = self
+            .last_by_source
+            .iter()
+            .map(read_event_value)
+            .collect::<Result<_>>()?;
+        let mut sources = std::collections::HashSet::new();
+        let mut sequences = std::collections::HashSet::new();
+        for event in &events {
+            if event.seq > self.last_seq
+                || !sources.insert(&event.checkpoint.source)
+                || !sequences.insert(event.seq)
+            {
+                return Err("inconsistent facts source metadata".into());
+            }
+        }
+        if events.iter().map(|event| event.seq).max().unwrap_or(0) != self.last_seq {
+            return Err("facts source metadata has no latest observation".into());
+        }
+        Ok(events)
+    }
+    fn committed(&mut self, event: &Event) -> Result<()> {
+        let mut sources = self.sources()?;
+        sources.retain(|old| old.checkpoint.source != event.checkpoint.source);
+        sources.push(event.clone());
+        if sources.len() > MAX_SOURCES {
+            return Err("facts source capacity exceeded".into());
+        }
+        self.last_seq = event.seq;
+        self.last_by_source = sources.iter().map(event_value).collect::<Result<_>>()?;
+        self.pending = None;
+        Ok(())
+    }
+    fn bytes(&self) -> Result<Vec<u8>> {
+        let bytes = serde_json::to_vec(self).map_err(|_| "cannot encode facts metadata")?;
+        if bytes.len() > STATE_BYTES {
+            return Err("facts metadata capacity exceeded".into());
+        }
+        Ok(bytes)
+    }
+}
+fn event_value(event: &Event) -> Result<Value> {
+    serde_json::from_slice(&event.to_json().map_err(|error| error.to_string())?)
+        .map_err(|_| "cannot encode fact".into())
+}
+fn read_event_value(value: &Value) -> Result<Event> {
+    Event::from_json(&serde_json::to_vec(value).map_err(|_| "invalid fact metadata")?)
+        .map_err(|error| error.to_string())
+}
+
+struct Journal {
+    events: Vec<Event>,
+    current_bytes: usize,
+    torn_at: Option<u64>,
+}
+impl Journal {
+    fn last_seq(&self) -> u64 {
+        self.events.last().map_or(0, |event| event.seq)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Facts {
+    root: Root,
+    journal_bytes: usize,
+}
+impl Facts {
+    /// Explicit first initialization. Existing or partial artifacts are never reset to empty.
+    /// Supply <protected repository root>/facts, outside writable workspace/Git binds.
+    pub fn initialize(root: &Path) -> Result<Self> {
+        let root = Root::open(root, true)?;
+        let _lock = root.lock(LOCK)?;
+        for leaf in [CURRENT, PREVIOUS, STATE, SITUATION] {
+            if root.exists(leaf)? {
+                return Err("facts store already exists or initialization is incomplete".into());
+            }
+        }
+        root.create(CURRENT, b"")?;
+        root.create(
+            SITUATION,
+            &situation::empty().to_json().map_err(|error| error.to_string())?,
+        )?;
+        root.create(
+            STATE,
+            &State {
+                version: 1,
+                ..State::default()
+            }
+            .bytes()?,
+        )?;
+        Ok(Self {
+            root,
+            journal_bytes: JOURNAL_BYTES,
+        })
+    }
+    pub fn open(root: &Path) -> Result<Self> {
+        let facts = Self {
+            root: Root::open(root, false)?,
+            journal_bytes: JOURNAL_BYTES,
+        };
+        facts.situation()?;
+        Ok(facts)
+    }
+    /// One event per durable source/revision. A retry of the latest revision returns its
+    /// original event; older revisions and different contents under that identity are errors.
+    /// Stop before the next action if this call fails. Replaying the same checkpoint repairs
+    /// a lost acknowledgement, a torn last line or an interrupted snapshot replacement.
+    pub fn append(&self, checkpoint: Checkpoint, at_ms: u64, fact: Fact) -> Result<Event> {
+        let _lock = self.root.lock(LOCK)?;
+        let (mut state, mut snapshot, journal) = self.recover()?;
+        let sources = state.sources()?;
+        if let Some(previous) = sources
+            .iter()
+            .find(|event| event.checkpoint.source == checkpoint.source)
+        {
+            if checkpoint.revision == previous.checkpoint.revision {
+                return if previous.fact == fact {
+                    Ok(previous.clone())
+                } else {
+                    Err("checkpoint identity has conflicting facts".into())
+                };
+            }
+            if checkpoint.revision < previous.checkpoint.revision {
+                return Err("stale facts checkpoint".into());
+            }
+        } else if sources.len() == MAX_SOURCES {
+            return Err("facts source capacity exceeded".into());
+        }
+        let event = Event {
+            seq: state.last_seq.checked_add(1).ok_or("facts sequence exhausted")?,
+            at_ms,
+            checkpoint,
+            fact,
+        };
+        let mut bytes = event.to_json().map_err(|error| error.to_string())?;
+        bytes.push(b'\n');
+        if bytes.len() > self.journal_bytes {
+            return Err("event exceeds journal capacity".into());
+        }
+        // Fail capacity/semantic checks before durably reserving an observation.
+        situation::apply(&mut snapshot, &event)?;
+        state.pending = Some(event_value(&event)?);
+        self.root.atomic(STATE, &state.bytes()?)?;
+        if journal.current_bytes + bytes.len() > self.journal_bytes {
+            self.root.rotate(CURRENT, PREVIOUS)?;
+        }
+        self.root.append(CURRENT, &bytes)?;
+        state.committed(&event)?;
+        self.root.atomic(STATE, &state.bytes()?)?;
+        self.root
+            .atomic(SITUATION, &snapshot.to_json().map_err(|error| error.to_string())?)?;
+        Ok(event)
+    }
+    pub fn situation(&self) -> Result<Snapshot> {
+        let _lock = self.root.lock(LOCK)?;
+        self.recover().map(|(_, snapshot, _)| snapshot)
+    }
+    pub fn events_after(&self, after: u64, limit: usize) -> Result<EventPage> {
+        if !(1..=64).contains(&limit) {
+            return Err("event page limit must be between 1 and 64".into());
+        }
+        let _lock = self.root.lock(LOCK)?;
+        let (state, _, journal) = self.recover()?;
+        if after > state.last_seq {
+            return Err("event cursor is ahead of the journal".into());
+        }
+        let first_available = journal.events.first().map_or(1, |event| event.seq);
+        let events: Vec<_> = journal
+            .events
+            .into_iter()
+            .filter(|event| event.seq > after)
+            .take(limit)
+            .collect();
+        let next = events
+            .last()
+            .map_or(after.max(first_available - 1), |event| event.seq);
+        let page = EventPage {
+            after,
+            events,
+            next,
+            first_available,
+            gap: after.saturating_add(1) < first_available,
+        };
+        page.to_json().map_err(|error| error.to_string())?;
+        Ok(page)
+    }
+    fn journal(&self, pending: bool) -> Result<Journal> {
+        // The only allowed missing current file is an interrupted, durably reserved rotation.
+        if !self.root.exists(CURRENT)? {
+            if !pending {
+                return Err("facts journal is missing".into());
+            }
+            self.root.create(CURRENT, b"")?;
+        }
+        let mut events = Vec::new();
+        if self.root.exists(PREVIOUS)? {
+            let bytes = self.root.read(PREVIOUS, self.journal_bytes)?;
+            parse_lines(&bytes, false, &mut events)?;
+        }
+        let bytes = self.root.read(CURRENT, self.journal_bytes)?;
+        let torn_at = parse_lines(&bytes, pending, &mut events)?;
+        for pair in events.windows(2) {
+            if pair[0].seq.checked_add(1) != Some(pair[1].seq) {
+                return Err("facts journal has a sequence gap".into());
+            }
+        }
+        Ok(Journal {
+            events,
+            current_bytes: bytes.len(),
+            torn_at,
+        })
+    }
+    fn recover(&self) -> Result<(State, Snapshot, Journal)> {
+        let mut state: State = serde_json::from_slice(&self.root.read(STATE, STATE_BYTES)?)
+            .map_err(|_| "invalid facts metadata")?;
+        let sources = state.sources()?;
+        let pending = state.pending.as_ref().map(read_event_value).transpose()?;
+        let mut journal = self.journal(pending.is_some())?;
+        let mut snapshot = Snapshot::from_json(&self.root.read(SITUATION, MAX_SNAPSHOT_BYTES)?)
+            .map_err(|error| error.to_string())?;
+        let original_seq = snapshot.as_of_seq;
+        if snapshot.as_of_seq > state.last_seq {
+            return Err("situation is ahead of committed facts".into());
+        }
+        for event in journal
+            .events
+            .iter()
+            .filter(|event| event.seq > original_seq && event.seq <= state.last_seq)
+        {
+            situation::apply(&mut snapshot, event)?;
+        }
+        if snapshot.as_of_seq != state.last_seq {
+            return Err("retained journal cannot recover the situation".into());
+        }
+        if let Some(event) = pending {
+            if state.last_seq.checked_add(1) != Some(event.seq)
+                || sources.iter().any(|old| {
+                    old.checkpoint.source == event.checkpoint.source
+                        && old.checkpoint.revision >= event.checkpoint.revision
+                })
+                || !sources
+                    .iter()
+                    .any(|old| old.checkpoint.source == event.checkpoint.source)
+                    && sources.len() >= MAX_SOURCES
+            {
+                return Err("invalid pending facts checkpoint".into());
+            }
+            situation::apply(&mut snapshot, &event)?;
+            if journal.last_seq() == state.last_seq {
+                if let Some(length) = journal.torn_at {
+                    self.root.truncate(CURRENT, length)?;
+                    journal.current_bytes = length as usize;
+                }
+                let mut bytes = event.to_json().map_err(|error| error.to_string())?;
+                bytes.push(b'\n');
+                if bytes.len() > self.journal_bytes {
+                    return Err("event exceeds journal capacity".into());
+                }
+                if journal.current_bytes + bytes.len() > self.journal_bytes {
+                    self.root.rotate(CURRENT, PREVIOUS)?;
+                }
+                self.root.append(CURRENT, &bytes)?;
+            } else if journal.events.last() != Some(&event) || journal.torn_at.is_some() {
+                return Err("pending fact disagrees with the journal".into());
+            } else {
+                // Visibility is not durability: the original append may have died before sync.
+                let leaf = if journal.current_bytes == 0 {
+                    PREVIOUS
+                } else {
+                    CURRENT
+                };
+                self.root.append(leaf, b"")?;
+            }
+            state.committed(&event)?;
+            self.root.atomic(STATE, &state.bytes()?)?;
+            journal = self.journal(false)?;
+        } else if journal.last_seq() != state.last_seq {
+            return Err("journal disagrees with committed facts".into());
+        }
+        if snapshot.as_of_seq != original_seq {
+            self.root
+                .atomic(SITUATION, &snapshot.to_json().map_err(|error| error.to_string())?)?;
+        }
+        Ok((state, snapshot, journal))
+    }
+}
+
+fn parse_lines(bytes: &[u8], allow_torn: bool, events: &mut Vec<Event>) -> Result<Option<u64>> {
+    let mut offset = 0usize;
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        if !line.ends_with(b"\n") {
+            return if allow_torn {
+                Ok(Some(offset as u64))
+            } else {
+                Err("facts journal has an unreserved torn line".into())
+            };
+        }
+        if line.len() > MAX_EVENT_BYTES + 1 {
+            return Err("facts journal line capacity exceeded".into());
+        }
+        events.push(Event::from_json(&line[..line.len() - 1]).map_err(|error| error.to_string())?);
+        offset += line.len();
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests;

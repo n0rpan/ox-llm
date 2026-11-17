@@ -29,7 +29,9 @@ impl Sandbox for NoActions {
     }
 }
 
-fn with_loop(test: impl FnOnce(&mut Loop<'_>, &mut TestTerminal, SessionInfo, &mpsc::Receiver<SessionCmd>)) {
+pub(super) fn with_loop(
+    test: impl FnOnce(&mut Loop<'_>, &mut TestTerminal, SessionInfo, &mpsc::Receiver<SessionCmd>),
+) {
     let env = TestEnv::new();
     let server = FakeServer::start(
         Vec::new(),

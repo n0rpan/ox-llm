@@ -98,6 +98,8 @@ fn release_priority_lease_expiry_and_daily_attempt_cap() {
             lease: Some(Lease {
                 holder: "worker-a".into(),
                 expires_at: 86_410,
+                claimed_at: Some(86_400),
+                generation: (1, 2),
             }),
         },
     )]);
@@ -199,4 +201,25 @@ fn action_priority_is_stable_within_release_priority() {
     let json = serde_json::to_string(&result).unwrap();
     let restored: Board = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.entries[0].action, Action::FixFindings);
+}
+
+#[test]
+fn pull_request_debug_redacts_body_while_serde_preserves_policy_input() {
+    for body in [
+        "synthetic private report",
+        "Removes: synthetic private report\nsecond line",
+    ] {
+        let mut input = pr(1);
+        input.body = body.into();
+        for rendered in [
+            format!("{input:?}"),
+            format!("{input:#?}"),
+            format!("{:?}", vec![input.clone()]),
+        ] {
+            assert!(!rendered.contains("synthetic private report"));
+            assert!(rendered.contains("number: 1"));
+        }
+        let restored: PullRequest = serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
+        assert_eq!(restored.body, body);
+    }
 }

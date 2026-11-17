@@ -167,21 +167,31 @@ fn a_project_setting_cannot_opt_in() {
 #[test]
 fn the_environment_opts_in() {
     let env = TestEnv::new();
-    let server = FakeServer::start(vec![ScriptTurn::text("ok")], FakeOpts::default()).unwrap();
     let home = env.home();
-    let (code, out, err) = go(
-        &env,
-        &server.url(),
-        &home,
-        &[("OXA_ALLOW_HOME_CWD", "1")],
-        &["-p", "--no-session", "x"],
-        "",
-        false,
-    );
-    assert_eq!(code, 0, "{err}");
-    assert_eq!(out.trim(), "ok");
-    // A falsy value does not opt in.
-    refused_in_with_env(&env, &home, "0");
+    // Every shared true word opts in, in any case.
+    let true_words = ["1", "true", "TRUE", "yes", "on", "ON"];
+    let server = FakeServer::start(
+        true_words.iter().map(|_| ScriptTurn::text("ok")).collect(),
+        FakeOpts::default(),
+    )
+    .unwrap();
+    for value in true_words {
+        let (code, out, err) = go(
+            &env,
+            &server.url(),
+            &home,
+            &[("OXA_ALLOW_HOME_CWD", value)],
+            &["-p", "--no-session", "x"],
+            "",
+            false,
+        );
+        assert_eq!(code, 0, "OXA_ALLOW_HOME_CWD={value}: {err}");
+        assert_eq!(out.trim(), "ok");
+    }
+    // A falsy, unknown or empty value does not opt in.
+    for value in ["0", "false", "no", "off", "", "maybe"] {
+        refused_in_with_env(&env, &home, value);
+    }
 }
 
 fn refused_in_with_env(env: &TestEnv, cwd: &Path, value: &str) {

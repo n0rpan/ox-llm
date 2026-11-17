@@ -484,17 +484,17 @@ fn escape_aborts_and_restores_queue() {
         vec![WorkerMsg::Event(AgentEvent::AgentStart)],
     );
     assert_eq!(d.code, 0);
-    // Escape took the queued message back into the editor; Enter sent it again as a steer.
+    // Escape restores queued text; explicit Enter recovers after the canceled run.
     let (steering, follow_up) = s.handle().queued();
-    assert_eq!(
-        steering,
-        vec!["q1".to_string()],
-        "the queued message is back in the editor and resubmitted"
+    assert!(
+        steering.is_empty(),
+        "recovered text must not steer the canceled run"
     );
     assert!(follow_up.is_empty());
     assert!(
-        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
-        "resubmitting restored input retains one consumer on its original handle"
+        matches!(d.cmds.as_slice(), [SessionCmd::RecoveryPrompt { handle, text, parts }]
+            if handle.same_instance(&s.handle()) && text == "q1" && parts.is_empty()),
+        "restored input becomes exactly one recovery prompt on its original handle"
     );
 }
 
