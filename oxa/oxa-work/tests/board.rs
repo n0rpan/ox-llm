@@ -98,6 +98,8 @@ fn release_priority_lease_expiry_and_daily_attempt_cap() {
             lease: Some(Lease {
                 holder: "worker-a".into(),
                 expires_at: 86_410,
+                claimed_at: Some(86_400),
+                generation: (1, 2),
             }),
         },
     )]);

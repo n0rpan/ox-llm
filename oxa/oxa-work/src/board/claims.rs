@@ -1,5 +1,5 @@
 //! Durable reservations only; execution and GitHub writes are outside this API.
-use super::{Action, AttemptState, Entry, Lease, Policy};
+use super::{valid_worker_id, Action, AttemptState, Entry, Lease, Policy};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -71,7 +71,8 @@ impl Claims {
         {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                io(OpenOptions::new().read(true).write(true).open(&path))?
+                self.private(&path)?;
+                io(File::open(&path))?
             }
             Err(e) => return io(Err(e)),
         };
@@ -105,7 +106,11 @@ impl Claims {
         if saved.version != 1
             || saved.number != number
             || saved.state.lease.as_ref().is_some_and(|l| {
-                saved.state.attempts == 0 || !crate::valid_task_id(&l.holder) || l.expires_at == 0
+                saved.state.attempts == 0
+                    || !valid_worker_id(&l.holder)
+                    || l.expires_at == 0
+                    || l.generation != (saved.state.utc_day, saved.state.attempts)
+                    || l.claimed_at.is_none_or(|at| at >= l.expires_at)
             })
         {
             return Err("invalid board claim identity or lease".into());
@@ -183,7 +188,7 @@ impl Claims {
             .checked_add(ttl)
             .filter(|_| ttl > 0)
             .ok_or("invalid board lease duration")?;
-        if entry.number == 0 || entry.head.is_empty() || !crate::valid_task_id(holder) {
+        if entry.number == 0 || entry.head.is_empty() || !valid_worker_id(holder) {
             return Err("invalid board claim request".into());
         }
         let _lock = self.lock(entry.number)?;
@@ -209,13 +214,13 @@ impl Claims {
         let lease = Lease {
             holder: holder.into(),
             expires_at,
+            claimed_at: Some(now),
+            generation: (day, state.attempts),
         };
         state.lease = Some(lease.clone());
         let replacing = self.established(entry.number)?;
         self.save(entry.number, state, replacing)?;
-        if !replacing {
-            self.mark(entry.number)?;
-        }
+        self.mark(entry.number)?;
         Ok(Some(lease))
     }
 
@@ -234,7 +239,7 @@ impl Claims {
                 io(io(File::open(&self.root))?.sync_all())?;
                 Ok(())
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => self.private(&path),
             Err(e) => io(Err(e)),
         }
     }

@@ -18,7 +18,7 @@ impl Fixture {
     }
     fn claim(&self, now: u64, ttl: u64) -> Option<Lease> {
         self.store()
-            .claim(&entry(), &policy(), "worker", now, ttl)
+            .claim(&entry(), &policy(), "codex:node/slot-1", now, ttl)
             .unwrap()
     }
 }

@@ -60,6 +60,15 @@ pub trait GitHub {
 pub struct Lease {
     pub holder: String,
     pub expires_at: u64,
+    #[serde(default)]
+    pub claimed_at: Option<u64>,
+    /// UTC admission day and its non-refunded attempt ordinal identify this reservation.
+    #[serde(default)]
+    pub generation: (u64, u32),
+}
+
+pub fn valid_worker_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 128 && id.split([':', '/']).all(crate::valid_task_id)
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
