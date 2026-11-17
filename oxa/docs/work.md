@@ -77,6 +77,17 @@ Issue lookup also requires source-project trust. Git and GitHub CLI host calls u
 validated executables outside the repository. Worker and check-supervisor PATHs
 exclude project directories, relative entries and unsafe aliases; project tools
 can still run by explicit path inside the sandbox.
+Use `oxa work --pr 123 --model your-model` for a pull request in the source
+repository. The runner supplies its body, discussion, unresolved inline reviews,
+failing checks, and changed files from the reviewed commit. Fetch that commit and
+set the local PR branch to it before running. The runner refuses a missing or
+different local tip. The worker starts at the reviewed commit and keeps the same
+tool restrictions as an issue worker. Truncated sections request missing data
+from the runner. Each reviewed commit has its own task ID and frozen packet.
+When a newer reviewed commit is already on the local branch, a finished clean
+task worktree for the same PR is left in place at a detached HEAD. The next round
+gets its own worktree. Uncommitted changes or an active task block the transition.
+
 Branches must be literal names; checkout-history aliases such as `@{-1}` are refused.
 A local base branch that lags behind the commit the base names (for example a local
 `main` after a fetch, though the runner itself never fetches) is fast-forwarded to that

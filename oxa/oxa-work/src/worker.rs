@@ -121,7 +121,7 @@ pub(crate) fn run(
             .env_remove("GH_ENTERPRISE_TOKEN")
             .env_remove("GITHUB_ENTERPRISE_TOKEN")
             .env_remove("GH_CONFIG_DIR")
-            .args(["--no-mcp", "--no-extensions", "--no-web-search"]);
+            .args(["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]);
     }
     if let Some(id) = session {
         command.arg(format!("--continue={id}"));

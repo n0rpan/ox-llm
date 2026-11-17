@@ -77,7 +77,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         cwd,
     } = io;
 
-    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(argv) {
+    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(crate::help::command_words(argv)) {
         if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
             && invocation.args.is_empty()
         {
