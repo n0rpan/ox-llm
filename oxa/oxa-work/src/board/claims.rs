@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 mod controls;
 pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
 mod imports;
+mod reviews;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +21,8 @@ struct Saved {
     state: AttemptState,
     #[serde(default)]
     data: AssignmentData,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    review_requests: Vec<super::review::RequestKey>,
 }
 
 fn io<T>(value: std::io::Result<T>) -> Result<T> {
@@ -106,6 +109,7 @@ impl Claims {
                         number,
                         state: AttemptState::default(),
                         data: AssignmentData::default(),
+                        review_requests: vec![],
                     }),
                     Ok(_) => Err("board claim state is missing; recovery is required".into()),
                     Err(e) => io(Err(e)),
@@ -122,6 +126,7 @@ impl Claims {
         let saved: Saved = serde_json::from_slice(&bytes).map_err(|_| "invalid board claim state")?;
         if saved.version != 1
             || saved.number != number
+            || saved.review_requests.iter().any(|key| !key.valid())
             || saved.state.lease.as_ref().is_some_and(|l| {
                 saved.state.attempts == 0
                     || !valid_worker_id(&l.holder)

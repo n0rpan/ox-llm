@@ -280,20 +280,22 @@ pub(crate) fn run(
                 if !is_trusted {
                     return Err("source project is not trusted; approve it before issue lookup".into());
                 }
-                let gh = crate::netguard::trusted_executable_for(
-                    "gh",
-                    Some(policy.host_path.as_os_str()),
-                    Some(&root),
-                    Some(&dirs.home),
-                )
-                .ok_or("no trusted gh executable outside the source project")?;
-                vec![oxa_work::issue_task(
-                    &root,
-                    &gh,
-                    &policy.host_path,
-                    number.parse().map_err(|_| "invalid issue number")?,
-                    model.clone(),
-                )?]
+                let number = number.parse().map_err(|_| "invalid issue number")?;
+                if let Some(task) = oxa_work::saved_issue_task(&policy, number, model)? {
+                    vec![task]
+                } else {
+                    let gh = crate::netguard::trusted_executable_for(
+                        "gh",
+                        Some(policy.host_path.as_os_str()),
+                        Some(&root),
+                        Some(&dirs.home),
+                    )
+                    .ok_or("no trusted gh executable outside the source project")?;
+                    let mut task =
+                        oxa_work::issue_task(&root, &gh, &policy.host_path, number, model.clone())?;
+                    task.prompt.insert_str(0, oxa_work::ISSUE_RUNNER_GUIDANCE);
+                    vec![task]
+                }
             }
             _ => return Err(
                 "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | status [--json]"
