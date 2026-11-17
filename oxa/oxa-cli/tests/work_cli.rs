@@ -237,8 +237,8 @@ fn github_issue_input_uses_mock_gh() {
     let gh = env.write(
         "tmp/trusted-tools/gh",
         r##"#!/bin/sh
-[ "$*" = 'issue view 42 --json title,body' ] || exit 9
-printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
+[ "$*" = 'issue view 42 --json title,body,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","comments":[]}'
 "##,
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
