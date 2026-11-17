@@ -553,9 +553,7 @@ pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), 
                 {
                     Ok(())
                 }
-                result => {
-                    result.map_err(|error| HealthFailure::reply(ReplyPart::TransferEnd, error))
-                }
+                result => result.map_err(|error| HealthFailure::reply(ReplyPart::TransferEnd, error)),
             };
         }
         stream
@@ -635,9 +633,7 @@ mod mock_health {
             ] {
                 for remaining in [0, framing - 1, framing, framing + 2] {
                     let result = write_reply(&mut DisconnectAfter { remaining, kind }, &reply);
-                    let expected = terminal
-                        && remaining >= framing
-                        && kind != io::ErrorKind::TimedOut;
+                    let expected = terminal && remaining >= framing && kind != io::ErrorKind::TimedOut;
                     assert_eq!(
                         result.is_ok(),
                         expected,
