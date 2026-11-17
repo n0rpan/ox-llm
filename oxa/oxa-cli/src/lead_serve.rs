@@ -68,7 +68,7 @@ impl Source {
         Ok(Self { uid, board })
     }
 
-    fn render(&self, fragment: bool) -> String {
+    fn render(&self, page: crate::lead_page::Page, fragment: bool) -> String {
         // The existing bounded reader revalidates owner-only files/directories on every read.
         // Missing, stale and refused data remain explicit in the shared renderer.
         let board = self
@@ -83,9 +83,9 @@ impl Source {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         if fragment {
-            crate::lead_page::content(&view, now)
+            crate::lead_page::content_for(page, &view, now)
         } else {
-            crate::lead_page::document(&view, now)
+            crate::lead_page::document_for(page, &view, now)
         }
     }
 }
@@ -111,7 +111,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     crate::lead_http::serve(
         listener,
         move |stream, request| authorized(&config, uid, stream, request),
-        move |fragment| source.render(fragment),
+        move |page, fragment| source.render(page, fragment),
     )
     .map_err(|_| invalid("lead listener failed"))?;
     Ok(0)
@@ -178,9 +178,11 @@ mod tests {
         let path_text = path.to_str().unwrap();
         let env = Env::from_pairs(&[("OXA_LEAD_BOARD_LOG", path_text)]);
         let source = Source::new(&env, uid).unwrap();
-        assert!(source.render(false).contains("No open PRs in this snapshot"));
+        assert!(source
+            .render(crate::lead_page::Page::Home, false)
+            .contains("No open PRs in this snapshot"));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let refused = source.render(true);
+        let refused = source.render(crate::lead_page::Page::Home, true);
         assert!(refused.contains("Board unavailable"));
         assert!(!refused.contains(path_text));
         assert!(Source::new(
