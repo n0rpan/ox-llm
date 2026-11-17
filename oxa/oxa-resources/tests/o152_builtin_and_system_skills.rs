@@ -368,43 +368,26 @@ fn pull_request_skill_defers_pushes_and_gh_to_the_session() {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let open = flat.find("## Open").expect("open section");
     let follow = flat.find("## Follow up").expect("follow up section");
-    let open_section = &flat[open..follow];
+    let steps = &flat[open..follow];
     // Sessions that permit pushing keep the exact commands.
-    let push = open_section.find("git push -u origin HEAD").expect("push step");
-    assert!(
-        open_section.contains("gh pr create --draft"),
-        "sessions that permit gh keep the pull-request command"
-    );
+    let push = steps.find("git push -u origin HEAD").expect("push step");
     // The condition is stated before the commands it governs.
-    let permit = open_section
+    let permit = steps
         .find("session")
-        .expect("the open steps say which session may push and call gh");
-    assert!(
-        permit < push,
-        "the session condition precedes the push: {open_section}"
-    );
+        .expect("the open steps say which session may push");
+    assert!(permit < push, "the session condition precedes the push");
+    assert!(steps.contains("gh pr create --draft"), "keep the gh command");
     // A session that refuses them is told what to hand over instead of pushing.
-    assert!(
-        open_section.contains("refuse"),
-        "a session that refuses pushes and gh is named: {open_section}"
-    );
-    assert!(
-        open_section.contains("report the branch") && open_section.contains("exact commit"),
-        "the hand-over names the branch and the exact commit: {open_section}"
-    );
+    assert!(steps.contains("refuse"), "name a session that refuses");
+    assert!(steps.contains("report the branch"), "hand over the branch");
+    assert!(steps.contains("exact commit"), "hand over the exact commit");
 
+    // A session that may not call `gh` never pushes, and the queue read stays conditioned.
     let rules = &flat[flat.find("## Rules").expect("rules section")..];
-    let may = rules
-        .find("may call `gh`")
-        .expect("the merge-queue read says where it applies");
-    assert!(
-        may < rules
-            .find("gh pr view N --json isInMergeQueue")
-            .expect("merge-queue read"),
-        "the merge-queue read follows its condition: {rules}"
-    );
-    assert!(
-        rules.contains("never push"),
-        "a session that may not call gh never pushes: {rules}"
-    );
+    assert!(rules.contains("never push"), "a refusing session never pushes");
+    let may = rules.find("may call `gh`").expect("say where gh applies");
+    let read = rules
+        .find("gh pr view N --json isInMergeQueue")
+        .expect("queue read");
+    assert!(may < read, "the merge-queue read follows its condition");
 }
