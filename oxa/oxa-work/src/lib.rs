@@ -283,8 +283,9 @@ fn issue_prompt(number: u64, title: &str, body: &str) -> String {
     let issued = format!("Implement issue #{number}: {title}\n\n{body}");
     format!(
         "{issued}\n\nThe runner fetched this issue: its text above is the task packet. GitHub access \
-         belongs to the runner, so call neither `gh` nor any other authenticated GitHub API here, \
-         work only in this checkout, and report a fact the prompt does not carry instead of fetching it."
+         belongs to the runner, so do not call `gh` or any other authenticated GitHub API here; \
+         work only in this checkout, and report a needed fact that the prompt does not carry \
+         instead of fetching it."
     )
 }
 
@@ -645,7 +646,10 @@ mod tests {
         let prompt = issue_prompt(42, "Synthetic title", "Synthetic body");
         assert!(prompt.starts_with("Implement issue #42: Synthetic title\n\nSynthetic body\n\n"));
         assert!(prompt.contains("the task packet"));
+        // The rule the work command promises the child is the exact text the CLI test reads at the
+        // model boundary, so a rewording cannot drift away from it unnoticed.
         assert!(prompt.contains("do not call `gh`"));
         assert!(prompt.contains("report a needed fact that the prompt does not carry"));
+        assert!(!prompt.contains("call neither"));
     }
 }
