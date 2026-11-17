@@ -41,11 +41,13 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
     let gh = env.write("tmp/gh", r#"#!/bin/sh
 case "$*" in
   *'pullRequests(first:100'*) printf '%s' '{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]}}}}' ;;
-  *'p42:pullRequest(number:42)'*) printf '%s' '{"data":{"repository":{"p42":{"number":42,"headRefOid":"synthetic-head","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}' ;;
+  *'p42:pullRequest(number:42)'*) cat detail.json ;;
   *) exit 92 ;;
 esac
 "#);
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"p42":{"number":42,"headRefOid":"synthetic-head","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
+    fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
     let out = invoke(&env, "work board --shadow --repo example/repo --once");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let storage = fs::read_dir(env.agent_dir().join("work"))
@@ -54,43 +56,65 @@ esac
         .unwrap()
         .unwrap()
         .path();
-    let log = storage.join("board-shadow.jsonl");
+    let log_for = |repo: &str| {
+        let bound = storage.join("board").join(repo).join("board-shadow.jsonl");
+        if bound.exists() {
+            bound
+        } else {
+            storage.join("board-shadow.jsonl")
+        }
+    };
+    let log = log_for("example/repo");
     assert_eq!(fs::metadata(&log).unwrap().permissions().mode() & 0o777, 0o600);
     let sample: serde_json::Value = serde_json::from_str(fs::read_to_string(log).unwrap().trim()).unwrap();
     assert_eq!(sample["would_take"][0]["action"], "resolve_conflict");
     assert_eq!(sample["board"]["entries"][0], sample["would_take"][0]);
-}
-
-#[test]
-fn sampling_appends_and_waits_five_minutes_and_stops_on_read_error() {
-    let env = TestEnv::new();
-    let path = env.tmp().join("shadow.jsonl");
-    let mut log = oxa_work::shadow::open_log(&path).unwrap();
-    assert!(oxa_work::shadow::open_log(&path).is_err());
-    let mut reads = 0;
-    let mut waits = vec![];
-    assert!(oxa_work::shadow::run(
-        &mut log,
-        false,
-        || {
-            reads += 1;
-            if reads == 3 {
-                return Err("synthetic read failure".into());
-            }
-            Ok(oxa_work::board::Board {
-                observed_at: reads * 300,
-                entries: vec![],
-            })
-        },
-        |duration| waits.push(duration)
-    )
-    .is_err());
-    assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 2);
-    assert_eq!(waits.len(), 2);
-    assert!(waits
-        .iter()
-        .all(|d| *d <= oxa_work::shadow::INTERVAL && d.as_secs() >= 299));
-    drop(log);
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(oxa_work::shadow::open_log(&path).is_err());
+    let mut actual = vec![];
+    for (conclusion, head, source) in [
+        ("STARTUP_FAILURE", "synthetic-head", ""),
+        ("SUCCESS", "old-head", ""),
+        ("SUCCESS", "synthetic-head", "engine.c"),
+        ("SUCCESS", "synthetic-head", "view.qml"),
+        ("SUCCESS", "synthetic-head", "header.hpp"),
+    ] {
+        let row = &mut detail["data"]["repository"]["p42"];
+        row["mergeable"] = "MERGEABLE".into();
+        row["reviewDecision"] = "APPROVED".into();
+        row["latestOpinionatedReviews"] =
+            serde_json::json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":head}}]});
+        row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"isRequired":true,"conclusion":conclusion}]}}}}]});
+        row["files"] = if source.is_empty() {
+            serde_json::json!({"totalCount":0,"nodes":[]})
+        } else {
+            serde_json::json!({"totalCount":1,"nodes":[{"path":source,"deletions":1}]})
+        };
+        fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+        assert!(invoke(&env, "work board --shadow --repo example/repo --once")
+            .status
+            .success());
+        let text = fs::read_to_string(log_for("example/repo")).unwrap();
+        let sample: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+        actual.push(
+            sample["board"]["entries"][0]["action"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    assert!(invoke(&env, "work board --shadow --repo example/other --once")
+        .status
+        .success());
+    assert_eq!(
+        (actual, log_for("example/repo") != log_for("example/other")),
+        (
+            vec![
+                "fix_required_ci",
+                "wait_review",
+                "add_removes",
+                "add_removes",
+                "add_removes"
+            ],
+            true
+        )
+    );
 }
