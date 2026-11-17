@@ -10,6 +10,7 @@ pub enum RunOutcome {
     Blocked(&'static str),
     Failed(&'static str),
     Interrupted,
+    Stalled,
 }
 
 impl RunOutcome {
@@ -46,6 +47,7 @@ impl RunOutcome {
             Self::Done => 0,
             Self::NothingToDo => 4,
             Self::Interrupted => 130,
+            Self::Stalled => 9,
             Self::Blocked(class) => match *class {
                 codes::BUDGET_EXHAUSTED => oxa_proto::EXIT_BUDGET,
                 "cloud_credentials_unavailable" => 5,
@@ -67,6 +69,7 @@ impl RunOutcome {
             Self::Blocked(class) => ("blocked", Some(*class)),
             Self::Failed(class) => ("failed", Some(*class)),
             Self::Interrupted => ("interrupted", Some(codes::ABORTED)),
+            Self::Stalled => ("stalled", Some("goal_stalled")),
         };
         serde_json::json!({"type":"oxa_result", "outcome":outcome,
             "error_class":error_class, "exit_code":self.exit_code()})

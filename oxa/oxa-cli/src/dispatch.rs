@@ -448,7 +448,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 Ok(p) => p,
                 Err(e) => return report(&mut *stderr, &e),
             };
-            if prompts.is_empty() {
+            if prompts.is_empty() && a.goal.is_none() && !a.continue_ && !a.resume {
                 let e = OxaError::new(codes::USAGE, "no prompt: give a message, an @file or piped stdin")
                     .with_hint(USAGE_HINT);
                 return report(&mut *stderr, &e);
@@ -477,6 +477,8 @@ struct Prep {
     /// CLI-024: `-n/--name`, trimmed and non-empty; written as a `session_info` entry once
     /// the session is open.
     name: Option<String>,
+    /// Explicit user continuation may resume a paused, unexhausted stored goal.
+    continue_goal: bool,
 }
 
 /// Startup warnings after opening the session, so restored/selected model limits are final.
@@ -527,6 +529,9 @@ fn open_named(
 ) -> Result<Session, OxaError> {
     let mut session = Session::open(built.deps(session_id), open)?;
     session.set_output_schema(built.output_schema.clone());
+    if let Some(goal) = &built.goal {
+        session.set_goal(Some(goal.clone()), &mut oxa_proto::VecSink::default())?;
+    }
     if let Some(name) = name {
         session.set_name(name, &mut oxa_proto::VecSink::default())?;
     }
@@ -541,6 +546,7 @@ struct Built {
     status: Option<Arc<crate::status::StatusWriter>>,
     result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
+    goal: Option<oxa_session::Goal>,
     engine: Arc<dyn Engine>,
     cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
     store: Arc<dyn SessionStore>,
@@ -655,6 +661,13 @@ fn prepare(
     confirm: &mut dyn FnMut(&str, &str) -> bool,
     cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
 ) -> Result<Prep, OxaError> {
+    if a.goal.is_some() && !matches!(mode, RunMode::Print | RunMode::Json) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "--goal currently requires print or JSON mode.",
+        ));
+    }
+    let goal = crate::goal_cmd::load(a, cwd)?;
     let output_schema = a
         .output_schema
         .as_ref()
@@ -953,6 +966,7 @@ fn prepare(
         status,
         result_facts,
         output_schema,
+        goal,
         engine,
         cloud_diagnostics,
         store,
@@ -978,6 +992,7 @@ fn prepare(
         notices,
         gated,
         name,
+        continue_goal: a.continue_,
     })
 }
 
@@ -1285,12 +1300,63 @@ fn run_headless(
         session_id,
         mut notices,
         name,
+        continue_goal,
         ..
     } = prep;
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
     };
+    if continue_goal {
+        if let Some(mut goal) = session
+            .goal()
+            .filter(|g| g.status == oxa_session::GoalStatus::Paused && !g.exhausted())
+        {
+            if let Err(error) = goal
+                .resume()
+                .and_then(|()| session.set_goal(Some(goal), &mut oxa_proto::VecSink::default()))
+            {
+                return finish_outcome_facts(Err(error), stderr, Some(&built.result_facts));
+            }
+        }
+    }
+    let mut prompts = prompts;
+    if let Some(goal) = session.goal() {
+        if goal.status == oxa_session::GoalStatus::Pursuing {
+            if built.goal.is_some() {
+                let start = oxa_core::prompt::goal_start(&goal.objective);
+                if let Some((text, _parts)) = prompts.first_mut() {
+                    *text = format!("{start}\n\n{text}");
+                } else {
+                    prompts.push((start, vec![]));
+                }
+            } else if prompts.is_empty() {
+                prompts.push((oxa_core::prompt::GOAL_CONTINUE.into(), vec![]));
+            }
+        }
+    }
+    if prompts.is_empty() {
+        if let Some(goal) = session.goal() {
+            let outcome = match goal.status {
+                oxa_session::GoalStatus::Done => oxa_core::RunOutcome::Done,
+                oxa_session::GoalStatus::Blocked => oxa_core::RunOutcome::Blocked("goal_blocked"),
+                oxa_session::GoalStatus::Paused => oxa_core::RunOutcome::Stalled,
+                oxa_session::GoalStatus::Pursuing => oxa_core::RunOutcome::NothingToDo,
+            };
+            built.result_facts.goal(Some(goal));
+            session.shutdown(&mut oxa_proto::HeadlessUi::default());
+            let result = built
+                .status
+                .as_ref()
+                .map_or(Ok(outcome), |status| status.finish(Ok(outcome), stderr));
+            return finish_outcome_facts(result, stderr, Some(&built.result_facts));
+        }
+        return finish_outcome_facts(
+            Err(OxaError::new(codes::USAGE, "No prompt or pursuing stored goal.")),
+            stderr,
+            Some(&built.result_facts),
+        );
+    }
     notices.extend(startup_notices(&built, &session));
     write_notices(stderr, notices);
     if mode == RunMode::Print {
@@ -1304,6 +1370,25 @@ fn run_headless(
             );
         }
     }
+    let goal = session
+        .goal()
+        .filter(|g| g.status == oxa_session::GoalStatus::Pursuing);
+    let goal_time = goal.as_ref().and_then(|g| {
+        g.budget
+            .max_time_ms
+            .map(|cap| std::time::Duration::from_millis(cap.saturating_sub(g.elapsed_ms)))
+    });
+    let goal_tokens = goal
+        .as_ref()
+        .and_then(|g| g.budget.max_tokens.map(|cap| cap.saturating_sub(g.tokens_used)));
+    let max_time = match (max_time, goal_time) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    let max_tokens = match (max_tokens, goal_tokens) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
     let _limit = match crate::limits::LimitWatcher::start(
         session.handle(),
         max_time,
@@ -1323,6 +1408,7 @@ fn run_headless(
         RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
         _ => run_print_outcome(&mut session, prompts, stdout, stderr),
     };
+    built.result_facts.goal(session.goal());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
     let mut ui = oxa_proto::HeadlessUi::default();
     session.shutdown(&mut ui);
@@ -1420,6 +1506,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         mut notices,
         gated,
         name,
+        ..
     } = prep;
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
@@ -2204,6 +2291,7 @@ mod session_scratch_tests {
             status: None,
             result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,
+            goal: None,
             engine: Arc::new(oxa_fake::ScriptedEngine::new(Vec::new())),
             cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics::default(),
             store: Arc::new(MemStore::new()),

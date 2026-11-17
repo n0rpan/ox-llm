@@ -4,14 +4,50 @@
 //! the frozen prefix, W3): `tools()` changes only with what `SessionStart` / `ModelSelect`
 //! taught the hook set.
 
-use oxa_config::Settings;
-use oxa_core::SubagentHooks;
+use oxa_config::{Dirs, Settings};
+use oxa_core::{discover_agents, AgentDef, SubagentHooks};
+use oxa_fake::TestEnv;
+use oxa_proto::Hooks;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
 fn hooks(settings: Value) -> SubagentHooks {
-    SubagentHooks::new(PathBuf::from("/nonexistent/oxa"), Vec::new())
+    let agent = AgentDef {
+        name: "worker".into(),
+        description: "A test worker".into(),
+        tools: None,
+        model: None,
+        system_prompt: String::new(),
+        path: PathBuf::from("/agents/worker.md"),
+        project: false,
+    };
+    SubagentHooks::new(PathBuf::from("/nonexistent/oxa"), vec![agent])
         .with_settings(&Settings::from_values(settings, Value::Null))
+}
+
+#[test]
+fn no_agents_means_no_declared_tool_even_when_explicitly_enabled() {
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    for trusted in [false, true] {
+        let agents = discover_agents(&dirs, &env.work(), trusted);
+        assert!(agents.is_empty(), "a fresh home has no agents");
+        for settings in [
+            Value::Null,
+            json!({"oxa": {"subagent": {"enabled": true}}}),
+            json!({"oxa": {"subagent": {"smallContext": true}}}),
+        ] {
+            let h = SubagentHooks::new(PathBuf::from("/nonexistent/oxa"), agents.clone())
+                .with_settings(&Settings::from_values(settings, Value::Null));
+            assert!(
+                h.tools().is_empty(),
+                "do not offer a tool that cannot start an agent"
+            );
+            assert!(!h.declared_for(Some(131072), false));
+            assert!(!h.declared_for(None, false));
+            assert!(!h.declared_for(Some(16384), true));
+        }
+    }
 }
 
 #[test]
