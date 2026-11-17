@@ -152,6 +152,36 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
         }
         assert!(get(port, path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
     }
+    let entries: Vec<_> = (1..=101)
+        .map(|number| {
+            serde_json::json!({
+                "number":number,"head":"synthetic-head","release_pinned":false,
+                "action":"ready","lease":null,"attempts_today":0,"eligible":true
+            })
+        })
+        .collect();
+    let record = serde_json::json!({"schema_version":1,"observed_at":10,
+        "board":{"observed_at":10,"entries":entries}});
+    std::fs::write(&sample, format!("{record}\n")).unwrap();
+    for (path, first, last, absent) in [
+        ("/board", 1, 50, 51),
+        ("/board?page=1", 51, 100, 1),
+        ("/board?page=2", 101, 101, 100),
+    ] {
+        let response = get(port, path, &authority, "");
+        assert!(response.starts_with("HTTP/1.1 200"), "{path}");
+        for number in [first, last] {
+            assert!(response.contains(&format!("#{number}<")), "{path} #{number}");
+        }
+        assert!(!response.contains(&format!("#{absent}<")), "{path} #{absent}");
+        let separator = if path.contains('?') { '&' } else { '?' };
+        let fragment = get(port, &format!("{path}{separator}fragment=1"), &authority, "");
+        assert!(fragment.starts_with("HTTP/1.1 200") && !fragment.contains("<!doctype"));
+        assert!(get(port, path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
+    }
+    for page in ["-1", "01", "18446744073709551615"] {
+        assert!(get(port, &format!("/board?page={page}"), &authority, "").starts_with("HTTP/1.1 404"));
+    }
     assert!(get(port, "/", "attacker.invalid", "").starts_with("HTTP/1.1 403"));
     assert!(get(
         port,
