@@ -55,6 +55,11 @@ esac
 "#);
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
     let detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]},"mergeQueue":null,"p42":{"number":42,"headRefOid":"synthetic-head","baseRefName":"main","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"CLEAN","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
+    let mut detail = detail;
+    detail["data"]["repository"]["p42"]["baseRef"] = serde_json::json!({
+        "refUpdateRule":{"requiredStatusCheckContexts":["ci"]},
+        "rules":{"totalCount":0,"nodes":[]}
+    });
     fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
     fs::write(env.work().join("first.json"), detail.to_string()).unwrap();
     (env, detail)
@@ -120,7 +125,7 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
         row["reviewDecision"] = "APPROVED".into();
         row["latestOpinionatedReviews"] =
             serde_json::json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":head}}]});
-        row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"isRequired":true,"conclusion":conclusion}]}}}}]});
+        row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":conclusion}]}}}}]});
         row["files"] = if source.is_empty() {
             serde_json::json!({"totalCount":0,"nodes":[]})
         } else {
@@ -196,7 +201,7 @@ fn behind_heads_wait_without_a_queue_and_keep_queue_composition() {
     row["reviewDecision"] = "APPROVED".into();
     row["latestOpinionatedReviews"] =
         serde_json::json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":"synthetic-head"}}]});
-    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"isRequired":true,"conclusion":"SUCCESS"}]}}}}]});
+    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]}}}}]});
     let mut actions = vec![];
     for queued in [false, true] {
         let mut first = detail.clone();
@@ -260,4 +265,36 @@ fn refreshed_token_can_be_supplied_privately_by_the_caller() {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn approval_required_block_has_an_actionable_wait_reason() {
+    let (env, mut detail) = fixture();
+    let row = &mut detail["data"]["repository"]["p42"];
+    row["mergeable"] = "MERGEABLE".into();
+    row["mergeStateStatus"] = "BLOCKED".into();
+    row["reviewDecision"] = "REVIEW_REQUIRED".into();
+    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]}}}}]});
+    assert_eq!(
+        sample(&env, &detail)["board"]["entries"][0]["action"],
+        "wait_review"
+    );
+}
+
+#[test]
+fn unreported_classic_and_ruleset_requirements_are_pending() {
+    let (env, mut detail) = fixture();
+    let row = &mut detail["data"]["repository"]["p42"];
+    row["mergeable"] = "MERGEABLE".into();
+    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]}}}}]});
+    for base in [
+        serde_json::json!({"refUpdateRule":{"requiredStatusCheckContexts":["ci","missing"]},"rules":{"totalCount":0,"nodes":[]}}),
+        serde_json::json!({"refUpdateRule":null,"rules":{"totalCount":1,"nodes":[{"type":"REQUIRED_STATUS_CHECKS","parameters":{"requiredStatusChecks":[{"context":"ci"},{"context":"missing"}]}}]}}),
+    ] {
+        detail["data"]["repository"]["p42"]["baseRef"] = base;
+        assert_eq!(
+            sample(&env, &detail)["board"]["entries"][0]["action"],
+            "wait_required_ci"
+        );
+    }
 }
