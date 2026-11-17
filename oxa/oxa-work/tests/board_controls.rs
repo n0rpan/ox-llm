@@ -121,7 +121,7 @@ fn stale_entries_and_legacy_claims_cannot_bypass_persistent_controls() {
         Some(worker.id.as_str())
     );
     assert_eq!(store.assignments().unwrap()[&3].assignee(20), None);
-    assert!(store.release(3, &lease).unwrap());
+    assert!(store.release_for(3, &worker.id, &lease, 20, "completed").unwrap());
     assert!(store
         .claim_for(&entry, &policy(), &worker, 21, 10)
         .unwrap()
@@ -165,4 +165,184 @@ fn one_snapshot_serves_all_workers_with_release_and_manual_pin_priority() {
     assert!(disabled.board.entries.is_empty());
     assert!(disabled.assignments.is_empty());
     assert_eq!(github.0, 1);
+}
+
+#[test]
+fn manual_assignment_and_unassignment_share_revision_fencing_and_attempts() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let first = worker("slot-1");
+    let second = worker("slot-2");
+    let entry = entry();
+    assert!(store.assign(&entry, &policy(), None, 0, &first, 10, 10).is_err());
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    assert!(store
+        .assign(
+            &entry,
+            &Policy::default(),
+            Some(ManualAuthority::Owner),
+            0,
+            &first,
+            10,
+            10
+        )
+        .unwrap()
+        .is_none());
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    let lease = store
+        .assign(&entry, &policy(), Some(ManualAuthority::Lead), 0, &first, 10, 10)
+        .unwrap()
+        .unwrap();
+    assert!(store
+        .assign(
+            &entry,
+            &policy(),
+            Some(ManualAuthority::Owner),
+            1,
+            &second,
+            11,
+            10
+        )
+        .unwrap()
+        .is_none());
+    assert!(store.unassign(3, None, 1, 11, "reassign").is_err());
+    assert!(store
+        .unassign(3, Some(ManualAuthority::Lead), 0, 11, "reassign")
+        .is_err());
+    assert!(store
+        .unassign(3, Some(ManualAuthority::Lead), 1, 11, "reassign")
+        .unwrap());
+    let next = store
+        .assign(
+            &entry,
+            &policy(),
+            Some(ManualAuthority::Owner),
+            2,
+            &second,
+            11,
+            10,
+        )
+        .unwrap()
+        .unwrap();
+    assert_ne!(lease.generation, next.generation);
+    assert!(!store
+        .release_for(3, &first.id, &lease, 12, "stale completion")
+        .unwrap());
+    assert!(store
+        .release_for(3, &first.id, &next, 12, "wrong worker")
+        .is_err());
+    assert!(store.release(3, &next).is_err());
+    assert!(store
+        .release_for(3, &second.id, &next, 12, " completed ")
+        .unwrap());
+    let rows = fixture.store().assignments().unwrap();
+    assert_eq!(rows[&3].data.revision, 4);
+    assert_eq!(rows[&3].state.attempts, 2);
+    assert_eq!(rows[&3].assignee(12), None);
+    let ended = rows[&3].data.last_release.as_ref().unwrap();
+    assert_eq!(ended.holder, second.id);
+    assert_eq!(ended.released_at, 12);
+    assert_eq!(ended.reason, "completed");
+}
+
+#[test]
+fn manual_assignment_never_bypasses_pins_or_the_three_attempt_cap() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let worker = worker("slot-1");
+    let entry = entry();
+    store
+        .control(
+            3,
+            Some(ManualAuthority::Owner),
+            0,
+            Control::Pin(Pin::Worker(worker.id.clone())),
+        )
+        .unwrap();
+    assert!(store
+        .assign(
+            &entry,
+            &policy(),
+            Some(ManualAuthority::Owner),
+            1,
+            &crate::worker("slot-2"),
+            10,
+            10
+        )
+        .unwrap()
+        .is_none());
+    for attempt in 0..3 {
+        let revision = 1 + attempt * 2;
+        let lease = store
+            .assign(
+                &entry,
+                &policy(),
+                Some(ManualAuthority::Owner),
+                revision,
+                &worker,
+                10,
+                10,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(lease.generation.1, attempt as u32 + 1);
+        assert!(store
+            .unassign(3, Some(ManualAuthority::Owner), revision + 1, 10, "retry needed")
+            .unwrap());
+    }
+    assert!(store
+        .assign(
+            &entry,
+            &policy(),
+            Some(ManualAuthority::Owner),
+            7,
+            &worker,
+            10,
+            10
+        )
+        .unwrap()
+        .is_none());
+    let rows = store.assignments().unwrap();
+    assert_eq!(rows[&3].state.attempts, 3);
+    assert_eq!(
+        rows[&3].data.policy.as_ref().unwrap().pin,
+        Some(Pin::Worker(worker.id))
+    );
+}
+
+#[test]
+fn releases_validate_reasons_and_repair_witnesses_without_refunding() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let worker = worker("slot-1");
+    let lease = store
+        .claim_for(&entry(), &policy(), &worker, 10, 10)
+        .unwrap()
+        .unwrap();
+    for reason in ["", "line\nline", "control\0text", &"x".repeat(513)] {
+        assert!(store.release_for(3, &worker.id, &lease, 11, reason).is_err());
+    }
+    assert!(store.release_for(3, &worker.id, &lease, 9, "backwards").is_err());
+    fs::remove_file(fixture.0.join("3.board-claim.created")).unwrap();
+    assert!(store.release_for(3, &worker.id, &lease, 11, "finished").unwrap());
+    assert_eq!(store.snapshot().unwrap()[&3].attempts, 1);
+    fs::remove_file(fixture.0.join("3.board-claim.json")).unwrap();
+    fs::remove_file(fixture.0.join("3.board-claim.lock")).unwrap();
+    assert!(store.snapshot().is_err());
+}
+
+#[test]
+fn records_without_release_metadata_remain_readable() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    store
+        .claim_for(&entry(), &policy(), &worker("slot-1"), 10, 10)
+        .unwrap();
+    let path = fixture.0.join("3.board-claim.json");
+    let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    saved["data"].as_object_mut().unwrap().remove("last_release");
+    fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let rows = store.assignments().unwrap();
+    assert_eq!(rows[&3].state.attempts, 1);
+    assert!(rows[&3].data.last_release.is_none());
 }

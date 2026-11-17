@@ -9,7 +9,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 mod controls;
-pub use controls::{Assignment, AssignmentBoard, AssignmentData};
+pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -295,6 +295,9 @@ impl Claims {
         }
         let _lock = self.lock(number)?;
         let mut row = self.load(number)?;
+        if row.data.policy.is_some() {
+            return Err("configured assignments require authenticated release with a reason".into());
+        }
         if row.state.lease.as_ref() != Some(lease) {
             return Ok(false);
         }
