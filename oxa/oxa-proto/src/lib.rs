@@ -34,6 +34,8 @@
 //! object-safe trait.
 #![forbid(unsafe_code)]
 
+#[cfg(unix)]
+mod account;
 mod engine;
 mod entry;
 mod error;
@@ -50,8 +52,11 @@ mod wire;
 pub mod control;
 pub mod guard;
 pub mod panic;
+pub mod time;
 pub mod work;
 
+#[cfg(unix)]
+pub use account::account_home;
 pub use engine::*;
 pub use entry::*;
 pub use error::*;

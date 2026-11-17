@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read};
 use std::os::unix::{
-    fs::{DirBuilderExt, OpenOptionsExt},
+    fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     process::CommandExt,
 };
 use std::path::{Path, PathBuf};
@@ -12,8 +12,11 @@ use std::time::{Duration, Instant};
 
 pub mod board;
 mod checkpoint;
+mod committed;
+pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
 pub mod helper_queue;
+pub mod mirrors;
 pub mod shadow;
 mod state;
 mod status;
@@ -24,6 +27,10 @@ mod worker;
 mod worker_wait;
 pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult};
 
+#[cfg(test)]
+#[path = "../tests/support/private_dir.rs"]
+mod test_dir;
+
 pub type Result<T> = std::result::Result<T, String>;
 
 // Lead facts consume public observations and never open runner task-state files.
@@ -31,6 +38,7 @@ pub mod events;
 mod facts_io;
 pub mod incidents;
 pub mod situation;
+pub mod standing;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -145,6 +153,11 @@ pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: boo
 }
 
 fn load_task_checkpoint(policy: &RunPolicy, id: &str) -> Result<Option<state::State>> {
+    match verify_task_storage(&policy.storage) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("task storage: {error}")),
+    }
     let path = policy.storage.join(format!("{id}.json"));
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -160,6 +173,34 @@ pub const ISSUE_RUNNER_GUIDANCE: &str =
      needed for the task is missing from the packet, report NEED-METADATA and name \
      what the runner needs to supply.\n\n";
 
+pub const RUNNER_GITHUB_ENV: &str = "OXA_RUNNER_OWNS_GITHUB";
+
+impl Task {
+    fn matches_issue_packet(&self, number: u64) -> bool {
+        let packet = self
+            .prompt
+            .strip_prefix(ISSUE_RUNNER_GUIDANCE)
+            .unwrap_or(&self.prompt);
+        number != 0
+            && self.id == format!("issue-{number}")
+            && self.branch == format!("agent/{number}-work")
+            && self.base == default_base()
+            && self.max_time == default_max_time()
+            && packet.starts_with(&format!("Implement issue #{number}: "))
+    }
+
+    // Derive the worker restriction from the frozen task on every launch. This
+    // also covers old issue checkpoints resumed through an identical task file.
+    fn runner_owns_github(&self) -> bool {
+        self.prompt.starts_with(ISSUE_RUNNER_GUIDANCE)
+            || self
+                .id
+                .strip_prefix("issue-")
+                .and_then(|number| number.parse::<u64>().ok())
+                .is_some_and(|number| self.matches_issue_packet(number))
+    }
+}
+
 /// Reuse the frozen packet for the same issue and model, including on rerun.
 pub fn saved_issue_task(policy: &RunPolicy, number: u64, model: &str) -> Result<Option<Task>> {
     if number == 0 {
@@ -170,17 +211,7 @@ pub fn saved_issue_task(policy: &RunPolicy, number: u64, model: &str) -> Result<
         return Ok(None);
     };
     let task = saved.task;
-    let packet = task
-        .prompt
-        .strip_prefix(ISSUE_RUNNER_GUIDANCE)
-        .unwrap_or(&task.prompt);
-    if task.id != id
-        || task.model != model
-        || task.branch != format!("agent/{number}-work")
-        || task.base != default_base()
-        || task.max_time != default_max_time()
-        || !packet.starts_with(&format!("Implement issue #{number}: "))
-    {
+    if task.model != model || !task.matches_issue_packet(number) {
         return Err("task specification changed; use a new task id".into());
     }
     Ok(Some(task))
@@ -191,7 +222,14 @@ pub const COMMAND_DEADLINE: Duration = Duration::from_secs(30);
 const GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 
 fn output(command: Command) -> Result<Output> {
-    capture_command(command, Some(GIT_OUTPUT_BYTES), COMMAND_DEADLINE, true).map_err(|e| e.to_string())
+    capture_command(
+        command,
+        Some(GIT_OUTPUT_BYTES),
+        COMMAND_DEADLINE,
+        Stdio::null(),
+        true,
+    )
+    .map_err(|e| e.to_string())
 }
 fn checked(command: Command) -> Result<String> {
     let out = output(command)?;
@@ -203,7 +241,17 @@ fn checked(command: Command) -> Result<String> {
 
 /// Capture bounded stdout, discarding stderr, within one process and pipe deadline.
 pub fn command_runner(command: Command, limit: Option<usize>, deadline: Duration) -> Option<(i32, String)> {
-    let out = capture_command(command, limit, deadline, false).ok()?;
+    command_runner_with_stdin(command, limit, Stdio::null(), deadline)
+}
+
+/// Capture through the same deadline and byte limit while a supervised child holds a supplied stdin.
+pub fn command_runner_with_stdin(
+    command: Command,
+    limit: Option<usize>,
+    stdin: Stdio,
+    deadline: Duration,
+) -> Option<(i32, String)> {
+    let out = capture_command(command, limit, deadline, stdin, false).ok()?;
     Some((
         out.status.code().unwrap_or(1),
         String::from_utf8(out.stdout).ok()?,
@@ -229,11 +277,16 @@ fn capture_command(
     mut command: Command,
     limit: Option<usize>,
     deadline: Duration,
+    stdin: Stdio,
     keep_stderr: bool,
 ) -> io::Result<Output> {
     let start = Instant::now();
+    let timeout = || io::Error::new(io::ErrorKind::TimedOut, "command timed out");
+    if deadline.is_zero() {
+        return Err(timeout());
+    }
     let mut child = command
-        .stdin(Stdio::null())
+        .stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(if keep_stderr {
             Stdio::piped()
@@ -245,6 +298,10 @@ fn capture_command(
     let stdout = read_output(child.stdout.take().expect("piped stdout"), limit);
     let stderr = child.stderr.take().map(|pipe| read_output(pipe, limit));
     let status = loop {
+        let remaining = deadline.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            break Err(timeout());
+        }
         // A descendant can keep a pipe open after the leader exits. Keep the
         // leader unreaped until then so its PID cannot be reused before cleanup.
         if stdout.is_finished() && stderr.as_ref().is_none_or(|pipe| pipe.is_finished()) {
@@ -253,10 +310,6 @@ fn capture_command(
                 Ok(None) => (),
                 Err(error) => break Err(error),
             }
-        }
-        let remaining = deadline.saturating_sub(start.elapsed());
-        if remaining.is_zero() {
-            break Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
         }
         std::thread::sleep(remaining.min(Duration::from_millis(2)));
     };
@@ -514,7 +567,9 @@ pub enum SupervisorOperation {
     Merge { base: String },
     Save { task_id: String },
     Checks { commands: Vec<String> },
+    CommittedChecks { commands: Vec<String>, index: PathBuf },
     Inspect,
+    InspectCommitted { index: PathBuf },
 }
 
 fn supervise(
@@ -566,6 +621,10 @@ fn acceptance(
         policy,
         lock,
     )?;
+    acceptance_result(out)
+}
+
+fn acceptance_result(out: Output) -> Result<String> {
     let diagnostic = String::from_utf8_lossy(&out.stderr).into_owned();
     match out.status.code() {
         Some(0) => Ok(String::new()),
@@ -645,19 +704,33 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
     }
 }
 
+fn verify_task_storage(path: &Path) -> std::io::Result<()> {
+    let directory = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
+    let metadata = directory.metadata()?;
+    // SAFETY: geteuid has no arguments or preconditions.
+    let owner = unsafe { libc::geteuid() };
+    if metadata.uid() != owner || metadata.mode() & 0o022 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "must be owned by this user and protected from group or other writes",
+        ));
+    }
+    Ok(())
+}
+
 /// Recover the bounded pending observation before opening a lead's facts view.
 /// This never acquires a task lock, changes a task file or starts a worker.
 pub fn recover_checkpoints(
     storage: &Path,
     observer: &dyn CheckpointObserver,
 ) -> std::result::Result<(), RunError> {
-    match fs::metadata(storage) {
+    match verify_task_storage(storage) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(RunError::Checkpoint(error.to_string())),
-        Ok(metadata) if !metadata.is_dir() => {
-            return Err(RunError::Checkpoint("checkpoint root is not a directory".into()))
-        }
-        Ok(_) => {}
+        Err(error) => return Err(RunError::Checkpoint(format!("task storage: {error}"))),
+        Ok(()) => {}
     }
     checkpoint::Repository::open(storage, observer)
         .map(|_| ())
@@ -695,16 +768,25 @@ pub fn run_task_with_observer(
         .recursive(true)
         .mode(0o700)
         .create(&policy.storage)
-        .map_err(|e| e.to_string())?;
+        .and_then(|()| verify_task_storage(&policy.storage))
+        .map_err(|error| format!("task storage: {error}"))?;
     let lock_path = policy.storage.join(format!("{}.lock", task.id));
     let lock_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .mode(0o600)
+        .custom_flags(shadow::OWNER_FILE_FLAGS)
         .create(true)
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
+    let lock_metadata = lock_file
+        .metadata()
+        .map_err(|e| format!("cannot inspect task lock: {e}"))?;
+    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+    if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
+        return Err("cannot lock task: lock must be an owner-controlled regular file".into());
+    }
     lock_file
         .try_lock()
         .map_err(|e| format!("task {} is already running: {e}", task.id))?;
@@ -827,6 +909,53 @@ pub fn run_task_with_observer(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn command_deadline_cleans_up_a_descendant_holding_stdout() {
+        let fixture = test_dir::PrivateDir::new("command-deadline");
+        let mut command = Command::new("/bin/sh");
+        command
+            .current_dir(fixture.path())
+            .args(["-c", r#"sleep 30 & printf '%s' "$!" > child.pid"#]);
+        let start = Instant::now();
+        assert!(command_runner(command, Some(4096), Duration::from_millis(500)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(5));
+
+        let pid = fs::read_to_string(fixture.path().join("child.pid")).unwrap();
+        let path = format!("/proc/{}/stat", pid.parse::<u32>().unwrap());
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match fs::read_to_string(&path) {
+                Ok(stat)
+                    if stat
+                        .rsplit_once(") ")
+                        .is_some_and(|(_, fields)| fields.starts_with('Z')) =>
+                {
+                    break
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+                Ok(_) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
+                result => panic!("descendant survived the command deadline: {result:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn command_runner_captures_supplied_stdin_with_the_same_byte_limit() {
+        let fixture = test_dir::PrivateDir::new("command-stdin");
+        let input = fixture.path().join("input");
+        fs::write(&input, "fixture").unwrap();
+        let run = |limit| {
+            command_runner_with_stdin(
+                Command::new("/bin/cat"),
+                Some(limit),
+                fs::File::open(&input).unwrap().into(),
+                COMMAND_DEADLINE,
+            )
+        };
+        assert_eq!(run(7), Some((0, "fixture".into())));
+        assert_eq!(run(6), None);
+    }
 
     fn comments(bodies: &[&str]) -> serde_json::Value {
         json!(bodies

@@ -346,6 +346,68 @@ exec /bin/cat "$ISSUE_LOOKUP_PACKET"
         "issue view 42 --json title,body,state,comments\n"
     );
 }
+#[test]
+fn issue_packet_workers_keep_local_tools_and_a_separate_network_namespace() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r#"#!/bin/sh
+[ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Record the local fixture","state":"OPEN","comments":[]}'
+"#,
+    );
+    std::fs::set_permissions(gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let host_namespace = std::fs::read_link("/proc/self/ns/net").unwrap();
+    let turns = |file: &str| {
+        vec![
+            ScriptTurn::tool(
+                "local",
+                "bash",
+                &serde_json::json!({"command": format!("readlink /proc/self/ns/net > {file}")}).to_string(),
+            ),
+            ScriptTurn::text("done"),
+        ]
+    };
+    let assert_isolated = |record: &serde_json::Value, file: &str| {
+        assert!(
+            matches!(record["outcome"].as_str(), Some("done" | "nothing_to_do")),
+            "{record}"
+        );
+        let worktree = Path::new(record["worktree"].as_str().unwrap());
+        let worker_namespace = std::fs::read_to_string(worktree.join(file)).unwrap();
+        assert!(worker_namespace.starts_with("net:["));
+        assert_ne!(Path::new(worker_namespace.trim()), host_namespace.as_path());
+    };
+    let first = run_args(
+        &env,
+        turns("worker-namespace"),
+        &["work", "--issue", "42", "--model", "fake"],
+        Some(path),
+    );
+    assert_isolated(&first, "worker-namespace");
+
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(storage(&env).join("issue-42.json")).unwrap()).unwrap();
+    env.write(
+        "work/frozen-issue.json",
+        &serde_json::json!([saved["task"]]).to_string(),
+    );
+    // The file still describes the exact issue packet, so an explicit rerun
+    // keeps the same tool restriction even without an issue flag.
+    let rerun = run_args(
+        &env,
+        turns("rerun-namespace"),
+        &["work", "../frozen-issue.json", "--rerun"],
+        None,
+    );
+    assert_isolated(&rerun, "rerun-namespace");
+}
+
 /// A dogfood issue carried its content in comments, so a packet built from the
 /// title and body alone reached the worker without it. The child's first request
 /// must contain the body and the comment findings, all as data.

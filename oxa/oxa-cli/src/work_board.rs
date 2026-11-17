@@ -9,6 +9,8 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+mod review;
+
 fn token_line(input: &mut dyn BufRead) -> Result<String, String> {
     let mut line = Vec::new();
     input
@@ -27,14 +29,24 @@ fn token_line(input: &mut dyn BufRead) -> Result<String, String> {
     Ok(token.to_owned())
 }
 
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     gh: &'a Path,
     path: &'a std::ffi::OsStr,
     repo: &'a str,
     token: &'a str,
+    review_rows: Option<Value>,
 }
 
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
+const LIST: &str = "pullRequests(first:100,states:OPEN){totalCount pageInfo{hasNextPage endCursor} nodes{number headRefOid}}";
+
+fn charge(bytes: &mut usize, read: usize) -> Result<(), String> {
+    *bytes = bytes
+        .checked_add(read)
+        .filter(|total| *total <= MAX_RESPONSE)
+        .ok_or("GitHub snapshot exceeds byte limit")?;
+    Ok(())
+}
 
 enum QueryError {
     Http(u16),
@@ -52,7 +64,79 @@ impl QueryError {
     }
 }
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
+    /// Callers must enforce trust/offline policy and supply an explicit App credential.
+    pub(crate) fn new(gh: &'a Path, path: &'a std::ffi::OsStr, repo: &'a str, token: &'a str) -> Self {
+        Self {
+            gh,
+            path,
+            repo,
+            token,
+            review_rows: None,
+        }
+    }
+
+    /// Fixed repository fields from native callers share the bounded, redacted transport.
+    /// The byte count lets callers enforce an aggregate snapshot budget across queries.
+    pub(crate) fn repository_read(&self, fields: &str) -> Result<(Value, usize), String> {
+        self.query(fields).map_err(QueryError::message)
+    }
+
+    fn listing(&self, bytes: &mut usize) -> Result<(Value, Value), String> {
+        let (mut fields, mut rows, mut seen, mut cursors) =
+            (LIST.to_owned(), vec![], BTreeSet::new(), BTreeSet::new());
+        let mut result = Value::Null;
+        loop {
+            let (page, read) =
+                self.repository_read(&format!("{fields} mergeQueue(branch:\"main\"){{id}}"))?;
+            charge(bytes, read)?;
+            if result.is_null() {
+                result = page.clone();
+            }
+            let connection = &page["pullRequests"];
+            let total = connection["totalCount"].as_u64().ok_or("missing PR count")?;
+            if total > 1000
+                || connection["totalCount"] != result["pullRequests"]["totalCount"]
+                || page["mergeQueue"] != result["mergeQueue"]
+            {
+                return Err("GitHub listing exceeds limit or changed during snapshot".into());
+            }
+            let nodes = connection["nodes"].as_array().ok_or("missing PR page")?;
+            if nodes.len() > 100 {
+                return Err("oversized PR page".into());
+            }
+            for row in nodes {
+                let number = row["number"]
+                    .as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or("invalid PR number")?;
+                if !seen.insert(number) || row["headRefOid"].as_str().is_none_or(str::is_empty) {
+                    return Err("duplicate PR or missing head in listing".into());
+                }
+                rows.push(row.clone());
+            }
+            let more = connection["pageInfo"]["hasNextPage"]
+                .as_bool()
+                .ok_or("missing PR pagination")?;
+            if !more {
+                if rows.len() as u64 != total {
+                    return Err("incomplete PR listing".into());
+                }
+                let first = result["pullRequests"].clone();
+                result["pullRequests"]["nodes"] = rows.into();
+                return Ok((result, first));
+            }
+            let cursor = connection["pageInfo"]["endCursor"]
+                .as_str()
+                .filter(|c| !c.is_empty())
+                .ok_or("missing PR cursor")?;
+            if nodes.is_empty() || rows.len() as u64 >= total || !cursors.insert(cursor.to_owned()) {
+                return Err("invalid PR pagination progress".into());
+            }
+            fields = LIST.replace("states:OPEN", &format!("states:OPEN,after:{cursor:?}"));
+        }
+    }
+
     fn query(&self, fields: &str) -> Result<(Value, usize), QueryError> {
         let mut retries = 0;
         loop {
@@ -161,36 +245,33 @@ fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
 
 impl GitHub for Reader<'_> {
     fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
-        // Small detail batches retain every field and recheck the complete open set.
-        const LIST: &str = "pullRequests(first:100,states:OPEN){totalCount nodes{number}}";
-        let (list, _) = self
-            .query(&format!("{LIST} mergeQueue(branch:\"main\"){{id}}"))
-            .map_err(QueryError::message)?;
+        // Verify the complete paginated identity set before publishing any details.
+        let mut bytes = 0;
+        let (list, first) = self.listing(&mut bytes)?;
         let has_queue = list["mergeQueue"].is_object();
         let numbers: Vec<u64> = nodes(&list["pullRequests"])?
             .iter()
             .map(|pr| pr["number"].as_u64().ok_or("missing PR number"))
             .collect::<Result<_, _>>()?;
-        let ids = |connection: &Value| -> Result<BTreeSet<u64>, String> {
-            nodes(connection)?
-                .iter()
-                .map(|pr| pr["number"].as_u64().ok_or("missing PR number".into()))
-                .collect()
-        };
-        let expected = ids(&list["pullRequests"])?;
+        let expected: BTreeMap<_, _> = numbers.iter().zip(nodes(&list["pullRequests"])?).collect();
         let mut details = serde_json::json!({});
-        let (mut offset, mut size, mut bytes) = (0, 15, 0usize);
+        let review_fields = if self.review_rows.is_some() {
+            "baseRefOid isCrossRepository authorAssociation comments(first:100){totalCount nodes{body author{login} lastEditedAt}} reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
+        } else {
+            ""
+        };
+        let (mut offset, mut size) = (0, 15);
         loop {
             let end = numbers.len().min(offset + size);
             let mut fields = LIST.to_owned();
             for n in &numbers[offset..end] {
                 fields.push_str(&format!(
-                r#"p{n}:pullRequest(number:{n}){{number headRefOid baseRefName state body isDraft reviewDecision mergeable mergeStateStatus
+                r#"p{n}:pullRequest(number:{n}){{number headRefOid baseRefName state body isDraft reviewDecision mergeable mergeStateStatus {review_fields}
                 baseRef{{refUpdateRule{{requiredStatusCheckContexts}} rules(first:100){{totalCount nodes{{type parameters{{... on RequiredStatusChecksParameters{{requiredStatusChecks{{context}}}}}}}}}}}}
                 labels(first:100){{totalCount nodes{{name}}}}
                 files(first:100){{totalCount nodes{{path deletions}}}}
                 reviewThreads(first:100){{totalCount nodes{{isResolved}}}}
-                latestOpinionatedReviews(first:100,writersOnly:true){{totalCount nodes{{state commit{{oid}}}}}}
+                latestOpinionatedReviews(first:100,writersOnly:true){{totalCount nodes{{state commit{{oid}} author{{login}}}}}}
                 commits(last:1){{nodes{{commit{{statusCheckRollup{{contexts(first:100){{totalCount nodes{{
                     ... on CheckRun{{name isRequired(pullRequestNumber:{n}) status conclusion}}
                     ... on StatusContext{{context isRequired(pullRequestNumber:{n}) state}}
@@ -205,16 +286,13 @@ impl GitHub for Reader<'_> {
                 }
                 Err(error) => return Err(error.message()),
             };
-            bytes = bytes
-                .checked_add(read)
-                .filter(|total| *total <= MAX_RESPONSE)
-                .ok_or("GitHub detail snapshot exceeds byte limit")?;
-            if ids(&page["pullRequests"])? != expected {
+            charge(&mut bytes, read)?;
+            if page["pullRequests"] != first {
                 return Err("open PR set changed during snapshot; retry later".into());
             }
             for n in &numbers[offset..end] {
                 let row = &page[format!("p{n}")];
-                if row["number"].as_u64() != Some(*n) {
+                if row["number"].as_u64() != Some(*n) || row["headRefOid"] != expected[n]["headRefOid"] {
                     return Err("missing or mismatched PR details".into());
                 }
                 details[format!("p{n}")] = row.clone();
@@ -224,7 +302,11 @@ impl GitHub for Reader<'_> {
                 break;
             }
         }
-        nodes(&list["pullRequests"])?
+        let (verified, _) = self.listing(&mut bytes)?;
+        if verified["pullRequests"] != list["pullRequests"] || verified["mergeQueue"] != list["mergeQueue"] {
+            return Err("PR identities changed during snapshot; retry later".into());
+        }
+        let rows = nodes(&list["pullRequests"])?
             .iter()
             .map(|pr| {
                 let row = &details[format!("p{}", pr["number"])];
@@ -305,14 +387,7 @@ impl GitHub for Reader<'_> {
                     body: row["body"].as_str().ok_or("missing PR body")?.into(),
                     removes_source: nodes(&row["files"])?.iter().any(|f| {
                         f["deletions"].as_u64().unwrap_or(0) > 0
-                            && f["path"].as_str().is_some_and(|p| {
-                                [
-                                    ".rs", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".sh", ".c", ".cc",
-                                    ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc", ".qml",
-                                ]
-                                .iter()
-                                .any(|ext| p.ends_with(ext))
-                            })
+                            && f["path"].as_str().is_some_and(review::source_path)
                     }),
                     draft: row["isDraft"].as_bool().ok_or("missing draft state")?,
                     reviewed: row["reviewDecision"] == "APPROVED" && {
@@ -325,7 +400,11 @@ impl GitHub for Reader<'_> {
                     },
                 })
             })
-            .collect()
+            .collect();
+        if self.review_rows.is_some() {
+            self.review_rows = Some(details);
+        }
+        rows
     }
 }
 
@@ -339,16 +418,20 @@ pub(crate) fn run(
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
         [shadow, flag, repo, options @ ..] if shadow == "--shadow" && flag == "--repo" => (repo, options),
-        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin]".into()),
+        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--review-policy FILE]".into()),
     };
-    if options
-        .iter()
-        .any(|o| !matches!(o.as_str(), "--once" | "--token-stdin"))
-    {
-        return Err("invalid board option".into());
+    let (mut once, mut streamed, mut review_file) = (false, false, None);
+    let mut options = options.iter();
+    while let Some(option) = options.next() {
+        match option.as_str() {
+            "--once" => once = true,
+            "--token-stdin" => streamed = true,
+            "--review-policy" if review_file.is_none() => {
+                review_file = Some(options.next().ok_or("missing board review policy file")?);
+            }
+            _ => return Err("invalid board option".into()),
+        }
     }
-    let once = options.iter().any(|o| o == "--once");
-    let streamed = options.iter().any(|o| o == "--token-stdin");
     if !once && !streamed {
         return Err("continuous sampling requires --token-stdin; use --once with a five-minute token-refresh supervisor otherwise".into());
     }
@@ -369,6 +452,9 @@ pub(crate) fn run(
     if !crate::work_cmd::trusted(root, env, dirs)? {
         return Err("source project is not trusted".into());
     }
+    let review_settings = review_file
+        .map(|path| review::Settings::read(Path::new(path)))
+        .transpose()?;
     let inherited = env.get("GH_TOKEN").filter(|s| !s.is_empty());
     if !streamed && inherited.is_none() {
         return Err("shadow board requires an explicit GitHub App token".into());
@@ -389,7 +475,7 @@ pub(crate) fn run(
         .create(&storage)
         .map_err(|_| "cannot create shadow storage")?;
     let mut log = oxa_work::shadow::open_log(&storage.join("board-shadow.jsonl"))?;
-    oxa_work::shadow::run(
+    oxa_work::shadow::run_with_reviews(
         &mut log,
         once,
         || {
@@ -398,25 +484,22 @@ pub(crate) fn run(
             } else {
                 inherited.ok_or("missing App token")?.to_owned()
             };
-            let mut reader = Reader {
-                gh: &gh,
-                path: &policy.host_path,
-                repo,
-                token: &token,
-            };
+            let mut reader = Reader::new(&gh, &policy.host_path, repo, &token);
+            reader.review_rows = review_settings.as_ref().map(|_| Value::Null);
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map_err(|_| "invalid system clock")?
                 .as_secs();
-            Board::read(
-                &mut reader,
-                &Policy {
-                    enabled: true,
-                    ..Policy::default()
-                },
-                &BTreeMap::new(),
-                now,
-            )
+            let board_policy = Policy {
+                enabled: true,
+                ..Policy::default()
+            };
+            if let Some(settings) = &review_settings {
+                review::sample(&mut reader, root, policy, &board_policy, settings, now)
+            } else {
+                Board::read(&mut reader, &board_policy, &BTreeMap::new(), now)
+                    .map(|board| (board, BTreeMap::new()))
+            }
         },
         std::thread::sleep,
     )?;
