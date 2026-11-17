@@ -4,6 +4,31 @@ use serde_json::{json, Value};
 /// The JSON chat request shape, matching the gateway's Anthropic translator.
 pub type ChatRequest = Value;
 
+/// Route selected by the caller. Subscription adaptation belongs to the transport
+/// adapter, not this pure Responses request translator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Api,
+    Subscription,
+}
+
+/// All provider output items for one assistant turn, in their original order.
+/// Persist these values with history; this helper owns no continuation state.
+#[derive(Clone)]
+pub struct ReplayItems(Vec<Value>);
+
+impl ReplayItems {
+    pub fn new(items: Vec<Value>) -> Self {
+        Self(items)
+    }
+}
+
+impl std::fmt::Debug for ReplayItems {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReplayItems([REDACTED])")
+    }
+}
+
 /// A fixed error identifying an invalid field without reflecting request content.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestError {
@@ -64,13 +89,27 @@ fn content(value: &Value, role: &str) -> Result<Option<Value>, RequestError> {
     Ok(Some(json!(result)))
 }
 
-/// Translate visible, closed history without a continuation cache.
+/// Translate history without a continuation cache.
 ///
-/// As in the legacy Responses contract, tool calls must have all results before
-/// a later user/assistant turn. A latest continuation needs opaque reasoning and
-/// is rejected rather than guessed. No native reasoning or response IDs are restored.
+/// `replay` is indexed by assistant-turn ordinal (not message index). Missing
+/// entries, including omitted trailing entries, mean no persisted provider items.
+/// A present entry must contain ALL output items from that response, in order;
+/// these replace the entire reconstructed assistant output, including text and
+/// function calls. The original non-assistant input and matching tool results
+/// remain in history. Callers must scope persisted items to the provider/model/
+/// account/prefix; the translator neither stores nor retrieves them.
+///
+/// All calls still require exactly one matching result. A latest tool continuation
+/// without replay items is refused rather than guessing opaque reasoning state.
+/// Both modes produce the same Responses body; subscription adaptation is separate.
 /// `max_output` must be a positive catalog limit. Client limits are clamped to it.
-pub fn translate(payload: &ChatRequest, model: &str, max_output: Option<u64>) -> Result<Value, RequestError> {
+pub fn translate(
+    payload: &ChatRequest,
+    model: &str,
+    max_output: Option<u64>,
+    _mode: Mode,
+    replay: &[Option<ReplayItems>],
+) -> Result<Value, RequestError> {
     if !payload.is_object() {
         return Err(invalid("request"));
     }
@@ -115,6 +154,7 @@ pub fn translate(payload: &ChatRequest, model: &str, max_output: Option<u64>) ->
     let mut pending = std::collections::BTreeSet::new();
     let mut seen = std::collections::BTreeSet::new();
     let mut needs_later_turn = false;
+    let mut assistant_turn = 0;
     for message in messages {
         let role = message["role"].as_str().ok_or(invalid("messages"))?;
         if !matches!(role, "system" | "developer" | "user" | "assistant" | "tool") {
@@ -149,8 +189,17 @@ pub fn translate(payload: &ChatRequest, model: &str, max_output: Option<u64>) ->
             inputs.push(json!({"type":"function_call_output","call_id":id,"output":output}));
             continue;
         }
-        if let Some(content) = translated {
-            inputs.push(json!({"role":role,"content":content}));
+        let items = if role == "assistant" {
+            let items = replay.get(assistant_turn).and_then(Option::as_ref);
+            assistant_turn += 1;
+            items
+        } else {
+            None
+        };
+        if items.is_none() {
+            if let Some(content) = translated {
+                inputs.push(json!({"role":role,"content":content}));
+            }
         }
         for call in calls {
             if call["type"] != "function" {
@@ -165,10 +214,32 @@ pub fn translate(payload: &ChatRequest, model: &str, max_output: Option<u64>) ->
                 return Err(invalid("messages"));
             }
             pending.insert(id);
-            needs_later_turn = true;
-            inputs.push(json!({"type":"function_call","call_id":id,"name":name,
-                "arguments":arguments,"status":"completed"}));
+            needs_later_turn = items.is_none();
+            if items.is_none() {
+                inputs.push(json!({"type":"function_call","call_id":id,"name":name,
+                    "arguments":arguments,"status":"completed"}));
+            }
         }
+        if let Some(items) = items {
+            // Only inspect the call IDs needed to correlate visible tool results.
+            // All other provider fields/items, including reasoning, stay opaque.
+            let mut replay_calls = std::collections::BTreeSet::new();
+            for item in &items.0 {
+                if item["type"] == "function_call" {
+                    let id = nonempty(&item["call_id"], "replay_items")?;
+                    if !replay_calls.insert(id) {
+                        return Err(invalid("replay_items"));
+                    }
+                }
+            }
+            if replay_calls != pending {
+                return Err(invalid("replay_items"));
+            }
+            inputs.extend(items.0.iter().cloned());
+        }
+    }
+    if replay.len() > assistant_turn {
+        return Err(invalid("replay_items"));
     }
     if !pending.is_empty() || needs_later_turn {
         return Err(invalid("messages"));
@@ -240,7 +311,7 @@ mod tests {
     use super::*;
 
     fn translate_request(payload: Value) -> Value {
-        translate(&payload, "gpt-6-sol", Some(1024)).unwrap()
+        translate(&payload, "gpt-6-sol", Some(1024), Mode::Api, &[]).unwrap()
     }
 
     #[test]
@@ -297,7 +368,7 @@ mod tests {
         let mut payload = tool_history();
         payload["messages"].as_array_mut().unwrap().remove(1);
         assert_eq!(
-            translate(&payload, "gpt-6-sol", Some(1024)),
+            translate(&payload, "gpt-6-sol", Some(1024), Mode::Api, &[]),
             Err(RequestError { param: "messages" })
         );
     }
@@ -307,9 +378,199 @@ mod tests {
         let mut payload = tool_history();
         payload["messages"].as_array_mut().unwrap().pop();
         assert_eq!(
-            translate(&payload, "gpt-6-sol", Some(1024)),
+            translate(&payload, "gpt-6-sol", Some(1024), Mode::Api, &[]),
             Err(RequestError { param: "messages" })
         );
+    }
+
+    fn replay_fixture() -> ReplayItems {
+        ReplayItems::new(vec![
+            json!({"type":"reasoning","id":"opaque_reasoning","encrypted_content":"opaque_fixture","summary":[]}),
+            json!({"type":"function_call","id":"provider_b","call_id":"call_b","name":"second","arguments":"{}","status":"completed"}),
+            json!({"type":"message","id":"provider_message","role":"assistant","content":[{"type":"output_text","text":"working"}]}),
+            json!({"type":"function_call","id":"provider_a","call_id":"call_a","name":"first","arguments":"{\"x\":1}","status":"completed"}),
+        ])
+    }
+
+    #[test]
+    fn persisted_two_tool_continuation_survives_a_new_process() {
+        const CHILD: &str = "OXA_TEST_OPENAI_REPLAY_CHILD";
+        let mut payload = tool_history();
+        payload["messages"].as_array_mut().unwrap().pop();
+        payload["messages"]
+            .as_array_mut()
+            .unwrap()
+            .insert(0, json!({"role":"user","content":"original input"}));
+        let items = replay_fixture();
+        // The child receives only serialized history and provider output, not any
+        // same-process translator state.
+        let (payload, items) = match std::env::var(CHILD) {
+            Ok(saved) => {
+                let saved: Value = serde_json::from_str(&saved).unwrap();
+                (
+                    saved["payload"].clone(),
+                    ReplayItems::new(saved["items"].as_array().unwrap().clone()),
+                )
+            }
+            Err(_) => (payload, items),
+        };
+        let body = translate(
+            &payload,
+            "gpt-6-sol",
+            Some(1024),
+            Mode::Api,
+            &[Some(items.clone())],
+        )
+        .unwrap();
+        let bytes = serde_json::to_string(&body).unwrap();
+        if std::env::var_os(CHILD).is_some() {
+            println!("REPLAY_RESULT={bytes}");
+            return;
+        }
+        let mut expected = vec![json!({"role":"user","content":"original input"})];
+        expected.extend(items.0.clone());
+        expected.extend([
+            json!({"type":"function_call_output","call_id":"call_b","output":"failed: denied"}),
+            json!({"type":"function_call_output","call_id":"call_a","output":"success"}),
+        ]);
+        assert_eq!(body["input"], json!(expected));
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "openai::request::tests::persisted_two_tool_continuation_survives_a_new_process",
+                "--nocapture",
+            ])
+            .env(
+                CHILD,
+                serde_json::to_string(&json!({"payload":payload,"items":items.0})).unwrap(),
+            )
+            .output()
+            .unwrap();
+        assert!(child.status.success());
+        let stdout = String::from_utf8(child.stdout).unwrap();
+        assert_eq!(
+            stdout
+                .lines()
+                .find_map(|line| line.strip_prefix("REPLAY_RESULT=")),
+            Some(bytes.as_str())
+        );
+        assert_eq!(
+            body,
+            translate(
+                &payload,
+                "gpt-6-sol",
+                Some(1024),
+                Mode::Subscription,
+                &[Some(items)]
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn replay_is_per_assistant_turn_and_replaces_visible_output() {
+        let mut payload = tool_history();
+        let messages = payload["messages"].as_array_mut().unwrap();
+        messages.pop();
+        messages.splice(
+            0..0,
+            [
+                json!({"role":"user","content":"first input"}),
+                json!({"role":"assistant","content":"visible answer"}),
+                json!({"role":"user","content":"second input"}),
+            ],
+        );
+        messages[3]["content"] = json!("visible working text");
+        let first = ReplayItems::new(vec![
+            json!({"type":"reasoning","encrypted_content":"earlier_opaque_fixture"}),
+            json!({"type":"message","role":"assistant","content":[{"type":"output_text","text":"provider answer"}]}),
+        ]);
+        let second = replay_fixture();
+        let body = translate(
+            &payload,
+            "gpt-6-sol",
+            Some(1024),
+            Mode::Api,
+            &[Some(first.clone()), Some(second.clone())],
+        )
+        .unwrap();
+        let mut expected = vec![json!({"role":"user","content":"first input"})];
+        expected.extend(first.0);
+        expected.push(json!({"role":"user","content":"second input"}));
+        expected.extend(second.0);
+        expected.extend([
+            json!({"type":"function_call_output","call_id":"call_b","output":"failed: denied"}),
+            json!({"type":"function_call_output","call_id":"call_a","output":"success"}),
+        ]);
+        assert_eq!(body["input"], json!(expected));
+        let body = translate(
+            &payload,
+            "gpt-6-sol",
+            Some(1024),
+            Mode::Api,
+            &[None, Some(replay_fixture())],
+        )
+        .unwrap();
+        assert_eq!(
+            body["input"][1],
+            json!({"role":"assistant","content":"visible answer"})
+        );
+    }
+
+    #[test]
+    fn replay_call_ids_must_match_and_errors_do_not_expose_items() {
+        let mut payload = tool_history();
+        payload["messages"].as_array_mut().unwrap().pop();
+        let mut missing = replay_fixture();
+        missing.0.pop();
+        let mut mismatch = replay_fixture();
+        mismatch.0[1]["call_id"] = json!("opaque_fixture");
+        let mut duplicate = replay_fixture();
+        duplicate.0.push(duplicate.0[1].clone());
+        for replay in [
+            vec![Some(missing)],
+            vec![Some(mismatch)],
+            vec![Some(duplicate)],
+            vec![Some(ReplayItems::new(vec![]))],
+            vec![Some(replay_fixture()), None],
+        ] {
+            let error = translate(&payload, "gpt-6-sol", Some(1024), Mode::Api, &replay).unwrap_err();
+            assert_eq!(
+                error,
+                RequestError {
+                    param: "replay_items"
+                }
+            );
+            assert_eq!(format!("{error:?}"), "RequestError { param: \"replay_items\" }");
+            assert_eq!(error.to_string(), "Invalid OpenAI request field: replay_items");
+            assert!(!format!("{replay:?}").contains("opaque_fixture"));
+        }
+    }
+
+    #[test]
+    fn replay_keeps_result_validation_and_diagnostics_redacted() {
+        let replay = [Some(replay_fixture())];
+        assert_eq!(format!("{replay:?}"), "[Some(ReplayItems([REDACTED]))]");
+        for fault in ["missing", "mismatch", "duplicate"] {
+            let mut payload = tool_history();
+            let messages = payload["messages"].as_array_mut().unwrap();
+            messages.pop();
+            match fault {
+                "missing" => {
+                    messages.remove(1);
+                }
+                "mismatch" => {
+                    messages[1]["tool_call_id"] = json!("unknown");
+                }
+                _ => {
+                    messages.insert(2, messages[1].clone());
+                }
+            }
+            let error = translate(&payload, "gpt-6-sol", Some(1024), Mode::Api, &replay).unwrap_err();
+            assert_eq!(error, RequestError { param: "messages" });
+            assert_eq!(format!("{error:?}"), "RequestError { param: \"messages\" }");
+            assert_eq!(error.to_string(), "Invalid OpenAI request field: messages");
+        }
     }
 
     #[test]
@@ -329,7 +590,7 @@ mod tests {
         }
         let payload = json!({"reasoning_effort":"none"});
         assert_eq!(
-            translate(&payload, "gpt-6.1-sol", Some(1024)).unwrap()["reasoning"]["effort"],
+            translate(&payload, "gpt-6.1-sol", Some(1024), Mode::Api, &[]).unwrap()["reasoning"]["effort"],
             "low"
         );
         assert_eq!(
@@ -393,13 +654,13 @@ mod tests {
             (json!({"max_tokens":0}), "max_completion_tokens"),
         ] {
             assert_eq!(
-                translate(&payload, "gpt-6-sol", Some(1024)),
+                translate(&payload, "gpt-6-sol", Some(1024), Mode::Api, &[]),
                 Err(RequestError { param })
             );
         }
         for limit in [None, Some(0)] {
             assert_eq!(
-                translate(&json!({}), "gpt-6-sol", limit),
+                translate(&json!({}), "gpt-6-sol", limit, Mode::Api, &[]),
                 Err(RequestError { param: "model" })
             );
         }

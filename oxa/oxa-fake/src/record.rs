@@ -113,6 +113,7 @@ fn wire_from_value(m: &Value) -> Result<WireMsg, OxaError> {
         content,
         reasoning: None,
         tool_calls: Vec::new(),
+        provider_history: None,
         tool_call_id: None,
     };
     match role {

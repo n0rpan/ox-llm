@@ -141,6 +141,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     key("oxa.bootPreload", Kind::Bool, "true"),
     key("oxa.builtinSkills", Kind::Bool, "true"),
+    key("oxa.cloud", Kind::Object, "{}"),
     // V020-OPTIMIZE #7: unset = on.
     key("oxa.compaction.idleSummary", Kind::Bool, "null"),
     // L5 mid-run: unset = on.
@@ -154,9 +155,12 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.diet.output", Kind::Bool, "null"),
     key("oxa.diet.tools", Kind::Bool, "null"),
     key("oxa.engine.allowRemote", Kind::Bool, "false"),
+    key("oxa.engine.inProcessCloud", Kind::Bool, "false"),
+    key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
+    key("oxa.local", Kind::Object, "{}"),
     key("oxa.maxTurns", Kind::Number, "null"),
     key(
         "oxa.mode",
@@ -305,9 +309,17 @@ pub fn validate(v: &Value, source: &str) -> Vec<Diagnostic> {
 
 /// pi's merge: objects merge key by key, scalars and plain lists from `project` replace
 /// `user`, lists made of `+x` / `-x` entries patch the lower layer ([`apply_list_patch`]).
+/// The native `oxa.local` launch subtree replaces literally, preserving argv bytes.
 pub fn merge_settings(user: &Value, project: &Value) -> Value {
     match project {
-        Value::Object(_) => merge_value(Some(user), project),
+        Value::Object(_) => {
+            let mut merged = merge_value(Some(user), project);
+            // Native launch data is literal: argv flags are not list-patch edits.
+            if let Some(local) = project.pointer("/oxa/local") {
+                merged["oxa"]["local"] = local.clone();
+            }
+            merged
+        }
         _ => user.clone(),
     }
 }

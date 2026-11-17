@@ -1036,3 +1036,35 @@ fn print_streams_progress_to_stderr_and_final_text_to_stdout() {
         .collect();
     assert_eq!(stdout, "done\n");
 }
+
+#[test]
+fn persisted_provider_replay_is_not_part_of_public_entry_records() {
+    let mut wire = WireMsg::assistant("visible");
+    wire.provider_history = Some(
+        oxa_proto::ProviderHistory::new(
+            [1; 32],
+            [2; 32],
+            vec![json!({
+        "type":"reasoning","encrypted_content":"synthetic-private-replay"})],
+        )
+        .unwrap(),
+    );
+    let e = Entry {
+        id: "synthetic".into(),
+        parent: None,
+        ts_ms: 1,
+        body: EntryBody::Msg {
+            wire,
+            parts: vec![],
+            tool: None,
+        },
+    };
+    let mut bytes = vec![];
+    encode_entry(&e, &mut bytes);
+    let decoded = oxa_session::decode_entry(&bytes).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("synthetic-private-replay"));
+    let public = entry_to_json(&decoded).to_string();
+    assert!(!public.contains("synthetic-private-replay"));
+    assert!(!public.contains("provider_history"));
+    assert!(public.contains("visible"));
+}

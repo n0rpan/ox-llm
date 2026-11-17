@@ -32,6 +32,91 @@ Each product has its own guide with the details:
 
 ## Tests
 
+Linux oxa integration tests require `bubblewrap` and `strace` on `PATH` (Arch:
+`sudo pacman -S bubblewrap strace`; Debian/Ubuntu: `sudo apt-get install bubblewrap strace`).
+The native cloud tool-loop test uses `strace -f -e trace=execve` to verify that the real binary
+and its descendants never launch Python; running without the tracer is not a valid substitute.
+Hosted CI installs both prerequisites too. Custom runners must provision them before invoking
+Cargo; Cargo does not install system test dependencies.
+
+On Arch, a runner without root access can extract the signed `strace` package into the checkout
+instead of installing it system-wide (requires the distro keyring, `curl`, `gpgv` and `bsdtar`,
+plus the package's runtime libraries). From the repository root:
+
+```sh
+(
+  set -eu
+  tools="$PWD/oxa/target/test-tools"
+  mkdir -p "$tools"
+  url=$(pacman -Sp --print-format '%l' --nodeps strace)
+  curl --fail --location "$url" -o "$tools/strace.pkg.tar.zst"
+  curl --fail --location "$url.sig" -o "$tools/strace.pkg.tar.zst.sig"
+  gpgv --keyring /etc/pacman.d/gnupg/pubring.gpg \
+    "$tools/strace.pkg.tar.zst.sig" "$tools/strace.pkg.tar.zst"
+  bsdtar -xf "$tools/strace.pkg.tar.zst" -C "$tools" usr/bin/strace
+  export PATH="$tools/usr/bin:$PATH"
+  strace --version
+  cd oxa
+  cargo test -p oxa-cli --test in_process_cloud \
+    native_discovery_tool_loop_and_budget_settlement_use_no_python_process -- --exact
+)
+```
+
+The download and extracted executable stay in ignored build output; nothing is installed outside
+the checkout. Keep that absolute `PATH` prefix for subsequent test commands in the same runner.
+Do not skip the proof when `strace` is missing or substitute an untraced run.
+
+If `bubblewrap` is already available but host package installation is not permitted, build
+upstream `strace` inside the checkout instead (requires a C compiler, make, curl, tar and xz).
+From the repository root:
+
+```sh
+mkdir -p .local-checks/strace-src
+printf '*\n' > .local-checks/.gitignore
+curl --fail --location --proto '=https' --tlsv1.2 \
+  https://strace.io/files/7.3/strace-7.3.tar.xz \
+  -o .local-checks/strace-src/strace-7.3.tar.xz
+printf '%s  %s\n' \
+  529634c40910895a9a1f3c5c1e65da2ca9ed72fb158dfc4bcc89efdf05e39b72 \
+  .local-checks/strace-src/strace-7.3.tar.xz | sha256sum --check &&
+tar -xJf .local-checks/strace-src/strace-7.3.tar.xz -C .local-checks/strace-src
+prefix="$PWD/.local-checks/strace"
+(
+  cd .local-checks/strace-src/strace-7.3 &&
+  ./configure --prefix="$prefix" --enable-mpers=no --enable-bundled=yes &&
+  make -j2 && make install
+)
+export PATH="$prefix/bin:$PATH"
+strace -V
+(cd oxa && cargo test -p oxa-cli --test in_process_cloud \
+  native_discovery_tool_loop_and_budget_settlement_use_no_python_process)
+```
+
+The bundled headers avoid incompatibilities with newer system kernel headers; disabling
+optional multi-personality decoding avoids needing a 32-bit toolchain. Neither changes the
+native `execve` tracing used by this test. Keep this `PATH` prefix for subsequent check commands
+(and set it again in each new shell); all downloaded sources and build/install output remain
+ignored inside `.local-checks/`. An export in a setup shell does not update a separate check
+runner's environment. For a runner that starts a fresh shell, pass the prefix with the check
+command itself (from the repository root, after building above):
+
+```sh
+(cd oxa && env -u TMPDIR PATH="$PWD/../.local-checks/strace/bin:$PATH" \
+  cargo test -p oxa-cli --test in_process_cloud \
+  native_discovery_tool_loop_and_budget_settlement_use_no_python_process)
+```
+
+The native cloud tool-loop and untrusted package-settings tests also discover the
+checkout-local install at `.local-checks/strace/bin/strace` directly, before searching `PATH`.
+Outside check runners therefore do not need to inherit the setup shell's export for these tests. This is the same
+upstream tracer, not a replacement proof; if the local executable exists but cannot trace,
+the test still fails. No test is skipped or substituted, and no host installation is changed.
+A failure to trace (for example, denied `ptrace`) must still be fixed, not ignored.
+Keep the test's temporary directory outside any repository: its synthetic credential fixture
+is subject to the production repository-key refusal. If `TMPDIR` points inside a checkout,
+run the test with `env -u TMPDIR cargo test ...` to use the system temporary directory instead;
+`CARGO_TARGET_DIR` may still point inside the checkout for build output.
+
 ```sh
 cd oxc && ./tools/run_lab_tests.sh                       # lab
 cd engine && cargo test --release --locked --workspace --exclude qwen4exp   # engine (Flash: see engine/CONTRIBUTING.md)

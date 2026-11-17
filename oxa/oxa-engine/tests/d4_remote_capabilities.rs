@@ -336,6 +336,40 @@ fn request_budget_is_local_thinking_only_and_discovered_without_model_names() {
     }
 }
 
+#[test]
+fn output_schema_capability_and_remote_only_serialization() {
+    let _policy = NET_POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let models = json!({"data":[{"id":"cloud-model"}]});
+    for remote in [false, true] {
+        for advertised in [false, true] {
+            let mut status = cloud_status(64000, 64000);
+            status["model_limits"]["cloud-model"]["capabilities"]["remote"] = json!(remote);
+            status["model_limits"]["cloud-model"]["capabilities"]["response_format"] = json!(advertised);
+            let info =
+                parse_info_for("http://127.0.0.1:8092", &models, &status, Some("cloud-model")).unwrap();
+            assert_eq!(info.caps.response_format, remote && advertised);
+        }
+    }
+    let p = prefix();
+    let schema = json!({"type":"object", "required":["answer"], "properties":{"answer":{"type":"number"}}});
+    let mut r = request(&p, &[], "cloud-model");
+    r.output_schema = Some(&schema);
+    for remote in [false, true] {
+        let mut body = vec![];
+        build_body_for(&r, remote, &mut body);
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        if remote {
+            assert_eq!(body["response_format"]["type"], "json_schema");
+            assert_eq!(body["response_format"]["json_schema"]["schema"], schema);
+        } else {
+            assert!(
+                body.get("response_format").is_none(),
+                "local engine rejects response_format"
+            );
+        }
+    }
+}
+
 /// Issue #574: a cloud model reached through oxc carries the request's own Idempotency-Key and
 /// session header (oxc's headers, never forwarded upstream); the local-only hint headers stay off.
 #[test]

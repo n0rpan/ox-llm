@@ -78,6 +78,7 @@ fn chat_cancelled(e: &HttpEngine, token: &CancelToken, h: Hints) -> Result<(), O
     let p = prefix();
     let msgs = vec![WireMsg::user("hi")];
     let r = ChatRequest {
+        output_schema: None,
         prefix: &p,
         messages: &msgs,
         model: "fake-model",
@@ -97,6 +98,7 @@ fn prefill(e: &HttpEngine, token: &CancelToken, h: Hints) -> Result<(), OxaError
     let p = prefix();
     let msgs = vec![WireMsg::user("hi")];
     let r = ChatRequest {
+        output_schema: None,
         prefix: &p,
         messages: &msgs,
         model: "fake-model",
