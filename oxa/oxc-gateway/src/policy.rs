@@ -114,7 +114,7 @@ pub fn daily_budget(
     if !reserved.is_finite() || reserved < 0.0 || !required.is_finite() || required < 0.0 {
         return Err(Refusal::ledger());
     }
-    if spent + reserved + required > cap + 1e-12 || (required == 0.0 && spent + reserved >= cap) {
+    if spent + reserved >= cap || spent + reserved + required > cap + 1e-12 {
         return Err(Refusal {
             status: 429,
             message: "The daily cloud budget is exhausted.",
