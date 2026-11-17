@@ -405,15 +405,22 @@ fn auto_bash_keeps_session_scratch_between_commands() {
     let out = run_oxa(&env, &srv.url(), &["-p", "--auto", "save then load"], "");
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let reqs = srv.requests();
-    let result = reqs
+    let results: Vec<&str> = reqs
         .last()
         .unwrap()
         .messages
         .iter()
         .rev()
-        .find(|m| m.role == Role::Tool)
-        .and_then(|m| m.content.as_deref())
-        .unwrap_or_default();
+        .filter(|m| m.role == Role::Tool)
+        .filter_map(|m| m.content.as_deref())
+        .take(2)
+        .collect();
+    let saved = results.last().copied().unwrap_or_default();
+    assert!(
+        !saved.contains("\nSandbox: /tmp"),
+        "#1058: a successful scratch write repeats no sandbox blurb: {saved}"
+    );
+    let result = results.first().copied().unwrap_or_default();
     assert!(
         result.contains("scratch-marker"),
         "session scratch lost: {result}"

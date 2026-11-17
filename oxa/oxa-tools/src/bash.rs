@@ -551,17 +551,10 @@ impl BashTool {
         }
 
         let mut output = String::from_utf8_lossy(&res.output).into_owned();
-        // Successful reads/mentions stay quiet; scratch writes and relevant failures get a notice.
-        let persistence_relevant = scratch_write_likely(raw_command)
-            || (res.exit != Some(0) && (raw_command.contains("/tmp") || raw_command.contains("TMPDIR")))
-            || (res.exit != Some(0)
-                && [
-                    "read-only file system",
-                    "permission denied",
-                    "operation not permitted",
-                ]
-                .iter()
-                .any(|error| output.to_ascii_lowercase().contains(error)));
+        // #1058: with a session scratch directory the write survives the call, so a successful
+        // one is not a lifetime risk (the scratch view the bash tool runs in decides).
+        let persistence_relevant =
+            persistence_relevant(raw_command, res.exit, &output, cx.sandbox.scratch_dir().is_some());
         if let Some(notice) = self
             .sandbox(cx)
             .persistence_notice()
@@ -641,6 +634,31 @@ impl BashTool {
     }
 }
 
+/// Whether the result carries the sandbox's persistence notice: a failed command that mentions
+/// scratch or names a filesystem failure (the `/tmp` lifetime may be the cause), and a successful
+/// scratch write only while `/tmp` is a per-command tmpfs. A session scratch directory persists
+/// between the commands of its session, so a successful write there needs no repeated blurb
+/// (#1058); the bash tool's own guidelines carry the lifetime rule once.
+pub(crate) fn persistence_relevant(
+    command: &str,
+    exit: Option<i32>,
+    output: &str,
+    persistent_scratch: bool,
+) -> bool {
+    if exit == Some(0) {
+        return !persistent_scratch && scratch_write_likely(command);
+    }
+    command.contains("/tmp")
+        || command.contains("TMPDIR")
+        || [
+            "read-only file system",
+            "permission denied",
+            "operation not permitted",
+        ]
+        .iter()
+        .any(|error| output.to_ascii_lowercase().contains(error))
+}
+
 /// Suppress the successful-command hint only for recognizable reads. Enumerating writers
 /// misses interpreters, build tools, attached output flags and custom scripts. This is a
 /// conservative hint heuristic, NOT a shell parser or a permission check; unknown syntax
@@ -701,6 +719,41 @@ fn scratch_write_likely(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1058: a per-command tmpfs keeps every hint; a session scratch directory drops only the
+    /// successful-write blurb (the write persists), never a failure.
+    #[test]
+    fn persistence_notice_follows_the_scratch_lifetime() {
+        for command in ["touch /tmp/oxa-1058", "mktemp -p /tmp", "echo hi"] {
+            assert_eq!(
+                persistence_relevant(command, Some(0), "", false),
+                scratch_write_likely(command),
+                "{command}"
+            );
+            assert!(
+                !persistence_relevant(command, Some(0), "", true),
+                "{command}: a successful command needs no note with session scratch"
+            );
+        }
+        for (command, output) in [
+            ("cat /tmp/oxa-1058-missing", "No such file or directory"),
+            ("echo TMPDIR; exit 1", ""),
+            ("true", "bash: x: Read-only file system"),
+            ("true", "bash: x: Permission denied"),
+        ] {
+            assert!(
+                persistence_relevant(command, Some(1), output, false),
+                "{command}: {output}"
+            );
+            assert!(
+                persistence_relevant(command, Some(1), output, true),
+                "{command}: a failure may be caused by the scratch lifetime"
+            );
+        }
+        // A failure that names neither scratch nor a filesystem cause stays quiet either way.
+        assert!(!persistence_relevant("false", Some(1), "", true));
+        assert!(!persistence_relevant("false", Some(1), "", false));
+    }
 
     /// #532: a successful read that merely mentions /tmp gets no persistence notice.
     #[test]

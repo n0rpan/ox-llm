@@ -669,8 +669,8 @@ fn bash_tool_exit_code_and_timeout_lines() {
         assert!(!out.is_error, "{}", out.text);
         assert!(!out.text.contains(notice), "{command}: {}", out.text);
     }
-    // ... one that writes there does.
-    for command in [
+    // ... one that writes there does, while `/tmp` is discarded after each command.
+    let writes = [
         "echo x > /tmp/oxa-532",
         "mktemp -p /tmp oxa-532.XXXXXX",
         "touch /tmp/oxa-532",
@@ -678,7 +678,8 @@ fn bash_tool_exit_code_and_timeout_lines() {
         "TMPDIR=/tmp; cd $TMPDIR && mkdir oxa-532",
         "printf x >/tmp/oxa-532; sed -i 's/x/y/' /tmp/oxa-532",
         "printf x | sort -o/tmp/oxa-532",
-    ] {
+    ];
+    for command in writes {
         let out = run(serde_json::json!({ "command": command }));
         assert!(!out.is_error, "{}", out.text);
         assert!(out.text.ends_with(notice), "{command}: {}", out.text);
@@ -729,6 +730,29 @@ fn bash_tool_exit_code_and_timeout_lines() {
     assert_eq!(a.text, "a\n\n\nCommand timed out after 1 seconds");
     assert_eq!(a.text, b.text);
     assert_eq!(a.ui, serde_json::json!({ "exit": null, "timedOut": true }));
+
+    // #1058: with a session scratch directory a successful write persists between the calls,
+    // so it gets no repeated blurb; every failure still explains the scratch lifetime.
+    let mut session_sandbox = sb.clone();
+    session_sandbox.layout.scratch_root = Some(oxa_sandbox::scratch_root(&env.home()));
+    let session = session_sandbox.for_session().expect("a session sandbox");
+    let session_tool = oxa_tools::BashTool::new().with_sandbox(session.clone());
+    let notice = session.persistence_notice().unwrap();
+    assert_eq!(notice, oxa_sandbox::SCRATCH_NOTICE);
+    let run = |command: &str| session_tool.run(&serde_json::json!({ "command": command }), &cx, &mut |_| {});
+    for command in writes {
+        let out = run(command);
+        assert!(!out.is_error, "{command}: {}", out.text);
+        assert!(!out.text.contains(notice), "{command}: {}", out.text);
+    }
+    // The write really persisted between the calls.
+    let out = run("test -f /tmp/oxa-532");
+    assert!(!out.is_error, "{}", out.text);
+    for command in ["cat /tmp/oxa-1058-missing", "echo TMPDIR; exit 1"] {
+        let out = run(command);
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains(notice), "{}", out.text);
+    }
 }
 
 /// Failed reads still need the hint: per-command scratch vanished, not a permission error.
