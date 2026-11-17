@@ -3,18 +3,20 @@
 #[path = "../tests/common/gateway_cases.rs"]
 mod tests;
 use crate::{
-    accounting::Outcome,
+    accounting::{Outcome, Usage},
     anthropic_client::{self, Cancellation, Chat, Client, Control},
-    anthropic_replay::{History, Replay},
-    anthropic_stream::Completed,
+    catalog::Provider,
     ledger::Context,
     policy::Refusal,
-    runtime::Runtime,
+    runtime::{Call, HistorySeal, Runtime},
 };
+mod completion;
+#[cfg(feature = "upstream-openai")]
+mod openai;
 use serde_json::{json, Value};
 use std::{
     fmt,
-    sync::Mutex,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -23,11 +25,23 @@ pub enum Event {
     Done,
 }
 
+pub struct Completed {
+    pub assistant: Value,
+    pub usage: Option<Usage>,
+    pub output_items: Arc<[Value]>,
+    pub replay_items: Arc<[Value]>,
+    pub finish_reason: &'static str,
+    /// Bind only to the engine's actual assembled assistant, after settlement.
+    pub history: Option<HistorySeal>,
+}
+
 #[derive(Debug)]
 pub enum Error {
     Refused(Refusal),
     Upstream(anthropic_client::Error),
     OpenCode(crate::opencode::client::Error),
+    #[cfg(feature = "upstream-openai")]
+    OpenAi(crate::openai::client::Error),
 }
 impl Error {
     pub fn refusal(&self) -> Refusal {
@@ -35,6 +49,8 @@ impl Error {
             Self::Refused(refusal) => return refusal.clone(),
             Self::OpenCode(error) => return go_refusal(*error),
             Self::Upstream(error) => error,
+            #[cfg(feature = "upstream-openai")]
+            Self::OpenAi(error) => return completion::openai_refusal(error),
         };
         let (status, code, param) = match error {
             anthropic_client::Error::Request(param) => (400, "invalid_value", *param),
@@ -75,17 +91,22 @@ impl std::error::Error for Error {}
 pub struct Gateway {
     runtime: Runtime,
     client: Client,
-    replay: Mutex<Replay>,
+    #[cfg(feature = "upstream-openai")]
+    openai: crate::openai::client::Client,
 }
 impl Gateway {
     pub fn new(runtime: Runtime) -> Result<Self, Error> {
         Self::with_read_timeout(runtime, Some(Duration::from_secs(1800)))
     }
     pub fn with_read_timeout(runtime: Runtime, timeout: Option<Duration>) -> Result<Self, Error> {
+        let client = Client::with_read_timeout(timeout).map_err(Error::Upstream)?;
+        #[cfg(feature = "upstream-openai")]
+        let openai = crate::openai::client::Client::from_messages_transport(&client);
         Ok(Self {
             runtime,
-            client: Client::with_read_timeout(timeout).map_err(Error::Upstream)?,
-            replay: Mutex::new(Replay::default()),
+            client,
+            #[cfg(feature = "upstream-openai")]
+            openai,
         })
     }
     /// Startup-only bounded live discovery. Reuses this gateway's HTTP pool;
@@ -128,11 +149,27 @@ impl Gateway {
                 return Err(Error::Refused(error));
             }
         };
-        self.chat_payload(&payload, context, cancel, on).await
+        self.chat_payload_with_history(&payload, Some(request), context, cancel, on)
+            .await
     }
+    #[cfg(test)]
     async fn chat_payload<F>(
         &self,
         payload: &Value,
+        context: Context<'_>,
+        cancel: &Cancellation,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
+        self.chat_payload_with_history(payload, None, context, cancel, on)
+            .await
+    }
+    async fn chat_payload_with_history<F>(
+        &self,
+        payload: &Value,
+        history: Option<&oxa_proto::ChatRequest<'_>>,
         context: Context<'_>,
         cancel: &Cancellation,
         on: &mut F,
@@ -144,13 +181,24 @@ impl Gateway {
             return Err(Error::Upstream(anthropic_client::Error::Cancelled));
         }
         let mut call = self.runtime.begin(payload, context).map_err(Error::Refused)?;
+        if let Some(request) = history {
+            if let Err(error) = call.verify_history(request) {
+                call.finish(Outcome::Complete, error.status, Some(error.code))
+                    .map_err(Error::Refused)?;
+                return Err(Error::Refused(error));
+            }
+        }
         let model = call.model();
-        if model.info().provider == crate::catalog::Provider::OpenCode {
+        if model.info().provider == Provider::OpenCode {
             return self.chat_go(call, payload, cancel, on).await;
+        }
+        #[cfg(feature = "upstream-openai")]
+        if matches!(model.info().provider, Provider::OpenAi | Provider::ChatGpt) {
+            return self.openai_chat(call, payload, history, cancel, on).await;
         }
         // Transport dispatch is added with the provider client; an admitted
         // foreign route must never be sent using the Anthropic protocol.
-        if model.info().provider != crate::catalog::Provider::Anthropic {
+        if model.info().provider != Provider::Anthropic {
             let error = Refusal {
                 status: 503,
                 code: "cloud_provider_unavailable",
@@ -162,7 +210,6 @@ impl Gateway {
             return Err(Error::Refused(error));
         }
         let key = call.key_handle().map_err(Error::Refused)?;
-        let history = History::new(model, key.expose(), payload);
         let mut terminal_usage = None;
         let request = Chat {
             base_url: model.endpoint().as_str(),
@@ -194,8 +241,12 @@ impl Gateway {
                     }
                 },
                 |index| {
-                    let id = history.at(index)?;
-                    self.replay.lock().ok()?.restore(id)
+                    history?
+                        .messages
+                        .get(index.checked_sub(1)?)?
+                        .provider_history
+                        .as_ref()
+                        .map(|saved| saved.items().to_vec())
                 },
                 &mut terminal_usage,
             )
@@ -205,31 +256,42 @@ impl Gateway {
         if let Some(usage) = terminal_usage {
             call.metered(usage);
         }
+        self.finish(
+            call,
+            result.map(completion::anthropic).map_err(Error::Upstream),
+            history,
+            terminal_usage.is_some(),
+            on,
+        )
+    }
+    fn finish<F>(
+        &self,
+        call: Call<'_>,
+        result: Result<Completed, Error>,
+        history: Option<&oxa_proto::ChatRequest<'_>>,
+        usage_final: bool,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
         let (outcome, status, code) = match &result {
             Ok(_) => (Outcome::Complete, 200, None),
-            Err(anthropic_client::Error::Cancelled) => (
-                if terminal_usage.is_some() {
+            Err(error) => {
+                let refusal = error.refusal();
+                let outcome = if completion::cancelled(error) && usage_final {
                     Outcome::Cancelled {
                         request_bytes: 0,
                         streamed_bytes: 0,
                         usage_final: true,
                         elapsed: Duration::ZERO,
                     }
-                } else {
-                    Outcome::Failed
-                },
-                499,
-                Some("request_cancelled"),
-            ),
-            Err(error) => {
-                let refusal = Error::Upstream(*error).refusal();
-                // Documented Anthropic request/auth/limit refusals precede
-                // generation. Timeouts, server and transport failures remain
-                // ambiguous and retain their conservative reservation charge.
-                let outcome = if matches!(
-                    *error,
-                    anthropic_client::Error::Http(400 | 401 | 403 | 404 | 413 | 429)
-                ) {
+                } else if usage_final {
+                    // A locally refused complete reply (for example unsafe
+                    // private replay) still has trusted provider usage. Charge
+                    // those facts without granting reply/replay authority.
+                    Outcome::Complete
+                } else if completion::clean_refusal(error) {
                     Outcome::Refused
                 } else {
                     Outcome::Failed
@@ -237,15 +299,22 @@ impl Gateway {
                 (outcome, refusal.status, Some(refusal.code))
             }
         };
+        let pending = match (&result, history) {
+            (Ok(completed), Some(request)) if !completed.replay_items.is_empty() => {
+                match call.prepare_history(request, Arc::clone(&completed.replay_items)) {
+                    Ok(seal) => Some(seal),
+                    Err(error) => {
+                        call.finish(Outcome::Complete, error.status, Some(error.code))
+                            .map_err(Error::Refused)?;
+                        return Err(Error::Refused(error));
+                    }
+                }
+            }
+            _ => None,
+        };
         call.finish(outcome, status, code).map_err(Error::Refused)?;
-        let completed = result.map_err(Error::Upstream)?;
-        // Opaque signatures are bound to the exact safe assistant turn the
-        // client will echo. Keep them only after settlement, before Done lets
-        // another request continue the conversation. A miss never crosses a
-        // model/endpoint/credential/history boundary.
-        if let Ok(mut replay) = self.replay.lock() {
-            replay.remember(history.after(&completed.assistant), &completed.native_blocks);
-        }
+        let mut completed = result?;
+        completed.history = pending;
         // Settlement committed success; a late cancel cannot retract a paid turn.
         let _ = on(Event::Done);
         Ok(completed)
@@ -316,52 +385,26 @@ impl Gateway {
         // Parsed terminal usage survives cancellation before public delivery.
         // Meter it privately before consuming the hold, just as for Anthropic.
         call.metered_go(usage.as_ref());
-        let (outcome, status, code) = match &result {
-            Ok(_) => (Outcome::Complete, 200, None),
-            Err(GoError::Cancelled) => (
-                if usage.is_some() {
-                    Outcome::Cancelled {
-                        request_bytes: 0,
-                        streamed_bytes: 0,
-                        usage_final: true,
-                        elapsed: Duration::ZERO,
-                    }
+        // Go chat completions have no native replay items. The common request
+        // path already verifies incoming history before dispatch; the common
+        // finish path owns durable settlement and the final Done transition.
+        let result = result
+            .map(|completed| Completed {
+                assistant: completed.assistant,
+                usage: None,
+                output_items: Arc::from([]),
+                replay_items: Arc::from([]),
+                finish_reason: completed.finish_reason,
+                history: None,
+            })
+            .map_err(|error| {
+                if error == GoError::Cancelled {
+                    Error::Upstream(anthropic_client::Error::Cancelled)
                 } else {
-                    Outcome::Failed
-                },
-                499,
-                Some("request_cancelled"),
-            ),
-            Err(error) => {
-                let refusal = go_refusal(*error);
-                let outcome = if usage.is_some() {
-                    Outcome::Complete
-                } else if matches!(
-                    error,
-                    GoError::Refused(
-                        crate::opencode::Refusal::RegionBlocked
-                            | crate::opencode::Refusal::LimitReached
-                            | crate::opencode::Refusal::Unauthenticated
-                            | crate::opencode::Refusal::Forbidden
-                    )
-                ) {
-                    Outcome::Refused
-                } else {
-                    Outcome::Failed
-                };
-                (outcome, refusal.status, Some(refusal.code))
-            }
-        };
-        call.finish(outcome, status, code).map_err(Error::Refused)?;
-        let completed = result.map_err(|error| {
-            if error == GoError::Cancelled {
-                Error::Upstream(anthropic_client::Error::Cancelled)
-            } else {
-                Error::OpenCode(error)
-            }
-        })?;
-        let _ = on(Event::Done);
-        Ok(completed)
+                    Error::OpenCode(error)
+                }
+            });
+        self.finish(call, result, None, usage.is_some(), on)
     }
 }
 

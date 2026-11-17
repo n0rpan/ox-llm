@@ -210,6 +210,79 @@ fn conversation() -> Vec<AgentEvent> {
 // ---------------------------------------------------------------------------------------------
 // Acceptance
 
+/// A dirty frame must not sit behind the 250ms idle input wait (#791). Check the
+/// actual loop's requested waits rather than a machine-dependent wall-clock budget.
+#[test]
+fn first_prompt_renders_without_idle_wait_then_sleeps_when_clean() {
+    struct StartupTerminal {
+        term: TestTerminal,
+        waits: Vec<u64>,
+    }
+    impl oxa_tui::Terminal for StartupTerminal {
+        fn write(&mut self, bytes: &[u8]) {
+            self.term.write(bytes);
+        }
+        fn flush(&mut self) {
+            self.term.flush();
+        }
+        fn size(&self) -> (u16, u16) {
+            self.term.size()
+        }
+        fn caps(&self) -> TermCaps {
+            self.term.caps()
+        }
+        fn set_mode(&mut self, mode: oxa_tui::TermMode, on: bool) {
+            self.term.set_mode(mode, on);
+        }
+        fn suspend(&mut self) {
+            self.term.suspend();
+        }
+        fn resume(&mut self) {
+            self.term.resume();
+        }
+        fn poll(&mut self, ms: u64) -> Vec<InputEvent> {
+            self.waits.push(ms);
+            match self.waits.len() {
+                1 => Vec::new(), // No key or capability reply to wake startup.
+                2 => {
+                    let output = String::from_utf8_lossy(&self.term.out);
+                    assert!(output.contains("READY"), "prompt drawn before idle wait");
+                    vec![key("ctrl+d")]
+                }
+                _ => panic!("the empty editor should exit on Ctrl+D"),
+            }
+        }
+    }
+
+    for fullscreen in [false, true] {
+        let env = TestEnv::new();
+        let session = session(&env);
+        let mut opts = interactive_opts(&env);
+        opts.fullscreen = fullscreen;
+        let mut term = StartupTerminal {
+            term: TestTerminal::new(120, 36),
+            waits: Vec::new(),
+        };
+        let (cmd_tx, _cmd_rx) = mpsc::channel();
+        let (_msg_tx, msg_rx) = mpsc::channel();
+        let (_ui_tx, ui_rx) = mpsc::channel();
+        assert_eq!(
+            run_loop(
+                &mut term,
+                &mut opts,
+                session.handle(),
+                cmd_tx,
+                msg_rx,
+                ui_rx,
+                ViewModel::default(),
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(term.waits, [0, 250], "fullscreen={fullscreen}");
+    }
+}
+
 /// snapshot
 #[test]
 fn event_list_to_frames_80() {

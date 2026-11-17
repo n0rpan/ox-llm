@@ -66,6 +66,16 @@ pub(super) enum Credential {
     Subscription(TokenRecord),
 }
 impl Credential {
+    pub fn contains_secret(&self, value: &Value) -> bool {
+        match self {
+            Self::ApiKey(key) => redaction::contains_secret(value, key.expose()),
+            #[cfg(feature = "upstream-openai")]
+            Self::Subscription(record) => {
+                redaction::contains_secret(value, record.access_token())
+                    || redaction::contains_secret(value, record.refresh_token())
+            }
+        }
+    }
     pub fn key(&self) -> Result<Arc<Key>, Refusal> {
         match self {
             Self::ApiKey(key) => Ok(Arc::clone(key)),
