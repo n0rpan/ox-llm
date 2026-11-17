@@ -44,13 +44,33 @@ pub struct MemorySample {
     pub pids_max_events: u64,
 }
 #[derive(Debug)]
-pub(crate) struct AdmissionRefusal {
-    available: u64,
-    required: u64,
+pub(crate) enum AdmissionRefusal {
+    Allocation {
+        available: u64,
+        required: u64,
+    },
+    Policy {
+        required: u64,
+        swap_limit_zero: bool,
+        swap_current_bytes: u64,
+    },
 }
 impl std::fmt::Display for AdmissionRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Local engine memory admission refused: available={} bytes, required={} bytes (allocation budget including margin); reduce configured context or free memory.", self.available, self.required)
+        match self {
+            Self::Allocation { available, required } => write!(
+                f,
+                "Local engine memory admission refused: available={available} bytes, required={required} bytes (allocation budget including margin); reduce configured context or free memory."
+            ),
+            Self::Policy {
+                required,
+                swap_limit_zero,
+                swap_current_bytes,
+            } => write!(
+                f,
+                "Local engine memory admission refused: required={required} (must be >0), memory.swap.max_zero={swap_limit_zero} (must be true), memory.swap.current={swap_current_bytes} (must be 0)."
+            ),
+        }
     }
 }
 impl std::error::Error for AdmissionRefusal {}
@@ -67,14 +87,18 @@ impl MemorySample {
         if required > 0 && sample.available_bytes < required {
             return Err(io::Error::new(
                 io::ErrorKind::OutOfMemory,
-                AdmissionRefusal {
+                AdmissionRefusal::Allocation {
                     available: sample.available_bytes,
                     required,
                 },
             ));
         }
         if required == 0 || !sample.swap_limit_zero || sample.swap_current_bytes != 0 {
-            return Err(io::Error::other("local engine memory admission refused"));
+            return Err(io::Error::other(AdmissionRefusal::Policy {
+                required,
+                swap_limit_zero: sample.swap_limit_zero,
+                swap_current_bytes: sample.swap_current_bytes,
+            }));
         }
         Ok(sample)
     }

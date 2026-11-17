@@ -18,6 +18,6 @@ isolated() {
 }
 (cd engine && isolated cargo test --release --locked -p oxe-cli --test version)
 (cd engine && isolated cargo test --release --locked -p server --lib)
-(cd oxa && isolated cargo test --release --locked -p oxa-cli --lib)
+(cd oxa && isolated cargo test --release --locked -p oxa-cli -p oxc-local --lib)
 # Build-tool regression tests for the native-only installed payload.
 isolated python3 -I -m unittest discover -s packaging/release/tests

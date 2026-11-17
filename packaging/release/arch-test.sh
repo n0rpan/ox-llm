@@ -2,9 +2,13 @@
 # Run as root in a fresh archlinux:latest container, with artifacts mounted at /artifacts.
 set -euo pipefail
 # Qualification must inherit the real policy required by the shipped native engine.
-test "$(awk -F: '$1 == "0" && $2 == "" { print $3 }' /proc/self/cgroup)" = /
-test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
-test "$(cat /sys/fs/cgroup/memory.swap.current)" = 0
+require() { if ! "$@"; then printf 'NATIVE-MEMORY-REFUSAL: %s\n' "$predicate" >&2; exit 1; fi; }
+predicate='unified cgroup membership must be root'
+require test "$(awk -F: '$1 == "0" && $2 == "" { print $3 }' /proc/self/cgroup)" = /
+predicate='memory.swap.max must be 0'
+require test "$(cat /sys/fs/cgroup/memory.swap.max)" = 0
+predicate='memory.swap.current must be 0'
+require test "$(cat /sys/fs/cgroup/memory.swap.current)" = 0
 pacman -Syu --noconfirm --needed base-devel namcap python bubblewrap rust cmake ninja git strace
 useradd -m builder
 install -d -o builder -g builder /build
