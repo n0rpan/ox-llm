@@ -143,4 +143,24 @@ mod tests {
         fs::write(&path, b"sensitive synthetic malformed data").unwrap();
         assert_eq!(situation(&path, uid).unwrap_err(), "invalid runner situation");
     }
+
+    #[test]
+    fn situation_reports_inputs_over_the_size_limit() {
+        let env = TestEnv::new();
+        let source = include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl");
+        let expected = source
+            .lines()
+            .find_map(|line| Snapshot::from_json(line.as_bytes()).ok())
+            .unwrap();
+        let mut bytes = expected.to_json().unwrap();
+        bytes.resize(MAX_SNAPSHOT_BYTES, b' ');
+        let (path, uid) = fixture(&env, &bytes);
+        assert_eq!(situation(&path, uid).unwrap(), expected);
+        bytes.push(b' ');
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            situation(&path, uid).unwrap_err(),
+            "runner situation exceeds limit"
+        );
+    }
 }
