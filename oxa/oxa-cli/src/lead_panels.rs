@@ -150,6 +150,37 @@ mod tests {
         );
     }
     #[test]
+    fn checklist_ignores_fenced_code_examples() {
+        let mut data = response();
+        data["data"]["repository"]["issue"]["body"] = json!("- [ ] Actual task\n```markdown\n- [x] Example task\n```\n~~~~\n- [x] Another example\n~~~\n- [x] Still fenced\n~~~~");
+        assert_eq!(
+            parse(&serde_json::to_vec(&data).unwrap(), Some(19))
+                .unwrap()
+                .release
+                .unwrap()
+                .1,
+            [(false, "Actual task".into())]
+        );
+    }
+    #[test]
+    fn checklist_recognizes_all_bullet_markers() {
+        let mut data = response();
+        data["data"]["repository"]["issue"]["body"] =
+            json!("* [x] First task\n+ [ ] Second task\n- [X] Third task");
+        assert_eq!(
+            parse(&serde_json::to_vec(&data).unwrap(), Some(19))
+                .unwrap()
+                .release
+                .unwrap()
+                .1,
+            [
+                (true, "First task".into()),
+                (false, "Second task".into()),
+                (true, "Third task".into())
+            ]
+        );
+    }
+    #[test]
     fn refuses_truncation_errors_wrong_issue_and_missing_fields() {
         for (pointer, replacement) in [
             ("/data/repository/mergeQueue/entries/totalCount", json!(999)),
