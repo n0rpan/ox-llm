@@ -160,6 +160,34 @@ pub const ISSUE_RUNNER_GUIDANCE: &str =
      needed for the task is missing from the packet, report NEED-METADATA and name \
      what the runner needs to supply.\n\n";
 
+pub const RUNNER_GITHUB_ENV: &str = "OXA_RUNNER_OWNS_GITHUB";
+
+impl Task {
+    fn matches_issue_packet(&self, number: u64) -> bool {
+        let packet = self
+            .prompt
+            .strip_prefix(ISSUE_RUNNER_GUIDANCE)
+            .unwrap_or(&self.prompt);
+        number != 0
+            && self.id == format!("issue-{number}")
+            && self.branch == format!("agent/{number}-work")
+            && self.base == default_base()
+            && self.max_time == default_max_time()
+            && packet.starts_with(&format!("Implement issue #{number}: "))
+    }
+
+    // Derive the worker restriction from the frozen task on every launch. This
+    // also covers old issue checkpoints resumed through an identical task file.
+    fn runner_owns_github(&self) -> bool {
+        self.prompt.starts_with(ISSUE_RUNNER_GUIDANCE)
+            || self
+                .id
+                .strip_prefix("issue-")
+                .and_then(|number| number.parse::<u64>().ok())
+                .is_some_and(|number| self.matches_issue_packet(number))
+    }
+}
+
 /// Reuse the frozen packet for the same issue and model, including on rerun.
 pub fn saved_issue_task(policy: &RunPolicy, number: u64, model: &str) -> Result<Option<Task>> {
     if number == 0 {
@@ -170,17 +198,7 @@ pub fn saved_issue_task(policy: &RunPolicy, number: u64, model: &str) -> Result<
         return Ok(None);
     };
     let task = saved.task;
-    let packet = task
-        .prompt
-        .strip_prefix(ISSUE_RUNNER_GUIDANCE)
-        .unwrap_or(&task.prompt);
-    if task.id != id
-        || task.model != model
-        || task.branch != format!("agent/{number}-work")
-        || task.base != default_base()
-        || task.max_time != default_max_time()
-        || !packet.starts_with(&format!("Implement issue #{number}: "))
-    {
+    if task.model != model || !task.matches_issue_packet(number) {
         return Err("task specification changed; use a new task id".into());
     }
     Ok(Some(task))
