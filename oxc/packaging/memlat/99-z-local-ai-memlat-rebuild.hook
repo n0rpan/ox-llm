@@ -18,4 +18,4 @@ Target = usr/lib/modules/*/modules.builtin
 [Action]
 Description = Rebuilding and verifying the approved Yoga MEMLAT boot entry...
 When = PostTransaction
-Exec = /usr/local/libexec/local-ai-memlat-boot rebuild
+Exec = /usr/bin/local-ai-memlat-boot rebuild

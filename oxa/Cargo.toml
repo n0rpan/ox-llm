@@ -17,6 +17,7 @@ members = [
     "oxa-fake", "oxa-parity",
     "oxc-gateway",
     "oxc-local",
+    "oxc-memlat",
 ]
 
 [workspace.package]

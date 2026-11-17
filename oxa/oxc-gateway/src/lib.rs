@@ -52,3 +52,12 @@ mod sse;
 pub mod openrouter;
 #[cfg(all(feature = "anthropic-client", feature = "pricing"))]
 pub mod status;
+
+/// Private, opt-in trusted-terminal diagnostic facts.
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+pub mod diagnostics;
+
+#[cfg(all(test, any(feature = "upstream-openai", feature = "anthropic-gateway")))]
+#[allow(dead_code)]
+#[path = "../tests/common/openai.rs"]
+pub(crate) mod mock_openai;

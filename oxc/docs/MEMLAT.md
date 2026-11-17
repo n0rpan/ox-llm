@@ -58,6 +58,23 @@ sudo /usr/local/libexec/local-ai-memlat-boot check
 
 Direct manual overwrites that bypass both package and boot tools must first run `fallback`; the hooks cannot protect arbitrary writes outside those tools. To uninstall automation, run `fallback`, remove only the two ALPM hooks, two boot-tool hooks, installed boot helper/builder/overlay and `/etc/local-ai/memlat-boot.json`. Keep stock and backups. Removing experimental images/entries is separate; never remove the selected image.
 
+## Native packaged boot helper
+
+The native [`local-ai-memlat-boot`](../../oxa/oxc-memlat/README.md) executable uses
+`/usr/bin/local-ai-memlat-boot`. The accepted Rust-only packaging layout (#824) ships the four
+hook/script templates as inert data under `/usr/share/ox-llm/memlat/`; they invoke that executable.
+Installing the package does not activate the templates. This describes the accepted layout,
+not a completed installation or hardware validation.
+
+The native helper implements `enable`, `fallback`, `check`, `prepare-update` and `rebuild`;
+it retains the existing policy format and uses `dtc`, `fdtoverlay` and `b2sum` for rebuilds,
+without an installed Python builder.
+
+The `/usr/local/libexec` paths and Python installation steps in this document describe the earlier
+manual installation. Packaging does not overwrite manually installed hooks or policy, select an
+image, write the ESP or reboot. Hook migration and hardware validation remain owner-approved
+steps. See the native helper README for the migration boundary.
+
 ## Build, install and remove
 
 Run the helper from the repository root. `doctor` is read-only. Build against the exact installed UKI payload; the helper checks that it matches the selected stock Yoga DTB/DTS before producing a separate image:
