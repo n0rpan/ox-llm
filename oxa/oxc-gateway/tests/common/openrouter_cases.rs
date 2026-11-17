@@ -762,6 +762,45 @@ async fn openrouter_null_tool_identity_continuations_keep_assembled_identity() {
 }
 
 #[tokio::test]
+async fn openrouter_null_identity_support_keeps_required_and_typed_identity_guards() {
+    for call in [
+        json!({"id":null,"function":{"name":"read","arguments":"{}"}}),
+        json!({"id":"synthetic-call","function":{"name":null,"arguments":"{}"}}),
+        json!({"id":17,"function":{"name":"read","arguments":"{}"}}),
+        json!({"id":"synthetic-call","function":{"name":{},"arguments":"{}"}}),
+    ] {
+        let mock = MockAnthropic::start(vec![wire(
+            vec![json!({"choices":[{"index":0,
+            "delta":{"tool_calls":[call]},"finish_reason":"tool_calls"}],
+            "usage":{"prompt_tokens":21,"completion_tokens":5}})],
+            true,
+        )]);
+        let (gateway, fixture) = gateway(&mock);
+        let error = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    match event {
+                        Event::Chunk(value) => {
+                            assert!(value.pointer("/choices/0/delta/tool_calls").is_none())
+                        }
+                        Event::Done => panic!("missing or invalid identity cannot complete"),
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.refusal().code, "cloud_upstream_stream_broken");
+        assert_eq!(rows(&fixture)[0]["settled"], "reserved");
+        mock.finish();
+    }
+}
+
+#[tokio::test]
 async fn openrouter_missing_tool_indices_use_array_positions() {
     let raw = r#"{ "path" : "note.txt" }"#;
     let calls = json!([

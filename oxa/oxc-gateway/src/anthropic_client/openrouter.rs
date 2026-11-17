@@ -286,7 +286,7 @@ impl<'a> Stream<'a> {
                             Value::Object(_) | Value::Array(_) if path == "/function/arguments" => {
                                 value.to_string()
                             }
-                            Value::Null if path == "/function/arguments" => String::new(),
+                            Value::Null => String::new(),
                             _ => value.as_str().ok_or(Error::Protocol)?.to_owned(),
                         };
                         let target = tool.pointer_mut(path).ok_or(Error::Protocol)?;
