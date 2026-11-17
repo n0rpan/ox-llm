@@ -369,6 +369,147 @@ fn native_go_inference_failed_is_a_request_error_without_a_retry_or_allowance_cl
     assert_eq!(rows(&env)[0]["status"], 400);
     mock.assert_healthy();
 }
+fn set_one_request_token_cap(env: &TestEnv) {
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    // Exactly one discovered context+output window can be reserved at a time.
+    settings["oxa"]["cloud"]["subscription_limits"]["daily_tokens"] = json!(32768 + 512);
+    fs::write(path, settings.to_string()).unwrap();
+}
+
+#[test]
+fn native_go_rejected_requests_release_tokens_before_the_next_valid_request() {
+    for status in [400, 404, 413] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                Reply::error(status, "inference_failed", CREDENTIAL),
+                Reply::json(discovery(base)),
+                stream(json!({"content":"Synthetic valid request"}), "stop"),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        set_one_request_token_cap(&env);
+        let rejected = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic rejected request"],
+        );
+        assert_eq!(terminal(&rejected)["error_class"], "engine_http");
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["status"], status);
+        assert_eq!(ledger[0]["settled"], "refused", "HTTP{status}");
+        assert_eq!(ledger[0]["subscription_requests"], 1);
+        assert_eq!(ledger[0]["subscription_tokens"], 0);
+        let valid = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic valid request"],
+        );
+        assert_eq!(
+            valid.status.code(),
+            Some(0),
+            "HTTP{status}: {}",
+            String::from_utf8_lossy(&valid.stderr)
+        );
+        assert_eq!(rows(&env).len(), 2);
+        assert_eq!(mock.requests().len(), 4);
+        assert!(!String::from_utf8_lossy(&rejected.stderr).contains(CREDENTIAL));
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn native_go_5xx_usage_stays_reserved_and_the_token_cap_still_refuses() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::error(500, "inference_failed", CREDENTIAL),
+            Reply::json(discovery(base)),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    set_one_request_token_cap(&env);
+    let failed = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic failed request"],
+    );
+    assert_eq!(terminal(&failed)["error_class"], "engine_http");
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["settled"], "reserved");
+    assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
+    assert_eq!(ledger[0]["usage_missing"], true);
+    let blocked = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic next request"],
+    );
+    assert_eq!(terminal(&blocked)["error_class"], "budget_exhausted");
+    assert_eq!(mock.requests().len(), 3, "cap must refuse before another chat");
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_text_deltas_allow_null_or_empty_tool_calls_and_keep_final_usage() {
+    for calls in [Value::Null, json!([])] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                stream(
+                    json!({"content":"Synthetic nullable text", "tool_calls":calls}),
+                    "stop",
+                ),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic nullable text"));
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["settled"], "usage");
+        assert_eq!(ledger[0]["subscription_tokens"], 105);
+        assert!(ledger[0].get("usage_missing").is_none());
+        assert_eq!(mock.requests().len(), 2);
+        mock.assert_healthy();
+    }
+}
+
+#[test]
+fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
+    for calls in [json!({}), json!(CREDENTIAL), json!(0), json!(false)] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start_with(|base| {
+            vec![
+                Reply::json(discovery(base)),
+                stream(
+                    json!({"content":"Synthetic invalid shape", "tool_calls":calls}),
+                    "stop",
+                ),
+            ]
+        });
+        setup(&env, &format!("http://{}", mock.address()));
+        let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+        assert_eq!(terminal(&output)["error_class"], "stream_broken");
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("Synthetic invalid shape"));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 1);
+        assert_eq!(ledger[0]["settled"], "reserved");
+        assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
+        assert_eq!(ledger[0]["usage_missing"], true);
+        assert_eq!(mock.requests().len(), 2);
+        mock.assert_healthy();
+    }
+}
+
 #[test]
 fn live_discovery_lists_chat_models_only_and_offline_precedes_credentials() {
     let env = TestEnv::new();

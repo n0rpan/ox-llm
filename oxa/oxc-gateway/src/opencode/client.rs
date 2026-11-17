@@ -266,7 +266,10 @@ where
                         chunk["choices"][0]["delta"][name] = safe.into();
                     }
                 }
-                if let Some(calls) = chunk["choices"][0]["delta"].get_mut("tool_calls") {
+                if let Some(calls) = chunk["choices"][0]["delta"]
+                    .get_mut("tool_calls")
+                    .filter(|calls| !calls.is_null())
+                {
                     for call in calls.as_array_mut().ok_or(Error::Protocol)? {
                         let index = call["index"]
                             .as_u64()
