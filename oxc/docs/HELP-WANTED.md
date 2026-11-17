@@ -111,6 +111,7 @@ Acceptance:
 - [ ] `plan`, `verify-models` and `run` complete on a Mac; fixes sent as a pull request.
 - [ ] Receipts for at least one 35B MoE: decode and prefill separately, ≥3 warm runs, chip and RAM stated, power source stated.
 - [ ] MLX rows labelled as a different quantisation (MLX does not load GGUF).
+- [ ] Staged CPU arm: `plan --stacks oxe-cpu` describes separate decode/prefill receipts, labelled `unmatched_format`. **Execution is unavailable:** the repository engine depends on Linux affinity/futex APIs; Apple Silicon being aarch64 does not make it build on macOS. This Mac runner also requires performance-core sysctl, so it is not a Linux execution path. `run --stacks oxe-cpu` refuses before executing a binary or writing receipts until a supported path is implemented.
 
 ## 8. Fuzz the tool-call parser
 

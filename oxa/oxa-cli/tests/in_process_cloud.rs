@@ -10,19 +10,21 @@ use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 const MODEL: &str = "synthetic-cloud";
 const UPSTREAM: &str = "synthetic-anthropic";
 
 fn cloud_env() -> TestEnv {
-    // This Linux-only proof needs credentials outside any repository. Harnesses can
-    // put TMPDIR inside the checkout; honoring it here would correctly trip the
-    // production key-file guard (and inherit repository project settings).
+    // Credentials AND the usage ledger deliberately refuse repository paths, and this
+    // Linux-only proof needs them outside any repository. Harnesses can put TMPDIR
+    // inside the checkout; honoring it here would correctly trip the production
+    // key-file guard (and inherit repository project settings), so do not relax those
+    // production checks or mutate the process environment to accommodate it.
     TestEnv::new_in(Path::new("/tmp"))
 }
 
@@ -107,6 +109,72 @@ fn success(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// The public RPC statistic must not label a settled, priced cloud call as free.
+#[test]
+fn native_rpc_session_cost_is_unknown_after_priced_settlement() {
+    let env = cloud_env();
+    let mock = MockAnthropic::start(vec![Reply::text("Synthetic answer", 11, 0, 0, 5)]);
+    settings(&env, &mock.base_url(), true);
+    write_key(&env, &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .args([
+            "--mode",
+            "rpc",
+            "--no-tools",
+            "--no-skills",
+            "--no-extensions",
+            "--no-context-files",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    writeln!(
+        input,
+        "{}",
+        json!({"id":"prompt","type":"prompt","message":"Synthetic request"})
+    )
+    .unwrap();
+    input.flush().unwrap();
+    loop {
+        let mut line = String::new();
+        assert_ne!(
+            output.read_line(&mut line).unwrap(),
+            0,
+            "RPC exited before settlement"
+        );
+        let record: Value = serde_json::from_str(&line).unwrap();
+        if record["type"] == "agent_settled" {
+            break;
+        }
+    }
+    writeln!(input, "{}", json!({"id":"stats","type":"get_session_stats"})).unwrap();
+    input.flush().unwrap();
+    drop(input);
+    let mut tail = String::new();
+    output.read_to_string(&mut tail).unwrap();
+    success(&child.wait_with_output().unwrap());
+    let stats = tail
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|record| record["id"] == "stats")
+        .expect("stats response");
+    assert_eq!(stats["success"], true, "{stats}");
+    assert_eq!(stats["data"]["tokens"]["total"], 16);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert!((ledger[0]["cost_usd"].as_f64().unwrap() - 0.000037).abs() < 1e-12);
+    assert_eq!(stats["data"].get("cost"), Some(&Value::Null), "{stats}");
+    mock.finish();
 }
 
 // These regressions must exercise the ordinary protected reader, not a test bypass.
