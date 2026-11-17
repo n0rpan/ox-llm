@@ -117,6 +117,24 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
                                 for p in self.stable.parent.parent.rglob('*')), ['bin', 'bin/oxa'])
         self.assertEqual(self.stable.read_bytes(), b'stable sentinel')
 
+    def test_aliased_or_nonregular_lock_cannot_touch_another_install(self):
+        self.build()
+        for kind in ['symlink', 'hardlink', 'fifo']:
+            prefix = self.root / kind
+            prefix.mkdir()
+            (prefix / '.dev-channel').write_text('ox-llm dev v1\n')
+            lock = prefix / '.update.lock'
+            if kind == 'symlink':
+                lock.symlink_to(self.stable)
+            elif kind == 'hardlink':
+                os.link(self.stable, lock)
+            else:
+                os.mkfifo(lock)
+            result = self.run_update(prefix)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(self.stable.read_bytes(), b'stable sentinel')
+            self.assertFalse((prefix / 'current').exists())
+
 
 if __name__ == '__main__':
     unittest.main()

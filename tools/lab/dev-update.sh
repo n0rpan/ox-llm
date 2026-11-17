@@ -10,12 +10,19 @@ case $(uname -m) in aarch64|x86_64) arch=$(uname -m);; *) echo 'Unsupported arch
 test ! -L "$prefix"
 [[ $prefix != *$'\n'* && $prefix != *$'\r'* ]]
 mkdir -p "$prefix"
+test -O "$prefix"
+for state in .dev-channel .update.lock; do
+  if test -e "$prefix/$state" || test -L "$prefix/$state"; then
+    test -f "$prefix/$state" && test ! -L "$prefix/$state" && test -O "$prefix/$state"
+    test "$(stat -c %h "$prefix/$state")" = 1
+  fi
+done
 if test ! -f "$prefix/.dev-channel"; then
   test -z "$(find "$prefix" -mindepth 1 -maxdepth 1 -print -quit)" || {
     echo 'Refusing a nonempty prefix without a dev-channel marker' >&2; exit 1;
   }
 fi
-exec 9>"$prefix/.update.lock"
+exec 9>>"$prefix/.update.lock"
 flock 9
 test ! -L "$prefix/.dev-channel"
 if test -f "$prefix/.dev-channel"; then
