@@ -432,6 +432,54 @@ pub fn run_queue(
 mod tests {
     use super::*;
     #[test]
+    fn queue_refuses_oversized_inputs_without_admitting_their_tasks() {
+        let dir = std::env::temp_dir().join(format!(
+            "oxa-queue-limits-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let valid = r#"[{"id":"large","branch":"agent/large","model":"fake","prompt":"Synthetic task"}]"#;
+        let mut oversized = valid.to_owned();
+        oversized.push_str(&" ".repeat(1024 * 1024));
+        fs::write(dir.join("bytes.json"), oversized).unwrap();
+        let many: Vec<_> = (0..129)
+            .map(|n| {
+                serde_json::json!({
+                    "id": format!("task-{n}"),
+                    "branch": format!("agent/task-{n}"),
+                    "model": "fake",
+                    "prompt": "Synthetic task"
+                })
+            })
+            .collect();
+        fs::write(dir.join("count.json"), serde_json::to_vec(&many).unwrap()).unwrap();
+        fs::write(dir.join("outside"), valid.replace("large", "symlink")).unwrap();
+        std::os::unix::fs::symlink(dir.join("outside"), dir.join("link.json")).unwrap();
+
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        let mut errors = vec![];
+        let result = scan(&dir, &mut pending, &mut inputs, &mut |event| {
+            if let QueueEvent::Error { file, .. } = event {
+                errors.push(file);
+            }
+            Ok(())
+        });
+        fs::remove_dir_all(&dir).unwrap();
+        result.unwrap();
+        assert!(
+            pending.is_empty(),
+            "oversized and linked inputs must never be admitted"
+        );
+        assert!(errors.contains(&dir.join("bytes.json")));
+        assert!(errors.contains(&dir.join("count.json")));
+    }
+
+    #[test]
     fn archiving_an_unadmitted_file_cancels_its_pending_job() {
         let dir = std::env::temp_dir().join(format!(
             "oxa-queue-pending-{}-{}",

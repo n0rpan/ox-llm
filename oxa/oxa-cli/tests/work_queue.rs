@@ -380,7 +380,13 @@ case "$1 $2" in
   'issue list') if test -f "$HOME/reported"; then printf '[{"number":1}]'; else printf '[]'; fi ;;
   'pr list') printf '[]' ;;
   'issue view') printf '%s' '{"title":"oxa queue problem","body":"Same synthetic reproduction","url":"https://github.com/example/project/issues/1","comments":[]}' ;;
-  'issue create') sleep 0.2; touch "$HOME/reported"; printf 'created\n' >> "$HOME/report-writes"; printf '%s' 'https://github.com/example/project/issues/1' ;;
+  'issue create')
+    for fd in /proc/self/fd/*; do
+      if test "$fd" -ef "$HOME/.oxa/agent/work-report.lock"; then
+        touch "$HOME/report-lease-inherited"
+      fi
+    done
+    sleep 0.2; touch "$HOME/reported"; printf 'created\n' >> "$HOME/report-writes"; printf '%s' 'https://github.com/example/project/issues/1' ;;
   *) exit 7 ;;
 esac
 "##);
@@ -410,6 +416,10 @@ esac
         1
     );
     let events = rows(&out);
+    assert!(
+        env.home().join("report-lease-inherited").exists(),
+        "a surviving GitHub writer must retain the reporting lease"
+    );
     let dispositions: std::collections::HashSet<_> = events
         .iter()
         .filter(|r| r["event"] == "task")
