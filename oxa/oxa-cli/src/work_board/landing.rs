@@ -33,7 +33,8 @@ pub(super) fn review_decisions(
     let mut observed = 0;
     charge(&mut observed, received)?;
     let main = oid(&queue["main"]["target"]["oid"]);
-    let mut queued = queue_observations(&queue["mergeQueue"], board)?;
+    let merge_queue = queue.get("mergeQueue").ok_or("missing merge queue observation")?;
+    let mut queued = queue_observations(merge_queue, board)?;
     for batch in entries.chunks(BATCH) {
         let mut fields = String::new();
         for entry in batch {
@@ -96,9 +97,10 @@ pub(super) fn review_decisions(
 }
 
 fn queue_observations(queue: &Value, board: &Board) -> Result<BTreeMap<u64, QueueObservation>, String> {
-    let Some(rows) = nodes(&queue["entries"]).ok() else {
+    if queue.is_null() {
         return Ok(BTreeMap::new());
-    };
+    }
+    let rows = nodes(&queue["entries"])?;
     let mut seen = std::collections::BTreeSet::new();
     let mut queued = BTreeMap::new();
     for row in rows {
