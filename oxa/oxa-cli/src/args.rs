@@ -235,6 +235,10 @@ const COMMANDS: &[(&str, &str)] = &[
         "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (
+        "oxa work board --shadow --repo OWNER/REPO --once",
+        "Sample a private read-only GitHub work board",
+    ),
+    (
         "oxa wipe --session <id> | --all [--yes] [--engine]",
         "Delete one session (or every session) and its spill files; --engine also drops the engine's state",
     ),
