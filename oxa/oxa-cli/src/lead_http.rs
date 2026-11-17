@@ -62,7 +62,6 @@ pub fn connection(
     authorize: impl FnOnce(&TcpStream, &Request<'_>) -> bool,
     render: impl FnOnce(bool) -> String,
 ) -> std::io::Result<()> {
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let start = Instant::now();
     let mut bytes = Vec::new();
     while !bytes.ends_with(b"\r\n\r\n") && bytes.len() < 8192 {
@@ -107,9 +106,28 @@ pub fn connection(
 }
 
 fn write_response(stream: &mut TcpStream, parts: &[&[u8]], budget: Duration) -> std::io::Result<()> {
-    stream.set_write_timeout(Some(budget))?;
+    let start = Instant::now();
     for part in parts {
-        stream.write_all(part)?;
+        let mut remaining = *part;
+        while !remaining.is_empty() {
+            let left = budget
+                .checked_sub(start.elapsed())
+                .filter(|d| !d.is_zero())
+                .ok_or(std::io::ErrorKind::TimedOut)?;
+            stream.set_write_timeout(Some(left))?;
+            match stream.write(remaining) {
+                Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+                Ok(n) => remaining = &remaining[n..],
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::Interrupted
+                            | std::io::ErrorKind::WouldBlock
+                            | std::io::ErrorKind::TimedOut
+                    ) => {}
+                Err(e) => return Err(e),
+            }
+        }
     }
     Ok(())
 }
