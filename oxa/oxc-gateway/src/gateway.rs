@@ -209,12 +209,12 @@ impl Gateway {
             }
         }
         let model = call.model();
-        if model.info().provider == Provider::OpenCode {
-            return self.chat_go(call, payload, cancel, on).await;
-        }
         #[cfg(feature = "upstream-openai")]
         if matches!(model.info().provider, Provider::OpenAi | Provider::ChatGpt) {
             return self.openai_chat(call, payload, history, cancel, on).await;
+        }
+        if model.info().provider == Provider::OpenCode {
+            return self.chat_go(call, payload, cancel, on).await;
         }
         // Transport dispatch is added with the provider client; an admitted
         // foreign route must never be sent using the Anthropic protocol.
