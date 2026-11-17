@@ -1204,6 +1204,7 @@ name = "oxa-work"
 version = "0.2.0"
 dependencies = [
  "libc",
+ "oxa-proto",
  "serde",
  "serde_json",
 ]
