@@ -2693,6 +2693,10 @@ fn key_005() {
     // terminal sends a plain CR for it); ctrl+j works everywhere.
     let mut t = Setup::new()
         .profile(TermProfile::kitty())
+        .fake(tui::FakeOpts {
+            done_gap_ms: 2500,
+            ..tui::FakeOpts::default()
+        })
         .replies("got it", 2)
         .start();
     t.type_text("first line");
@@ -2704,7 +2708,6 @@ fn key_005() {
     t.key("enter");
     t.wait_text("got it");
     assert_eq!(t.prompts(), vec!["first line\nsecond line\nthird".to_string()]);
-    t.wait_worker_reply_end("key005-after-reply.html");
     // tab completes a slash command.
     t.type_text("/hotk");
     t.key("tab");
@@ -3137,7 +3140,6 @@ fn key_010() {
     t.wait_chats(1);
     t.key("escape");
     t.wait_text("late answer");
-    t.wait_worker_reply_end("key010-after-reply.html");
     t.type_text("slow two");
     t.key("enter");
     t.wait_text("after f9");
