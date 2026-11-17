@@ -506,6 +506,7 @@ fn tokenizer_fixture(path: &Path) {
 
 // The shipped engine's existing stub is model-free. This is not a fake-child
 // replacement and does not qualify weights, numerics or a real local-model task.
+// Called only in required-release mode: omit enable switches to prove its default.
 fn native_local_release_pair(binary: &Path, engine: &Path, missing_weights: bool) {
     let env = TestEnv::new();
     let model = env.work().join("tokenizer-only.gguf");
@@ -519,7 +520,7 @@ fn native_local_release_pair(binary: &Path, engine: &Path, missing_weights: bool
     let marker = env.tmp().join("python-invoked");
     env.write("home/.oxa/agent/settings.json", &json!({
         "defaultProjectTrust":"always", "defaultThinkingLevel":"off", "retry":{"enabled":false},
-        "oxa":{"engine":{"inProcessLocal":true}, "local":{
+        "oxa":{"local":{
             "binary":engine, "startup_timeout_seconds":10,
             "environment":{"PATH":bin,"OXA_TEST_PYTHON_MARKER":marker},
             "models":{"synthetic":{"model":model,"arguments":["--engine","stub","--stub-reply","native-local-proof","--reasoning","off"]}},
