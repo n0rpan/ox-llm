@@ -4,7 +4,7 @@ use crate::{
     Result, RunPolicy, Step, SupervisorOperation, SupervisorRequest,
 };
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -194,6 +194,7 @@ pub(crate) struct Export {
     root: PathBuf,
     pub(crate) store: PathBuf,
     pub(crate) tree: PathBuf,
+    shallow: Option<Vec<u8>>,
 }
 impl Drop for Export {
     fn drop(&mut self) {
@@ -230,10 +231,11 @@ impl Export {
             .mode(0o700)
             .create(&root)
             .map_err(|_| "cannot create fresh acceptance export")?;
-        let export = Self {
+        let mut export = Self {
             store: root.join("objects.git"),
             tree: root.join("tree"),
             root,
+            shallow: None,
         };
         let format = checked(git(policy, source, &["rev-parse", "--show-object-format"]))?;
         if !matches!(format.as_str(), "sha1" | "sha256") {
@@ -250,6 +252,48 @@ impl Export {
                 export.store.to_str().ok_or("invalid acceptance path")?,
             ],
         ))?;
+        // A shallow source intentionally omits ancestors. Preserve only its
+        // reachable declared boundaries; strict import/fsck still validate every
+        // exported object, without fetching or borrowing the source object store.
+        let shallow_path = checked(git(
+            policy,
+            source,
+            &["rev-parse", "--path-format=absolute", "--git-path", "shallow"],
+        ))?;
+        match File::open(shallow_path) {
+            Ok(file) => {
+                const LIMIT: u64 = 1024 * 1024;
+                let mut bytes = vec![];
+                file.take(LIMIT + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "cannot read shallow boundaries")?;
+                if bytes.len() as u64 > LIMIT {
+                    return Err("shallow boundaries exceed export limit".into());
+                }
+                let text = std::str::from_utf8(&bytes).map_err(|_| "invalid shallow boundaries")?;
+                let width = if format == "sha1" { 40 } else { 64 };
+                let boundaries: std::collections::HashSet<_> = text.lines().collect();
+                if boundaries
+                    .iter()
+                    .any(|id| id.len() != width || !id.bytes().all(|b| b.is_ascii_hexdigit()))
+                {
+                    return Err("invalid shallow boundary identity".into());
+                }
+                let roots = checked(git(policy, source, &["rev-list", "--max-parents=0", head, base]))?;
+                let mut selected = Vec::new();
+                for id in roots.lines().filter(|id| boundaries.contains(id)) {
+                    writeln!(selected, "{id}").map_err(|_| "cannot capture shallow boundary")?;
+                }
+                if !selected.is_empty() {
+                    private_file(&export.store.join("shallow"))?
+                        .write_all(&selected)
+                        .map_err(|_| "cannot write export boundaries")?;
+                    export.shallow = Some(selected);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("cannot open shallow boundaries".into()),
+        }
         let revisions = export.root.join("revisions");
         let mut input = private_file(&revisions)?;
         writeln!(input, "{head}\n{base}").map_err(|_| "cannot write export identities")?;
@@ -318,6 +362,11 @@ impl Export {
     }
 
     fn verify(&self, policy: &RunPolicy, head: &str, base: &str) -> Result<()> {
+        match (fs::read(self.store.join("shallow")), &self.shallow) {
+            (Ok(actual), Some(expected)) if actual == *expected => {}
+            (Err(error), None) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err("acceptance shallow boundary changed".into()),
+        }
         for leaf in ["objects/info/alternates", "objects/info/http-alternates"] {
             match fs::symlink_metadata(self.store.join(leaf)) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -511,6 +560,16 @@ mod tests {
         drop(export);
         assert!(!private.exists());
         assert!(fixture.source.join("helper.sh").exists());
+    }
+
+    #[test]
+    fn acceptance_cannot_introduce_a_new_shallow_boundary() {
+        let fixture = Fixture::new();
+        let export = fixture.export().unwrap();
+        fs::write(export.store.join("shallow"), format!("{}\n", fixture.head)).unwrap();
+        assert!(export
+            .verify(&fixture.policy, &fixture.head, &fixture.head)
+            .is_err());
     }
 
     #[test]
