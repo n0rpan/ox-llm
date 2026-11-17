@@ -152,6 +152,10 @@ pub fn plan_task_for_actions(
     plan_task_mode(repo, task, policy, rerun, true)
 }
 
+fn completed_execution(step: Step) -> bool {
+    matches!(step, Step::Finished | Step::Publishing | Step::Reporting)
+}
+
 fn plan_task_mode(
     repo: &Path,
     task: Task,
@@ -173,8 +177,9 @@ fn plan_task_mode(
     if saved.task != task {
         return Err("task specification changed; use a new task id".into());
     }
-    if saved.record.step != Step::Finished
-        || (!rerun && (actions || matches!(saved.record.outcome, Outcome::Done | Outcome::NothingToDo)))
+    if !(rerun && completed_execution(saved.record.step))
+        && (saved.record.step != Step::Finished
+            || (!rerun && (actions || matches!(saved.record.outcome, Outcome::Done | Outcome::NothingToDo))))
     {
         let execution = saved.execution.ok_or("missing task execution checkpoint")?;
         if saved.record.base_sha.as_deref() != Some(&execution.base) {
@@ -645,7 +650,12 @@ pub fn run_task_with_notes(
             return Err("task specification changed; use a new task id".into());
         }
         writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
-        if old.record.step == Step::Finished {
+        // Action recovery cannot turn a changed HEAD into fresh acceptance.
+        // Only an explicit rerun starts a new execution for these checkpoints.
+        if !rerun && matches!(old.record.step, Step::Publishing | Step::Reporting) {
+            return Ok(old.record);
+        }
+        if completed_execution(old.record.step) {
             if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
                 return Ok(old.record);
             }
