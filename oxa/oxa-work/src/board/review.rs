@@ -5,7 +5,7 @@ use super::RequiredCi;
 use serde::{Deserialize, Serialize};
 
 mod git;
-pub use git::GitDiff;
+pub use git::{GitDiff, GitFileChange};
 mod receipts;
 pub use receipts::GitHubRequestReceipt;
 

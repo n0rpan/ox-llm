@@ -11,6 +11,15 @@ const MAX_MAIN_MERGES: usize = 16;
 pub struct GitDiff {
     pub patch_id: String,
     pub main_merge_predecessors: Vec<String>,
+    pub files: Vec<GitFileChange>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct GitFileChange {
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub deleted_file: bool,
+    pub deleted_lines: u64,
 }
 
 impl GitDiff {
@@ -18,9 +27,11 @@ impl GitDiff {
         if !object_id(base) || !object_id(head) {
             return Err("review evidence requires full Git object IDs".into());
         }
-        let Some(patch_id) = own_patch_id(policy, repo, base, head)? else {
+        let start = merge_base(policy, repo, base, head)?;
+        let Some(patch_id) = own_patch_id(policy, repo, &start, head)? else {
             return Ok(None);
         };
+        let files = own_file_changes(policy, repo, &start, head)?;
         let mut current = head.to_owned();
         let mut main_merge_predecessors = Vec::new();
         for _ in 0..MAX_MAIN_MERGES {
@@ -35,7 +46,8 @@ impl GitDiff {
             };
             if !is_ancestor(policy, repo, main, base)?
                 || is_ancestor(policy, repo, main, previous)?
-                || own_patch_id(policy, repo, base, previous)?.as_ref() != Some(&patch_id)
+                || own_patch_id(policy, repo, &merge_base(policy, repo, base, previous)?, previous)?.as_ref()
+                    != Some(&patch_id)
             {
                 break;
             }
@@ -45,6 +57,7 @@ impl GitDiff {
         Ok(Some(Self {
             patch_id,
             main_merge_predecessors,
+            files,
         }))
     }
 }
@@ -79,11 +92,15 @@ fn is_ancestor(policy: &RunPolicy, repo: &Path, ancestor: &str, descendant: &str
     }
 }
 
-fn own_patch_id(policy: &RunPolicy, repo: &Path, base: &str, head: &str) -> Result<Option<String>> {
+fn merge_base(policy: &RunPolicy, repo: &Path, base: &str, head: &str) -> Result<String> {
     let start = git_line(policy, repo, &["merge-base", "--all", base, head])?;
     if !object_id(&start) {
         return Err("review evidence requires one Git merge base".into());
     }
+    Ok(start)
+}
+
+fn own_patch_id(policy: &RunPolicy, repo: &Path, start: &str, head: &str) -> Result<Option<String>> {
     let diff = git(
         policy,
         repo,
@@ -102,7 +119,7 @@ fn own_patch_id(policy: &RunPolicy, repo: &Path, base: &str, head: &str) -> Resu
             "--dst-prefix=b/",
             "--ignore-submodules=none",
             "--submodule=short",
-            &start,
+            start,
             head,
             "--",
         ],
@@ -130,6 +147,83 @@ fn own_patch_id(policy: &RunPolicy, repo: &Path, base: &str, head: &str) -> Resu
         [patch_id, commit] if object_id(patch_id) && object_id(commit) => Ok(Some((*patch_id).to_owned())),
         _ => Err("invalid Git patch identity".into()),
     }
+}
+
+fn own_file_changes(policy: &RunPolicy, repo: &Path, start: &str, head: &str) -> Result<Vec<GitFileChange>> {
+    let raw = read_diff(git(
+        policy,
+        repo,
+        &[
+            "diff",
+            "--raw",
+            "--numstat",
+            "-z",
+            "--find-renames=50%",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--no-color",
+            "--ignore-submodules=none",
+            start,
+            head,
+            "--",
+        ],
+    ))?;
+    let invalid = "invalid Git review file inventory";
+    let raw = std::str::from_utf8(&raw).map_err(|_| invalid)?;
+    let mut records = raw.strip_suffix('\0').ok_or(invalid)?.split('\0').peekable();
+    let mut files = Vec::new();
+    while records.peek().is_some_and(|record| record.starts_with(':')) {
+        let status = records
+            .next()
+            .and_then(|header| header.split_ascii_whitespace().last())
+            .ok_or(invalid)?;
+        let first = records.next().filter(|path| !path.is_empty()).ok_or(invalid)?;
+        let (previous_path, path) = match status.as_bytes() {
+            [b'R' | b'C', similarity @ ..]
+                if !similarity.is_empty() && similarity.iter().all(u8::is_ascii_digit) =>
+            {
+                let path = records.next().filter(|path| !path.is_empty()).ok_or(invalid)?;
+                (Some(first.to_owned()), path)
+            }
+            [b'A' | b'D' | b'M' | b'T'] => (None, first),
+            _ => return Err(invalid.into()),
+        };
+        files.push(GitFileChange {
+            path: path.to_owned(),
+            previous_path,
+            deleted_file: status == "D",
+            deleted_lines: 0,
+        });
+    }
+    for file in &mut files {
+        let row = records.next().ok_or(invalid)?;
+        let mut columns = row.splitn(3, '\t');
+        let added = columns.next().ok_or(invalid)?;
+        let deleted = columns.next().ok_or(invalid)?;
+        let path = columns.next().ok_or(invalid)?;
+        if let Some(previous) = &file.previous_path {
+            if !path.is_empty()
+                || records.next() != Some(previous.as_str())
+                || records.next() != Some(file.path.as_str())
+            {
+                return Err(invalid.into());
+            }
+        } else if path != file.path {
+            return Err(invalid.into());
+        }
+        file.deleted_lines = match (added, deleted) {
+            ("-", "-") => 0,
+            (added, deleted) if added.parse::<u64>().is_ok() => {
+                deleted.parse::<u64>().map_err(|_| invalid)?
+            }
+            _ => return Err(invalid.into()),
+        };
+    }
+    if files.is_empty() || records.next().is_some() {
+        return Err(invalid.into());
+    }
+    Ok(files)
 }
 
 fn read_diff(mut command: Command) -> Result<Vec<u8>> {

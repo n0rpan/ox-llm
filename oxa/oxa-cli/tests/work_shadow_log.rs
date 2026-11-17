@@ -88,7 +88,13 @@ fn review_git_evidence_keeps_an_unchanged_main_merge_and_rejects_a_changed_patch
         String::from_utf8(out.stdout).unwrap().trim().to_owned()
     };
     git(&["init", "-b", "main"]);
-    git(&["commit", "--allow-empty", "-m", "initial"]);
+    env.write(
+        "work/obsolete.rs",
+        "const FIRST: u8 = 1;\nconst SECOND: u8 = 2;\n",
+    );
+    env.write("work/old_name.rs", "fn existing() {}\n");
+    git(&["add", "obsolete.rs", "old_name.rs"]);
+    git(&["commit", "-m", "initial"]);
     let old_main = git(&["rev-parse", "HEAD"]);
     git(&["switch", "-c", "review"]);
     env.write("work/protected.rs", "fn check() {}\n");
@@ -130,4 +136,23 @@ fn review_git_evidence_keeps_an_unchanged_main_merge_and_rejects_a_changed_patch
     assert_ne!(current.patch_id, carried.patch_id);
     assert!(current.main_merge_predecessors.is_empty());
     assert!(GitDiff::read(&policy, &repo, &main, "HEAD").is_err());
+
+    git(&["mv", "old_name.rs", "renamed.md"]);
+    git(&["rm", "obsolete.rs"]);
+    git(&["commit", "-m", "rename code and remove a file"]);
+    let changed = read(&main, &git(&["rev-parse", "HEAD"]));
+    let renamed = changed
+        .files
+        .iter()
+        .find(|file| file.path == "renamed.md")
+        .unwrap();
+    assert_eq!(renamed.previous_path.as_deref(), Some("old_name.rs"));
+    assert!(!renamed.deleted_file);
+    let removed = changed
+        .files
+        .iter()
+        .find(|file| file.path == "obsolete.rs")
+        .unwrap();
+    assert!(removed.deleted_file);
+    assert_eq!(removed.deleted_lines, 2);
 }
