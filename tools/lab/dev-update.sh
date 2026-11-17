@@ -13,7 +13,7 @@ mkdir -p "$prefix"
 test -O "$prefix"
 for state in .dev-channel .update.lock; do
   if test -e "$prefix/$state" || test -L "$prefix/$state"; then
-    test -f "$prefix/$state" && test ! -L "$prefix/$state" && test -O "$prefix/$state"
+    { test -f "$prefix/$state" && test ! -L "$prefix/$state" && test -O "$prefix/$state"; } || exit 1
     test "$(stat -c %h "$prefix/$state")" = 1
   fi
 done
@@ -66,7 +66,7 @@ tar -tzf "$work/$archive" > "$work/entries"
 ! grep -Ev '^usr(/|$)' "$work/entries"
 ! grep -E '(^|/)\.\.(/|$)' "$work/entries"
 tar -xzf "$work/$archive" -C "$work/payload" --no-same-owner --no-same-permissions
-test -x "$work/payload/usr/bin/oxa" && test ! -L "$work/payload/usr/bin/oxa"
+{ test -x "$work/payload/usr/bin/oxa" && test ! -L "$work/payload/usr/bin/oxa"; } || exit 1
 jq -n --arg sha "$sha" --arg version "$version" --arg digest "$digest" \
   --arg time "$(date -u +%FT%TZ)" --arg archive "$archive" \
   '{channel:"dev",source_sha:$sha,version:$version,archive:$archive,sha256:$digest,installed_at:$time}' \
@@ -80,7 +80,7 @@ fi
 old=$(readlink "$prefix/current" || true)
 test ! -e "$prefix/current" || test -L "$prefix/current"
 if test -e "$prefix/bin" || test -L "$prefix/bin"; then
-  test -L "$prefix/bin" && test "$(readlink "$prefix/bin")" = current/usr/bin
+  { test -L "$prefix/bin" && test "$(readlink "$prefix/bin")" = current/usr/bin; } || exit 1
 else
   ln -s current/usr/bin "$prefix/bin"
 fi
