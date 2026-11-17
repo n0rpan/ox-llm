@@ -90,12 +90,16 @@ fn headless_argument_error(argv: &[String], stdin_tty: bool, stdout_tty: bool) -
     }
     !stdin_tty
         || !stdout_tty
-        || flags
-            .iter()
-            .any(|arg| matches!(*arg, "-p" | "--print" | "--mode=rpc" | "--mode=json"))
+        || flags.iter().any(|arg| {
+            matches!(*arg, "-p" | "--print")
+                || ["--mode=", "--output-format="].iter().any(|prefix| {
+                    arg.strip_prefix(prefix)
+                        .is_some_and(|value| matches!(value, "rpc" | "json"))
+                })
+        })
         || flags
             .windows(2)
-            .any(|pair| pair[0] == "--mode" && matches!(pair[1], "rpc" | "json"))
+            .any(|pair| matches!(pair[0], "--mode" | "--output-format") && matches!(pair[1], "rpc" | "json"))
 }
 
 /// The whole program. Returns the exit code; never panics on user error.
