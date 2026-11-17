@@ -317,7 +317,17 @@ jobs:
           test "$(cat proof-harness/SOURCE-COMMIT)" = "$GITHUB_SHA"
           mkdir subject scope-receipts
           tar -xzf "artifacts/ox-llm-$VERSION-linux-x86_64.tar.gz" -C subject
-          chmod 755 proof-harness/no-python-proof
+          # Fixture users must not need traversal of the runner's private checkout.
+          inputs=$(mktemp -d /var/tmp/ox-release-proof.XXXXXX)
+          printf 'PROOF_INPUTS=%s\n' "$inputs" >> "$GITHUB_ENV"
+          cp "artifacts/ox-llm-$VERSION-linux-x86_64.tar.gz" "$inputs/"
+          cp proof-harness/no-python-proof subject/usr/bin/oxa subject/usr/bin/oxe-server "$inputs/"
+          cmp proof-harness/no-python-proof "$inputs/no-python-proof"
+          cmp subject/usr/bin/oxa "$inputs/oxa"
+          cmp subject/usr/bin/oxe-server "$inputs/oxe-server"
+          cmp "artifacts/ox-llm-$VERSION-linux-x86_64.tar.gz" "$inputs/ox-llm-$VERSION-linux-x86_64.tar.gz"
+          chmod 444 "$inputs/ox-llm-$VERSION-linux-x86_64.tar.gz"
+          chmod 555 "$inputs" "$inputs/no-python-proof" "$inputs/oxa" "$inputs/oxe-server"
       - name: Hosted scope observation tools
         run: |
           sudo apt-get update
@@ -378,9 +388,18 @@ jobs:
           predicate='negative fixture canonical user bus must be absent'
           require_setup sudo runuser -u ox-proof-nobus -- test ! -e "/run/user/$(id -u ox-proof-nobus)/bus"
           printf 'scope_setup=ready positive_bus=socket negative_bus=absent\n' | tee -a "$setup_receipt"
-          archive="$GITHUB_WORKSPACE/artifacts/ox-llm-$VERSION-linux-x86_64.tar.gz"
-          binary="$GITHUB_WORKSPACE/subject/usr/bin/oxa"
-          engine="$GITHUB_WORKSPACE/subject/usr/bin/oxe-server"
+          archive="$PROOF_INPUTS/ox-llm-$VERSION-linux-x86_64.tar.gz"
+          binary="$PROOF_INPUTS/oxa"
+          engine="$PROOF_INPUTS/oxe-server"
+          predicate='fixture user must read exact archive and execute immutable proof inputs'
+          for user in ox-proof-scope ox-proof-nobus; do
+            require_setup sudo runuser -u "$user" -- test -r "$archive"
+            for executable in "$binary" "$engine" "$PROOF_INPUTS/no-python-proof"; do
+              require_setup sudo runuser -u "$user" -- test -x "$executable"
+              require_setup sudo runuser -u "$user" -- test ! -w "$executable"
+            done
+          done
+          cd "$PROOF_INPUTS"
           archive_sha=$(sha256sum "$archive" | cut -d' ' -f1)
           oxa_sha=$(sha256sum "$binary" | cut -d' ' -f1)
           engine_sha=$(sha256sum "$engine" | cut -d' ' -f1)
@@ -395,9 +414,16 @@ jobs:
               OXA_TEST_RELEASE_ARCHIVE="$archive" OXA_TEST_RELEASE_ARCHIVE_SHA256="$archive_sha" \
               OXA_TEST_RELEASE_OXA="$binary" OXA_TEST_RELEASE_OXA_SHA256="$oxa_sha" \
               OXA_TEST_RELEASE_OXE_SERVER="$engine" OXA_TEST_RELEASE_OXE_SERVER_SHA256="$engine_sha" \
-              "$GITHUB_WORKSPACE/proof-harness/no-python-proof" --nocapture 2>&1 | tee -a "$receipt"
+              "$PROOF_INPUTS/no-python-proof" --nocapture 2>&1 | tee -a "$receipt"
           done
           (cd scope-receipts && sha256sum -- *.txt > SHA256SUMS)
+      - name: Remove only this job's copied proof inputs
+        if: always()
+        run: |
+          if [[ -n ${PROOF_INPUTS:-} && ${PROOF_INPUTS%/*} == /var/tmp && ${PROOF_INPUTS##*/} == ox-release-proof.* && ! -L $PROOF_INPUTS ]]; then
+            chmod u+w "$PROOF_INPUTS"
+            rm -rf -- "$PROOF_INPUTS"
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
