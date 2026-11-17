@@ -1141,6 +1141,9 @@ fn go_private_discovery_diagnostic_is_absent_for_rpc_and_supervised_children() {
 }
 
 fn check_private_stream_cause(cause: &str, reply: Reply) {
+    check_private_stream_details(cause, None, reply);
+}
+fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) {
     let env = go_diagnostic_env();
     let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base)), reply]);
     setup(&env, &format!("http://{}", mock.address()));
@@ -1156,7 +1159,10 @@ fn check_private_stream_cause(cause: &str, reply: Reply) {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains(&format!("cause={cause}\n")),
+        stderr.contains(&format!(
+            "cause={cause}{}\n",
+            check.map(|s| format!(" terminal_check={s}")).unwrap_or_default()
+        )),
         "missing finite cause {cause}"
     );
     assert!(stderr.contains("stage=chat_http status=200"));
@@ -1164,6 +1170,7 @@ fn check_private_stream_cause(cause: &str, reply: Reply) {
     assert!(!stderr.contains("synthetic-private-frame"));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(!stdout.contains("cause="));
+    assert!(!stdout.contains("terminal_check="));
     assert!(!stdout.contains(CREDENTIAL));
     let ledger = rows(&env);
     assert_eq!(ledger.len(), 1);
@@ -1174,6 +1181,7 @@ fn check_private_stream_cause(cause: &str, reply: Reply) {
     for path in session_files(&env.home().join(".oxa/agent/sessions")) {
         let history = fs::read_to_string(path).unwrap();
         assert!(!history.contains("cause="));
+        assert!(!history.contains("terminal_check="));
         assert!(!history.contains(CREDENTIAL));
     }
     assert_eq!(mock.requests().len(), 2);
@@ -1225,4 +1233,81 @@ fn go_private_stream_cause_tool_arguments() {
 #[test]
 fn go_private_stream_cause_terminal_usage() {
     check_private_stream_cause("terminal_usage",cause_reply(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
+}
+
+fn terminal_frames(frames: &[Value], done: bool) -> Reply {
+    let mut bytes = Vec::new();
+    for frame in frames {
+        bytes.extend_from_slice(format!("data: {frame}\n\n").as_bytes());
+    }
+    if done {
+        bytes.extend_from_slice(b"data: [DONE]\n\n");
+    }
+    cause_reply(&bytes)
+}
+fn terminal_finish() -> Value {
+    json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})
+}
+#[test]
+fn go_private_terminal_done_without_finish() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("done_without_finish"),
+        terminal_frames(&[], true),
+    );
+}
+#[test]
+fn go_private_terminal_done_without_usage() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("done_without_usage"),
+        terminal_frames(&[terminal_finish()], true),
+    );
+}
+#[test]
+fn go_private_terminal_frame_after_usage() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("frame_after_usage"),
+        terminal_frames(
+            &[
+                terminal_finish(),
+                json!({"choices":[],"usage":usage()}),
+                json!({"choices":[]}),
+            ],
+            true,
+        ),
+    );
+}
+#[test]
+fn go_private_terminal_choices_after_finish() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("choices_after_finish"),
+        terminal_frames(
+            &[
+                terminal_finish(),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":null}]}),
+            ],
+            true,
+        ),
+    );
+}
+#[test]
+fn go_private_terminal_usage_before_finish() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("usage_before_finish"),
+        terminal_frames(&[json!({"choices":[],"usage":usage()})], true),
+    );
+}
+#[test]
+fn go_private_terminal_usage_record_invalid() {
+    let mut invalid = usage();
+    invalid["opencode"]["billing_source"] = json!("synthetic-private-frame");
+    check_private_stream_details(
+        "terminal_usage",
+        Some("usage_record_invalid"),
+        terminal_frames(&[terminal_finish(), json!({"choices":[],"usage":invalid})], true),
+    );
 }
