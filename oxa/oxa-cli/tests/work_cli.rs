@@ -237,21 +237,41 @@ fn github_issue_input_uses_mock_gh() {
     let gh = env.write(
         "tmp/trusted-tools/gh",
         r##"#!/bin/sh
-[ "$*" = 'issue view 42 --json title,body' ] || exit 9
-printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
+[ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OPEN","comments":[{"author":{"login":"reviewer"},"body":"Synthetic follow-up finding"}]}'
 "##,
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
-    let record = run_args(
-        &env,
-        vec![ScriptTurn::text("done")],
-        &["work", "--issue", "42", "--model", "fake"],
-        Some(path),
-    );
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", &path)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let record: serde_json::Value = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .unwrap_or_else(|| panic!("no record: {}", String::from_utf8_lossy(&out.stderr)));
     assert_eq!(record["id"], "issue-42");
     assert_eq!(record["branch"], "agent/42-work");
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    // The packet the child receives is the one lookup: text, state and comments. A worker
+    // that cannot read the issue itself must not receive a title-shaped packet.
+    let request = server.requests().remove(0);
+    let user = request
+        .messages
+        .last()
+        .and_then(|m| m.content.as_deref())
+        .unwrap_or_default();
+    assert!(user.contains("Fix the test fixture"), "{user}");
+    assert!(user.contains("Runner-fetched issue state: OPEN."), "{user}");
+    assert!(user.contains("Synthetic follow-up finding"), "{user}");
 }
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {

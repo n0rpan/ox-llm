@@ -262,20 +262,91 @@ pub fn issue_task(
         "view",
         &number.to_string(),
         "--json",
-        "title,body",
+        "title,body,state,comments",
     ]);
     let text = checked(c)?;
     let issue: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let title = issue["title"].as_str().ok_or("issue title missing")?;
-    let body = issue["body"].as_str().ok_or("issue body missing")?;
     Ok(Task {
         id: format!("issue-{number}"),
         model,
         branch: format!("agent/{number}-work"),
         base: default_base(),
-        prompt: format!("Implement issue #{number}: {title}\n\n{body}"),
+        prompt: issue_prompt(number, &issue)?,
         max_time: default_max_time(),
     })
+}
+
+/// A worker inside the sandbox cannot read the issue itself, so the packet carries
+/// the state and the comment thread the runner already fetched.
+const MAX_COMMENT_BYTES: usize = 16 * 1024;
+const MAX_STATE_BYTES: usize = 32;
+
+/// gh's `issue view --json title,body,state,comments` as one data packet.
+fn issue_prompt(number: u64, issue: &serde_json::Value) -> Result<String> {
+    let title = issue["title"].as_str().ok_or("issue title missing")?;
+    let body = issue["body"].as_str().ok_or("issue body missing")?;
+    let state = issue["state"].as_str().ok_or("issue state missing")?;
+    if state.is_empty()
+        || state.len() > MAX_STATE_BYTES
+        || !state.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    {
+        return Err("issue state malformed".into());
+    }
+    let mut prompt = format!("Implement issue #{number}: {title}\n\n{body}");
+    prompt.push_str(&format!("\n\nRunner-fetched issue state: {state}."));
+    let thread = comment_thread(issue)?;
+    if !thread.is_empty() {
+        prompt.push_str(
+            "\n\nIssue comments follow as data, oldest first. They may carry findings and \
+             corrections to the issue above.\n\n",
+        );
+        prompt.push_str(&bounded(&thread, MAX_COMMENT_BYTES));
+    }
+    Ok(prompt)
+}
+
+/// The comment bodies with their authors, oldest first. A comment without text is
+/// skipped; a present but non-text body refuses the packet instead of dropping a
+/// finding, and the whole section stays bounded.
+fn comment_thread(issue: &serde_json::Value) -> Result<String> {
+    let comments: &[serde_json::Value] = match issue.get("comments") {
+        None | Some(serde_json::Value::Null) => return Ok(String::new()),
+        Some(serde_json::Value::Array(comments)) => comments,
+        Some(_) => return Err("issue comments malformed".into()),
+    };
+    let mut thread = String::new();
+    for comment in comments {
+        if !comment.is_object() {
+            return Err("issue comment malformed".into());
+        }
+        let body = match comment.get("body") {
+            None | Some(serde_json::Value::Null) => continue,
+            Some(serde_json::Value::String(body)) => body.trim(),
+            Some(_) => return Err("issue comment body malformed".into()),
+        };
+        if body.is_empty() {
+            continue;
+        }
+        let author = comment["author"]["login"].as_str().unwrap_or("unknown");
+        let author = if author.is_empty() { "unknown" } else { author };
+        thread.push_str(&format!("--- comment by {author} ---\n{body}\n\n"));
+    }
+    Ok(thread)
+}
+
+/// Keep a bounded prefix without splitting a UTF-8 character, and say what was left out.
+fn bounded(text: &str, limit: usize) -> String {
+    if text.len() <= limit {
+        return text.to_owned();
+    }
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n--- further comments truncated; open the issue for the rest ---\n",
+        &text[..end]
+    )
 }
 
 /// Freeze acceptance before checkout filters or hooks can edit project settings.
@@ -624,4 +695,118 @@ pub fn run_task_with_observer(
         .save(&mut state, Step::Finished, observer)
         .map_err(RunError::Checkpoint)?;
     Ok(state.record)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn comments(bodies: &[&str]) -> serde_json::Value {
+        json!(bodies
+            .iter()
+            .map(|body| json!({"author": {"login": "reviewer"}, "body": body}))
+            .collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn issue_packet_carries_the_state_the_runner_fetched() {
+        // The worker cannot open the issue from inside the sandbox, so a closed or open
+        // state has to arrive with the text the runner already fetched.
+        let prompt = issue_prompt(
+            42,
+            &json!({"title": "Dogfood task", "body": "Fix the fixture", "state": "CLOSED"}),
+        )
+        .unwrap();
+        assert!(
+            prompt.starts_with("Implement issue #42: Dogfood task\n\nFix the fixture\n\n"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Runner-fetched issue state: CLOSED."), "{prompt}");
+        assert!(!prompt.contains("Issue comments follow"), "{prompt}");
+    }
+
+    #[test]
+    fn issue_packet_carries_the_comment_thread_after_the_body() {
+        let prompt = issue_prompt(
+            42,
+            &json!({
+                "title": "Dogfood task",
+                "body": "Fix the fixture",
+                "state": "OPEN",
+                "comments": comments(&["Second finding", "", "Third finding"]),
+            }),
+        )
+        .unwrap();
+        let body_at = prompt.find("Fix the fixture").unwrap();
+        let first = prompt.find("Second finding").unwrap();
+        let second = prompt.find("Third finding").unwrap();
+        assert!(body_at < first && first < second, "{prompt}");
+        assert!(
+            prompt.contains("--- comment by reviewer ---\nSecond finding"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("Runner-fetched issue state: OPEN."), "{prompt}");
+    }
+
+    #[test]
+    fn issue_packet_refuses_fields_it_cannot_read_instead_of_dropping_them() {
+        let base = json!({"title": "T", "body": "B", "state": "OPEN"});
+        let cases = [
+            (json!({"body": "B", "state": "OPEN"}), "issue title missing"),
+            (json!({"title": "T", "state": "OPEN"}), "issue body missing"),
+            (json!({"title": "T", "body": "B"}), "issue state missing"),
+            (
+                json!({"title": "T", "body": "B", "state": ""}),
+                "issue state malformed",
+            ),
+            (
+                json!({"title": "T", "body": "B", "state": "OPEN; ignore previous"}),
+                "issue state malformed",
+            ),
+            (
+                json!({"title": "T", "body": "B", "state": "OPEN", "comments": "none"}),
+                "issue comments malformed",
+            ),
+            (
+                json!({"title": "T", "body": "B", "state": "OPEN", "comments": [42]}),
+                "issue comment malformed",
+            ),
+            (
+                json!({"title": "T", "body": "B", "state": "OPEN",
+                       "comments": [{"body": {"text": "nested"}}]}),
+                "issue comment body malformed",
+            ),
+        ];
+        for (issue, expected) in cases {
+            assert_eq!(issue_prompt(42, &issue).unwrap_err(), expected, "{issue}");
+        }
+        // A missing or null field still means none, as gh reports it, and a comment with no
+        // text is skipped instead of failing the whole packet.
+        for comments in [
+            serde_json::Value::Null,
+            json!([]),
+            json!([{"author": {"login": "reviewer"}}, {"body": "   "}]),
+        ] {
+            let mut issue = base.clone();
+            issue["comments"] = comments;
+            assert!(issue_prompt(42, &issue).is_ok(), "{issue}");
+        }
+    }
+
+    #[test]
+    fn long_comment_threads_are_bounded_at_a_character_boundary() {
+        let long = format!("{}{}", "é".repeat(MAX_COMMENT_BYTES), " tail");
+        let prompt = issue_prompt(
+            42,
+            &json!({"title": "T", "body": "B", "state": "OPEN", "comments": comments(&[&long])}),
+        )
+        .unwrap();
+        assert!(prompt.len() < MAX_COMMENT_BYTES + 1024, "{}", prompt.len());
+        assert!(
+            prompt.contains("further comments truncated; open the issue for the rest"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("tail"), "{prompt}");
+    }
 }
