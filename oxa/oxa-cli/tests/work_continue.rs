@@ -263,13 +263,23 @@ fn fresh_worktree_fast_forwards_a_local_base_branch_that_lags_it() {
     commit_file(&env, "fetched.txt", "fetched base\n");
     git(&env, &project(&env), &["push", "origin", "main"]);
     git(&env, &project(&env), &["reset", "--hard", "HEAD~1"]);
+    // The source checkout works on its own branch, so `main` is not checked out.
+    git(&env, &project(&env), &["checkout", "-b", "source"]);
     git(&env, &project(&env), &["fetch", "origin"]);
+    let fetched = git(&env, &project(&env), &["rev-parse", "origin/main"]);
+    assert_ne!(fetched, stale);
+    // A base named after the fetched ref names a commit, not the stale branch.
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"fake","base":"origin/main","prompt":"Finish task"}]"#,
+    );
     let record = run(&env, vec![ScriptTurn::text("nothing")]);
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(record["base_sha"], fetched, "{record}");
     assert_ne!(record["base_sha"], stale, "{record}");
     assert_eq!(
         git(&env, &project(&env), &["rev-parse", "main"]),
-        git(&env, &project(&env), &["rev-parse", "origin/main"]),
+        fetched,
         "the local base branch still lags the fetched base"
     );
     assert_eq!(
@@ -283,6 +293,8 @@ fn fresh_worktree_fast_forwards_a_local_base_branch_that_lags_it() {
 fn local_base_branch_checked_out_elsewhere_is_never_moved() {
     let env = TestEnv::new();
     setup(&env, "[]");
+    // `main` lives in the review worktree; the source checkout is off it.
+    git(&env, &project(&env), &["checkout", "-b", "source"]);
     let other = env.work().join("review");
     git(
         &env,
@@ -291,21 +303,19 @@ fn local_base_branch_checked_out_elsewhere_is_never_moved() {
     );
     let checked_out = git(&env, &project(&env), &["rev-parse", "main"]);
     commit_file(&env, "fetched.txt", "fetched base\n");
-    git(
-        &env,
-        &project(&env),
-        &["fetch", "origin", "main:refs/heads/fetched"],
-    );
-    git(&env, &project(&env), &["reset", "--hard", "HEAD~1"]);
+    git(&env, &project(&env), &["push", "origin", "source:main"]);
+    git(&env, &project(&env), &["fetch", "origin"]);
+    let fetched = git(&env, &project(&env), &["rev-parse", "origin/main"]);
     env.write(
         "work/tasks.json",
-        r#"[{"id":"test","branch":"agent/test","model":"fake","base":"fetched","prompt":"Finish task"}]"#,
+        r#"[{"id":"test","branch":"agent/test","model":"fake","base":"origin/main","prompt":"Finish task"}]"#,
     );
     let record = run(&env, vec![ScriptTurn::text("nothing")]);
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(record["base_sha"], fetched, "{record}");
     assert_eq!(
         git(&env, tree(&record), &["rev-parse", "HEAD"]),
-        git(&env, &project(&env), &["rev-parse", "fetched"]),
+        fetched,
         "{record}"
     );
     assert_eq!(
