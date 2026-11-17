@@ -149,7 +149,7 @@ pub fn content(view: &View<'_>, now: u64) -> String {
     } else {
         html.push_str("<p>Board unavailable.</p>");
     }
-    html.push_str("</section><section id=lanes><h2>Lanes</h2>");
+    html.push_str("</section><section id=lanes><h2>Workers</h2>");
     if let Some(s) = view.situation {
         let _ = write!(
             html,
