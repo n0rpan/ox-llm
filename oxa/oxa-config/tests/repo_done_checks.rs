@@ -11,7 +11,7 @@ fn repo_done_list_runs_the_documented_checks() {
     let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
     let done = Settings::from_values(value, json!({})).done_commands();
     assert!(
-        done.iter().any(|c| c == "in oxa: cargo fmt --check"),
+        done.iter().any(|c| c == "in oxa: ../tools/ci/fmt_check.sh"),
         "rustfmt check missing: {done:?}"
     );
     assert!(

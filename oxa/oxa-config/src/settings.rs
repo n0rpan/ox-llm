@@ -346,7 +346,8 @@ impl Settings {
         let mut text = serde_json::to_string_pretty(&Value::Object(root.clone()))
             .map_err(|e| OxaError::new(codes::INVALID, format!("cannot serialise settings: {e}")))?;
         text.push('\n');
-        write_atomic(&path, &text)?;
+        // The user file is private to the user; a project file keeps the umask default.
+        write_atomic(&path, &text, if project { 0o666 } else { 0o600 })?;
 
         let source = path.display().to_string();
         let (checked, _) = check_root(&Value::Object(root), &source);
@@ -452,15 +453,45 @@ fn read_object_for_write(path: &Path) -> Result<Map<String, Value>, OxaError> {
     }
 }
 
-/// Write `text` through a temporary sibling file, so a crash never leaves a half-written file.
-fn write_atomic(path: &Path, text: &str) -> Result<(), OxaError> {
+/// Write `text` through a fresh, uniquely named sibling file (created exclusively with `mode`,
+/// synced, then renamed over `path`), so a crash never leaves a half-written file and the write
+/// never goes through a file that was already there.
+fn write_atomic(path: &Path, text: &str, mode: u32) -> Result<(), OxaError> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| OxaError::io(&format!("create {}", parent.display()), &e))?;
     }
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, text).map_err(|e| OxaError::io(&format!("write {}", tmp.display()), &e))?;
-    std::fs::rename(&tmp, path).map_err(|e| OxaError::io(&format!("replace {}", path.display()), &e))
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("json.tmp-{}-{nonce}-{count}", std::process::id()));
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&tmp)
+            .map_err(|e| OxaError::io(&format!("create {}", tmp.display()), &e))?;
+        file.write_all(text.as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|e| OxaError::io(&format!("write {}", tmp.display()), &e))?;
+        drop(file);
+        std::fs::rename(&tmp, path).map_err(|e| OxaError::io(&format!("replace {}", path.display()), &e))
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    } else if let Some(parent) = path.parent() {
+        // Best effort: make the rename itself durable.
+        let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+    }
+    result
 }
 
 /// `~` and `~/rest` expand to `home`; a relative path resolves from `base`.

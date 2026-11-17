@@ -41,6 +41,10 @@ fn fixture() -> (TestEnv, serde_json::Value) {
     let gh = env.write("tmp/gh", r#"#!/bin/sh
 printf 'read\n' >> gh-calls
 if [ -e expect-input ]; then IFS= read -r expected < expect-input; [ "$GH_TOKEN" = "$expected" ] || exit 93; fi
+if [ -e held-pipe ]; then
+  (n=0; while [ ! -e release-pipe ] && [ "$n" -lt 450 ]; do sleep 0.1; n=$((n+1)); done) &
+fi
+case " $* " in *' --include '*) printf 'HTTP/2.0 200 OK\r\n\r\n' ;; esac
 if [ -e oversized ]; then
   printf '{"data":{"repository":{"pullRequests":{"totalCount":0,"nodes":[]},"padding":"'
   head -c 4194305 /dev/zero | tr '\000' 'a'
@@ -56,6 +60,9 @@ esac
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
     let detail: serde_json::Value = serde_json::from_str(r#"{"data":{"repository":{"pullRequests":{"totalCount":1,"nodes":[{"number":42}]},"mergeQueue":null,"p42":{"number":42,"headRefOid":"synthetic-head","baseRefName":"main","state":"OPEN","body":"","isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"CLEAN","labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}}}}"#).unwrap();
     let mut detail = detail;
+    detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = "synthetic-head".into();
+    detail["data"]["repository"]["pullRequests"]["pageInfo"] =
+        serde_json::json!({"hasNextPage":false,"endCursor":"synthetic-end"});
     detail["data"]["repository"]["p42"]["baseRef"] = serde_json::json!({
         "refUpdateRule":{"requiredStatusCheckContexts":["ci"]},
         "rules":{"totalCount":0,"nodes":[]}
@@ -119,6 +126,7 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
         ("SUCCESS", "synthetic-head", "engine.c"),
         ("SUCCESS", "synthetic-head", "view.qml"),
         ("SUCCESS", "synthetic-head", "header.hpp"),
+        ("SUCCESS", "synthetic-head", "kernel.inc"),
     ] {
         let row = &mut detail["data"]["repository"]["p42"];
         row["mergeable"] = "MERGEABLE".into();
@@ -154,6 +162,7 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
             "fix_required_ci",
             "wait_review",
             "ready",
+            "add_removes",
             "add_removes",
             "add_removes",
             "add_removes"
@@ -297,4 +306,220 @@ fn unreported_classic_and_ruleset_requirements_are_pending() {
             "wait_required_ci"
         );
     }
+}
+
+fn batched_fixture(count: u64, limit: usize, failure: u16) -> TestEnv {
+    let (env, detail) = fixture();
+    fs::create_dir(env.work().join("pages")).unwrap();
+    for start in (0..count.max(1)).step_by(100) {
+        let end = count.min(start + 100);
+        let connection = serde_json::json!({"totalCount":count,"nodes":(start+1..=end)
+            .map(|number| serde_json::json!({"number":number,"headRefOid":"synthetic-head"})).collect::<Vec<_>>(),
+            "pageInfo":{"hasNextPage":end<count,"endCursor":format!("c{end}")}});
+        let cursor = if start == 0 {
+            "first".into()
+        } else {
+            format!("c{start}")
+        };
+        fs::write(
+            env.work().join(format!("pages/{cursor}.json")),
+            connection.to_string(),
+        )
+        .unwrap();
+    }
+    fs::create_dir(env.work().join("rows")).unwrap();
+    for number in 1..=count {
+        let mut row = detail["data"]["repository"]["p42"].clone();
+        row["number"] = number.into();
+        fs::write(env.work().join(format!("rows/{number}.json")), row.to_string()).unwrap();
+    }
+    fs::write(env.work().join("limit"), limit.to_string()).unwrap();
+    fs::write(env.work().join("failure"), failure.to_string()).unwrap();
+    let gh = env.write("tmp/gh", r#"#!/bin/sh
+include=false
+case " $* " in *' --include '*) include=true ;; esac
+cursor=$(printf '%s\n' "$*" | sed -n 's/.*after:"\([^"]*\)".*/\1/p')
+numbers=$(printf '%s\n' "$*" | grep -oE 'p[0-9]+:pullRequest\(number:[0-9]+\)' | sed -E 's/.*number:([0-9]+)\)/\1/')
+set -- $numbers
+printf '%s\n' "$#" >> batch-sizes
+status=200
+if [ "$#" -gt "$(cat limit)" ]; then status=$(cat failure); fi
+if [ -e fail-after ] && [ "$(wc -l < batch-sizes)" -gt "$(cat fail-after)" ]; then status=403; fi
+if [ -e fail-page ] && [ "$cursor" = "$(cat fail-page)" ]; then status=403; fi
+if "$include"; then printf 'HTTP/2.0 %s Synthetic\r\n\r\n' "$status"; fi
+if [ "$status" != 200 ]; then
+  printf '{"message":"synthetic-private-response-marker"}'
+  exit 1
+fi
+printf '{"data":{"repository":{"pullRequests":'
+cat "pages/${cursor:-first}.json"
+printf ',"mergeQueue":null'
+for number in "$@"; do
+  printf ',"p%s":' "$number"
+  cat "rows/$number.json"
+done
+printf '}}}'
+"#);
+    fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
+    env
+}
+
+fn batch_sizes(env: &TestEnv) -> Vec<usize> {
+    fs::read_to_string(env.work().join("batch-sizes"))
+        .unwrap()
+        .lines()
+        .map(|line| line.parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn ninety_pr_details_are_read_in_small_batches_without_losing_rows() {
+    let env = batched_fixture(90, 15, 504);
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let sizes = batch_sizes(&env);
+    assert_eq!(sizes[0], 0);
+    assert_eq!(sizes.last(), Some(&0));
+    assert!(sizes[1..sizes.len() - 1]
+        .iter()
+        .all(|size| *size > 0 && *size <= 15));
+    assert_eq!(sizes.iter().sum::<usize>(), 90);
+    let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    let sample: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    let numbers: Vec<_> = sample["board"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, (1..=90).collect::<Vec<_>>());
+}
+
+#[test]
+fn repeated_gateway_failures_retry_then_reduce_the_detail_batch() {
+    for status in [502, 503, 504] {
+        let env = batched_fixture(31, 7, status);
+        let out = invoke(&env, "work board --shadow --repo example/repo --once");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let sizes = batch_sizes(&env);
+        assert_eq!(&sizes[..5], &[0, 15, 15, 15, 7]);
+        assert_eq!(sizes.last(), Some(&0));
+        assert!(sizes[4..sizes.len() - 1]
+            .iter()
+            .all(|size| *size > 0 && *size <= 7));
+    }
+}
+
+#[test]
+fn terminal_http_failures_are_bounded_named_and_do_not_publish_a_partial_board() {
+    for (status, attempts) in [(401, 1), (403, 1), (429, 1), (504, 3)] {
+        let env = batched_fixture(1, 0, status);
+        let out = invoke(&env, "work board --shadow --repo example/repo --once");
+        assert!(!out.status.success());
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(error.contains(&format!("HTTP {status}")), "{error}");
+        assert!(!error.contains("synthetic"));
+        assert_eq!(batch_sizes(&env), [vec![0], vec![1; attempts]].concat());
+        assert!(fs::read_to_string(log_for(&env, "example/repo"))
+            .unwrap()
+            .is_empty());
+    }
+    let env = batched_fixture(31, 15, 504);
+    fs::write(env.work().join("fail-after"), "2").unwrap();
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("HTTP 403"));
+    assert_eq!(batch_sizes(&env), [0, 15, 15]);
+    assert!(fs::read_to_string(log_for(&env, "example/repo"))
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn complete_paginated_boards_include_every_pr_up_to_the_limit() {
+    for count in [101, 1000] {
+        let env = batched_fixture(count, 15, 504);
+        let out = invoke(&env, "work board --shadow --repo example/repo --once");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+        let sample: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+        let numbers: Vec<_> = sample["board"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["number"].as_u64().unwrap())
+            .collect();
+        assert_eq!(numbers, (1..=count).collect::<Vec<_>>());
+        assert_eq!(batch_sizes(&env).iter().sum::<usize>(), count as usize);
+    }
+}
+
+#[test]
+fn later_page_failures_and_changed_heads_never_publish_partial_boards() {
+    for fault in ["http", "late-http", "duplicate", "head", "cursor", "identity"] {
+        let env = batched_fixture(101, 15, 504);
+        if fault == "http" {
+            fs::write(env.work().join("fail-page"), "c100").unwrap();
+        } else if fault == "late-http" {
+            fs::write(env.work().join("fail-after"), "10").unwrap();
+        } else if matches!(fault, "duplicate" | "cursor" | "identity") {
+            let path = env.work().join("pages/c100.json");
+            let mut page: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            match fault {
+                "duplicate" => page["nodes"][0]["number"] = 1.into(),
+                "cursor" => page["pageInfo"]["hasNextPage"] = true.into(),
+                _ => page["nodes"][0]["headRefOid"] = serde_json::Value::Null,
+            }
+            fs::write(path, page.to_string()).unwrap();
+        } else {
+            let path = env.work().join("rows/101.json");
+            let mut row: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            row["headRefOid"] = "changed-head".into();
+            fs::write(path, row.to_string()).unwrap();
+        }
+        let out = invoke(&env, "work board --shadow --repo example/repo --once");
+        assert!(!out.status.success(), "{fault}");
+        if fault == "late-http" {
+            assert!(String::from_utf8_lossy(&out.stderr).contains("HTTP 403"));
+            assert_eq!(batch_sizes(&env).iter().sum::<usize>(), 101);
+        }
+        assert!(fs::read_to_string(log_for(&env, "example/repo"))
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn exited_github_child_cannot_escape_the_whole_read_deadline() {
+    use std::time::{Duration, Instant};
+    let (env, _) = fixture();
+    fs::write(env.work().join("held-pipe"), "synthetic").unwrap();
+    let mut child = command(&env, "work board --shadow --repo example/repo --once")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let ended = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if start.elapsed() >= Duration::from_secs(35) {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // Release the finite peer before assertions, including the before-fix failure.
+    fs::write(env.work().join("release-pipe"), "release").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        ended,
+        "a descendant-held pipe bypassed the 30-second read deadline"
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(env.work().join("gh-calls")).unwrap(), "read\n");
+    assert!(
+        !log_for(&env, "example/repo").exists()
+            || fs::metadata(log_for(&env, "example/repo")).unwrap().len() == 0
+    );
 }
