@@ -51,23 +51,10 @@ pub fn diff_argv(selection: &Selection) -> Result<Vec<String>, OxaError> {
         Selection::Base(reference) => vec!["diff".to_string(), checked("base", reference)?],
         Selection::Commit(commit) => {
             let commit = checked("commit", commit)?;
-            if commit.starts_with('^')
-                || commit.contains("..")
-                || commit.contains("^@")
-                || commit.contains("^!")
-                || commit.contains("^-")
-                || commit.contains(':')
-                || commit.chars().any(char::is_whitespace)
-            {
-                return Err(refused(
-                    "commit",
-                    &commit,
-                    "name one commit, not a revision set or path",
-                ));
-            }
             vec![
                 "show".to_string(),
                 "--format=".to_string(),
+                "--no-show-signature".to_string(),
                 "--root".to_string(),
                 "--diff-merges=first-parent".to_string(),
                 format!("{commit}^{{commit}}"),
@@ -77,6 +64,7 @@ pub fn diff_argv(selection: &Selection) -> Result<Vec<String>, OxaError> {
     argv.push("--no-ext-diff".to_string());
     argv.push("--no-textconv".to_string());
     argv.push("--no-color".to_string());
+    argv.push("--no-relative".to_string());
     argv.push("--ignore-submodules=none".to_string());
     argv.push("--".to_string());
     Ok(argv)
@@ -92,6 +80,20 @@ fn checked(what: &str, revision: &str) -> Result<String, OxaError> {
     }
     if revision.chars().any(char::is_control) {
         return Err(refused(what, revision, "it contains a control character"));
+    }
+    if revision.starts_with('^')
+        || revision.contains("..")
+        || revision.contains("^@")
+        || revision.contains("^!")
+        || revision.contains("^-")
+        || revision.contains(':')
+        || revision.chars().any(char::is_whitespace)
+    {
+        return Err(refused(
+            what,
+            revision,
+            "name one revision, not a revision set or path",
+        ));
     }
     Ok(revision.to_string())
 }
@@ -156,26 +158,27 @@ fn cut_diff(diff: &str, limit: usize) -> String {
 /// unnamed first section, which is a piece of a file's diff rather than one of the files after
 /// the cut and so never counts as a file left out.
 fn sections(diff: &str) -> Vec<(String, &str)> {
-    const HEAD: &str = "diff --git ";
     let mut starts = Vec::new();
-    if diff.starts_with(HEAD) {
-        starts.push(0);
-    }
-    for (at, _) in diff.match_indices("\ndiff --git ") {
-        starts.push(at + 1);
+    let mut at = 0;
+    for line in diff.split_inclusive('\n') {
+        if let Some(title) = ["diff --git ", "diff --cc ", "diff --combined "]
+            .iter()
+            .find_map(|prefix| line.strip_prefix(prefix))
+        {
+            starts.push((at, title.trim_end_matches('\n')));
+        }
+        at += line.len();
     }
     if starts.is_empty() {
         return vec![(String::new(), diff)];
     }
     let mut out = Vec::new();
-    if starts[0] > 0 {
-        out.push((String::new(), &diff[..starts[0]]));
+    if starts[0].0 > 0 {
+        out.push((String::new(), &diff[..starts[0].0]));
     }
-    for (n, &start) in starts.iter().enumerate() {
-        let end = starts.get(n + 1).copied().unwrap_or(diff.len());
-        let head_end = diff[start..end].find('\n').map_or(end, |i| start + i);
-        let title = diff[start + HEAD.len()..head_end].to_string();
-        out.push((title, &diff[start..end]));
+    for (n, &(start, title)) in starts.iter().enumerate() {
+        let end = starts.get(n + 1).map_or(diff.len(), |next| next.0);
+        out.push((title.to_string(), &diff[start..end]));
     }
     out
 }
@@ -412,6 +415,7 @@ mod tests {
                 "--no-ext-diff",
                 "--no-textconv",
                 "--no-color",
+                "--no-relative",
                 "--ignore-submodules=none",
                 "--"
             ]
@@ -438,6 +442,7 @@ mod tests {
                 "--no-ext-diff",
                 "--no-textconv",
                 "--no-color",
+                "--no-relative",
                 "--ignore-submodules=none",
                 "--"
             ]
@@ -451,12 +456,14 @@ mod tests {
             [
                 "show",
                 "--format=",
+                "--no-show-signature",
                 "--root",
                 "--diff-merges=first-parent",
                 "3eb8ad14^{commit}",
                 "--no-ext-diff",
                 "--no-textconv",
                 "--no-color",
+                "--no-relative",
                 "--ignore-submodules=none",
                 "--"
             ]
