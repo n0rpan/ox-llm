@@ -168,7 +168,10 @@ fn generation_pty_ctrl_c_cancels_and_keeps_prompt_usable() {
     let mut p = Process::start(&env, &server, "tui");
     p.wait_text("READY");
     p.send(b"synthetic cancellation check\r");
-    p.wait_for(|| !server.requests().is_empty());
+    // O-152: the boot preload (H6, `max_tokens: 0`) is on the wire before the first prompt, so
+    // wait for the foreground turn itself: the Ctrl+C must land on the run, not on the
+    // background prefill (which is not the activity the interrupt cancels).
+    p.wait_for(|| server.requests().iter().any(|r| r.max_tokens > 0));
     p.send(b"\x03");
     p.wait_text("partial reply dropped; your prompt stays");
     // A fresh prompt proves the first Ctrl+C did not arm exit or poison the next turn.
