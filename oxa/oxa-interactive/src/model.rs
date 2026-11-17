@@ -267,7 +267,15 @@ pub fn retry_reason(message: &str) -> &'static str {
         "timeout"
     } else if m.contains("credential") {
         "credentials"
-    } else if m.contains("stream") || m.contains("connection") || m.contains("reset") || m.contains("reach") {
+    } else if m.contains("connection")
+        || m.contains("reset")
+        || m.contains("reach")
+        || m.contains("refused")
+        || m.contains("closed the stream")
+        || m.contains("mid-stream")
+        || m.contains("stream_broken")
+        || m.contains("malformed chunked body")
+    {
         "connection lost"
     } else {
         "transient error"

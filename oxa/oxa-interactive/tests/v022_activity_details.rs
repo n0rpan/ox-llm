@@ -185,6 +185,19 @@ fn the_retry_reason_reads_the_real_engine_messages() {
         "engine error"
     );
     assert_eq!(retry_reason("HTTP 429: rate limited"), "rate limited");
+    assert_eq!(
+        retry_reason("the engine closed the stream before [DONE]"),
+        "connection lost"
+    );
+    assert_eq!(
+        retry_reason("the engine reported an error mid-stream: overloaded"),
+        "connection lost"
+    );
+    // `upstream` is not a broken stream: a provider's own wording must not pick a label.
+    assert_eq!(
+        retry_reason("api_key sk-live-abc123 rejected by upstream https://example.invalid"),
+        "transient error"
+    );
     assert_eq!(retry_reason("something else entirely"), "transient error");
 }
 
