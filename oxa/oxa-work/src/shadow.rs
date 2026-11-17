@@ -1,5 +1,5 @@
 //! Read-only sampling: this runner has no executor or GitHub mutation interface.
-use crate::board::{queue::RejectionEvidence, review, Board, Entry};
+use crate::board::{landing::Next, queue::RejectionEvidence, review, Board, Entry};
 use crate::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -22,6 +22,10 @@ struct Sample<'a> {
     reviews: &'a BTreeMap<u64, review::Plan>,
     #[serde(skip_serializing_if = "<[RejectionEvidence]>::is_empty")]
     queue_rejections: &'a [RejectionEvidence],
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    landing: &'a BTreeMap<u64, LandingDecision>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    landing_main: Option<&'a str>,
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -175,12 +179,16 @@ pub fn run_with_reviews(
     mut snapshot: impl FnMut() -> Result<(Board, BTreeMap<u64, review::Plan>)>,
     wait: impl FnMut(Duration),
 ) -> Result<()> {
-    run_with_evidence(
+    run_with_landing(
         log,
         once,
         || {
             let (board, reviews) = snapshot()?;
-            Ok((board, reviews, Vec::new()))
+            Ok(LandingSample {
+                board,
+                reviews,
+                ..LandingSample::default()
+            })
         },
         wait,
     )
@@ -194,28 +202,62 @@ pub fn run_with_queue_evidence(
     mut snapshot: impl FnMut() -> Result<(Board, Vec<RejectionEvidence>)>,
     wait: impl FnMut(Duration),
 ) -> Result<()> {
-    run_with_evidence(
+    run_with_landing(
         log,
         once,
         || {
-            let (board, queue) = snapshot()?;
-            Ok((board, BTreeMap::new(), queue))
+            let (board, queue_rejections) = snapshot()?;
+            Ok(LandingSample {
+                board,
+                queue_rejections,
+                ..LandingSample::default()
+            })
         },
         wait,
     )
 }
 
-type EvidenceSample = (Board, BTreeMap<u64, review::Plan>, Vec<RejectionEvidence>);
+#[derive(Serialize)]
+pub struct LandingDecision {
+    pub next: Next,
+    pub queue_alarm: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue: Option<QueueObservation>,
+}
 
-fn run_with_evidence(
+#[derive(Serialize)]
+pub struct QueueObservation {
+    pub enqueued_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_head: Option<String>,
+}
+
+#[derive(Default)]
+pub struct LandingSample {
+    pub board: Board,
+    pub reviews: BTreeMap<u64, review::Plan>,
+    pub queue_rejections: Vec<RejectionEvidence>,
+    pub landing: BTreeMap<u64, LandingDecision>,
+    /// Main can advance independently of the queue or its merge-group commits.
+    pub landing_main: Option<String>,
+}
+
+/// Persist the board and its projections in one owner-only sample.
+pub fn run_with_landing(
     log: &mut File,
     once: bool,
-    mut snapshot: impl FnMut() -> Result<EvidenceSample>,
+    mut snapshot: impl FnMut() -> Result<LandingSample>,
     mut wait: impl FnMut(Duration),
 ) -> Result<()> {
     loop {
         let started = Instant::now();
-        let (board, reviews, queue_rejections) = snapshot()?;
+        let LandingSample {
+            board,
+            reviews,
+            queue_rejections,
+            landing,
+            landing_main,
+        } = snapshot()?;
         let sample = Sample {
             schema_version: 1,
             observed_at: board.observed_at,
@@ -223,6 +265,8 @@ fn run_with_evidence(
             board: &board,
             reviews: &reviews,
             queue_rejections: &queue_rejections,
+            landing: &landing,
+            landing_main: landing_main.as_deref(),
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         line.push(b'\n');

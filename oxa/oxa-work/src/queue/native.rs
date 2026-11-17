@@ -214,6 +214,7 @@ mod tests {
             host_path: "/usr/bin".into(),
             terminate_binary: None,
             offline: true,
+            runner_owns_github: false,
             storage: directory.path().join("runner"),
         };
         (directory, claims, binding, prepared, policy)
