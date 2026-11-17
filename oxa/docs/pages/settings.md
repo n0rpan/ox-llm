@@ -27,7 +27,7 @@ Settings that older files may contain but oxa does not implement are not listed 
 
 Where the user file alone counts, the table says so:
 
-- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
+- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
 - project settings are trust-gated. In an untrusted project they are not read. Project files that run or load code (`hooks`, `shellPath`, `shellCommandPrefix`, `packages`, `extensions`, `skills`, `prompts`) also need the content approval described in [security.md](security.md#project-trust).
 
 Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file.
@@ -167,8 +167,10 @@ The compaction rules are in [compaction.md](compaction.md).
 | `defaultProjectTrust` | `ask` / `always` / `never` | `ask` | what happens in a project that is not trusted yet; user settings only |
 | `oxa.offline` | bool | `false` | same as `--offline`; user settings only |
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
+| `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
+| `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
-| `oxa.cloud` | object | `{}` | native cloud models, prices and daily USD cap; user settings only; see below |
+| `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
@@ -185,7 +187,8 @@ gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
 
-Configure Anthropic routes under `oxa.cloud.models`, keyed by the model name used
+Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes
+under `oxa.cloud.models`, keyed by the model name used
 with `--model`. Supply the upstream model, context/output limits and current
 provider prices. This example uses an illustrative model and prices:
 
@@ -221,6 +224,32 @@ Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing model
 reads neither the key nor the ledger and contacts no provider. A missing price or
 daily budget refuses a request before credentials or provider I/O. Requests retain
 their budget reservation until the private row is durable.
+
+An `openai` route uses the same model/price fields, reads the `openai` key from
+that key file, and defaults to `https://api.openai.com/v1`. Both native providers
+preserve tool argument strings, including arguments supplied only by final
+provider events. Completed native replay is authenticated to the provider,
+model, account and exact visible history. It is stored only in private session
+records, omitted from public output, and dropped when compaction changes context.
+An invalid saved binding refuses the request before provider I/O.
+
+A `chatgpt` route defaults to `https://chatgpt.com/backend-api/codex` and uses the
+existing owner-only `chatgpt-auth.json` beside the key file. It does not discover
+other applications' credentials or start a sign-in. Configure the user-only
+`oxa.cloud.subscription_limits` object with positive integer `daily_requests`
+and `daily_tokens`. The separate optional `oxa.cloud.subscription` refresh object
+accepts a public `client_id` override (`[A-Za-z0-9_.-]{1,128}`); its default is the
+experimental public identity approved in #252. The refresh endpoint is fixed at
+`https://auth.openai.com/oauth/token` and cannot be overridden in settings.
+`refresh_timeout_ms` defaults to 15000, must be positive and is bounded by the
+client's 30-second maximum. These settings contain no access or refresh token.
+Client transport tests inject loopback endpoints privately; production refresh
+configuration never supplies one.
+
+Subscription calls require their own positive request/token caps, retain actual
+token usage and settle zero USD. Unknown paid work retains its full token bound;
+the cap includes concurrent and crashed-process reservations. It never falls back
+to a paid API balance. Missing metered pricing still refuses metered requests.
 
 ### Other
 

@@ -33,7 +33,8 @@ fn engine(fixture: &skeleton::Fixture, cap: f64) -> EmbeddedEngine {
     let runtime = GatewayRuntime::new(
         [(
             model,
-            Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]),
+            Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL])
+                .map(oxc_gateway::runtime::Billing::Metered),
         )],
         fixture.key_path.clone(),
         fixture.ledger_dir.clone(),
@@ -41,6 +42,8 @@ fn engine(fixture: &skeleton::Fixture, cap: f64) -> EmbeddedEngine {
             access: Access::Enabled,
             daily_budget_usd: Some(cap),
             ledger_enabled: true,
+            subscription: None,
+            subscription_limits: None,
         },
     )
     .unwrap();
@@ -155,11 +158,14 @@ fn a_waiting_request_does_not_serialize_other_calls_on_the_same_engine() {
 fn refusal_classes_survive_the_typed_bridge_without_provider_contact() {
     let mock = MockAnthropic::start(vec![]);
     let fixture = skeleton::Fixture::new(&mock);
+    let budget_error = chat(&engine(&fixture, 1e-9), &CancelToken::new()).unwrap_err();
+    assert_eq!(budget_error.code, codes::BUDGET_EXHAUSTED);
+    // The native bridge names oxa's own setting: the controller's key does not exist here.
     assert_eq!(
-        chat(&engine(&fixture, 1e-9), &CancelToken::new())
-            .unwrap_err()
-            .code,
-        codes::BUDGET_EXHAUSTED
+        budget_error.hint.as_deref(),
+        Some(
+            "adjust oxa.cloud.daily_budget_usd in oxa user settings, or wait for the next spend day; this is not retried"
+        )
     );
     std::fs::remove_file(&fixture.key_path).unwrap();
     assert_eq!(
@@ -181,17 +187,20 @@ fn native_thinking_tool_continuation_restores_opaque_signatures_privately() {
         json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"read-1","name":"read","input":{}}}),
         json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"path\":\"synthetic\"}"}}),
         json!({"type":"content_block_stop","index":1}),
+        json!({"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"<think>More reasoning</think>Visible answer"}}),
+        json!({"type":"content_block_stop","index":2}),
         json!({"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":5}}),
         json!({"type":"message_stop"}),
     ]);
     let mock = MockAnthropic::start(vec![first, Reply::text("Done", 11, 7, 3, 5)]);
     let fixture = skeleton::Fixture::new(&mock);
-    let engine = engine(&fixture, 1.0);
+    let first_engine = engine(&fixture, 1.0);
     let mut prefix = prefix();
     prefix.tools_json =
         json!([{"type":"function","function":{"name":"read","parameters":{"type":"object"}}}]).to_string();
     let mut messages = vec![WireMsg::user("Read synthetic")];
-    let turn = engine
+    let mut turn = first_engine
         .chat(
             &ChatRequest::new(&prefix, &messages, skeleton::MODEL),
             &CancelToken::new(),
@@ -199,10 +208,22 @@ fn native_thinking_tool_continuation_restores_opaque_signatures_privately() {
         )
         .unwrap();
     assert_eq!(turn.msg.tool_calls[0].args_raw, "{\"path\":\"synthetic\"}");
+    assert_eq!(turn.msg.content.as_deref(), Some("Visible answer"));
+    assert_eq!(
+        turn.msg.reasoning.as_deref(),
+        Some("Synthetic planMore reasoning")
+    );
+    let saved = turn.msg.provider_history.as_ref().unwrap().to_session_value();
+    turn.msg.provider_history = Some(oxa_proto::ProviderHistory::from_session_value(&saved).unwrap());
     assert!(!format!("{:?}", turn.msg).contains("opaque-signature"));
+    assert!(!String::from_utf8(turn.msg.to_json())
+        .unwrap()
+        .contains("opaque-signature"));
     messages.push(turn.msg);
     messages.push(WireMsg::tool_result("read-1", "Synthetic result"));
-    engine
+    drop(first_engine);
+    let restarted = engine(&fixture, 1.0);
+    restarted
         .chat(
             &ChatRequest::new(&prefix, &messages, skeleton::MODEL),
             &CancelToken::new(),

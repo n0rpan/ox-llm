@@ -16,11 +16,16 @@ path = "src/lib.rs"
 name = "oxa"
 path = "src/main.rs"
 
+[features]
+default = []
+share = ["oxc-gateway/share"]
+
 [dependencies]
 oxa-work.workspace = true
 oxa-proto.workspace = true
 oxa-engine = { workspace = true, features = ["in-process-gateway"] }
-oxc-gateway.workspace = true
+oxc-gateway = { workspace = true, features = ["upstream-openai"] }
+oxc-local.workspace = true
 oxa-session.workspace = true
 oxa-tools.workspace = true
 oxa-sandbox.workspace = true

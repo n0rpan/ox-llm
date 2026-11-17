@@ -174,3 +174,220 @@ fn openai_mock_errors_and_retry_after() {
     assert_eq!(error["error"]["code"], "insufficient_quota");
     mock.assert_healthy();
 }
+
+/// Real loopback read failures remain unhealthy and reveal only finite facts.
+#[test]
+fn mock_read_failure_diagnostics_are_finite_and_health_remains_strict() {
+    use std::{
+        net::Shutdown,
+        panic::{catch_unwind, AssertUnwindSafe},
+        time::Instant,
+    };
+    for (wire, expected) in [
+        (
+            b"POST /synthetic HTTP/1.1\r\nContent-Length: synthetic-private-header\r\n\r\n".as_slice(),
+            "InvalidData",
+        ),
+        (
+            b"POST /synthetic-private-header HTTP/1.1\r\n".as_slice(),
+            "UnexpectedEof",
+        ),
+    ] {
+        let mock = MockOpenAi::start(Vec::new());
+        let mut peer = TcpStream::connect(mock.address()).unwrap();
+        peer.write_all(wire).unwrap();
+        peer.shutdown(Shutdown::Write).unwrap();
+        let started = Instant::now();
+        let panic = loop {
+            if let Err(panic) = catch_unwind(AssertUnwindSafe(|| mock.assert_healthy())) {
+                break panic;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "mock failure must be observed"
+            );
+            std::thread::yield_now();
+        };
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(message.contains("mock upstream reported a connection failure"));
+        assert!(
+            message.contains("phase=Some(RequestRead)"),
+            "finite read phase missing"
+        );
+        assert!(
+            message.contains(&format!("kind=Some({expected})")),
+            "finite I/O kind missing"
+        );
+        assert!(
+            message.contains("part=None"),
+            "non-write failures must not invent a reply part"
+        );
+        assert!(!message.contains("synthetic-private-header"));
+        assert!(
+            mock.requests().is_empty(),
+            "invalid input never becomes a request"
+        );
+    }
+}
+
+/// Fail a chosen existing write/flush boundary without sockets or timing races.
+struct FailingReplyWriter {
+    fail_at: usize,
+    calls: usize,
+    bytes: Vec<u8>,
+}
+impl FailingReplyWriter {
+    fn step(&mut self) -> std::io::Result<()> {
+        let at = self.calls;
+        self.calls += 1;
+        if at == self.fail_at {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "synthetic-private-write",
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+impl Write for FailingReplyWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.step()?;
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.step()
+    }
+    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+        self.write_all(args.to_string().as_bytes())
+    }
+}
+fn diagnostic_reply() -> Reply {
+    Reply::raw(
+        200,
+        "text/plain",
+        b"abc".to_vec(),
+        vec![("X-Synthetic", "bounded".into())],
+    )
+}
+#[test]
+fn mock_reply_write_diagnostics_identify_each_finite_part_without_error_text() {
+    use openai::ReplyPart;
+    let cases = [
+        (
+            false,
+            vec![
+                ReplyPart::Headers,
+                ReplyPart::Headers,
+                ReplyPart::HeaderEnd,
+                ReplyPart::ChunkHeader,
+                ReplyPart::FinalChunk,
+                ReplyPart::Flush,
+            ],
+        ),
+        (
+            true,
+            vec![
+                ReplyPart::Headers,
+                ReplyPart::Headers,
+                ReplyPart::HeaderEnd,
+                ReplyPart::ChunkHeader,
+                ReplyPart::ChunkPayload,
+                ReplyPart::ChunkEnd,
+                ReplyPart::Flush,
+            ],
+        ),
+    ];
+    for (truncate, expected_parts) in cases {
+        for (fail_at, expected) in expected_parts.into_iter().enumerate() {
+            let mut writer = FailingReplyWriter {
+                fail_at,
+                calls: 0,
+                bytes: Vec::new(),
+            };
+            let mut reply = diagnostic_reply();
+            reply.truncate_transfer = truncate;
+            let failure = openai::write_reply(&mut writer, &reply).unwrap_err();
+            assert_eq!(failure.part, Some(expected));
+            assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+            assert_eq!(writer.calls, fail_at + 1, "do not continue after failed writes");
+            let finite = format!("{failure:?}");
+            assert!(finite.contains("ReplyWrite"));
+            assert!(!finite.contains("synthetic-private-write"));
+            assert!(!finite.contains("X-Synthetic"));
+        }
+    }
+    let mut writer = FailingReplyWriter {
+        fail_at: 2,
+        calls: 0,
+        bytes: Vec::new(),
+    };
+    let empty = Reply::raw(200, "text/plain", Vec::new(), vec![]);
+    let failure = openai::write_reply(&mut writer, &empty).unwrap_err();
+    assert_eq!(failure.part, Some(ReplyPart::TransferEnd));
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+}
+#[test]
+fn mock_reply_diagnostics_preserve_wire_flush_and_transfer_truncation() {
+    for truncate in [false, true] {
+        let mut reply = diagnostic_reply();
+        reply.truncate_transfer = truncate;
+        let mut writer = FailingReplyWriter {
+            fail_at: usize::MAX,
+            calls: 0,
+            bytes: Vec::new(),
+        };
+        openai::write_reply(&mut writer, &reply).unwrap();
+        let mut expected = b"HTTP/1.1 200 Synthetic\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: close\r\nX-Synthetic: bounded\r\n\r\n3\r\nabc\r\n".to_vec();
+        if !truncate {
+            expected.extend_from_slice(b"0\r\n\r\n");
+        }
+        assert_eq!(writer.bytes, expected);
+        assert_eq!(writer.calls, if truncate { 7 } else { 6 });
+    }
+}
+
+/// A peer that closes after a flushed semantic end, before a later HTTP-tail write.
+#[derive(Default)]
+struct CloseOnDoneFlush {
+    bytes: Vec<u8>,
+    closed: bool,
+}
+impl Write for CloseOnDoneFlush {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.closed {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.closed = self
+            .bytes
+            .windows(b"data: [DONE]".len())
+            .any(|w| w == b"data: [DONE]");
+        Ok(())
+    }
+}
+#[test]
+fn mock_finishes_http_before_final_done_flush_can_close_the_peer() {
+    let reply = Reply::raw(200, "text/event-stream", b"data: [DONE]\r\n\r\n".to_vec(), vec![]);
+    let mut peer = CloseOnDoneFlush::default();
+    openai::write_reply(&mut peer, &reply).expect("HTTP framing must be complete at final flush");
+    assert!(peer.closed);
+    assert!(peer.bytes.ends_with(b"\r\n0\r\n\r\n"));
+}
+#[test]
+fn mock_still_rejects_peer_close_before_later_payload_chunks() {
+    let mut body = b"data: [DONE]\r\n\r\n".to_vec();
+    body.extend(std::iter::repeat_n(b'x', 2048));
+    let reply = Reply::raw(200, "text/event-stream", body, vec![]);
+    let failure = openai::write_reply(&mut CloseOnDoneFlush::default(), &reply).unwrap_err();
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(failure.part, Some(openai::ReplyPart::ChunkHeader));
+}

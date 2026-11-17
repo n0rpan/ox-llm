@@ -1,5 +1,31 @@
 # v0.2.0 release qualification
 
+## v0.2.1 Rust-only upgrade boundary
+
+The v0.2.1 release target (#763) installs native `oxa` and `oxe-server`, retaining
+the approved native MEMLAT utility and four inert templates, with
+native cloud/local selection: no Python runtime dependency, Python payload,
+`oxc`/diagnostics wrappers, controller daemon or service on port 8092. Packaging
+must qualify that exact artifact; the historical v0.2.0 recipes below are not
+evidence that the native release is ready. See [native install and upgrade](NATIVE-INSTALL.md)
+for the owner-facing v0.2.0 upgrade procedure.
+
+Keep provider keys in `~/.config/oxc/llm/cloud-secrets.json` and the compatible
+ChatGPT token in `~/.config/oxc/llm/chatgpt-auth.json`, under the same user HOME.
+Reuse them in place, retaining the refresh lock and private permissions. Do not
+require reauthentication, credential export/import, a Python migration command
+or deletion of user state merely to upgrade. Invalid/revoked credentials still
+need normal owner recovery. Sessions and caches may start cold; credential
+compatibility does not promise session, cache or usage-ledger migration.
+
+The release qualification record must identify the v0.2.1 artifact commit and
+checksums, native install/default-config checks and exact-artifact no-Python
+proof. Existing legacy services/launchers must not be mistaken for the new
+runtime. Clean-HOME proofs use synthetic credentials and mocks; an owner's real
+upgrade preserves existing private files. No release clearance, publishing or
+hardware qualification follows from this note. The sections below describe the
+v0.2.0 build and packaging process only.
+
 `release-build.yml` only builds workflow artifacts. It does not create tags,
 GitHub releases, registry entries or AUR uploads. It needs no secrets and has
 `contents: read`. Its only triggers are manual dispatch and PR changes to this

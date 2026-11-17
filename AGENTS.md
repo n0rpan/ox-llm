@@ -7,6 +7,25 @@ You have **no access to the maintainer's Snapdragon laptop, its NPU or its model
 code, tests, CI and docs. Hardware validation (speed, memory, long runs) is done separately by the
 maintainer, who says in the PR when a hardware check is needed.
 
+## Review guidelines
+
+- Never expose credentials, tokens or private data in prompts, errors, Debug, logs or tests;
+  use synthetic fixtures. Do not open real credential files during review.
+- Keep engine transport selection, native binary/launch configuration, `allowRemote`, share
+  authority and login/token paths user-only. A project file must never override these decisions.
+- Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
+- Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
+  owner-selected yolo deliberately disables the permission floor.
+- Preserve durable ledger/usage settlement, uncertainty reservations and budget caps across
+  retries, cancellation, concurrent processes and restarts; never admit unaccounted spend.
+- Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
+  while validating numeric type, sign, range and finiteness before accounting or execution.
+- v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
+- Never expose secrets to fork PRs or execute PR code with review credentials. Never use
+  `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
+- Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
+  introduced, actionable defects with a failure scenario; skip style and speculative risks.
+
 ## How to work
 
 - **One PR per task**, base `main`, branch `agent/<task-id>-<slug>`. Small PRs; resolve real text conflicts
@@ -42,20 +61,59 @@ maintainer, who says in the PR when a hardware check is needed.
   daily-driver UI suite also runs ten stress rounds with four concurrent tests before the full gate. This extra
   job is skipped on PRs, merge groups and main pushes; manual runs can opt in with
   `nightly_oxa_arm: true`. Its cache is separate from x86 test and production ARM64 builds.
-- You can build and test x86_64 code locally: the Rust workspace `oxa/`, the Python controller `oxc/`, and
-  `oxe-server --engine stub` in `engine/`. The model engine is aarch64-only; rely on CI for those jobs.
 - **When a task is ambiguous,** open the PR as a draft with your question at the top instead of guessing.
+
+## Build and test capacity (owner rule)
+
+All builds and tests run in GitHub CI. Local compiler work is limited to `cargo check -p <edited-crate>`
+and `cargo clippy -p <edited-crate> -- -D warnings`, niced, with `CARGO_BUILD_JOBS=3`. Never run local
+`cargo build`, `cargo test`, Python/unit/end-to-end tests, or whole-workspace compiler sweeps.
+Formatting and read-only source inspection do not build or run tests.
+
+Keep target directories and large scratch under your own clone or `~/.cache`; never put them under
+`/tmp` (it is RAM on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary
+files; preserve anything a running process of yours uses, and never clean another lane's files.
+
+Push the lane branch to start the `lane` workflow, or dispatch it explicitly:
+
+```sh
+gh workflow run lane --ref <branch>
+gh run watch <run-id> --exit-status
+```
+
+The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
+consumers against main. Shared workspace manifests/locks expand the affected workspace. Tests use
+release-relevant features, Cargo registry/target caches via GitHub-owned actions, and standard free
+Ubuntu x64/ARM runners. Cache keys include the lockfile, toolchain and architecture; lane caches
+use their own namespace and branch scope, preserving the required workflows' main-cache policy.
+The native-controller crate runs its existing CLI conformance/refusal controls against the real
+native binary; an empty Rust unit inventory alone never qualifies it.
+Native engine tests requiring Oryon CPU features remain on the existing self-hosted route. The lane
+workflow does not replace or change the merge queue's required checks. Start full-workspace and
+release CI only when the change is close to done. Each started job records its queue delay in its
+GitHub job summary so capacity decisions use measurements.
+
+Wait with **one blocking `gh run watch --exit-status`**, or continue an independent piece and read the
+result once later. Never spend repeated model turns or API/status polls waiting for CI, and never
+post “still waiting” updates. On failure, read only the failed job's tail:
+
+```sh
+gh run view <run-id> --log-failed | tail -100
+```
+
+Fix the failure, then test the changed head. Do not repeatedly run unchanged checks or substitute
+an earlier head's result. Report the selected crates, exact head and terminal CI result in the PR.
 
 ## Definition of done
 
-Run these before saying a task is done, per area. oxa runs the checks in `.oxa/settings.json` (`done`) itself after an edit, for the same checks listed here:
+Run these in GitHub CI before saying a task is done. Automatic local helpers must dispatch CI and consume its result rather than launch builds or tests.
 
-- **oxa** (Rust, run from `oxa/`):
+- **oxa** (Rust, in CI from `oxa/`):
   - `cargo fmt --check`
   - `cargo clippy -p <crate> -- -D warnings` for each touched crate
   - `cargo test -p <crate>` for each touched crate
-  - UI/TUI change: build the real binary and drive it in tmux (live check). Unit tests alone are not enough; they have passed for changes that did nothing in the real TUI.
-- **lab** (Python controller): `cd oxc && ./tools/run_lab_tests.sh`. It sets a throwaway HOME; never run the tests with the real HOME.
+  - UI/TUI change: CI must build the real binary and drive it through the existing PTY/tmux live checks. Unit tests alone are not enough; they have passed for changes that did nothing in the real TUI.
+- **lab** (Python controller, in CI): `cd oxc && ./tools/run_lab_tests.sh`. It sets a throwaway HOME; never run the tests with the real HOME.
 - **Bug fix:** show the new test failing before the fix.
 
 ## Hard rules (never break these)

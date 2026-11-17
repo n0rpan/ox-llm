@@ -920,6 +920,7 @@ dependencies = [
  "oxa-web",
  "oxa-work",
  "oxc-gateway",
+ "oxc-local",
  "regex",
  "serde_json",
  "sha2",
@@ -1239,6 +1240,16 @@ dependencies = [
  "serde_json",
  "tokio",
  "ureq",
+]
+
+[[package]]
+name = "oxc-memlat"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "regex",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

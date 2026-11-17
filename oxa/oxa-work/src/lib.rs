@@ -5,6 +5,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+pub mod board;
 mod checkpoint;
 mod execute;
 mod state;

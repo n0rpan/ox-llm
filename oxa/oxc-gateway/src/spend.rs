@@ -1,11 +1,15 @@
 //! Incremental daily spend. An unfinished final line is not a committed row.
 //! Complete malformed rows fail closed. Replacement/truncation resets the cache.
+use crate::billing::Counts;
+use bigdecimal::BigDecimal;
+use num_traits::ToPrimitive;
 use serde_json::Value;
 use std::{
     fs::OpenOptions,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 #[derive(Default, Debug)]
@@ -13,13 +17,17 @@ pub struct SpendReader {
     path: PathBuf,
     identity: Option<(u64, u64)>,
     offset: u64,
-    total: f64,
+    total: BigDecimal,
+    subscription: Counts,
     tail: Vec<u8>,
     bytes_read: u64,
 }
 impl SpendReader {
     pub fn bytes_read(&self) -> u64 {
         self.bytes_read
+    }
+    pub(crate) fn subscription(&self) -> Counts {
+        self.subscription
     }
     pub fn read(&mut self, path: &Path) -> io::Result<f64> {
         let mut file = match OpenOptions::new()
@@ -31,7 +39,8 @@ impl SpendReader {
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 self.identity = None;
                 self.offset = 0;
-                self.total = 0.0;
+                self.total = BigDecimal::default();
+                self.subscription = Counts::default();
                 self.tail.clear();
                 self.path = path.into();
                 return Ok(0.0);
@@ -47,7 +56,8 @@ impl SpendReader {
             self.path = path.into();
             self.identity = Some(identity);
             self.offset = 0;
-            self.total = 0.0;
+            self.total = BigDecimal::default();
+            self.subscription = Counts::default();
             self.tail.clear();
         } else if self.offset > 0 {
             // A same-inode rewrite can be at least as long as the cached file.
@@ -58,14 +68,16 @@ impl SpendReader {
             self.bytes_read += tail.len() as u64;
             if tail != self.tail {
                 self.offset = 0;
-                self.total = 0.0;
+                self.total = BigDecimal::default();
+                self.subscription = Counts::default();
                 self.tail.clear();
             }
         }
         let mut reader = BufReader::new(file);
         reader.seek(SeekFrom::Start(self.offset))?;
         let mut offset = self.offset;
-        let mut total = self.total;
+        let mut total = self.total.clone();
+        let mut subscription = self.subscription;
         let mut tail = self.tail.clone();
         let mut line = Vec::new();
         loop {
@@ -95,20 +107,77 @@ impl SpendReader {
                 .as_f64()
                 .filter(|cost| cost.is_finite() && *cost >= 0.0)
                 .ok_or(io::ErrorKind::InvalidData)?;
-            total += cost;
-            if !total.is_finite() {
+            match row.get("billing") {
+                None => {
+                    if matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                        || row.get("subscription_requests").is_some()
+                        || row.get("subscription_tokens").is_some()
+                    {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                }
+                Some(value) if value == "metered" && row["remote_provider"] != "opencode" => {
+                    if matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                        || row.get("subscription_requests").is_some()
+                        || row.get("subscription_tokens").is_some()
+                    {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                }
+                Some(value)
+                    if value == "subscription"
+                        || value == "metered" && row["remote_provider"] == "opencode" =>
+                {
+                    if (value == "subscription" && cost != 0.0)
+                        || (value == "metered" && cost <= 0.0)
+                        || !matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                    {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                    let requests = row["subscription_requests"]
+                        .as_u64()
+                        .filter(|n| *n <= 1)
+                        .ok_or(io::ErrorKind::InvalidData)?;
+                    let tokens = row["subscription_tokens"]
+                        .as_u64()
+                        .ok_or(io::ErrorKind::InvalidData)?;
+                    let not_forwarded = row["settled"] == "not_forwarded";
+                    let settled = row["settled"]
+                        .as_str()
+                        .filter(|v| ["usage", "reserved", "not_forwarded", "refused"].contains(v))
+                        .ok_or(io::ErrorKind::InvalidData)?;
+                    if (requests == 0) != not_forwarded
+                        || (matches!(settled, "not_forwarded" | "refused") && tokens != 0)
+                    {
+                        return Err(io::ErrorKind::InvalidData.into());
+                    }
+                    subscription = subscription
+                        .add(Counts { requests, tokens })
+                        .map_err(|_| io::ErrorKind::InvalidData)?;
+                }
+                _ => return Err(io::ErrorKind::InvalidData.into()),
+            }
+            // Sum the validated finite ledger amounts as decimals, as pricing
+            // does. Fixed currency rounding loses small paid charges, while
+            // repeated binary addition can invent spend above an exact cap.
+            total += BigDecimal::from_str(&cost.to_string())
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+            if total.to_f64().is_none_or(|value| !value.is_finite()) {
                 return Err(io::ErrorKind::InvalidData.into());
             }
         }
+        let spend = total
+            .to_f64()
+            .filter(|value| value.is_finite())
+            .ok_or(io::ErrorKind::InvalidData)?;
         // Commit the cursor/total together only after every complete row passed.
         self.offset = offset;
         self.total = total;
+        self.subscription = subscription;
         self.tail = tail;
-        Ok(if total < f64::MAX / 1e8 {
-            (total * 1e8).round_ties_even() / 1e8
-        } else {
-            total
-        })
+        // Admission uses this amount directly. Currency display rounding must
+        // never erase a valid positive charge before comparing it with a cap.
+        Ok(spend)
     }
 }
 

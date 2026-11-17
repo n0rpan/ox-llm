@@ -419,3 +419,35 @@ fn persisted_restore_respects_the_destinations_existing_prefix_invalidation() {
     assert_eq!(t.rebases().last().unwrap().why, rebase_why::LEAF_MOVE);
     assert!(t.wire()[1].provider_history.is_none());
 }
+
+#[test]
+fn model_change_invalidates_authority_even_when_the_prefix_is_unchanged() {
+    let entries = vec![
+        Entry {
+            id: "p".into(),
+            parent: None,
+            ts_ms: 0,
+            body: EntryBody::Prefix(prefix("same")),
+        },
+        entry("a", Some("p"), assistant()),
+        Entry {
+            id: "m".into(),
+            parent: Some("a".into()),
+            ts_ms: 0,
+            body: EntryBody::ModelChange("other-route/model".into()),
+        },
+        Entry {
+            id: "p2".into(),
+            parent: Some("m".into()),
+            ts_ms: 0,
+            body: EntryBody::Prefix(prefix("same")),
+        },
+    ];
+    assert!(Transcript::project(&entries[..2]).wire()[0]
+        .provider_history
+        .is_some());
+    assert!(
+        Transcript::project(&entries).wire()[0].provider_history.is_none(),
+        "a model/route switch cannot carry old route authority through an identical prefix epoch"
+    );
+}

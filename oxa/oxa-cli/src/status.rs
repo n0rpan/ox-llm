@@ -88,13 +88,20 @@ pub(crate) struct StatusWriter {
     state: Mutex<State>,
     timeout_ms: Option<u64>,
     interval: Duration,
+    billing: Option<oxc_gateway::diagnostics::Diagnostics>,
 }
 
 impl StatusWriter {
+    pub(crate) fn with_billing(mut self, billing: oxc_gateway::diagnostics::Diagnostics) -> Self {
+        self.billing = Some(billing);
+        self
+    }
+
     pub(crate) fn new(timeout: Option<Duration>) -> Self {
         let timeout_ms = timeout.map(|d| d.as_millis() as u64);
         Self {
             state: Mutex::new(State::default()),
+            billing: None,
             timeout_ms,
             interval: Duration::from_millis(timeout_ms.map(|t| (t / 4).clamp(1, 1000)).unwrap_or(1000)),
         }
@@ -159,6 +166,7 @@ impl StatusWriter {
         let outcome = match &result {
             Ok(0) => RunOutcome::Done,
             Ok(130) => RunOutcome::Interrupted,
+            Ok(129) => RunOutcome::Failed(oxa_proto::codes::TERMINAL_CLOSED),
             Ok(_) => RunOutcome::Failed("interactive_exit"),
             Err(e) => RunOutcome::from_error(e),
         };
@@ -172,10 +180,14 @@ impl StatusWriter {
     }
 
     fn write(&self, snapshot: &mut Snapshot) -> std::io::Result<()> {
-        let bytes = serde_json::to_vec(&snapshot.record(
+        let mut record = snapshot.record(
             self.timeout_ms,
             self.interval.as_millis().min(u64::MAX as u128) as u64,
-        ))?;
+        );
+        if let Some(billing) = self.billing.as_ref().and_then(|b| b.last_billing()) {
+            record["last_billing"] = billing.record();
+        }
+        let bytes = serde_json::to_vec(&record)?;
         if bytes.len() > MAX_BYTES {
             return Err(std::io::Error::other("status snapshot exceeds its size limit"));
         }
@@ -447,6 +459,27 @@ mod tests {
     use super::*;
     use oxa_fake::TestEnv;
     use oxa_proto::Usage;
+
+    #[test]
+    fn interactive_terminal_loss_records_the_process_exit() {
+        let env = TestEnv::new();
+        let session = SessionRef {
+            id: "one".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let writer = StatusWriter::new(None);
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        assert_eq!(writer.finish_interactive(Ok(129), &mut Vec::new()).unwrap(), 129);
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert_eq!(record["phase"], "finished");
+        assert_eq!(record["outcome"]["error_class"], "terminal_closed");
+        assert_eq!(record["outcome"]["exit_code"], 129);
+    }
 
     #[test]
     fn stream_updates_coalesce_and_the_final_snapshot_includes_all_usage() {
