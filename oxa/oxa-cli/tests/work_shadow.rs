@@ -332,6 +332,7 @@ fn exited_github_child_cannot_escape_the_whole_read_deadline() {
         "a descendant-held pipe bypassed the 30-second read deadline"
     );
     assert_eq!(out.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(env.work().join("gh-calls")).unwrap(), "read\n");
     assert!(
         !log_for(&env, "example/repo").exists()
             || fs::metadata(log_for(&env, "example/repo")).unwrap().len() == 0
