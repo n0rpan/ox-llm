@@ -138,29 +138,31 @@ impl Supervisor {
 
     fn spawn(&mut self, now: Instant) -> io::Result<()> {
         self.launch_started = Instant::now();
-        let gated = self
-            .platform
-            .as_ref()
-            .map(|p| p.requires_scope())
-            .transpose()?
-            .unwrap_or(false);
-        let mut command = if gated {
-            let mut command = Command::new(std::env::current_exe()?);
-            command.arg(platform::CHILD_GATE).arg(&self.config.executable);
+        let result = (|| {
+            let gated = self
+                .platform
+                .as_ref()
+                .map(|p| p.requires_scope())
+                .transpose()?
+                .unwrap_or(false);
+            let mut command = if gated {
+                let mut command = Command::new(std::env::current_exe()?);
+                command.arg(platform::CHILD_GATE).arg(&self.config.executable);
+                command
+            } else {
+                Command::new(&self.config.executable)
+            };
             command
-        } else {
-            Command::new(&self.config.executable)
-        };
-        let result = command
-            .args(&self.config.arguments)
-            // Ambient model/provider settings and credentials must not cross this boundary.
-            .env_clear()
-            .envs(&self.config.environment)
-            .stdin(if gated { Stdio::piped() } else { Stdio::null() })
-            .stdout(if gated { Stdio::piped() } else { Stdio::null() })
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn();
+                .args(&self.config.arguments)
+                // Ambient model/provider settings and credentials must not cross this boundary.
+                .env_clear()
+                .envs(&self.config.environment)
+                .stdin(if gated { Stdio::piped() } else { Stdio::null() })
+                .stdout(if gated { Stdio::piped() } else { Stdio::null() })
+                .stderr(Stdio::null())
+                .process_group(0)
+                .spawn()
+        })();
         match result {
             Ok(child) => {
                 self.child = Some(child);
