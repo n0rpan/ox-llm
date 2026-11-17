@@ -1,0 +1,142 @@
+//! Read-only GitHub board policy. Snapshot acquisition and durable claims belong to the caller.
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Action {
+    FixFindings,
+    FixRequiredCi,
+    ResolveConflict,
+    WaitReview,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RequiredCi {
+    Pending,
+    Failed,
+    Passed,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Mergeability {
+    Unknown,
+    Conflicting,
+    Mergeable,
+}
+
+/// Normalized GitHub facts: findings are unresolved; required CI describes the current head.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct PullRequest {
+    pub number: u64,
+    pub head: String,
+    pub release_pinned: bool,
+    pub findings: bool,
+    pub required_ci: RequiredCi,
+    pub mergeability: Mergeability,
+}
+
+/// The adapter must return the complete open-PR snapshot or fail, never a partial page.
+pub trait GitHub {
+    fn open_pull_requests(&mut self) -> crate::Result<Vec<PullRequest>>;
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Lease {
+    pub holder: String,
+    pub expires_at: u64,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct AttemptState {
+    pub utc_day: u64,
+    pub attempts: u32,
+    pub lease: Option<Lease>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Policy {
+    pub enabled: bool,
+    pub max_attempts_per_day: u32,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_attempts_per_day: 3,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Entry {
+    pub number: u64,
+    pub head: String,
+    pub release_pinned: bool,
+    pub action: Action,
+    pub lease: Option<Lease>,
+    pub attempts_today: u32,
+    pub eligible: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct Board {
+    pub observed_at: u64,
+    pub entries: Vec<Entry>,
+}
+
+impl Board {
+    /// `now` and lease expiry are Unix seconds; attempt days are UTC days since the epoch.
+    /// State is read only. An executor must atomically reserve an attempt and lease before work.
+    pub fn read(
+        github: &mut impl GitHub,
+        policy: &Policy,
+        state: &BTreeMap<u64, AttemptState>,
+        now: u64,
+    ) -> crate::Result<Self> {
+        let mut board = Self {
+            observed_at: now,
+            entries: vec![],
+        };
+        if !policy.enabled {
+            return Ok(board);
+        }
+        let mut seen = BTreeSet::new();
+        for pr in github.open_pull_requests()? {
+            if pr.number == 0 || pr.head.is_empty() || !seen.insert(pr.number) {
+                return Err("invalid or duplicate pull request in board snapshot".into());
+            }
+            let action = if pr.findings {
+                Action::FixFindings
+            } else if pr.required_ci == RequiredCi::Failed {
+                Action::FixRequiredCi
+            } else if pr.mergeability == Mergeability::Conflicting {
+                Action::ResolveConflict
+            } else {
+                Action::WaitReview
+            };
+            let saved = state.get(&pr.number);
+            let attempts_today = saved
+                .filter(|s| s.utc_day >= now / 86_400)
+                .map_or(0, |s| s.attempts);
+            let lease = saved.and_then(|s| s.lease.clone());
+            let eligible = action != Action::WaitReview
+                && attempts_today < policy.max_attempts_per_day
+                && lease.as_ref().is_none_or(|l| l.expires_at <= now);
+            board.entries.push(Entry {
+                number: pr.number,
+                head: pr.head,
+                release_pinned: pr.release_pinned,
+                action,
+                lease,
+                attempts_today,
+                eligible,
+            });
+        }
+        board.entries.sort_by_key(|e| (!e.release_pinned, e.number));
+        Ok(board)
+    }
+}

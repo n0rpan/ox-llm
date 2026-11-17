@@ -1,5 +1,16 @@
 # Unattended work
 
+The opt-in `oxa_work::board` library derives one next action per open PR from a
+single normalized GitHub snapshot. `Policy.enabled` defaults to false and makes
+no GitHub reads while disabled. Findings take precedence over failed required CI,
+then conflicts; other PRs conservatively wait for review in this first slice.
+Release-pinned PRs sort first. Active leases and a per-PR UTC daily attempt cap
+make entries ineligible without hiding them. Snapshot adapters must supply the
+complete open set, current-head required checks and unresolved findings. Callers
+own durable state and must reserve attempts and leases atomically before acting;
+this read-only core neither claims work nor writes to GitHub. CLI/shadow polling
+is a separate adapter.
+
 `oxa work tasks.json` opts into sequential tasks in separate git worktrees.
 Run it inside the project repository. The JSON file is an array:
 
