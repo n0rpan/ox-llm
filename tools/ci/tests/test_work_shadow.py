@@ -35,6 +35,14 @@ class ShadowComparisonTests(unittest.TestCase):
         self.assertEqual([r[2] for r in rows], ['ready'] * 3 + ['fix_findings'])
         self.assertNotIn('synthetic', str(rows))
 
+    def test_one_row_per_decision_even_when_several_logs_record_it(self):
+        samples = [dict(schema_version=1, observed_at=1000, would_take=[])]
+        events = [(1010, 42, 'ready', 'merge-flow.log'),
+                  (1000, 42, 'ready', 'auto-approve.log')]
+        rows = list(compare.differences(samples, events))
+        self.assertEqual(rows, [dict(observed_at=1000, difference='lab_only', number=42,
+                                     action='ready', source='auto-approve.log')])
+
     def test_unknown_action_is_reported_and_bad_schema_is_rejected(self):
         self.assertEqual(compare.action('unexpected operation'), 'unclassified')
         with self.assertRaises(ValueError):

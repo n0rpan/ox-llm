@@ -54,11 +54,14 @@ def differences(samples, events):
         if end <= start:
             raise ValueError('shadow timestamps must increase')
         predicted = {(row['number'], row['action']) for row in sample['would_take']}
-        actual = {(number, name, source) for at, number, name, source in events if start <= at < end}
-        for number, name, source in sorted(actual):
+        actual = {}
+        for at, number, name, source in sorted(events):
+            if start <= at < end:
+                actual.setdefault((number, name), source)
+        for (number, name), source in sorted(actual.items()):
             if (number, name) not in predicted:
                 yield dict(observed_at=start, difference='lab_only', number=number, action=name, source=source)
-        observed = {(number, name) for number, name, _ in actual}
+        observed = set(actual)
         for number, name in sorted(predicted - observed):
             yield dict(observed_at=start, difference='shadow_only', number=number, action=name)
 
