@@ -2,6 +2,7 @@
 use super::{charge, nodes, Reader};
 use oxa_work::board::{
     landing::{LatestReviews, Observation, Policy, Queue},
+    queue::is_object_id,
     review::{self, Comment, Findings},
     Action, Board,
 };
@@ -136,12 +137,7 @@ fn queue_observations(queue: &Value, board: &Board) -> Result<BTreeMap<u64, Queu
 }
 
 fn oid(value: &Value) -> Option<&str> {
-    value.as_str().filter(|sha| {
-        matches!(sha.len(), 40 | 64)
-            && sha
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
+    value.as_str().filter(|sha| is_object_id(sha))
 }
 
 fn comments(value: &Value) -> Option<Vec<Comment<'_>>> {
