@@ -28,6 +28,8 @@ maintainer, who says in the PR when a hardware check is needed.
   mixed in; user-visible new behaviour that is not behind a default-off flag/setting; deleted or
   disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
   body; a test weakened, skipped or rewritten to pass instead of fixing the code.
+- **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
+  registry with its surfaces and help (P1 if added outside it or without an exception reason).
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
 
