@@ -159,6 +159,9 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
             let reply = get(port, &path, &authority, "");
             assert!(reply.starts_with("HTTP/1.1 200"), "{path}");
             assert!(reply.contains("0 tokens") && reply.contains("role=log"));
+            if prompt == "status" {
+                assert!(reply.contains("0 items") && reply.contains("href=/board>Board · observed at 10"));
+            }
             assert_eq!(reply.contains("<!doctype html>"), suffix.is_empty());
             assert!(get(port, &path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
         }
