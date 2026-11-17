@@ -2149,14 +2149,15 @@ mod model_limits_tests {
             "stderr names the row and error: {err:?}"
         );
 
-        // The failing row shows '?' in the context, max-out, thinking and images columns.
+        // The failing row shows '?' in the context, max-out, thinking and images columns,
+        // and keeps its (here unset) routing cell.
         let row: Vec<_> = text
             .lines()
             .find(|l| l.split_whitespace().nth(1) == Some("anthropic/claude-sonnet-5-5"))
             .unwrap()
             .split_whitespace()
             .collect();
-        assert_eq!(&row[2..], &["?", "?", "?", "?"]);
+        assert_eq!(&row[2..], &["?", "?", "?", "?", "-"]);
     }
 }
 
