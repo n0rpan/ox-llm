@@ -547,6 +547,134 @@ fn records_without_release_metadata_remain_readable() {
 }
 
 #[test]
+fn review_reservations_survive_reopening_and_head_changes() {
+    use oxa_work::board::review::{
+        self, Change, ChangeKind, Dispatch, Facts, GitHubRequestReceipt, Plan, Request, RequestRemote,
+        Reviewer,
+    };
+
+    struct ReviewPr(PullRequest);
+    impl GitHub for ReviewPr {
+        fn open_pull_requests(&mut self) -> oxa_work::Result<Vec<PullRequest>> {
+            Ok(vec![self.0.clone()])
+        }
+    }
+
+    let plan = |head: &str, patch_id: &str| -> Plan {
+        let changes = [Change {
+            path: "src/main.rs",
+            previous_path: None,
+            kind: ChangeKind::Source,
+            deleted_lines: 0,
+            deleted_file: false,
+        }];
+        let facts = Facts {
+            changes: &changes,
+            two_review: false,
+            required_ci: RequiredCi::Pending,
+            draft: false,
+            review_admitted: true,
+            unresolved_findings: false,
+            body: "",
+            head,
+            patch_id: Some(patch_id),
+            main_merge_predecessors: &[],
+            requested: &[],
+            approvals: &[],
+        };
+        let mut pr = FakeGitHub(0).open_pull_requests().unwrap().remove(0);
+        pr.head = head.into();
+        pr.findings = false;
+        let (_, mut plans) = Board::read_with_review_policy(
+            &mut ReviewPr(pr),
+            &policy(),
+            &BTreeMap::new(),
+            0,
+            &review::Policy {
+                enabled: true,
+                paths: &[],
+            },
+            &BTreeMap::from([(1, facts)]),
+        )
+        .unwrap();
+        plans.remove(&1).unwrap()
+    };
+
+    let fixture = Fixture::new();
+    let claims = fixture.store();
+    let patch_id = "a".repeat(40);
+    let original = plan("tested-head", &patch_id);
+    let request = &original.requests()[0];
+    assert_eq!(request.reviewer(), Reviewer::Codex);
+    assert!(claims.reserve_review_request(request, None).is_err());
+    let owner = Some(ManualAuthority::Owner);
+    std::thread::scope(|scope| {
+        let first = scope.spawn(|| claims.reserve_review_request(request, owner).unwrap());
+        let second = scope.spawn(|| claims.reserve_review_request(request, owner).unwrap());
+        assert_ne!(first.join().unwrap(), second.join().unwrap());
+    });
+
+    let reopened = fixture.store();
+    let merged = plan("main-merge-head", &patch_id);
+    assert!(!reopened
+        .reserve_review_request(&merged.requests()[0], owner)
+        .unwrap());
+    let changed = plan("edited-head", &"b".repeat(40));
+    assert!(reopened
+        .reserve_review_request(&changed.requests()[0], owner)
+        .unwrap());
+    assert_eq!(reopened.snapshot().unwrap()[&1].attempts, 0);
+
+    #[derive(Default)]
+    struct Remote {
+        eligible: bool,
+        submissions: usize,
+    }
+    impl RequestRemote for Remote {
+        fn current_and_admitted(&mut self, _: &Request) -> oxa_work::Result<bool> {
+            Ok(self.eligible)
+        }
+        fn send_once(&mut self, _: &Request) -> oxa_work::Result<()> {
+            self.submissions += 1;
+            Err("synthetic connection loss after sending".into())
+        }
+    }
+    let plan = plan(&"c".repeat(40), &"d".repeat(40));
+    let request = &plan.requests()[0];
+    let marker = request.github_marker().unwrap();
+    assert!(GitHubRequestReceipt::from_comment("review-app[bot]", "untrusted", &marker).is_none());
+    let receipt = GitHubRequestReceipt::from_comment(
+        "review-app[bot]",
+        "review-app[bot]",
+        &format!("@codex review\n{marker}"),
+    )
+    .unwrap();
+    assert_eq!(receipt.receipt().patch_id, request.patch_id());
+    assert_eq!(receipt.receipt().reviewer, Reviewer::Codex);
+
+    let mut remote = Remote::default();
+    assert_eq!(
+        reopened
+            .dispatch_review_request(&mut remote, request, owner)
+            .unwrap(),
+        Dispatch::Held
+    );
+    assert_eq!(remote.submissions, 0);
+    remote.eligible = true;
+    assert!(reopened
+        .dispatch_review_request(&mut remote, request, owner)
+        .is_err());
+    assert_eq!(
+        fixture
+            .store()
+            .dispatch_review_request(&mut remote, request, owner)
+            .unwrap(),
+        Dispatch::AlreadyReserved
+    );
+    assert_eq!(remote.submissions, 1);
+}
+
+#[test]
 fn idle_claims_preserve_expired_work_until_fenced_completion() {
     let fixture = Fixture::new();
     let store = fixture.store();
