@@ -227,27 +227,29 @@ impl Policy<'_> {
             .changes
             .iter()
             .map(|change| {
+                let paths = [Some(change.path), change.previous_path];
                 let path_tier = self
                     .paths
                     .iter()
                     .filter(|rule| {
-                        [Some(change.path), change.previous_path]
-                            .into_iter()
-                            .flatten()
-                            .any(|path| {
-                                path == rule.path
-                                    || path
-                                        .strip_prefix(rule.path)
-                                        .is_some_and(|rest| rest.starts_with('/'))
-                            })
+                        paths.into_iter().flatten().any(|path| {
+                            path == rule.path
+                                || path
+                                    .strip_prefix(rule.path)
+                                    .is_some_and(|rest| rest.starts_with('/'))
+                        })
                     })
                     .map(|rule| rule.tier)
                     .max()
                     .unwrap_or(Tier::DocsAndTests);
                 match change.kind {
                     _ if path_tier == Tier::Protected => Tier::Protected,
-                    ChangeKind::Documentation | ChangeKind::Test => Tier::DocsAndTests,
-                    ChangeKind::Source | ChangeKind::Other => path_tier.max(Tier::Product),
+                    ChangeKind::Documentation | ChangeKind::Test
+                        if !paths.into_iter().flatten().any(agent_instruction_path) =>
+                    {
+                        Tier::DocsAndTests
+                    }
+                    _ => path_tier.max(Tier::Product),
                 }
             })
             .max()
@@ -258,8 +260,7 @@ impl Policy<'_> {
             tier
         };
         let required: &[Reviewer] = match tier {
-            Tier::DocsAndTests => &[],
-            Tier::Product => &[Reviewer::Codex],
+            Tier::DocsAndTests | Tier::Product => &[Reviewer::Codex],
             Tier::Core => &[Reviewer::Codex, Reviewer::Security],
             Tier::Protected => &[Reviewer::Codex, Reviewer::Security, Reviewer::Owner],
         };
@@ -292,6 +293,12 @@ impl Policy<'_> {
             outstanding,
         }
     }
+}
+
+fn agent_instruction_path(path: &str) -> bool {
+    matches!(path.rsplit('/').next(), Some("AGENTS.md" | "SKILL.md"))
+        || path.split('/').any(|component| component == "skills")
+        || path.starts_with("oxa/oxa-resources/")
 }
 
 pub(super) fn has_removes_note(body: &str) -> bool {

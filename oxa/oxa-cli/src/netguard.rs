@@ -109,38 +109,12 @@ const GH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Run `exe auth token --hostname github.com` under one `deadline` that covers the process and
 /// the reading of its output.
 fn gh_token_from(exe: &Path, deadline: std::time::Duration) -> Option<String> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new(exe)
-        .args(["auth", "token", "--hostname", "github.com"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    // One deadline for the process and for reading its output: the reader runs in a thread so a
-    // helper that leaves the pipe open (a background child) cannot block startup.
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = String::new();
-        let ok = (&mut stdout).take(4096).read_to_string(&mut out).is_ok();
-        let _ = tx.send(ok.then_some(out));
-    });
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait().ok()? {
-            Some(st) if st.success() => break,
-            Some(_) => return None,
-            None if start.elapsed() > deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-            None => std::thread::sleep(std::time::Duration::from_millis(20)),
-        }
+    let mut command = std::process::Command::new(exe);
+    command.args(["auth", "token", "--hostname", "github.com"]);
+    let (code, out) = oxa_work::command_runner(command, Some(4096), deadline)?;
+    if code != 0 {
+        return None;
     }
-    let out = rx.recv_timeout(deadline.saturating_sub(start.elapsed())).ok()??;
     let t = out.trim();
     (!t.is_empty() && !t.chars().any(char::is_whitespace)).then(|| t.to_string())
 }
@@ -310,6 +284,13 @@ mod tests {
         // A parallel test's fork can hold the script's write fd (ETXTBSY): retry the spawn.
         let got = (0..5).find_map(|_| gh_token_from(&gh, GH_DEADLINE));
         assert_eq!(got.as_deref(), Some("SYNTH_TOKEN"));
+    }
+
+    #[test]
+    fn an_oversized_helper_result_is_refused() {
+        let d = tmp("oversized");
+        let gh = script(&d, "gh", "printf '%04097d\\n' 1");
+        assert!(gh_token_from(&gh, GH_DEADLINE).is_none());
     }
 
     /// #122: with cwd = home, a `gh` in a user-owned directory under home (`~/.local/bin`)
