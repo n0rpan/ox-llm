@@ -57,6 +57,150 @@ fn subject() -> Subject<'static> {
 }
 
 #[test]
+fn debug_never_formats_private_standing_text_or_nested_payloads() {
+    let fixture = Fixture::new();
+    let standing = fixture.standing(fixture.facts());
+    let marker = "synthetic-private-standing-value";
+    let mut rule = hold(true, None);
+    rule.said = marker.into();
+    rule.source = super::super::Source::Command {
+        command: marker.into(),
+    };
+    let entry = standing.rule(0, Authority::Owner, 1, rule.clone()).unwrap();
+    let mut request = question();
+    request.question = marker.into();
+    request.meanwhile = Some(marker.into());
+    let ask = standing.ask(1, 2, request.clone()).unwrap();
+    let answered = standing.answer(2, Authority::Owner, 3, answer(&ask)).unwrap();
+    let read = standing.read().unwrap();
+    for output in [
+        format!("{read:?}"),
+        format!("{entry:?}"),
+        format!("{rule:?}"),
+        format!("{:?}", rule.source),
+        format!("{request:?}"),
+        format!("{answered:?}"),
+        format!("{:?}", Value::Text(marker.into())),
+        format!("{:?}", Scope::Branch(marker.into())),
+        format!("{:?}", super::super::Choice::Text(marker.into())),
+        format!(
+            "{:?}",
+            super::super::QuestionOption {
+                label: marker.into(),
+                detail: marker.into()
+            }
+        ),
+    ] {
+        assert!(!output.contains(marker), "Debug exposed private standing data");
+    }
+    assert_eq!(read.entries[0].said, marker);
+    assert!(serde_json::to_string(&read).unwrap().contains(marker));
+}
+
+#[test]
+fn ordinary_facts_cannot_publish_standing_revisions() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts.clone());
+    let change = Fact::StandingChanged(StandingChanged {
+        revision: 1,
+        goal: None,
+        ask_opened: None,
+        ask_closed: None,
+        incident: None,
+    });
+    assert!(facts
+        .append(
+            Checkpoint {
+                source: "other".into(),
+                revision: 1
+            },
+            1,
+            change
+        )
+        .is_err());
+    assert_eq!(facts.situation().unwrap().standing_revision, 0);
+    standing.rule(0, Authority::Owner, 2, hold(true, None)).unwrap();
+    assert_eq!(standing.read().unwrap().revision, 1);
+}
+
+#[test]
+fn standing_asks_do_not_collide_with_another_producers_common_id() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts.clone());
+    let external = oxa_proto::work::Ask {
+        id: "A-1".into(),
+        subject: oxa_proto::work::Subject::Repository,
+        question: "A separate producer question".into(),
+    };
+    facts
+        .append(
+            Checkpoint {
+                source: "runner".into(),
+                revision: 1,
+            },
+            1,
+            Fact::AskOpened(external.clone()),
+        )
+        .unwrap();
+    let ask = standing.ask(0, 2, question()).unwrap();
+    assert_ne!(ask.id, external.id);
+    standing.answer(1, Authority::Owner, 3, answer(&ask)).unwrap();
+    assert_eq!(facts.situation().unwrap().asks, [external]);
+}
+
+fn fill_fact_sources(facts: &Facts, count: usize) {
+    for index in 0..count {
+        facts
+            .append(
+                Checkpoint {
+                    source: format!("producer-{index}"),
+                    revision: 1,
+                },
+                index as u64,
+                Fact::Unblocked(oxa_proto::work::Subject::Repository),
+            )
+            .unwrap();
+    }
+}
+
+#[test]
+fn initialization_reserves_source_capacity_before_the_first_rule() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    fill_fact_sources(&facts, 15);
+    let standing = fixture.standing(facts.clone());
+    let late = facts.append(
+        Checkpoint {
+            source: "late-producer".into(),
+            revision: 1,
+        },
+        16,
+        Fact::Unblocked(oxa_proto::work::Subject::Repository),
+    );
+    assert!(
+        late.is_err(),
+        "ordinary producer consumed the reserved standing slot"
+    );
+    assert_eq!(facts.situation().unwrap().as_of_seq, 15);
+    standing.rule(0, Authority::Owner, 17, hold(true, None)).unwrap();
+    assert_eq!(facts.situation().unwrap().as_of_seq, 16);
+    assert_eq!(standing.read().unwrap().revision, 1);
+}
+
+#[test]
+fn initialization_refuses_an_already_full_nonstanding_source_table() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    fill_fact_sources(&facts, 16);
+    let root = fixture.0.join("standing");
+    assert!(Standing::initialize(&root, Authority::Owner, facts.clone()).is_err());
+    assert!(!root.join("standing.json").exists());
+    assert_eq!(facts.situation().unwrap().as_of_seq, 16);
+}
+
+#[test]
 fn a_fresh_hold_blocks_each_effect_in_a_handle_opened_before_it() {
     let fixture = Fixture::new();
     let facts = fixture.facts();
