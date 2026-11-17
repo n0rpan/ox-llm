@@ -1507,7 +1507,7 @@ fn regular_renderer_refreshes_live_policy_after_load_and_unload() {
     );
     assert!(!term.frames[3].contains("Memory: scope") && !term.frames[3].contains("Memory: inherited"));
     assert!(
-        term.frames[3].contains("\x1b[2K"),
+        term.frames[3].contains("\x1b[K"),
         "unload clears the former live line"
     );
 }
