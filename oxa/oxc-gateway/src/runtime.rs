@@ -783,3 +783,63 @@ impl Drop for Call<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod discovery_budget_tests {
+    use super::*;
+    use crate::pricing::Price;
+
+    #[test]
+    fn discovery_preserves_configured_price_floors_and_long_context_tiers() {
+        let base = "https://example.invalid/api/v1";
+        let provider = Provider::OpenRouter;
+        let alias = "synthetic-alias";
+        let upstream = "synthetic/model";
+        let model = Model::new(alias, provider, upstream, base, 4096, 64).unwrap();
+        let configured = Price::from_model(&json!({"pricing": {"tiers": [
+            {"max_prompt_tokens": 1024, "input_per_million": 3, "output_per_million": 2},
+            {"input_per_million": 12, "output_per_million": 10, "cache_write_per_million": 15}
+        ]}}))
+        .unwrap();
+        let live = Price::from_model(&json!({"pricing": {
+            "input_per_million": 0, "output_per_million": 4, "cache_write_per_million": 8
+        }}))
+        .unwrap();
+        let mut runtime = Runtime::new(
+            [(model, Some(Billing::Metered(configured)))],
+            PathBuf::from("/synthetic/credentials.json"),
+            PathBuf::from("/synthetic/ledger"),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: Some(1.0),
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        let source = Source::new(provider, base).unwrap();
+        let offer = Offer {
+            id: upstream.into(),
+            context: Some(4096),
+            max_output: Some(64),
+            price: Some(live),
+        };
+        assert_eq!(
+            runtime.apply_provider_catalog(&source, vec![offer]).unwrap(),
+            (0, 0)
+        );
+        let Some(Billing::Metered(price)) = runtime.billings.get(alias) else {
+            panic!("the discovered model lost its metered route");
+        };
+        let tiers = price.normalized()["tiers"]
+            .as_array()
+            .expect("configured tiers survived");
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0]["max_prompt_tokens"].as_u64(), Some(1024));
+        assert_eq!(tiers[0]["input_per_million"].as_f64(), Some(3.0));
+        assert_eq!(tiers[0]["output_per_million"].as_f64(), Some(4.0));
+        assert_eq!(tiers[0]["cache_write_per_million"].as_f64(), Some(8.0));
+        assert_eq!(tiers[1]["input_per_million"].as_f64(), Some(12.0));
+        assert_eq!(tiers[1]["output_per_million"].as_f64(), Some(10.0));
+        assert_eq!(tiers[1]["cache_write_per_million"].as_f64(), Some(15.0));
+    }
+}
