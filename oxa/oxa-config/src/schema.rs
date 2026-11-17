@@ -161,6 +161,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.envNote", Kind::Bool, "null"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
     key("oxa.local", Kind::Object, "{}"),
+    key("oxa.local.vCacheThp", Kind::Bool, "false"),
     key("oxa.maxTurns", Kind::Number, "null"),
     key(
         "oxa.mode",

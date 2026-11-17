@@ -42,7 +42,13 @@ fn installed_layout_needs_no_profile_or_filesystem_probe() {
         ]
         .map(OsString::from)
     );
-    assert_eq!(p.environment, BTreeMap::from([("LANG".into(), "C.UTF-8".into())]));
+    assert_eq!(
+        p.environment,
+        BTreeMap::from([
+            ("LANG".into(), "C.UTF-8".into()),
+            ("OXE_KV_V_THP".into(), "0".into())
+        ])
+    );
 }
 
 #[test]

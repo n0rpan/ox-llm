@@ -80,6 +80,14 @@ impl Settings {
             &project_src,
         )
     }
+    /// V-cache THP is a user-only launch choice, independent of project trust.
+    pub fn local_v_cache_thp(&self) -> bool {
+        self.user
+            .pointer("/oxa/local/vCacheThp")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
     /// Whether the project's own settings file declares a non-empty `done` list. Reads the file
     /// whatever the trust (it only looks at that key and never merges it), so the caller can
     /// say that the checks were skipped for an untrusted project.

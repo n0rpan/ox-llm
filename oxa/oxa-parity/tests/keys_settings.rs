@@ -3816,3 +3816,21 @@ fn key_020() {
     t.key("f2");
     t.wait_text("3/3 enabled");
 }
+
+#[test]
+fn local_v_cache_thp_settings_real_cli_saves_shared_key_and_shows_next_load() {
+    let t = Setup::new().start();
+    t.type_text("/settings");
+    t.key("enter");
+    t.wait_text("Settings");
+    t.type_text("v cache thp");
+    t.wait_text("next model load");
+    t.wait_text("1.2-1.4 GiB");
+    t.key("enter");
+    t.wait("shared user toggle saved", |_| {
+        std::fs::read_to_string(t.env.agent_dir().join("settings.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .is_some_and(|v| v.pointer("/oxa/local/vCacheThp") == Some(&Value::Bool(true)))
+    });
+}

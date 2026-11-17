@@ -22,6 +22,26 @@ pub fn configured_engine(
     private_dir: PathBuf,
     opts: StreamOpts,
 ) -> Result<Arc<dyn Engine>, OxaError> {
+    configure(local, private_dir, opts, None)
+}
+
+/// The launch-only tuning toggle is reread from the caller's user settings file at each cold
+/// load. Executable, model, budget and every other launch field remain the validated snapshot.
+pub fn configured_engine_with_settings_file(
+    local: Option<&Value>,
+    private_dir: PathBuf,
+    opts: StreamOpts,
+    settings_file: PathBuf,
+) -> Result<Arc<dyn Engine>, OxaError> {
+    configure(local, private_dir, opts, Some(settings_file))
+}
+
+fn configure(
+    local: Option<&Value>,
+    private_dir: PathBuf,
+    opts: StreamOpts,
+    settings_file: Option<PathBuf>,
+) -> Result<Arc<dyn Engine>, OxaError> {
     let local = local.and_then(Value::as_object).ok_or_else(invalid)?;
     if local.keys().any(|k| {
         !matches!(
@@ -32,6 +52,7 @@ pub fn configured_engine(
                 | "environment"
                 | "idle_unload_seconds"
                 | "startup_timeout_seconds"
+                | "vCacheThp"
         )
     }) {
         return Err(invalid());
@@ -125,6 +146,7 @@ pub fn configured_engine(
         let alias_owned = alias.clone();
         let layout = layout.clone();
         let user = user.clone();
+        let settings_file = settings_file.clone();
         models.push(LocalModel {
             alias: alias.clone(),
             context_window: context,
@@ -135,6 +157,10 @@ pub fn configured_engine(
                 let mut profile =
                     from_user_settings(&user, &layout, &alias_owned, port).map_err(|_| invalid())?;
                 crate::admission::bind_context(&mut profile.arguments, context)?;
+                if let Some(path) = &settings_file {
+                    profile.environment.insert("OXE_KV_V_THP".into(),
+                        if read_v_cache_thp(path)? { "1" } else { "0" }.into());
+                }
                 // Check only at cold load/switch, before creating child authentication.
                 // Discovery never inspects weights or runs the engine.
                 let required = required_for_weights(&profile.model, &budget, context)?;
@@ -170,6 +196,37 @@ pub fn configured_engine(
     }
     Ok(Arc::new(LocalEngine::new(models, private_dir, opts, policy)?))
 }
+/// Read only the shared user toggle; do not reload model paths, budgets or project settings.
+fn read_v_cache_thp(path: &std::path::Path) -> Result<bool, OxaError> {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(invalid()),
+    };
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| invalid())?;
+    if bytes.len() > 1024 * 1024 {
+        return Err(invalid());
+    }
+    let value: Value = serde_json::from_slice(&bytes).map_err(|_| invalid())?;
+    if !value.is_object() {
+        return Err(invalid());
+    }
+    if value.get("oxa").is_some_and(|v| !v.is_object())
+        || value.pointer("/oxa/local").is_some_and(|v| !v.is_object())
+    {
+        return Err(invalid());
+    }
+    match value.pointer("/oxa/local/vCacheThp") {
+        None => Ok(false),
+        Some(Value::Bool(enabled)) => Ok(*enabled),
+        _ => Err(invalid()),
+    }
+}
+
 fn required_for_weights(model: &std::path::Path, budget: &Value, context: u32) -> Result<u64, OxaError> {
     let weights = std::fs::metadata(model).ok().filter(|m| m.is_file()).ok_or_else(||
         OxaError::new(codes::NOT_FOUND, "Local weights are missing; set oxa.local.models.<alias>.model to an existing GGUF path. No download is attempted."))?;
@@ -425,5 +482,30 @@ mod tests {
             );
         }
         assert!(!env.work().join("private").exists());
+    }
+}
+
+#[cfg(test)]
+mod v_cache_thp_tests {
+    use super::*;
+    use oxa_fake::TestEnv;
+
+    #[test]
+    fn user_toggle_is_reread_at_next_load_and_malformed_values_fail_closed() {
+        let env = TestEnv::new();
+        let path = env.work().join("settings.json");
+        assert!(!read_v_cache_thp(&path).unwrap());
+        for enabled in [true, false] {
+            std::fs::write(
+                &path,
+                serde_json::json!({"oxa":{"local":{"vCacheThp":enabled}}}).to_string(),
+            )
+            .unwrap();
+            assert_eq!(read_v_cache_thp(&path).unwrap(), enabled);
+        }
+        for value in ["not json", "[]", r#"{"oxa":{"local":{"vCacheThp":"on"}}}"#] {
+            std::fs::write(&path, value).unwrap();
+            assert!(read_v_cache_thp(&path).is_err());
+        }
     }
 }

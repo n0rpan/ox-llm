@@ -98,7 +98,7 @@ pub(crate) fn select_observed(
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
     if user.bool(oxc_local::LOCAL_SETTING, false) {
-        return oxc_local::configured_engine(
+        return oxc_local::configured_engine_with_settings_file(
             user.get("oxa.local"),
             dirs.agent_dir.join("local-engine"),
             oxa_engine::StreamOpts {
@@ -106,6 +106,7 @@ pub(crate) fn select_observed(
                     .unwrap_or(365 * 24 * 3600 * 1000),
                 ..oxa_engine::StreamOpts::default()
             },
+            dirs.settings_file(),
         );
     }
     if !user.bool(SETTING, false) {

@@ -58,14 +58,18 @@ pub fn setting_items(settings: &Settings) -> Vec<SettingItem> {
                 Kind::Enum(values) => SettingKind::Choice(values.iter().map(|v| v.to_string()).collect()),
                 Kind::StringList | Kind::Object | Kind::Any => return None,
             };
-            let value = settings
+            let value = if def.key == "oxa.local.vCacheThp" {
+                Value::Bool(settings.local_v_cache_thp())
+            } else { settings
                 .get(def.key)
                 .cloned()
-                .unwrap_or_else(|| serde_json::from_str(def.default).unwrap_or(Value::Null));
+                .unwrap_or_else(|| serde_json::from_str(def.default).unwrap_or(Value::Null)) };
             Some(SettingItem {
                 key: def.key.to_string(),
                 label: humanize(def.key),
-                description: format!("{} (default {})", def.key, def.default),
+                description: if def.key == "oxa.local.vCacheThp" {
+                    "Faster generation (~1%) at the cost of ~1.2-1.4 GiB more RAM. Applies on next model load; unload/reload a running model.".into()
+                } else { format!("{} (default {})", def.key, def.default) },
                 kind,
                 value,
             })
@@ -390,6 +394,18 @@ impl SettingsSelector {
             Some((_, sub)) => lines.extend(sub.render(width, theme)),
             None => lines.extend(self.list.render(width, theme)),
         }
+        if self
+            .list
+            .selected()
+            .is_some_and(|item| item.value == "oxa.local.vCacheThp")
+        {
+            for text in [
+                "THP on: ~1% faster generation; ~1.2-1.4 GiB more RAM.",
+                "Default off. Applies on next model load; unload/reload first.",
+            ] {
+                lines.push(theme.fg("muted", &truncate_to_width(text, w, "")));
+            }
+        }
         lines.push(theme.fg("muted", &truncate_to_width(&self.hint, w, "")));
         lines
     }
@@ -402,4 +418,28 @@ fn hint_text(keymap: &Keymap) -> String {
         key_label(keymap, "tui.select.confirm"),
         key_label(keymap, "tui.select.cancel")
     )
+}
+
+#[cfg(test)]
+mod v_cache_thp_tests {
+    use super::*;
+
+    #[test]
+    fn shared_toggle_is_user_only_and_renders_tradeoff_and_reload_notice() {
+        let settings = Settings::from_values(
+            serde_json::json!({}),
+            serde_json::json!({"oxa":{"local":{"vCacheThp":true}}}),
+        );
+        let items = setting_items(&settings);
+        let toggle = items
+            .iter()
+            .find(|item| item.key == "oxa.local.vCacheThp")
+            .unwrap();
+        assert_eq!(toggle.value, Value::Bool(false));
+        let mut selector = SettingsSelector::new(items);
+        selector.select_key("oxa.local.vCacheThp");
+        let text = selector.render(120, &Theme::plain()).join("\n");
+        assert!(text.contains("1.2-1.4 GiB"));
+        assert!(text.contains("next model load"));
+    }
 }

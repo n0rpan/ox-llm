@@ -15,6 +15,11 @@ Column {
     property color accent: Commons.Color.accent
     property color urgent: Commons.Color.urgent
     property string face: Style.font.family
+    property bool vCacheThp: false
+    property bool vCacheThpKnown: false
+    property bool vCacheThpBusy: false
+    property bool vCacheThpFailed: false
+    signal vCacheThpRequested(bool enabled)
     property bool busy: false
     property var preparing: []
 
@@ -24,6 +29,25 @@ Column {
     signal forgetRequested(string name)
     signal flashCacheRequested(string preference)
     signal modeRequested(string mode)
+
+    Ui.Button {
+        width: parent.width
+        text: root.strings.t("vCacheThp.title") + ": " +
+            (root.vCacheThpKnown ? (root.vCacheThp ? root.strings.t("vCacheThp.on") : root.strings.t("vCacheThp.off")) : root.strings.t("vCacheThp.unavailable"))
+        enabled: root.vCacheThpKnown && !root.vCacheThpBusy
+        foreground: root.foreground
+        accent: root.accent
+        fontFamily: root.face
+        onClicked: root.vCacheThpRequested(!root.vCacheThp)
+    }
+    Label {
+        width: parent.width
+        wrapMode: Text.WordWrap
+        color: root.foreground
+        font.family: root.face
+        text: root.strings.t("vCacheThp.tradeoff") + " " + root.strings.t("vCacheThp.nextLoad")
+            + (root.vCacheThpFailed ? " " + root.strings.t("vCacheThp.failed") : "")
+    }
 
     component T: Label { color: root.foreground; font.family: root.face }
 

@@ -13,6 +13,7 @@ QtObject {
   readonly property string scenarioFile: args.length >= 2 ? args[args.length - 2] : ""
   readonly property string fixtures: Qt.resolvedUrl("../../fixtures/panel/")
   readonly property var scenario: JSON.parse(read("file://" + scenarioFile))
+  property bool vCacheThp: scenario.v_cache_thp === true
   property var calls: []
   property real cardHeight: 0
 
@@ -29,6 +30,12 @@ QtObject {
     var s = scenario
     var name = command.length > 1 ? String(command[1]) : ""
     calls = calls.concat([command.slice(1).join(" ")])
+    if (name === "config" && command[2] === "v-cache-thp") {
+      if (s.v_cache_thp_fail === true) return { started: true, code: 1, text: "" }
+      if (command[3] === "on") vCacheThp = true
+      if (command[3] === "off") vCacheThp = false
+      return { started: true, code: 0, text: JSON.stringify({enabled:vCacheThp, applies:"next-model-load"}) }
+    }
     if (name === "status") {
       if (s.status_missing === true) return { started: false, text: "", code: -1 }
       return { started: true, code: s.status_exit || 0,

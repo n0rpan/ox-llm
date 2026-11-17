@@ -209,6 +209,13 @@ pub fn from_user_settings(
     }) {
         return Err(Error::Environment);
     }
+    let v_cache_thp = match local.and_then(|v| v.get("vCacheThp")) {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        _ => return Err(Error::Settings),
+    };
+    // This shared toggle owns the knob; raw environment cannot silently reverse it.
+    environment.insert("OXE_KV_V_THP".into(), if v_cache_thp { "1" } else { "0" }.into());
     Ok(LaunchProfile {
         binary,
         model,

@@ -12,6 +12,38 @@ Ui.Panel {
     moduleName: "snapdragon.local-ai"
     ipcTarget: "snapdragon.local-ai"
 
+    readonly property string oxaExecutable: (Quickshell.env("HOME") || "") + "/.local/bin/oxa"
+    property bool vCacheThp: false
+    property bool vCacheThpKnown: false
+    property bool vCacheThpFailed: false
+    function refreshVCacheThp() {
+        if (!vCacheSetting.running) {
+            vCacheSetting.command = [root.oxaExecutable, "config", "v-cache-thp", "--json"]
+            vCacheSetting.running = true
+        }
+    }
+    function setVCacheThp(enabled) {
+        if (vCacheSetting.running) return
+        vCacheSetting.command = [root.oxaExecutable, "config", "v-cache-thp", enabled ? "on" : "off"]
+        vCacheSetting.running = true
+    }
+    Process {
+        id: vCacheSetting
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    var setting = JSON.parse(this.text)
+                    root.vCacheThpKnown = typeof setting.enabled === "boolean"
+                        && setting.applies === "next-model-load"
+                    if (root.vCacheThpKnown) root.vCacheThp = setting.enabled
+                } catch (_) { root.vCacheThpKnown = false }
+            }
+        }
+        onExited: function(code) {
+            root.vCacheThpFailed = code !== 0
+            if (code !== 0) root.vCacheThpKnown = false
+        }
+    }
     property var vm: Model.parse("", 0)
     property var ledger: Model.parseLedger("")
     property var storage: Model.parseStorage("")
@@ -164,6 +196,7 @@ Ui.Panel {
 
     onOpenedChanged: {
         if (opened) {
+            root.refreshVCacheThp()
             root.refresh()
             root.refreshLedger()
             root.refreshShare()
@@ -263,7 +296,7 @@ Ui.Panel {
         running: root.setting("pollEnabled", true) && !root.pollingPaused
         repeat: true
         triggeredOnStart: true
-        onTriggered: root.refresh()
+        onTriggered: { root.refresh(); root.refreshVCacheThp() }
     }
 
     Timer {
@@ -468,6 +501,11 @@ Ui.Panel {
                             visible: root.shownView === "models"
                             width: body.width
                             vm: root.vm
+                            vCacheThp: root.vCacheThp
+                            vCacheThpKnown: root.vCacheThpKnown
+                            vCacheThpBusy: vCacheSetting.running
+                            vCacheThpFailed: root.vCacheThpFailed
+                            onVCacheThpRequested: function(enabled) { root.setVCacheThp(enabled) }
                             strings: localAiStrings
                             foreground: root.foreground
                             accent: root.accent

@@ -7,6 +7,9 @@ use std::path::Path;
 
 /// `oxa config` (print the resolved settings and their sources). Returns the exit code.
 pub fn run_config(words: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i32, OxaError> {
+    if words.first().is_some_and(|word| word == "v-cache-thp") {
+        return v_cache_thp(words, dirs, cwd, out);
+    }
     for word in words {
         match word.as_str() {
             // Accepted for symmetry with pi's `config -l`; the settings listing is the same.
@@ -67,4 +70,30 @@ fn lookup<'a>(root: &'a Json, key: &str) -> Option<&'a Json> {
         cur = cur.as_object()?.get(part)?;
     }
     Some(cur)
+}
+
+/// Narrow widget entry point: same user file and atomic writer as `/settings`.
+fn v_cache_thp(words: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<i32, OxaError> {
+    let enabled = match words.get(1).map(String::as_str) {
+        Some("on") if words.len() == 2 => Some(true),
+        Some("off") if words.len() == 2 => Some(false),
+        Some("--json") if words.len() == 2 => None,
+        _ => {
+            return Err(OxaError::new(
+                codes::USAGE,
+                "usage: oxa config v-cache-thp on|off|--json",
+            ))
+        }
+    };
+    let mut settings = Settings::load(dirs, cwd, false);
+    if let Some(enabled) = enabled {
+        settings.set(dirs, cwd, "oxa.local.vCacheThp", Json::Bool(enabled), false)?;
+    }
+    writeln!(
+        out,
+        "{}",
+        serde_json::json!({"enabled":settings.local_v_cache_thp(),"applies":"next-model-load"})
+    )
+    .map_err(|error| OxaError::io("cannot write V-cache setting", &error))?;
+    Ok(0)
 }

@@ -85,7 +85,8 @@ Item {
   Timer {
     interval: 200; running: true
     onTriggered: {
-      if (Array.isArray(root.scenario.act)) panel.act(root.scenario.act)
+      if (typeof root.scenario.v_cache_thp_set === "boolean") panel.setVCacheThp(root.scenario.v_cache_thp_set)
+      else if (Array.isArray(root.scenario.act)) panel.act(root.scenario.act)
       else if (typeof root.scenario.mode === "string") panel.setMode(root.scenario.mode)
       else if (typeof root.scenario.share_to === "string") panel.setShare(root.scenario.share_to)
       else if (Array.isArray(root.scenario.share_steps)) root.shareSteps(root.scenario.share_steps)

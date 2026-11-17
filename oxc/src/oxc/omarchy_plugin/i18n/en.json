@@ -273,5 +273,12 @@
 
   "footer.paused": "Updates paused",
   "footer.pause": "Pause updates. The panel refreshes every 5 s; refreshing never loads a model.",
-  "footer.resume": "Resume updates"
+  "footer.resume": "Resume updates",
+  "vCacheThp.title": "V-cache huge pages",
+  "vCacheThp.on": "On",
+  "vCacheThp.off": "Off (less RAM)",
+  "vCacheThp.unavailable": "Unavailable",
+  "vCacheThp.tradeoff": "Faster generation (~1%) at the cost of ~1.2-1.4 GiB more RAM.",
+  "vCacheThp.nextLoad": "Applies on next model load; unload/reload a running model.",
+  "vCacheThp.failed": "Setting could not be saved."
 }

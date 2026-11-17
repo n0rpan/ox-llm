@@ -138,3 +138,25 @@ slimming, Studio, legacy completions or a separate controller CLI.
 synthetic GGUF. Tests mount explicit fake kernel metadata in a private namespace;
 that is a protocol/lifecycle proof, not hardware qualification or real-model
 acceptance. The orchestrator performs the real local task acceptance separately.
+
+### V-cache huge pages (#858, O-378; after v0.2.1)
+
+`oxa.local.vCacheThp` is a user-only boolean, **false by default**. Both `/settings`
+and the oxc desktop widget write this same key in oxa's user settings file. The
+widget uses `oxa config v-cache-thp on|off`; `--json` reads the saved value without
+contacting a controller or loading a model.
+
+THP on means roughly 1% faster generation at the cost of roughly 1.2–1.4 GiB more
+resident RAM, as measured in the owner's M3 batch. These are workload-specific
+observations, not new measurements or a hardware qualification of this change.
+The lower-memory default is useful on memory-constrained machines or when running
+two models. This only sets the existing V-cache `OXE_KV_V_THP` engine knob, not
+process-wide or system THP, and takes precedence over raw launch environment.
+
+Changes apply **on the next model load**: unload/reload an already running model.
+The running engine is never restarted by the toggle. At cold load only this boolean
+is reread from the user settings file; model paths, arguments and admission budgets
+remain the validated launch snapshot. Invalid/unreadable or oversized (>1 MiB)
+settings refuse that load; a missing file/key selects false. The native factory's
+trust, version, authentication and memory guards remain in force. Hardware identity
+and quality must be checked by the owner before shipping this post-v0.2.1 change.

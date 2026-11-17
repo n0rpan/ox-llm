@@ -29,6 +29,17 @@ REASON = 'Not enough free RAM to load Ornith: 19.2 GiB needed, 6.0 GiB free.'
 
 @unittest.skipUnless(shutil.which('qml6'), 'qml6 is not installed')
 class PanelV013States(unittest.TestCase):
+    def test_v_cache_thp_shared_setting_default_toggle_and_failure(self):
+        for initial, target in [(False, True), (True, False)]:
+            probe = self.render('ready', v_cache_thp=initial, v_cache_thp_set=target)['models']
+            calls = [call for call in probe['calls'] if call.startswith('config v-cache-thp ')]
+            self.assertIn('config v-cache-thp --json', calls)
+            self.assertEqual(calls.count('config v-cache-thp ' + ('on' if target else 'off')), 1)
+            self.assertTrue(any('next model load' in text for text in probe['texts']))
+            self.assertTrue(any('1.2-1.4 GiB' in text for text in probe['texts']))
+        failed = self.render('ready', v_cache_thp_fail=True)['models']
+        self.assertTrue(any('Unavailable' in text for text in failed['texts']))
+
     def render(self, name, label=None, **changes):
         """Runs one scenario; returns {tab: probe} after checking the log, the exit and the images."""
         scenario = json.loads((SCENARIOS / f'{name}.json').read_text(encoding='utf-8'))
