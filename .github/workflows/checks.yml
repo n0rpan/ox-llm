@@ -364,10 +364,12 @@ jobs:
     # and qwen4exp used to enter their ARM C builds unconditionally (-march=armv8.6-a, -mcpu=oryon-1,
     # a pre-existing production ggml archive), so nothing could check the workspace off aarch64. Both
     # build scripts now return before any compiler or archive access and their kernel entry points
-    # refuse instead of returning fabricated results; this job holds that contract. Always a
-    # GitHub-hosted runner (never the project's own x86_64 workers) and an isolated HOME/XDG.
+    # refuse instead of returning fabricated results; this job holds that contract. It needs any
+    # x86_64 Linux host, so it goes through the project's runner expression (checks.yml's split:
+    # the project's x86_64 workers when the switch is on, hosted ubuntu-24.04 otherwise) with an
+    # isolated HOME/XDG.
     name: engine workspace check, non-aarch64 (x86_64)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OXCI == 'on' && (github.event_name != 'pull_request' && 'oxci' || (vars.OXCI_PR == 'on' && github.event.pull_request.head.repo.full_name == github.repository) && 'oxci-pr') || 'ubuntu-24.04' }}
     timeout-minutes: 60
     env:
       RUSTUP_TOOLCHAIN: "1.99.1"
