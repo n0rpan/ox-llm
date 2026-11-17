@@ -1,5 +1,23 @@
 # Opt-in orchestrator foundations
 
+## A2A carry: bounded follow history (#629)
+
+The default-off `a2a` feature exposes `follow::History`, extracted from
+#129 `f89ba2e`'s `control.rs` publisher/history and exclusive-after event pages.
+It retains at most 128 events / 512 KiB and returns at most 16 events per page.
+The reconnect cursor is the last returned event, separately from the latest
+sequence. A retention gap requires a fresh snapshot from the session owner.
+The #436 pagination regression intent is retained with the exclusive cursor.
+Oversized individual events are rejected before changing history or sequence.
+
+This is an in-memory primitive for an existing owner, with no socket, CLI,
+thread, task/goal ledger or delivery receipt. Callers must supply approved
+summaries; it neither captures nor redacts raw transcripts. Live follow/control
+wiring remains a separate carry slice. Normal builds leave `a2a` off; the test
+self-dependency enables it so ordinary hosted crate tests exercise the port.
+
+## Existing core foundations
+
 Independently testable foundations from rollup #88 for [issue #282](https://github.com/oxstack/ox-llm/issues/282).
 Private audit storage, approved text snapshots and private review copies are
 present here. No worker, listener, CLI command,

@@ -1,7 +1,12 @@
 //! D13: mode choice and wiring.
 // ported from pi packages/coding-agent/src/main.ts
+mod mode;
+
+use mode::headless_argument_error;
+pub use mode::{choose_mode, RunMode};
+
 use crate::hooks::{build_hooks, HookInputs, HookSets};
-use crate::{parse_args, run_config, run_mcp, run_pkg, usage_text, Args, ModeArg, Subcommand};
+use crate::{parse_args, run_config, run_mcp, run_pkg, usage_text, Args, Subcommand};
 use oxa_config::{
     dirs_from_env, resolve_model, Dirs, Endpoint, Env, Keymap, ModelRef, ModelsConfig, Settings,
 };
@@ -51,52 +56,7 @@ impl Stdio {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RunMode {
-    Interactive,
-    Print,
-    Json,
-    Rpc,
-}
-
-/// cli.md's tty rules (see the crate docs). Pure.
-pub fn choose_mode(a: &Args, stdin_is_tty: bool, stdout_is_tty: bool) -> RunMode {
-    match a.mode {
-        Some(ModeArg::Rpc) => RunMode::Rpc,
-        Some(ModeArg::Json) => RunMode::Json,
-        _ if a.print || !stdin_is_tty || !stdout_is_tty => RunMode::Print,
-        _ => RunMode::Interactive,
-    }
-}
-
 pub(crate) const USAGE_HINT: &str = "Run `oxa --help` for the list of options.";
-
-fn headless_argument_error(argv: &[String], stdin_tty: bool, stdout_tty: bool) -> bool {
-    let standalone = parse_args(&argv[..argv.len().min(1)], &[])
-        .ok()
-        .is_some_and(|args| args.subcommand.is_some());
-    let flags: Vec<&str> = argv
-        .iter()
-        .map(String::as_str)
-        .take_while(|arg| *arg != "--")
-        .collect();
-    let single_action = flags.iter().any(|arg| {
-        ["--export", "--list-models", "--help", "-h", "--version", "-v"]
-            .iter()
-            .any(|flag| *arg == *flag || arg.starts_with(&format!("{flag}=")))
-    });
-    if standalone || single_action {
-        return false;
-    }
-    !stdin_tty
-        || !stdout_tty
-        || flags
-            .iter()
-            .any(|arg| matches!(*arg, "-p" | "--print" | "--mode=rpc" | "--mode=json"))
-        || flags
-            .windows(2)
-            .any(|pair| pair[0] == "--mode" && matches!(pair[1], "rpc" | "json"))
-}
 
 /// #868: the help text a subcommand asks for, or `None` when it asks for none.
 ///
@@ -326,7 +286,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let user = Settings::load(&dirs, &cwd, false);
-        let engine = match crate::in_process::select(&user, &user, &dirs, || engine_for(&endpoint)) {
+        let engine = match crate::in_process::select(&user, &user, &dirs, None, || engine_for(&endpoint)) {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
@@ -744,10 +704,24 @@ fn prepare(
     }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
+    let has_model_scope = a.models.as_ref().map_or_else(
+        || !settings.list("enabledModels").is_empty(),
+        |patterns| !patterns.is_empty(),
+    );
+    let resuming = a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
+    let requested_model = a.model.clone().or_else(|| {
+        // The core chooses a restored/scoped model instead of an unused default.
+        if resuming || has_model_scope {
+            None
+        } else {
+            settings.string("defaultModel")
+        }
+    });
     let engine = child.wrap(crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
+        requested_model.as_deref(),
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         || engine_with_settings(&endpoint, &settings),
     )?);
@@ -960,8 +934,12 @@ fn prepare(
         no_tools: a.no_tools,
         default_edits: settings.default_tools_edits(),
     };
-    let status = (!a.no_session).then(|| Arc::new(crate::status::StatusWriter::new(a.stall_timeout)));
-    let result_facts = Arc::new(crate::result_facts::ResultFacts::new(status.clone()));
+    let status = (!a.no_session).then(|| {
+        Arc::new(crate::status::StatusWriter::new(a.stall_timeout).with_billing(cloud_diagnostics.clone()))
+    });
+    let result_facts = Arc::new(
+        crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
+    );
     let built = Built {
         status,
         result_facts,
@@ -1648,12 +1626,17 @@ pub(crate) fn stream_silence_timeout(settings: &Settings) -> Option<u64> {
         .or_else(|| settings.http_idle_timeout_ms())
 }
 
-/// The provider column: the controller's `remote_provider` (else `cloud`) for a cloud model,
-/// the endpoint name for a local one.
+/// The provider column: the controller's `remote_provider`, else the remote model id's
+/// provider prefix (or `cloud` for an unprefixed id); the endpoint name for a local one.
 fn row_provider(endpoint: &str, info: &oxa_proto::EngineInfo) -> String {
     match (info.caps.remote, info.caps.remote_provider) {
         (_, Some(p)) => p.to_string(),
-        (true, None) => "cloud".to_string(),
+        (true, None) => info
+            .limits_for
+            .split_once('/')
+            .filter(|(provider, model)| !provider.is_empty() && !model.is_empty())
+            .map_or("cloud", |(provider, _)| provider)
+            .to_string(),
         _ => endpoint.to_string(),
     }
 }
@@ -2010,6 +1993,7 @@ fn exit_code(e: &OxaError) -> i32 {
     match e.code {
         codes::USAGE | codes::ENGINE_DOWN | codes::UNSUPPORTED_IN_OXA => 2,
         codes::BUDGET_EXHAUSTED => oxa_proto::EXIT_BUDGET,
+        codes::TERMINAL_CLOSED => 129,
         _ => 1,
     }
 }
@@ -2180,6 +2164,29 @@ mod model_limits_tests {
         };
         assert_eq!(col0("anthropic/claude-sonnet-5-5"), "anthropic");
         assert_eq!(col0("local"), "oxe");
+    }
+
+    #[test]
+    fn list_models_provider_falls_back_to_remote_model_prefix() {
+        let mut info = CatalogEngine.info(None).unwrap();
+        info.caps.remote = true;
+        info.caps.remote_provider = None;
+        for (id, expected) in [
+            ("chatgpt/subscription-model", "chatgpt"),
+            ("future-provider/model", "future-provider"),
+            ("unprefixed-model", "cloud"),
+            ("/model", "cloud"),
+            ("provider/", "cloud"),
+        ] {
+            info.limits_for = id.to_string();
+            assert_eq!(row_provider("oxe", &info), expected, "{id}");
+        }
+        info.limits_for = "chatgpt/subscription-model".to_string();
+        info.caps.remote_provider = Some("openrouter");
+        assert_eq!(row_provider("oxe", &info), "openrouter", "gateway provider wins");
+        info.caps.remote_provider = None;
+        info.caps.remote = false;
+        assert_eq!(row_provider("oxe", &info), "oxe", "local endpoint is unchanged");
     }
 
     /// A failing per-model `info(Some(id))` degrades only that row: '?' in the context,

@@ -17,6 +17,15 @@ external acceptance bind a full PR head. A head-independent `Subject::PullReques
 available for blocks, asks and future standing holds. Task, host, repository and inbox subjects
 also exist, including tasks that do not yet have a PR.
 
+`TaskTransition { task, step, session_id, reason }` reports every durable runner step:
+`preparing → worker → acceptance → repair/recheck → saving → finished`. Each observation gets
+its own checkpoint revision; worker completion and local acceptance may have separate revisions.
+`TaskStep` is closed, `session_id` is optional until known, and `StepReason` is a closed code
+such as `checks_failed`, `session_unavailable` or `deadline`, not diagnostic prose. A finished
+step requires a reason and says only that this local attempt ended. It does not imply acceptance,
+publication or merge. These observations are routine; a separate block/ask/incident carries any
+attention condition. Running situation rows expose their current step and cannot be `finished`.
+
 `Snapshot` is a materialized read view: `as_of_seq`, observation time, standing revision, optional
 goal, running tasks (host, branch, worktree and optional session), locally accepted work,
 publications, landed PRs, blocks, asks and incidents. It is not authoritative task state.

@@ -108,6 +108,36 @@ fn the_context_size_comes_from_the_remote_capability_row() {
     assert!(stdout.contains("64K"), "the row's context wins: {stdout}");
 }
 
+/// Subscription models must be discoverable by provider, without guessing capabilities.
+#[test]
+fn list_models_chatgpt_provider_and_published_modalities() {
+    for omit_modality in [false, true] {
+        let env = TestEnv::new();
+        let server = FakeServer::start(
+            Vec::new(),
+            FakeOpts {
+                model: "chatgpt/subscription-model".to_string(),
+                remote: Some("chatgpt"),
+                omit_modality,
+                ..FakeOpts::default()
+            },
+        )
+        .expect("fake controller");
+        let out = run(&env, &server.url(), &["--list-models", "chatgpt"], &[]);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "stdout: {stdout}\nstderr: {stderr}");
+        let rows: Vec<_> = stdout.lines().skip(1).collect();
+        assert_eq!(rows.len(), 1, "{stdout}");
+        let cells: Vec<_> = rows[0].split_whitespace().collect();
+        assert_eq!(cells[0], "chatgpt", "subscription provider: {stdout}");
+        assert_eq!(cells[1], "chatgpt/subscription-model");
+        let expected = if omit_modality { ["?", "?"] } else { ["yes", "no"] };
+        assert_eq!(cells[4..], expected, "published capabilities: {stdout}");
+        assert!(server.requests().is_empty(), "listing must not generate");
+    }
+}
+
 #[test]
 fn offline_refuses_a_remote_model() {
     let env = TestEnv::new();
