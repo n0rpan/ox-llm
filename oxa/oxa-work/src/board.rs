@@ -33,7 +33,7 @@ pub enum Mergeability {
 }
 
 /// Normalized GitHub facts: findings are unresolved; required CI describes the current head.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct PullRequest {
     pub number: u64,
     pub head: String,
@@ -46,6 +46,23 @@ pub struct PullRequest {
     pub draft: bool,
     /// Required review policy is satisfied for the PR's own diff, not merely an old head.
     pub reviewed: bool,
+}
+
+impl std::fmt::Debug for PullRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PullRequest")
+            .field("number", &self.number)
+            .field("head", &self.head)
+            .field("release_pinned", &self.release_pinned)
+            .field("findings", &self.findings)
+            .field("required_ci", &self.required_ci)
+            .field("mergeability", &self.mergeability)
+            .field("body", &"<redacted>")
+            .field("removes_source", &self.removes_source)
+            .field("draft", &self.draft)
+            .field("reviewed", &self.reviewed)
+            .finish()
+    }
 }
 
 /// The adapter must return the complete open-PR snapshot or fail, never a partial page.
