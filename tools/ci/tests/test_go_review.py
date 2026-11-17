@@ -20,7 +20,7 @@ FILES = [{'filename': 'oxa/sample.rs', 'status': 'modified', 'additions': 1, 'de
           'patch': '@@ -1 +1 @@\n-old\n+new'}]
 PR = {'number': 7, 'state': 'open', 'draft': False, 'author_association': 'MEMBER',
       'head': {'sha': SHA, 'repo': {'full_name': review.REPO}},
-      'base': {'repo': {'full_name': review.REPO}}, 'labels': [],
+      'base': {'ref': 'main', 'repo': {'full_name': review.REPO}}, 'labels': [],
       'additions': 1, 'deletions': 1, 'changed_files': 1}
 
 
@@ -37,7 +37,8 @@ def finding(**changes):
 
 
 class GoReview(unittest.TestCase):
-    def run_review(self, *, pr=None, files=None, comments=None, answer=None, stale=False, models=None, argon=None):
+    def run_review(self, *, pr=None, files=None, comments=None, answer=None, stale=False, models=None,
+                   argon=None, current_base=None):
         pr = copy.deepcopy(PR if pr is None else pr)
         files = FILES if files is None else files
         calls, posted, pulls = [], [], 0
@@ -48,6 +49,8 @@ class GoReview(unittest.TestCase):
             if url == review.API + '/pulls/7':
                 pulls += 1
                 value = copy.deepcopy(pr)
+                if current_base is not None:
+                    value['base']['ref'] = current_base
                 if stale and pulls == 3:
                     value['head']['sha'] = 'b' * 40
                 return value
@@ -263,6 +266,9 @@ class GoReview(unittest.TestCase):
 
     def test_workflow_uses_trusted_base_and_narrow_permissions(self):
         text = (SOURCE.parents[2] / '.github/workflows/go-review.yml').read_text()
+        self.assertRegex(text, r'(?m)^    branches: \[main\]$')
+        self.assertIn("github.event.repository.default_branch == 'main'", text)
+        self.assertIn("github.event.pull_request.base.ref == 'main'", text)
         self.assertIn('ref: ${{ github.event.pull_request.base.sha }}', text)
         self.assertIn('persist-credentials: false', text)
         self.assertIn('id-token: write', text)
@@ -272,6 +278,13 @@ class GoReview(unittest.TestCase):
         self.assertIn('pull-requests: write', text)
         self.assertNotIn('pull_request_target:', text)
         self.assertNotIn('secrets.', text)
+
+    def test_review_refuses_non_main_base_before_authentication(self):
+        other = {**PR, 'base': {**PR['base'], 'ref': 'topic-base'}}
+        self.assertEqual(self.run_review(pr=other), ([], [], 0))
+        calls, posted, auth = self.run_review(current_base='topic-base')
+        self.assertEqual(calls, [review.API + '/pulls/7'])
+        self.assertEqual((posted, auth), ([], 0))
 
     def test_transport_has_no_redirect_or_proxy_fallback_and_bounds_response(self):
         with patch.object(review.urllib.request, 'build_opener') as build:
