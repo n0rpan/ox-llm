@@ -687,8 +687,7 @@ fn retry_must_sync_a_visible_standing_reservation() {
         fs::set_permissions(root, fs::Permissions::from_mode(0o300)).unwrap();
         let first = facts.reserve_standing().expect_err("directory sync must fail");
         assert!(first.contains("directory"), "{first}");
-        let visible: State =
-            serde_json::from_slice(&facts.root.read(STATE, STATE_BYTES).unwrap()).unwrap();
+        let visible: State = serde_json::from_slice(&facts.root.read(STATE, STATE_BYTES).unwrap()).unwrap();
         assert!(visible.standing_reserved, "rename must precede the sync failure");
         let retry = facts.reserve_standing();
         fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();

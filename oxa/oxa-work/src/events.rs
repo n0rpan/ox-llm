@@ -171,7 +171,10 @@ impl Facts {
         {
             return Err("facts source capacity unavailable for standing".into());
         }
-        if !state.standing_reserved {
+        if state.standing_reserved {
+            // A previous rename may be visible even though its directory sync failed.
+            self.root.durable(STATE)?;
+        } else {
             state.standing_reserved = true;
             self.root.atomic(STATE, &state.bytes()?)?;
         }
