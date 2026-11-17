@@ -1,5 +1,4 @@
-//! V022 (#884): duplicate startup loads of the user settings file are gone, and the project's own
-//! file is still never read without trust.
+//! V022 (#884): duplicate startup loads of the user settings file are gone.
 //!
 //! `prepare` used to parse `<agent_dir>/settings.json` three times with the same inputs when the
 //! project was untrusted: once for the user-only view, once inside the trust decision and once
@@ -9,7 +8,8 @@
 //! than those loads (resource discovery's package declarations, the execution hooks' `httpProxy`
 //! lookup) run in both, so an untrusted run must never read the user settings *more* often than a
 //! trusted one, and before the fix it did (the two duplicate loads are extra). The trusted run
-//! also proves the trace works: it does read the project's file.
+//! also proves the trace sees the project's file, which the untrusted run only peeks at for its
+//! `done` key (`Settings::project_declares_done`) and never merges.
 //!
 //! `strace` (as in `package_list.rs`), because the read count is the behaviour under test; strace
 //! is mandatory and its absence fails rather than skips.
@@ -186,15 +186,11 @@ fn untrusted_startup_reads_user_settings_no_more_than_a_trusted_one() {
         user_without.join("\n"),
         user_with.join("\n")
     );
-    // Trust boundary: the project's own settings are never read while the project is untrusted,
-    // and are read once the project is trusted (which also proves the trace works).
-    let project_without = opens(&without, &dirs_without.project_settings_file(&untrusted.work()));
+    // The trace sees the project's file: the trusted run merges it. The untrusted run is not
+    // asserted to leave it alone — `Settings::project_declares_done` reads it whatever the trust,
+    // to say that the checks were skipped — so a read count cannot express that boundary; the
+    // merge itself is what trust gates, and `h_settings_accessors` covers it.
     let project_with = opens(&with, &dirs.project_settings_file(&trusted.work()));
-    assert!(
-        project_without.is_empty(),
-        "an untrusted project's settings file is never opened:\n{}",
-        project_without.join("\n")
-    );
     assert!(
         !project_with.is_empty(),
         "a trusted project's settings file is read:\n{with}"
