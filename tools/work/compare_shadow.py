@@ -12,11 +12,13 @@ SOURCES = ('merge-flow.log', 'auto-approve.log', 'night-watch.log')
 
 def action(text):
     text = text.lower()
+    operation = re.match(r'^\d{2}:\d{2}\s+([\w-]+)\s+#\d+\b', text)
+    if operation and operation[1] in ('enqueued', 're-enqueued', 'approved'):
+        return 'ready'
     for words, name in ((('findings',), 'fix_findings'),
                         (('conflict',), 'resolve_conflict'),
                         (('ci failed', 'gate failed', 'queue rejected'), 'fix_required_ci'),
                         (('removes:',), 'add_removes'),
-                        (('enqueued', 'approved #'), 'ready'),
                         (('promoted',), 'promote_draft'),
                         (('review',), 'wait_review')):
         if any(word in text for word in words):
@@ -35,7 +37,7 @@ def lab_events(directory, last_day, timezone):
                 continue
             clock = time.fromisoformat(stamp[1])
             minute = clock.hour * 60 + clock.minute
-            if later is not None and minute - later > 720:
+            if later is not None and minute > later:
                 day -= timedelta(days=1)
             later = minute
             number = re.search(r'#(\d+)\b', line)
