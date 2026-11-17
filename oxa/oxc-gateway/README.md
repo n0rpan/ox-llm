@@ -174,7 +174,8 @@ Discovery never opens the ledger, and offline refusal precedes key reads.
 Go uses the one gateway HTTP pool, shared raw SSE Framer and field redactor.
 The existing provider-bound private session hint supplies `x-opencode-session`;
 raw session IDs and the private salt never leave the ledger. API/guest origins
-cannot use the subscription. Region and allowance refusals are typed, with no
-workspace console URL or provider error body exposed. Successful rows retain zero
+cannot use the subscription. Region and rate-limit refusals are typed; upstream
+429 remains retryable and never implies allowance exhaustion. No workspace console
+URL or provider error body is exposed. Successful rows retain zero
 USD, request/token accounting and checked numeric-only allowance/list-cost/token
 metadata; arbitrary provider text cannot enter those receipt fields.

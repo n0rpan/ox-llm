@@ -409,7 +409,7 @@ pub(crate) fn ledger_metadata(value: &Value) -> Result<Value, Error> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     RegionBlocked,
-    LimitReached,
+    RateLimited { retry_after: Option<u32> },
     Unauthenticated,
     Forbidden,
     Other(u16),
@@ -427,15 +427,21 @@ pub fn refusal(status: u16, body: &Value) -> Refusal {
     match status {
         401 => Refusal::Unauthenticated,
         403 => Refusal::Forbidden,
-        429 => Refusal::LimitReached,
+        429 => Refusal::RateLimited { retry_after: None },
         other => Refusal::Other(other),
     }
 }
 impl Refusal {
+    pub(crate) fn with_retry_after(self, retry_after: Option<u32>) -> Self {
+        match self {
+            Self::RateLimited { .. } => Self::RateLimited { retry_after },
+            other => other,
+        }
+    }
     pub fn code(self) -> &'static str {
         match self {
             Self::RegionBlocked => "region_blocked",
-            Self::LimitReached => "subscription_limit_reached",
+            Self::RateLimited { .. } => "cloud_rate_limited",
             Self::Unauthenticated => "cloud_credentials_unavailable",
             Self::Forbidden => "cloud_forbidden",
             Self::Other(_) => "cloud_upstream_error",
