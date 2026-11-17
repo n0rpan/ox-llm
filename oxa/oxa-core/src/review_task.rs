@@ -13,10 +13,12 @@
 //!
 //! ## Caps
 //! A diff of a large change is bigger than a request may be. [`prompt`] keeps at most
-//! [`PER_FILE_CAP`] bytes per file and at most `limit` diff bytes in total, cutting on a line
-//! boundary (on a character boundary when a single line is longer than the cap) and saying so in
-//! a visible marker, so a reviewer can tell a one-file change from a trimmed one. The rubric and
-//! the markers are not counted against `limit`: the instructions are never cut.
+//! [`PER_FILE_CAP`] bytes per file and at most `limit` diff bytes in total, ending on a line
+//! boundary where one is close behind the cut and cutting inside the line on a character
+//! boundary otherwise (a minified file is one long line; keeping a piece of it beats keeping
+//! none), and saying so in a visible marker, so a reviewer can tell a one-file change from a
+//! trimmed one. The rubric and the markers are not counted against `limit`: the instructions are
+//! never cut.
 use oxa_proto::{codes, OxaError};
 
 /// What the diff is taken against.
@@ -80,19 +82,30 @@ fn refused(what: &str, revision: &str, why: &str) -> OxaError {
 /// cut to at most [`PER_FILE_CAP`] bytes per file and `limit` bytes in total.
 ///
 /// `limit` is the budget of diff bytes, not of the whole text: the rubric and the cut markers
-/// are always kept, so the result is longer than `limit` by what the markers take.
+/// are always kept, so the result is longer than `limit` by what the markers take. The rubric
+/// stands alone, without a trailing blank line, when there is no diff text to show under it.
 pub fn prompt(diff: &str, rubric: &str, limit: usize) -> String {
-    let mut out = String::new();
-    if !rubric.is_empty() {
-        out.push_str(rubric.trim_end());
-        out.push_str("\n\n");
+    let text = cut_diff(diff, limit);
+    let rubric = rubric.trim_end();
+    if text.is_empty() {
+        return rubric.to_string();
     }
+    if rubric.is_empty() {
+        return text;
+    }
+    format!("{rubric}\n\n{text}")
+}
+
+/// The diff cut to `limit` bytes in total and [`PER_FILE_CAP`] per file, with a visible marker
+/// wherever something was left out.
+fn cut_diff(diff: &str, limit: usize) -> String {
+    let mut out = String::new();
     let mut kept = 0usize;
     let all = sections(diff);
     for (n, (title, text)) in all.iter().enumerate() {
         let room = limit.saturating_sub(kept);
-        let per_file = clip(text, PER_FILE_CAP).0;
-        let shown = clip(per_file, room).0;
+        let (per_file, _) = clip(text, PER_FILE_CAP);
+        let (shown, _) = clip(per_file, room);
         if !shown.is_empty() {
             out.push_str(shown);
             if !shown.ends_with('\n') {
@@ -105,7 +118,7 @@ pub fn prompt(diff: &str, rubric: &str, limit: usize) -> String {
         }
         out.push_str(&file_mark(title, shown.len(), text.len()));
         if shown.len() < per_file.len() {
-            out.push_str(&total_mark(limit, all.len() - n - 1));
+            out.push_str(&total_mark(limit, files_after(&all, n)));
             break;
         }
     }
@@ -114,7 +127,8 @@ pub fn prompt(diff: &str, rubric: &str, limit: usize) -> String {
 
 /// The `(title, bytes)` of each file in a `git diff`, in order. `title` is the header line
 /// without `diff --git `; text before the first header (or a diff without headers) is the
-/// unnamed first section.
+/// unnamed first section, which is a piece of a file's diff rather than one of the files after
+/// the cut and so never counts as a file left out.
 fn sections(diff: &str) -> Vec<(String, &str)> {
     const HEAD: &str = "diff --git ";
     let mut starts = Vec::new();
@@ -140,8 +154,16 @@ fn sections(diff: &str) -> Vec<(String, &str)> {
     out
 }
 
-/// The first `cap` bytes of `text`, on a line boundary when there is one (a character boundary
-/// otherwise, so a multi-byte character is never split), and the number of bytes left out.
+/// How many files follow section `n` in `all`.
+fn files_after(all: &[(String, &str)], n: usize) -> usize {
+    let after = all[n + 1..].iter().filter(|(title, _)| !title.is_empty());
+    after.count()
+}
+
+/// The first `cap` bytes of `text`, and the number of bytes left out. The cut ends on a line
+/// boundary when one is within a quarter of `cap` behind it (or a quarter of what is left when
+/// `cap` is tiny); otherwise it ends on a character boundary, so a multi-byte character is never
+/// split and a single line longer than `cap` still shows its start instead of nothing.
 fn clip(text: &str, cap: usize) -> (&str, usize) {
     if text.len() <= cap {
         return (text, 0);
@@ -150,8 +172,10 @@ fn clip(text: &str, cap: usize) -> (&str, usize) {
     while cut > 0 && !text.is_char_boundary(cut) {
         cut -= 1;
     }
-    if let Some(nl) = text[..cut].rfind('\n') {
-        cut = nl + 1;
+    let slack = (cap.min(text.len()) / 4).max(1);
+    match text[..cut].rfind('\n') {
+        Some(nl) if cut - (nl + 1) <= slack => cut = nl + 1,
+        _ => {}
     }
     (&text[..cut], text.len() - cut)
 }
@@ -163,9 +187,8 @@ fn file_mark(title: &str, kept: usize, total: usize) -> String {
 
 fn total_mark(limit: usize, omitted: usize) -> String {
     let files = if omitted == 1 { "file" } else { "files" };
-    format!(
-        "[... oxa: diff cut at the {limit} byte total limit; {omitted} more {files} not shown ...]\n"
-    )
+    let cut = format!("[... oxa: diff cut at the {limit} byte total limit;");
+    format!("{cut} {omitted} more {files} not shown ...]\n")
 }
 
 #[cfg(test)]
@@ -207,8 +230,11 @@ mod tests {
 
     #[test]
     fn an_option_or_a_control_character_is_refused() {
-        for bad in ["-p", "--output=/tmp/x", "", "HEAD\n--output=/tmp/x", "ma\u{7}in"] {
-            for selection in [Selection::Base(bad.to_string()), Selection::Commit(bad.to_string())] {
+        let bases = ["-p", "--output=/tmp/x", "", "HEAD\n--output=/tmp/x", "ma\u{7}in"];
+        for bad in bases {
+            let base = Selection::Base(bad.to_string());
+            let commit = Selection::Commit(bad.to_string());
+            for selection in [base, commit] {
                 let e = diff_argv(&selection).unwrap_err();
                 assert_eq!(e.code, codes::INVALID, "{bad:?}");
             }
@@ -259,7 +285,8 @@ mod tests {
         assert!(out.starts_with("Rubric.\n\n"));
         assert!(out.contains("cut: kept 0 of "));
         assert!(out.contains("total limit"));
-        assert_eq!(out.matches("diff --git").count(), 1, "the first file's header is the marker's text");
+        let headers = "the first file's header is the marker's text";
+        assert_eq!(out.matches("diff --git").count(), 1, "{headers}");
     }
 
     #[test]
@@ -284,6 +311,29 @@ mod tests {
     fn a_diff_without_git_headers_is_one_unnamed_section() {
         let out = prompt("plain patch text\n", "", 4096);
         assert_eq!(out, "plain patch text\n");
+    }
+
+    #[test]
+    fn text_before_the_first_header_is_not_a_file_left_out() {
+        let diff = "stray text\n\
+                    diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+b\n\
+                    diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-c\n+d\n";
+        let first = diff.split("diff --git a/a.rs").next().unwrap();
+        let out = prompt(diff, "", first.len() + 8);
+        assert!(out.contains("diff --git a/a.rs"));
+        assert!(out.contains("1 more file not shown"), "{out}");
+        assert!(!out.contains("2 more files"), "{out}");
+    }
+
+    #[test]
+    fn a_line_longer_than_the_budget_still_shows_its_start() {
+        let diff = format!("diff --git a/m.js b/m.js\n+{}\n", "x".repeat(PER_FILE_CAP * 2));
+        let out = prompt(&diff, "", 64);
+        assert!(out.contains("cut: kept "), "the cut is visible: {out}");
+        assert!(out.contains("total limit"), "{out}");
+        let shown = out.split("[... oxa:").next().unwrap();
+        assert!(shown.starts_with("diff --git a/m.js"), "{out}");
+        assert!(shown.len() <= diff.len() / 2, "{out}");
     }
 
     #[test]
