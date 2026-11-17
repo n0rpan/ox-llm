@@ -21,7 +21,10 @@ Run it inside the project repository. The JSON file is an array:
 [{"id":"docs-fix","model":"your-model","branch":"agent/docs-fix","base":"main","prompt":"Fix documentation links."}]
 ```
 
-`base` defaults to `main`. IDs contain 1–128 letters, digits, hyphens or underscores.
+`base` defaults to `main`. An optional `start` commit creates the new task branch
+from that commit instead of the base; the base still supplies the acceptance
+commands, and `--pr` uses it for the reviewed head. IDs contain 1–128 letters,
+digits, hyphens or underscores.
 Optional `max_time` is a positive integer number of seconds, defaulting to 2700
 (45 minutes). The task's saved deadline is shared by its worker, repair and crash
 recovery; a repair does not get a fresh budget. Each child receives its remaining
@@ -30,14 +33,25 @@ seconds after that allowance, the runner sends SIGTERM, then SIGKILL after anoth
 10 seconds. The result is interrupted and its worktree is retained. `kill` must be
 available as a trusted executable outside the project; status reads do not need it.
 IDs and branches must be unique within one file. Existing task branches can be
-continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.
+continued. For a GitHub issue use `oxa work --issue 123 --model your-model`,
+and for a pull request you are handing to a worker `oxa work --pr 123 --model your-model`.
 This explicitly invokes your installed,
-authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
-when the environment or user settings enable offline mode.
-Issue lookup also requires source-project trust. Git and GitHub CLI host calls use
+authenticated `gh` CLI to fetch the issue title and body, or the pull request text
+and its review metadata. Such lookups are refused when the environment or user
+settings enable offline mode.
+They also require source-project trust. Git and GitHub CLI host calls use
 validated executables outside the repository. Worker and check-supervisor PATHs
 exclude project directories, relative entries and unsafe aliases; project tools
 can still run by explicit path inside the sandbox.
+A `--pr` task creates a review branch at the pull request's head commit, which
+must already be in this checkout (a missing head is refused before any worktree,
+with a hint to fetch it). The base still supplies the frozen acceptance commands
+and is merged in, and the task id pins that head, so a newer head is new work. Its
+prompt carries the title and body, the newest comment whose first line starts with
+`VERDICT`, the inline review comments with their path and line, and the failing
+check names of that head (names only: they say what to rerun). The review text is
+labelled data and bounded, and empty sections say so. Pushing and updating the
+pull request stay with you.
 Branches must be literal names; checkout-history aliases such as `@{-1}` are refused.
 Every base and acceptance command list is resolved before any task in the batch
 starts. All bases must therefore exist at batch startup. Host metadata commands

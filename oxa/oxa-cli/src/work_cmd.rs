@@ -132,12 +132,14 @@ pub(crate) fn run(
         let is_trusted = trusted(&root, env, dirs)?;
         let tasks = match task_args {
             [file] if !file.starts_with('-') => oxa_work::read_tasks(&cwd.join(file))?,
-            [flag, number, model_flag, model] if flag == "--issue" && model_flag == "--model" => {
+            [flag, number, model_flag, model]
+                if matches!(flag.as_str(), "--issue" | "--pr") && model_flag == "--model" =>
+            {
                 if oxa_proto::offline() {
-                    return Err("GitHub issue lookup is unavailable in offline mode".into());
+                    return Err("GitHub lookup is unavailable in offline mode".into());
                 }
                 if !is_trusted {
-                    return Err("source project is not trusted; approve it before issue lookup".into());
+                    return Err("source project is not trusted; approve it before GitHub lookup".into());
                 }
                 let gh = crate::netguard::trusted_executable_for(
                     "gh",
@@ -146,16 +148,14 @@ pub(crate) fn run(
                     Some(&dirs.home),
                 )
                 .ok_or("no trusted gh executable outside the source project")?;
-                vec![oxa_work::issue_task(
-                    &root,
-                    &gh,
-                    &policy.host_path,
-                    number.parse().map_err(|_| "invalid issue number")?,
-                    model.clone(),
-                )?]
+                let number = number.parse().map_err(|_| "invalid issue or pull request number")?;
+                vec![match flag.as_str() {
+                    "--pr" => oxa_work::pull_request_task(&policy, &root, &gh, number, model.clone())?,
+                    _ => oxa_work::issue_task(&root, &gh, &policy.host_path, number, model.clone())?,
+                }]
             }
             _ => return Err(
-                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | status [--json]"
+                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | --pr N --model MODEL [--rerun] | status [--json]"
                     .into(),
             ),
         };

@@ -279,6 +279,7 @@ mod tests {
             id: "test".into(),
             branch: "agent/test".into(),
             base: "main".into(),
+            start: None,
             model: "fake".into(),
             prompt: "Synthetic task".into(),
             max_time: crate::default_max_time(),
