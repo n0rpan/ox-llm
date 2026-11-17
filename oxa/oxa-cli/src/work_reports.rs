@@ -6,47 +6,18 @@ use oxa_work::{ProblemNote, ReportRecord};
 use serde_json::Value;
 use std::{
     fs::File,
-    io::Read,
     path::Path,
     process::{Command, Stdio},
-    time::{Duration, Instant},
 };
 
 pub(crate) fn process(program: &str, args: &[String], cwd: &Path, lock: &File) -> Option<(i32, String)> {
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::from(lock.try_clone().ok()?))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = String::new();
-        let result = (&mut stdout).take(1_048_576).read_to_string(&mut out);
-        let _ = tx.send(result.ok().map(|_| out));
-    });
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return Some((
-                    status.code().unwrap_or(1),
-                    rx.recv_timeout(Duration::from_secs(2)).ok()??,
-                ))
-            }
-            Ok(None) if start.elapsed() < Duration::from_secs(30) => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
+    let mut command = Command::new(program);
+    command.args(args).current_dir(cwd);
+    crate::report_cmd::command_runner_with_stdin(
+        command,
+        Some(1_048_576),
+        Stdio::from(lock.try_clone().ok()?),
+    )
 }
 fn call(runner: Runner<'_>, args: &[String]) -> Result<String, String> {
     match runner("gh", args) {

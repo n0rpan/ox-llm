@@ -456,12 +456,17 @@ system-wide or put it in a trusted PATH entry outside the project (for example ~
     )
 }
 
-pub(crate) fn command_runner(
+pub(crate) fn command_runner(command: std::process::Command, limit: Option<usize>) -> Option<(i32, String)> {
+    command_runner_with_stdin(command, limit, std::process::Stdio::null())
+}
+
+pub(crate) fn command_runner_with_stdin(
     mut command: std::process::Command,
     limit: Option<usize>,
+    stdin: std::process::Stdio,
 ) -> Option<(i32, String)> {
     let mut child = command
-        .stdin(std::process::Stdio::null())
+        .stdin(stdin)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
