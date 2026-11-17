@@ -23,6 +23,7 @@ impl Write for Sink {
 }
 
 const NOTICE: &str = "done checks in .oxa/settings.json were not run: project is not trusted";
+const NOT_RUN: &str = "done checks did not run";
 const FAILED: &str = "done checks failed";
 
 /// Run `oxa <args>` in-process against a fake engine with `turns`; returns (code, stdout, stderr).
@@ -102,6 +103,29 @@ fn print_exits_nonzero_when_done_checks_still_fail() {
         "one summary line: {err}"
     );
     assert!(err.contains("FAILED (exit 1)"), "{err}");
+    assert!(out.contains("finished"), "the reply is still printed: {out}");
+}
+
+/// A declared check whose program is missing never runs: `-p` says the checks did not run
+/// instead of reporting a failure of the source, runs no repair round, and exits 1 because
+/// nothing was verified (#966).
+#[test]
+fn print_reports_a_check_that_could_not_start_as_not_run() {
+    let env = TestEnv::new();
+    trust_always(&env);
+    project_done(&env, r#"["oxa-966-missing-program --check"]"#);
+    let (code, out, err) = go(&env, edits_then_stops(1), &["-p", "go"]);
+    assert_eq!(code, 1, "stdout: {out}\nstderr: {err}");
+    assert_eq!(err.matches(NOT_RUN).count(), 1, "one summary line: {err}");
+    assert!(err.contains("oxa-966-missing-program"), "{err}");
+    assert!(
+        err.contains("done check: oxa-966-missing-program --check FAILED (not run)"),
+        "{err}"
+    );
+    assert!(
+        !err.lines().any(|l| l.starts_with(FAILED)),
+        "a check that could not start is not a failed check: {err}"
+    );
     assert!(out.contains("finished"), "the reply is still printed: {out}");
 }
 

@@ -217,6 +217,94 @@ fn failing_forever_stops_after_two_rounds() {
     assert_eq!(engine.remaining(), 1);
 }
 
+/// A `done` entry whose program does not exist (the shell exits 127) says nothing about the
+/// source: it is reported as not run with the shell's own reason, spends no repair round, and
+/// the run still ends failed, so an unverified tree is never reported as a pass (#966).
+#[test]
+fn unstartable_check_is_reported_as_not_run_and_not_retried() {
+    let env = TestEnv::new();
+    let (rec, engine, failed) = run_state(
+        &env,
+        json!(["oxa-966-missing-program --check"]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            ScriptTurn::text("must not be requested for a check that cannot start"),
+        ],
+        Arc::new(Direct),
+    );
+    let checks = rec.checks();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert!(
+        checks[0].starts_with("done check: oxa-966-missing-program --check FAILED (not run)"),
+        "{checks:?}"
+    );
+    assert!(checks[0].contains("command not found"), "{checks:?}");
+    assert!(failed, "a check that did not run is not a pass");
+    assert_eq!(engine.requests().len(), 2, "no repair round: {checks:?}");
+    assert_eq!(engine.remaining(), 1, "no repair round: {checks:?}");
+}
+
+/// The other POSIX code for a command that did not start: a file that is not executable (126).
+/// It is the same environment problem, reported the same way.
+#[test]
+fn non_executable_check_is_reported_as_not_run() {
+    let env = TestEnv::new();
+    // No executable bit: the shell refuses to start it.
+    std::fs::write(env.work().join("check.sh"), "#!/bin/sh\nexit 0\n").unwrap();
+    let (rec, engine, failed) = run_state(
+        &env,
+        json!(["./check.sh"]),
+        vec![write("c1", "a.txt"), ScriptTurn::text("done")],
+        Arc::new(Direct),
+    );
+    let checks = rec.checks();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert!(
+        checks[0].starts_with("done check: ./check.sh FAILED (not run)"),
+        "{checks:?}"
+    );
+    assert!(checks[0].contains("Permission denied"), "{checks:?}");
+    assert!(failed, "a check that did not run is not a pass");
+    assert_eq!(engine.requests().len(), 2, "no repair round: {checks:?}");
+}
+
+/// A real failure in the same list keeps its repair round; the entry that cannot start is not
+/// repeated as a problem the model is asked to fix.
+#[test]
+fn real_failure_keeps_its_round_beside_an_unstartable_check() {
+    let env = TestEnv::new();
+    let (rec, engine) = run(
+        &env,
+        json!([CHECK, "oxa-966-missing-program"]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            write("c2", "fixed.txt"),
+            ScriptTurn::text("done again"),
+        ],
+    );
+    assert_eq!(engine.requests().len(), 4);
+    let reqs = engine.requests();
+    let repair = reqs[2]
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == oxa_proto::Role::User)
+        .and_then(|m| m.content.clone())
+        .expect("the real failure is sent back");
+    assert!(repair.contains("MISSING-FIXED"), "{repair}");
+    assert!(
+        !repair.contains("oxa-966-missing-program"),
+        "a command that cannot start is not a project problem to fix: {repair}"
+    );
+    let checks = rec.checks();
+    assert!(
+        checks.iter().any(|c| c.contains("FAILED (not run)")),
+        "{checks:?}"
+    );
+}
+
 #[test]
 fn failed_check_without_new_edit_is_not_rerun() {
     let env = TestEnv::new();
