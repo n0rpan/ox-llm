@@ -251,6 +251,16 @@ pub fn command_runner(command: Command, limit: Option<usize>, deadline: Duration
     command_runner_with_stdin(command, limit, Stdio::null(), deadline)
 }
 
+/// Capture binary stdout with the same process and pipe deadline as the text runner.
+pub fn command_output_bytes(
+    command: Command,
+    limit: Option<usize>,
+    deadline: Duration,
+) -> Option<(i32, Vec<u8>)> {
+    let out = capture_command(command, limit, deadline, Stdio::null(), false).ok()?;
+    Some((out.status.code().unwrap_or(1), out.stdout))
+}
+
 /// Capture through the same deadline and byte limit while a supervised child holds a supplied stdin.
 pub fn command_runner_with_stdin(
     command: Command,
@@ -936,6 +946,22 @@ pub fn run_task_with_observer(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn bounded_command_output_preserves_binary_stdout_and_exit_status() {
+        let command = || {
+            let mut command = Command::new("sh");
+            command.args(["-c", r"printf '\377\000'; printf 'ignored' >&2; exit 3"]);
+            command
+        };
+        let deadline = Duration::from_secs(5);
+        assert_eq!(
+            command_output_bytes(command(), Some(2), deadline),
+            Some((3, vec![255, 0]))
+        );
+        assert_eq!(command_output_bytes(command(), Some(1), deadline), None);
+        assert_eq!(command_runner(command(), Some(2), deadline), None);
+    }
 
     #[test]
     fn command_deadline_cleans_up_a_descendant_holding_stdout() {
