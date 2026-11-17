@@ -167,6 +167,28 @@ fn claim_child() {
 }
 
 #[test]
+fn active_and_capped_claims_repair_the_missing_creation_witness() {
+    for now in [11, 21] {
+        let fixture = Fixture::new();
+        fixture.claim(10, 10).unwrap();
+        fs::remove_file(fixture.0.join("1.board-claim.created")).unwrap();
+        let capped = Policy {
+            enabled: true,
+            max_attempts_per_day: 1,
+        };
+        assert!(fixture
+            .store()
+            .claim(&entry(), &capped, "worker", now, 10)
+            .unwrap()
+            .is_none());
+        assert!(fixture.0.join("1.board-claim.created").exists());
+        fs::remove_file(fixture.0.join("1.board-claim.json")).unwrap();
+        fs::remove_file(fixture.0.join("1.board-claim.lock")).unwrap();
+        assert!(fixture.store().snapshot().is_err());
+    }
+}
+
+#[test]
 fn concurrent_processes_reserve_exactly_one_attempt() {
     let fixture = Fixture::new();
     let children: Vec<_> = (0..6)
