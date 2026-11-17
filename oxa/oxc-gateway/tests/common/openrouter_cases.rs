@@ -801,6 +801,58 @@ async fn openrouter_null_identity_support_keeps_required_and_typed_identity_guar
 }
 
 #[tokio::test]
+async fn openrouter_repeated_whole_tool_names_are_idempotent_and_fragments_still_append() {
+    for names in [
+        vec!["list_files", "list_files"],
+        vec!["list_", "files"],
+        vec!["list_", "files", "list_files"],
+    ] {
+        let mut events = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let mut call = json!({"index":3,"function":{"name":name,
+                "arguments":if index == 0 {"{\"path\":"} else if index == 1 {"\"note.txt\"}"} else {""}}});
+            if index == 0 {
+                call["id"] = json!("synthetic-call");
+            }
+            events.push(json!({"choices":[{"index":0,"delta":{"tool_calls":[call]},"finish_reason":null}]}));
+        }
+        events.push(
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
+            "usage":{"prompt_tokens":21,"completion_tokens":5}}),
+        );
+        let mock = MockAnthropic::start(vec![wire(events, true)]);
+        let (gateway, fixture) = gateway(&mock);
+        let mut output = Vec::new();
+        let completed = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    if let Event::Chunk(value) = event {
+                        output.push(value);
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap();
+        let call = &completed.assistant["tool_calls"][0];
+        assert_eq!(call["id"], "synthetic-call");
+        assert_eq!(call["function"]["name"], "list_files");
+        assert_eq!(call["function"]["arguments"], "{\"path\":\"note.txt\"}");
+        let calls: Vec<_> = output
+            .iter()
+            .filter_map(|v| v.pointer("/choices/0/delta/tool_calls/0"))
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["function"], call["function"]);
+        assert_eq!(rows(&fixture)[0]["settled"], "usage");
+        mock.finish();
+    }
+}
+
+#[tokio::test]
 async fn openrouter_missing_tool_indices_use_array_positions() {
     let raw = r#"{ "path" : "note.txt" }"#;
     let calls = json!([
