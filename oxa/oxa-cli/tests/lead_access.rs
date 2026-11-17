@@ -17,7 +17,8 @@ impl IdentityProvider for Proxy {
 }
 const OWNER: &str = "owner@example.invalid";
 fn load(env: &TestEnv) -> Result<Config, &'static str> {
-    let pairs = [("HOME".into(), env.home().display().to_string())];
+    let test_home = env.home().display().to_string();
+    let pairs = [("HOME", test_home.as_str())];
     let dirs = dirs_from_env(&Env::from_pairs(&pairs), None).unwrap();
     Config::load(&dirs, &env.work())
 }
