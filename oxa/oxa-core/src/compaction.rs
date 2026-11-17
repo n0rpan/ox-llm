@@ -398,6 +398,23 @@ mod estimate_tests {
             )
             .unwrap(),
         );
+        let entry = oxa_proto::Entry {
+            id: "synthetic".into(),
+            parent: None,
+            ts_ms: 1,
+            body: oxa_proto::EntryBody::Msg {
+                wire: message,
+                parts: vec![],
+                tool: None,
+            },
+        };
+        let mut bytes = Vec::new();
+        oxa_session::encode_entry(&entry, &mut bytes);
+        let oxa_proto::EntryBody::Msg { wire: message, .. } = oxa_session::decode_entry(&bytes).unwrap().body
+        else {
+            panic!("message")
+        };
+        assert!(message.provider_history.is_some());
         t.push(message);
         assert_eq!(
             estimate_of(&t),
@@ -949,6 +966,7 @@ fn compact_inner(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<Option<Applied>, OxaError> {
+    st.transcript.validate_compaction_cut(cut)?;
     let (instructions, reason) = (spec.instructions, spec.reason);
     // OXA-REBASE-NONE-ORIGIN: a cut on a message without an entry origin (rewritten by a
     // declared extension rebase) keeps its tail by value (`details.keptMessages`).
@@ -1095,6 +1113,22 @@ fn compact_inner(
         }
     }
     head.extend(tail);
+    // A closed native tool batch is structurally valid, but after a changed-prefix
+    // rebase its replay authority cannot authorize a same-turn continuation. Start a
+    // fresh turn only when this compaction actually invalidates that latest batch.
+    let native_batch = head.last().filter(|m| m.role == Role::Tool).and_then(|_| {
+        head.iter()
+            .rposition(|m| !m.tool_calls.is_empty())
+            .filter(|&at| head[at].provider_history.is_some())
+    });
+    st.transcript.prepare_rebase(&mut head);
+    if native_batch.is_some_and(|at| head[at].provider_history.is_none()) {
+        if !details.is_object() {
+            details = json!({ "hook": details });
+        }
+        details["nativeToolContinuation"] = json!(true);
+        head.push(WireMsg::user(oxa_session::Transcript::NATIVE_TOOL_CONTINUATION));
+    }
     let entry = EntryBody::Compaction {
         // The fold replays this text verbatim, so it is the wrapped user message itself.
         summary: prompt::summary_user_message(&summary),

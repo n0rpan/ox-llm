@@ -105,6 +105,29 @@ fn session(env: &TestEnv, refuses: bool) -> (Session, Arc<Fake>) {
 }
 
 #[test]
+fn failed_remote_request_leaves_session_cost_unknown_after_local_switch() {
+    let _lock = POLICY.lock().unwrap_or_else(|e| e.into_inner());
+    let _reset = Policy;
+    set_net_policy(false, false);
+    let env = TestEnv::new();
+    let (mut s, engine) = session(&env, false);
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    assert!(!s.stats().cost_unknown);
+    s.set_model("cloud-m", &mut sink).expect("cloud switch");
+    // Selecting a cloud model alone does not incur a charge.
+    assert!(!s.stats().cost_unknown);
+    let _ = s.prompt("Synthetic request".into(), Vec::new(), &mut sink, &mut ui);
+    assert!(engine.chats.load(Ordering::SeqCst) > 0);
+    assert!(s.stats().cost_unknown, "failed remote calls can still be billed");
+    s.set_model("local-m", &mut sink).expect("local switch");
+    assert!(
+        s.stats().cost_unknown,
+        "switching models cannot erase unknown cost"
+    );
+}
+
+#[test]
 fn offline_switch_to_a_remote_model_is_a_hard_error() {
     let _lock = POLICY.lock().unwrap_or_else(|e| e.into_inner());
     let _reset = Policy;

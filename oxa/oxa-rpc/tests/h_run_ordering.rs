@@ -570,3 +570,275 @@ fn abort_at_each_point_before_the_first_byte_settles_aborted() {
         assert!(at_settled < at_abort, "point {point}: {lines:?}");
     }
 }
+
+#[test]
+fn inbox_wakes_an_idle_rpc_session_without_stdin_input() {
+    let env = TestEnv::new();
+    let session = open_session(&env, vec![ScriptTurn::text("received")], Vec::new());
+    let id = session.state().session_id;
+    let inbox = Dirs::under(env.root()).agent_dir.join("inbox").join(id);
+    std::fs::create_dir_all(&inbox).unwrap();
+    // Ready before the watcher starts: startup must scan as well as subscribe.
+    std::fs::write(inbox.join("001.msg"), "task finished, red").unwrap();
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    let start = Instant::now();
+    while !served.lines().iter().any(|v| v["type"] == "agent_settled")
+        && start.elapsed() < Duration::from_secs(3)
+    {
+        thread::sleep(Duration::from_millis(5));
+    }
+    let lines = served.close(3, 0);
+    assert!(
+        lines.iter().any(|v| v["type"] == "agent_settled"),
+        "inbox did not wake RPC: {lines:?}"
+    );
+    assert!(
+        !inbox.join("001.msg").exists(),
+        "delivered message must be consumed"
+    );
+}
+
+#[test]
+fn inbox_tracks_rpc_session_switches_and_leaves_the_old_inbox_alone() {
+    let env = TestEnv::new();
+    let session = open_session(&env, vec![ScriptTurn::text("new session received")], Vec::new());
+    let old_id = session.state().session_id;
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    served.send(json!({"type": "new_session", "id": "new"}));
+    served.wait("new session", |lines| response(lines, "new").is_some());
+    served.send(json!({"type": "get_state", "id": "state"}));
+    served.wait("new state", |lines| response(lines, "state").is_some());
+    let lines = served.lines();
+    let new_id = response(&lines, "state").unwrap()["data"]["sessionId"]
+        .as_str()
+        .unwrap();
+    assert_ne!(old_id, new_id);
+    let agent = Dirs::under(env.root()).agent_dir;
+    oxa_session::send_inbox(&agent, &old_id, "for the previous session").unwrap();
+    oxa_session::send_inbox(&agent, new_id, "for the active session").unwrap();
+    served.wait("new session inbox run", |lines| {
+        lines.iter().any(|v| v["type"] == "agent_settled")
+    });
+    served.close(3, 0);
+    assert_eq!(
+        std::fs::read_dir(agent.join("inbox").join(old_id))
+            .unwrap()
+            .count(),
+        1
+    );
+    assert_eq!(
+        std::fs::read_dir(agent.join("inbox").join(new_id))
+            .unwrap()
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn inbox_arriving_during_session_switch_stays_with_its_destination() {
+    struct DuringSwitch {
+        agent: PathBuf,
+        old_id: Mutex<String>,
+    }
+    impl Hooks for DuringSwitch {
+        fn fire(&self, point: HookPoint, _: &Value, _: &mut dyn Ui) -> HookReply {
+            if point == HookPoint::SessionBeforeSwitch {
+                let old_id = self.old_id.lock().unwrap();
+                oxa_session::send_inbox(&self.agent, &old_id, "old session only").unwrap();
+                // Give the live watcher time to see the file while the switch is in progress.
+                let deadline = Instant::now() + Duration::from_millis(300);
+                while Instant::now() < deadline {
+                    if std::fs::read_dir(self.agent.join("inbox").join(&*old_id))
+                        .unwrap()
+                        .count()
+                        == 0
+                    {
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+            HookReply::Continue
+        }
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            Vec::new()
+        }
+        fn commands(&self) -> Vec<CommandSpec> {
+            Vec::new()
+        }
+        fn run_command(&self, _: &str, _: &str, _: &mut dyn Ui) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn prompt_sections(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+    }
+    let env = TestEnv::new();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let hook = Arc::new(DuringSwitch {
+        agent: agent.clone(),
+        old_id: Mutex::new(String::new()),
+    });
+    let session = open_session(&env, vec![ScriptTurn::text("new reply")], vec![hook.clone()]);
+    let old_id = session.state().session_id;
+    *hook.old_id.lock().unwrap() = old_id.clone();
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    served.send(json!({"type": "new_session", "id": "new"}));
+    served.wait("switch response", |lines| response(lines, "new").is_some());
+    served.send(json!({"type": "get_state", "id": "state"}));
+    served.wait("new state", |lines| response(lines, "state").is_some());
+    served.send(json!({"type": "prompt", "id": "prompt", "message": "new session only"}));
+    served.wait("new prompt settles", |lines| {
+        lines.iter().any(|v| v["type"] == "agent_settled")
+    });
+    served.send(json!({"type": "get_messages", "id": "messages"}));
+    served.wait("messages", |lines| response(lines, "messages").is_some());
+    let lines = served.close(3, 0);
+    assert!(!response(&lines, "messages")
+        .unwrap()
+        .to_string()
+        .contains("old session only"));
+    assert_eq!(
+        std::fs::read_dir(agent.join("inbox").join(old_id))
+            .unwrap()
+            .count(),
+        1,
+        "a switch must not consume the old session's pending text"
+    );
+}
+
+#[test]
+fn inbox_rebinding_rearms_admitted_messages_without_files() {
+    let env = TestEnv::new();
+    let session = open_session(&env, vec![ScriptTurn::text("received")], Vec::new());
+    let handle = session.handle();
+    handle.follow_up_for(&session.state().session_id, "already admitted".into());
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    served.wait("admitted inbox run", |lines| {
+        lines.iter().any(|v| v["type"] == "agent_settled")
+    });
+    served.close(3, 0);
+    assert!(!handle.has_inbox_input());
+}
+
+fn write_oversized_fixture(dir: &Path, during_write: impl FnOnce()) {
+    let pending = dir.join("oversized.pending");
+    let mut file = std::fs::File::create(&pending).unwrap();
+    during_write();
+    file.write_all(&vec![b'x'; 256 * 1024 + 1]).unwrap();
+    drop(file);
+    std::fs::rename(pending, dir.join("oversized.msg")).unwrap();
+}
+
+#[test]
+fn oversized_fixture_is_not_published_until_its_payload_is_complete() {
+    let env = TestEnv::new();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let id = "fixture-publication";
+    let dir = agent.join("inbox").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Both paths exist before startup scanning; this sorts after the fixture.
+    std::fs::write(dir.join("zz-scan.msg"), "scan barrier").unwrap();
+    write_oversized_fixture(&dir, || {
+        let (tx, rx) = mpsc::channel();
+        let watch = oxa_session::Inbox::watch(&agent, id, move |text| tx.send(text).is_ok()).unwrap();
+        let delivered = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        drop(watch);
+        assert_eq!(
+            delivered, "scan barrier",
+            "startup scan consumed an incomplete fixture"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "only the complete barrier may be delivered"
+        );
+    });
+    assert_eq!(
+        std::fs::metadata(dir.join("oversized.msg")).unwrap().len(),
+        256 * 1024 + 1
+    );
+}
+
+#[test]
+fn inbox_backpressure_retains_excess_files_while_model_is_held_then_drains() {
+    struct HeldFirst {
+        inner: ScriptedEngine,
+        hold: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    }
+    impl Engine for HeldFirst {
+        fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+            self.inner.info(target)
+        }
+        fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+            self.inner.count_tokens(text)
+        }
+        fn chat(
+            &self,
+            request: &ChatRequest,
+            cancel: &CancelToken,
+            on: &mut dyn FnMut(StreamEvent),
+        ) -> Result<AssistantTurn, OxaError> {
+            if let Some((entered, release)) = self.hold.lock().unwrap().take() {
+                entered.send(()).unwrap();
+                release.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+            self.inner.chat(request, cancel, on)
+        }
+    }
+    let env = TestEnv::new();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let engine = Arc::new(HeldFirst {
+        inner: ScriptedEngine::new((0..100).map(|_| ScriptTurn::text("reply")).collect()),
+        hold: Mutex::new(Some((entered_tx, release_rx))),
+    });
+    let session = open_with(&env, engine, Vec::new());
+    let id = session.state().session_id;
+    let handle = session.handle();
+    let served = Served::start(session, &env, Box::new(|_| Vec::new()));
+    served.send(json!({"type": "prompt", "id": "held", "message": "hold model"}));
+    entered_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let dir = agent.join("inbox").join(&id);
+    // An external writer can bypass send's size validation: still never read it all.
+    write_oversized_fixture(&dir, || {});
+    for n in 0..70 {
+        oxa_session::send_inbox(&agent, &id, &format!("backlog {n}")).unwrap();
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while handle.queued().1.len() < 64 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(handle.queued().1.len(), 64);
+    // A barrier file after the excess backlog confirms that a scan encountered pressure.
+    oxa_session::send_inbox(&agent, &id, "barrier").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    assert_eq!(
+        handle.queued().1.len(),
+        64,
+        "no unbounded admissions during a held model"
+    );
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 8);
+    release_tx.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while std::fs::read_dir(&dir).unwrap().count() != 1 && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        1,
+        "capacity release must retry disk backlog"
+    );
+    served.wait("backlog drained", |_| {
+        !handle.has_inbox_input() && !handle.is_busy()
+    });
+    served.send(json!({"type": "get_messages", "id": "messages"}));
+    served.wait("messages", |lines| response(lines, "messages").is_some());
+    let lines = served.close(3, 0);
+    let messages = response(&lines, "messages").unwrap().to_string();
+    for n in 0..70 {
+        assert!(messages.contains(&format!("backlog {n}")), "missing backlog {n}");
+    }
+    assert!(messages.contains("barrier"));
+    assert!(dir.join("oversized.msg").exists());
+}

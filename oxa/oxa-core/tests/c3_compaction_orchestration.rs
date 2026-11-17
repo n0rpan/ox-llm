@@ -81,6 +81,7 @@ fn build_with_store(
         gate: Default::default(),
     });
     SessionState {
+        goal: None,
         output_schema: None,
         engine,
         store,

@@ -37,7 +37,7 @@ def classify(paths, full_event=False):
     for path in paths:
         if documentation(path):
             continue
-        if path.startswith(('oxa/oxc-gateway/', 'oxa/oxa-engine/', 'oxa/oxa-proto/')) or path in ('oxa/Cargo.toml', 'oxa/Cargo.lock'):
+        if path.startswith(('oxa/oxc-gateway/', 'oxa/oxa-engine/', 'oxa/oxa-proto/', 'oxa/oxa-cli/')) or path in ('oxa/Cargo.toml', 'oxa/Cargo.lock'):
             components = {'oxa', 'gateway'}
         else:
             components = COMPONENTS.get(path.split('/', 1)[0]) or FUZZ.get('/'.join(path.split('/', 2)[:2]))
@@ -87,10 +87,13 @@ def main():
     name = os.environ['GITHUB_EVENT_NAME']
     full = full_gate(name, os.environ.get('GITHUB_REF', ''))
     result = classify(changed_paths(event, name), full)
-    if full and name != 'merge_group':
-        # main after a merge, nightly and manual runs test every component; the queue and pull
-        # requests keep the diff result, so the workflow needs no event tests of its own.
-        result.update(dict.fromkeys(OUTPUTS, True))
+    if full:
+        if name == 'merge_group':
+            # Every queued tree runs all oxa tests, including tests that consume docs/assets.
+            result['oxa'] = True
+        else:
+            # Main, nightly and manual runs test every component.
+            result.update(dict.fromkeys(OUTPUTS, True))
     with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
         for key, value in result.items():
             stream.write(f'{key}={str(value).lower()}\n')

@@ -2,8 +2,9 @@
 //! imports start no runtime, listener, refresh worker or model supervisor.
 use super::{
     admission::Admission,
-    keys::{Error as KeyError, Store},
+    keys::{Error as KeyError, KeyInfo, Store},
     protocol,
+    status::{Activity, Status, MAX_CONNECTIONS},
 };
 pub use oxa_proto::CancelToken;
 use serde_json::{json, Value};
@@ -108,6 +109,26 @@ impl Output {
         }
     }
 }
+/// Borrowed authenticated metadata from durable quota admission, never a bearer.
+/// Kept separate from model history; use only for owner accounting/policy.
+/// Fields are private so callers cannot manufacture an authenticated guest.
+pub struct Guest<'a> {
+    key: &'a KeyInfo,
+}
+impl Guest<'_> {
+    pub fn key_id(&self) -> &str {
+        &self.key.id
+    }
+    pub fn key_name(&self) -> &str {
+        &self.key.name
+    }
+}
+impl std::fmt::Debug for Guest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Guest([authenticated])")
+    }
+}
+
 /// The future must retain model ownership until generation/cancellation cleanup
 /// has stopped, and never detach background model work. The listener joins it.
 pub trait Answer: Send + Sync + 'static {
@@ -115,6 +136,7 @@ pub trait Answer: Send + Sync + 'static {
     fn chat(
         &self,
         request: Request,
+        guest: Guest<'_>,
         output: Output,
         cancel: CancelToken,
     ) -> impl Future<Output = Result<Completed, Failure>> + Send;
@@ -164,6 +186,7 @@ impl Default for Config {
 }
 pub struct Server<A, T> {
     listener: TcpListener,
+    status: Status,
     keys: Arc<Store>,
     answer: Arc<A>,
     tailnet: Arc<T>,
@@ -176,7 +199,7 @@ impl<A: Answer, T: Tailnet> Server<A, T> {
         tailnet: Arc<T>,
         config: Config,
     ) -> Result<Self, Failure> {
-        if !(1..=64).contains(&config.connections)
+        if !(1..=MAX_CONNECTIONS).contains(&config.connections)
             || !(1..=1024 * 1024).contains(&config.max_body)
             || config.requests_per_minute == 0
             || config.peer_requests_per_minute == 0
@@ -228,12 +251,17 @@ impl<A: Answer, T: Tailnet> Server<A, T> {
             .map_err(|_| Failure::Busy)?;
         Ok(Self {
             listener,
+            status: Status::new(),
             keys,
             answer,
             tailnet,
             config,
         })
     }
+    pub fn status(&self) -> Status {
+        self.status.clone()
+    }
+
     pub fn address(&self) -> Result<SocketAddr, Failure> {
         self.listener.local_addr().map_err(|_| Failure::Failed)
     }
@@ -265,9 +293,13 @@ impl<A: Answer, T: Tailnet> Server<A, T> {
                 rates.clone(),
             );
             let global = stop.clone();
+            let status = self.status.clone();
             let storage = storage.clone();
             tasks.spawn(async move {
                 let _permit = permit;
+                let Ok(activity) = status.open() else {
+                    return;
+                };
                 let cancel = CancelToken::new();
                 let future = connection(
                     socket,
@@ -276,7 +308,10 @@ impl<A: Answer, T: Tailnet> Server<A, T> {
                     tailnet.as_ref(),
                     &config,
                     &rates,
-                    cancel.clone(),
+                    ConnectionContext {
+                        cancel: cancel.clone(),
+                        activity,
+                    },
                 );
                 tokio::pin!(future);
                 tokio::select! {
@@ -404,6 +439,11 @@ fn eligible(model: &Model, config: &Config) -> bool {
     model.access == Access::Local
         || (model.access == Access::Metered && config.remote_models.contains(&model.alias))
 }
+struct ConnectionContext {
+    cancel: CancelToken,
+    activity: Activity,
+}
+
 async fn connection<A: Answer, T: Tailnet>(
     socket: TcpStream,
     keys: &Storage,
@@ -411,8 +451,9 @@ async fn connection<A: Answer, T: Tailnet>(
     tailnet: &T,
     config: &Config,
     rates: &Mutex<Rates>,
-    cancel: CancelToken,
+    context: ConnectionContext,
 ) {
+    let ConnectionContext { cancel, mut activity } = context;
     let peer = match socket.peer_addr() {
         Ok(peer) => peer.ip(),
         Err(_) => return,
@@ -445,7 +486,7 @@ async fn connection<A: Answer, T: Tailnet>(
                 .ok_or(Failure::Unauthorized)?;
             rate(
                 &mut rates.lock().map_err(|_| Failure::Busy)?.keys,
-                key.id,
+                key.id.clone(),
                 64,
                 config.requests_per_minute,
             )?;
@@ -456,6 +497,7 @@ async fn connection<A: Answer, T: Tailnet>(
             {
                 return Err(Failure::Forbidden);
             }
+            activity.authorize(&key)?;
             if !head.chat {
                 let models: Vec<_> = answer.models().iter().filter(|m| eligible(m, config))
                 .map(|m| json!({"id":m.alias,"object":"model","context_window":m.context_window,"remote":m.access!=Access::Local})).collect();
@@ -564,6 +606,7 @@ async fn connection<A: Answer, T: Tailnet>(
     let backend = async {
         let future = answer.chat(
             request,
+            Guest { key: admission.key() },
             Output {
                 send: tx,
                 cancel: cancel.clone(),

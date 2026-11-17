@@ -49,7 +49,8 @@ impl Transcript {
     /// `Msg` appends its `wire`; in-context `BashExecution` (not `excluded`) and `CustomMessage`
     /// append one user message; the last `Prefix` sets the prefix (a later one is an `epoch`
     /// rebase that keeps the messages); `Compaction` rebases to `[user:<summary>]` + the
-    /// messages from `first_kept` on; `BranchSummary` appends one user message at its position;
+    /// messages from `first_kept` on and the recorded native-tool fresh turn, if any;
+    /// `BranchSummary` appends one user message at its position;
     /// `ContextEdit` rebases by replacing or removing its target message; all other bodies
     /// leave the wire untouched. Summary and bash message texts are produced by the callers of
     /// `rebase`/`push` at run time and by the same pure functions here on replay, so a resumed
@@ -68,10 +69,11 @@ impl Transcript {
         match &e.body {
             EntryBody::Prefix(p) => {
                 let later_epoch = self.prefix.is_some();
+                let same_prefix = self.prefix.as_ref() == Some(p);
                 self.prefix = Some(p.clone());
                 if later_epoch {
                     let (wire, origins) = (self.wire.to_vec(), self.origins.clone());
-                    self.install(wire, origins, rebase_why::EPOCH);
+                    self.install_head(wire, origins, rebase_why::EPOCH, same_prefix);
                 }
             }
             EntryBody::Msg { wire, .. } => {
@@ -131,6 +133,18 @@ impl Transcript {
                 let mut origins = vec![origin];
                 wire.extend(tail);
                 origins.extend(tail_origins);
+                // Recorded in the same entry as the rebase: a process interruption
+                // cannot leave a saved native tool tail without its fresh-turn boundary.
+                if details
+                    .get("nativeToolContinuation")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                {
+                    wire.push(WireMsg::user(Self::NATIVE_TOOL_CONTINUATION));
+                    // This is not the summary message identified by the entry id.
+                    // A later cut here must persist its tail by value, not alias it.
+                    origins.push(None);
+                }
                 self.install(wire, origins, rebase_why::COMPACTION);
             }
             EntryBody::ContextEdit { target, replacement } => {
@@ -179,9 +193,15 @@ impl Transcript {
                     .collect();
                 self.install(head, origins, rebase_why::EXTENSION);
             }
+            EntryBody::ModelChange(_) => {
+                // Model/route identity is not part of FrozenPrefix. Even an identical
+                // following epoch must not carry authority from the previous route.
+                for message in Arc::make_mut(&mut self.wire) {
+                    message.provider_history = None;
+                }
+            }
             // Never on the wire.
             EntryBody::Shown { .. }
-            | EntryBody::ModelChange(_)
             | EntryBody::ThinkingLevelChange(_)
             | EntryBody::ModeChange(_)
             | EntryBody::Custom { .. }
@@ -189,6 +209,10 @@ impl Transcript {
             | EntryBody::SessionInfo { .. } => {}
         }
     }
+    /// A caller-generated fresh turn after native tool compaction. It carries no new
+    /// user intent or replay authority; the summary and kept results retain the task.
+    pub const NATIVE_TOOL_CONTINUATION: &'static str = "Continue the current task using the compacted context and tool results above. Follow the existing user instructions and do not repeat completed work.";
+
     /// `customType` of the `custom` entry that records a declared extension rebase. Its `data`
     /// carries the rebased wire under `messages` ([`Transcript::encode_rebase`]); the fold
     /// applies it as a rebase with `rebase_why::EXTENSION`.
@@ -254,6 +278,64 @@ impl Transcript {
         let origins = vec![None; head.len()];
         self.install(head, origins, why);
     }
+    /// Restore the wire of a destination projected from persisted session/tree entries.
+    /// Navigation is not a rewrite of the outgoing conversation: retain the destination's
+    /// original opaque carriers, including invalidation already performed by its fold.
+    /// Callers must use `project` over stored entries, never a hook-supplied wire. This does
+    /// not authenticate, rebind or re-sign replay; provider validation remains authoritative.
+    /// As with navigation's previous `rebase`, the current frozen prefix stays in force.
+    pub fn restore_persisted(&mut self, destination: Transcript) {
+        let wire = Arc::unwrap_or_clone(destination.wire);
+        let origins = vec![None; wire.len()];
+        self.install_prepared(wire, origins, rebase_why::LEAF_MOVE);
+    }
+
+    /// Refuse a compaction cut inside a tool exchange or retaining an unfinished batch.
+    pub fn validate_compaction_cut(&self, cut: usize) -> Result<(), oxa_proto::OxaError> {
+        let cut = cut.min(self.wire.len());
+        closed_tools(&self.wire[..cut])?;
+        closed_tools(&self.wire[cut..])
+    }
+
+    pub(crate) fn validate_compaction(&self, body: &EntryBody) -> Result<(), oxa_proto::OxaError> {
+        if let EntryBody::Compaction {
+            first_kept, details, ..
+        } = body
+        {
+            let cut = self
+                .origins
+                .iter()
+                .position(|o| o.as_deref() == Some(first_kept))
+                .unwrap_or(self.wire.len());
+            self.validate_compaction_cut(cut)?;
+            if first_kept.is_empty() {
+                if let Some(kept) = Self::decode_kept(details) {
+                    closed_tools(&kept)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Retain only existing authority whose complete visible prefix is unchanged.
+    /// Never accept a replacement carrier supplied by a rebase or hook.
+    pub fn prepare_rebase(&self, head: &mut [WireMsg]) {
+        let mut unchanged = true;
+        for (i, message) in head.iter_mut().enumerate() {
+            let old = self.wire.get(i);
+            unchanged &= old.is_some_and(|old| {
+                old.role == message.role
+                    && old.content == message.content
+                    && old.reasoning == message.reasoning
+                    && old.tool_calls == message.tool_calls
+                    && old.tool_call_id == message.tool_call_id
+            });
+            message.provider_history = old
+                .filter(|_| unchanged)
+                .and_then(|old| old.provider_history.clone());
+        }
+    }
+
     pub fn chain(&self) -> [u8; 32] {
         self.chain
     }
@@ -313,6 +395,25 @@ impl Transcript {
     /// Replace the wire (and its origins) by a head, recompute the chain, drop the usage and
     /// log the rebase. The only place the wire may shrink or change.
     fn install(&mut self, wire: Vec<WireMsg>, origins: Vec<Option<String>>, why: &'static str) {
+        self.install_head(wire, origins, why, true);
+    }
+    fn install_head(
+        &mut self,
+        mut wire: Vec<WireMsg>,
+        origins: Vec<Option<String>>,
+        why: &'static str,
+        same_prefix: bool,
+    ) {
+        if same_prefix {
+            self.prepare_rebase(&mut wire);
+        } else {
+            for message in &mut wire {
+                message.provider_history = None;
+            }
+        }
+        self.install_prepared(wire, origins, why);
+    }
+    fn install_prepared(&mut self, wire: Vec<WireMsg>, origins: Vec<Option<String>>, why: &'static str) {
         assert!(rebase_why::ALL.contains(&why), "unknown rebase cause: {why:?}");
         let before = self.wire.len();
         self.wire = Arc::new(wire);
@@ -359,4 +460,66 @@ pub fn bash_text(command: &str, output: &str, exit: Option<i32>) -> String {
         text.push_str(&format!("\n\nCommand exited with code {code}"));
     }
     text
+}
+
+/// Check both sides independently: no orphan/duplicate result, pending call or split batch.
+fn closed_tools(wire: &[WireMsg]) -> Result<(), oxa_proto::OxaError> {
+    use oxa_proto::Role;
+    let mut pending = std::collections::BTreeSet::new();
+    let invalid = || {
+        oxa_proto::OxaError::new(
+            oxa_proto::codes::INVALID,
+            "Compaction requires closed tool-call/result boundaries.",
+        )
+    };
+    for message in wire {
+        if message.role == Role::Tool {
+            if !message
+                .tool_call_id
+                .as_deref()
+                .is_some_and(|id| pending.remove(id))
+            {
+                return Err(invalid());
+            }
+        } else {
+            if !pending.is_empty() {
+                return Err(invalid());
+            }
+            for call in &message.tool_calls {
+                if call.id.is_empty() || !pending.insert(call.id.as_str()) {
+                    return Err(invalid());
+                }
+            }
+        }
+    }
+    if pending.is_empty() {
+        Ok(())
+    } else {
+        Err(invalid())
+    }
+}
+
+/// Only compactions need ancestry projection; ordinary appends do no extra work.
+pub(crate) fn validate_append(entries: &[Entry], entry: &Entry) -> Result<(), oxa_proto::OxaError> {
+    if !matches!(entry.body, EntryBody::Compaction { .. }) {
+        return Ok(());
+    }
+    let indices: std::collections::HashMap<_, _> = entries.iter().map(|e| (e.id.as_str(), e)).collect();
+    let mut branch = Vec::new();
+    let mut parent = entry.parent.as_deref();
+    while let Some(e) = parent.and_then(|id| indices.get(id)).copied() {
+        if branch.len() >= entries.len() {
+            return Err(oxa_proto::OxaError::new(
+                oxa_proto::codes::INVALID,
+                "Cyclic compaction ancestry.",
+            ));
+        }
+        branch.push(e);
+        parent = e.parent.as_deref();
+    }
+    let mut transcript = Transcript::default();
+    for e in branch.into_iter().rev() {
+        transcript.apply(e);
+    }
+    transcript.validate_compaction(&entry.body)
 }

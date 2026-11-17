@@ -442,6 +442,19 @@ pub type ReopenFn =
 /// One request to the worker thread that owns the `Session`. Each maps to one
 /// `oxa_core::Session` call; the results come back as `AgentEvent`s and [`WorkerMsg`]s.
 pub enum SessionCmd {
+    /// Coalesced wake for editor input. The handle binds it to the original ordinary queues;
+    /// a wake left behind by a session rebind must not run the replacement's input.
+    QueuedInput(oxa_core::Handle),
+    /// Explicit input after Ctrl+C belongs to the canceled session, not a queued replacement.
+    RecoveryPrompt {
+        handle: oxa_core::Handle,
+        text: String,
+        parts: Vec<Part>,
+    },
+    /// Event-driven inbox wake. The id makes a wake queued before a swap harmless.
+    Inbox {
+        session_id: String,
+    },
     /// `Session::prompt`. Slash commands that are templates, `/skill:name` or extension
     /// commands are sent as a prompt and expanded by the core.
     Prompt {
@@ -506,6 +519,11 @@ pub enum WorkerMsg {
     Event(oxa_proto::AgentEvent),
     /// A command finished; `Err` is shown as an error notice.
     Done(Result<(), OxaError>),
+    /// A session switch overtook explicit recovery input; return it without sending it.
+    UnsentPrompt {
+        text: String,
+        parts: Vec<Part>,
+    },
     /// The session was swapped; the app rebuilds the view model from the new branch.
     Reopened {
         entries: Vec<oxa_proto::Entry>,

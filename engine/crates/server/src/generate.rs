@@ -387,6 +387,9 @@ pub struct Worker<E: Engine> {
     /// test hook (usize::MAX in production): the optional snapshot writes of one persist stop after
     /// this many files, as when a request arrives between them
     pub opt_write_limit: usize,
+    /// Test-only late decision at the mandatory/optional write boundary.
+    #[cfg(test)]
+    pub test_optional_write_late: bool,
     /// audit v0.1.2 N2: how far past the shutdown deadline a snapshot file already started may run
     /// before it is cut inside the file (5 s: the 2.5 s deadline + 5 s stays inside the
     /// controller's 10 s unload grace); a test hook too
@@ -879,6 +882,8 @@ impl<E: Engine> Worker<E> {
             live_hint: None,
             legacy_writes: true,
             opt_write_limit: usize::MAX,
+            #[cfg(test)]
+            test_optional_write_late: false,
             shutdown_file_grace: std::time::Duration::from_secs(5),
             held_bytes: 0,
             restore_bps: (0.83e9, 0.64e9),
@@ -1447,13 +1452,21 @@ impl<E: Engine> Worker<E> {
             st.drop_session(a);
         }
         if !optional {
-            st.enforce(Some(&sid));
+            if st.used_bytes() > st.budget {
+                st.enforce_cancellable(Some(&sid), cancel);
+            }
             return rep;
         }
         let mut added = false;
         let mut cut = false;
         // a shutdown starts an optional file only while one fits before its deadline
+        #[cfg(test)]
+        let test_optional_write_late = self.test_optional_write_late;
         let late = || {
+            #[cfg(test)]
+            if test_optional_write_late {
+                return true;
+            }
             deadline.is_some_and(|d| Instant::now() + std::time::Duration::from_millis(250) >= d)
         };
         for (k, (r, idx)) in todo.into_iter().enumerate() {
@@ -1501,7 +1514,7 @@ impl<E: Engine> Worker<E> {
         if stop() || mode != PersistMode::Reply {
             return rep;
         }
-        let freed = st.enforce(Some(&sid));
+        let freed = st.enforce_cancellable(Some(&sid), cancel);
         if freed > 0 {
             eprintln!(
                 "oxe-server: state cache: evicted {} MiB (budget {} MiB)",
@@ -1702,7 +1715,7 @@ impl<E: Engine> Worker<E> {
             rep.bytes += r2.bytes;
             rep.note = r2.note;
         } else if let Some(st) = self.states.as_mut() {
-            st.enforce(Some(&s.manifest.sid));
+            st.enforce_cancellable(Some(&s.manifest.sid), cancel);
         }
         rep
     }
@@ -1769,7 +1782,11 @@ impl<E: Engine> Worker<E> {
             return;
         }
         let t0 = Instant::now();
-        let r = self.persist(p.session.as_deref(), PersistMode::Progress, None);
+        let r = self.persist(
+            p.session.as_deref(),
+            PersistMode::Progress,
+            p.cancel.as_deref(),
+        );
         self.progress_mark = n;
         if r.head.is_some() {
             eprintln!(

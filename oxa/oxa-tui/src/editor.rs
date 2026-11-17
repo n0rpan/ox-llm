@@ -314,8 +314,13 @@ impl Editor {
     /// Install (or remove) the completion source. While suggestions are open, up/down/tab/enter
     /// and escape go to the list (rendered below the text with `SelectList`).
     pub fn set_autocomplete(&mut self, provider: Option<Box<dyn AutocompleteProvider>>) {
+        let arriving = self.provider.is_none() && provider.is_some();
         self.provider = provider;
         self.suggest = None;
+        // Initial session metadata can arrive after the user has already typed a query.
+        if arriving {
+            self.refresh_suggestions(false);
+        }
     }
     pub fn autocomplete_open(&self) -> bool {
         self.suggest.is_some()
@@ -853,6 +858,11 @@ impl Editor {
             self.push_undo();
             self.kill_push("\n".to_string(), true, acc);
             self.merge_into_prev(l);
+        } else if !self.st.lines[l].is_empty() {
+            // Start of the first line (e.g. after an Up-arrow recall): clear the line.
+            self.push_undo();
+            let deleted = std::mem::take(&mut self.st.lines[l]);
+            self.kill_push(deleted, true, acc);
         } else {
             return false;
         }

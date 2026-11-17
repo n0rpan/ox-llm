@@ -260,24 +260,91 @@ fn export_flag() {
     assert!(missing.out.is_empty());
 }
 
-/// --export writes HTML and prints the path. The input is a session file written by a print
-/// run against the fake engine.
 #[test]
-fn export_flag_writes_html() {
+fn export_refuses_the_source_and_its_file_aliases_without_changing_bytes() {
+    for alias in ["same", "hard.jsonl", "soft.jsonl", "hard.html"] {
+        let env = TestEnv::new();
+        let server = FakeServer::start(
+            vec![ScriptTurn::text("Preserve this session.")],
+            FakeOpts::default(),
+        )
+        .unwrap();
+        assert_eq!(go(&env, &server.url(), &["-p", "hello"]).code, 0);
+        let input = first_jsonl(&env.agent_dir().join("sessions")).unwrap();
+        let source = std::fs::read(&input).unwrap();
+        let dest = if alias == "same" {
+            input.clone()
+        } else {
+            let dest = env.work().join(alias);
+            if alias == "soft.jsonl" {
+                std::os::unix::fs::symlink(&input, &dest).unwrap();
+            } else {
+                std::fs::hard_link(&input, &dest).unwrap();
+            }
+            dest
+        };
+        let result = go(
+            &env,
+            &closed_url(),
+            &["--export", input.to_str().unwrap(), dest.to_str().unwrap()],
+        );
+        assert!(
+            std::fs::read(&input).unwrap() == source,
+            "export must preserve source bytes: {alias}"
+        );
+        assert_ne!(result.code, 0, "source aliases must be refused: {alias}");
+        assert!(!result.out.contains("Exported to:"), "no success on refusal");
+        assert!(result.err.contains("source session"), "{}", result.err);
+    }
+}
+
+/// --export chooses the format by destination suffix, just like /export (#702).
+/// Both formats use the same session written by a print run against the fake engine.
+#[test]
+fn export_flag_formats() {
     let env = TestEnv::new();
     let server = FakeServer::start(vec![ScriptTurn::text("Export me.")], FakeOpts::default()).expect("fake");
     let first = go(&env, &server.url(), &["-p", "hello"]);
     assert_eq!(first.code, 0, "stderr: {}", first.err);
     let input = first_jsonl(&env.agent_dir().join("sessions")).expect("the print run wrote a session file");
-    let result = go(
-        &env,
-        &closed_url(),
-        &["--export", input.to_str().expect("utf-8 path"), "out.html"],
-    );
-    assert_eq!(result.code, 0, "stderr: {}", result.err);
-    assert!(result.out.starts_with("Exported to: "));
-    let html = std::fs::read_to_string(env.work().join("out.html")).expect("the export file");
-    assert!(html.starts_with("<!DOCTYPE html>") || html.starts_with("<!doctype html>"));
+    let source = std::fs::read(&input).unwrap();
+    let url = closed_url();
+    for output in [
+        Some("out.html"),
+        Some("out.jsonl"),
+        Some("out.JSONL"),
+        Some("out"),
+        None,
+    ] {
+        let mut args = vec!["--export", input.to_str().expect("utf-8 path")];
+        if let Some(output) = output {
+            args.push(output);
+        }
+        let result = go(&env, &url, &args);
+        assert_eq!(result.code, 0, "stderr: {}", result.err);
+        assert!(result.err.is_empty());
+        let dest = result
+            .out
+            .strip_prefix("Exported to: ")
+            .expect("success message")
+            .trim();
+        if let Some(output) = output {
+            assert_eq!(Path::new(dest), env.work().join(output));
+        } else {
+            assert_eq!(Path::new(dest).extension().unwrap(), "html");
+        }
+        let bytes = std::fs::read(dest).expect("the export file");
+        if matches!(output, Some("out.jsonl" | "out.JSONL")) {
+            assert_eq!(bytes, source, "JSONL export must preserve every byte");
+            for line in String::from_utf8(bytes).unwrap().lines() {
+                serde_json::from_str::<serde_json::Value>(line).expect("valid JSONL");
+            }
+        } else {
+            let html = String::from_utf8(bytes).unwrap();
+            assert!(html.starts_with("<!DOCTYPE html>") || html.starts_with("<!doctype html>"));
+        }
+        assert_eq!(std::fs::read(&input).unwrap(), source, "source must not change");
+    }
 }
 
 /// The first `.jsonl` file under `dir` (searched recursively, names sorted).
@@ -500,4 +567,61 @@ fn keymap_diagnostics_reported_in_print_mode() {
         "{}",
         c.err
     );
+}
+
+#[test]
+fn send_writes_an_inbox_message_without_contacting_the_engine() {
+    for words in [
+        vec!["send", "session-638", "task finished, red"],
+        vec!["--offline", "send", "session-638", "task finished, red"],
+        vec![
+            "--offline",
+            "--offline",
+            "send",
+            "session-638",
+            "@literal --offline",
+        ],
+        vec!["--offline", "send", "session-638", "--offline"],
+        vec!["send", "session-638", "--offline"],
+        vec!["send", "session-638", "@literal"],
+    ] {
+        let env = TestEnv::new();
+        let r = go(&env, &closed_url(), &words);
+        assert_eq!(r.code, 0, "{words:?}: {}", r.err);
+        assert!(r.out.is_empty());
+        let dirs = oxa_config::Dirs::under(env.root());
+        let files: Vec<_> = std::fs::read_dir(dirs.agent_dir.join("inbox/session-638"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&files[0]).unwrap(),
+            *words.last().unwrap()
+        );
+        assert!(
+            !dirs.agent_dir.join("sessions").exists(),
+            "send must not start inference"
+        );
+    }
+}
+
+#[test]
+fn send_rejects_missing_arguments_and_path_ids_without_an_engine() {
+    let env = TestEnv::new();
+    for words in [
+        vec!["send"],
+        vec!["send", "session-638"],
+        vec!["send", "../outside", "text"],
+        vec!["send", "id", "text", "extra"],
+        vec!["--offline", "send"],
+        vec!["--offline", "send", "session-638"],
+        vec!["--offline", "--offline", "send", "../outside", "text"],
+        vec!["--offline", "send", "id", "text", "extra"],
+    ] {
+        let r = go(&env, &closed_url(), &words);
+        assert_eq!(r.code, 2, "{words:?}: {}", r.err);
+        assert!(r.err.contains("Usage: oxa send"), "{}", r.err);
+        assert!(!r.err.contains("cannot reach the engine"));
+    }
 }

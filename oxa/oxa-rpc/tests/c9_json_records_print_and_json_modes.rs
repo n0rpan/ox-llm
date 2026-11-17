@@ -48,13 +48,21 @@ impl Sandbox for NoBwrap {
 
 /// A new session over `engine`, stored under the test's own agent directory.
 fn open(env: &TestEnv, engine: &Arc<ScriptedEngine>) -> Session {
+    open_with_hooks(env, engine, Vec::new())
+}
+
+fn open_with_hooks(
+    env: &TestEnv,
+    engine: &Arc<ScriptedEngine>,
+    hooks: Vec<Arc<dyn oxa_proto::Hooks>>,
+) -> Session {
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(env.agent_dir().join("sessions")));
     let engine_dyn: Arc<dyn Engine> = engine.clone();
     let deps = Deps {
         engine: engine_dyn,
         store,
         tools: Vec::new(),
-        hooks: Vec::new(),
+        hooks,
         policy: Box::new(DenyAll),
         sandbox: Arc::new(NoBwrap),
         // Exact prompt-byte fixtures select note-free queues/RPC/replay.
@@ -607,6 +615,9 @@ fn print_final_text_only() {
     let code = run_print(&mut session, prompts, &mut out, &mut err).expect("the run completes");
     assert_eq!(code, 0);
     assert_eq!(String::from_utf8(out).unwrap(), "final answer\n");
+    let progress = String::from_utf8(err).unwrap();
+    assert_eq!(progress.matches("first answer").count(), 1);
+    assert!(!progress.contains("final answer"));
 }
 
 /// A truncated reply in an earlier prompt fails the run and says why, even when a later
@@ -1035,4 +1046,163 @@ fn print_streams_progress_to_stderr_and_final_text_to_stdout() {
         .filter(|l| *l != "<flush>")
         .collect();
     assert_eq!(stdout, "done\n");
+}
+
+#[test]
+fn persisted_provider_replay_is_not_part_of_public_entry_records() {
+    let mut wire = WireMsg::assistant("visible");
+    wire.provider_history = Some(
+        oxa_proto::ProviderHistory::new(
+            [1; 32],
+            [2; 32],
+            vec![json!({
+        "type":"reasoning","encrypted_content":"synthetic-private-replay"})],
+        )
+        .unwrap(),
+    );
+    let e = Entry {
+        id: "synthetic".into(),
+        parent: None,
+        ts_ms: 1,
+        body: EntryBody::Msg {
+            wire,
+            parts: vec![],
+            tool: None,
+        },
+    };
+    let mut bytes = vec![];
+    encode_entry(&e, &mut bytes);
+    let decoded = oxa_session::decode_entry(&bytes).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("synthetic-private-replay"));
+    let public = entry_to_json(&decoded).to_string();
+    assert!(!public.contains("synthetic-private-replay"));
+    assert!(!public.contains("provider_history"));
+    assert!(public.contains("visible"));
+}
+
+/// Classifies the audited stop window after AgentEnd, without clock scheduling.
+#[test]
+fn print_retains_completed_reply_when_wrap_up_arrives_at_settlement() {
+    use oxa_proto::{CommandSpec, HookPoint, HookReply, Hooks, Tool, Ui};
+    use std::sync::Mutex;
+    #[derive(Default)]
+    struct StopAtSettle(Mutex<Option<oxa_core::Handle>>);
+    impl Hooks for StopAtSettle {
+        fn fire(&self, point: HookPoint, _: &Value, _: &mut dyn Ui) -> HookReply {
+            if point == HookPoint::AgentSettled {
+                if let Some(handle) = self.0.lock().unwrap().take() {
+                    handle.request_wrap_up(oxa_core::WrapUpReason::TimeLimit);
+                }
+            }
+            HookReply::Continue
+        }
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            Vec::new()
+        }
+        fn commands(&self) -> Vec<CommandSpec> {
+            Vec::new()
+        }
+        fn run_command(&self, _: &str, _: &str, _: &mut dyn Ui) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn prompt_sections(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+    }
+    for partial in [false, true] {
+        let env = TestEnv::new();
+        let mut first = ScriptTurn::text("completed first reply");
+        if partial {
+            first.fault = Some(Fault::DropAt { bytes: 7 });
+        }
+        let engine = Arc::new(ScriptedEngine::new(vec![
+            first,
+            ScriptTurn::text("later prompt must not run"),
+        ]));
+        let hook = Arc::new(StopAtSettle::default());
+        let mut session = open_with_hooks(&env, &engine, vec![hook.clone()]);
+        session.set_auto_retry(false);
+        *hook.0.lock().unwrap() = Some(session.handle());
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let outcome = oxa_rpc::run_print_outcome(
+            &mut session,
+            vec![("first".into(), Vec::new()), ("later".into(), Vec::new())],
+            &mut out,
+            &mut err,
+        )
+        .unwrap();
+        assert_eq!(engine.requests().len(), 1, "the later prompt is not admitted");
+        if partial {
+            assert_eq!(outcome, oxa_core::RunOutcome::Failed(codes::STREAM_BROKEN));
+            assert!(out.is_empty(), "failed partial output is never a final reply");
+        } else {
+            assert_eq!(outcome, oxa_core::RunOutcome::Interrupted);
+            assert_eq!(out, b"completed first reply\n");
+        }
+    }
+}
+
+/// A real before-settle append starts another run: its prior completed reply is progress.
+#[test]
+fn print_keeps_intermediate_reply_when_before_settle_appends_another_run() {
+    use oxa_proto::{CommandSpec, HookPoint, HookReply, Hooks, Tool, Ui};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    #[derive(Default)]
+    struct AppendOnce(AtomicBool);
+    impl Hooks for AppendOnce {
+        fn fire(&self, point: HookPoint, _: &Value, _: &mut dyn Ui) -> HookReply {
+            if point == HookPoint::AgentBeforeSettle && !self.0.swap(true, Ordering::SeqCst) {
+                return HookReply::Append(vec![WireMsg::user("Synthetic added work")]);
+            }
+            HookReply::Continue
+        }
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            Vec::new()
+        }
+        fn commands(&self) -> Vec<CommandSpec> {
+            Vec::new()
+        }
+        fn run_command(&self, _: &str, _: &str, _: &mut dyn Ui) -> Result<(), OxaError> {
+            Ok(())
+        }
+        fn prompt_sections(&self) -> Vec<(String, String)> {
+            Vec::new()
+        }
+    }
+    for later_prompt in [true, false] {
+        let env = TestEnv::new();
+        let mut turns = vec![
+            ScriptTurn::text("before-settle reply"),
+            ScriptTurn::text("hook-added reply"),
+        ];
+        if later_prompt {
+            turns.push(ScriptTurn::text("last-prompt reply"));
+        }
+        let engine = Arc::new(ScriptedEngine::new(turns));
+        let mut session = open_with_hooks(&env, &engine, vec![Arc::new(AppendOnce::default())]);
+        let mut prompts = vec![("first".into(), Vec::new())];
+        if later_prompt {
+            prompts.push(("last".into(), Vec::new()));
+        }
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let outcome = oxa_rpc::run_print_outcome(&mut session, prompts, &mut out, &mut err).unwrap();
+        assert_eq!(outcome, oxa_core::RunOutcome::Done);
+        assert_eq!(engine.requests().len(), if later_prompt { 3 } else { 2 });
+        let progress = String::from_utf8(err).unwrap();
+        assert_eq!(
+            progress.matches("before-settle reply\n").count(),
+            1,
+            "completed intermediate reply must not disappear"
+        );
+        if later_prompt {
+            assert_eq!(progress.matches("hook-added reply\n").count(), 1);
+            assert!(
+                progress.find("before-settle reply").unwrap() < progress.find("hook-added reply").unwrap()
+            );
+            assert_eq!(out, b"last-prompt reply\n");
+        } else {
+            assert!(!progress.contains("hook-added reply"));
+            assert_eq!(out, b"hook-added reply\n");
+        }
+    }
 }

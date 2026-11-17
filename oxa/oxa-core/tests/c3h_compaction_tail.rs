@@ -51,6 +51,7 @@ fn build(
         gate: Default::default(),
     });
     SessionState {
+        goal: None,
         output_schema: None,
         engine,
         store,
@@ -424,5 +425,296 @@ fn cut_on_a_rewritten_message_is_stored_by_value() {
         .expect("compaction entry");
     assert_eq!(details.1, "");
     assert!(details.0.get("keptMessages").is_some(), "{:?}", details.0);
+    assert_replays(&st);
+}
+
+#[derive(Default)]
+struct ReplayHook(Mutex<Vec<Value>>);
+impl Hooks for ReplayHook {
+    fn fire(
+        &self,
+        _: oxa_proto::HookPoint,
+        payload: &Value,
+        _: &mut dyn oxa_proto::Ui,
+    ) -> oxa_proto::HookReply {
+        self.0.lock().unwrap().push(payload.clone());
+        oxa_proto::HookReply::Continue
+    }
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        vec![]
+    }
+    fn commands(&self) -> Vec<oxa_proto::CommandSpec> {
+        vec![]
+    }
+    fn run_command(&self, _: &str, _: &str, _: &mut dyn oxa_proto::Ui) -> Result<(), oxa_proto::OxaError> {
+        Ok(())
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        vec![]
+    }
+}
+
+#[test]
+fn resumed_private_replay_is_absent_from_hooks_and_engine_wire_then_dropped_on_compaction() {
+    let env = TestEnv::new();
+    let (mut st, eng) = state(
+        &env,
+        vec![ScriptTurn::text("next answer"), ScriptTurn::text("SUMMARY")],
+        CompactPolicy {
+            soft: u32::MAX,
+            hard: u32::MAX,
+            keep_tokens: 1,
+            summary_max: 64,
+            enabled: false,
+        },
+    );
+    let hooks = Arc::new(ReplayHook::default());
+    st.hooks.push(hooks.clone());
+    say(&mut st, "previous question");
+    let mut reply = WireMsg::assistant("previous answer");
+    reply.provider_history = Some(
+        oxa_proto::ProviderHistory::new(
+            [1; 32],
+            [2; 32],
+            vec![serde_json::json!({
+        "type":"reasoning","encrypted_content":"synthetic-private-replay"})],
+        )
+        .unwrap(),
+    );
+    let e = oxa_proto::Entry {
+        id: "a".into(),
+        parent: None,
+        ts_ms: 1,
+        body: EntryBody::Msg {
+            wire: reply,
+            parts: vec![],
+            tool: None,
+        },
+    };
+    let mut bytes = vec![];
+    oxa_session::encode_entry(&e, &mut bytes);
+    let EntryBody::Msg { wire, .. } = oxa_session::decode_entry(&bytes).unwrap().body else {
+        panic!("message")
+    };
+    assert!(wire.provider_history.is_some());
+    push(&mut st, wire);
+    say(&mut st, "next question");
+    assert_eq!(run(&mut st), RunEnd::Stopped);
+    assert!(!hooks.0.lock().unwrap().is_empty());
+    for value in hooks.0.lock().unwrap().iter() {
+        assert!(!value.to_string().contains("synthetic-private-replay"));
+    }
+    for request in eng.requests() {
+        for message in request.messages {
+            assert!(!String::from_utf8_lossy(&message.to_json()).contains("synthetic-private-replay"));
+        }
+    }
+    compact_now(
+        &mut st,
+        None,
+        CompactReason::Manual,
+        &mut VecSink::default(),
+        &mut HeadlessUi::default(),
+    )
+    .unwrap();
+    assert_eq!(compactions(&st), 1);
+    assert!(st.transcript.wire().iter().all(|m| m.provider_history.is_none()));
+    assert_replays(&st);
+}
+
+/// Models the native latest-tool boundary, not the provider's MAC implementation.
+/// The real provider binding controls remain in the engine/session suites.
+struct NativeBoundary(Arc<ScriptedEngine>);
+impl Engine for NativeBoundary {
+    fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, oxa_proto::OxaError> {
+        self.0.info(target)
+    }
+    fn count_tokens(&self, text: &str) -> Result<u32, oxa_proto::OxaError> {
+        self.0.count_tokens(text)
+    }
+    fn chat(
+        &self,
+        r: &oxa_proto::ChatRequest,
+        cancel: &CancelToken,
+        on: &mut dyn FnMut(oxa_proto::StreamEvent),
+    ) -> Result<oxa_proto::AssistantTurn, oxa_proto::OxaError> {
+        let fresh = r.messages.iter().rposition(|m| m.role == Role::User).unwrap_or(0);
+        if let Some(call) = r.messages[fresh..]
+            .iter()
+            .rev()
+            .find(|m| !m.tool_calls.is_empty())
+        {
+            assert!(
+                call.provider_history.is_some(),
+                "latest native tool call has no replay authority and no fresh user boundary"
+            );
+        }
+        let mut turn = self.0.chat(r, cancel, on)?;
+        if !turn.msg.tool_calls.is_empty() {
+            turn.msg.provider_history = Some(
+                oxa_proto::ProviderHistory::new(
+                    [1; 32],
+                    [2; 32],
+                    vec![serde_json::json!({"type":"function_call","id":"synthetic-native-id"})],
+                )
+                .unwrap(),
+            );
+        }
+        Ok(turn)
+    }
+}
+
+#[test]
+fn native_tool_auto_compaction_establishes_a_durable_fresh_turn() {
+    // Execute the persisted, unfinished continuation in another process: no in-memory
+    // carrier cache, and no new user prompt to conceal a missing compaction boundary.
+    if let Some(path) = std::env::var_os("OXA_TEST_NATIVE_COMPACT_SESSION") {
+        let env = TestEnv::new();
+        let store = oxa_session::FsStore::new(std::path::PathBuf::from(&path).parent().unwrap().into());
+        let entries = store
+            .load(&oxa_session::SessionRef {
+                path: path.into(),
+                id: "synthetic".into(),
+            })
+            .unwrap();
+        let eng = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("resumed answer")]));
+        let mut st = build(
+            &env,
+            Arc::new(NativeBoundary(eng.clone())),
+            vec![],
+            CompactPolicy {
+                soft: u32::MAX,
+                hard: u32::MAX,
+                keep_tokens: 1,
+                summary_max: 64,
+                enabled: false,
+            },
+            Settings::default(),
+        );
+        st.transcript = Transcript::project(&entries);
+        st.tree = Tree::new(entries);
+        assert_eq!(st.transcript.wire().last().unwrap().role, Role::User);
+        assert!(
+            st.transcript.origin(st.transcript.wire().len() - 1).is_none(),
+            "the synthetic continuation must not alias the summary's entry origin"
+        );
+        assert!(st.transcript.wire().iter().all(|m| m.provider_history.is_none()));
+        assert_eq!(run(&mut st), RunEnd::Stopped);
+        assert_eq!(eng.remaining(), 0);
+        return;
+    }
+    let env = TestEnv::new();
+    for native in [false, true] {
+        let eng = Arc::new(ScriptedEngine::new(vec![
+            ScriptTurn::text("ready"),
+            ScriptTurn::tool("c1", "readlog", "{}"),
+            ScriptTurn::text("SUMMARY: inspect the log and report its contents"),
+            ScriptTurn::text("the log contains heartbeats"),
+        ]));
+        let engine: Arc<dyn Engine> = if native {
+            Arc::new(NativeBoundary(eng.clone()))
+        } else {
+            eng.clone()
+        };
+        let mut st = build(
+            &env,
+            engine,
+            vec![big_tool(6000)],
+            CompactPolicy {
+                soft: 2000,
+                hard: 100_000,
+                keep_tokens: 1,
+                summary_max: 64,
+                enabled: true,
+            },
+            Settings::from_values(
+                serde_json::json!({"oxa":{"compaction":{"midRun":true}}}),
+                serde_json::json!({}),
+            ),
+        );
+        say(&mut st, "get ready");
+        assert_eq!(run(&mut st), RunEnd::Stopped);
+        say(&mut st, "inspect the log and report its contents");
+        assert_eq!(run(&mut st), RunEnd::Stopped);
+        assert_eq!(compactions(&st), 1);
+        assert_eq!(eng.remaining(), 0);
+        let requests = eng.requests();
+        let summary = requests.iter().position(|r| r.kind == "compaction").unwrap();
+        let continuation = &requests[summary + 1].messages;
+        assert_eq!(
+            continuation.last().unwrap().role,
+            if native { Role::User } else { Role::Tool }
+        );
+        assert!(continuation
+            .iter()
+            .any(|m| m.role == Role::Tool && m.content.as_ref().unwrap().len() == 6000));
+        assert!(continuation.iter().all(|m| m.provider_history.is_none()));
+        assert_replays(&st);
+        if native {
+            let end = st
+                .tree
+                .entries()
+                .iter()
+                .position(|e| matches!(e.body, EntryBody::Compaction { .. }))
+                .unwrap();
+            let store = oxa_session::FsStore::new(env.root().join("saved"));
+            let sref = store.create(&env.work(), Some("synthetic"), None).unwrap();
+            for entry in &st.tree.entries()[..=end] {
+                store.append(&sref, entry).unwrap();
+            }
+            store.sync(&sref).unwrap();
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "native_tool_auto_compaction_establishes_a_durable_fresh_turn",
+                ])
+                .env_clear()
+                .envs(env.envs("http://127.0.0.1:9"))
+                .env("OXA_TEST_NATIVE_COMPACT_SESSION", &sref.path)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn unchanged_native_tool_continuation_keeps_its_authority_without_a_new_prompt() {
+    let env = TestEnv::new();
+    let eng = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::tool("c1", "readlog", "{}"),
+        ScriptTurn::text("done"),
+    ]));
+    let mut st = build(
+        &env,
+        Arc::new(NativeBoundary(eng.clone())),
+        vec![big_tool(100)],
+        CompactPolicy {
+            soft: u32::MAX,
+            hard: u32::MAX,
+            keep_tokens: 1,
+            summary_max: 64,
+            enabled: true,
+        },
+        Settings::default(),
+    );
+    say(&mut st, "inspect the log");
+    assert_eq!(run(&mut st), RunEnd::Stopped);
+    assert_eq!(compactions(&st), 0);
+    let requests = eng.requests();
+    assert_eq!(requests.len(), 2);
+    let continuation = &requests[1].messages;
+    assert_eq!(continuation.last().unwrap().role, Role::Tool);
+    assert!(continuation
+        .iter()
+        .find(|m| !m.tool_calls.is_empty())
+        .unwrap()
+        .provider_history
+        .is_some());
     assert_replays(&st);
 }

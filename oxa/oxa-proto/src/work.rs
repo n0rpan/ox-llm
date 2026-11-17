@@ -211,6 +211,18 @@ choice!(WorkerOutcome {
     Done => "done", NothingToDo => "nothing_to_do", Blocked => "blocked",
     Failed => "failed", Interrupted => "interrupted",
 });
+choice!(TaskStep {
+    Preparing => "preparing", Worker => "worker", Acceptance => "acceptance",
+    Repair => "repair", Recheck => "recheck", Saving => "saving", Finished => "finished",
+});
+choice!(StepReason {
+    Resumed => "resumed", Prepared => "prepared", WorkerDone => "worker_done",
+    WorkerNothingToDo => "worker_nothing_to_do", WorkerBlocked => "worker_blocked",
+    WorkerFailed => "worker_failed", ChecksPassed => "checks_passed", ChecksFailed => "checks_failed",
+    RepairDone => "repair_done", RepairFailed => "repair_failed", Saved => "saved", SaveFailed => "save_failed",
+    Interrupted => "interrupted", Deadline => "deadline", SessionUnavailable => "session_unavailable",
+    SetupFailed => "setup_failed",
+});
 choice!(EvidenceKind {
     LocalCheck => "local_check", Gate => "gate", Review => "review", Queue => "queue",
     Status => "status", Standing => "standing",
@@ -282,10 +294,14 @@ impl Codec for Subject {
 
 record!(
     /// Stable source/revision identifies a durable observation on restart, before its event seq.
-    Checkpoint { source: String, revision: u64 } |s| {
-        atom(&s.source, 64)?;
-        require(s.revision > 0, "checkpoint revision must be positive")
-    }
+    Checkpoint {
+        source: String,
+        revision: u64
+    } | s
+        | {
+            atom(&s.source, 64)?;
+            require(s.revision > 0, "checkpoint revision must be positive")
+        }
 );
 record!(
     PullRequest {
@@ -305,14 +321,25 @@ record!(
         | { atom(&s.id, 256) }
 );
 record!(Running {
-    task: String, host: String, branch: String, worktree: String, session_id: Option<String>,
+    task: String, host: String, branch: String, worktree: String, session_id: Option<String>, step: TaskStep,
 } |s| {
     atom(&s.task, 128)?;
     atom(&s.host, 128)?;
     require(!s.branch.starts_with('-') && s.branch.len() <= 256, "invalid task branch")?;
     if let Some(id) = &s.session_id { atom(id, 128)?; }
+    require(s.step != TaskStep::Finished, "finished task cannot be running")?;
     Ok(())
 });
+record!(
+    /// One durable runner step, with no task-state contents or implied publication/landing.
+    /// Finished means this local attempt ended; only the separate acceptance/merge facts
+    /// provide those respective claims. A terminal step requires an explicit fixed reason.
+    TaskTransition { task: String, step: TaskStep, session_id: Option<String>, reason: Option<StepReason> } |s| {
+        atom(&s.task, 128)?;
+        if let Some(id) = &s.session_id { atom(id, 128)?; }
+        require(s.step != TaskStep::Finished || s.reason.is_some(), "finished step requires a reason")
+    }
+);
 record!(WorkerFinished {
     task: String, session_id: Option<String>, outcome: WorkerOutcome, error_class: Option<String>,
 } |s| {
@@ -389,7 +416,7 @@ record!(
         }
 );
 record!(AskClosed { id: String } | s | { atom(&s.id, 128) });
-record!(Incident { id: String, subject: Subject, kind: IncidentKind, evidence: Option<Evidence> } |s| { atom(&s.id, 128) });
+record!(Incident { id: String, subject: Subject, kind: IncidentKind, evidence: Option<Evidence> } |s| { atom(&s.id, 256) });
 record!(
     Mechanical {
         subject: Subject,
@@ -402,6 +429,7 @@ tagged!(
     /// No variant grants permission or updates runner state. Only PrMerged is evidence of landing.
     Fact {
         TaskStarted(Running) => "task_started",
+        TaskTransition(TaskTransition) => "task_transition",
         WorkerFinished(WorkerFinished) => "worker_finished",
         LocalAcceptance(LocalAcceptance) => "local_acceptance",
         Published(Publication) => "published",
@@ -409,6 +437,7 @@ tagged!(
         Enqueued(PullRequest) => "enqueued",
         PrMerged(Landed) => "pr_merged",
         Blocked(Blocked) => "blocked",
+        Unblocked(Subject) => "unblocked",
         AskOpened(Ask) => "ask_opened",
         AskClosed(AskClosed) => "ask_closed",
         Incident(Incident) => "incident",
@@ -429,9 +458,13 @@ impl Fact {
 
 record!(
     /// Sequence is repository-local, starts at one and never resets on rotation.
-    Event { seq: u64, at_ms: u64, checkpoint: Checkpoint, fact: Fact } |s| {
-        require(s.seq > 0, "event sequence must be positive")
-    }
+    Event {
+        seq: u64,
+        at_ms: u64,
+        checkpoint: Checkpoint,
+        fact: Fact
+    } | s
+        | { require(s.seq > 0, "event sequence must be positive") }
 );
 record!(
     /// A bounded materialized read view, not task state. Never drop running/blocked/asks to fit.

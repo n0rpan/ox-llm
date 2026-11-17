@@ -1,4 +1,4 @@
-"""The `gate` job in checks.yml covers every job and every classifier output; caches save only on main.
+"""The required gate covers every job/output; its caches save only on main, lane caches stay isolated.
 
 Parsed line by line (no YAML library) so it runs with a bare `python3 -I`.
 """
@@ -26,6 +26,38 @@ def job_block(text, name):
     return re.search(rf'^  {re.escape(name)}:\s*\n((?:(?:    .*|\s*)\n)*)', body + '\n', re.M).group(1)
 
 
+def lane_cache_problems(text):
+    """Owner-authorized lane caches cannot write the required workflows' main keys."""
+    found = []
+    block = job_block(text, 'test')
+    actions = re.findall(r'uses: ([^@\s]+)@([^\s]+)', text)
+    if any(not name.startswith('actions/') or not re.fullmatch('[a-f0-9]{40}', sha)
+           for name, sha in actions):
+        found.append('lane actions must be GitHub-owned and SHA-pinned')
+    condition = (
+        "success() && github.event_name != 'merge_group' && github.ref != 'refs/heads/main' && "
+        "(startsWith(github.ref, 'refs/heads/agent/') || startsWith(github.ref, 'refs/heads/codex/') || "
+        "startsWith(github.ref, 'refs/heads/air/') || startsWith(github.ref, 'refs/heads/runner/')) && "
+        "steps.cache.outputs.cache-hit != 'true'"
+    )
+    steps = re.findall(r'(?m)^      - uses: actions/cache/(restore|save)@[a-f0-9]{40}[^\n]*\n'
+                       r'((?:(?:        .*|\s*)\n)*)', block + '\n')
+    if sorted(kind for kind, _ in steps) != ['restore', 'save']:
+        found.append('expected one explicit cache restore/save pair in lane test job')
+    paths = ('          path: |\n'
+             '            ${{ env.CARGO_HOME }}/registry\n'
+             '            ${{ env.CARGO_HOME }}/git\n'
+             '            ${{ env.CARGO_TARGET_DIR }}\n')
+    for kind, step in steps:
+        if paths not in step or '          key: lane-${{ steps.rust-key.outputs.key }}' not in step:
+            found.append('lane cache paths/key must be explicit and lane-namespaced')
+        if kind == 'save' and f'        if: {condition}\n' not in step:
+            found.append('lane cache writes need success, a lane branch, and no main/queue access')
+        if kind == 'restore' and '          restore-keys: lane-${{ steps.rust-key.outputs.prefix }}' not in step:
+            found.append('lane cache fallback must stay in its namespace')
+    return found
+
+
 class Gate(unittest.TestCase):
     def setUp(self):
         self.checks = (WORKFLOWS / 'checks.yml').read_text()
@@ -35,6 +67,18 @@ class Gate(unittest.TestCase):
         needs = set(re.search(r'^    needs: \[(.*)\]', block, re.M).group(1).replace(' ', '').split(','))
         self.assertIn('if: always()', block)
         self.assertEqual(needs, set(jobs(self.checks)) - set(UNGATED))
+
+    def test_merge_group_always_selects_complete_oxa_workspace(self):
+        build = job_block(self.checks, 'build')
+        self.assertIn("oxa: ${{ github.event_name == 'merge_group' || needs.changes.outputs.oxa == 'true' }}", build)
+        reusable = (WORKFLOWS / 'build.yml').read_text()
+        archive = job_block(reusable, 'oxa-test-build')
+        shards = job_block(reusable, 'oxa-test-shards')
+        self.assertIn('if: inputs.heavy && inputs.oxa', archive)
+        self.assertIn('if: inputs.heavy && inputs.oxa', shards)
+        self.assertIn('cargo nextest archive --profile ci --cargo-profile ci --locked --workspace', archive)
+        self.assertIn('--partition hash:${{ matrix.shard }}/2', shards)
+        self.assertNotIn('changed_paths', archive + shards)
 
     def test_gate_checks_every_classifier_output(self):
         outputs = set(re.findall(r'^      ([a-z]+): \$\{\{ steps\.paths\.outputs\.\1 \}\}',
@@ -57,6 +101,7 @@ class Gate(unittest.TestCase):
         self.assertEqual(set(manifests), {'oxa/Cargo.toml'})
         self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features', block)
         self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features -p oxa-engine', block)
+        self.assertIn('cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxa-cli --test in_process_cloud', block)
         self.assertIn('bwrap --unshare-user --unshare-net --cap-drop ALL', block)
         self.assertIn('env -i ', block)
         self.assertIn('sudo chown 65534:65534 "$gateway_owner_fixture"', block)
@@ -74,10 +119,30 @@ class Gate(unittest.TestCase):
             text = path.read_text()
             self.assertNotRegex(text, r'actions/cache@', path.name)
             for match in re.finditer(r'actions/cache/save@.*\n(?:\s+#.*\n)?\s+if: (.*)', text):
-                self.assertIn("github.ref == 'refs/heads/main'", match.group(1), path.name)
-                self.assertIn("github.event_name != 'merge_group'", match.group(1), path.name)
+                if path.name == 'lane.yml':
+                    self.assertFalse(lane_cache_problems(text), lane_cache_problems(text))
+                else:
+                    self.assertIn("github.ref == 'refs/heads/main'", match.group(1), path.name)
+                    self.assertIn("github.event_name != 'merge_group'", match.group(1), path.name)
             self.assertEqual(len(re.findall(r'actions/cache/save@', text)),
                              len(re.findall(r'actions/cache/restore@', text)), path.name)
+
+
+    def test_lane_cache_cannot_bypass_required_main_cache_policy(self):
+        text = (WORKFLOWS / 'lane.yml').read_text()
+        self.assertFalse(lane_cache_problems(text))
+        for changed in (
+            text.replace("github.ref != 'refs/heads/main'", "true"),
+            text.replace("github.event_name != 'merge_group'", "true"),
+            text.replace("if: success() &&", "if: always() &&"),
+            text.replace("startsWith(github.ref, 'refs/heads/agent/')", "true"),
+            text.replace('key: lane-${{', 'key: rust-${{'),
+            text.replace('restore-keys: lane-${{', 'restore-keys: rust-${{'),
+            text.replace('${{ env.CARGO_HOME }}/registry', '~/.config'),
+            text.replace('actions/cache/save@', 'other/cache/save@'),
+        ):
+            self.assertTrue(lane_cache_problems(changed))
+
 
 
 class LabShards(unittest.TestCase):

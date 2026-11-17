@@ -1,5 +1,6 @@
 //! Short filesystem transactions shared by every process using one daily ledger.
 //! A crash keeps its holds. Broken state refuses admission rather than resetting it.
+use crate::billing::Counts;
 use nix::fcntl::{Flock, FlockArg};
 use serde_json::{json, Value};
 use std::{
@@ -35,13 +36,55 @@ fn options() -> OpenOptions {
     options
 }
 
+pub(crate) enum Reserved {
+    Metered(f64),
+    Subscription(u64, f64),
+}
+impl Reserved {
+    fn from_value(value: &Value) -> io::Result<Self> {
+        if let Some(cost) = value.as_f64().filter(|cost| cost.is_finite() && *cost >= 0.0) {
+            return Ok(Self::Metered(cost));
+        }
+        let object = value
+            .as_object()
+            .filter(|o| o.len() == 1 || o.len() == 2 && o.contains_key("reserved_usd"))
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let tokens = object
+            .get("subscription_tokens")
+            .and_then(Value::as_u64)
+            .filter(|n| *n > 0)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        let usd = match object.get("reserved_usd") {
+            Some(value) => value
+                .as_f64()
+                .filter(|cost| cost.is_finite() && *cost > 0.0)
+                .ok_or(io::ErrorKind::InvalidData)?,
+            None => 0.0,
+        };
+        Ok(Self::Subscription(tokens, usd))
+    }
+    fn to_value(&self) -> Value {
+        match self {
+            Self::Metered(cost) => json!(cost),
+            Self::Subscription(tokens, usd) if *usd > 0.0 => {
+                json!({"subscription_tokens":tokens,"reserved_usd":usd})
+            }
+            Self::Subscription(tokens, _) => json!({"subscription_tokens":tokens}),
+        }
+    }
+    fn usd(&self) -> f64 {
+        match self {
+            Self::Metered(cost) | Self::Subscription(_, cost) => *cost,
+        }
+    }
+}
 pub(crate) struct Shared {
     _lock: Flock<File>,
     file: File,
     directory: PathBuf,
     fresh: bool,
     pub failed: bool,
-    pub holds: BTreeMap<String, f64>,
+    pub holds: BTreeMap<String, Reserved>,
 }
 impl Shared {
     pub fn open(ledger: &Path) -> io::Result<Self> {
@@ -89,18 +132,15 @@ impl Shared {
             }
             let mut total = 0.0;
             for (id, cost) in pending {
-                let cost = cost
-                    .as_f64()
-                    .filter(|cost| cost.is_finite() && *cost >= 0.0)
-                    .ok_or(io::ErrorKind::InvalidData)?;
+                let amount = Reserved::from_value(cost)?;
                 if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
-                total += cost;
+                total += amount.usd();
                 if !total.is_finite() {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
-                holds.insert(id.clone(), cost);
+                holds.insert(id.clone(), amount);
             }
         }
         let mut shared = Self {
@@ -111,28 +151,63 @@ impl Shared {
             failed,
             holds,
         };
+        shared.subscription_reserved()?;
         if fresh {
             shared.save()?;
         }
         Ok(shared)
     }
     pub fn reserved(&self) -> f64 {
-        self.holds.values().sum()
+        self.holds.values().map(Reserved::usd).sum()
+    }
+    /// An unpriced call owns the remaining USD headroom until settlement.
+    /// Do not let floating-point summation or a changed cap admit another call.
+    pub fn has_conservative_hold(&self) -> bool {
+        self.holds
+            .values()
+            .any(|amount| matches!(amount, Reserved::Subscription(_, usd) if *usd > 0.0))
+    }
+    pub fn subscription_reserved(&self) -> io::Result<Counts> {
+        self.holds
+            .values()
+            .try_fold(Counts::default(), |counts, amount| match amount {
+                Reserved::Metered(_) => Ok(counts),
+                Reserved::Subscription(tokens, _) => counts
+                    .add(Counts {
+                        requests: 1,
+                        tokens: *tokens,
+                    })
+                    .map_err(|_| io::ErrorKind::InvalidData.into()),
+            })
     }
     pub fn insert(&mut self, cost: f64) -> io::Result<String> {
+        self.insert_amount(Reserved::Metered(cost))
+    }
+    pub fn insert_subscription_with_usd(&mut self, tokens: u64, usd: f64) -> io::Result<String> {
+        if tokens == 0 || !usd.is_finite() || usd < 0.0 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.insert_amount(Reserved::Subscription(tokens, usd))
+    }
+    fn insert_amount(&mut self, amount: Reserved) -> io::Result<String> {
         if self.holds.len() >= MAX_HOLDS {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
         let mut bytes = [0; 16];
         getrandom::fill(&mut bytes).map_err(|_| io::ErrorKind::Other)?;
         let id = format!("{:032x}", u128::from_be_bytes(bytes));
-        if self.holds.insert(id.clone(), cost).is_some() {
+        if self.holds.insert(id.clone(), amount).is_some() {
             return Err(io::ErrorKind::InvalidData.into());
         }
         Ok(id)
     }
     pub fn save(&mut self) -> io::Result<()> {
-        let bytes = serde_json::to_vec(&json!({"failed":self.failed,"holds":self.holds}))?;
+        let holds: BTreeMap<_, _> = self
+            .holds
+            .iter()
+            .map(|(id, amount)| (id, amount.to_value()))
+            .collect();
+        let bytes = serde_json::to_vec(&json!({"failed":self.failed,"holds":holds}))?;
         if self.fresh {
             // Ledger::open may have created several directory components.
             // Persist their names before writing a valid initial snapshot: a
@@ -149,5 +224,34 @@ impl Shared {
         self.file.write_all(&bytes)?;
         self.file.sync_data()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Reserved;
+    use serde_json::json;
+
+    #[test]
+    fn monetary_subscription_holds_preserve_legacy_forms_and_reject_malformed_usd() {
+        for valid in [
+            json!(0.01),
+            json!({"subscription_tokens":120}),
+            json!({"subscription_tokens":120,"reserved_usd":0.01}),
+        ] {
+            let hold = Reserved::from_value(&valid).unwrap();
+            assert_eq!(hold.to_value(), valid);
+        }
+        for invalid in [
+            json!({"subscription_tokens":120,"reserved_usd":null}),
+            json!({"subscription_tokens":120,"reserved_usd":"0.01"}),
+            json!({"subscription_tokens":120,"reserved_usd":-0.01}),
+            json!({"subscription_tokens":120,"reserved_usd":0}),
+            json!({"subscription_tokens":0,"reserved_usd":0.01}),
+            json!({"subscription_tokens":120,"reserved_usd":0.01,"extra":true}),
+            json!({"subscription_tokens":120,"other":0.01}),
+        ] {
+            assert!(Reserved::from_value(&invalid).is_err(), "{invalid}");
+        }
     }
 }
