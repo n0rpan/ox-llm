@@ -50,6 +50,61 @@ fn gh(binary: &Path, policy: &RunPolicy, repo: &Path, lock: &File, args: &[&str]
 fn json(text: &str) -> Result<serde_json::Value> {
     serde_json::from_str(text).map_err(|e| e.to_string())
 }
+struct Repository {
+    qualified: String,
+    host: String,
+    owner: String,
+    name: String,
+}
+fn repository(value: &serde_json::Value) -> Result<Repository> {
+    let identity = value["nameWithOwner"]
+        .as_str()
+        .ok_or("repository identity missing")?;
+    let (owner, name) = identity.split_once('/').ok_or("invalid repository identity")?;
+    let url = value["url"].as_str().ok_or("repository URL missing")?;
+    let (host, path) = url
+        .strip_prefix("https://")
+        .and_then(|url| url.split_once('/'))
+        .ok_or("repository URL must identify its HTTPS host")?;
+    if owner.is_empty()
+        || name.is_empty()
+        || name.contains('/')
+        || path.trim_end_matches('/') != identity
+        || host.is_empty()
+        || !host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b".-:".contains(&byte))
+    {
+        return Err("repository URL disagrees with its identity".into());
+    }
+    Ok(Repository {
+        qualified: format!("{host}/{identity}"),
+        host: host.into(),
+        owner: owner.into(),
+        name: name.into(),
+    })
+}
+const BODY_BEGIN: &str = "<!-- oxa-work-acceptance -->";
+const BODY_END: &str = "<!-- /oxa-work-acceptance -->";
+fn body(task: &Task, head: &str, existing: Option<&str>) -> Result<String> {
+    let section = format!("{BODY_BEGIN}\nAccepted commit: `{head}`\nLocal acceptance: passed\nCI: not yet qualified for this commit\n{BODY_END}");
+    let default = format!("T2 — task `{}` executed by `oxa work`.\n\nWhat/why: explicitly requested task; review its changes against the base.\n\nChanges: accepted worktree retained.\n\nRemoves: inspect the diff before promotion; no deletion clearance is inferred.\n\nValidation: frozen local acceptance passed; CI qualification is separate.\n", task.id);
+    let original = existing.unwrap_or(&default);
+    match (
+        original.matches(BODY_BEGIN).count(),
+        original.matches(BODY_END).count(),
+    ) {
+        (0, 0) => Ok(format!("{original}\n\n{section}\n")),
+        (1, 1) => {
+            let (before, rest) = original
+                .split_once(BODY_BEGIN)
+                .ok_or("invalid managed PR section")?;
+            let (_, after) = rest.split_once(BODY_END).ok_or("invalid managed PR section")?;
+            Ok(format!("{before}{section}{after}"))
+        }
+        _ => Err("ambiguous managed PR section; preserve the owner description".into()),
+    }
+}
 fn pr_base(repo: &Path, task: &Task, policy: &RunPolicy) -> Result<String> {
     let reference = checked(super::git(
         policy,
@@ -102,15 +157,14 @@ pub fn publish(
         if remote.lines().count() != 1 {
             return Err("publishing requires one origin push URL".into());
         }
-        let repository = json(&gh(
+        let repository = repository(&json(&gh(
             tree,
             &lock,
-            &["repo", "view", &remote, "--json", "nameWithOwner"],
-        )?)?;
-        let name = repository["nameWithOwner"]
-            .as_str()
-            .ok_or("repository name missing")?;
-        let (owner, repo_name) = name.split_once('/').ok_or("invalid repository name")?;
+            &["repo", "view", &remote, "--json", "nameWithOwner,url"],
+        )?)?)?;
+        let name = repository.qualified.as_str();
+        let owner = repository.owner.as_str();
+        let repo_name = repository.name.as_str();
         let prs = json(&gh(
             tree,
             &lock,
@@ -143,6 +197,18 @@ pub fn publish(
         {
             return Err("nothing to publish".into());
         }
+        let existing_body = if let Some(pr) = prs.first() {
+            let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
+            let value = json(&gh(
+                tree,
+                &lock,
+                &["pr", "view", &number, "--repo", name, "--json", "body"],
+            )?)?;
+            Some(value["body"].as_str().ok_or("PR body missing")?.to_owned())
+        } else {
+            None
+        };
+        let text = body(task, &head, existing_body.as_deref())?;
         if confirm(&format!(
             "Push accepted commit {head} as {} to origin and create/update its PR in {name} (base {base})? Type yes to publish: ",
             task.branch
@@ -165,6 +231,8 @@ pub fn publish(
                 &[
                     "api",
                     "graphql",
+                    "--hostname",
+                    &repository.host,
                     "-f",
                     &format!("query={query}"),
                     "-F",
@@ -210,15 +278,24 @@ pub fn publish(
         }
         let draft = false;
         let body = policy.storage.join(format!("{}.pr-body.md", task.id));
-        let text = format!("T2 — task `{}` executed by `oxa work`.\n\nWhat/why: explicitly requested task; review its changes against the base.\n\nChanges: accepted commit `{head}`; worktree retained.\n\nRemoves: inspect the diff before promotion; no deletion clearance is inferred.\n\nValidation: frozen local acceptance passed. CI: not yet qualified.\n", task.id);
-        std::fs::write(&body, text).map_err(|e| e.to_string())?;
+        crate::checkpoint::write_atomic(&body, text.as_bytes(), body.exists())?;
         let body_arg = body.to_str().ok_or("non-UTF8 PR body path")?;
         let result = if let Some(pr) = prs.first() {
             let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
             gh(
                 tree,
                 &lock,
-                &["pr", "edit", &number, "--repo", name, "--base", &base],
+                &[
+                    "pr",
+                    "edit",
+                    &number,
+                    "--repo",
+                    name,
+                    "--base",
+                    &base,
+                    "--body-file",
+                    body_arg,
+                ],
             )?;
             let was_draft = pr["isDraft"].as_bool().ok_or("PR draft state missing")?;
             if was_draft != draft {

@@ -525,7 +525,7 @@ fn unsetting_the_agent_marker_and_piping_yes_cannot_authorize_public_writes() {
         let path = configure(&env);
         env.write("tmp/gh", r##"#!/bin/sh
 case "$1 $2" in
-  'repo view') printf '%s' '{"nameWithOwner":"example/project"}' ;;
+  'repo view') printf '%s' '{"nameWithOwner":"example/project","url":"https://github.com/example/project"}' ;;
   'pr list'|'issue list') printf '[]' ;;
   'pr create'|'issue create'|'issue comment') touch "$HOME/public-write"; printf '%s' 'https://github.com/example/project/issues/1' ;;
   *) exit 7 ;;
