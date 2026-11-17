@@ -1,4 +1,7 @@
 //! Real CLI, isolated home and generated guest bearers only. No model/network.
+#[cfg(all(feature = "share", target_os = "linux"))]
+#[path = "common/strace.rs"]
+mod strace;
 use std::{
     fs,
     path::PathBuf,
@@ -28,6 +31,18 @@ impl Home {
             .output()
             .unwrap()
     }
+    #[cfg(feature = "share")]
+    fn marked(&self, args: &[&str], marker: &str, value: &str) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args(args)
+            .env_clear()
+            .env("HOME", &self.0)
+            .env("OXA_TEST_ISOLATION", "1")
+            .env(marker, value)
+            .current_dir(&self.0)
+            .output()
+            .unwrap()
+    }
 }
 impl Drop for Home {
     fn drop(&mut self) {
@@ -43,6 +58,95 @@ fn default_build_refuses_share_without_creating_storage() {
     assert!(!result.status.success());
     assert!(result.stdout.is_empty());
     assert!(!home.0.join(".oxa").exists());
+}
+
+#[cfg(feature = "share")]
+const OWNER_REFUSAL: &str = "Guest key commands require the owner outside an agent tool";
+
+#[cfg(feature = "share")]
+fn assert_agent_refusal(output: &Output) {
+    assert_eq!(output.status.code(), Some(1), "owner command must refuse");
+    assert!(output.stdout.is_empty(), "owner output must stay private");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains(OWNER_REFUSAL), "{error}");
+    assert!(
+        !error.contains("synthetic-device"),
+        "arguments must not be echoed"
+    );
+    assert!(!error.contains("synthetic-id"), "arguments must not be echoed");
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn agent_markers_refuse_all_key_commands_without_creating_storage() {
+    for marker in ["OXA_CODING_AGENT", "AI_AGENT", "OXA_SUBAGENT_DEPTH"] {
+        for value in ["", "1"] {
+            for args in [
+                vec![
+                    "share",
+                    "key",
+                    "add",
+                    "synthetic-device",
+                    "--daily-requests",
+                    "1",
+                    "--daily-tokens",
+                    "10",
+                ],
+                vec!["share", "key", "list"],
+                vec!["share", "key", "revoke", "synthetic-id"],
+            ] {
+                let home = Home::new();
+                assert_agent_refusal(&home.marked(&args, marker, value));
+                assert!(!home.0.join(".oxa").exists(), "refusal must precede storage");
+                assert!(!home.0.join(".config").exists());
+            }
+        }
+    }
+}
+
+#[cfg(all(feature = "share", target_os = "linux"))]
+#[test]
+fn agent_refusal_does_not_open_a_preexisting_synthetic_store() {
+    use std::os::unix::fs::PermissionsExt;
+    for marker in ["OXA_CODING_AGENT", "AI_AGENT", "OXA_SUBAGENT_DEPTH"] {
+        for args in [
+            vec!["share", "key", "list"],
+            vec!["share", "key", "revoke", "synthetic-id"],
+        ] {
+            let home = Home::new();
+            let store = home.0.join(".oxa/share");
+            fs::create_dir_all(&store).unwrap();
+            fs::set_permissions(&store, fs::Permissions::from_mode(0o700)).unwrap();
+            // Deliberately invalid synthetic bytes: this is never a key registry.
+            let sentinel = store.join("share-keys.json");
+            fs::write(&sentinel, b"synthetic unopened store").unwrap();
+            fs::set_permissions(&sentinel, fs::Permissions::from_mode(0o600)).unwrap();
+            let trace = home.0.join("store-opens.trace");
+            let output = Command::new("timeout")
+                .args(["--kill-after=1s", "5s"])
+                .arg(strace::executable())
+                .args(["-f", "-e", "trace=open,openat,openat2", "-o"])
+                .arg(&trace)
+                .arg(env!("CARGO_BIN_EXE_oxa"))
+                .args(&args)
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("HOME", &home.0)
+                .env("OXA_TEST_ISOLATION", "1")
+                .env(marker, "")
+                .current_dir(&home.0)
+                .output()
+                .expect("timeout and strace are mandatory for the no-store-open proof");
+            assert_agent_refusal(&output);
+            let opens = fs::read_to_string(trace).unwrap();
+            assert!(opens.contains("open"), "tracer must record process startup");
+            assert!(!opens.contains(store.to_str().unwrap()), "{opens}");
+            assert!(!store.join(".lock").exists());
+            assert_eq!(fs::read(&sentinel).unwrap(), b"synthetic unopened store");
+            assert_eq!(fs::read_dir(&store).unwrap().count(), 1);
+            assert!(!home.0.join(".oxa/agent").exists());
+        }
+    }
 }
 
 #[cfg(feature = "share")]
