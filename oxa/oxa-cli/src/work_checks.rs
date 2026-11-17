@@ -20,13 +20,48 @@ pub(crate) fn run(
         return Err("supervisor source project is not trusted".into());
     }
     let root = cwd.canonicalize().map_err(|e| e.to_string())?;
+    let committed = matches!(&request.operation, SupervisorOperation::CommittedChecks { .. });
     let mut b = Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home).map_err(|e| e.to_string())?;
     b.layout = crate::sandbox_layout::layout(env, dirs, &root, false, &mut vec![]);
+    let outputs = if committed {
+        Some(
+            root.parent()
+                .ok_or("committed checkout has no parent")?
+                .join(".committed-output"),
+        )
+    } else {
+        None
+    };
+    if let Some(outputs) = &outputs {
+        if !std::fs::symlink_metadata(outputs).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err("invalid committed-check output directory".into());
+        }
+        // No user cache/extra bind may reopen tracked inputs for writes.
+        b.layout.write.retain(|path| {
+            path.canonicalize()
+                .is_ok_and(|path| !path.starts_with(&root) && !root.starts_with(path))
+        });
+        b.layout.write.push(outputs.clone());
+    }
+    if let SupervisorOperation::CommittedChecks { index, .. }
+    | SupervisorOperation::InspectCommitted { index } = &request.operation
+    {
+        if index.parent() != root.parent()
+            || index.file_name().is_none_or(|name| name != ".committed-index")
+            || !std::fs::symlink_metadata(index).is_ok_and(|metadata| metadata.is_file())
+        {
+            return Err("invalid committed inspection index".into());
+        }
+        // The private index remains readable even when its parent is masked as
+        // part of HOME. This adds only the one immutable generated file.
+        b.layout.read.push(index.clone());
+    }
     let b = b.with_git_dirs(&root);
     b.check().map_err(|e| e.to_string())?;
     let settings = Settings::load(dirs, &source, true);
     let commands = match request.operation {
         SupervisorOperation::Inspect => return inspect(&b, &root),
+        SupervisorOperation::InspectCommitted { index } => return inspect_committed(&b, &root, &index),
         SupervisorOperation::Checkout { branch, create } => {
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
             let spec = ExecSpec {
@@ -117,7 +152,9 @@ git --no-replace-objects commit -m '{message}'
             }
             return Ok(0);
         }
-        SupervisorOperation::Checks { commands } => commands,
+        SupervisorOperation::Checks { commands } | SupervisorOperation::CommittedChecks { commands, .. } => {
+            commands
+        }
     };
     let shell = oxa_tools::ShellConfig {
         shell_path: settings.shell_path(&dirs.home),
@@ -154,13 +191,27 @@ git --no-replace-objects commit -m '{message}'
         } else {
             command
         };
+        let mut check_env = git_environment();
+        if let Some(outputs) = &outputs {
+            check_env.extend([
+                (
+                    "OXA_WORK_OUTPUT_DIR".into(),
+                    outputs.to_string_lossy().into_owned(),
+                ),
+                (
+                    "CARGO_TARGET_DIR".into(),
+                    outputs.join("target").to_string_lossy().into_owned(),
+                ),
+                ("TMPDIR".into(), outputs.to_string_lossy().into_owned()),
+            ]);
+        }
         let spec = ExecSpec {
             command,
             cwd: root.clone(),
-            writable: true,
+            writable: !committed,
             net: sandbox.network(),
             timeout_s: Some(600),
-            env: git_environment(),
+            env: check_env,
         };
         let mut tail = Vec::new();
         let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
@@ -188,6 +239,7 @@ fn inspect(sandbox: &Bwrap, root: &Path) -> Result<i32, String> {
     while IFS= read -r -d '' work_entry; do work_dirty=1; done
     exit "$work_dirty"
 }
+
 work_probe_status=("${PIPESTATUS[@]}")
 if test "${work_probe_status[0]}" -ne 0; then exit 2; fi
 exit "${work_probe_status[1]}"
@@ -209,6 +261,43 @@ exit "${work_probe_status[1]}"
             "sandboxed Git inspection failed: {}",
             String::from_utf8_lossy(&tail)
         )),
+    }
+}
+
+// Compare actual tracked contents using the runner's fresh, protected index.
+// The check-writable index and user Git filters supply no authority here.
+fn inspect_committed(sandbox: &Bwrap, root: &Path, index: &Path) -> Result<i32, String> {
+    if index.parent() != root.parent() || index.file_name().is_none_or(|name| name != ".committed-index") {
+        return Err("invalid committed inspection index".into());
+    }
+    let store = root
+        .parent()
+        .ok_or("committed checkout has no parent")?
+        .join("objects.git");
+    let mut env = git_environment();
+    env.extend([
+        ("GIT_INDEX_FILE".into(), index.to_string_lossy().into_owned()),
+        ("GIT_DIR".into(), store.to_string_lossy().into_owned()),
+        ("GIT_COMMON_DIR".into(), store.to_string_lossy().into_owned()),
+        ("GIT_WORK_TREE".into(), root.to_string_lossy().into_owned()),
+        ("GIT_CONFIG_GLOBAL".into(), "/dev/null".into()),
+        ("GIT_CONFIG_SYSTEM".into(), "/dev/null".into()),
+    ]);
+    let result = sandbox.run_streaming(
+        &ExecSpec {
+            command: "test -r \"$GIT_INDEX_FILE\" || exit 2\ngit --no-replace-objects --no-optional-locks -c core.fsmonitor=false -c core.ignoreStat=false -c core.trustctime=true -c core.checkStat=default -c core.filemode=true -c core.symlinks=true -c core.sparseCheckout=false -c index.sparse=false diff --quiet --no-ext-diff --no-textconv --ignore-submodules=none --".into(),
+            cwd: root.into(),
+            writable: false,
+            net: false,
+            timeout_s: Some(600),
+            env,
+        },
+        &CancelToken::default(),
+        &mut |_| {},
+    );
+    match (result.exit, result.timed_out) {
+        (Some(code @ (0 | 1)), false) => Ok(code),
+        _ => Err("committed source inspection failed".into()),
     }
 }
 
