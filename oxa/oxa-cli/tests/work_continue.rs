@@ -218,16 +218,20 @@ fn adopted_save_callbacks_have_no_ambient_authority() {
         &project(&env),
         &["checkout", "-b", "published", "origin/agent/test"],
     );
-    let hook = env.write("work/project/hooks/pre-commit", "#!/bin/sh\nprintf ran > adopted-save-ran\nif test -n \"${GH_TOKEN-}${GITHUB_TOKEN-}\"; then printf exposed > adopted-save-credentials; fi\nif test -r \"$HOME/.config/gh/config.yml\"; then printf exposed > adopted-save-config; fi\nreadlink /proc/self/ns/net > adopted-save-network\n");
-    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    env.write("work/project/save-callback.sh", "printf ran > adopted-save-ran\nif test -n \"${GH_TOKEN-}${GITHUB_TOKEN-}\"; then printf exposed > adopted-save-credentials; fi\nif test -r \"$HOME/.config/gh/config.yml\"; then printf exposed > adopted-save-config; fi\nreadlink /proc/self/ns/net > adopted-save-network\n");
     env.write("work/project/.gitignore", "/adopted-save-*\n");
-    git(&env, &project(&env), &["add", "hooks/pre-commit", ".gitignore"]);
+    git(&env, &project(&env), &["add", "save-callback.sh", ".gitignore"]);
     git(&env, &project(&env), &["commit", "-m", "fixture saved hook"]);
     git(&env, &project(&env), &["push", "origin", "published:agent/test"]);
     git(&env, &project(&env), &["checkout", "main"]);
     git(&env, &project(&env), &["branch", "-D", "published"]);
     git(&env, &project(&env), &["fetch", "origin"]);
-    git(&env, &project(&env), &["config", "core.hooksPath", "hooks"]);
+    // A repository-installed callback can invoke files from the adopted head.
+    let hook = env.write(
+        "work/project/.git/hooks/pre-commit",
+        "#!/bin/sh\nexec sh save-callback.sh\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     env.write("home/.config/gh/config.yml", "version: 1\n");
     let (record, _) = work::run_observed_with_env(
         &env,
@@ -575,10 +579,21 @@ fn automatic_merge_hooks_stay_inside_the_sandbox() {
     diverge(&env, false);
     let hook = env.write(
         "work/project/.git/hooks/post-merge",
-        "#!/bin/sh\nprintf escaped > \"$HOME/continuation-hook-escape\" 2>/dev/null || true\nprintf ran > post-merge-ran\n",
+        "#!/bin/sh\nprintf escaped > \"$HOME/continuation-hook-escape\" 2>/dev/null || true\nprintf ran > post-merge-ran\nif test -n \"${GH_TOKEN-}${GITHUB_TOKEN-}\"; then printf exposed > \"$(git rev-parse --git-path merge-credentials)\"; fi\nif test -r \"$HOME/.config/gh/config.yml\"; then printf exposed > \"$(git rev-parse --git-path merge-config)\"; fi\nreadlink /proc/self/ns/net > \"$(git rev-parse --git-path merge-network)\"\n",
     );
     std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    env.write("home/.config/gh/config.yml", "version: 1\n");
+    let (record, _) = work::run_observed_with_env(
+        &env,
+        vec![ScriptTurn::text("nothing")],
+        &["work", "../tasks.json"],
+        Some(synthetic_github_path(&env)),
+        &[
+            ("OXA_TEST_ISOLATION", "0"),
+            ("GH_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+            ("GITHUB_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+        ],
+    );
     assert!(!env.home().join("continuation-hook-escape").exists(), "{record}");
     assert_eq!(record["outcome"], "done", "{record}");
     assert_eq!(
@@ -586,6 +601,19 @@ fn automatic_merge_hooks_stay_inside_the_sandbox() {
         "ran"
     );
     assert!(!project(&env).join("post-merge-ran").exists());
+    let marker = |name: &str| {
+        PathBuf::from(git(
+            &env,
+            tree(&record),
+            &["rev-parse", "--path-format=absolute", "--git-path", name],
+        ))
+    };
+    assert!(!marker("merge-credentials").exists(), "{record}");
+    assert!(!marker("merge-config").exists(), "{record}");
+    assert_ne!(
+        std::fs::read_to_string(marker("merge-network")).unwrap().trim(),
+        std::fs::read_link("/proc/self/ns/net").unwrap().to_str().unwrap()
+    );
 }
 
 #[test]
