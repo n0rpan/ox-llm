@@ -386,9 +386,9 @@ impl SubagentHooks {
 
     /// #508: the parent's `--max-time` deadline. Every child is started with the time that is
     /// left as its own `--max-time`, and no child is started once the deadline has passed.
-    /// `--max-time` is cooperative and counts from the child's own start, so this asks the
-    /// child to wrap up at the parent's limit rather than killing it; a cancel still kills
-    /// its process group.
+    /// The child's timer asks it to wrap up cooperatively. The parent also supervises the
+    /// absolute deadline, including startup before the child's timer exists, and cancels
+    /// its process group at that deadline. Unlimited parents retain no time deadline.
     pub fn with_deadline(self, deadline: Instant) -> SubagentHooks {
         self.set_deadline(Some(deadline));
         self
@@ -1456,7 +1456,8 @@ impl Run<'_, '_> {
 }
 
 /// Spawn one child and wait for it; `on` gets its activity. An abort (the cancel token,
-/// [`Hooks::shutdown`]) kills its process group.
+/// [`Hooks::shutdown`]) or the parent's absolute deadline kills its process group, including
+/// initialization that runs before the child's own limit watcher starts.
 fn wait_child(
     inner: &Inner,
     cancel: &CancelToken,
@@ -1464,7 +1465,11 @@ fn wait_child(
     p: &Prepared,
     on: &mut dyn FnMut(String),
 ) -> ChildResult {
-    let stopped = || cancel.is_cancelled() || inner.abort.load(Ordering::SeqCst);
+    let stopped = || {
+        cancel.is_cancelled()
+            || inner.abort.load(Ordering::SeqCst)
+            || lock(&inner.deadline).is_some_and(|at| Instant::now() >= at)
+    };
     // Read at spawn, not when tasks are queued: earlier children and the park may
     // have consumed tokens. Parallel children, like active tools, may finish in flight.
     let mut argv = p.argv.clone();
