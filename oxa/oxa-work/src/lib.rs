@@ -515,10 +515,18 @@ pub fn run_task_with_observer(
         .read(true)
         .write(true)
         .mode(0o600)
+        .custom_flags(shadow::OWNER_FILE_FLAGS)
         .create(true)
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
+    let lock_metadata = lock_file
+        .metadata()
+        .map_err(|e| format!("cannot inspect task lock: {e}"))?;
+    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+    if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
+        return Err("cannot lock task: lock must be an owner-controlled regular file".into());
+    }
     lock_file
         .try_lock()
         .map_err(|e| format!("task {} is already running: {e}", task.id))?;
