@@ -29,6 +29,7 @@ mod identity_cmd;
 mod in_process;
 pub mod lead;
 pub mod lead_access;
+pub mod lead_http;
 pub mod lead_input;
 pub mod lead_page;
 pub mod lead_panels;
@@ -51,6 +52,7 @@ mod wipe_cmd;
 mod work_board;
 mod work_checks;
 mod work_cmd;
+pub mod work_refill;
 
 pub use args::{
     no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand, NO_TOOL_ALIASES,
