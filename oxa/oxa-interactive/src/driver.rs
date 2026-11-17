@@ -28,7 +28,9 @@ use crate::{
 use oxa_config::Keymap;
 use oxa_core::Handle;
 use oxa_export::default_output_name;
-use oxa_proto::{AgentEvent, Autonomy, Level, Mode, OxaError, Part, PermissionMode, ThinkingLevel, Value};
+use oxa_proto::{
+    AgentEvent, Autonomy, Level, MessageDelta, Mode, OxaError, Part, PermissionMode, ThinkingLevel, Value,
+};
 use oxa_session::{SessionMeta, SessionRef, Tree};
 use oxa_tui::{
     detect_caps, list_themes, resolve_theme, title_sequence, CombinedProvider, Component, CursorPos, Editor,
@@ -214,6 +216,60 @@ impl BlockCache {
     }
 }
 
+/// #875: the frame budget of streaming text. A streamed delta changes one block, so it is drawn at
+/// most once per `CONTENT_FRAME_MS`; a frame that carries anything else is drawn at once, and an
+/// overdue content frame counts as drawn by it, so the budget starts over instead of two full
+/// renders following each other.
+///
+/// The clock is passed in, so the loop's decisions are exercised with a fake one in tests.
+#[derive(Debug, Default)]
+pub(crate) struct ContentFrames {
+    /// When the next streaming content frame may be drawn.
+    next_ms: u64,
+}
+
+impl ContentFrames {
+    /// Anything but streaming content changed: it is drawn now, and the budget starts over.
+    fn immediate(&mut self, now: u64) {
+        if now >= self.next_ms {
+            self.next_ms = now.saturating_add(crate::app::CONTENT_FRAME_MS);
+        }
+    }
+
+    /// A frame carrying streaming content was drawn now.
+    fn drawn(&mut self, now: u64) {
+        if now >= self.next_ms {
+            self.next_ms = now.saturating_add(crate::app::CONTENT_FRAME_MS);
+        }
+    }
+
+    /// The loop's decision for this turn: `None` when nothing is dirty, `Some(0)` when the frame
+    /// is drawn now, `Some(ms)` when the sole pending change is streaming content and its frame
+    /// is `ms` away.
+    fn frame_due_in(&self, dirty: bool, immediate: bool, content_only: bool, now: u64) -> Option<u64> {
+        if !dirty {
+            return None;
+        }
+        if immediate || !content_only {
+            return Some(0);
+        }
+        Some(self.next_ms.saturating_sub(now))
+    }
+}
+
+/// #875: the one worker message that a streaming frame may wait for: a text or thinking delta.
+/// Everything else (a block starting or ending, a tool's state, the end of the run, a notice)
+/// is drawn at once.
+fn is_stream_delta(msg: &WorkerMsg) -> bool {
+    let WorkerMsg::Event(AgentEvent::MessageUpdate { delta, .. }) = msg else {
+        return false;
+    };
+    matches!(
+        delta,
+        MessageDelta::TextDelta { .. } | MessageDelta::ThinkingDelta { .. }
+    )
+}
+
 pub(crate) struct Loop<'a> {
     opts: &'a mut InteractiveOpts,
     handle: Handle,
@@ -318,6 +374,10 @@ pub(crate) struct Loop<'a> {
     focused: bool,
     run_finished: bool,
     pub(crate) dirty: bool,
+    /// #875: something that is not streaming content changed (`Loop::content_is_immediate`).
+    repaint: bool,
+    /// #875: the streaming content frame budget.
+    content: ContentFrames,
     /// Ctrl+C was pressed on an empty editor; a second press within two seconds quits.
     armed: bool,
     armed_at: Option<std::time::Instant>,
@@ -450,6 +510,8 @@ impl<'a> Loop<'a> {
             focused: true,
             run_finished: false,
             dirty: true,
+            repaint: false,
+            content: ContentFrames::default(),
             armed: false,
             armed_at: None,
             reset_screen: false,
@@ -716,6 +778,37 @@ impl<'a> Loop<'a> {
     fn push_notice(&mut self, level: Level, text: String) {
         push_notice(&mut self.vm, level, text);
         self.dirty = true;
+        self.content_is_immediate();
+    }
+
+    /// #875: the only change since the last frame is the reply still being streamed: the last
+    /// block is an open reply. Everything else (a new block, a tool's state, a dialog, the end
+    /// of the run, a resize, a notice) calls [`Loop::content_is_immediate`] and is drawn at once.
+    fn only_streaming_text(&self) -> bool {
+        match self.vm.blocks.last() {
+            Some(Block::Assistant { streaming, .. }) => *streaming,
+            _ => false,
+        }
+    }
+
+    /// #875: a change that is not streaming content was seen: its frame is drawn at once and
+    /// the content budget starts over, so the next content frame cannot follow it immediately.
+    pub(crate) fn content_is_immediate(&mut self) {
+        self.content.immediate(now_ms());
+        self.repaint = true;
+    }
+
+    /// #875: whether the next frame is drawn this turn, and how long the loop may wait first.
+    /// `Some(0)` is the pre-#875 behaviour (nothing to wait for); `Some(ms)` only when the sole
+    /// pending change is streaming content, whose frame is `ms` away.
+    pub(crate) fn frame_due_in(&self) -> Option<u64> {
+        self.content
+            .frame_due_in(self.dirty, self.repaint, self.only_streaming_text(), now_ms())
+    }
+
+    /// #875: whether a frame is drawn this turn.
+    pub(crate) fn frame_wanted(&self) -> bool {
+        self.dirty && !matches!(self.frame_due_in(), Some(ms) if ms > 0)
     }
 
     fn cwd(&self) -> PathBuf {
@@ -727,6 +820,11 @@ impl<'a> Loop<'a> {
     // -----------------------------------------------------------------------------------------
 
     pub(crate) fn worker_msg(&mut self, msg: WorkerMsg) {
+        // #875: only a bare streaming delta may wait for its frame; every other message (and a
+        // delta that is not the open reply) draws at once.
+        if !is_stream_delta(&msg) || !self.only_streaming_text() {
+            self.content_is_immediate();
+        }
         self.dirty = true;
         match msg {
             // SET-010: cache-miss notices only with `showCacheMissNotices` (pi's default is
@@ -963,6 +1061,7 @@ impl<'a> Loop<'a> {
 
     pub(crate) fn ui_req(&mut self, req: UiRequest) {
         self.dirty = true;
+        self.content_is_immediate();
         match req {
             UiRequest::SetEditorText(t) => self.editor.set_text(&t),
             UiRequest::EditorText { reply } => {
@@ -1041,12 +1140,23 @@ impl<'a> Loop<'a> {
         // An answered ask changes the screen (navigation, a re-opened navigator, a new dialog).
         if open.len() != before || !self.asks.is_empty() {
             self.dirty = true;
+            self.content_is_immediate();
         }
         open.append(&mut self.asks);
         self.asks = open;
     }
 
     pub(crate) fn tick(&mut self, animating: bool) {
+        // #875: a tick's frame (the armed hint, a dialog's countdown, an animation step, the
+        // scrollbar) is never a streaming content frame; it is drawn at once.
+        let before = self.dirty;
+        self.tick_steps(animating);
+        if self.dirty && !before {
+            self.content_is_immediate();
+        }
+    }
+
+    fn tick_steps(&mut self, animating: bool) {
         if self
             .armed_at
             .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(2))
@@ -1069,7 +1179,9 @@ impl<'a> Loop<'a> {
             animating
         };
         if self.dialogs.tick(now_ms()) || animating || self.arcade.take_expired(now_ms()) {
+            // #875: a dialog's countdown and an animation step are drawn at once.
             self.dirty = true;
+            self.content_is_immediate();
         }
         self.draft_tick();
         // The transient scrollbar hides once its time is up.
@@ -1203,6 +1315,9 @@ impl<'a> Loop<'a> {
             }
             _ => {}
         }
+        // #875: a key (its echo), a paste, a mouse action or a resize is never held behind a
+        // streaming content frame.
+        self.content_is_immediate();
     }
 
     fn paste(&mut self, text: &str) {
@@ -2873,7 +2988,13 @@ impl<'a> Loop<'a> {
 
     /// Draw one frame in the active layout.
     pub(crate) fn draw(&mut self, term: &mut dyn Terminal) {
+        if self.only_streaming_text() {
+            // #875: this frame carried the streaming content; its slot starts now (inside a
+            // slot, an immediate frame is that slot's frame and keeps the schedule).
+            self.content.drawn(now_ms());
+        }
         self.dirty = false;
+        self.repaint = false;
         // Consume edges even when notifications are disabled/focused: never replay them
         // later on focus-out. Input was polled first, so pending focus reports are current.
         let finished = std::mem::take(&mut self.run_finished);
@@ -3466,3 +3587,122 @@ mod block_cache_tests {
 
 #[cfg(test)]
 mod catalog_tests;
+
+/// #875: the streaming content frame budget, driven with a fake clock (no terminal, no output).
+#[cfg(test)]
+mod content_frames_tests {
+    use super::*;
+
+    /// One frame slot: about 30 frames a second.
+    const FRAME: u64 = crate::app::CONTENT_FRAME_MS;
+
+    fn delta(kind: MessageDelta) -> WorkerMsg {
+        WorkerMsg::Event(AgentEvent::MessageUpdate {
+            delta: kind,
+            usage: Default::default(),
+        })
+    }
+
+    /// A text or thinking delta is the only message a streaming frame may wait for.
+    #[test]
+    fn only_text_and_thinking_deltas_are_streaming_content() {
+        let text = MessageDelta::TextDelta {
+            index: 0,
+            delta: "x".to_string(),
+        };
+        let thinking = MessageDelta::ThinkingDelta {
+            index: 0,
+            delta: "x".to_string(),
+        };
+        assert!(is_stream_delta(&delta(text)));
+        assert!(is_stream_delta(&delta(thinking)));
+        let start = MessageDelta::TextStart { index: 0 };
+        assert!(!is_stream_delta(&delta(start)));
+        let end = AgentEvent::MessageEnd {
+            message: oxa_proto::EventMessage {
+                msg: oxa_proto::WireMsg::assistant("done"),
+                ts_ms: 0,
+                stop: None,
+                usage: None,
+                model: None,
+                tool_name: None,
+                is_error: false,
+                error_message: None,
+            },
+        };
+        assert!(!is_stream_delta(&WorkerMsg::Event(end)));
+    }
+
+    /// 100 deltas inside one slot draw one frame, not one frame per delta (the pre-#875 cost).
+    #[test]
+    fn deltas_inside_one_slot_draw_one_frame() {
+        assert_eq!(FRAME, 33);
+        let mut slot = ContentFrames::default();
+        // Nothing was drawn yet: the first content frame is not throttled.
+        assert_eq!(slot.frame_due_in(true, false, true, 1_000), Some(0));
+        slot.drawn(1_000);
+        assert_eq!(slot.frame_due_in(true, false, true, 1_000), Some(33));
+        // A delta every millisecond for 32 ms: still not due, and never negative.
+        for at in 1_000..1_033 {
+            assert_eq!(slot.frame_due_in(true, false, true, at), Some(1_033 - at));
+        }
+        assert_eq!(slot.frame_due_in(true, false, true, 1_033), Some(0));
+        // The next slot starts at the draw, so batching repeats.
+        slot.drawn(1_033);
+        assert_eq!(slot.frame_due_in(true, false, true, 1_033), Some(33));
+        assert_eq!(slot.frame_due_in(true, false, true, 1_040), Some(26));
+    }
+
+    /// A frame that carries a key echo, a dialog or the end of the run is drawn at once: content
+    /// never delays it, and inside a slot it does not restart the schedule.
+    #[test]
+    fn input_and_other_frames_are_immediate() {
+        let mut slot = ContentFrames::default();
+        slot.drawn(1_000);
+        assert_eq!(slot.frame_due_in(true, false, true, 1_000), Some(33));
+        // Typing a key 5 ms after the last content frame: drawn now.
+        slot.immediate(1_005);
+        assert_eq!(slot.frame_due_in(true, true, true, 1_005), Some(0));
+        // The key frame did not restart the slot: content is due at its normal time.
+        assert_eq!(slot.frame_due_in(true, false, true, 1_010), Some(23));
+    }
+
+    /// A dirty screen that is not streaming content (a new block, a tool's end, a resize) is
+    /// never held, even while a content frame is pending.
+    #[test]
+    fn a_non_content_change_is_never_held() {
+        let mut slot = ContentFrames::default();
+        slot.drawn(1_000);
+        assert_eq!(slot.frame_due_in(true, false, false, 1_002), Some(0));
+        // Nothing dirty: the loop takes its idle wait.
+        assert_eq!(slot.frame_due_in(false, false, true, 1_002), None);
+        // The loop's first frame is not throttled either.
+        let fresh = ContentFrames::default();
+        assert_eq!(fresh.frame_due_in(true, false, true, 1_002), Some(0));
+    }
+
+    /// An overdue content frame drawn as part of a non-content frame starts the budget over:
+    /// two full renders never follow each other within one slot.
+    #[test]
+    fn an_overdue_content_frame_restarts_the_budget() {
+        let mut slot = ContentFrames::default();
+        slot.drawn(1_000);
+        // The loop idled for 200 ms, then an immediate change came with fresh content.
+        slot.immediate(1_200);
+        assert_eq!(slot.frame_due_in(true, false, true, 1_200), Some(33));
+        slot.drawn(1_233);
+        assert_eq!(slot.frame_due_in(true, false, true, 1_233), Some(33));
+    }
+
+    /// About 30 frames a second, and never the idle input wait: a content frame is a cap, not a
+    /// stall.
+    #[test]
+    fn the_budget_is_about_thirty_frames_a_second() {
+        assert!(FRAME < 250, "never the idle input wait");
+        assert!(FRAME > 0, "a zero budget would draw every delta again");
+        let mut slot = ContentFrames::default();
+        slot.drawn(5_000);
+        assert_eq!(slot.frame_due_in(true, false, true, 5_000), Some(FRAME));
+        assert_eq!(slot.frame_due_in(true, false, true, 5_010), Some(23));
+    }
+}

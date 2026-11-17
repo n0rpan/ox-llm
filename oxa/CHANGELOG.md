@@ -5,6 +5,7 @@
 ### Changed
 
 - Security-relevant default change (#314): upgrading without a saved mode now selects `auto` instead of the previous prompting default. Select `--standard` or save `permissions.defaultMode: "standard"` to retain prompts. Owner-selected `yolo` deliberately disables the permission floor for file tools (including credentials and git hooks/config) and the bash sandbox; `auto` keeps both and plan remains read-only.
+- With OXA's look (the default), a streamed reply is redrawn at most about 30 times a second instead of once per delta (#875): text arriving faster than that is batched into the next frame, so a long streamed code block no longer spends the window's time repainting. A key (and its echo), a dialog, the first prompt, a resize, a cancellation and the completed reply are still drawn at once; tool output and the rest of the screen are unchanged.
 - Permission modes (#202): `auto` is the old YOLO (no prompts, bash sandbox on) and the default on a fresh install; `yolo` now means full access (no prompts, no sandbox); `standard` still prompts. `permissions.defaultMode` (`standard` | `auto` | `yolo` | `plan`) sets the mode at start and replaces `permissions.yolo: "auto"`; a project's settings may lower it but never raise it to `yolo`. `/mode <name> --save` or "make default" in the `/mode` picker writes it, flags override per run, one key cycles standard → auto → yolo and the status bar always shows the mode.
 
 ## [0.2.0] - 2026-11-13

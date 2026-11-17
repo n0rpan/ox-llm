@@ -9,7 +9,7 @@ use oxa_fake::{ScriptedEngine, TestEnv};
 use oxa_interactive::{
     apply_event, blocks_from_entries, exit_lines, frames, run_loop, status_from, transcript_lines, Activity,
     Block, InteractiveOpts, RegularPrinter, SessionCmd, StatusModel, ToolState, UiRequest, ViewModel,
-    ViewSettings, WorkerMsg,
+    ViewSettings, WorkerMsg, CONTENT_FRAME_MS,
 };
 use oxa_proto::{
     codes, Access, AgentEvent, CancelToken, Decision, Engine, Entry, EntryBody, EventMessage, ExecResult,
@@ -17,7 +17,7 @@ use oxa_proto::{
 };
 use oxa_resources::Resources;
 use oxa_session::{MemStore, SessionStore};
-use oxa_tui::{visible_width, InputEvent, Key, TermCaps, TestTerminal, Theme};
+use oxa_tui::{visible_width, InputEvent, Key, TermCaps, TermMode, Terminal, TestTerminal, Theme};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
@@ -1386,5 +1386,189 @@ fn stale_tui_inbox_callback_keeps_messages_with_original_session_after_clone_or_
             matches!(&entry.body, EntryBody::Msg { wire, .. }
                 if wire.role == oxa_proto::Role::User && wire.content.as_deref() == Some("old destination only"))
         }));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// #875: streaming content is batched, input and the final reply are not
+
+/// #875: a 300-line fenced reply streamed one delta per loop turn (302 of them) is drawn far
+/// fewer times than there are deltas (the loop's frame budget, `CONTENT_FRAME_MS`), while a key
+/// typed during the stream is echoed in the very next frame and every byte of the reply is on
+/// the terminal at the end. Before #875 every delta drew a frame of its own.
+///
+/// The terminal feeds the deltas itself, so the loop sees them arrive between frames as it does
+/// from a real worker. The requested waits are checked instead of wall-clock timings: while text
+/// streams, the loop never asks for the idle 250 ms wait.
+#[test]
+fn streaming_text_is_batched_while_keys_and_the_final_reply_stay_immediate() {
+    const LINES: usize = 300;
+
+    struct StreamingTerminal {
+        term: TestTerminal,
+        tx: Sender<WorkerMsg>,
+        reply: Vec<String>,
+        next: usize,
+        /// Set once the last delta is out: the end of the reply goes out on the next poll.
+        ending: bool,
+        /// Deltas are streaming: no wait may be the idle one until the reply ends.
+        streaming: bool,
+        typed: bool,
+        /// The typed key was erased again, so the editor is empty for Ctrl+D.
+        erased: bool,
+        expect_echo: bool,
+        echoed: bool,
+        /// Bytes already checked for the echo.
+        seen: usize,
+    }
+
+    impl StreamingTerminal {
+        fn send(&self, msg: WorkerMsg) {
+            self.tx.send(msg).expect("the loop is listening");
+        }
+
+        fn send_delta(&self, delta: &str) {
+            let delta = oxa_proto::MessageDelta::TextDelta {
+                index: 0,
+                delta: delta.to_string(),
+            };
+            self.send(WorkerMsg::Event(AgentEvent::MessageUpdate {
+                usage: Default::default(),
+                delta,
+            }));
+        }
+    }
+
+    impl Terminal for StreamingTerminal {
+        fn write(&mut self, bytes: &[u8]) {
+            self.term.write(bytes);
+        }
+        fn flush(&mut self) {
+            self.term.flush();
+            let fresh = String::from_utf8_lossy(&self.term.out[self.seen..]).into_owned();
+            self.seen = self.term.out.len();
+            if std::mem::take(&mut self.expect_echo) {
+                self.echoed = true;
+                assert!(
+                    fresh.contains('Z'),
+                    "the key typed during the stream is echoed in the next frame: {fresh:?}"
+                );
+            }
+        }
+        fn size(&self) -> (u16, u16) {
+            self.term.size()
+        }
+        fn caps(&self) -> TermCaps {
+            self.term.caps()
+        }
+        fn set_mode(&mut self, mode: TermMode, on: bool) {
+            self.term.set_mode(mode, on);
+        }
+        fn suspend(&mut self) {
+            self.term.suspend();
+        }
+        fn resume(&mut self) {
+            self.term.resume();
+        }
+        fn poll(&mut self, ms: u64) -> Vec<InputEvent> {
+            assert!(
+                !self.streaming || ms <= CONTENT_FRAME_MS,
+                "streaming text never waits for the idle input timeout: {ms} ms"
+            );
+            if self.next < self.reply.len() {
+                self.send_delta(&self.reply[self.next]);
+                self.next += 1;
+                // Type into the editor while the reply streams.
+                if self.next >= 3 && !self.typed {
+                    self.typed = true;
+                    self.expect_echo = true;
+                    return vec![ch('Z')];
+                }
+                return Vec::new();
+            }
+            if !self.ending {
+                self.ending = true;
+                // The stream is over: the end of the reply may wait for the idle timeout.
+                self.streaming = false;
+                let end = AgentEvent::MessageEnd {
+                    message: assistant_msg(&self.reply.concat(), Some(StopReason::Stop)),
+                };
+                self.send(WorkerMsg::Event(end));
+                let settled = AgentEvent::AgentSettled { aborted: false };
+                self.send(WorkerMsg::Event(settled));
+                return Vec::new();
+            }
+            if !self.erased {
+                self.erased = true;
+                return vec![key("backspace")];
+            }
+            vec![key("ctrl+d")]
+        }
+    }
+
+    for fullscreen in [false, true] {
+        let env = TestEnv::new();
+        let session = session(&env);
+        let mut opts = interactive_opts(&env);
+        opts.fullscreen = fullscreen;
+        let mut lines = vec!["```".to_string()];
+        lines.extend((1..=LINES).map(|i| format!("line-{i:03}")));
+        lines.push("END-OF-REPLY".to_string());
+        lines.push("```".to_string());
+        // One line per delta, so the delta count and the line count agree.
+        let reply: Vec<String> = lines.iter().map(|l| format!("{l}\n")).collect();
+        let deltas = reply.len();
+        let (cmd_tx, _cmd_rx) = mpsc::channel();
+        let (msg_tx, msg_rx) = mpsc::channel::<WorkerMsg>();
+        let (_ui_tx, ui_rx) = mpsc::channel();
+        let mut term = StreamingTerminal {
+            term: TestTerminal::new(100, 30),
+            tx: msg_tx,
+            reply,
+            next: 0,
+            ending: false,
+            streaming: true,
+            typed: false,
+            erased: false,
+            expect_echo: false,
+            echoed: false,
+            seen: 0,
+        };
+        term.send(WorkerMsg::Event(AgentEvent::AgentStart));
+        let start = AgentEvent::MessageStart {
+            message: assistant_msg("", None),
+        };
+        term.send(WorkerMsg::Event(start));
+        assert_eq!(
+            run_loop(
+                &mut term,
+                &mut opts,
+                session.handle(),
+                cmd_tx,
+                msg_rx,
+                ui_rx,
+                ViewModel::default(),
+            )
+            .unwrap(),
+            0,
+            "fullscreen={fullscreen}"
+        );
+        // The bound is loose on purpose: before #875 this is one frame per delta (about
+        // `deltas`), after it one frame per 33 ms of streaming (a handful). Reaching a third
+        // would take seconds of streaming for these 302 deltas.
+        let drawn = term.term.flushes;
+        assert!(
+            drawn < deltas / 3,
+            "fullscreen={fullscreen}: {deltas} deltas are batched into {drawn} frames"
+        );
+        assert!(term.echoed, "fullscreen={fullscreen}");
+        let out = String::from_utf8_lossy(&term.term.out).into_owned();
+        assert!(
+            out.contains("END-OF-REPLY"),
+            "fullscreen={fullscreen}: the end of the reply is on the terminal"
+        );
+        if !fullscreen {
+            assert!(out.contains("line-001"), "the whole reply is committed");
+        }
     }
 }

@@ -353,12 +353,20 @@ impl WorkerStop {
 /// (`Session::serve_host`: timers, MCP callbacks, `sendMessage` with `triggerTurn`).
 pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(50);
 
+/// #875: streaming text and reasoning are drawn at most once per this budget (about 30 Hz).
+/// A delta only changes the live streaming block; every other change (a new block, a tool's
+/// state, a dialog, the first prompt, the end of the run) is still drawn at once, and the
+/// loop keeps draining worker messages and input while a content frame waits.
+pub const CONTENT_FRAME_MS: u64 = 33;
+
 /// The UI loop over an arbitrary terminal (tests pass `oxa_tui::TestTerminal` and scripted
 /// channels). Ends when an [`AppAction::Quit`] was carried out or `worker` disconnects.
 ///
-/// Per iteration: poll the terminal (at most 16 ms while something animates, else 250 ms),
-/// drain `worker` and `ui`, route input (dialog > selector > editor > global `app.*` keys),
-/// carry out actions, and draw one frame if anything changed.
+/// Per iteration: drain `worker` and `ui`, poll the terminal (without waiting while a change
+/// must be drawn, at most 16 ms while something animates, never more than
+/// [`CONTENT_FRAME_MS`] while streaming content waits for its frame, else 250 ms), route input
+/// (dialog > selector > editor > global `app.*` keys), carry out actions, and draw one frame
+/// if anything changed.
 ///
 /// Key rules (pi): Enter while a run is active = steer, Alt+Enter = follow-up
 /// (`Handle::steer` / `Handle::follow_up`); Escape = abort (`Handle::abort`), or
@@ -423,21 +431,24 @@ fn drive(
         lp.poll_asks();
 
         let animating = lp.animating();
-        // A pending frame (including the first editable prompt) must not wait behind
-        // the idle input timeout. Still drain input first so it sees the latest state.
-        let wait_ms = if lp.dirty {
-            0
-        } else if animating {
-            16
-        } else {
-            250
+        // #875: a frame that must not wait (the first editable prompt, a new block, a key's
+        // echo, a dialog, the end of the run) is drawn at once with no input wait. Only a frame
+        // whose sole change is streaming content waits for its slot, and only that long: the
+        // loop keeps draining the worker and input meanwhile, so a key still echoes at once.
+        let wait_ms = match lp.frame_due_in() {
+            Some(0) => 0,
+            Some(ms) if animating => ms.min(16),
+            Some(ms) => ms,
+            None if animating => 16,
+            None => 250,
         };
         let events = term.poll(wait_ms);
         for ev in events {
             lp.input(term, ev);
         }
         lp.tick(animating);
-        if lp.dirty {
+        if lp.frame_wanted() {
+            // A key pressed during the wait is echoed here, before any pending content frame.
             lp.draw(term);
         }
         if let Some(code) = lp.quit {
