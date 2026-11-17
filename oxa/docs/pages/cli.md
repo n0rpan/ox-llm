@@ -90,6 +90,7 @@ Commands take the place of the message. They do not start a session.
 
 | Command | What it does |
 |---|---|
+| `oxa help [command]` | print the usage and one example of a command, or the top-level help |
 | `oxa install <source> [-l]` | add a package (a git URL or a local path) to the settings and install it |
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
@@ -109,6 +110,10 @@ Commands take the place of the message. They do not start a session.
 `oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes`.
 
 `oxa config` lists the settings as oxa resolves them.
+
+### Help
+
+Every command and nested verb answers `--help` (or `-h`) with its usage and one example, and exits 0. `oxa help <command>` prints the same text, for example `oxa help mcp add`. Help is answered before the working directory, the trust store, settings, resources, package execution or sign-in are touched: a help run reads and writes no file, starts no process and makes no network request. A command this build does not have is a usage error (exit 2), and a build without the `share` feature refuses `oxa share` the same way.
 
 ### Experimental ChatGPT sign-in
 

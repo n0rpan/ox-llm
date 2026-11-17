@@ -36,6 +36,8 @@ pub enum Subcommand {
     Wipe(Vec<String>),
     /// Publish a follow-up to a session's file inbox.
     Send(Vec<String>),
+    /// #868: `oxa help [command]`, answered without any side effect.
+    Help(Vec<String>),
 }
 
 /// Login words can contain a mistakenly pasted callback. Never expose them
@@ -184,6 +186,7 @@ const SESSION_ID_ERROR: &str = "Session id must be non-empty, contain only alpha
 
 /// Subcommands take every following word raw; they are parsed by their own modules.
 const COMMANDS: &[(&str, &str)] = &[
+    ("oxa help [command]", "Show help for a command and exit"),
     #[cfg(feature = "share")]
     (
         "oxa share key <add|list|revoke>",
@@ -428,6 +431,7 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         "send" => Subcommand::Send(rest.to_vec()),
         "status" => Subcommand::Status(rest.to_vec()),
         "work" => Subcommand::Work(rest.to_vec()),
+        "help" => Subcommand::Help(rest.to_vec()),
         "auth" => return Err(OxaError::unsupported("the auth command")),
         _ => return Ok(None),
     }))

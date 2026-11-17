@@ -21,6 +21,7 @@ mod args;
 mod child;
 mod config_cmd;
 mod dispatch;
+mod help;
 mod home_cwd;
 mod hooks;
 mod identity_cmd;

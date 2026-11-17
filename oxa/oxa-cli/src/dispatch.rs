@@ -98,10 +98,48 @@ fn headless_argument_error(argv: &[String], stdin_tty: bool, stdout_tty: bool) -
             .any(|pair| pair[0] == "--mode" && matches!(pair[1], "rpc" | "json"))
 }
 
+/// #868: the help text a subcommand asks for, or `None` when it asks for none.
+///
+/// `oxa help <command>` resolves the exact public path; an unknown one is a usage error.
+/// A subcommand's `--help`/`-h` resolves the longest public path that is a prefix of the
+/// command name and its leading non-option words.
+fn subcommand_help(sub: &Subcommand) -> Option<Result<String, OxaError>> {
+    let requested = |name: &str, words: &[String]| crate::help::requested(name, words).map(Ok);
+    match sub {
+        Subcommand::Help(words) => {
+            let path: Vec<&str> = words
+                .iter()
+                .map(String::as_str)
+                .filter(|w| !matches!(*w, "--help" | "-h"))
+                .collect();
+            if path.is_empty() {
+                return Some(Ok(usage_text(&[])));
+            }
+            Some(crate::help::text(&path).ok_or_else(|| {
+                OxaError::new(codes::USAGE, format!("no help for `oxa {}`", path.join(" ")))
+                    .with_hint("Run `oxa --help` for the list of commands.")
+            }))
+        }
+        Subcommand::Status(w) => requested("status", w),
+        Subcommand::Login(logout, w) => requested(if *logout { "logout" } else { "login" }, &w.0),
+        Subcommand::Work(w) => requested("work", w),
+        Subcommand::Mcp(w) => requested("mcp", w),
+        Subcommand::Pkg(verb, w) => requested(verb, w),
+        Subcommand::Config(w) => requested("config", w),
+        Subcommand::Identity(w) => requested("identity", w),
+        Subcommand::ReportIssue(w) => requested("report-issue", w),
+        Subcommand::Wipe(w) => requested("wipe", w),
+        Subcommand::Send(w) => requested("send", w),
+        #[cfg(feature = "share")]
+        Subcommand::Share(w) => requested("share", w),
+    }
+}
+
 /// The whole program. Returns the exit code; never panics on user error.
 ///
 /// Order: parse args (two passes for extension flags) -> `--help` / `--version` ->
-/// subcommands (`mcp`, packages, `config`) -> `--export` -> resolve `Dirs`, trust, settings,
+/// subcommand help (`--help`/`-h`, `oxa help <command>`) -> subcommands (`mcp`, packages,
+/// `config`) -> `--export` -> resolve `Dirs`, trust, settings,
 /// resources -> build hook sets (extensions, exec hooks, MCP unless `--no-mcp`, codemode,
 /// subagent when enabled) -> engine (`HttpEngine`; down = one-line error, exit 2) ->
 /// `--list-models` -> sandbox (`Bwrap::detect`, else `NoSandbox` + notice) -> `Session::open`
@@ -136,6 +174,18 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     if a.version {
         let _ = writeln!(stdout, "oxa {}", env!("CARGO_PKG_VERSION"));
         return 0;
+    }
+    // #868: help is side-effect-free. A subcommand's `--help`/`-h` and `oxa help <command>`
+    // are answered here, before the working directory, the network guard, the trust store,
+    // settings, resources, package execution or sign-in are touched.
+    if let Some(help) = a.subcommand.as_ref().and_then(subcommand_help) {
+        return match help {
+            Ok(text) => {
+                let _ = stdout.write_all(text.as_bytes());
+                0
+            }
+            Err(e) => report(&mut *stderr, &e),
+        };
     }
     let headless = a.subcommand.is_none()
         && a.export.is_none()
@@ -240,6 +290,9 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     err: &mut *stderr,
                 },
             ),
+            // #868: `oxa help` is answered by `subcommand_help` before this match; the arm
+            // only keeps the match exhaustive.
+            Subcommand::Help(_) => Ok(0),
         };
         return finish(result, &mut *stderr);
     }
