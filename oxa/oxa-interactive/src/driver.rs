@@ -370,12 +370,13 @@ impl<'a> Loop<'a> {
             .and_then(Value::as_bool)
         {
             Some(on) => on,
+            // The shared true words (`1`, `true`, `yes`, `on`), under either name.
             None => opts
                 .env
                 .iter()
                 .rev()
                 .find(|(k, _)| k == "OXA_CLEAR_ON_SHRINK" || k == "PI_CLEAR_ON_SHRINK")
-                .is_some_and(|(_, v)| v == "1"),
+                .is_some_and(|(_, v)| oxa_config::EnvFlag::parse(Some(v)) == oxa_config::EnvFlag::On),
         };
         let header_pending = !view.quiet_startup;
         let open_picker = opts.open_picker;

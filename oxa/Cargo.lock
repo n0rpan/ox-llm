@@ -1191,6 +1191,7 @@ name = "oxa-web"
 version = "0.2.0"
 dependencies = [
  "libc",
+ "oxa-config",
  "oxa-fake",
  "oxa-perm",
  "oxa-proto",

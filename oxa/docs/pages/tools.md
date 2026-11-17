@@ -148,7 +148,8 @@ Start oxa and run `/web-search` to see the provider, where the key came from, an
 ### Turning it off
 
 - No key: the tool is not declared at all.
-- `--no-web-search`, or `OXA_WEB_SEARCH=0` (also `false`, `no` or `off`).
+- `--no-web-search`, or `OXA_WEB_SEARCH=0` (also `false`, `no` or `off`); `1`, `true`, `yes` and `on` say on.
+- Any other tool: `--no-<tool>`, e.g. `--no-bash` or `--no-subagent`, the same as `--exclude-tools <tool>`.
 - `"oxa": { "webSearch": { "enabled": false } }` or `"provider": "none"` in settings.
 - Offline mode (`--offline`, `OXA_OFFLINE=1`, or `oxa.offline` in user settings) removes the tool, and a call that gets through is refused.
 

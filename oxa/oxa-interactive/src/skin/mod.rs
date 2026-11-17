@@ -219,11 +219,15 @@ pub fn sprite_frame(sprite: Sprite, ms: u64) -> &'static str {
     frames.get(index).copied().unwrap_or("      ")
 }
 
-/// `true` when the environment asks for no animation: `OXA_REDUCED_MOTION` set to anything
-/// but empty or `0` (the `ui.reducedMotion` setting is the caller's other input).
+/// `true` when the environment asks for no animation: `OXA_REDUCED_MOTION` set to one of the
+/// documented true words (`1`, `true`, `yes`, `on`, any case). `false`, `no` and `off` say the
+/// opposite for one run; unset, empty and any unknown word keep the default (motion on). The
+/// `ui.reducedMotion` setting is the caller's other input.
 pub fn env_reduced_motion(env: &[(String, String)]) -> bool {
     env.iter()
-        .any(|(k, v)| k == "OXA_REDUCED_MOTION" && !v.is_empty() && v != "0")
+        .rev()
+        .find(|(k, _)| k == "OXA_REDUCED_MOTION")
+        .is_some_and(|(_, v)| oxa_config::EnvFlag::parse(Some(v)) == oxa_config::EnvFlag::On)
 }
 
 /// The theme while YOLO is on (O-182): the accents and the frames turn hot (the theme's
@@ -372,8 +376,16 @@ mod tests {
     #[test]
     fn reduced_motion_env() {
         let e = |v: &str| vec![("OXA_REDUCED_MOTION".to_string(), v.to_string())];
-        assert!(env_reduced_motion(&e("1")) && env_reduced_motion(&e("true")));
-        assert!(!env_reduced_motion(&e("")) && !env_reduced_motion(&e("0")) && !env_reduced_motion(&[]));
+        // The four true words, in any case.
+        for v in ["1", "true", "TRUE", "yes", "Yes", "on", "ON"] {
+            assert!(env_reduced_motion(&e(v)), "OXA_REDUCED_MOTION={v}");
+        }
+        // `false`, `no` and `off` say motion is wanted; unset, empty and unknown words keep
+        // the default (motion on).
+        for v in ["0", "false", "FALSE", "no", "off", "Off", "", "  ", "maybe", "2"] {
+            assert!(!env_reduced_motion(&e(v)), "OXA_REDUCED_MOTION={v}");
+        }
+        assert!(!env_reduced_motion(&[]));
     }
 
     #[test]

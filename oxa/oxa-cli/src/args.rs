@@ -11,6 +11,29 @@ pub enum ModeArg {
     Rpc,
 }
 
+/// The `--no-<tool>` aliases (UX/DX review item 5): each is sugar for `--exclude-tools <tool>`,
+/// so one exclusion precedence (`resolve_toolset`) covers both spellings and the effective tool
+/// selection is identical. `--no-web-search` and `--no-mcp` are not here: they also skip
+/// building the web-search hook set and the MCP manager.
+pub const NO_TOOL_ALIASES: [(&str, &str); 8] = [
+    ("--no-read", "read"),
+    ("--no-bash", "bash"),
+    ("--no-edit", "edit"),
+    ("--no-write", "write"),
+    ("--no-grep", "grep"),
+    ("--no-find", "find"),
+    ("--no-ls", "ls"),
+    ("--no-subagent", "subagent"),
+];
+
+/// The tool a `--no-<tool>` alias excludes, when `flag` is one of [`NO_TOOL_ALIASES`].
+pub fn no_tool_alias(flag: &str) -> Option<&'static str> {
+    NO_TOOL_ALIASES
+        .iter()
+        .find(|(name, _)| *name == flag)
+        .map(|(_, tool)| *tool)
+}
+
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
@@ -117,7 +140,8 @@ pub struct Args {
     pub name: Option<String>,
     /// `--tools <list>` / `-t`.
     pub tools: Option<Vec<String>>,
-    /// `--exclude-tools <list>` / `-xt`.
+    /// `--exclude-tools <list>` / `-xt`, plus every `--no-<tool>` alias (see
+    /// [`NO_TOOL_ALIASES`]).
     pub exclude_tools: Vec<String>,
     /// `-nbt`, `--no-builtin-tools`.
     pub no_builtin_tools: bool,
@@ -127,6 +151,8 @@ pub struct Args {
     pub no_mcp: bool,
     /// `--no-web-search` (oxa, O-170): the `web_search` tool is off for this run.
     pub no_web_search: bool,
+    /// `--animation <mode>`: `ui.animation` for this run (over the setting, in memory only).
+    pub animation: Option<String>,
     /// `-e`, `--extension <path>` (repeatable).
     pub extensions: Vec<String>,
     /// `-ne`, `--no-extensions`.
@@ -313,6 +339,14 @@ const OPTIONS: &[(&str, &str)] = &[
     (
         "--exclude-tools, -xt <list>",
         "Comma-separated denylist of tool names or patterns (*)",
+    ),
+    (
+        "--no-<tool>",
+        "Disable one tool: read, bash, edit, write, grep, find, ls or subagent (same as --exclude-tools <tool>)",
+    ),
+    (
+        "--animation <mode>",
+        "Animation of the oxa skin for this run: arcade, minimal or off (over ui.animation)",
     ),
     (
         "--no-builtin-tools, -nbt",
@@ -698,6 +732,12 @@ fn parse_flag(
         "-xt" | "--exclude-tools" => {
             a.exclude_tools = list(&value(argv, i, inline, flag, "a comma-separated list")?)
         }
+        // `--no-<tool>`: the same exclusion list as `-xt`, appended in the order given.
+        _ if no_tool_alias(flag).is_some() => {
+            no_value(inline, flag)?;
+            a.exclude_tools
+                .push(no_tool_alias(flag).unwrap_or_default().to_string());
+        }
         "--thinking" => {
             let v = value(argv, i, inline, flag, "a thinking level")?;
             a.thinking = Some(ThinkingLevel::parse(&v).ok_or_else(|| {
@@ -755,6 +795,16 @@ fn parse_flag(
                 )));
             }
             a.tui_mode = Some(v);
+        }
+        "--animation" => {
+            let v = value(argv, i, inline, flag, "arcade, minimal, or off")?;
+            if !oxa_interactive::skin::Animation::ALL.contains(&v.as_str()) {
+                return Err(usage(format!(
+                    "Invalid animation \"{v}\". Valid values: {}",
+                    oxa_interactive::skin::Animation::ALL.join(", ")
+                )));
+            }
+            a.animation = Some(v);
         }
         "--permission-mode" => {
             let v = value(

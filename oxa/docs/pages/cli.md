@@ -194,6 +194,15 @@ See [sessions.md](sessions.md).
 | `--no-tools`, `-nt` | disable all tools by default |
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
 | `--no-web-search` | disable `web_search` (same as `OXA_WEB_SEARCH=0`) |
+| `--no-<tool>` | disable one tool by name: `--no-read`, `--no-bash`, `--no-edit`, `--no-write`, `--no-grep`, `--no-find`, `--no-ls`, `--no-subagent`; the same as `--exclude-tools <tool>` |
+
+### Animation
+
+| Option | Meaning |
+|---|---|
+| `--animation <mode>` | animation of the `oxa` skin for this run: `arcade`, `minimal` or `off`, over the `ui.animation` setting. Anything else is a usage error. `--animation off` is the same as `ui.reducedMotion` for one run |
+
+See [settings.md](settings.md#ui) for what each mode draws.
 
 See [tools.md](tools.md) for the tool names.
 
@@ -242,6 +251,8 @@ Options added by extensions are listed after the options when you run `oxa --hel
 
 Variables that oxa reads. Variables marked *set* are set by oxa for the bash tool and its children, and you do not need to set them.
 
+Every boolean variable takes the same eight words, in any case: `1`, `true`, `yes` and `on` mean on; `0`, `false`, `no` and `off` mean off. Unset, empty and any other word leave the variable's own default in place (so a typo never turns a switch on or off by accident).
+
 | Variable | Meaning |
 |---|---|
 | `OXA_ENGINE_URL` | engine endpoint for the default model entry. Default `http://127.0.0.1:8092` |
@@ -249,16 +260,16 @@ Variables that oxa reads. Variables marked *set* are set by oxa for the bash too
 | `OXA_SESSION_DIR` | session storage; `--session-dir` wins over it |
 | `OXA_PACKAGE_DIR` | package directory, for Nix or Guix store paths |
 | `OXA_SYSTEM_SKILLS_DIR` | system skills directory, read last. Default `/usr/share/omarchy/default/agents/skills`; empty disables it |
-| `OXA_OFFLINE` | `1`, `true` or `yes` turns offline mode on, as `--offline` does |
-| `OXA_ALLOW_HOME_CWD` | `1`, `true` or `yes` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
-| `OXA_WEB_SEARCH` | `0`, `false`, `no` or `off` disables `web_search` |
+| `OXA_OFFLINE` | `1`, `true`, `yes` or `on` turns offline mode on, as `--offline` does |
+| `OXA_ALLOW_HOME_CWD` | `1`, `true`, `yes` or `on` allows a start in the home directory, `/` or a parent of home, as the user setting `oxa.allowHomeCwd` does. See [security.md](security.md#starting-in-your-home-directory) |
+| `OXA_WEB_SEARCH` | `0`, `false`, `no` or `off` disables `web_search`; `1`, `true`, `yes` or `on` says on |
 | `BRAVE_SEARCH_API_KEY` | Brave Search key for `web_search`; wins over `brave-search.key` ([tools.md](tools.md#web_search)) |
 | `OXA_CODEMODE_MAX_WORKERS` | script workers alive at once in the process. Default 2; overrides `codemode.maxWorkers` |
-| `OXA_CLEAR_ON_SHRINK` | `1` clears empty rows when the rendered output shrinks |
+| `OXA_CLEAR_ON_SHRINK` | `1`, `true`, `yes` or `on` clears empty rows when the rendered output shrinks |
 | `OXA_SKIN` | `pi`, `oxa` or `ascii` (ASCII glyphs only): the look of the interactive UI for this run, over the `ui.skin` setting |
-| `OXA_REDUCED_MOTION` | `1` switches the animations of the `oxa` skin off, as the `ui.reducedMotion` setting does |
+| `OXA_REDUCED_MOTION` | `1`, `true`, `yes` or `on` switches the animations of the `oxa` skin off, as the `ui.reducedMotion` setting does; `0`, `false`, `no` or `off` says the opposite for one run |
 | `NO_COLOR` | with the `oxa` skin: no colour and no animation |
-| `OXA_CLIPBOARD_OSC52` | `1` also copies through OSC 52, the escape sequence that terminals relay to the clipboard |
+| `OXA_CLIPBOARD_OSC52` | `1`, `true`, `yes` or `on` also copies through OSC 52, the escape sequence that terminals relay to the clipboard |
 | `VISUAL`, `EDITOR` | external editor for Ctrl+G, when `externalEditor` is not set; `VISUAL` first |
 | `HTTP_PROXY`, `HTTPS_PROXY` | proxy for MCP HTTP requests only |
 | `OXA_SESSION_ID`, `OXA_SESSION_FILE` | *set*: the current session id, and the session file (unset when the session is ephemeral) |
