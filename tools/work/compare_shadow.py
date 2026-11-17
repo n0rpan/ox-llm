@@ -42,7 +42,10 @@ def lab_events(directory, last_day, timezone):
             later = minute
             number = re.search(r'#(\d+)\b', line)
             if number:
-                at = int(datetime.combine(day, clock, timezone).timestamp())
+                local = datetime.combine(day, clock, timezone)
+                if local.utcoffset() != local.replace(fold=1).utcoffset():
+                    raise ValueError('ambiguous or nonexistent local log time; use UTC logs')
+                at = int(local.timestamp())
                 events.append((at, int(number[1]), action(line), source))
     return sorted(events)
 
@@ -58,7 +61,8 @@ def differences(samples, events):
         predicted = {(row['number'], row['action']) for row in sample['would_take']}
         actual = {}
         for at, number, name, source in sorted(events):
-            if start <= at < end:
+            # A lab timestamp denotes [minute:00, minute:00 + 60s), not an instant.
+            if at < end and at + 60 > start:
                 actual.setdefault((number, name), source)
         for (number, name), source in sorted(actual.items()):
             if (number, name) not in predicted:

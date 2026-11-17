@@ -10,6 +10,9 @@ python3 -I tools/work/compare_shadow.py shadow.jsonl --lab-dir ~/lab-logs --date
 `--date` is the final day in each lab log; midnight rollovers are inferred backwards.
 Supply logs ending on that day, in the named timezone. Events are compared within
 each snapshot's next five minutes, stopping at the next snapshot if earlier.
+Minute-only timestamps match windows they overlap; boundary matches are approximate.
+Ambiguous or nonexistent daylight-saving times are rejected. Capture logs in UTC
+to compare across clock transitions without guessing which occurrence was meant.
 Only eligible `would_take` entries are predictions. Unmatched actions print as
 `lab_only` or `shadow_only`; these are observations, not correctness verdicts.
 Unknown lab messages with a timestamp and PR number remain `unclassified`.
