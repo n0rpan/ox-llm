@@ -1,6 +1,7 @@
 //! Explicitly approved text snapshots and private worker copies. A workspace
 //! grant never exposes a source checkout, git metadata or ambient credentials.
 //! Returned changes are review data; this module has no apply/merge operation.
+use oxa_proto::bounded_io::BoundedWriter;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -593,23 +594,8 @@ fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 fn bounded_json(value: &impl Serialize, max: usize) -> io::Result<()> {
-    struct Count {
-        size: usize,
-        max: usize,
-    }
-    impl Write for Count {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if bytes.len() > self.max.saturating_sub(self.size) {
-                return Err(limit("workspace review limit exceeded"));
-            }
-            self.size += bytes.len();
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    serde_json::to_writer(Count { size: 0, max }, value).map_err(|_| limit("workspace review limit exceeded"))
+    let exceeded = || limit("workspace review limit exceeded");
+    serde_json::to_writer(BoundedWriter::new(io::sink(), max, exceeded), value).map_err(|_| exceeded())
 }
 fn denied(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)

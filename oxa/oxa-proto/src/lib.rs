@@ -47,6 +47,7 @@ mod tool;
 mod ui;
 mod wire;
 
+pub mod bounded_io;
 pub mod control;
 pub mod guard;
 pub mod panic;
