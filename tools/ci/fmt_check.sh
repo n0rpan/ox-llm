@@ -39,17 +39,12 @@ if ! command -v cargo >/dev/null 2>&1; then
     }
 fi
 
-# Walk up to the manifest that declares the workspace: a member directory's
-# Cargo.toml is not it, and in a linked worktree there is no other way to name the
-# workspace root.
-dir=$PWD
-while :; do
-    if [ -f "$dir/Cargo.toml" ] && grep -q '^\[workspace\]' "$dir/Cargo.toml"; then
-        cd "$dir"
-        exec cargo fmt --check "$@"
-    fi
-    [ "$dir" = "/" ] && break
-    dir=$(dirname "$dir")
-done
-echo "fmt_check: no Cargo.toml declaring a workspace above $PWD" >&2
-exit 1
+# The helper is in tools/ci; resolve the sibling oxa workspace from this checkout,
+# including linked worktrees whose .git entry is a file. The caller's cwd is irrelevant.
+workspace=$(CDPATH= cd -- "$(dirname -- "$0")/../../oxa" && pwd)
+if [ ! -f "$workspace/Cargo.toml" ] || ! grep -q '^\[workspace\]' "$workspace/Cargo.toml"; then
+    echo "fmt_check: oxa workspace manifest not found beside this helper" >&2
+    exit 1
+fi
+cd "$workspace"
+exec cargo fmt --check "$@"
