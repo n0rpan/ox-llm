@@ -13,6 +13,20 @@ SPEC.loader.exec_module(compare)
 
 
 class ShadowComparisonTests(unittest.TestCase):
+    def test_sparse_overnight_gap_keeps_chronological_days(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for source in compare.SOURCES:
+                (root / source).write_text('')
+            (root / 'merge-flow.log').write_text('18:00 enqueued #42\n08:00 enqueued #43\n')
+            rows = compare.lab_events(root, date(2026, 1, 2), ZoneInfo('UTC'))
+        self.assertEqual([r[1] for r in rows], [42, 43])
+        self.assertEqual(rows[1][0] - rows[0][0], 14 * 3600)
+
+    def test_operation_takes_precedence_over_descriptive_text(self):
+        for operation in ('enqueued', 're-enqueued', 'approved'):
+            self.assertEqual(compare.action(f'00:01 {operation} #43 Fix review findings and conflict'), 'ready')
+
     def test_matches_and_differences_are_time_bounded(self):
         samples = [dict(schema_version=1, observed_at=1000, would_take=[
             dict(number=42, action='fix_required_ci'), dict(number=43, action='resolve_conflict')])]
