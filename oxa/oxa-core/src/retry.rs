@@ -169,7 +169,8 @@ pub(crate) fn chat_with_retry_keyed(
             return Err(err);
         }
 
-        // #514: the provider layer is a retry too: `/autoretry off` and `retry.enabled false` stop it.
+        // #514: the provider layer is a retry too: `set_auto_retry(false)` (the user switch) and
+        // `retry.enabled false` stop it as well.
         if policy.enabled && provider_retries < provider.max_retries && retryable(&err, got_data) {
             // A server-requested wait above `maxRetryDelayMs` (0 = no limit) is not waited for
             // here; the agent-level retry decides.

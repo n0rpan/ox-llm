@@ -155,6 +155,9 @@ fn fast_retry(max_retries: u32) -> serde_json::Value {
     json!({"retry": {"enabled": true, "maxRetries": max_retries, "baseDelayMs": 1, "maxAgentDelayMs": 5}})
 }
 
+/// The prefix of the visible provider/agent retry notice.
+const RETRY_NOTICE: &str = "retrying request";
+
 /// The `AutoRetryStart` events as (attempt, max_attempts, delay_ms).
 fn retry_starts(events: &[AgentEvent]) -> Vec<(u32, u32, u64)> {
     events
@@ -520,6 +523,13 @@ fn provider_retries_follow_the_auto_retry_switch() {
         eng.requests().len(),
         1,
         "auto-retry off: no provider retry either"
+    );
+    assert!(
+        !sink
+            .0
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains(RETRY_NOTICE))),
+        "the provider layer announces nothing when the switch is off"
     );
 
     let env2 = TestEnv::new();
