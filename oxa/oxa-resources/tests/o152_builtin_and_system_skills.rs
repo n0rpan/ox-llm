@@ -372,7 +372,9 @@ fn pull_request_skill_defers_pushes_and_gh_to_the_session() {
     // Sessions that permit pushing keep the exact commands.
     let push = steps.find("git push -u origin HEAD").expect("push step");
     // The condition is stated before the commands it governs.
-    let permit = steps.find("session").expect("the open steps say which session may push");
+    let permit = steps
+        .find("session")
+        .expect("the open steps say which session may push");
     assert!(permit < push, "the session condition precedes the push");
     assert!(steps.contains("gh pr create --draft"), "keep the gh command");
     // A session that refuses them is told what to hand over instead of pushing.
@@ -384,6 +386,8 @@ fn pull_request_skill_defers_pushes_and_gh_to_the_session() {
     let rules = &flat[flat.find("## Rules").expect("rules section")..];
     assert!(rules.contains("never push"), "a refusing session never pushes");
     let may = rules.find("may call `gh`").expect("say where gh applies");
-    let read = rules.find("gh pr view N --json isInMergeQueue").expect("queue read");
+    let read = rules
+        .find("gh pr view N --json isInMergeQueue")
+        .expect("queue read");
     assert!(may < read, "the merge-queue read follows its condition");
 }
