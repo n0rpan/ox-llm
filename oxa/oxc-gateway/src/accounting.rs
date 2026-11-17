@@ -187,6 +187,9 @@ impl Budget {
             return Err(Refusal::ledger());
         }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
+        if shared.has_conservative_hold() {
+            return Err(exhausted());
+        }
         policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
         let id = shared.insert(required).map_err(|_| Refusal::ledger())?;
         shared.save().map_err(|_| Refusal::ledger())?;
@@ -247,19 +250,32 @@ impl Budget {
             return Err(Refusal::ledger());
         }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
-        if let Some(cap) = cap {
+        let reserved = if let Some(cap) = cap {
+            if shared.has_conservative_hold() {
+                return Err(exhausted());
+            }
             policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), 0.0)?;
-        }
+            // Go has no trusted pre-request price/plan bound. Reserve all remaining
+            // configured USD headroom before sending, alongside its token allowance.
+            let required = cap.as_f64().ok_or_else(Refusal::ledger)? - (spent + shared.reserved());
+            if !required.is_finite() || required <= 0.0 {
+                return Err(exhausted());
+            }
+            policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
+            required
+        } else {
+            0.0
+        };
         let held = shared.subscription_reserved().map_err(|_| Refusal::ledger())?;
         limits.check(state.reader.subscription(), held, required)?;
         let id = shared
-            .insert_subscription(tokens)
+            .insert_subscription_with_usd(tokens, reserved)
             .map_err(|_| Refusal::ledger())?;
         shared.save().map_err(|_| Refusal::ledger())?;
         Ok(Hold {
             budget: self.clone(),
             model: model.clone(),
-            reserved: 0.0,
+            reserved,
             reserved_tokens: tokens,
             output,
             forwarded: false,
@@ -414,12 +430,7 @@ impl Hold {
             }
         }
         let paid = self.model.provider == "opencode";
-        let cost = if paid { usage.reported_cost } else { Some(0.0) };
-        if let Some(cost) = cost.filter(|n| n.is_finite() && *n > 0.0) {
-            row["billing"] = json!("metered");
-            row["cost_usd"] = json!(cost);
-            row["reported_cost_usd"] = json!(cost);
-        }
+        let cost = if paid { usage.reported_cost } else { Some(0.0) }.filter(|n| n.is_finite() && *n >= 0.0);
         let actual = usage.total_tokens();
         let final_usage = matches!(
             outcome,
@@ -429,7 +440,20 @@ impl Hold {
                     ..
                 }
         );
-        if let Some(actual) = actual.filter(|_| final_usage && cost.is_some()) {
+        let complete = actual.filter(|_| final_usage && cost.is_some());
+        let settled_cost = if complete.is_some() {
+            cost.unwrap_or(0.0)
+        } else {
+            self.reserved.max(cost.unwrap_or(0.0))
+        };
+        if settled_cost > 0.0 {
+            row["billing"] = json!("metered");
+            row["cost_usd"] = json!(settled_cost);
+            if let Some(cost) = cost {
+                row["reported_cost_usd"] = json!(cost);
+            }
+        }
+        if let Some(actual) = complete {
             row["subscription_tokens"] = json!(actual);
             row["settled"] = json!("usage");
         } else {

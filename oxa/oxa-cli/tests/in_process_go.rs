@@ -278,7 +278,7 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
         3,
         "only discovery may follow the held request"
     );
-    assert_eq!(rows(&env)[0]["settled"], "usage");
+    assert!(rows(&env).iter().any(|row| row["settled"] == "usage"));
     mock.assert_healthy();
 }
 
