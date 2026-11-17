@@ -253,6 +253,95 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
     assert_eq!(record["branch"], "agent/42-work");
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
 }
+
+/// Run `oxa work --pr 9 --model fake` with a mock `gh`; the fake engine answers once.
+fn pr_run(env: &TestEnv, gh: &str) -> (std::process::Output, FakeServer) {
+    use std::os::unix::fs::PermissionsExt;
+    let path = format!(
+        "{}:{}",
+        trusted_tools(env).display(),
+        std::env::var("PATH").unwrap()
+    );
+    let script = env.write("tmp/trusted-tools/gh", gh);
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--pr", "9", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    (out, server)
+}
+
+#[test]
+fn handed_off_pull_request_packet_reaches_the_worker() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let project = env.work().join("project");
+    // The reviewed work is a commit in this checkout, on a branch of its own.
+    git(&env, &project, &["checkout", "-b", "agent/handed-off"]);
+    env.write("work/project/patch.txt", "reviewed change\n");
+    git(&env, &project, &["add", "."]);
+    git(&env, &project, &["commit", "-m", "reviewed change"]);
+    git(&env, &project, &["checkout", "main"]);
+    let head = git(&env, &project, &["rev-parse", "agent/handed-off"]);
+    let short = &head[..8];
+    env.write(
+        "work/pr.json",
+        &format!(
+            r#"{{"title":"Reviewed change","body":"The change","headRefName":"agent/handed-off","headRefOid":"{head}","comments":[{{"author":{{"login":"reviewer"}},"body":"VERDICT: changes requested\nkeep the frame"}}],"statusCheckRollup":[{{"__typename":"CheckRun","name":"clippy","conclusion":"FAILURE"}}]}}"#
+        ),
+    );
+    env.write(
+        "work/inline.json",
+        r#"[{"path":"src/lib.rs","line":12,"user":{"login":"reviewer"},"body":"Restore the input"}]"#,
+    );
+    // The mock gh runs in the repository, so it reads these as `../<name>`.
+    let (out, server) = pr_run(
+        &env,
+        r##"#!/bin/sh
+case "$*" in
+"pr view 9 --json title,body,headRefName,headRefOid,comments,statusCheckRollup") cat ../pr.json ;;
+"api repos/{owner}/{repo}/pulls/9/comments?per_page=100&sort=created&direction=desc") cat ../inline.json ;;
+*) exit 9 ;;
+esac
+"##,
+    );
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stderr)));
+    assert_eq!(record["id"], format!("pr-9-{short}"), "{record}");
+    assert_eq!(record["branch"], format!("agent/9-{short}-review"), "{record}");
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    // The worktree is the reviewed head, not an empty branch from the base.
+    let tree = Path::new(record["worktree"].as_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(tree.join("patch.txt")).unwrap(),
+        "reviewed change\n"
+    );
+    let sent = server.requests()[0]
+        .messages
+        .last()
+        .unwrap()
+        .content
+        .clone()
+        .unwrap_or_default();
+    for expected in [
+        "Fix pull request #9",
+        &format!("at commit {short} of the pull request branch agent/handed-off"),
+        "keep the frame",
+        "src/lib.rs:12",
+        "Restore the input",
+        "clippy",
+    ] {
+        assert!(
+            sent.contains(expected),
+            "{expected} missing from the worker prompt"
+        );
+    }
+}
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
     let env = TestEnv::new();
@@ -328,7 +417,7 @@ fn child_can_create_a_commit_with_the_real_sandbox() {
 #[test]
 fn offline_issue_input_never_spawns_gh() {
     use std::os::unix::fs::PermissionsExt;
-    for setting in [false, true] {
+    for (setting, flag) in [(false, "--issue"), (true, "--issue"), (false, "--pr"), (true, "--pr")] {
         let env = TestEnv::new();
         setup(&env, "[]");
         let gh = env.write(
@@ -340,7 +429,7 @@ fn offline_issue_input_never_spawns_gh() {
             env.write("home/.oxa/agent/settings.json", r#"{"oxa":{"offline":true}}"#);
         }
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
-        cmd.args(["work", "--issue", "42", "--model", "fake"])
+        cmd.args(["work", flag, "42", "--model", "fake"])
             .current_dir(env.work().join("project"))
             .env_clear()
             .envs(env.envs("http://127.0.0.1:1"))
@@ -355,7 +444,7 @@ fn offline_issue_input_never_spawns_gh() {
         assert_eq!(out.status.code(), Some(2));
         assert!(
             !env.home().join("gh-invoked").exists(),
-            "offline lookup ran gh, setting={setting}"
+            "offline lookup ran gh, flag={flag} setting={setting}"
         );
         assert!(String::from_utf8_lossy(&out.stderr).contains("offline"));
     }

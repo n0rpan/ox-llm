@@ -624,3 +624,117 @@ pub fn run_task_with_observer(
         .map_err(RunError::Checkpoint)?;
     Ok(state.record)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_prompt(
+        comments: serde_json::Value,
+        checks: serde_json::Value,
+        inline: serde_json::Value,
+    ) -> String {
+        let pr = json!({
+            "title": "Keep the frame",
+            "body": "The change under review",
+            "headRefName": "agent/example",
+            "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+            "comments": comments,
+            "statusCheckRollup": checks,
+        });
+        pull_request_prompt(7, "agent/example", "01234567", &pr, &inline).unwrap()
+    }
+
+    #[test]
+    fn packet_carries_the_review_findings_and_failing_checks() {
+        let prompt = sample_prompt(
+            json!([
+                {"author": {"login": "older"}, "body": "VERDICT: changes requested\nfix the old thing"},
+                {"author": {"login": "author"}, "body": "Pushed a fix"},
+                {"author": {"login": "newest"}, "body": "## VERDICT: blocked\nfix the frame"},
+            ]),
+            json!([
+                {"__typename": "CheckRun", "name": "clippy", "conclusion": "FAILURE"},
+                {"__typename": "CheckRun", "name": "fmt", "conclusion": "SUCCESS"},
+                {"__typename": "CheckRun", "name": "tests", "status": "IN_PROGRESS", "conclusion": null},
+                {"__typename": "StatusContext", "context": "scan", "state": "ERROR"},
+                {"__typename": "StatusContext", "context": "build", "state": "PENDING"},
+            ]),
+            json!([
+                {"path": "src/a.rs", "line": 90, "user": {"login": "reviewer"}, "body": "Handle the empty case"},
+                {"path": "src/b.rs", "line": null, "user": null, "body": "Keep the frame"},
+                {"path": "src/c.rs", "line": 3, "user": {"login": "reviewer"}, "body": "   "},
+            ]),
+        );
+        assert!(
+            prompt.starts_with("Fix pull request #7: Keep the frame\n\nThe change under review"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("commit 01234567 of the pull request branch agent/example"),
+            "{prompt}"
+        );
+        // Only the newest verdict is carried: an older one would contradict it.
+        assert!(prompt.contains("Newest verdict comment by newest"), "{prompt}");
+        assert!(
+            prompt.contains("fix the frame") && !prompt.contains("fix the old thing"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("--- src/a.rs:90 by reviewer ---\nHandle the empty case"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("--- src/b.rs by unknown ---\nKeep the frame"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("src/c.rs"), "an empty comment is not a finding");
+        assert!(
+            prompt.contains("\n- clippy\n") && prompt.contains("\n- scan\n"),
+            "{prompt}"
+        );
+        for absent in ["\n- fmt\n", "\n- tests\n", "\n- build\n"] {
+            assert!(
+                !prompt.contains(absent),
+                "{absent} is not a failing check: {prompt}"
+            );
+        }
+    }
+
+    #[test]
+    fn packet_states_absent_text_refuses_odd_fields_and_bounds_a_long_thread() {
+        let prompt = sample_prompt(json!(null), json!([]), json!([]));
+        assert!(
+            prompt.contains("No VERDICT comment") && prompt.contains("(none)\n"),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("by unknown"), "{prompt}");
+        for (comments, inline, checks) in [
+            (json!("no"), json!([]), json!([])),
+            (json!([]), json!({"message": "not found"}), json!([])),
+            (json!([]), json!([]), json!("no")),
+        ] {
+            let pr = json!({
+                "title": "t",
+                "body": "b",
+                "comments": comments,
+                "statusCheckRollup": checks,
+            });
+            assert!(pull_request_prompt(1, "h", "s", &pr, &inline).is_err());
+        }
+        assert!(pull_request_prompt(1, "h", "s", &json!({"body": "b"}), &json!([])).is_err());
+        let long = format!("{}é", "x".repeat(REVIEW_BYTES));
+        let cut = bounded(&long, REVIEW_BYTES);
+        assert!(
+            cut.contains("review text truncated") && !cut.contains('é'),
+            "{cut}"
+        );
+        assert!(cut.len() <= REVIEW_BYTES + 128, "{}", cut.len());
+        let many = json!((0..CHECK_NAMES + 10)
+            .map(|n| json!({"__typename": "CheckRun", "name": format!("check-{n}"), "conclusion": "FAILURE"}))
+            .collect::<Vec<_>>());
+        let prompt = sample_prompt(json!([]), many, json!([]));
+        assert!(prompt.contains("- and 10 more failing checks"), "{prompt}");
+    }
+}
