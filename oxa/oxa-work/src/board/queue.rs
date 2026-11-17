@@ -20,6 +20,24 @@ pub struct RejectionEvidence {
     failed_required_workflows: BTreeMap<u64, WorkflowIdentity>,
 }
 
+pub(crate) struct Removal<'a> {
+    pub number: u64,
+    pub event: &'a str,
+    pub group: &'a str,
+    pub removed_at: &'a str,
+}
+
+impl RejectionEvidence {
+    pub(crate) fn admission_identity(&self) -> Removal<'_> {
+        Removal {
+            number: self.number,
+            event: &self.removal_event,
+            group: &self.merge_group_head,
+            removed_at: &self.removed_at,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 struct WorkflowIdentity {
     check_suite_id: u64,
