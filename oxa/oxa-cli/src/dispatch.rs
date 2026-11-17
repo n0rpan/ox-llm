@@ -172,6 +172,18 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         let result = match sub {
             #[cfg(feature = "share")]
             Subcommand::Share(words) => {
+                if env.get("OXA_CODING_AGENT").is_some()
+                    || env.get("AI_AGENT").is_some()
+                    || env.get("OXA_SUBAGENT_DEPTH").is_some()
+                {
+                    return report(
+                        &mut *stderr,
+                        &OxaError::new(
+                            codes::INVALID,
+                            "Guest key commands require the owner outside an agent tool",
+                        ),
+                    );
+                }
                 oxc_gateway::share::command::run(&words, &dirs.home.join(".oxa/share"), &mut *stdout)
                     .map(|()| 0)
                     .map_err(|error| {
