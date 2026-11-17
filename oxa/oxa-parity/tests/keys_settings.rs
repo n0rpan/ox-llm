@@ -670,6 +670,20 @@ mod tui {
             // sent into the still-working turn (it would be queued or swallowed under load).
             self.wait("the turn finished", |s| !s.contains("Working"));
         }
+        /// The read-only export is executed by the worker after the current run settles.
+        /// Reply text and a quiet frame alone do not acknowledge that boundary.
+        pub fn wait_worker_reply_end(&self, marker: &str) {
+            let chats = self.chats().len();
+            self.slash(&format!("/export {marker}"));
+            self.wait("worker completed the read-only export", |s| {
+                s.contains("Exported the session to") && s.contains(marker)
+            });
+            assert_eq!(
+                self.chats().len(),
+                chats,
+                "the witness must not make a model request"
+            );
+        }
         /// The user prompts the engine got (chat requests only), in order.
         pub fn prompts(&self) -> Vec<String> {
             self.server
@@ -2694,6 +2708,10 @@ fn key_005() {
     // terminal sends a plain CR for it); ctrl+j works everywhere.
     let mut t = Setup::new()
         .profile(TermProfile::kitty())
+        .fake(tui::FakeOpts {
+            done_gap_ms: 2500,
+            ..tui::FakeOpts::default()
+        })
         .replies("got it", 2)
         .start();
     t.type_text("first line");
@@ -2705,6 +2723,7 @@ fn key_005() {
     t.key("enter");
     t.wait_text("got it");
     assert_eq!(t.prompts(), vec!["first line\nsecond line\nthird".to_string()]);
+    t.wait_worker_reply_end("key005-after-reply.html");
     // tab completes a slash command.
     t.type_text("/hotk");
     t.key("tab");
@@ -3137,6 +3156,7 @@ fn key_010() {
     t.wait_chats(1);
     t.key("escape");
     t.wait_text("late answer");
+    t.wait_worker_reply_end("key010-after-reply.html");
     t.type_text("slow two");
     t.key("enter");
     t.wait_text("after f9");
@@ -3574,13 +3594,21 @@ fn key_016() {
     });
     t.wait_text("follow answer");
     assert_eq!(t.prompts(), vec!["one".to_string(), "later".to_string()]);
-    // Idle, alt+enter sends like enter.
+    // Idle, alt+enter adds a newline (issue #344); enter then sends both lines.
     drop(t);
     let t = Setup::new().replies("idle answer", 1).start();
     t.type_text("now");
     t.key("alt+enter");
+    // Witness: the newline was applied (the cursor moved to a second line) before typing on.
+    t.wait("a newline in the editor", |s| {
+        editor_rows(s).is_some_and(|r| r.len() >= 2)
+    });
+    t.type_text("more");
+    t.wait("both lines in the editor", |s| editor_text(s) == "now\nmore");
+    t.key("enter");
     t.wait_text("idle answer");
-    assert_eq!(t.prompts(), vec!["now".to_string()]);
+    t.wait_chats(1);
+    assert_eq!(t.prompts(), vec!["now\nmore".to_string()]);
     drop(t);
     // alt+up brings the queued messages back into the editor; they are not sent.
     let t = Setup::new()

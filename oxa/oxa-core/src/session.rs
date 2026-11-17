@@ -90,6 +90,10 @@ pub struct Stats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub cached_tokens: u64,
+    /// A remote request was attempted in this session. The engine chat contract does not
+    /// expose authoritative settled costs, so front ends must report cost as unavailable.
+    /// Sticky across model switches, including a switch back to a local model.
+    pub cost_unknown: bool,
     /// Current context size (`Transcript::context`).
     pub context_tokens: u32,
     pub requests: u32,

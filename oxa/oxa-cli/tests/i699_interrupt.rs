@@ -64,7 +64,9 @@ impl Process {
     fn send(&mut self, bytes: &[u8]) {
         self.child.stdin.as_mut().unwrap().write_all(bytes).unwrap();
     }
+    #[track_caller]
     fn wait_for(&mut self, predicate: impl Fn() -> bool) {
+        let predicate_line = std::panic::Location::caller().line();
         let start = Instant::now();
         while !predicate() {
             assert!(
@@ -74,7 +76,7 @@ impl Process {
             );
             assert!(
                 start.elapsed() < Duration::from_secs(10),
-                "timeout: {}",
+                "timeout predicate_line={predicate_line}: {}",
                 self.screen()
             );
             std::thread::sleep(Duration::from_millis(10));
@@ -83,6 +85,7 @@ impl Process {
     fn screen(&self) -> String {
         oxa_tui::strip_ansi(&self.text.lock().unwrap())
     }
+    #[track_caller]
     fn wait_text(&mut self, expected: &str) {
         let text = self.text.clone();
         self.wait_for(|| oxa_tui::strip_ansi(&text.lock().unwrap()).contains(expected));
@@ -130,12 +133,15 @@ impl Drop for Process {
 }
 
 fn fixture(turns: Vec<ScriptTurn>) -> (TestEnv, FakeServer) {
+    fixture_with_opts(turns, FakeOpts::default())
+}
+fn fixture_with_opts(turns: Vec<ScriptTurn>, opts: FakeOpts) -> (TestEnv, FakeServer) {
     let env = TestEnv::new();
     env.write(
         "home/.oxa/agent/settings.json",
         r#"{"defaultProjectTrust":"always","retry":{"enabled":false},"quietStartup":false}"#,
     );
-    let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
+    let server = FakeServer::start(turns, opts).unwrap();
     (env, server)
 }
 fn delayed() -> ScriptTurn {
@@ -164,14 +170,24 @@ fn idle_pty_ctrl_c_twice_exits_cleanly_and_saves_session() {
 
 #[test]
 fn generation_pty_ctrl_c_cancels_and_keeps_prompt_usable() {
-    let (env, server) = fixture(vec![delayed(), ScriptTurn::text("synthetic next answer")]);
+    let (env, server) = fixture_with_opts(
+        vec![delayed(), ScriptTurn::text("synthetic next answer")],
+        FakeOpts {
+            hold_prefill_ms: 20_000,
+            ..FakeOpts::default()
+        },
+    );
     let mut p = Process::start(&env, &server, "tui");
     p.wait_text("READY");
+    p.wait_for(|| server.requests().iter().any(|r| r.max_tokens == 0));
     p.send(b"synthetic cancellation check\r");
-    // O-152: the boot preload (H6, `max_tokens: 0`) reaches the engine before the first prompt,
-    // so "any request" is not the run. Wait for the foreground turn itself: the Ctrl+C must land
-    // on the run, not on the background prefill (which is not the activity it cancels).
+    // The boot preload uses max_tokens: 0; wait for the foreground turn itself before
+    // interrupting so this control cannot mistake background prefill for generation.
     p.wait_for(|| server.requests().iter().any(|r| r.max_tokens > 0));
+    eprintln!(
+        "foreground_before_ctrl_c={}",
+        server.requests().iter().filter(|r| r.max_tokens > 0).count()
+    );
     p.send(b"\x03");
     p.wait_text("partial reply dropped; your prompt stays");
     // A fresh prompt proves the first Ctrl+C did not arm exit or poison the next turn.

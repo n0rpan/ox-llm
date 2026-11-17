@@ -73,6 +73,8 @@ pub mod codes {
     pub const ABORTED: &str = "aborted";
     /// A pi feature omitted from oxa (verdict O).
     pub const UNSUPPORTED_IN_OXA: &str = "unsupported_in_oxa";
+    /// The interactive terminal disappeared (process exit 129).
+    pub const TERMINAL_CLOSED: &str = "terminal_closed";
     pub const IO: &str = "io";
     /// A file, session, model, tool, command or entry was not found.
     pub const NOT_FOUND: &str = "not_found";
