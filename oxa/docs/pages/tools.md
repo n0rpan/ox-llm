@@ -31,7 +31,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 | Option or setting | Effect |
 |---|---|
 | `--tools a,b` (`-t`) | allowlist of names or patterns; `*` matches any characters. Only these tools are on |
-| `--exclude-tools a,b` (`-xt`) | denylist, applied after the allowlist |
+| `--exclude-tools a,b` (`-xt`) | denylist, applied after the allowlist. Repeated lists and `--no-<tool>` add to it |
+| `--no-<tool>` | one exclusion by name: `--no-read`, `--no-bash`, `--no-edit`, `--no-write`, `--no-grep`, `--no-find`, `--no-ls`, `--no-subagent`; the same as `--exclude-tools <tool>` |
 | `--no-builtin-tools` (`-nbt`) | disables the built-in tools; extension and MCP tools stay |
 | `--no-tools` (`-nt`) | disables all tools |
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
