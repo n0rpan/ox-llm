@@ -69,6 +69,9 @@ pub(crate) fn run(args: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write)
         },
     )
     .map_err(service_error)?;
+    let ledger = oxc_gateway::ledger::Ledger::open(&dirs.agent_dir.join("cloud-ledger"))
+        .map_err(|_| OxaError::new(codes::INVALID, "The private request ledger is unavailable."))?;
+    let answer = answer.with_ledger(ledger);
     let tailnet = LocalApi::new(socket, Duration::from_secs(5))
         .map_err(|error| OxaError::new(codes::INVALID, error.to_string()))?;
 
