@@ -70,13 +70,28 @@ wrapper or new daemon is needed to launch native `oxa`.
    key does not translate legacy controller configuration, model aliases, caps
    or endpoint overrides automatically. Native cloud selection is the user
    setting `oxa.engine.inProcessCloud`; native local selection uses
-   `oxa.engine.inProcessLocal`. Both default to `true` in v0.2.1; an explicit
-   user `false` remains respected. Installation writes no user settings. Review
+   `oxa.engine.inProcessLocal`. Merge the following explicit selectors into
    `settings.json` in the user agent directory (normally
-   `~/.oxa/agent/settings.json`, changed by `OXA_AGENT_DIR`); project settings
-   cannot choose credential or engine executable paths. The native local model
+   `~/.oxa/agent/settings.json`, changed by `OXA_AGENT_DIR`), preserving all
+   existing routes, budgets and unrelated settings:
+
+   ```json
+   {
+     "oxa": {
+       "engine": {
+         "inProcessCloud": true,
+         "inProcessLocal": true
+       }
+     }
+   }
+   ```
+
+   Installation writes no user settings. Do not rely on absent selectors:
+   older binaries default them to `false`, and an existing explicit user
+   `false` remains respected even when a package supplies native defaults.
+   Project settings cannot choose credential or engine executable paths. The native local model
    configuration is documented in [native local configuration](https://github.com/oxstack/ox-llm/blob/main/oxa/oxc-local/CONFIGURATION.md).
-   Use these native defaults and explicit model routes rather than a
+   Use these explicit native selectors and model routes rather than a
    legacy controller URL. Do not point the new agent at port 8092 as an upgrade
    requirement. Keep explicit cloud budgets and provider subscription limits.
 5. Existing model weights need not be downloaded again: configure their actual
