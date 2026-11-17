@@ -454,6 +454,37 @@ fn run(b: &Bwrap, command: &str, cwd: &Path) -> (Option<i32>, String) {
     (r.exit, String::from_utf8_lossy(&r.output).into_owned())
 }
 
+/// The reported failure, end to end: the toolchain is installed under `$HOME` (rustup's
+/// `~/.cargo/bin`) and the environment oxa started from has no such directory on `PATH`.
+/// The sandboxed command must still find it: the layout puts the installed toolchain
+/// directories on the sandbox `PATH`, after the user's own.
+#[test]
+fn real_an_installed_toolchain_is_found_without_it_on_path() {
+    let env = TestEnv::new();
+    exe(
+        &env,
+        "home/.cargo/bin/cargo",
+        "#!/bin/sh\necho \"cargo from $(cat \"$HOME/.rustup/toolchains/stable/version\")\"\n",
+    );
+    env.write("home/.rustup/toolchains/stable/version", "1.0.0-test");
+    let home = env.home();
+    let layout = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin:/bin".into(),
+        ..Default::default()
+    });
+    // The premise: the inherited PATH has no cargo directory.
+    let Some(b) = real(&env, layout) else { return };
+    let (exit, out) = run(&b, "command -v cargo && cargo", &env.work());
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(out.contains("cargo from 1.0.0-test"), "{out}");
+    // The toolchain directory is read-only, as before.
+    let (exit, _) = run(&b, "touch \"$HOME/.cargo/bin/evil\"", &env.work());
+    assert_ne!(exit, Some(0));
+    assert!(!home.join(".cargo/bin/evil").exists());
+}
+
 #[test]
 fn real_toolchains_under_home_run() {
     let env = TestEnv::new();
