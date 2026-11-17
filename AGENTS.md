@@ -76,9 +76,13 @@ files; preserve anything a running process of yours uses, and never clean anothe
 
 That rule holds outside oxa's sandbox. Inside it the home directory is an empty mount that is made
 read-only, `~/.cache` included: only the package caches and your `oxa.sandbox.writePaths` binds are
-writable there, and the toolchain directories are read-only. A sandboxed command's scratch is `/tmp`
-(also `TMPDIR` and `XDG_CACHE_HOME`), backed by the session's directory under `~/.cache/oxa/scratch`
-on the host and deleted when the session ends, so keep anything that must survive in the workspace.
+writable there, and the toolchain directories are read-only. One exception: when oxa itself runs in
+`$HOME` and the home is the workspace (you confirmed the start there, or the user settings say
+`oxa.sandbox.allowHomeWrite: true`), the home's plain top-level files and folders are writable while
+every dot-entry (`.cache`, `.config`, `.ssh`, ...), `~/bin`, the toolchains and the deny-list stay
+read-only. A sandboxed command's scratch is `/tmp` (also `TMPDIR` and `XDG_CACHE_HOME`), backed by the
+session's directory under `~/.cache/oxa/scratch` on the host and deleted when the session ends, so keep
+anything that must survive in the workspace.
 
 Push the lane branch to start the `lane` workflow, or dispatch it explicitly:
 

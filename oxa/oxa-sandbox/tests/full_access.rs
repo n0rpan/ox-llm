@@ -54,6 +54,27 @@ fn yolo_runs_unsandboxed_outside_the_workspace() {
     let _ = std::fs::remove_dir_all(&out_dir);
 }
 
+/// #928: a note about the sandbox's empty read-only home must not describe a `yolo` run, which
+/// happens on the host; plan mode stays inside the sandbox and keeps the inner answer.
+#[test]
+fn full_access_tells_tools_which_runs_left_the_sandbox() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let (full, switch) = full(Autonomy::Yolo, &env);
+    let writable = spec(&env, "true".into(), true);
+    let plan = spec(&env, "true".into(), false);
+    assert!(!full.sandboxed(&writable));
+    assert!(full.sandboxed(&plan), "plan mode still runs in the sandbox");
+    switch.set_level(Autonomy::Auto);
+    assert!(full.sandboxed(&writable));
+    switch.set_level(Autonomy::Standard);
+    assert!(full.sandboxed(&writable));
+    // A wrapper that leaves the sandbox answers for it.
+    let other: Arc<dyn Sandbox> = Arc::new(NoSandbox);
+    let inside = FullAccess::new(other, YoloSwitch::new(Autonomy::Auto), "", env.home(), false);
+    assert!(inside.sandboxed(&writable));
+}
+
 #[test]
 fn auto_and_plan_keep_the_sandbox() {
     let env = TestEnv::new();

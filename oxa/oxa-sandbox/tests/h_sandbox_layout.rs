@@ -1234,6 +1234,24 @@ fn real_home_cache_is_read_only_outside_the_bound_caches() {
     let (exit, out) = run(&b, "mkdir -p \"$HOME/.cache/build-tools\"", &work);
     assert_ne!(exit, Some(0), "{out}");
     assert!(out.contains("Read-only file system"), "{out}");
+    // The sandbox runs with `LANG=C.UTF-8`, so GNU `mkdir` quotes the path with the locale's
+    // marks, not ASCII quotes: `oxa-tools`'s note parser is tested against this exact line
+    // (`read_only_home_note_reads_locale_quoted_paths`), so a quoting change fails here first.
+    let quoted = out
+        .lines()
+        .find(|l| l.trim_end().ends_with("Read-only file system"))
+        .expect("mkdir's own error line");
+    let home = env.home().display().to_string();
+    let expected = [
+        "mkdir: cannot create directory ",
+        "\u{2018}",
+        home.as_str(),
+        "/.cache/build-tools",
+        "\u{2019}",
+        ": Read-only file system",
+    ]
+    .concat();
+    assert_eq!(quoted.trim_end(), expected, "{out}");
     assert!(!env.home().join(".cache/build-tools").exists());
     let (exit, out) = run(&b, "echo v > \"$HOME/.cache/sccache/probe\"", &work);
     assert_eq!(exit, Some(0), "{out}");

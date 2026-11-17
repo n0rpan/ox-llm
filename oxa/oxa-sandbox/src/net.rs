@@ -204,6 +204,12 @@ impl Sandbox for NetSandbox {
     fn persistence_notice(&self) -> Option<&str> {
         self.inner.persistence_notice()
     }
+    /// #928: only the network switch differs (no token is loaded here), which changes no
+    /// file-system view: the inner sandbox's answer for the clamped spec holds, and a wrapper
+    /// that leaves the sandbox still answers `false`.
+    fn sandboxed(&self, s: &ExecSpec) -> bool {
+        self.inner.sandboxed(&self.clamp(s))
+    }
     fn scratch_dir(&self) -> Option<&std::path::Path> {
         self.inner.scratch_dir()
     }

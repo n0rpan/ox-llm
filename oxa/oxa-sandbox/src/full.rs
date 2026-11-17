@@ -121,6 +121,14 @@ impl Sandbox for FullAccess {
         }
         self.inner.persistence_notice()
     }
+    /// #928: a `yolo` run of a writable spec leaves the sandbox (`self.bypass`), so there is no
+    /// empty home mount to explain; plan mode stays inside and keeps the inner answer.
+    fn sandboxed(&self, s: &ExecSpec) -> bool {
+        if self.bypass(s) {
+            return false;
+        }
+        self.inner.sandboxed(s)
+    }
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         if self.bypass(s) {
             return Vec::new();

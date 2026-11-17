@@ -86,6 +86,14 @@ pub trait Sandbox: Send + Sync {
     fn home(&self) -> Option<&std::path::Path> {
         None
     }
+    /// #928: whether `s` runs inside this sandbox's own file-system view, the empty read-only
+    /// home bwrap mounts, rather than on the host. Full access (`yolo`) answers `false` for the
+    /// runs it takes outside the sandbox, so a tool-result note about that view is not printed
+    /// for a failure that happened on the host; plan mode stays inside. Default: `true` (what a
+    /// sandbox is given runs in its own view).
+    fn sandboxed(&self, _s: &ExecSpec) -> bool {
+        true
+    }
     /// #597: the host directory this session's sandbox mounts at `/tmp`, if it has one. The file
     /// tools read a path under `/tmp` there, as the bash tool sees it. Default: none.
     fn scratch_dir(&self) -> Option<&std::path::Path> {

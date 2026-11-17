@@ -75,6 +75,8 @@ struct Job {
     status: Arc<Mutex<JobStatus>>,
     /// When the job was started, for the age a listing shows.
     started: Instant,
+    /// The spec the job was started with (a read judges the job's output with it, #928).
+    spec: ExecSpec,
 }
 
 /// A snapshot of a job for a read.
@@ -85,6 +87,9 @@ pub struct JobRead {
     pub output: String,
     /// Every byte of output the job has written so far (not only the ones kept).
     pub total: u64,
+    /// #928: the spec the job runs with, so a job read can judge the same way its foreground
+    /// run would (which view it runs in, whether it may write).
+    pub spec: ExecSpec,
 }
 
 /// The outcome of [`JobRegistry::kill`].
@@ -209,6 +214,7 @@ impl JobRegistry {
                 output: output.clone(),
                 status: status.clone(),
                 started: Instant::now(),
+                spec: spec.clone(),
             },
         );
         drop(state);
@@ -247,6 +253,7 @@ impl JobRegistry {
             status,
             output: text,
             total: out.total,
+            spec: job.spec.clone(),
         })
     }
 

@@ -312,12 +312,77 @@ pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Optio
     None
 }
 
+/// How a shell quotes the path in its own error line: `'/home/u/.cache/x'`, the locale's
+/// `‘/home/u/.cache/x’` under the sandbox's `LANG=C.UTF-8`, or the ASCII double quote.
+fn quote_chars(c: char) -> bool {
+    matches!(
+        c,
+        '\'' | '"' | '`' | '\u{2018}' | '\u{2019}' | '\u{201c}' | '\u{201d}'
+    )
+}
+
+/// The first token of `line` that names a path under `home/`, split on whitespace, `:` and the
+/// quote characters a tool may wrap it in.
+fn under_home_token<'a>(line: &'a str, prefix: &str) -> Option<&'a str> {
+    line.split(|c: char| c.is_whitespace() || c == ':' || quote_chars(c))
+        .find(|tok| tok.starts_with(prefix))
+}
+
+/// Whether the sandbox's own view leaves `path` writable, so the read-only-home note stays
+/// quiet for it. Only the layout's writable mounts of the home count:
+///
+/// * the workspace, when `cwd` is below the home and is not the home itself; a cwd outside the
+///   home (or the home's parent) holds no writable mount of it, and the workspace's protected
+///   project files (`.git`, `.oxa`, ...) stay read-only;
+/// * the home's plain entries, when `cwd` is the home (O-199 home as workspace), while its
+///   dot-entries (`~/.cache`, `~/.bashrc`) and `~/bin` stay read-only.
+///
+/// Any other path under the home (a toolchain, another dot-entry) is read-only or hidden.
+fn writable_in_home_view(home: &Path, cwd: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(home) else {
+        return false;
+    };
+    let Ok(cwd_rel) = cwd.strip_prefix(home) else {
+        return false;
+    };
+    if cwd_rel.as_os_str().is_empty() {
+        // The home itself is the workspace: its plain entries are bound writable.
+        return !is_home_dot_entry(rel);
+    }
+    rel.starts_with(cwd_rel)
+        && !oxa_proto::guard::protected_paths(cwd)
+            .iter()
+            .any(|p| path.starts_with(p))
+}
+
+/// A dotted entry of the home (`.cache`, `.bashrc`) or `~/bin`: read-only or hidden in every
+/// layout, the home-as-workspace one included.
+fn is_home_dot_entry(rel: &Path) -> bool {
+    rel.components().next().is_some_and(|first| match first {
+        std::path::Component::Normal(name) => {
+            let name = name.to_string_lossy();
+            name.starts_with('.') || name == "bin"
+        }
+        _ => true,
+    })
+}
+
 /// #928: the sandbox home is an empty mount, so a write to a path under it that is not bound
 /// (`~/.cache/build-tools`, `~/.bashrc`) fails with "Read-only file system", not "No such file
 /// or directory": the note names where the session's scratch is, so a location taken from
 /// instructions written for the host (`~/.cache`) does not send the model looking for the
 /// missing path. Only a failed command's own error line counts, as in [`unmounted_home_note`].
-pub(crate) fn read_only_home_note(output: &str, home: &str, cwd: &Path, exit: Option<i32>) -> Option<String> {
+///
+/// The message follows the writable view (`plan` = the workspace is read-only too, so the note
+/// asks to leave plan mode instead of naming a destination that fails as well) and it is only
+/// about a path the view really keeps read-only ([`writable_in_home_view`]).
+pub(crate) fn read_only_home_note(
+    output: &str,
+    home: &str,
+    cwd: &Path,
+    exit: Option<i32>,
+    plan: bool,
+) -> Option<String> {
     if exit == Some(0) {
         return None;
     }
@@ -328,19 +393,35 @@ pub(crate) fn read_only_home_note(output: &str, home: &str, cwd: &Path, exit: Op
     let prefix = format!("{home}/");
     let path = output
         .lines()
-        .filter(|l| {
-            let l = l.trim_end();
-            l.ends_with("Read-only file system") || l.ends_with("Permission denied")
-        })
-        .flat_map(|line| {
-            line.split(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ':'))
-                .filter(|tok| tok.starts_with(&prefix) && !Path::new(tok).starts_with(cwd))
-                .collect::<Vec<_>>()
-        })
-        .next()?;
-    Some(format!(
-        "{path}: not writable in the sandbox. The home directory is an empty mount and only toolchain directories, package caches and configured writable binds are writable in it. Use /tmp for this session's scratch (TMPDIR and XDG_CACHE_HOME point into it) and the workspace for anything that must persist"
-    ))
+        .filter(|l| l.trim_end().ends_with("Read-only file system"))
+        .find_map(|line| {
+            under_home_token(line, &prefix)
+                .filter(|tok| !writable_in_home_view(Path::new(home), cwd, Path::new(*tok)))
+        })?;
+    let mount = "The sandbox home is an empty mount: outside the workspace only the package caches and the oxa.sandbox.writePaths binds are writable in it, and its toolchain directories, dot-entries and `~/bin` stay read-only.";
+    let where_to = if plan {
+        "Plan mode makes the workspace read-only as well, so leave plan mode before writing the file."
+    } else {
+        "Use /tmp for this session's scratch (TMPDIR and XDG_CACHE_HOME point into it) and the workspace for anything that must persist."
+    };
+    Some(format!("{path}: not writable in the sandbox. {mount} {where_to}"))
+}
+
+/// #928: the read-only-home note for a command result, when the command ran inside the
+/// sandbox's own file-system view (`sandboxed`) and the sandbox can name its home. Shared by
+/// the foreground path and the background-job reads, which see the same view.
+fn home_note(
+    output: &str,
+    home: Option<&Path>,
+    cwd: &Path,
+    exit: Option<i32>,
+    plan: bool,
+    sandboxed: bool,
+) -> Option<String> {
+    if !sandboxed {
+        return None;
+    }
+    home.and_then(|h| read_only_home_note(output, &h.to_string_lossy(), cwd, exit, plan))
 }
 
 /// #494: git keeps `.git/config` read-only in the sandbox (a writable config could run code
@@ -477,8 +558,31 @@ impl BashTool {
                     ));
                 }
                 if !read.output.is_empty() {
+                    // #928: a job runs the same sandboxed command as a foreground call, so its
+                    // finished output gets the same note (once per read, not once per view).
+                    let done = matches!(read.status, JobStatus::Exited(code) if code != 0);
+                    let exit = match read.status {
+                        JobStatus::Exited(code) => Some(code),
+                        _ => None,
+                    };
+                    let sb = self.sandbox(cx);
+                    let note = if done {
+                        home_note(
+                            &read.output,
+                            sb.home(),
+                            &read.spec.cwd,
+                            exit,
+                            !read.spec.writable,
+                            sb.sandboxed(&read.spec),
+                        )
+                    } else {
+                        None
+                    };
                     text.push_str("\n\n");
                     text.push_str(&read.output);
+                    if let Some(n) = note {
+                        text.push_str(&format!("\n[{n}]"));
+                    }
                 }
                 ToolOutput {
                     text,
@@ -623,9 +727,17 @@ impl BashTool {
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
         let note = note.or_else(|| {
-            cx.sandbox
-                .home()
-                .and_then(|h| read_only_home_note(&output, &h.to_string_lossy(), cx.cwd, res.exit))
+            let sb = self.sandbox(cx);
+            // #928: only a run inside the sandbox's own view (not a `yolo` host run) sees the
+            // empty read-only home this note explains.
+            home_note(
+                &output,
+                sb.home(),
+                cx.cwd,
+                res.exit,
+                !spec.writable,
+                sb.sandboxed(&spec),
+            )
         });
         let note = note.or_else(|| git_config_note(&output, res.exit));
         let note = note.or_else(|| git_exclude_note(&output, res.exit));
@@ -823,6 +935,8 @@ echo '\''a'\'''"#
         chunks: Vec<Vec<u8>>,
         seen: Mutex<Option<ExecSpec>>,
         home: Option<PathBuf>,
+        /// #928: what `Sandbox::sandboxed` answers (a wrapper that leaves the sandbox).
+        sandboxed: Option<bool>,
     }
 
     impl Fake {
@@ -837,6 +951,7 @@ echo '\''a'\'''"#
                 chunks: vec![output.to_vec()],
                 seen: Mutex::new(None),
                 home: None,
+                sandboxed: None,
             }
         }
     }
@@ -850,6 +965,9 @@ echo '\''a'\'''"#
         }
         fn home(&self) -> Option<&Path> {
             self.home.as_deref()
+        }
+        fn sandboxed(&self, _s: &ExecSpec) -> bool {
+            self.sandboxed.unwrap_or(true)
         }
         fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
             Vec::new()
@@ -987,12 +1105,18 @@ echo '\''a'\'''"#
     fn read_only_home_write_failure_points_at_the_session_scratch() {
         let cwd = Path::new("/home/u/proj");
         let msg = "mkdir: cannot create directory '/home/u/.cache/build-tools': Read-only file system\n";
-        let note = read_only_home_note(msg, "/home/u", cwd, Some(1)).expect("note");
+        let note = read_only_home_note(msg, "/home/u", cwd, Some(1), false).expect("note");
         assert!(note.contains("/home/u/.cache/build-tools"), "{note}");
         assert!(note.contains("not writable"), "{note}");
         assert!(note.contains("/tmp"), "{note}");
         assert!(note.contains("TMPDIR"), "{note}");
-        assert!(note.contains("workspace"), "{note}");
+        assert!(
+            note.contains("workspace for anything that must persist"),
+            "{note}"
+        );
+        // The layout keeps toolchain directories read-only: the note must not call them writable.
+        assert!(!note.contains("toolchain directories, package"), "{note}");
+        assert!(note.contains("toolchain directories, dot-entries"), "{note}");
         // The "may be hidden" advice of the other note is wrong here: the path exists.
         assert!(
             unmounted_home_note(msg, "/home/u", cwd).is_none(),
@@ -1000,13 +1124,104 @@ echo '\''a'\'''"#
         );
         // Quoted text is not a failed command's own error line.
         let quoted = "the log said: /home/u/.cache/x: Read-only file system\n";
-        assert!(read_only_home_note(quoted, "/home/u", cwd, Some(0)).is_none());
-        // Outside the home, and inside the workspace: other notes and nothing apply.
-        assert!(read_only_home_note("/var/x: Read-only file system", "/home/u", cwd, Some(1)).is_none());
-        assert!(read_only_home_note("/home/u/proj/x: Permission denied", "/home/u", cwd, Some(1)).is_none());
-        assert!(read_only_home_note(msg, "", cwd, Some(1)).is_none());
-        // `Permission denied` on a home path counts too (this uid cannot write it).
-        assert!(read_only_home_note("/home/u/x: Permission denied", "/home/u", cwd, Some(1)).is_some());
+        assert!(read_only_home_note(quoted, "/home/u", cwd, Some(0), false).is_none());
+        // Outside the home, nothing applies; inside the workspace, the workspace is writable.
+        assert!(
+            read_only_home_note("/var/x: Read-only file system", "/home/u", cwd, Some(1), false).is_none()
+        );
+        assert!(read_only_home_note(
+            "/home/u/proj/.git/config: Read-only file system",
+            "/home/u",
+            cwd,
+            Some(1),
+            false
+        )
+        .is_none());
+        assert!(read_only_home_note(msg, "", cwd, Some(1), false).is_none());
+    }
+
+    /// #928 (code review): GNU tools quote the path with the locale's marks, and the sandbox
+    /// runs with `LANG=C.UTF-8`, where `mkdir` prints `cannot create directory ‘…’` — the exact
+    /// failing command of this change. The path is found there too.
+    #[test]
+    fn read_only_home_note_reads_locale_quoted_paths() {
+        let cwd = Path::new("/home/u/proj");
+        let msg = "mkdir: cannot create directory \u{2018}/home/u/.cache/build-tools\u{2019}: Read-only file system\n";
+        let note = read_only_home_note(msg, "/home/u", cwd, Some(1), false).expect("note");
+        assert!(
+            note.starts_with("/home/u/.cache/build-tools: not writable"),
+            "{note}"
+        );
+        // The other mark flavours a tool may use.
+        let curly = "touch: cannot touch \u{201c}/home/u/.cache/x\u{201d}: Read-only file system\n";
+        let note = read_only_home_note(curly, "/home/u", cwd, Some(1), false).expect("note");
+        assert!(note.starts_with("/home/u/.cache/x: not writable"), "{note}");
+        let backtick = "bash: line 1: /home/u/.cache/y: Read-only file system\n";
+        assert!(read_only_home_note(backtick, "/home/u", cwd, Some(1), false).is_some());
+    }
+
+    /// #928 (code review): a read denial is not a failed write. `cat` on a mode-000 file that a
+    /// bind exposes, or running a non-executable file under the home, ends in "Permission
+    /// denied" and says nothing about the empty home mount.
+    #[test]
+    fn read_only_home_note_ignores_permission_denied() {
+        let cwd = Path::new("/home/u/proj");
+        for msg in [
+            "cat: /home/u/notes/private.txt: Permission denied\n",
+            "bash: /home/u/tools/run.sh: Permission denied\n",
+        ] {
+            assert!(
+                read_only_home_note(msg, "/home/u", cwd, Some(1), false).is_none(),
+                "{msg}"
+            );
+        }
+    }
+
+    /// #928 (code review): with the home as the workspace (`oxa.sandbox.allowHomeWrite`, or the
+    /// confirmed start in `$HOME`), the home's plain entries are bound writable while its
+    /// dot-entries stay read-only: the note explains the cache, not `~/notes`.
+    #[test]
+    fn read_only_home_note_follows_the_home_workspace_entries() {
+        let home = Path::new("/home/u");
+        // The home itself as cwd: `~/.cache/...` is read-only, `~/notes/...` is writable.
+        let cache = "mkdir: cannot create directory '/home/u/.cache/build-tools': Read-only file system\n";
+        let note = read_only_home_note(cache, "/home/u", home, Some(1), false).expect("note");
+        assert!(
+            note.starts_with("/home/u/.cache/build-tools: not writable"),
+            "{note}"
+        );
+        let plain = "bash: /home/u/notes/todo.md: Read-only file system\n";
+        assert!(read_only_home_note(plain, "/home/u", home, Some(1), false).is_none());
+        // A home-workspace folder as cwd is writable, except for its `.git` data.
+        let folder = Path::new("/home/u/notes");
+        assert!(read_only_home_note(plain, "/home/u", folder, Some(1), false).is_none());
+        assert!(read_only_home_note(
+            "mkdir: cannot create directory '/home/u/notes/.git/hooks/x': Read-only file system\n",
+            "/home/u",
+            folder,
+            Some(1),
+            false
+        )
+        .is_none());
+        // The protected home entries stay read-only even from the home workspace.
+        let bashrc = "bash: /home/u/.bashrc: Read-only file system\n";
+        assert!(read_only_home_note(bashrc, "/home/u", home, Some(1), false).is_some());
+    }
+
+    /// #928 (code review): plan mode makes the workspace read-only too (`ExecSpec::writable`
+    /// false), so the note does not send the model to the workspace: it says to leave plan mode.
+    #[test]
+    fn read_only_home_note_in_plan_mode_names_no_writable_destination() {
+        let cwd = Path::new("/home/u/proj");
+        let msg = "mkdir: cannot create directory '/home/u/.cache/fleet': Read-only file system\n";
+        let note = read_only_home_note(msg, "/home/u", cwd, Some(1), true).expect("note");
+        assert!(note.contains("leave plan mode"), "{note}");
+        assert!(
+            !note.contains("workspace for anything that must persist"),
+            "{note}"
+        );
+        let note = read_only_home_note(msg, "/home/u", cwd, Some(1), false).expect("note");
+        assert!(!note.contains("leave plan mode"), "{note}");
     }
 
     /// #928: a failed write under the sandbox home names the session's scratch once; a
@@ -1057,6 +1272,52 @@ echo '\''a'\'''"#
             &CancelToken::new(),
         );
         assert!(!out.text.contains("not writable"), "{}", out.text);
+        // Plan mode: no destination is named that would fail as well.
+        let (out, _) = run_with(
+            &failed,
+            json!({"command": "mkdir -p ~/.cache/fleet"}),
+            Mode::Plan,
+            &CancelToken::new(),
+        );
+        assert!(out.text.contains("leave plan mode"), "{}", out.text);
+    }
+
+    /// #928 (code review): under `yolo` a writable command runs on the host, so its "Read-only
+    /// file system" comes from the host's own mounts, not from the sandbox's empty home: the
+    /// note is only for a run that stayed inside (`Sandbox::sandboxed`, and `oxa-sandbox`'s
+    /// `full_access_tells_tools_which_runs_left_the_sandbox` for the real wrapper).
+    #[test]
+    fn read_only_home_note_is_absent_for_a_full_access_host_run() {
+        let msg = "touch: cannot touch '/home/u/.cache/fleet': Read-only file system\n";
+        let host_run = Fake {
+            home: Some(PathBuf::from("/home/u")),
+            sandboxed: Some(false),
+            ..Fake::ok(msg.as_bytes(), Some(1))
+        };
+        let (out, _) = run_with(
+            &host_run,
+            json!({"command": "touch ~/.cache/fleet"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(out.is_error);
+        assert!(!out.text.contains("not writable"), "{}", out.text);
+        // A sandboxed run keeps the note.
+        let inside = Fake {
+            home: Some(PathBuf::from("/home/u")),
+            ..Fake::ok(msg.as_bytes(), Some(1))
+        };
+        let (out, _) = run_with(
+            &inside,
+            json!({"command": "touch ~/.cache/fleet"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(
+            out.text.contains("/home/u/.cache/fleet: not writable"),
+            "{}",
+            out.text
+        );
     }
 
     #[test]
@@ -1803,6 +2064,100 @@ echo '\''a'\'''"#
         assert!(out.is_error);
         assert!(out.text.contains("At most 4 background jobs"), "{:?}", out.text);
         jobs.kill_all();
+    }
+
+    /// #928 (code review): a background job runs the same sandboxed command, so a finished job
+    /// whose write into the read-only home failed gets the same note when its output is read.
+    #[test]
+    fn finished_background_job_output_gets_the_read_only_home_note() {
+        struct Exit {
+            seen: Mutex<Option<ExecSpec>>,
+        }
+        impl Sandbox for Exit {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn home(&self) -> Option<&Path> {
+                Some(Path::new("/home/u"))
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                *self.seen.lock().unwrap() = Some(s.clone());
+                live(b"mkdir: cannot create directory '/home/u/.cache/fleet': Read-only file system\n");
+                ExecResult {
+                    output: Vec::new(),
+                    exit: Some(1),
+                    timed_out: false,
+                }
+            }
+        }
+        let jobs = Arc::new(JobRegistry::new());
+        let sb = Arc::new(Exit {
+            seen: Mutex::new(None),
+        });
+        jobs.set_sandbox(sb.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let started = run_job_tool(
+            &tool,
+            &*sb,
+            json!({"command": "mkdir -p ~/.cache/fleet", "background": true}),
+        );
+        assert!(!started.is_error, "{}", started.text);
+        // The job exits at once; read it once it has (a running read has no exit status).
+        for _ in 0..200 {
+            if jobs.read("job-1").unwrap().status == JobStatus::Exited(1) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let out = run_job_tool(&tool, &*sb, json!({"job": "job-1"}));
+        jobs.kill_all();
+        assert!(out.text.starts_with("Job job-1: exited 1"), "{}", out.text);
+        assert!(out.text.contains("Read-only file system"), "{}", out.text);
+        assert!(
+            out.text.contains("/home/u/.cache/fleet: not writable"),
+            "{}",
+            out.text
+        );
+        assert_eq!(
+            out.text
+                .matches("workspace for anything that must persist")
+                .count(),
+            1,
+            "{}",
+            out.text
+        );
+        // A job that ran on the host (`yolo`) keeps its output verbatim: the host's own
+        // read-only path is not the sandbox's empty home.
+        let jobs = Arc::new(JobRegistry::new());
+        let host = Arc::new(Fake {
+            home: Some(PathBuf::from("/home/u")),
+            sandboxed: Some(false),
+            ..Fake::ok(
+                b"touch: cannot touch '/home/u/.cache/fleet': Read-only file system\n",
+                Some(1),
+            )
+        });
+        jobs.set_sandbox(host.clone());
+        let tool = BashTool::with_shell_and_jobs(ShellConfig::default(), jobs.clone());
+        let started = run_job_tool(
+            &tool,
+            &*host,
+            json!({"command": "touch ~/.cache/fleet", "background": true}),
+        );
+        assert!(!started.is_error, "{}", started.text);
+        for _ in 0..200 {
+            if jobs.read("job-1").unwrap().status == JobStatus::Exited(1) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let out = run_job_tool(&tool, &*host, json!({"job": "job-1"}));
+        jobs.kill_all();
+        assert!(out.text.contains("Read-only file system"), "{}", out.text);
+        assert!(!out.text.contains("not writable"), "{}", out.text);
     }
 
     /// #519: `bash {job, kill: true}` stops one job and frees its slot; the others keep running.
