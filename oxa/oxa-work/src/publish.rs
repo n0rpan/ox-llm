@@ -5,7 +5,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::{
     fs::File,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
 };
 
 fn context(
@@ -39,21 +39,41 @@ fn context(
     writer.replay(&value, observer)?;
     Ok((writer, lock, value))
 }
+const MAX_PUBLICATION_RESPONSE_BYTES: usize = 1024 * 1024;
+
+fn isolate_github_environment(command: &mut Command) {
+    // The destination comes from origin. Let the CLI choose its stored
+    // login for that host, independently of host-agnostic shell overrides.
+    for key in [
+        "GH_HOST",
+        "GH_REPO",
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+    ] {
+        command.env_remove(key);
+    }
+}
+
 fn gh(binary: &Path, policy: &RunPolicy, repo: &Path, lock: &File, args: &[&str]) -> Result<String> {
     let mut command = Command::new(binary);
     super::isolate_git_environment(&mut command);
+    isolate_github_environment(&mut command);
     command
         .env("PATH", &policy.host_path)
-        .env_remove("GH_REPO")
-        .env_remove("GH_HOST")
+        .env("GH_PROMPT_DISABLED", "1")
         .current_dir(repo)
         .args(args);
-    command.stdin(lock.try_clone().map_err(|e| e.to_string())?);
-    let output = command.output().map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err("GitHub publication request failed".into());
+    match super::command_runner_with_stdin(
+        command,
+        Some(MAX_PUBLICATION_RESPONSE_BYTES),
+        Stdio::from(lock.try_clone().map_err(|e| e.to_string())?),
+        super::COMMAND_DEADLINE,
+    ) {
+        Some((0, text)) => Ok(text.trim().into()),
+        _ => Err("GitHub publication request failed".into()),
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().into())
 }
 fn json(text: &str) -> Result<serde_json::Value> {
     serde_json::from_str(text).map_err(|e| e.to_string())
@@ -194,17 +214,17 @@ pub fn publish(
                 "--head",
                 &task.branch,
                 "--json",
-                "number,url,isDraft,headRepositoryOwner",
+                "number,url,isDraft,headRepositoryOwner,isCrossRepository",
             ],
         )?)?;
         let prs = prs.as_array().ok_or("invalid PR list")?;
         if prs.len() > 1 {
             return Err("multiple open PRs match the task branch".into());
         }
-        if prs
-            .first()
-            .is_some_and(|pr| pr["headRepositoryOwner"]["login"].as_str() != Some(owner))
-        {
+        if prs.first().is_some_and(|pr| {
+            pr["headRepositoryOwner"]["login"].as_str() != Some(owner)
+                || pr["isCrossRepository"].as_bool() != Some(false)
+        }) {
             return Err("PR head repository does not match origin".into());
         }
         if accepted == Outcome::NothingToDo
@@ -284,13 +304,21 @@ pub fn publish(
                 &format!("{head}:refs/heads/{}", task.branch),
             ],
         );
+        isolate_github_environment(&mut push);
         push.env("GIT_TERMINAL_PROMPT", "0")
+            .env("GH_PROMPT_DISABLED", "1")
             // Metadata probes deny every transport. Only this explicit,
             // confirmed publication may use the normal GitHub/file transports.
-            .env("GIT_ALLOW_PROTOCOL", "https:ssh:file")
-            .stdin(lock.try_clone().map_err(|e| e.to_string())?);
-        let pushed = push.output().map_err(|e| e.to_string())?;
-        if !pushed.status.success() {
+            .env("GIT_ALLOW_PROTOCOL", "https:ssh:file");
+        if !matches!(
+            super::command_runner_with_stdin(
+                push,
+                Some(MAX_PUBLICATION_RESPONSE_BYTES),
+                Stdio::from(lock.try_clone().map_err(|e| e.to_string())?),
+                super::COMMAND_DEADLINE,
+            ),
+            Some((0, _))
+        ) {
             return Err("accepted commit push failed".into());
         }
         let draft = false;

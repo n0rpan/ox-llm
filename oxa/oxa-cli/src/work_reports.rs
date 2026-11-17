@@ -106,6 +106,7 @@ pub(crate) fn report(
         result.detail = "issue reporting is not configured; draft retained locally".into();
         return Ok(result);
     };
+    let repo = format!("github.com/{repo}");
     let note = ProblemNote {
         title,
         notes: clean_notes(&note.notes, ctx),

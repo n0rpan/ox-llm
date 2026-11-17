@@ -40,7 +40,7 @@ case "$1 $2" in
       if test "$arg" = '--draft'; then draft=true; fi
       if test "$arg" = '--body-file'; then body_next=true; fi
     done
-    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$host" "$draft" > "$HOME/pr-state.json"
+    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"},"isCrossRepository":false}' "$host" "$draft" > "$HOME/pr-state.json"
     printf 'https://%s/example/project/pull/1' "$host" ;;
   'pr view') jq -Rs '{body:.}' "$HOME/published-body" ;;
   'pr edit')
@@ -52,7 +52,7 @@ case "$1 $2" in
   'pr ready')
     draft=false
     for arg in "$@"; do if test "$arg" = '--undo'; then draft=true; fi; done
-    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$host" "$draft" > "$HOME/pr-state.json" ;;
+    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"},"isCrossRepository":false}' "$host" "$draft" > "$HOME/pr-state.json" ;;
   *) exit 7 ;;
 esac
 "##);
