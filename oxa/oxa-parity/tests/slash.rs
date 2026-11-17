@@ -950,50 +950,87 @@ fn setters_say_where_the_change_lives() {
         }
         cur.as_str().map(str::to_string)
     };
-    let wait = |what: &str, a: &str, b: &str| {
+    // The notice block that starts at the last row holding `notice`: its rows up to the next
+    // blank one, joined. A long notice wraps, so its tail may sit on a later row of the block.
+    let block_of = |s: &Screen, notice: &str| -> Option<String> {
+        let rows = s.rows();
+        let start = rows.iter().rposition(|r| r.contains(notice))?;
+        Some(
+            rows[start..]
+                .iter()
+                .take_while(|r| !r.trim().is_empty())
+                .map(|r| r.trim())
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+    };
+    // A save is announced only after the write: wait for the value on disk *and* for the notice
+    // that says so. The file is the gate, the notice is the receipt.
+    let saved = |what: &str, key: &str, value: &str, notice: &str| {
         rig.pty
-            .wait_for_named(what, |s| s.contains(a) && s.contains(b), WAIT)
+            .wait_for_named(
+                what,
+                |s| {
+                    read(key).as_deref() == Some(value)
+                        && block_of(s, notice).is_some_and(|b| b.contains("saved to user settings"))
+                },
+                WAIT,
+            )
+            .unwrap();
+    };
+    // A session-only change says so and writes nothing.
+    let session_only = |what: &str, notice: &str| {
+        rig.pty
+            .wait_for_named(
+                what,
+                |s| block_of(s, notice).is_some_and(|b| b.contains("this session only")),
+                WAIT,
+            )
             .unwrap();
     };
 
     // `/theme <name>` has always saved the choice.
     rig.slash("/theme dark");
-    wait("the theme notice", "Theme: dark", "saved to user settings");
-    assert_eq!(read("theme").as_deref(), Some("dark"));
+    saved("the theme notice", "theme", "dark", "Theme: dark");
 
     // `/thinking` without `--save` is this session only.
     rig.slash("/thinking high");
-    wait("the thinking notice", "Thinking: high", "this session only");
+    session_only("the thinking notice", "Thinking: high");
     assert_eq!(read("defaultThinkingLevel"), None, "no write without --save");
 
     rig.slash("/thinking high --save");
-    wait(
+    saved(
         "the saved thinking notice",
+        "defaultThinkingLevel",
+        "high",
         "Thinking: high",
-        "saved to user settings",
     );
-    assert_eq!(read("defaultThinkingLevel").as_deref(), Some("high"));
 
     // `/model` without `--save` is this session only; with it, the default model is written.
     rig.slash("/model fake-model");
-    wait("the model notice", "Model: fake-model", "this session only");
+    session_only("the model notice", "Model: fake-model");
     assert_eq!(read("defaultModel"), None, "no write without --save");
 
     rig.slash("/model fake-model --save");
-    wait(
+    saved(
         "the saved model notice",
+        "defaultModel",
+        "fake-model",
         "Model: fake-model",
-        "saved to user settings",
     );
-    assert_eq!(read("defaultModel").as_deref(), Some("fake-model"));
 
     // `/yolo --save` writes the mode it lands on; `/yolo off` without it does not.
     rig.slash("/yolo on --save");
-    wait("the saved yolo notice", "Mode: yolo", "saved to user settings");
-    assert_eq!(read("permissions.defaultMode").as_deref(), Some("yolo"));
+    saved(
+        "the saved yolo notice",
+        "permissions.defaultMode",
+        "yolo",
+        "Mode: yolo",
+    );
 
+    // Off returns to the level before yolo, which is the default mode (`auto`) here.
     rig.slash("/yolo off");
-    wait("the yolo-off notice", "Mode: standard", "this session only");
+    session_only("the yolo-off notice", "Mode: auto");
     assert_eq!(
         read("permissions.defaultMode").as_deref(),
         Some("yolo"),
