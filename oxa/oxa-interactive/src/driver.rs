@@ -752,6 +752,24 @@ impl<'a> Loop<'a> {
                 }
                 apply_event(&mut self.vm, &e);
             }
+            WorkerMsg::UnsentPrompt { text, parts } => {
+                self.editor.prepend_text(&text);
+                self.pending_parts.extend(parts);
+                if !self.pending_parts.is_empty() {
+                    self.vm.widgets_above.insert(
+                        "oxa.attachments".to_string(),
+                        vec![format!(
+                            "{} image(s) attached to the next prompt",
+                            self.pending_parts.len()
+                        )],
+                    );
+                }
+                self.push_notice(
+                    Level::Warning,
+                    "Recovery prompt was not sent after the session changed; it is back in the editor."
+                        .to_string(),
+                );
+            }
             WorkerMsg::Done(result) => {
                 // The wire may have changed: the same draft is a new prefill.
                 self.draft.wire_changed();
@@ -1696,9 +1714,17 @@ impl<'a> Loop<'a> {
             self.wake_queued();
             self.sync_queue();
         } else {
-            self.abort_requested = false;
+            let recovering = std::mem::take(&mut self.abort_requested);
             let parts = self.take_attachments();
-            self.send(SessionCmd::Prompt { text: trimmed, parts });
+            self.send(if recovering {
+                SessionCmd::RecoveryPrompt {
+                    handle: self.handle.clone(),
+                    text: trimmed,
+                    parts,
+                }
+            } else {
+                SessionCmd::Prompt { text: trimmed, parts }
+            });
         }
     }
 

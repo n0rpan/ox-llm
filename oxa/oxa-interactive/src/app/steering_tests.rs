@@ -268,10 +268,26 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         let mut replacement = Session::open(deps(&env, engine, store, settings), Open::Ephemeral).unwrap();
         replacement.handle().steer("replacement-only".into());
         lp.worker_msg(WorkerMsg::Rebind(replacement.handle()));
-        let (reply, rx) = mpsc::channel();
-        lp.ui_req(UiRequest::EditorText { reply });
-        assert_eq!(rx.recv_timeout(GATE_TIMEOUT).unwrap(), "third");
-        for command in commands {
+        if window != Window::AfterExplicitAbort {
+            let (reply, rx) = mpsc::channel();
+            lp.ui_req(UiRequest::EditorText { reply });
+            assert_eq!(rx.recv_timeout(GATE_TIMEOUT).unwrap(), "third");
+        }
+        for mut command in commands {
+            if window == Window::AfterExplicitAbort {
+                let SessionCmd::RecoveryPrompt { handle, text, parts } = &mut command else {
+                    panic!("explicit recovery must retain its destination");
+                };
+                assert!(handle.same_instance(&control));
+                assert_eq!(text, "third");
+                parts.push(oxa_proto::Part::Image {
+                    path: "synthetic.png".into(),
+                    mime: "image/png".into(),
+                    sha256: [0; 32],
+                    w: 1,
+                    h: 1,
+                });
+            }
             execute(
                 &mut replacement,
                 command,
@@ -283,10 +299,28 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
             .0
             .unwrap();
         }
+        if window == Window::AfterExplicitAbort {
+            let mut unsent = out_rx
+                .try_iter()
+                .filter(|message| matches!(message, WorkerMsg::UnsentPrompt { .. }));
+            let message = unsent.next().expect("return unsent recovery");
+            assert!(unsent.next().is_none(), "return recovery exactly once");
+            assert!(matches!(&message, WorkerMsg::UnsentPrompt { text, parts }
+                if text == "third" && matches!(parts.as_slice(), [oxa_proto::Part::Image { w: 1, h: 1, .. }])));
+            lp.worker_msg(message);
+            let (reply, rx) = mpsc::channel();
+            lp.ui_req(UiRequest::EditorText { reply });
+            assert_eq!(rx.recv_timeout(GATE_TIMEOUT).unwrap(), "third");
+            lp.worker_msg(WorkerMsg::Event(AgentEvent::AgentSettled { aborted: false }));
+            lp.input(&mut terminal, InputEvent::Key(Key::press("enter")));
+            assert!(matches!(cmd_rx.recv_timeout(GATE_TIMEOUT).unwrap(),
+                SessionCmd::Prompt { text, parts }
+                if text == "third" && matches!(parts.as_slice(), [oxa_proto::Part::Image { w: 1, h: 1, .. }])));
+        }
         assert_eq!(replacement.handle().queued().0, ["replacement-only"]);
         assert_eq!(
             server.requests().iter().filter(|r| r.max_tokens > 0).count(),
-            3,
+            before_wake,
             "a stale wake cannot run another destination"
         );
         return;
@@ -392,4 +426,9 @@ fn failed_prompt_retains_steering_without_automatic_retry() {
 #[test]
 fn explicit_prompt_after_ctrl_c_is_not_stranded_before_settlement() {
     gated_prompt(Window::AfterExplicitAbort, None, false, false);
+}
+
+#[test]
+fn explicit_recovery_overtaken_by_rebind_returns_text_and_attachments() {
+    gated_prompt(Window::AfterExplicitAbort, None, false, true);
 }
