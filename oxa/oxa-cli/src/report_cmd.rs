@@ -426,10 +426,13 @@ fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
 fn process_runner(program: &str, args: &[String]) -> Option<(i32, String)> {
     let mut command = std::process::Command::new(program);
     command.args(args);
-    command_runner(command)
+    command_runner(command, None)
 }
 
-pub(crate) fn command_runner(mut command: std::process::Command) -> Option<(i32, String)> {
+pub(crate) fn command_runner(
+    mut command: std::process::Command,
+    limit: Option<usize>,
+) -> Option<(i32, String)> {
     let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -438,9 +441,14 @@ pub(crate) fn command_runner(mut command: std::process::Command) -> Option<(i32,
         .ok()?;
     let stdout = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = std::io::Read::read_to_string(&mut std::io::BufReader::new(stdout), &mut s);
-        s
+        let mut bytes = Vec::new();
+        let ceiling = limit.map_or(u64::MAX, |limit| limit.saturating_add(1) as u64);
+        let mut limited = std::io::Read::take(stdout, ceiling);
+        std::io::Read::read_to_end(&mut limited, &mut bytes).ok()?;
+        if limit.is_some_and(|limit| bytes.len() > limit) {
+            return None;
+        }
+        String::from_utf8(bytes).ok()
     });
     let start = Instant::now();
     let status = loop {
@@ -456,7 +464,7 @@ pub(crate) fn command_runner(mut command: std::process::Command) -> Option<(i32,
             }
         }
     };
-    let out = reader.join().ok()?;
+    let out = reader.join().ok()??;
     Some((status.code().unwrap_or(1), out))
 }
 

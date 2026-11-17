@@ -104,7 +104,7 @@ fn recover_tail(file: &mut File, path: &Path) -> Result<()> {
         .map_err(|_| "cannot sync preserved shadow tail")?;
     file.set_len(cut)
         .and_then(|_| file.sync_data())
-        .map_err(|_| "cannot restore shadow JSONL boundary")
+        .map_err(|_| "cannot restore shadow JSONL boundary".into())
 }
 
 #[cfg(test)]

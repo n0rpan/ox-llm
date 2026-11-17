@@ -1,16 +1,24 @@
 # Unattended work
 
-`oxa work board --shadow --repo OWNER/REPO` opts into read-only GitHub sampling
-immediately and every five minutes; `--once` captures one sample. It requires a
+`oxa work board --shadow --repo OWNER/REPO --once` captures a read-only GitHub sample.
+For continuous five-minute sampling use `--token-stdin`: the caller supplies a fresh
+newline-terminated App token on a private pipe before each sample. No token is
+retained across samples or read from a credential file. The five-minute user timer
+may instead remint externally and repeat `--once` with `GH_TOKEN`. It requires a
 trusted source project and an explicit `GH_TOKEN` supplied by a GitHub App caller;
 offline mode refuses before GitHub or log creation. No worker or mutation runs.
 The private, locked `work/<project-hash>/board/OWNER/REPO/board-shadow.jsonl` under the agent
 directory appends `{schema_version:1,observed_at,board,would_take}`. Eligible shared
 board entries form `would_take`; shadow reserves no leases or attempts. Use one
 GitHub repository per capture. Read errors and incomplete connections stop sampling.
-Limit: 100 PRs/items per connection. Unknown/no required checks stay pending. Review
+Limit: 100 PRs/items per connection. Reported checks are matched against the base's
+classic protection and active repository/organization rulesets; missing required
+contexts and unknown/no required checks stay pending. Review
 requires GitHub's approval decision and all latest approving writer reviews at the
 current head; older approvals wait, including pure base merges without fresh evidence.
+Snapshot reads reject changing open-PR sets and responses above 4 MiB. Detailed
+merge state is checked; behind heads can be queue-ready when the main merge queue
+composes and validates them, without requesting pre-emptive main merges.
 
 The opt-in `oxa_work::board` library derives one next action per open PR from a
 single normalized GitHub snapshot. `Policy.enabled` defaults to false and makes
