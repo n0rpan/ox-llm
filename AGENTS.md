@@ -23,6 +23,11 @@ maintainer, who says in the PR when a hardware check is needed.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
 - Never expose secrets to fork PRs or execute PR code with review credentials. Never use
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
+- **Intent:** the change must do what its linked issue and PR description say, and nothing else.
+  Flag as P1: missing or contradicted acceptance criteria from the linked issue; unrelated changes
+  mixed in; user-visible new behaviour that is not behind a default-off flag/setting; deleted or
+  disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
+  body; a test weakened, skipped or rewritten to pass instead of fixing the code.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
 
