@@ -721,6 +721,11 @@ pub fn run_task_with_notes(
     };
     // Replaying the prior checkpoint precedes this first new checkpoint or action.
     let step = state.record.step;
+    let recover_accepted_save = step == Step::Saving
+        && matches!(
+            state.record.acceptance_outcome.unwrap_or(state.record.outcome),
+            Outcome::Done | Outcome::NothingToDo
+        );
     writer
         .save(&mut state, step, observer)
         .map_err(RunError::Checkpoint)?;
@@ -786,6 +791,25 @@ pub fn run_task_with_notes(
         .acceptance_outcome
         .take()
         .unwrap_or(state.record.outcome);
+    if recover_accepted_save {
+        // A failed or interrupted save can leave a worktree that changed since
+        // acceptance. Qualify the exact recovered commit before restoring success.
+        match committed::verify_commit(&root, binary, &policy, &state, &lock_file) {
+            Ok(_) => {
+                let initial = state.execution.as_ref().and_then(|point| point.initial.as_ref());
+                state.record.outcome = if state.record.head_sha.as_ref() == initial {
+                    Outcome::NothingToDo
+                } else {
+                    Outcome::Done
+                };
+                state.record.detail.clear();
+            }
+            Err(error) => {
+                state.record.outcome = Outcome::Blocked;
+                state.record.detail = format!("save recovery: {error}");
+            }
+        }
+    }
     writer
         .save(&mut state, Step::Finished, observer)
         .map_err(RunError::Checkpoint)?;

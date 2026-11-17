@@ -6,10 +6,8 @@ use oxa_work::{ProblemNote, ReportRecord};
 use serde_json::Value;
 use std::{
     fs::File,
-    io::Read,
     path::Path,
     process::{Command, Stdio},
-    time::{Duration, Instant},
 };
 
 pub(crate) fn process(
@@ -22,38 +20,11 @@ pub(crate) fn process(
     let mut command = Command::new(program);
     command.args(args).current_dir(cwd);
     oxa_work::inherit_report_lease(&mut command, gate).ok()?;
-    let mut child = command
-        .stdin(Stdio::from(lock.try_clone().ok()?))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let mut stdout = child.stdout.take()?;
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = String::new();
-        let result = (&mut stdout).take(1_048_576).read_to_string(&mut out);
-        let _ = tx.send(result.ok().map(|_| out));
-    });
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                return Some((
-                    status.code().unwrap_or(1),
-                    rx.recv_timeout(Duration::from_secs(2)).ok()??,
-                ))
-            }
-            Ok(None) if start.elapsed() < Duration::from_secs(30) => {
-                std::thread::sleep(Duration::from_millis(20))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
+    crate::report_cmd::command_runner_with_stdin(
+        command,
+        Some(1_048_576),
+        Stdio::from(lock.try_clone().ok()?),
+    )
 }
 fn call(runner: Runner<'_>, args: &[String]) -> Result<String, String> {
     match runner("gh", args) {
@@ -326,6 +297,15 @@ pub(crate) fn report(
 mod tests {
     use super::*;
     use oxa_fake::TestEnv;
+
+    #[test]
+    fn locked_report_command_refuses_oversized_stdout() {
+        let env = TestEnv::new();
+        let lock = File::open("/dev/null").unwrap();
+        let args = words(&["-c", "1048577", "/dev/zero"]);
+        assert!(process("/usr/bin/head", &args, &env.work(), &lock, &lock).is_none());
+    }
+
     fn note() -> ProblemNote {
         ProblemNote {
             title: "oxa work commit is read only".into(),
@@ -359,7 +339,7 @@ mod tests {
                 approved = true;
                 Some(false)
             },
-            &mut |program, _| {
+            |program, _, _| {
                 if program == "gh" {
                     calls += 1;
                 }
@@ -377,7 +357,7 @@ mod tests {
         let env = TestEnv::new();
         let dirs = Dirs::under(env.root());
         let mut log = vec![];
-        let mut runner = |program: &str, args: &[String]| {
+        let runner = |program: &str, args: &[String], _: &File| {
             if program != "gh" {
                 return Some((0, "{}".into()));
             }
@@ -397,7 +377,7 @@ mod tests {
             &ScrubCtx::default(),
             false,
             &mut |_| Some(true),
-            &mut runner,
+            runner,
         )
         .unwrap();
         assert_eq!(result.disposition, "existing_issue");
@@ -410,7 +390,7 @@ mod tests {
             let env = TestEnv::new();
             let dirs = Dirs::under(env.root());
             let mut gh_calls = 0;
-            let mut runner = |program: &str, _: &[String]| {
+            let runner = |program: &str, _: &[String], _: &File| {
                 if program == "gh" {
                     gh_calls += 1;
                     None
@@ -425,7 +405,7 @@ mod tests {
                 &ScrubCtx::default(),
                 offline,
                 &mut |_| Some(true),
-                &mut runner,
+                runner,
             )
             .unwrap();
             assert_eq!(result.disposition, "local");
@@ -438,7 +418,7 @@ mod tests {
     fn an_open_fixing_pr_prevents_issue_or_comment_writes() {
         let env = TestEnv::new();
         let dirs = Dirs::under(env.root());
-        let mut runner = |program: &str, args: &[String]| {
+        let runner = |program: &str, args: &[String], _: &File| {
             if program != "gh" {
                 return Some((0, "{}".into()));
             }
@@ -463,7 +443,7 @@ mod tests {
             &ScrubCtx::default(),
             false,
             &mut |_| Some(true),
-            &mut runner,
+            runner,
         )
         .unwrap();
         assert_eq!(result.disposition, "existing_pr");
@@ -475,7 +455,7 @@ mod tests {
         let mut n = note();
         n.notes = "Synthetic reproduction token=example at /home/synthetic/project with user@example.invalid"
             .into();
-        let mut runner = |program: &str, args: &[String]| {
+        let runner = |program: &str, args: &[String], _: &File| {
             if program != "gh" {
                 return Some((0, "{}".into()));
             }
@@ -493,7 +473,7 @@ mod tests {
             &ScrubCtx::default(),
             false,
             &mut |_| Some(true),
-            &mut runner,
+            runner,
         )
         .unwrap();
         assert_eq!(result.disposition, "filed");

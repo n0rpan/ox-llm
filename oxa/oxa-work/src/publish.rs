@@ -132,7 +132,9 @@ pub fn publish(
 ) -> Result<Record> {
     let (mut writer, lock, mut value) = context(task, policy, observer)?;
     let accepted = value.record.acceptance_outcome.unwrap_or(value.record.outcome);
-    if !matches!(accepted, Outcome::Done | Outcome::NothingToDo) {
+    if !super::completed_execution(value.record.step)
+        || !matches!(accepted, Outcome::Done | Outcome::NothingToDo)
+    {
         return Ok(value.record);
     }
     value.record.acceptance_outcome = Some(accepted);
@@ -152,6 +154,12 @@ pub fn publish(
         if value.record.head_sha.as_deref() != Some(head.as_str()) {
             return Err("task branch changed after acceptance; use --rerun before publishing".into());
         }
+        let proof = super::committed::verify_commit(repo, binary, policy, &value, &lock)?;
+        let accepted_base = value
+            .record
+            .base_sha
+            .as_deref()
+            .ok_or("saved base is unavailable")?;
         let base = pr_base(tree, task, policy)?;
         if task.branch == base {
             return Err("task branch must differ from its base branch".into());
@@ -223,6 +231,7 @@ pub fn publish(
         {
             return Err("publication destination or task head changed during confirmation".into());
         }
+        proof.verify(policy, &head, accepted_base)?;
         // Confirmation may remain open indefinitely: queue admission is checked
         // only after it returns, immediately before the push.
         if let Some(pr) = prs.first() {

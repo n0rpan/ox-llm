@@ -66,6 +66,36 @@ fn edits() -> Vec<ScriptTurn> {
 }
 #[test]
 fn a_real_save_failure_retries_without_another_worker() {
+    exercise_save_recovery(
+        "a_real_save_failure_retries_without_another_worker",
+        SaveRecovery::Unchanged,
+    );
+}
+
+#[test]
+fn publication_does_not_replace_a_pending_save_checkpoint() {
+    exercise_save_recovery(
+        "publication_does_not_replace_a_pending_save_checkpoint",
+        SaveRecovery::PendingPublish,
+    );
+}
+
+#[test]
+fn an_edit_after_acceptance_cannot_reuse_the_pending_save_verdict() {
+    exercise_save_recovery(
+        "an_edit_after_acceptance_cannot_reuse_the_pending_save_verdict",
+        SaveRecovery::Edited,
+    );
+}
+
+#[derive(PartialEq, Eq)]
+enum SaveRecovery {
+    Unchanged,
+    PendingPublish,
+    Edited,
+}
+
+fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
     const CHILD: &str = "OXA_SAVE_RECOVERY_TEST_ROOT";
     if let Some(root) = std::env::var_os(CHILD) {
         use std::sync::{
@@ -123,9 +153,37 @@ fn a_real_save_failure_retries_without_another_worker() {
             .unwrap();
         assert_eq!(reported.step, oxa_work::Step::Saving, "{reported:?}");
         assert_eq!(reported.session_id, first.session_id);
+        if case == SaveRecovery::PendingPublish {
+            let published = oxa_work::publish(
+                &project,
+                binary,
+                &task,
+                &policy,
+                std::path::Path::new("/unavailable/gh"),
+                &|_: &oxa_work::Record| Ok(()),
+                &mut |_| panic!("a pending save cannot request publication approval"),
+            )
+            .unwrap();
+            assert_eq!(published.step, oxa_work::Step::Saving, "{published:?}");
+            assert_eq!(published.checkpoint_revision, reported.checkpoint_revision);
+        }
         fs::remove_file(lock_path.into_inner().unwrap().unwrap()).unwrap();
+        if case == SaveRecovery::Edited {
+            fs::write(first.worktree.join("answer.txt"), "edited after acceptance").unwrap();
+        }
         let plan = oxa_work::plan_task_for_run(&project, task, &policy, false).unwrap();
         let retry = oxa_work::run_task_with_policy(&project, binary, &plan, &policy).unwrap();
+        if case == SaveRecovery::Edited {
+            assert!(
+                matches!(retry.outcome, oxa_work::Outcome::Red | oxa_work::Outcome::Blocked),
+                "{retry:?}"
+            );
+            assert_eq!(
+                fs::read_to_string(first.worktree.join("answer.txt")).unwrap(),
+                "edited after acceptance"
+            );
+            return;
+        }
         assert_eq!(retry.outcome, oxa_work::Outcome::Done, "{retry:?}");
         assert_eq!(retry.step, oxa_work::Step::Finished);
         assert_eq!(retry.session_id, first.session_id);
@@ -139,10 +197,15 @@ fn a_real_save_failure_retries_without_another_worker() {
         return;
     }
     let env = TestEnv::new();
-    setup(&env, "[]");
+    let checks = if case == SaveRecovery::Edited {
+        r#"["grep -Fx published answer.txt"]"#
+    } else {
+        "[]"
+    };
+    setup(&env, checks);
     let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
     let out = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "a_real_save_failure_retries_without_another_worker"])
+        .args(["--exact", test_name])
         .env_clear()
         .envs(env.envs(&server.url()))
         .env(CHILD, env.root())
@@ -155,6 +218,34 @@ fn a_real_save_failure_retries_without_another_worker() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert_eq!(server.requests().len(), 2, "save retry must not call a model");
+}
+
+#[test]
+fn publishing_requires_acceptance_without_ignored_helpers() {
+    let env = TestEnv::new();
+    setup(&env, r#"["sh helper.sh"]"#);
+    let repo = env.work().join("project");
+    env.write("work/project/.gitignore", "helper.sh\n");
+    git(&env, &repo, &["add", ".gitignore"]);
+    git(&env, &repo, &["commit", "-m", "Ignore synthetic local helper"]);
+    let mut turns = edits();
+    turns.insert(
+        0,
+        ScriptTurn::tool("helper", "write", r#"{"path":"helper.sh","content":"exit 0\n"}"#),
+    );
+    let saved = run_args(
+        &env,
+        turns,
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_eq!(saved["outcome"], "blocked", "{saved}");
+    assert!(saved["detail"]
+        .as_str()
+        .unwrap()
+        .contains("clean committed acceptance"));
+    assert!(!env.home().join("push-calls").exists());
+    assert!(!env.home().join("gh-calls").exists());
 }
 #[test]
 fn publishes_local_branch_and_updates_same_pr_on_restart() {
