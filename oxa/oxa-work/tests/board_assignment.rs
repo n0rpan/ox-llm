@@ -62,6 +62,7 @@ fn kinds_skills_and_workflow_role_cannot_be_bypassed_by_manual_pins() {
 
 #[test]
 fn workers_cannot_change_manual_controls_and_bad_ids_are_refused() {
+    assert!(valid_worker_id(&format!("codex:node/{}", "x".repeat(44))));
     let mut policy = AssignmentPolicy::default();
     assert!(policy.control(None, Control::OwnerOnly(true)).is_err());
     assert!(!policy.owner_only);
@@ -126,6 +127,8 @@ fn mirror_plans_clear_on_release_and_preserve_unrelated_labels() {
     assert!(released.add_labels.is_empty());
     assert_eq!(released.remove_labels, assigned.remove_labels);
     assert_eq!(released.project_worker, Some(None));
+    let restored: MirrorPlan = serde_json::from_value(serde_json::to_value(&released).unwrap()).unwrap();
+    assert_eq!(restored, released);
     assert_eq!(
         MirrorPlan::derive(None, &MirrorObservation::default())
             .unwrap()
