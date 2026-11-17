@@ -592,7 +592,7 @@ fn diff_path(prefix: &str, path: &RelativePath) -> String {
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
-fn bounded_json(value: &impl Serialize, max: usize) -> io::Result<()> {
+pub(crate) fn bounded_json(value: &impl Serialize, max: usize) -> io::Result<()> {
     struct Count {
         size: usize,
         max: usize,

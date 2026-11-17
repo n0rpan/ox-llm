@@ -2,7 +2,9 @@
 //! Callers supply approved summaries, not raw/private transcripts. This module
 //! authenticates nobody, performs no I/O, and never owns a session or task.
 use super::{History, Page, HISTORY_BYTES};
-use serde_json::{json, Value};
+use crate::workspace::bounded_json;
+use serde::Serialize;
+use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
 #[derive(Default)]
@@ -17,19 +19,56 @@ struct State {
 #[derive(Clone, Default)]
 pub struct Publisher(Arc<Mutex<State>>);
 
-fn bounded(value: &Value) -> Result<(), &'static str> {
-    if value.to_string().len() > HISTORY_BYTES {
-        return Err("follow summary exceeds byte limit");
-    }
-    Ok(())
+#[derive(Serialize)]
+struct SessionSummary<'a> {
+    id: &'a str,
+    model: &'a str,
+    mode: &'a str,
+    busy: bool,
+}
+
+#[derive(Serialize)]
+struct StatusSummary<'a> {
+    goal: &'a Value,
+    kind: &'a str,
+    session: Option<&'a Value>,
+    tasks: &'a Value,
+}
+
+#[derive(Serialize)]
+struct EventSummary<'a> {
+    kind: &'a str,
+    goal: &'a Value,
+    reply: Option<ReplyPreview<'a>>,
+    request_id: Option<&'a str>,
+    session: Option<&'a Value>,
+}
+
+#[derive(Serialize)]
+struct ReplyPreview<'a> {
+    text: &'a str,
+    truncated: bool,
+}
+
+fn bounded(value: &impl Serialize) -> Result<(), &'static str> {
+    bounded_json(value, HISTORY_BYTES).map_err(|_| "follow summary exceeds byte limit")
+}
+
+fn encode_summary(value: &impl Serialize) -> Result<Value, &'static str> {
+    bounded(value)?;
+    serde_json::to_value(value).map_err(|_| "invalid follow summary")
 }
 
 impl Publisher {
     /// Bind approved metadata for subsequent publications. Earlier observations
     /// retain their original session identity; this does not switch a runtime.
     pub fn bind_session(&self, id: &str, model: &str, mode: &str, busy: bool) -> Result<(), &'static str> {
-        let session = json!({"id":id,"model":model,"mode":mode,"busy":busy});
-        bounded(&session)?;
+        let session = encode_summary(&SessionSummary {
+            id,
+            model,
+            mode,
+            busy,
+        })?;
         self.0.lock().unwrap_or_else(|e| e.into_inner()).session = Some(session);
         Ok(())
     }
@@ -53,8 +92,12 @@ impl Publisher {
         request_id: Option<&str>,
     ) -> Result<Option<u64>, &'static str> {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let latest = json!({"goal":goal,"kind":kind,"session":state.session,"tasks":state.tasks});
-        bounded(&latest)?;
+        let latest = encode_summary(&StatusSummary {
+            goal: &goal,
+            kind,
+            session: state.session.as_ref(),
+            tasks: &state.tasks,
+        })?;
         if kind == "goal_status" {
             state.latest = Some(latest);
             return Ok(None);
@@ -64,10 +107,19 @@ impl Publisher {
             while !text.is_char_boundary(end) {
                 end -= 1;
             }
-            json!({"text":&text[..end],"truncated":end != text.len()})
+            ReplyPreview {
+                text: &text[..end],
+                truncated: end != text.len(),
+            }
         });
-        let event = json!({"kind":kind,"goal":goal,"reply":reply,
-            "request_id":request_id,"session":state.session});
+        let event = encode_summary(&EventSummary {
+            kind,
+            goal: &goal,
+            reply,
+            request_id,
+            session: state.session.as_ref(),
+        })
+        .map_err(|_| "event exceeds follow history byte limit")?;
         let sequence = state.history.publish(event)?;
         state.latest = Some(latest);
         Ok(Some(sequence))
