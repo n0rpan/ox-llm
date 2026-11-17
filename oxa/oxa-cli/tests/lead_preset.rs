@@ -45,6 +45,7 @@ fn shadow_is_explicit_and_cannot_add_executable_resources() {
         vec!["lead", "--shadow", "--output-schema", "other.json"],
         vec!["lead", "--shadow", "--system-prompt", "override"],
         vec!["lead", "--shadow", "--append-system-prompt", "override"],
+        vec!["lead", "--shadow", "-p", "--goal", "objective.txt"],
     ] {
         assert!(parse(&args).is_err(), "{args:?}");
     }
@@ -52,6 +53,49 @@ fn shadow_is_explicit_and_cannot_add_executable_resources() {
     assert_eq!(a.messages, ["check"]);
     assert!(a.no_mcp && a.no_extensions && a.no_skills && a.no_tools);
     assert_eq!(a.approve, Some(false));
+}
+
+#[test]
+fn entering_an_ordinary_saved_session_rebuilds_the_lead_prefix() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"lead":{"shadow":true}}}"#,
+    );
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("ordinary answer"), ScriptTurn::text(EMPTY)],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    for words in [
+        vec!["-p", "--session-id", "ordinary-test", "ordinary prompt"],
+        vec!["lead", "--shadow", "-p", "--continue=ordinary-test", "propose"],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args(words)
+            .env_clear()
+            .envs(env.envs(&server.url()))
+            .current_dir(env.work())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    let requests: Vec<_> = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.max_tokens > 0)
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].system.contains("Shadow preset: proposals only"));
+    let tools: Value = serde_json::from_str(&requests[1].tools_json).unwrap();
+    let mut names: Vec<_> = tools
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["function"]["name"].as_str().unwrap())
+        .collect();
+    names.sort_unstable();
+    assert_eq!(names, ["find", "grep", "ls", "read"]);
 }
 
 #[test]
