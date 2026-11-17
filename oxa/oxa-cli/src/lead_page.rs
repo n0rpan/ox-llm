@@ -8,6 +8,9 @@ use std::fmt::Write;
 pub struct View<'a> {
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
+    pub main_red: bool,
+    pub main_merge_stalled: bool,
+    pub stalled_runs: &'a [u64],
     pub queue: Option<&'a [PullRequest]>,
     /// Source issue and its reported checkbox states; these do not establish validation.
     pub release: Option<(u64, &'a [(bool, String)])>,
@@ -58,7 +61,36 @@ pub fn document(view: &View<'_>, now: u64) -> String {
 
 /// Allow-listed HTML fragment, also used by SSE. No worktrees, sessions, errors or headers.
 pub fn content(view: &View<'_>, now: u64) -> String {
-    let mut html = String::from("<main><h1>Work in motion</h1><p class=muted>One next action. A clear place for your decisions.</p><nav aria-label=Views><a href=#board>Board</a><a href=#lanes>Lanes</a><a href=#queue>Merge queue</a><a href=#release>Release</a><a href=#asks>Asks</a></nav><section id=board><h2>Board</h2>");
+    let mut html = String::from("<main><h1>Work in motion</h1>");
+    let ask_count = view.situation.map_or(0, |s| s.asks.len());
+    if view.main_red || view.main_merge_stalled || !view.stalled_runs.is_empty() || ask_count > 0 {
+        html.push_str("<section id=attention><h2>Needs attention</h2><ul>");
+        if view.main_red {
+            html.push_str("<li>Checks on main are failing.</li>");
+        }
+        if view.main_merge_stalled {
+            html.push_str("<li>No PR merged into main for 45 minutes or more at the last observation.</li>");
+        }
+        if !view.stalled_runs.is_empty() {
+            let _ = write!(
+                html,
+                "<li><details><summary>Workflow runs queued for more than 15 minutes ({})</summary><ul>",
+                view.stalled_runs.len()
+            );
+            for id in view.stalled_runs {
+                let _ = write!(html, "<li>Run {id}</li>");
+            }
+            html.push_str("</ul></details></li>");
+        }
+        if ask_count > 0 {
+            let _ = write!(
+                html,
+                "<li><a href=#asks>Unanswered owner decisions ({ask_count})</a></li>"
+            );
+        }
+        html.push_str("</ul></section>");
+    }
+    html.push_str("<nav aria-label=Views><a href=#board>Board</a><a href=#lanes>Lanes</a><a href=#queue>Merge queue</a><a href=#release>Release</a><a href=#asks>Asks</a></nav><section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
         let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
         let _ = write!(
@@ -206,6 +238,8 @@ mod tests {
             .filter_map(|line| Snapshot::from_json(line.as_bytes()).ok())
             .collect();
         assert!(!snapshots.is_empty());
+        assert!(snapshots.iter().any(|s| !s.asks.is_empty()));
+        assert!(snapshots.iter().any(|s| s.asks.is_empty()));
         for snapshot in snapshots {
             let page = document(
                 &View {
@@ -217,6 +251,10 @@ mod tests {
             for ask in &snapshot.asks {
                 assert!(page.contains(&escape(&ask.question)));
             }
+            assert_eq!(page.contains("Needs attention"), !snapshot.asks.is_empty());
+            if !snapshot.asks.is_empty() {
+                assert!(page.contains(&format!("Unanswered owner decisions ({})", snapshot.asks.len())));
+            }
             for running in &snapshot.running {
                 assert!(!page.contains(&running.worktree));
                 if let Some(id) = &running.session_id {
@@ -227,6 +265,75 @@ mod tests {
                 page.contains("Options, recommendation and meanwhile are unavailable")
                     || snapshot.asks.is_empty()
             );
+        }
+    }
+    #[test]
+    fn only_failed_main_rollups_render_an_alarm() {
+        for (state, red) in [
+            ("ERROR", true),
+            ("FAILURE", true),
+            ("SUCCESS", false),
+            ("PENDING", false),
+            ("EXPECTED", false),
+            ("", false),
+        ] {
+            let response = serde_json::json!({"data":{"repository":{
+                "main":{"target":{"statusCheckRollup":{"state":state}}},
+                "mergeQueue":null
+            }}});
+            let panels = crate::lead_panels::parse(&serde_json::to_vec(&response).unwrap(), None).unwrap();
+            let page = content(
+                &View {
+                    main_red: panels.main_red,
+                    ..View::default()
+                },
+                100,
+            );
+            assert_eq!(page.contains("Checks on main are failing."), red, "{state}");
+            assert_eq!(page.contains("Needs attention"), red, "{state}");
+        }
+    }
+    #[test]
+    fn merge_alarm_uses_the_main_merge_and_sample_time() {
+        use serde_json::{json, Value};
+
+        let head = "c".repeat(40);
+        let response = json!({"data":{"repository":{
+            "id":"example-repo",
+            "main":{"target":{"oid":head, "associatedPullRequests":{
+                "pageInfo":{"hasNextPage":false},
+                "nodes":[{"repository":{"id":"example-repo"}, "baseRefName":"main",
+                    "mergeCommit":{"oid":head}, "mergedAt":"1970-01-02T00:00:00Z"}]
+            }}},
+            "mergeQueue":null
+        }}});
+        let render_at = |payload: &Value, sampled_at| {
+            let panels = crate::lead_panels::parse(&serde_json::to_vec(payload).unwrap(), None).unwrap();
+            content(
+                &View {
+                    main_merge_stalled: panels.main_merge_stalled(sampled_at),
+                    ..View::default()
+                },
+                sampled_at + 3600,
+            )
+            .contains("No PR merged into main for 45 minutes")
+        };
+        const MERGED: u64 = 86_400;
+        assert!(!render_at(&response, MERGED - 1));
+        assert!(!render_at(&response, MERGED + 45 * 60 - 1));
+        assert!(render_at(&response, MERGED + 45 * 60));
+        let base = "/data/repository/main/target/associatedPullRequests";
+        for (field, value) in [
+            ("nodes/0/baseRefName", json!("elsewhere")),
+            ("nodes/0/repository/id", json!("example-fork")),
+            ("nodes/0/mergeCommit/oid", json!("d".repeat(40))),
+            ("nodes/0/mergedAt", json!("1970-02-30T00:00:00Z")),
+            ("pageInfo/hasNextPage", json!(true)),
+            ("nodes", json!([])),
+        ] {
+            let mut payload = response.clone();
+            *payload.pointer_mut(&format!("{base}/{field}")).unwrap() = value;
+            assert!(!render_at(&payload, MERGED + 45 * 60), "{field}");
         }
     }
     #[test]
