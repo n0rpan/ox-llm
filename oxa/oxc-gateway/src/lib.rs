@@ -56,4 +56,5 @@ pub mod openrouter;
 pub mod status;
 
 /// Private, opt-in trusted-terminal diagnostic facts.
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
 pub mod diagnostics;
