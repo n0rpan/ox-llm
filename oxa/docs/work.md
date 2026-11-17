@@ -16,9 +16,9 @@ Before dispatch, `claim(entry, policy, holder, now, ttl)` atomically reserves a
 lease and an attempt under a kernel file lock, then syncs state before returning.
 The default daily cap is three; a crash after reservation consumes an attempt.
 `release(number, lease)` fences stale workers and never refunds attempts. Active
-leases survive UTC midnight; corrupt/missing established state fails closed.
-Execution, fresh-head validation and CLI polling remain in the adapter; core
-claim storage never spawns workers or writes to GitHub.
+leases survive UTC midnight; corrupt state, or state that vanished after a PR's
+first reservation, fails closed. Execution, fresh-head validation and CLI polling
+remain in the adapter; core claim storage never spawns workers or writes to GitHub.
 
 `oxa work tasks.json` opts into sequential tasks in separate git worktrees.
 Run it inside the project repository. The JSON file is an array:

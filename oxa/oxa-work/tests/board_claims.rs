@@ -130,6 +130,27 @@ fn missing_corrupt_symlinked_or_public_state_never_resets_the_cap() {
 }
 
 #[test]
+fn lost_marker_keeps_the_cap_but_lost_state_still_fails_closed() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    assert!(fixture.claim(10, 10).is_some());
+    // A disposable-looking marker must not decide whether the attempts on disk count.
+    fs::remove_file(fixture.0.join("1.board-claim.lock")).unwrap();
+    assert!(fixture.claim(20, 10).is_some());
+    assert_eq!(fixture.store().snapshot().unwrap()[&1].attempts, 2);
+    // The reverse is corruption: attempts whose state file vanished are never reset.
+    let vanished = Fixture::new();
+    assert!(vanished.claim(10, 10).is_some());
+    fs::remove_file(vanished.0.join("1.board-claim.json")).unwrap();
+    fs::remove_file(vanished.0.join("1.board-claim.lock")).unwrap();
+    assert!(vanished.store().snapshot().is_err());
+    assert!(vanished
+        .store()
+        .claim(&entry(), &policy(), "worker", 20, 10)
+        .is_err());
+}
+
+#[test]
 fn claim_child() {
     let Some(root) = std::env::var_os("OXA_BOARD_CLAIM_TEST_ROOT") else {
         return;

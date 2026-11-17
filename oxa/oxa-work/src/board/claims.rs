@@ -4,7 +4,7 @@ use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -52,7 +52,9 @@ impl Claims {
         Ok(())
     }
 
-    fn lock(&self, number: u64) -> Result<(File, bool)> {
+    /// Take the store lock and make sure this PR's marker exists. A marker is created
+    /// only under the lock, so it never records a reservation that was not attempted.
+    fn lock(&self, number: u64) -> Result<File> {
         if Self::open(&self.root)?.uid != self.uid || number == 0 {
             return Err("invalid board claim directory or PR".into());
         }
@@ -61,28 +63,36 @@ impl Claims {
         let lock = io(File::open(&self.root))?;
         io(lock.lock())?;
         let path = self.root.join(format!("{number}.board-claim.lock"));
-        let (file, fresh) = match OpenOptions::new()
+        let file = match OpenOptions::new()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&path)
         {
-            Ok(file) => (file, true),
+            Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                self.private(&path)?;
-                (io(OpenOptions::new().read(true).write(true).open(&path))?, false)
+                io(OpenOptions::new().read(true).write(true).open(&path))?
             }
             Err(e) => return io(Err(e)),
         };
-        self.private(&path)?;
         drop(file);
-        Ok((lock, fresh))
+        self.private(&path)?;
+        Ok(lock)
     }
 
-    fn load(&self, number: u64, fresh: bool) -> Result<AttemptState> {
+    /// First access to a PR counts. A state file lost after a marker exists is still
+    /// corruption, so a vanished marker must not reset the cap by faking a first access.
+    fn load(&self, number: u64) -> Result<AttemptState> {
         let path = self.path(number);
+        let created = self.root.join(format!("{number}.board-claim.created"));
         match fs::symlink_metadata(&path) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound && fresh => return Ok(AttemptState::default()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return match fs::symlink_metadata(&created) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(AttemptState::default()),
+                    Ok(_) => Err("board claim state is missing; recovery is required".into()),
+                    Err(e) => io(Err(e)),
+                };
+            }
             Err(e) => return io(Err(e)),
             Ok(_) => self.private(&path)?,
         }
@@ -103,15 +113,26 @@ impl Claims {
         Ok(saved.state)
     }
 
-    fn save(&self, number: u64, state: AttemptState, fresh: bool) -> Result<()> {
+    fn save(&self, number: u64, state: AttemptState, replacing: bool) -> Result<()> {
         let bytes = serde_json::to_vec(&Saved {
             version: 1,
             number,
             state,
         })
         .map_err(|_| "cannot encode board claim state")?;
-        crate::checkpoint::write_atomic(&self.path(number), &bytes, !fresh)
+        crate::checkpoint::write_atomic(&self.path(number), &bytes, replacing)
             .map_err(|_| "cannot durably reserve board claim".into())
+    }
+
+    /// Whether the authoritative state file is already on disk. The per-PR marker only
+    /// records that a reservation started, so it must never decide create-versus-replace:
+    /// losing a marker may not brick a PR whose attempts still have to be counted.
+    fn established(&self, number: u64) -> Result<bool> {
+        match fs::symlink_metadata(self.path(number)) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => io(Err(e)),
+        }
     }
 
     /// Atomic replacements permit a coherent per-PR read without taking execution leases.
@@ -130,7 +151,7 @@ impl Claims {
             if number == 0 || id != number.to_string() {
                 return Err("invalid board claim filename".into());
             }
-            states.insert(number, self.load(number, false)?);
+            states.insert(number, self.load(number)?);
         }
         Ok(states)
     }
@@ -162,8 +183,8 @@ impl Claims {
         if entry.number == 0 || entry.head.is_empty() || !crate::valid_task_id(holder) {
             return Err("invalid board claim request".into());
         }
-        let (_lock, fresh) = self.lock(entry.number)?;
-        let mut state = self.load(entry.number, fresh)?;
+        let _lock = self.lock(entry.number)?;
+        let mut state = self.load(entry.number)?;
         let day = now / 86_400;
         if state.utc_day > day {
             return Err("board claim clock moved backwards".into());
@@ -187,8 +208,32 @@ impl Claims {
             expires_at,
         };
         state.lease = Some(lease.clone());
-        self.save(entry.number, state, fresh)?;
+        let replacing = self.established(entry.number)?;
+        self.save(entry.number, state, replacing)?;
+        if !replacing {
+            self.mark(entry.number)?;
+        }
         Ok(Some(lease))
+    }
+
+    /// Record that this PR has established state. Written only after the state file is
+    /// durable, so a marker can only ever claim too little, never hide a lost cap.
+    fn mark(&self, number: u64) -> Result<()> {
+        let path = self.root.join(format!("{number}.board-claim.created"));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
+            Ok(mut file) => {
+                io(io(file.write_all(b"1\n"))?.sync_all())?;
+                io(File::open(&self.root)?.sync_all())?;
+                Ok(())
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => io(Err(e)),
+        }
     }
 
     /// An old worker cannot release a replacement lease. Attempts are never refunded.
@@ -199,7 +244,7 @@ impl Claims {
             Ok(_) => {}
         }
         let (_lock, _) = self.lock(number)?;
-        let mut state = self.load(number, false)?;
+        let mut state = self.load(number)?;
         if state.lease.as_ref() != Some(lease) {
             return Ok(false);
         }
