@@ -1055,6 +1055,13 @@ fn the_cache_home_and_its_plain_entries_stay_read_only() {
         "{:?}",
         l.env
     );
+    // Nothing of that home is linked into the session's cache: the session's empty `.cache`
+    // is the writable cache inside.
+    let sc = oxa_sandbox::Scratch::create(&oxa_sandbox::scratch_root(&home)).expect("scratch");
+    let dir = sc.path().to_path_buf();
+    let _l = l.with_scratch(sc);
+    let links = cache_links(&dir);
+    assert!(links.is_empty(), "{links:?}");
 }
 
 /// #457, N28: the session directory replaces `--tmpfs /tmp` at the same place, before the
