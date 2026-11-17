@@ -550,6 +550,29 @@ fn option_name(cell: &str) -> Option<String> {
     }
 }
 
+/// The whole flags of a documentation cell, split on whitespace and commas: `--print, -p` ->
+/// `--print`, `-p`. A flag is a token of its own; `-p` is not documented by `--print`, which
+/// merely contains those characters.
+fn option_tokens(cell: &str) -> BTreeSet<String> {
+    cell.split(|c: char| c.is_whitespace() || c == ',')
+        .map(str::trim)
+        .filter(|token| token.starts_with('-') && token.len() > 1)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The short aliases of an `OPTIONS` cell that the documentation tokens of its row are missing.
+/// Compared as whole tokens, so dropping `-p` from the `--print` row is caught.
+fn missing_aliases(cell: &str, documented: &BTreeSet<String>) -> Vec<String> {
+    cell.split_whitespace()
+        .skip(1)
+        .map(|word| word.trim_end_matches(','))
+        .filter(|word| word.starts_with('-') && *word != "--")
+        .filter(|alias| !documented.contains(*alias))
+        .map(str::to_string)
+        .collect()
+}
+
 /// The first cell of every table row of `text`, with its 1-based line number: backticks stripped
 /// and `\|` kept as a literal `|`, so a cell is not cut at an escaped pipe.
 fn first_cells(text: &str) -> Vec<(usize, String)> {
@@ -600,6 +623,9 @@ fn slash_names(cell: &str) -> Vec<String> {
 /// flag. The three slash commands oxa answers with an `unsupported_in_oxa` notice (`login`,
 /// `logout`, `share`) are named in prose instead of a row, and skill, template and extension
 /// commands (such as `/web-search`) are not part of the built-in inventory.
+///
+/// The Commands and Options tables are checked both ways: every shipped name has a row, and no
+/// row names a command or option that oxa does not ship.
 #[test]
 fn cli_and_slash_tables_list_every_shipped_name() {
     let root = repo_root();
@@ -644,12 +670,25 @@ fn cli_and_slash_tables_list_every_shipped_name() {
         missing.is_empty(),
         "docs/pages/cli.md has no Commands table row for: {missing:?}"
     );
+    // The other direction: a row that names a command oxa no longer ships is stale, not coverage.
+    let shipped: BTreeSet<&String> = command_names.iter().collect();
+    let stale: Vec<&String> = documented
+        .iter()
+        .filter(|name| !shipped.contains(name))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "docs/pages/cli.md documents commands that oxa does not ship: {stale:?}"
+    );
 
-    let mut documented_flags: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    let mut documented_flags: BTreeMap<String, (usize, BTreeSet<String>)> = BTreeMap::new();
     for (line, cell) in &rows {
         if let Some(flag) = option_name(cell) {
-            let entry = documented_flags.entry(flag).or_insert((*line, String::new()));
-            entry.1.push_str(cell);
+            documented_flags
+                .entry(flag)
+                .or_insert_with(|| (*line, BTreeSet::new()))
+                .1
+                .extend(option_tokens(cell));
         }
     }
     let mut missing = Vec::new();
@@ -661,15 +700,8 @@ fn cli_and_slash_tables_list_every_shipped_name() {
         match documented_flags.get(&flag) {
             None => missing.push(flag),
             Some((line, documented)) => {
-                for alias in cell
-                    .split_whitespace()
-                    .skip(1)
-                    .map(|w| w.trim_end_matches(','))
-                    .filter(|w| w.starts_with('-') && *w != "--")
-                {
-                    if !documented.contains(alias) {
-                        alias_gaps.push(format!("docs/pages/cli.md:{line}: {flag} -> {alias}"));
-                    }
+                for alias in missing_aliases(cell, documented) {
+                    alias_gaps.push(format!("docs/pages/cli.md:{line}: {flag} -> {alias}"));
                 }
             }
         }
@@ -682,6 +714,19 @@ fn cli_and_slash_tables_list_every_shipped_name() {
         alias_gaps.is_empty(),
         "an option row does not show the alias of its long flag:\n{}",
         alias_gaps.join("\n")
+    );
+    let shipped_flags: BTreeSet<String> = option_cells
+        .iter()
+        .filter_map(|cell| option_name(cell))
+        .collect();
+    let stale: Vec<(&String, &usize)> = documented_flags
+        .iter()
+        .filter(|(flag, _)| !shipped_flags.contains(*flag))
+        .map(|(flag, (line, _))| (flag, line))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "docs/pages/cli.md documents options that oxa does not ship (flag, line): {stale:?}"
     );
 
     let usage = fs::read_to_string(root.join("docs/pages/usage.md")).expect("read usage.md");
@@ -719,5 +764,46 @@ fn cli_and_slash_tables_list_every_shipped_name() {
             usage.contains(&format!("/{name}")),
             "usage.md must say what /{name} does, even though it has no row"
         );
+    }
+}
+
+/// The alias check compares whole flag tokens: a row that keeps `--print` but drops `-p` is
+/// reported, and the substring `-p` inside `--print` does not pass for it.
+#[test]
+fn cli_option_rows_must_show_their_short_aliases() {
+    // Cells arrive with their backticks stripped, as `first_cells` hands them over.
+    let complete = option_tokens("--print, -p");
+    assert!(complete.contains("--print") && complete.contains("-p"));
+    assert_eq!(
+        missing_aliases("--print, -p", &complete),
+        Vec::<String>::new()
+    );
+
+    let dropped = option_tokens("--print");
+    assert!(dropped.contains("--print"));
+    // `--print` contains the characters `-p`, and still the alias is not documented.
+    assert!(!dropped.contains("-p"));
+    assert_eq!(
+        missing_aliases("--print, -p", &dropped),
+        vec!["-p".to_string()],
+        "a row that drops its short alias must be reported"
+    );
+
+    // The same rule on the published cells: each shipped short alias is reported when its row
+    // loses it, and the long flag alone does not cover it.
+    for (cell, alias) in [
+        ("--print, -p", "-p"),
+        ("--resume, -r", "-r"),
+        ("--tools, -t <list>", "-t"),
+        ("--extension, -e <path>", "-e"),
+    ] {
+        let tokens = option_tokens(cell);
+        assert!(tokens.contains(alias), "{cell} should carry {alias}");
+        let without: BTreeSet<String> = tokens
+            .iter()
+            .filter(|token| *token != alias)
+            .cloned()
+            .collect();
+        assert_eq!(missing_aliases(cell, &without), vec![alias.to_string()]);
     }
 }
