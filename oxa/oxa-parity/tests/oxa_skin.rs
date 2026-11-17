@@ -436,13 +436,25 @@ fn a_subagent_call_shows_the_child_on_screen() {
     rig.pty.send_key("enter");
     let running = rig
         .pty
-        .wait_for_named("the subagent line", |s| s.contains("AGENTS"), WAIT)
+        .wait_for_named(
+            "the subagent line",
+            |s| {
+                s.find_row("AGENTS")
+                    .map(|r| s.row(r).contains("scout"))
+                    .unwrap_or(false)
+            },
+            WAIT,
+        )
         .unwrap();
     let row = running
         .find_row("AGENTS")
         .map(|r| running.row(r))
         .expect("the subagent row");
     assert!(row.contains("scout"), "the child's name: {row:?}");
+    assert!(
+        row.contains("scout: running"),
+        "the child and what it does: {row:?}"
+    );
     rig.pty.wait_for_text(REPLY).unwrap();
 }
 
