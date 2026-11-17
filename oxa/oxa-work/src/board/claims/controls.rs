@@ -3,6 +3,9 @@ use super::*;
 use crate::board::assignment::{AssignmentPolicy, Control, ManualAuthority, Worker};
 use crate::board::{Board, GitHub};
 
+mod leases;
+pub use leases::ReleaseRecord;
+
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssignmentData {
@@ -10,6 +13,8 @@ pub struct AssignmentData {
     pub policy: Option<AssignmentPolicy>,
     #[serde(default)]
     pub import_hold: bool,
+    #[serde(default)]
+    pub last_release: Option<ReleaseRecord>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
