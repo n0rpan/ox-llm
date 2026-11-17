@@ -59,7 +59,15 @@ fn run(env: &TestEnv, args: &[&str], trace: Option<&Path>) -> Output {
 }
 fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Output {
     let mut cmd = if let Some(path) = trace {
-        let mut cmd = Command::new("strace");
+        // Checkout-only runners provision this signed package without changing
+        // the host. Use it directly: a PATH export in the provisioning shell
+        // does not survive when an outside check starts a fresh Cargo process.
+        let local_tracer = Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/test-tools/usr/bin/strace");
+        let mut cmd = Command::new(if local_tracer.is_file() {
+            local_tracer.as_os_str()
+        } else {
+            std::ffi::OsStr::new("strace")
+        });
         cmd.args(["-f", "-e", "trace=execve", "-o"])
             .arg(path)
             .arg(env!("CARGO_BIN_EXE_oxa"));

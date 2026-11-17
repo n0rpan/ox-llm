@@ -63,7 +63,10 @@ plus the package's runtime libraries). From the repository root:
 ```
 
 The download and extracted executable stay in ignored build output; nothing is installed outside
-the checkout. Keep that absolute `PATH` prefix for subsequent test commands in the same runner.
+the checkout. The native cloud tool-loop test uses `oxa/target/test-tools/usr/bin/strace` when
+present, otherwise `strace` on `PATH`. This lets fresh check shells reuse the provisioned tracer
+without inheriting the installation shell's `PATH` export (even with a custom `CARGO_TARGET_DIR`).
+A broken checkout-local tracer still fails the proof; it is not silently replaced or skipped.
 Do not skip the proof when `strace` is missing or substitute an untraced run.
 
 If `bubblewrap` is already available but host package installation is not permitted, build

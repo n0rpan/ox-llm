@@ -180,6 +180,7 @@ struct Stream<'a> {
     tools: BTreeMap<u64, Value>,
     reason: Option<&'static str>,
     usage: Option<Usage>,
+    reasoning_tokens: u64,
     reported_cost: Option<f64>,
 }
 impl<'a> Stream<'a> {
@@ -197,6 +198,7 @@ impl<'a> Stream<'a> {
             tools: BTreeMap::new(),
             reason: None,
             usage: None,
+            reasoning_tokens: 0,
             reported_cost: None,
         }
     }
@@ -216,6 +218,12 @@ impl<'a> Stream<'a> {
                 return Err(Error::Protocol);
             }
             self.usage = Some(usage(raw)?);
+            // Public reasoning detail is independent of Anthropic's billing
+            // categories; preserve it without adding to completion tokens.
+            self.reasoning_tokens = raw
+                .pointer("/completion_tokens_details/reasoning_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             // Only the upstream terminal usage can supply cost. Missing/invalid
             // values retain catalog pricing; zero is a valid reported charge.
             self.reported_cost = raw["cost"]
@@ -357,6 +365,7 @@ impl<'a> Stream<'a> {
         );
         if self.include_usage {
             let mut normalized = usage.openai();
+            normalized["completion_tokens_details"]["reasoning_tokens"] = json!(self.reasoning_tokens);
             if let Some(cost) = self.reported_cost {
                 normalized["cost"] = json!(cost);
             }

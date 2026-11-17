@@ -133,6 +133,42 @@ async fn openrouter_privacy_redaction_and_settlement_before_done() {
     }
 }
 #[tokio::test]
+async fn openrouter_preserves_reported_reasoning_tokens() {
+    for reported in [None, Some(json!(3)), Some(json!(0)), Some(json!("invalid"))] {
+        let mut events = chunks();
+        if let Some(value) = &reported {
+            events[3]["usage"]["completion_tokens_details"] = json!({"reasoning_tokens":value});
+        }
+        let mock = MockAnthropic::start(vec![wire(events, true)]);
+        let (gateway, fixture) = gateway(&mock);
+        let mut output = Vec::new();
+        let completed = gateway
+            .chat_payload(
+                &payload(true),
+                Context::default(),
+                &Cancellation::default(),
+                &mut |event| {
+                    if let Event::Chunk(value) = event {
+                        output.push(value);
+                    }
+                    Control::Continue
+                },
+            )
+            .await
+            .unwrap();
+        let usage = &output.iter().find(|value| value.get("usage").is_some()).unwrap()["usage"];
+        assert_eq!(
+            usage["completion_tokens_details"]["reasoning_tokens"],
+            reported.and_then(|value| value.as_u64()).unwrap_or(0)
+        );
+        assert_eq!(usage["completion_tokens"], 5);
+        assert!(completed.replay_items.is_empty());
+        assert!(completed.history.is_none());
+        assert_eq!(rows(&fixture)[0]["settled"], "usage");
+        mock.finish();
+    }
+}
+#[tokio::test]
 async fn openrouter_incomplete_or_invalid_stream_never_signals_done() {
     let mut invalid_usage = chunks();
     invalid_usage[3]["usage"]["prompt_tokens_details"]["cached_tokens"] = json!(22);
