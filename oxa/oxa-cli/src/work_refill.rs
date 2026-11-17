@@ -137,7 +137,7 @@ impl Consumer<'_> {
                     }
                     lease = self
                         .claims
-                        .claim_for(entry, self.policy, self.worker, now, self.ttl)?;
+                        .claim_idle_for(entry, self.policy, self.worker, now, self.ttl)?;
                     Ok(lease.is_some())
                 },
             )?;
