@@ -17,7 +17,11 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
     let test = TestEnv::new();
     for args in [vec!["lead"], vec!["lead", "--help"], vec!["help", "lead"]] {
         let output = command(&test).args(args).output().unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let text = String::from_utf8_lossy(&output.stdout);
         assert!(text.contains("lead"));
         assert!(!text.contains("lead serve"));
@@ -31,7 +35,11 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
 
 #[test]
 fn legacy_shadow_keeps_its_read_only_resource_floor() {
-    for text in ["lead --shadow task", "lead --model synthetic --shadow task", "lead task --shadow"] {
+    for text in [
+        "lead --shadow task",
+        "lead --model synthetic --shadow task",
+        "lead task --shadow",
+    ] {
         let words = text.split_whitespace().map(str::to_owned).collect::<Vec<_>>();
         let args = oxa_cli::parse_args(&words, &[]).unwrap();
         assert!(args.lead && args.shadow);

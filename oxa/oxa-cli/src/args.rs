@@ -619,9 +619,16 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
         if !stop && i == 1 && arg == "lead" {
             let reserved_child = oxa_interactive::command_registry::COMMANDS.iter().any(|entry| {
                 entry.path.first() == Some(&arg)
-                    && entry.path.get(1).is_some_and(|part| argv.get(i).map(String::as_str) == Some(*part))
+                    && entry
+                        .path
+                        .get(1)
+                        .is_some_and(|part| argv.get(i).map(String::as_str) == Some(*part))
             });
-            if !reserved_child && argv[i..].iter().any(|word| word.split('=').next() == Some("--shadow")) {
+            if !reserved_child
+                && argv[i..]
+                    .iter()
+                    .any(|word| word.split('=').next() == Some("--shadow"))
+            {
                 a.lead = true;
                 continue;
             }
