@@ -439,7 +439,7 @@ fn view_current(sessions: PathBuf, cwd: &Path, out: &mut dyn Write) -> Result<i3
     if let Ok(value) = read_snapshot(&path) {
         if value["type"] == "oxa_status" && value["version"] == 1 && value["session_id"] == sref.id {
             let phase = value["phase"].as_str().unwrap_or("unknown");
-            let outcome = value["outcome"]
+            let outcome = value["outcome"]["outcome"]
                 .as_str()
                 .map(|o| format!(" outcome {o}"))
                 .unwrap_or_default();
