@@ -711,10 +711,18 @@ fn agent_written_acceptance_code_cannot_write_outside_the_sandbox() {
 fn worker_result_and_session_come_from_the_real_child_contract() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    let mut turn = ScriptTurn::text("finished");
+    turn.completion_tokens = Some(5);
+    let record = run(&env, vec![turn]);
     assert_eq!(record["worker"]["outcome"], "done", "{record}");
     assert_eq!(record["worker"]["exit_code"], 0, "{record}");
     assert!(!record["session_id"].as_str().unwrap().is_empty());
+    let tokens = &record["worker"]["tokens"];
+    assert_eq!(tokens["completion"], 5, "{record}");
+    assert_eq!(tokens["complete"], true, "{record}");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(storage(&env).join("test.json")).unwrap()).unwrap();
+    assert_eq!(&saved["record"]["worker"]["tokens"], tokens);
 }
 
 #[test]
