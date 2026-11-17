@@ -993,7 +993,10 @@ fn local_policy_refreshes_after_prompt_and_idle_unload() {
     }
     impl oxa_proto::Engine for Local {
         fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, OxaError> {
-            self.inner.info(target)
+            let mut info = self.inner.info(target)?;
+            // This control observes the foreground load, independently of boot preload.
+            info.prefill_only = false;
+            Ok(info)
         }
         fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
             self.inner.count_tokens(text)
