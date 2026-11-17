@@ -94,7 +94,10 @@ async fn openrouter_terminal_reasoning_tokens_are_preserved_without_double_count
             let usage: Vec<_> = output.iter().filter_map(|value| value.get("usage")).collect();
             assert_eq!(usage.len(), usize::from(include_usage));
             if include_usage {
-                assert_eq!(usage[0]["completion_tokens_details"]["reasoning_tokens"], reasoning.unwrap_or(0));
+                assert_eq!(
+                    usage[0]["completion_tokens_details"]["reasoning_tokens"],
+                    reasoning.unwrap_or(0)
+                );
                 assert_eq!(usage[0]["completion_tokens"], 5);
                 assert_eq!(usage[0]["total_tokens"], 26);
             }
