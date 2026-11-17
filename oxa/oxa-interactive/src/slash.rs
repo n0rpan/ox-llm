@@ -1,9 +1,8 @@
 //! D11: handlers of the built-in slash commands.
 // ported from pi packages/coding-agent/src/modes/interactive/interactive-mode.ts (slash command handling) and docs/slash-commands.md
-use crate::{
-    AppAction, Block, Reopen, SelectorKind, SessionCmd, StatusModel, StatusRow, StatusView, ViewModel,
-};
+use crate::{AppAction, Block, Reopen, SelectorKind, SessionCmd, StatusModel, ViewModel};
 use oxa_config::{resolve_model, Dirs, Env, Keymap, ModelRef, ModelsConfig, Settings};
+use oxa_core::{context_text, messages_text, model_text, tokens_text, Row, StatusView};
 use oxa_proto::{CommandSpec, Level, Mode, OxaError, PermissionMode, Source, ThinkingLevel};
 use std::path::{Path, PathBuf};
 
@@ -32,9 +31,6 @@ pub struct SlashCx<'a> {
     pub models: &'a [String],
     /// Requests waiting on the engine, when known.
     pub queue: Option<u32>,
-    /// Background commands still running (`JobRegistry::running()`), when the caller holds the
-    /// registry. `None` = this surface has no job registry: the `/status` jobs row says so.
-    pub jobs_running: Option<u32>,
 }
 
 /// The built-in commands this module handles, without the slash, in pi's listing order.
@@ -231,6 +227,8 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
             }
         }
         "session" | "usage" => AppAction::ShowLines(session_info_lines(cx)),
+        // One read-only status view, shared with the headless `/status` and `oxa status`: rows
+        // this view cannot source stay unavailable instead of showing a zero.
         "status" => AppAction::ShowLines(status_lines(cx)),
         "help" => AppAction::ShowLines(help_lines(cx)),
         "hotkeys" => AppAction::ShowLines(hotkeys_lines(cx.keymap)),
@@ -366,36 +364,53 @@ pub fn session_info_lines(cx: &SlashCx) -> Vec<String> {
     out
 }
 
-/// #872: the one status view of the interactive surface. Every fact comes from what the UI
-/// thread already holds (the view model, the session info, the engine info); a row this
-/// surface cannot answer says `unavailable:` with the reason, never a zero. Bare
-/// `oxa status` renders the same rows from the status sidecar.
+/// The `/status` view: the session facts of `/session`, the live turn, the queues and the
+/// engine the session talks to, in the one layout every status surface shares. Facts this view
+/// does not receive (the job registry, children, the goal, lead facts, a cost meter) stay
+/// unavailable with their fixed reason.
 pub fn status_lines(cx: &SlashCx) -> Vec<String> {
     let st: &StatusModel = &cx.vm.status;
+    let (mut users, mut answers, mut tools) = (0u32, 0u32, 0u32);
+    for block in &cx.vm.blocks {
+        match block {
+            Block::User { .. } => users += 1,
+            Block::Assistant { streaming: false, .. } => answers += 1,
+            Block::Tool(_) => tools += 1,
+            _ => {}
+        }
+    }
     let file = match cx.session_file {
         Some(p) => p.display().to_string(),
         None => "(ephemeral, not saved)".to_string(),
     };
-    let name = st.session_name.as_deref().unwrap_or("(not set)");
-    let mut view = StatusView {
-        session: StatusRow::Fact(format!("{} (name {name}) {file}", cx.session_id)),
-        turn: StatusRow::Fact(crate::chrome::activity_text(st).unwrap_or_else(|| "idle".to_string())),
-        budget: StatusRow::Fact(format!("input {} output {} tokens", st.total_in, st.total_out)),
-        ..StatusView::default()
+    let name = st.session_name.clone().unwrap_or_else(|| "(not set)".to_string());
+    let turn = match crate::chrome::activity_text(st) {
+        Some(text) => text,
+        None if cx.busy => "running".to_string(),
+        None => "idle".to_string(),
     };
-    if let Some(running) = cx.jobs_running {
-        view.jobs = StatusRow::Fact(format!("{running} running"));
-    }
-    if let Some(queue) = cx.queue {
-        view.queue = StatusRow::Fact(format!("{queue} waiting"));
+    let model = model_text(&st.model, st.model_remote, st.model_provider);
+    let mut view = StatusView::new(cx.session_id);
+    view = view.set(Row::SessionFile, file);
+    view = view.set(Row::SessionId, cx.session_id);
+    view = view.set(Row::SessionName, name);
+    view = view.set(Row::Messages, messages_text(users, answers, tools));
+    view = view.set(Row::Tokens, tokens_text(st.total_in, st.total_out));
+    view = view.set(Row::Context, context_text(st.context_tokens, st.n_ctx));
+    view = view.set(Row::Turn, turn);
+    view = view.set(Row::Model, model);
+    view = view.set(Row::Steering, st.steering.len().to_string());
+    view = view.set(Row::FollowUp, st.follow_up.len().to_string());
+    if let (Some(cached), Some(prompt)) = (st.last_cached, st.last_prompt) {
+        view = view.set(Row::LastCache, cache_text(cached, prompt));
     }
     if !cx.engine_url.is_empty() {
-        let model = if st.model.is_empty() {
-            "(model unknown)".to_string()
-        } else {
-            st.model.clone()
-        };
-        view.engine = StatusRow::Fact(format!("{} model {model}", cx.engine_url));
+        view = view.set(Row::EngineEndpoint, cx.engine_url);
+        view = view.set(Row::EngineModel, st.model.clone());
+    }
+    if let Some(queue) = cx.queue {
+        // `EngineInfo::queue`: requests waiting, 0 when the engine does not report a queue.
+        view = view.set(Row::EngineQueue, format!("{queue} waiting"));
     }
     view.lines()
 }

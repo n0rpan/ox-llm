@@ -336,103 +336,6 @@ impl StatusModel {
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// #872: the one status view
-// ---------------------------------------------------------------------------------------------
-
-/// Why a row shows when the surface has no typed fact for it. Never rendered as a zero: a
-/// missing fact is named, so a reader cannot mistake it for a measured one.
-pub const STATUS_ROW_UNKNOWN: &str = "no typed fact for this row in this surface";
-/// The child/goal/lead rows of later surfaces (they contribute a row here, not a second
-/// status command).
-pub const STATUS_CHILD_UNAVAILABLE: &str = "child sessions are not surfaced yet";
-pub const STATUS_GOAL_UNAVAILABLE: &str = "no goal surface in this build";
-pub const STATUS_LEAD_UNAVAILABLE: &str = "no lead surface in this build";
-
-/// One row of the status view: a fact read from an existing typed API, or the reason this
-/// surface cannot answer the row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StatusRow {
-    Fact(String),
-    Unavailable(String),
-}
-
-impl StatusRow {
-    /// The text of the row, after its name.
-    pub fn text(&self) -> String {
-        match self {
-            StatusRow::Fact(fact) => fact.clone(),
-            StatusRow::Unavailable(reason) => format!("unavailable: {reason}"),
-        }
-    }
-
-    /// Whether this row carries a fact (a test and reader helper; the view never hides one).
-    pub fn is_fact(&self) -> bool {
-        matches!(self, StatusRow::Fact(_))
-    }
-}
-
-/// The one status view: the session, its turn, its jobs, the engine queue, the engine and the
-/// session budget, plus the child/goal/lead rows later surfaces fill. `/status` and bare
-/// `oxa status` render exactly these rows, and every fact comes from a typed API the caller
-/// already holds: this view contacts no engine, provider or auth store.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusView {
-    pub session: StatusRow,
-    pub turn: StatusRow,
-    pub jobs: StatusRow,
-    pub queue: StatusRow,
-    pub engine: StatusRow,
-    pub budget: StatusRow,
-    pub child: StatusRow,
-    pub goal: StatusRow,
-    pub lead: StatusRow,
-}
-
-impl Default for StatusView {
-    fn default() -> Self {
-        let unknown = || StatusRow::Unavailable(STATUS_ROW_UNKNOWN.to_string());
-        StatusView {
-            session: unknown(),
-            turn: unknown(),
-            jobs: unknown(),
-            queue: unknown(),
-            engine: unknown(),
-            budget: unknown(),
-            child: StatusRow::Unavailable(STATUS_CHILD_UNAVAILABLE.to_string()),
-            goal: StatusRow::Unavailable(STATUS_GOAL_UNAVAILABLE.to_string()),
-            lead: StatusRow::Unavailable(STATUS_LEAD_UNAVAILABLE.to_string()),
-        }
-    }
-}
-
-impl StatusView {
-    /// The rows in print order. A later surface adds its row to this list, never a parallel
-    /// status command.
-    pub fn rows(&self) -> [(&'static str, &StatusRow); 9] {
-        [
-            ("session", &self.session),
-            ("turn", &self.turn),
-            ("jobs", &self.jobs),
-            ("queue", &self.queue),
-            ("engine", &self.engine),
-            ("budget", &self.budget),
-            ("child", &self.child),
-            ("goal", &self.goal),
-            ("lead", &self.lead),
-        ]
-    }
-
-    /// The lines both surfaces print: a header, then one row per name.
-    pub fn lines(&self) -> Vec<String> {
-        let mut out = vec!["Status".to_string()];
-        for (name, row) in self.rows() {
-            out.push(format!("  {name:<8} {}", row.text()));
-        }
-        out
-    }
-}
-
 /// The look of the interactive UI. `Oxa` is OXA's own look (frames, HUD line, hint bar;
 /// OXA-UI-DESIGN.md); `OxaAscii` is the same with ASCII glyphs for terminals without UTF-8.
 /// `Pi` is the plain look (the parity reference), reachable with `ui.skin = "pi"`.
@@ -539,6 +442,9 @@ pub type ReopenFn =
 /// One request to the worker thread that owns the `Session`. Each maps to one
 /// `oxa_core::Session` call; the results come back as `AgentEvent`s and [`WorkerMsg`]s.
 pub enum SessionCmd {
+    /// Coalesced wake for editor input. The handle binds it to the original ordinary queues;
+    /// a wake left behind by a session rebind must not run the replacement's input.
+    QueuedInput(oxa_core::Handle),
     /// Event-driven inbox wake. The id makes a wake queued before a swap harmless.
     Inbox {
         session_id: String,
@@ -643,9 +549,6 @@ pub struct SessionInfo {
     pub models: Vec<String>,
     /// Requests waiting on the engine, as of the last `Engine::info`.
     pub queue: u32,
-    /// Background commands still running (`JobRegistry::running()`), as of the last worker
-    /// session update. The `/status` jobs row.
-    pub jobs_running: u32,
     /// Keys bound by hook sets (`Hooks::shortcuts`), sent to the worker as
     /// [`SessionCmd::Shortcut`] when no built-in binding has them.
     pub shortcuts: Vec<oxa_proto::KeyId>,

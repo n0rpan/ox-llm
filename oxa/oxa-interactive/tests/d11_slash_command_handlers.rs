@@ -70,7 +70,6 @@ impl Fx {
             engine_url: "",
             models: &[],
             queue: None,
-            jobs_running: None,
         }
     }
 
@@ -490,35 +489,114 @@ fn the_mode_cycle_is_standard_auto_yolo() {
     assert_eq!(P::DEFAULT, P::Auto);
 }
 
-/// #872: `/status` is the one status view: the session facts, the turn and the rows this
-/// surface cannot answer. A row without a typed fact says `unavailable:`, never a zero.
+/// `/status` renders the one shared status view: the session facts `/session` also shows, the
+/// live turn and the two queues; facts this view never receives stay unavailable with their
+/// reason instead of a fabricated zero.
 #[test]
-fn status_shows_one_view_with_unavailable_rows() {
+fn status_renders_the_shared_view_with_unavailable_rows() {
     let fx = Fx::new();
     let lines = match expect_some("/status", fx.run("/status")) {
         AppAction::ShowLines(lines) => lines,
-        _ => panic!("/status shows lines"),
+        other => panic!("expected lines, got {other:?}"),
     };
-    let row = |name: &str| {
-        lines
-            .iter()
-            .find(|l| l.trim_start().starts_with(&format!("{name} ")))
-            .unwrap_or_else(|| panic!("no {name} row in {lines:?}"))
-            .clone()
+    assert_eq!(lines[0], "Status of session sess-1");
+    for line in [
+        "  Session id: sess-1",
+        "  Name: demo",
+        "  Messages: user 0, assistant 0, tool calls 0",
+        "  Tokens: input 900, output 300",
+        "  Context: 1200 / 8192 tokens",
+        "  Cache, last request: 800 / 1000 tokens (80%)",
+        "  Turn: idle",
+        "  Model: engine-model (local)",
+        "  Steering: 0",
+        "  Follow-up: 0",
+    ] {
+        assert!(lines.iter().any(|l| l == line), "{line:?} missing from {lines:?}");
+    }
+    for line in [
+        "  Background jobs: unavailable (no live job registry on this surface)",
+        "  Child sessions: unavailable (no child-session listing yet)",
+        "  Goal: unavailable (no goal record for this session)",
+        "  Lead: unavailable (no lead facts for this session)",
+        "  Cost: unavailable (no cost meter on this surface)",
+        "  Engine queue: unavailable (the engine endpoint is not known to this view)",
+        "  Engine endpoint: unavailable (the engine endpoint is not known to this view)",
+    ] {
+        assert!(lines.iter().any(|l| l == line), "{line:?} missing from {lines:?}");
+    }
+    // The view is static text: no clock, animation or colour escape in a row.
+    assert!(lines.iter().all(|l| !l.contains('\u{1b}')), "{lines:?}");
+}
+
+/// The live turn and the engine rows come from the status model and the session's engine
+/// facts; a working run and a cloud model are shown as such.
+#[test]
+fn status_reports_the_live_turn_queues_and_engine() {
+    let fx = Fx::new();
+    let with_engine = |activity: oxa_interactive::Activity| {
+        let mut vm = ViewModel {
+            status: StatusModel {
+                model: "engine-model".to_string(),
+                model_remote: true,
+                model_provider: Some("openrouter"),
+                n_ctx: 4096,
+                steering: vec!["steer".to_string()],
+                follow_up: vec!["one".to_string(), "two".to_string()],
+                activity,
+                ..StatusModel::default()
+            },
+            ..ViewModel::default()
+        };
+        vm.blocks.push(Block::User {
+            text: "hello".to_string(),
+            images: vec![],
+        });
+        vm.blocks.push(Block::Assistant {
+            text: "hi".to_string(),
+            thinking: String::new(),
+            streaming: false,
+            stop: None,
+            error: None,
+            model: None,
+        });
+        let cx = SlashCx {
+            vm: &vm,
+            keymap: &fx.keymap,
+            settings: &fx.settings,
+            dirs: &fx.dirs,
+            cwd: &fx.cwd,
+            commands: &fx.commands,
+            busy: true,
+            session_file: None,
+            session_id: "sess-1",
+            last_assistant_text: None,
+            engine_url: "http://127.0.0.1:9",
+            models: &[],
+            queue: Some(2),
+        };
+        match dispatch_slash("/status", &cx) {
+            Some(AppAction::ShowLines(lines)) => lines,
+            other => panic!("expected lines, got {other:?}"),
+        }
     };
-    assert!(lines[0].contains("Status"), "{lines:?}");
-    assert!(row("session").contains("sess-1"), "{:?}", row("session"));
-    assert!(row("session").contains("name demo"), "{:?}", row("session"));
-    assert!(row("turn").contains("idle"), "{:?}", row("turn"));
-    // This fixture has no engine, no engine queue and no background jobs.
-    for name in ["jobs", "queue", "engine"] {
-        assert!(row(name).contains("unavailable:"), "{name}: {:?}", row(name));
+    let lines = with_engine(oxa_interactive::Activity::Tool("bash".to_string()));
+    for line in [
+        "  Messages: user 1, assistant 1, tool calls 0",
+        "  Turn: Running bash...",
+        "  Model: engine-model (cloud · openrouter)",
+        "  Steering: 1",
+        "  Follow-up: 2",
+        "  Engine endpoint: http://127.0.0.1:9",
+        "  Engine model: engine-model",
+        "  Engine queue: 2 waiting",
+    ] {
+        assert!(lines.iter().any(|l| l == line), "{line:?} missing from {lines:?}");
     }
-    // The rows later surfaces fill are unavailable here, not zero.
-    for name in ["child", "goal", "lead"] {
-        assert!(row(name).contains("unavailable:"), "{name}: {:?}", row(name));
-    }
-    // The budget is a fact from the session statistics.
-    assert!(row("budget").contains("input 900"), "{:?}", row("budget"));
-    assert!(row("budget").contains("output 300"), "{:?}", row("budget"));
+    // A busy session with no activity text still reports a running turn.
+    let idle_busy = with_engine(oxa_interactive::Activity::Idle);
+    assert!(
+        idle_busy.iter().any(|l| l == "  Turn: running"),
+        "{idle_busy:?}"
+    );
 }

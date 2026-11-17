@@ -278,6 +278,7 @@ pi page(s): slash-commands.md. Tests: `oxa-parity/tests/slash.rs`.
 | SLASH-028 | `/skill:name [args]` commands from skills | P |  | `slash.rs::slash_028` |
 | SLASH-029 | Prompt-template commands `/name args` | P |  | `slash.rs::slash_029` |
 | SLASH-030 | Extension commands; name clash order (built-in, extension, template, skill) as pi | P |  | `slash.rs::slash_030` |
+| SLASH-031 | `/status` shows the session, turn, queues, engine and work in one static view; a row without a fact says why | A | oxa only; children, goal, lead and cost stay unavailable until their surfaces exist | `slash.rs::slash_031` |
 
 ## SES: Sessions
 
@@ -776,7 +777,7 @@ pi page(s): (one row per page). Tests: `oxa-parity/tests/cli.rs`.
 | ENV | 9 | 3 | 12 |
 | TOOLS | 13 | 11 | 24 |
 | USE | 10 | 2 | 12 |
-| SLASH | 16 | 9 | 25 |
+| SLASH | 16 | 10 | 26 |
 | SES | 11 | 3 | 14 |
 | FMT | 11 | 9 | 20 |
 | TREE | 9 | 3 | 12 |
@@ -795,4 +796,4 @@ pi page(s): (one row per page). Tests: `oxa-parity/tests/cli.rs`.
 | EXT | 61 | 29 | 90 |
 | ENG | 0 | 16 | 16 |
 | OUT | 0 | 1 | 1 |
-| **total** | **375** | **181** | **556** |
+| **total** | **375** | **182** | **557** |

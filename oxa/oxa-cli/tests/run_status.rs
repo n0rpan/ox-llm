@@ -1,7 +1,7 @@
 //! Worker status is a bounded snapshot, usable without reading the event stream.
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
-use oxa_proto::Finish;
-use oxa_session::{FsStore, SessionStore};
+use oxa_proto::{Entry, EntryBody, Finish, Part, ToolCall, WireMsg};
+use oxa_session::{FsStore, SessionRef, SessionStore};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -470,78 +470,201 @@ fn status_refuses_malformed_oversized_mismatched_and_symlinked_snapshots() {
     assert_eq!(std::fs::read_to_string(other).unwrap(), "PRIVATE_TEST_CONTENT");
 }
 
-/// #872: bare `oxa status` shows the one status view of the current saved session. The dead
-/// loopback port proves it contacts no engine, provider or auth store.
+// ---------------------------------------------------------------------------------------------
+// Bare `oxa status`: the current/selected saved session in the one shared status view.
+
+/// A saved session in the current directory, with one user/assistant/tool turn.
+fn saved_session(store: &FsStore, cwd: &std::path::Path, text: &str, ts_ms: u64) -> SessionRef {
+    let sref = store.create(cwd, None, None).unwrap();
+    let mut assistant = WireMsg::assistant("done");
+    assistant.tool_calls = vec![ToolCall {
+        id: "call-1".into(),
+        name: "bash".into(),
+        args_raw: "{}".into(),
+    }];
+    for (i, wire) in [WireMsg::user(text), assistant].into_iter().enumerate() {
+        let entry = Entry {
+            id: format!("entry-{i}"),
+            parent: None,
+            ts_ms: ts_ms + i as u64,
+            body: EntryBody::Msg {
+                wire,
+                parts: vec![Part::Text(text.to_string())],
+                tool: None,
+            },
+        };
+        store.append(&sref, &entry).unwrap();
+    }
+    sref
+}
+
+/// A worker snapshot with every version-1 field, as the status writer leaves it.
+fn write_snapshot(sref: &SessionRef, phase: &str, outcome: Option<Value>) {
+    let path = sref.path.with_extension("status.json");
+    let value = json!({
+        "type": "oxa_status", "version": 1, "session_id": sref.id.clone(),
+        "pid": 4242, "started_ms": 1, "phase": phase, "step": 2,
+        "last_tool": "bash",
+        "tokens": {"prompt": 100, "completion": 10, "cached": 50, "complete": true,
+                   "unreported_requests": 0},
+        "cost_usd": 0, "last_progress_ms": 1, "stall_timeout_ms": null,
+        "stall_deadline_ms": null, "outcome": outcome
+    });
+    std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+}
+
+/// Bare `oxa status` picks this directory's most recently modified session (the `--continue`
+/// choice), reports it as static rows, and never contacts an engine: the endpoint is a dead
+/// loopback port and no provider or sign-in data is in the environment.
 #[test]
-fn bare_status_shows_the_current_sessions_view() {
+fn bare_status_reports_the_current_session_without_an_engine() {
     let env = TestEnv::new();
-    let srv = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
-    let output = command(&env, &srv.url())
-        .args(["-p", "--no-tools", "go"])
-        .stdin(Stdio::null())
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    let sref = session(&env);
+    let store = FsStore::new(env.agent_dir().join("sessions"));
+    let cwd = env.work().canonicalize().unwrap();
+    let older = saved_session(&store, &cwd, "older", 1_700_000_000_000);
+    let newer = saved_session(&store, &cwd, "newer", 1_900_000_000_000);
+    write_snapshot(&older, "idle", None);
+    write_snapshot(&newer, "tool", None);
+
     let output = command(&env, "http://127.0.0.1:1")
-        .arg("status")
+        .args(["status"])
         .output()
         .unwrap();
-    let text = String::from_utf8(output.stdout).unwrap();
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{stderr}");
+    assert!(stdout.starts_with(&format!("Status of session {}\n", newer.id)), "{stdout}");
+    assert!(stdout.contains(&format!("  Session id: {}\n", newer.id)), "{stdout}");
+    assert!(stdout.contains("  Messages: user 1, assistant 1, tool calls 1\n"), "{stdout}");
+    assert!(stdout.contains("  Tokens: input 100, output 10\n"), "{stdout}");
+    assert!(stdout.contains("  Cache, last request: 50 / 100 tokens (50%)\n"), "{stdout}");
+    assert!(stdout.contains("  Turn: tool (bash)\n"), "{stdout}");
+    assert!(stdout.contains("  Cost: $0.0000\n"), "{stdout}");
+    assert!(!stdout.contains(&older.id), "the older session is not the current one: {stdout}");
+    // Facts this surface cannot read are unavailable with their reason, never a zero.
+    for row in ["Background jobs", "Child sessions", "Goal", "Lead", "Engine queue", "Model"] {
+        assert!(
+            stdout.lines().any(|l| l.starts_with(&format!("  {row}: unavailable ("))),
+            "{row} must say why it is unavailable:\n{stdout}"
+        );
+    }
+    let file_row = format!("  Session file: {}", newer.path.display());
+    assert!(stdout.lines().any(|l| l == file_row), "{stdout}");
+}
+
+/// The same rows carry a failed, an idle and a stalled turn from the saved snapshot; an
+/// explicit session keeps printing the JSON snapshot instead.
+#[test]
+fn bare_status_reports_failed_idle_and_stalled_turns() {
+    let env = TestEnv::new();
+    let store = FsStore::new(env.agent_dir().join("sessions"));
+    let cwd = env.work().canonicalize().unwrap();
+    let sref = saved_session(&store, &cwd, "one", 1_700_000_000_000);
+    let run = || {
+        let output = command(&env, "http://127.0.0.1:1")
+            .args(["status"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8(output.stdout).unwrap()
+    };
+
+    let outcome = json!({"type": "oxa_result", "outcome": "failed",
+                         "error_class": "output_limit", "exit_code": 1});
+    write_snapshot(&sref, "finished", Some(outcome));
+    let failed = run();
+    assert!(
+        failed.contains("  Turn: finished (bash); last job: failed (output_limit)\n"),
+        "{failed}"
+    );
+
+    write_snapshot(&sref, "idle", None);
+    let idle = run();
+    assert!(idle.contains("  Turn: idle (bash)\n"), "{idle}");
+    assert!(idle.contains("  Cost: $0.0000\n"), "{idle}");
+
+    // An expired deadline is a stall signal, not a cancellation; reading it writes nothing.
+    let path = sref.path.with_extension("status.json");
+    let mut value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    value["phase"] = json!("model");
+    value["stall_timeout_ms"] = json!(1);
+    value["stall_deadline_ms"] = json!(1);
+    // A cloud session: the wire reports no settled charge, so the cost row says that.
+    value["cost_usd"] = Value::Null;
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+    let stalled = run();
+    assert!(stalled.contains("  Turn: model (bash); stalled\n"), "{stalled}");
+    assert!(
+        stalled.contains("  Cost: cloud (no settled charge is reported)\n"),
+        "{stalled}"
+    );
+
+    // The explicit form is unchanged: one version-1 JSON object, no view rows.
+    let output = command(&env, "http://127.0.0.1:1")
+        .args(["status", &sref.id])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["type"], "oxa_status");
+    assert_eq!(value["session_id"], sref.id);
+    assert_eq!(value["stalled"], true);
+}
+
+/// A session without a worker snapshot still reports its saved rows; a directory without a
+/// saved session says so instead of failing.
+#[test]
+fn bare_status_without_a_snapshot_or_a_session_states_what_is_known() {
+    let env = TestEnv::new();
+    let store = FsStore::new(env.agent_dir().join("sessions"));
+    let cwd = env.work().canonicalize().unwrap();
+    let sref = saved_session(&store, &cwd, "saved", 1_700_000_000_000);
+    assert!(!sref.path.with_extension("status.json").exists());
+
+    let output = command(&env, "http://127.0.0.1:1")
+        .args(["status"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains(&format!("Status of session {}", sref.id)), "{stdout}");
+    assert!(stdout.contains("  Messages: user 1, assistant 1, tool calls 1\n"), "{stdout}");
+    assert!(
+        stdout.contains("  Turn: unavailable (this view receives no turn state)\n"),
+        "{stdout}"
+    );
+
+    // An empty session directory has no current session: the command says so and still lists
+    // the rows with their reasons instead of failing.
+    let empty = env.root().join("empty-sessions").display().to_string();
+    let output = command(&env, "http://127.0.0.1:1")
+        .args(["status", "--session-dir", &empty])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.starts_with("No saved session for this directory.\n"), "{stdout}");
+    let jobs = "  Background jobs: unavailable (no live job registry on this surface)";
+    assert!(stdout.contains(jobs), "{stdout}");
+}
+
+/// `--offline` is a global flag: status reads local files only and does not start a provider,
+/// a sign-in or the engine, even when the configured endpoint is unreachable.
+#[test]
+fn offline_status_reads_only_local_files() {
+    let env = TestEnv::new();
+    let store = FsStore::new(env.agent_dir().join("sessions"));
+    let cwd = env.work().canonicalize().unwrap();
+    let sref = saved_session(&store, &cwd, "offline", 1_700_000_000_000);
+    write_snapshot(&sref, "idle", None);
+    let output = command(&env, "http://127.0.0.1:1")
+        .args(["--offline", "status"])
+        .output()
+        .unwrap();
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let row = |name: &str| {
-        text.lines()
-            .find(|l| l.trim_start().starts_with(&format!("{name} ")))
-            .unwrap_or_else(|| panic!("no {name} row in {text:?}"))
-            .to_string()
-    };
-    assert!(
-        text.lines().next().is_some_and(|l| l.contains("Status")),
-        "{text}"
-    );
-    assert!(row("session").contains(&sref.id), "{:?}", row("session"));
-    assert!(
-        row("session").contains(&sref.path.display().to_string()),
-        "{:?}",
-        row("session")
-    );
-    // The finished run is a fact of the status sidecar.
-    assert!(row("turn").contains("outcome done"), "{:?}", row("turn"));
-    assert!(row("turn").contains("phase finished"), "{:?}", row("turn"));
-    // The budget row is the sidecar's own counters, not a guess.
-    let snapshot = status(&env, &sref.id);
-    let tokens = &snapshot["tokens"];
-    for (name, value) in [
-        ("input", tokens["prompt"].as_u64().unwrap()),
-        ("output", tokens["completion"].as_u64().unwrap()),
-    ] {
-        assert!(
-            row("budget").contains(&format!("{name} {value}")),
-            "{name} {value}: {:?}",
-            row("budget")
-        );
-    }
-    // A saved session has no live job registry, engine queue or engine endpoint; the view
-    // says so instead of inventing a zero.
-    for name in ["jobs", "queue", "engine", "child", "goal", "lead"] {
-        assert!(row(name).contains("unavailable:"), "{name}: {:?}", row(name));
-    }
-}
-
-/// #872: without a saved session the view refuses; an explicit id keeps its own lookup.
-#[test]
-fn bare_status_without_a_saved_session_refuses() {
-    let env = TestEnv::new();
-    let output = command(&env, "http://127.0.0.1:1")
-        .arg("status")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let err = String::from_utf8_lossy(&output.stderr);
-    assert!(err.contains("no saved session"), "{err}");
-    assert!(err.contains("status <session-id"), "{err}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains(&sref.id));
 }

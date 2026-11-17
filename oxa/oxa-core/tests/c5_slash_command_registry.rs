@@ -186,7 +186,6 @@ fn builtins_list() {
         "copy",
         "name",
         "session",
-        "status",
         "hotkeys",
         "fork",
         "clone",
@@ -198,6 +197,7 @@ fn builtins_list() {
         "reload",
         "help",
         "usage",
+        "status",
         "quit",
     ]
     .iter()

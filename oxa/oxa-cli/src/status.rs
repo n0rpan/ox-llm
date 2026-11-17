@@ -1,12 +1,11 @@
 //! One small atomic snapshot per saved session. Progress never serializes model/tool text.
 use oxa_config::{dirs_from_env, Dirs, Env, Settings};
-use oxa_core::{Progress, ProgressObserver, RunOutcome};
-use oxa_interactive::{StatusRow, StatusView};
+use oxa_core::{messages_text, tokens_text, Progress, ProgressObserver, Row, RunOutcome, StatusView};
 use oxa_proto::{codes, OxaError, TurnKind};
 use oxa_session::{FsStore, SessionRef, SessionStore};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -370,7 +369,7 @@ pub(crate) fn run(
     let usage = || {
         OxaError::new(
             codes::USAGE,
-            "usage: oxa status <session-id|session-file> [--session-dir <dir>]",
+            "usage: oxa status [<session-id|session-file>] [--session-dir <dir>]",
         )
     };
     let mut sessions = dirs.sessions_dir.clone();
@@ -379,21 +378,39 @@ pub(crate) fn run(
             sessions = configured;
         }
     }
-    let Some(id) = words.first().filter(|id| !id.starts_with('-')) else {
-        if words.is_empty() {
-            // #872: bare `oxa status` is the one status view of the current saved session.
-            return view_current(sessions, cwd, out);
-        }
-        return Err(usage());
+    // Bare `oxa status` (`[]`, or only `--session-dir`) reads the saved session the current
+    // directory would continue: the same choice as `--continue`. An explicit id or file keeps
+    // the exact-session behaviour and its JSON snapshot.
+    let (explicit, rest) = match words.first() {
+        Some(id) if !id.starts_with('-') => (Some(id.as_str()), &words[1..]),
+        _ => (None, words),
     };
-    match &words[1..] {
+    match rest {
         [] => {}
         [flag, dir] if flag == "--session-dir" => {
             sessions = dirs_from_env(env, Some(Path::new(dir)))?.sessions_dir;
         }
         _ => return Err(usage()),
     }
-    let sref = FsStore::new(sessions).resolve(id)?;
+    let store = FsStore::new(sessions);
+    let Some(explicit) = explicit else {
+        // The same rule `--continue` uses (`oxa_core::latest_of`), not a second selection.
+        let Some(sref) = oxa_core::latest_of(&store, cwd) else {
+            // Nothing saved here yet: say so, and still list the rows with their reasons.
+            writeln!(out, "No saved session for this directory.")
+                .map_err(|e| OxaError::io("cannot write status", &e))?;
+            for line in StatusView::new("(none)").lines() {
+                writeln!(out, "{line}")
+                    .map_err(|e| OxaError::io("cannot write status", &e))?;
+            }
+            return Ok(0);
+        };
+        if let Err(e) = session_view(&store, &sref, out) {
+            return Err(OxaError::io("cannot write status", &e));
+        }
+        return Ok(0);
+    };
+    let sref = store.resolve(explicit)?;
     let path = sref.path.with_extension("status.json");
     let mut value = read_snapshot(&path)?;
     if value["type"] != "oxa_status" || value["version"] != 1 || value["session_id"] != sref.id {
@@ -412,54 +429,118 @@ pub(crate) fn run(
     Ok(0)
 }
 
-/// #872: the one status view of the current saved session of `cwd` (the session `oxa` would
-/// continue). Every fact comes from the session store and the status sidecar; the rows this
-/// surface cannot answer (jobs, engine queue, engine, child, goal, lead) say `unavailable:`
-/// with the reason, never a zero. It contacts no engine, provider or auth store.
-fn view_current(sessions: PathBuf, cwd: &Path, out: &mut dyn Write) -> Result<i32, OxaError> {
-    let store = FsStore::new(sessions);
-    let Some(meta) = store.list(Some(cwd)).into_iter().max_by_key(|m| m.modified_ms) else {
-        return Err(OxaError::new(
-            codes::NOT_FOUND,
-            format!(
-                "no saved session for {}; pass `oxa status <session-id|session-file>`",
-                cwd.display()
-            ),
-        ));
-    };
-    let sref = meta.sref;
-    let name = meta.name.as_deref().unwrap_or("(not set)");
-    let mut view = StatusView {
-        session: StatusRow::Fact(format!("{} (name {name}) {}", sref.id, sref.path.display())),
-        ..StatusView::default()
-    };
-    // The sidecar is written by the worker that ran the session; a missing or foreign one
-    // leaves the turn and budget rows unavailable rather than guessing.
+/// One status row's fact from a worker snapshot, as the view prints it. `None` when the
+/// snapshot does not carry that fact, so the row stays unavailable instead of printing a zero.
+fn snapshot_value(value: &Value, what: &str) -> Option<String> {
+    match what {
+        "tokens" => {
+            let prompt = value["tokens"]["prompt"].as_u64()?;
+            let completion = value["tokens"]["completion"].as_u64()?;
+            Some(tokens_text(prompt, completion))
+        }
+        "cache" => {
+            let prompt = value["tokens"]["prompt"].as_u64()?;
+            let cached = value["tokens"]["cached"].as_u64()?;
+            let cached = cached.min(u64::from(u32::MAX)) as u32;
+            let prompt = prompt.min(u64::from(u32::MAX)) as u32;
+            Some(oxa_core::cache_text(cached, prompt))
+        }
+        "turn" => Some(turn_text(value)),
+        // Version 1 records local spend as zero and a cloud charge as `null`: the engine wire
+        // reports no settled USD amount, so the row says so instead of printing a zero.
+        "cost" => match value["cost_usd"].as_f64() {
+            Some(usd) => Some(format!("${usd:.4}")),
+            None => Some("cloud (no settled charge is reported)".to_string()),
+        },
+        _ => None,
+    }
+}
+
+/// The turn row of a saved snapshot: the recorded phase, the last tool, an expired stall
+/// deadline and, only when the worker settled, its outcome. A phase is not an outcome.
+fn turn_text(value: &Value) -> String {
+    let mut text = value["phase"].as_str().unwrap_or("unknown").to_string();
+    if let Some(tool) = value["last_tool"].as_str() {
+        text.push_str(&format!(" ({tool})"));
+    }
+    if value["stalled"].as_bool().unwrap_or(false) {
+        text.push_str("; stalled");
+    }
+    if let Some(outcome) = value["outcome"]["outcome"].as_str() {
+        text.push_str(&format!("; last job: {outcome}"));
+        if let Some(class) = value["outcome"]["error_class"].as_str() {
+            text.push_str(&format!(" ({class})"));
+        }
+    }
+    text
+}
+
+/// The status view of one saved session, read without an engine, a model or any process: the
+/// session's stored facts and, when a worker saved a snapshot, its counters, cache, turn and
+/// cost. Every other row stays unavailable with its fixed reason.
+fn session_view(store: &dyn SessionStore, sref: &SessionRef, out: &mut dyn Write) -> io::Result<()> {
+    let mut view = StatusView::new(sref.id.clone());
+    match store.load(sref) {
+        Ok(entries) => {
+            let counts = oxa_session::message_counts(&entries);
+            let mut name = None;
+            for entry in entries.iter().rev() {
+                if let oxa_proto::EntryBody::SessionInfo { name: saved } = &entry.body {
+                    name = Some(saved.trim().to_string()).filter(|n| !n.is_empty());
+                    break;
+                }
+            }
+            view = view.set(Row::SessionFile, sref.path.display().to_string());
+            view = view.set(Row::SessionId, sref.id.clone());
+            view = view.set(Row::SessionName, name.unwrap_or_else(|| "(not set)".to_string()));
+            let messages = messages_text(counts.user, counts.assistant, counts.tool_calls);
+            view = view.set(Row::Messages, messages);
+        }
+        Err(_) => {
+            // The listing already skipped unreadable sessions; never present a half-read one.
+            view = view.set(Row::SessionFile, sref.path.display().to_string());
+            view = view.set(Row::SessionId, sref.id.clone());
+        }
+    }
+    view = snapshot_rows(view, sref);
+    for line in view.lines() {
+        writeln!(out, "{line}")?;
+    }
+    Ok(())
+}
+
+/// Add the rows a saved worker snapshot supplies. A missing snapshot leaves the turn row with
+/// its reason; a corrupt, oversized, symlinked or mismatched one says it cannot be read.
+fn snapshot_rows(mut view: StatusView, sref: &SessionRef) -> StatusView {
     let path = sref.path.with_extension("status.json");
-    if let Ok(value) = read_snapshot(&path) {
-        if value["type"] == "oxa_status" && value["version"] == 1 && value["session_id"] == sref.id {
-            let phase = value["phase"].as_str().unwrap_or("unknown");
-            let outcome = value["outcome"]["outcome"]
-                .as_str()
-                .map(|o| format!(" outcome {o}"))
-                .unwrap_or_default();
+    match read_snapshot(&path) {
+        Ok(mut value) => {
+            if value["type"] != "oxa_status" || value["version"] != 1 || value["session_id"] != sref.id {
+                let why = "unavailable (the worker snapshot does not match this session)";
+                return view.set(Row::Turn, why);
+            }
             let stalled = value["stall_deadline_ms"]
                 .as_u64()
                 .is_some_and(|deadline| now_ms() >= deadline);
-            let stalled = if stalled { " stalled" } else { "" };
-            view.turn = StatusRow::Fact(format!("phase {phase}{outcome}{stalled}"));
-            let tokens = &value["tokens"];
-            view.budget = StatusRow::Fact(format!(
-                "input {} output {} tokens",
-                tokens["prompt"].as_u64().unwrap_or(0),
-                tokens["completion"].as_u64().unwrap_or(0)
-            ));
+            value["stalled"] = stalled.into();
+            for (row, what) in [
+                (Row::Tokens, "tokens"),
+                (Row::LastCache, "cache"),
+                (Row::Turn, "turn"),
+                (Row::Cost, "cost"),
+            ] {
+                if let Some(text) = snapshot_value(&value, what) {
+                    view = view.set(row, text);
+                }
+            }
+            view
         }
+        Err(error) if error.code != codes::NOT_FOUND && path.exists() => {
+            let why = "unavailable (the worker snapshot is not a readable private file)";
+            view.set(Row::Turn, why)
+        }
+        Err(_) => view, // No worker snapshot for this session (yet).
     }
-    for line in view.lines() {
-        writeln!(out, "{line}").map_err(|e| OxaError::io("cannot write the status view", &e))?;
-    }
-    Ok(0)
 }
 
 fn read_snapshot(path: &Path) -> Result<Value, OxaError> {

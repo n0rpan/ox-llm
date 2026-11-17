@@ -36,7 +36,7 @@ pub use clock::{local_time, LocalTime};
 pub use goal::{Goal, GoalBudget, GoalStatus, GOAL_ENTRY};
 pub use lifecycle::SpillLifecycleLock;
 pub use lock::{lock_path_of, SessionLock, LOCKED};
-pub use meta::{search_sessions, sort_sessions, SessionSort};
+pub use meta::{message_counts, search_sessions, sort_sessions, MessageCounts, SessionSort};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
 pub use spill::{inherited_spill_dirs, remove_session_preserving_spills, remove_spill_dir_unless_forked};
 pub use store::{

@@ -57,6 +57,35 @@ pub(crate) fn meta_of_parts(sref: SessionRef, header: &SessionHeader, entries: &
     }
 }
 
+/// Saved message counts of a session: user and assistant messages (the picker's
+/// `message_count`) and the tool calls those assistant messages carry.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessageCounts {
+    pub user: u32,
+    pub assistant: u32,
+    pub tool_calls: u32,
+}
+
+/// Count the messages of a saved session. A tool call is one entry of an assistant message's
+/// `tool_calls`; the results are tool-role messages and are not calls.
+pub fn message_counts(entries: &[Entry]) -> MessageCounts {
+    let mut counts = MessageCounts::default();
+    for e in entries {
+        let EntryBody::Msg { wire, .. } = &e.body else {
+            continue;
+        };
+        match wire.role {
+            Role::User => counts.user += 1,
+            Role::Assistant => {
+                counts.assistant += 1;
+                counts.tool_calls += wire.tool_calls.len() as u32;
+            }
+            _ => {}
+        }
+    }
+    counts
+}
+
 /// Display/search text shared by the metadata builder and both stores' listings.
 /// Without provenance, a trailing note-shaped block may be user-authored and is preserved.
 pub(crate) fn message_text(body: &EntryBody) -> &str {

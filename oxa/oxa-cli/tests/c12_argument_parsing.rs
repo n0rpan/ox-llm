@@ -55,6 +55,26 @@ fn send_status_and_work_preserve_subcommand_arguments() {
     }
 }
 
+/// A leading offline switch keeps the read-only status read a subcommand, so `oxa --offline
+/// status` reports a saved session instead of prompting the model with the word `status`.
+#[test]
+fn offline_status_preserves_the_subcommand() {
+    let a = parse(&["--offline", "status"]);
+    assert!(a.offline);
+    assert_eq!(a.subcommand, Some(Subcommand::Status(Vec::new())));
+    assert!(a.messages.is_empty());
+    let a = parse(&["--offline", "status", "session-1", "--session-dir", "elsewhere"]);
+    assert!(a.offline);
+    assert_eq!(
+        a.subcommand,
+        Some(Subcommand::Status(argv(&["session-1", "--session-dir", "elsewhere"])))
+    );
+    // Any other leading option keeps the old positional behaviour.
+    let a = parse(&["--offline", "-p", "status"]);
+    assert_eq!(a.subcommand, None);
+    assert_eq!(a.messages, ["status"]);
+}
+
 /// A leading offline switch must not turn inbox delivery into a model prompt.
 #[test]
 fn offline_send_preserves_subcommand_arguments() {

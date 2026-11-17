@@ -126,3 +126,8 @@ one short line per task.
 The [checkpoint integration contract](work-state.md) defines the runner's public
 event hook. Event/situation/standing stores and their CLI adapters are a separate
 integration; this slice does not infer facts from worker prose or raw logs.
+
+A targeted stop (`oxa work stop <id>`) is specified but **not implemented**: it will signal
+only a worker whose task lock and process identity it has positively validated, reuse the
+runner's graceful termination and leave every saved artifact in place. The [status and
+targeted stop design](status.md) states the ownership rules, the receipt and the refusals.

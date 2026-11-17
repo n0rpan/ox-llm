@@ -1492,8 +1492,10 @@ fn apply_branch_counts(stats: &mut Stats, branch: &[Entry]) {
     }
 }
 
-/// The most recently modified session of `cwd`, if any.
-fn latest_of(store: &dyn SessionStore, cwd: &std::path::Path) -> Option<SessionRef> {
+/// The most recently modified saved session of `cwd`, if any: the session `--continue` opens and
+/// the one bare `oxa status` reports. One rule for both, so a status read cannot disagree with
+/// the session a continue would resume.
+pub fn latest_of(store: &dyn SessionStore, cwd: &std::path::Path) -> Option<SessionRef> {
     store
         .list(Some(cwd))
         .into_iter()

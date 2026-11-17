@@ -1,5 +1,6 @@
 //! C5: the slash-command registry and input expansion.
 // ported from pi packages/coding-agent/src/core/slash-commands.ts and prompt-templates.ts (expansion)
+use crate::status_view::{context_text, messages_text, model_text, tokens_text, Row, StatusView};
 use crate::SessionState;
 use oxa_proto::{CommandSpec, Source};
 use oxa_resources::{expand_skill_command, expand_template_command};
@@ -50,11 +51,6 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
     ("copy", "Copy last agent message to clipboard", None),
     ("name", "Set session display name", Some("[name]")),
     ("session", "Show session info and stats", None),
-    (
-        "status",
-        "Show the one status view: session, turn, jobs, queue, engine, budget",
-        None,
-    ),
     ("hotkeys", "Show all keyboard shortcuts", None),
     ("fork", "Create a new fork from a previous user message", None),
     (
@@ -78,6 +74,7 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
     ),
     ("help", "List the commands", None),
     ("usage", "Show token usage of this session", None),
+    ("status", "Show the session's work status in one view", None),
     ("quit", "Quit oxa", None),
 ];
 
@@ -238,7 +235,8 @@ fn admit(out: &mut Vec<CommandSpec>, taken: &mut HashSet<String>, c: CommandSpec
 /// them as notices. pi has no built-in commands outside its TUI (it sends `/reload` to the
 /// model as text); oxa runs the ones that have a meaning without a TUI:
 ///
-/// * `/engine [status|load <model>]`, `/session`, `/trust [parent|no]` (a bare `/trust` saves
+/// * `/engine [status|load <model>]`, `/session`, `/status` (the one status view),
+///   `/trust [parent|no]` (a bare `/trust` saves
 ///   "trust this project": the command itself is the decision, there is no selector),
 ///   `/reload`, `/bug <description>` (the local bundle), `/compact [instructions]`,
 ///   `/name <name>`, `/thinking <level>`, `/mode <mode>`, `/model <id>`;
@@ -327,6 +325,7 @@ fn run_builtin_inner(
             Ok(Vec::new())
         }
         "session" => Ok(session_lines(session)),
+        "status" => Ok(session_status_lines(session)),
         "reload" => {
             let changed = session.reload(sink, ui)?;
             Ok(vec![if changed {
@@ -384,6 +383,75 @@ fn run_builtin_inner(
             format!("/{name} is available in interactive mode"),
         )),
     }
+}
+
+/// The rows `/status` fills from the running session: the session file, id, name and message
+/// counts, the tokens, the context use and the cache of the last request. `/session` keeps its
+/// own older layout for compatibility; the status view is the one every surface shares.
+fn session_rows(view: StatusView, session: &crate::Session) -> StatusView {
+    let state = session.state();
+    let stats = session.stats();
+    let file = match &state.session_file {
+        Some(p) => p.display().to_string(),
+        None => "(ephemeral, not saved)".to_string(),
+    };
+    let name = state.session_name.clone().unwrap_or_else(|| "(not set)".to_string());
+    let mut view = view.set(Row::SessionFile, file);
+    view = view.set(Row::SessionId, state.session_id.clone());
+    view = view.set(Row::SessionName, name);
+    view = view.set(
+        Row::Messages,
+        messages_text(stats.user_messages, stats.assistant_messages, stats.tool_calls),
+    );
+    view = view.set(Row::Tokens, tokens_text(stats.prompt_tokens, stats.completion_tokens));
+    view = view.set(Row::Context, context_text(stats.context_tokens, state.n_ctx));
+    if let Some(usage) = session.inner().last_usage {
+        view = view.set(Row::LastCache, cache_text(usage.cached, usage.prompt));
+    }
+    view
+}
+
+/// The `/status` view outside the TUI: the shared rows plus the facts a running session really
+/// has (its model, turn and queues). Children, the goal, lead facts and a cost meter are not
+/// read here and stay unavailable with their reason.
+fn session_status_lines(session: &crate::Session) -> Vec<String> {
+    let st = session.inner();
+    let turn = turn_text(st);
+    let model = model_text(&st.model, st.info.caps.remote, st.info.caps.remote_provider);
+    let mut view = session_rows(StatusView::new(st.sref.id.clone()), session);
+    view = view.set(Row::Turn, turn);
+    view = view.set(Row::Model, model);
+    let queue = st.shared.queue.lock().unwrap_or_else(|p| p.into_inner());
+    view = view.set(Row::Steering, queue.steering.len().to_string());
+    view = view.set(Row::FollowUp, queue.follow_up.len().to_string());
+    drop(queue);
+    if !st.info.base_url.is_empty() {
+        view = view.set(Row::EngineEndpoint, st.info.base_url.clone());
+        view = view.set(Row::EngineModel, st.info.model.clone());
+        // `EngineInfo::queue` is "requests waiting; 0 when the engine does not report it":
+        // the same fact `/engine` shows, never an invented length.
+        view = view.set(Row::EngineQueue, format!("{} waiting", st.info.queue));
+    }
+    view = view.set(Row::Jobs, format!("{} running", st.jobs.running()));
+    view.lines()
+}
+
+/// The turn row of a running session: whether a run is busy, whether a model request is in
+/// flight and the last job's outcome. Reads only the session's own state.
+fn turn_text(st: &SessionState) -> String {
+    let busy = st.shared.busy.load(std::sync::atomic::Ordering::SeqCst);
+    let mut out = if busy { "running".to_string() } else { "idle".to_string() };
+    let in_flight = st.shared.gate.in_flight.load(std::sync::atomic::Ordering::SeqCst);
+    if in_flight {
+        out.push_str(", model request in flight");
+    }
+    let outcome = st.stats.outcome.record();
+    let name = outcome["outcome"].as_str().unwrap_or("nothing_to_do");
+    out.push_str(&format!("; last job: {name}"));
+    if let Some(class) = outcome["error_class"].as_str() {
+        out.push_str(&format!(" ({class})"));
+    }
+    out
 }
 
 /// The `/session` listing outside the TUI: file, id, name, message counts, tokens, context.

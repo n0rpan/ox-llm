@@ -638,11 +638,14 @@ impl Client {
             .as_str()
             .filter(|s| !s.is_empty())
             .ok_or(Error::Refresh)?;
-        let refresh = value
-            .get("refresh_token")
-            .map_or(Some(old.refresh_token()), Value::as_str)
-            .filter(|s| !s.is_empty())
-            .ok_or(Error::Refresh)?;
+        // Match the token-file helper: no rotation keeps the existing grant.
+        // Malformed replacements must still fail rather than lose that grant.
+        let refresh = match value.get("refresh_token") {
+            None | Some(Value::Null) => old.refresh_token(),
+            Some(Value::String(s)) if s.is_empty() => old.refresh_token(),
+            Some(Value::String(s)) => s,
+            _ => return Err(Error::Refresh),
+        };
         let expires = match value.get("expires_in") {
             Some(value) => {
                 let lifetime = value.as_u64().filter(|n| *n > 120).ok_or(Error::Refresh)?;

@@ -129,7 +129,7 @@ fn parity_rows() -> Vec<ParityRow> {
             test: cells[5].trim_matches('`').to_string(),
         });
     }
-    assert_eq!(rows.len(), 25, "25 supported SLASH rows");
+    assert_eq!(rows.len(), 26, "26 supported SLASH rows");
     rows
 }
 
@@ -178,7 +178,7 @@ fn a_rows_name_their_invariant() {
         );
         n += 1;
     }
-    assert_eq!(n, 9, "A rows of SLASH (9)");
+    assert_eq!(n, 10, "A rows of SLASH (10)");
 }
 
 // ---------------------------------------------------------------- helpers
@@ -454,6 +454,50 @@ fn slash_011() {
     assert!(s.contains("Session file:"), "{s:?}");
     assert!(s.contains(id.as_str().unwrap()), "the session id is shown: {s:?}");
     assert!(s.contains("Messages: user 2, assistant 2"), "{s:?}");
+}
+
+/// `/status` shows the session's work in one static view; rows the interface cannot source say
+/// why instead of showing a zero.
+#[test]
+fn slash_031() {
+    // invariant: oxa only (the one status view). The interface reads the session, the turn and
+    // its queues; the job registry, children, goal, lead and a cost meter are not reachable from
+    // the UI thread, so those rows are unavailable with a fixed reason, never a zero.
+    let rig = Rig::start(
+        replies(2),
+        RigOpts {
+            // Tall enough that the whole view (rows, section headings and block gaps) is on
+            // screen at once: it is static text.
+            size: (90, 160),
+            ..RigOpts::default()
+        },
+    );
+    rig.prompt("status please", "reply 1");
+    rig.slash("/status");
+    let id = header_of(&rig.session_files()[0])["id"].clone();
+    let id = id.as_str().unwrap().to_string();
+    let s = rig
+        .pty
+        .wait_for_named(
+            "the status view",
+            |s| s.contains("Status of session") && s.contains("Messages: user 1, assistant 1"),
+            WAIT,
+        )
+        .unwrap();
+    assert!(s.contains(&id), "the session id is shown: {s:?}");
+    assert!(s.contains("Turn: idle"), "{s:?}");
+    assert!(s.contains("Steering: 0") && s.contains("Follow-up: 0"), "{s:?}");
+    for row in [
+        "Background jobs: unavailable (no live job registry on this surface)",
+        "Child sessions: unavailable (no child-session listing yet)",
+        "Goal: unavailable (no goal record for this session)",
+        "Lead: unavailable (no lead facts for this session)",
+        "Cost: unavailable (no cost meter on this surface)",
+    ] {
+        assert!(s.contains(row), "{row:?} missing: {s:?}");
+    }
+    // The rows are static: they stay readable and the interface keeps working afterwards.
+    rig.prompt("still working", "reply 2");
 }
 
 /// `/tree`: moving the leaf to an earlier user message is a rebase; the abandoned branch is not sent.
@@ -928,32 +972,5 @@ fn slash_030() {
             .unwrap_or_default()
             .contains("TEMPLATE-GREET"))),
         "the template was not expanded"
-    );
-}
-
-/// #872: `/status` shows the one status view in the TUI: a session row, a turn row and
-/// explicit `unavailable:` rows. It is not a pi command, so it has no PARITY row.
-#[test]
-fn status_shows_one_view_in_the_tui() {
-    let rig = Rig::start(replies(1), RigOpts::default());
-    rig.prompt("first", "reply 1");
-    rig.slash("/status");
-    let s = rig
-        .pty
-        .wait_for_named(
-            "the status view",
-            |s| s.contains("Status") && s.contains("session") && s.contains("unavailable:"),
-            WAIT,
-        )
-        .unwrap();
-    let id = header_of(&rig.session_files()[0])["id"].clone();
-    assert!(s.contains(id.as_str().unwrap()), "the session id: {s:?}");
-    assert!(s.contains("turn"), "the turn row: {s:?}");
-    assert!(s.contains("budget"), "the budget row: {s:?}");
-    // The view is static: it starts no request of its own.
-    assert_eq!(
-        rig.generating().len(),
-        1,
-        "one prompt, no extra request from /status"
     );
 }

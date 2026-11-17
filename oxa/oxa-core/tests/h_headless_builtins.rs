@@ -166,3 +166,46 @@ fn reload_recreates_code_loaded_hook_sets() {
     );
     assert!(ui.notes.iter().all(|(l, _)| *l != Level::Error), "{:?}", ui.notes);
 }
+
+/// `/status` outside the TUI: the shared view, filled from the running session. Rows the core
+/// session cannot source (children, goal, lead, cost) stay unavailable with their reason.
+#[test]
+fn status_shows_the_shared_view() {
+    let env = TestEnv::new();
+    let mut s = open(&env, Vec::new());
+    let lines = run(&mut s, "status", "").expect("status");
+    let (id, model) = {
+        let state = s.state();
+        (state.session_id.clone(), state.model.clone())
+    };
+    assert_eq!(lines[0], format!("Status of session {id}"));
+    for line in [
+        format!("  Session id: {id}"),
+        "  Name: (not set)".to_string(),
+        "  Messages: user 0, assistant 0, tool calls 0".to_string(),
+        "  Tokens: input 0, output 0".to_string(),
+        "  Turn: idle; last job: nothing_to_do".to_string(),
+        format!("  Model: {model} (local)"),
+        "  Steering: 0".to_string(),
+        "  Follow-up: 0".to_string(),
+        "  Background jobs: 0 running".to_string(),
+    ] {
+        assert!(lines.iter().any(|l| *l == line), "{line:?} missing from {lines:?}");
+    }
+    for line in [
+        "  Child sessions: unavailable (no child-session listing yet)",
+        "  Goal: unavailable (no goal record for this session)",
+        "  Lead: unavailable (no lead facts for this session)",
+        "  Cost: unavailable (no cost meter on this surface)",
+    ] {
+        assert!(lines.iter().any(|l| *l == line), "{line:?} missing from {lines:?}");
+    }
+    // A synthetic queued message is a real queue fact, not a fabricated count.
+    s.handle().steer("queued steering".to_string());
+    let queued = run(&mut s, "status", "").expect("status");
+    assert!(
+        queued.iter().any(|l| l == "  Steering: 1"),
+        "the steering queue is reported: {queued:?}"
+    );
+    let _ = run(&mut s, "status", "extra").expect("arguments are ignored");
+}

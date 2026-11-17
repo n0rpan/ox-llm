@@ -1413,6 +1413,7 @@ impl<'a> Loop<'a> {
             self.editor.add_history(&text);
             if self.running() {
                 self.handle.follow_up(text);
+                self.wake_queued();
                 self.sync_queue();
             } else {
                 let parts = self.take_attachments();
@@ -1683,6 +1684,7 @@ impl<'a> Loop<'a> {
         }
         if self.running() {
             self.handle.steer(trimmed);
+            self.wake_queued();
             self.sync_queue();
         } else {
             let parts = self.take_attachments();
@@ -1711,7 +1713,6 @@ impl<'a> Loop<'a> {
                 engine_url: &self.session.engine_url,
                 models: &self.session.models,
                 queue: (!self.session.engine_url.is_empty()).then_some(self.session.queue),
-                jobs_running: Some(self.session.jobs_running),
             };
             dispatch_slash(line, &cx)
         };
@@ -1729,6 +1730,19 @@ impl<'a> Loop<'a> {
             Block::Assistant { text, .. } if !text.is_empty() => Some(text.clone()),
             _ => None,
         })
+    }
+
+    /// An active run may consume this input, but its final queue take may already be past.
+    /// Keep one handle-bound wake on the existing worker channel for that handoff window.
+    fn wake_queued(&self) {
+        if self.handle.request_queued_wake()
+            && self
+                .cmds
+                .send(SessionCmd::QueuedInput(self.handle.clone()))
+                .is_err()
+        {
+            self.handle.clear_queued_wake();
+        }
     }
 
     /// Show the queues as they are now (the core reports them only when it takes from them).

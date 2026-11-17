@@ -190,8 +190,9 @@ const COMMANDS: &[(&str, &str)] = &[
         "Manage private guest keys and daily limits",
     ),
     (
-        "oxa status [session-id|session-file]",
-        "Show the one status view of the current saved session, or read a saved session's progress and stall signal",
+        "oxa status [<session-id|session-file>]",
+        "Show a saved session's work status (the current directory's session when omitted), \
+         or its JSON progress snapshot with an explicit session",
     ),
     (
         "oxa install <source> [-l]",
@@ -538,11 +539,13 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
-        // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
-        // another option or `--` appears, later words retain their positional meaning.
+        // Inbox delivery, work and the read-only status view accept leading offline switches.
+        // Once a prompt, another option or `--` appears, later words retain their positional
+        // meaning.
         if !stop
             && (i == 1
-                || (matches!(arg, "send" | "work") && argv[..i - 1].iter().all(|word| word == "--offline")))
+                || (matches!(arg, "send" | "work" | "status")
+                    && argv[..i - 1].iter().all(|word| word == "--offline")))
         {
             if let Some(sub) = subcommand(arg, &argv[i..])? {
                 a.subcommand = Some(sub);
