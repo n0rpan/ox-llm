@@ -77,6 +77,23 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         cwd,
     } = io;
 
+    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(argv) {
+        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
+            && invocation.args.is_empty()
+        {
+            let menu = oxa_interactive::command_menu::menu(
+                invocation.command.id,
+                oxa_interactive::command_registry::Surface::Cli,
+            )
+            .unwrap_or_default();
+            return if stdout.write_all(menu.as_bytes()).is_ok() {
+                0
+            } else {
+                2
+            };
+        }
+    }
+
     if let Some(help) = crate::help::from_argv(argv) {
         return match help {
             Ok(text) => {
@@ -145,6 +162,26 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            Subcommand::Registered(id, words) => {
+                use oxa_interactive::command_registry::CommandId;
+                match id {
+                    CommandId::LeadServe if words.0.is_empty() => {
+                        crate::lead_serve::run(&dirs, &cwd, env, &mut *stdout)
+                    }
+                    CommandId::Lead
+                    | CommandId::LeadServe
+                    | CommandId::LeadBoard
+                    | CommandId::LeadStatus
+                    | CommandId::LeadAsks
+                    | CommandId::LeadChat
+                    | CommandId::Help
+                    | CommandId::WorkStatus
+                    | CommandId::WorkBoard => Err(OxaError::new(
+                        codes::USAGE,
+                        "registered command handler or arguments are unavailable",
+                    )),
+                }
+            }
             #[cfg(feature = "share")]
             Subcommand::Share(words) => {
                 let serve = words.first().is_some_and(|word| word == "serve");
