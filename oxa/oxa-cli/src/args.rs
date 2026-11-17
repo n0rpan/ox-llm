@@ -236,6 +236,11 @@ const COMMANDS: &[(&str, &str)] = &[
         "oxa share key <add|list|revoke>",
         "Manage private guest keys and daily limits",
     ),
+    #[cfg(feature = "share")]
+    (
+        "oxa share serve --model ALIAS",
+        "Serve selected native local models to authenticated guest devices",
+    ),
     (
         "oxa status <session-id|session-file>",
         "Read a saved session's current progress and stall signal",
@@ -633,11 +638,11 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
                 continue;
             }
         }
-        // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
-        // another option or `--` appears, later words retain their positional meaning.
+        // These commands accept leading offline switches so their own guards
+        // can report the refusal. A prompt, another option or `--` ends that prefix.
         if !stop
             && (i == 1
-                || ((matches!(arg, "send" | "work")
+                || ((matches!(arg, "send" | "work" | "share")
                     || oxa_interactive::command_registry::parse_cli(&argv[i - 1..])
                         .is_some_and(|invocation| registry_owned(invocation.command.id)))
                     && argv[..i - 1].iter().all(|word| word == "--offline")))
