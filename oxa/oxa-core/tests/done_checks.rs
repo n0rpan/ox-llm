@@ -217,6 +217,67 @@ fn failing_forever_stops_after_two_rounds() {
     assert_eq!(engine.remaining(), 1);
 }
 
+/// A check the shell cannot start (127: no such program, 126: not executable) says nothing
+/// about the source: it is reported as not run, spends no repair round and the run still ends
+/// failed, so the same exit code is not sent back and repeated.
+#[test]
+fn unrunnable_check_is_reported_once_and_not_retried() {
+    fn missing(_: &TestEnv) {}
+    fn not_executable(env: &TestEnv) {
+        std::fs::write(env.work().join("check.sh"), "exit 0\n").unwrap();
+    }
+    let cases: [(&str, &str, fn(&TestEnv)); 2] = [
+        ("oxa-969-missing-program --check", "command not found", missing),
+        ("./check.sh", "Permission denied", not_executable),
+    ];
+    for (entry, expected, prepare) in cases {
+        let env = TestEnv::new();
+        prepare(&env);
+        let (rec, engine, failed) = run_state(
+            &env,
+            json!([entry]),
+            vec![
+                write("c1", "a.txt"),
+                ScriptTurn::text("done"),
+                ScriptTurn::text("must not be requested"),
+            ],
+            Arc::new(Direct),
+        );
+        let checks = rec.checks();
+        assert_eq!(checks.len(), 1, "{entry}: {checks:?}");
+        assert!(
+            checks[0].contains("FAILED (not run)") && checks[0].contains(expected),
+            "{entry}: {checks:?}"
+        );
+        assert!(failed, "{entry}: a check that did not run is not a pass");
+        assert_eq!(engine.requests().len(), 2, "{entry}: no repair round");
+        assert_eq!(engine.remaining(), 1, "{entry}: no repair round");
+    }
+
+    // A real failure next to an unrunnable entry still gets its repair round; the next round
+    // then stops on the unrunnable one instead of repeating it.
+    let env = TestEnv::new();
+    let (rec, engine, failed) = run_state(
+        &env,
+        json!(["test -f fixed.txt || exit 3", "oxa-969-missing-program"]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            write("c2", "fixed.txt"),
+            ScriptTurn::text("done again"),
+        ],
+        Arc::new(Direct),
+    );
+    let checks = rec.checks();
+    assert_eq!(checks.len(), 4, "{checks:?}");
+    assert!(checks[0].contains("FAILED (exit 3)"), "{checks:?}");
+    assert!(checks[1].contains("FAILED (not run)"), "{checks:?}");
+    assert!(checks[2].ends_with("ok"), "{checks:?}");
+    assert!(checks[3].contains("FAILED (not run)"), "{checks:?}");
+    assert_eq!(engine.requests().len(), 4);
+    assert!(failed, "the unrunnable entry never verified the source");
+}
+
 #[test]
 fn failed_check_without_new_edit_is_not_rerun() {
     let env = TestEnv::new();

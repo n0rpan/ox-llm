@@ -105,6 +105,28 @@ fn print_exits_nonzero_when_done_checks_still_fail() {
     assert!(out.contains("finished"), "the reply is still printed: {out}");
 }
 
+/// A `done` entry the shell cannot start (exit 127) is reported once and not sent back for a
+/// repair round: `-p` names the entry instead of the generic failure and still exits 1.
+#[test]
+fn print_reports_a_check_that_could_not_be_started() {
+    let env = TestEnv::new();
+    trust_always(&env);
+    project_done(&env, r#"["oxa-969-missing-program --check"]"#);
+    let (code, _, err) = go(&env, edits_then_stops(1), &["-p", "go"]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(
+        err.matches("done checks could not be started").count(),
+        1,
+        "{err}"
+    );
+    assert!(err.contains("oxa-969-missing-program"), "{err}");
+    assert!(
+        err.contains("done check: oxa-969-missing-program --check FAILED (not run)"),
+        "{err}"
+    );
+    assert!(!err.contains(FAILED), "no generic failure line: {err}");
+}
+
 #[test]
 fn print_exits_zero_when_done_checks_pass() {
     let env = TestEnv::new();
