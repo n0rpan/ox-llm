@@ -87,6 +87,10 @@ impl Config {
         }
         Ok(config)
     }
+    /// Pre-bind feature selection only; requests still require `read_only` authorization.
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
     pub fn endpoint(&self) -> (IpAddr, u16) {
         (self.bind, self.port)
     }
