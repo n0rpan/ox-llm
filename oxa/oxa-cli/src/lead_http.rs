@@ -10,6 +10,8 @@ use std::{
 pub struct Request<'a> {
     pub method: &'a str,
     pub path: &'a str,
+    /// The single raw Host authority. This is input to policy, never expected/proven authority.
+    pub authority: &'a str,
     pub forwarded_login: Option<&'a str>,
 }
 
@@ -71,6 +73,7 @@ fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
         return Err("400 Bad Request");
     }
     let mut login = None;
+    let mut authority = None;
     for line in lines {
         let (name, value) = line.split_once(':').ok_or("400 Bad Request")?;
         if name.is_empty()
@@ -82,6 +85,9 @@ fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
         if name.eq_ignore_ascii_case("tailscale-user-login") && login.replace(value.trim()).is_some() {
             return Err("403 Forbidden");
         }
+        if name.eq_ignore_ascii_case("host") && authority.replace(value.trim()).is_some() {
+            return Err("400 Bad Request");
+        }
         if name.eq_ignore_ascii_case("transfer-encoding")
             || (name.eq_ignore_ascii_case("content-length") && value.trim() != "0")
         {
@@ -91,6 +97,7 @@ fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
     Ok(Request {
         method: first[0],
         path: first[1],
+        authority: authority.filter(|s| !s.is_empty()).ok_or("400 Bad Request")?,
         forwarded_login: login,
     })
 }
@@ -143,8 +150,11 @@ mod tests {
         for (request, permitted, status) in [
             ("GET / HTTP/1.1\r\nHost: example.invalid\r\nTailscale-User-Login: synthetic-private-marker\r\n\r\n", false, "403"),
             ("POST / HTTP/1.1\r\nHost: example.invalid\r\n\r\n", true, "405"),
-            ("GET / HTTP/1.1\r\nTailscale-User-Login: a\r\ntailscale-user-login: b\r\n\r\n", true, "403"),
-            ("GET / HTTP/1.1\r\nContent-Length: 1\r\n\r\n", true, "400"),
+            ("GET / HTTP/1.1\r\nHost: example.invalid\r\nTailscale-User-Login: a\r\ntailscale-user-login: b\r\n\r\n", true, "403"),
+            ("GET / HTTP/1.1\r\nHost: example.invalid\r\nContent-Length: 1\r\n\r\n", true, "400"),
+            ("GET / HTTP/1.1\r\n\r\n", true, "400"),
+            ("GET / HTTP/1.1\r\nHost: example.invalid\r\nHOST: other.invalid\r\n\r\n", true, "400"),
+            ("GET / HTTP/1.1\r\nHost: \r\n\r\n", true, "400"),
         ] {
             let (reply, reads) = exchange(request, permitted);
             assert!(reply.starts_with(&format!("HTTP/1.1 {status}")));
