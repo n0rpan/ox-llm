@@ -722,9 +722,12 @@ fn inbox_rebinding_rearms_admitted_messages_without_files() {
 }
 
 fn write_oversized_fixture(dir: &Path, during_write: impl FnOnce()) {
-    let mut file = std::fs::File::create(dir.join("oversized.msg")).unwrap();
+    let pending = dir.join("oversized.pending");
+    let mut file = std::fs::File::create(&pending).unwrap();
     during_write();
     file.write_all(&vec![b'x'; 256 * 1024 + 1]).unwrap();
+    drop(file);
+    std::fs::rename(pending, dir.join("oversized.msg")).unwrap();
 }
 
 #[test]
