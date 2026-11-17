@@ -32,11 +32,13 @@ fn action(value: Action) -> &'static str {
         Action::FixRequiredCi => "Fix required CI",
         Action::ResolveConflict => "Resolve conflict",
         Action::AddRemoves => "Add removal rationale",
+        Action::BuildIssue => "Build approved issue",
         Action::PromoteDraft => "Promote green draft",
         Action::Ready => "Ready to land",
         Action::WaitRequiredCi => "Wait for required CI",
         Action::WaitMergeability => "Wait for mergeability",
         Action::WaitReview => "Wait for review",
+        Action::WaitIssue => "Wait for issue intake",
     }
 }
 fn subject(value: &Subject) -> String {
