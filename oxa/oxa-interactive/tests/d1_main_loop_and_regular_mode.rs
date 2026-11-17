@@ -547,17 +547,17 @@ fn escape_aborts_and_restores_queue() {
         vec![WorkerMsg::Event(AgentEvent::AgentStart)],
     );
     assert_eq!(d.code, 0);
-    // Escape restores queued input; explicit resubmission is a new recovery prompt.
+    // Escape restores queued text; explicit Enter recovers after the canceled run.
     let (steering, follow_up) = s.handle().queued();
-    assert_eq!(
-        steering,
-        Vec::<String>::new(),
-        "restored input must not return to the canceled run queue"
+    assert!(
+        steering.is_empty(),
+        "recovered text must not steer the canceled run"
     );
     assert!(follow_up.is_empty());
     assert!(
-        matches!(d.cmds.as_slice(), [SessionCmd::RecoveryPrompt { handle, text, .. }] if handle.same_instance(&s.handle()) && text == "q1"),
-        "restored input retains its original handle and explicit recovery boundary"
+        matches!(d.cmds.as_slice(), [SessionCmd::RecoveryPrompt { handle, text, parts }]
+            if handle.same_instance(&s.handle()) && text == "q1" && parts.is_empty()),
+        "restored input becomes exactly one recovery prompt on its original handle"
     );
 }
 

@@ -211,6 +211,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                 let subagent = Arc::new(
                     SubagentHooks::new(bin, agents)
                         .with_settings(i.settings)
+                        .with_tool_exclusions(i.args.exclude_tools.clone())
                         .with_yolo(i.yolo.clone()),
                 );
                 sets.hooks.push(subagent.clone());

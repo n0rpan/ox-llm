@@ -25,7 +25,7 @@ mod schema;
 mod settings;
 
 pub use dirs::dirs_from_env;
-pub use env::{Env, EnvVar, ENV_TABLE};
+pub use env::{env_flag, Env, EnvFlag, EnvVar, ENV_TABLE, FALSE_WORDS, TRUE_WORDS};
 pub use keybindings::{ActionDef, Keymap};
 pub use models::{resolve_model, resolve_scoped, Endpoint, ModelRef, ModelsConfig};
 pub use profile::{ThinkingPolicy, BASH_TIMEOUT_DEFAULT, SUMMARY_TARGET_DEFAULT};
