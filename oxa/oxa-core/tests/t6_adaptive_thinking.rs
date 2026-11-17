@@ -140,6 +140,7 @@ fn state_with(
     });
     let tools = tools();
     let st = SessionState {
+        goal: None,
         output_schema: None,
         engine,
         store,
