@@ -13,6 +13,7 @@ pub enum GoalStatus {
     Done,
     Blocked,
     Paused,
+    Canceled,
 }
 impl GoalStatus {
     pub fn as_str(self) -> &'static str {
@@ -21,6 +22,7 @@ impl GoalStatus {
             Self::Done => "done",
             Self::Blocked => "blocked",
             Self::Paused => "paused",
+            Self::Canceled => "canceled",
         }
     }
 }
@@ -148,13 +150,23 @@ impl Goal {
         }
     }
     pub fn resume(&mut self) -> Result<(), OxaError> {
-        if self.status == GoalStatus::Done || self.exhausted() {
+        if self.is_terminal() || self.exhausted() {
             return Err(invalid());
         }
         self.status = GoalStatus::Pursuing;
         self.idle_stops = 0;
         self.evidence = None;
         Ok(())
+    }
+    pub fn cancel(&mut self) -> Result<(), OxaError> {
+        if self.is_terminal() {
+            return Err(invalid());
+        }
+        self.status = GoalStatus::Canceled;
+        Ok(())
+    }
+    fn is_terminal(&self) -> bool {
+        matches!(self.status, GoalStatus::Done | GoalStatus::Canceled)
     }
     pub fn value(&self) -> Value {
         json!({"version":1,"objective":self.objective,"status":self.status.as_str(),"started_ms":self.started_ms,
@@ -193,6 +205,7 @@ impl Goal {
             Some("done") => GoalStatus::Done,
             Some("blocked") => GoalStatus::Blocked,
             Some("paused") => GoalStatus::Paused,
+            Some("canceled") => GoalStatus::Canceled,
             _ => return Err(invalid()),
         };
         let evidence = match &v["evidence"] {
@@ -222,17 +235,27 @@ impl Goal {
     /// A goal belongs to the session, not a branch: latest native snapshot wins
     /// in file order, like its display name. A clear is an explicit tombstone.
     pub fn latest(entries: &[Entry]) -> Result<Option<Self>, OxaError> {
-        for entry in entries.iter().rev() {
-            if let EntryBody::Custom { custom_type, data } = &entry.body {
-                if custom_type == GOAL_ENTRY {
-                    return if data.is_null() {
-                        Ok(None)
-                    } else {
-                        Self::decode(data).map(Some)
-                    };
-                }
-            }
-        }
-        Ok(None)
+        last_record(entries)
+            .filter(|(_, data)| !data.is_null())
+            .map(|(_, data)| Self::decode(data))
+            .transpose()
     }
+
+    /// Session-scoped revision of the saved goal, including a clear. Zero means
+    /// there has been no goal record. File order keeps it stable on reopen and
+    /// advances it on replacement even when the new goal has identical contents.
+    pub fn revision(entries: &[Entry]) -> u64 {
+        last_record(entries).map_or(0, |(index, _)| index as u64 + 1)
+    }
+}
+
+fn last_record(entries: &[Entry]) -> Option<(usize, &Value)> {
+    entries
+        .iter()
+        .enumerate()
+        .rev()
+        .find_map(|(index, entry)| match &entry.body {
+            EntryBody::Custom { custom_type, data } if custom_type == GOAL_ENTRY => Some((index, data)),
+            _ => None,
+        })
 }
