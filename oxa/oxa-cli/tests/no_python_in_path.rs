@@ -142,6 +142,22 @@ fn controller_trap_detects_a_connection_without_a_request() {
 
 #[test]
 fn print_uses_native_gateway_without_python_or_controller() {
+    let scope_boundary = std::env::var("OXA_TEST_SCOPE_BOUNDARY").ok();
+    if let Some(mode) = &scope_boundary {
+        assert!(
+            matches!(mode.as_str(), "real" | "absent-bus"),
+            "unknown scope boundary"
+        );
+        assert!(
+            std::env::var_os("OXA_TEST_REQUIRE_RELEASE_ARTIFACT").is_some(),
+            "scope boundary requires exact artifacts"
+        );
+        let archive = std::env::var_os("OXA_TEST_RELEASE_ARCHIVE");
+        let hash = std::env::var("OXA_TEST_RELEASE_ARCHIVE_SHA256").ok();
+        verified_artifact(archive.as_deref().map(Path::new), hash.as_deref())
+            .expect("verify exact release archive");
+        eprintln!("REAL-SCOPE archive_sha256={} mode={mode}", hash.unwrap());
+    }
     let release = std::env::var_os("OXA_TEST_RELEASE_OXA");
     let required = std::env::var_os("OXA_TEST_REQUIRE_RELEASE_ARTIFACT").is_some();
     let binary = proof_binary(release.as_deref().map(Path::new), required).expect("select proof binary");
@@ -304,7 +320,12 @@ fn print_uses_native_gateway_without_python_or_controller() {
     mock.finish();
     if let Some(engine) = engine {
         shipped_engine_authenticated_props(&engine);
-        native_local_release_pair(&binary, &engine, false);
+        match scope_boundary.as_deref() {
+            Some("real") => real_scope_boundary(&binary, &engine, false),
+            Some("absent-bus") => real_scope_boundary(&binary, &engine, true),
+            None => native_local_release_pair(&binary, &engine, false),
+            _ => unreachable!(),
+        }
         native_local_release_pair(&binary, &engine, true);
     }
 }
@@ -695,4 +716,243 @@ fn native_local_release_pair(binary: &Path, engine: &Path, missing_weights: bool
         "local proof must need no cloud credentials"
     );
     println!("PASS exact release native model-free control: missing_weights={missing_weights}; no Python/controller; not real-model qualification");
+}
+
+// Prepared proof-only helper for composition with the published child sampler.
+// Existing exact artifact verification and calibrated traps remain the caller's.
+fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
+    use std::io::Write;
+    use std::os::unix::fs::MetadataExt;
+
+    let parent = oxc_local::memory::MemorySource::default()
+        .sample()
+        .expect("real scope boundary requires complete actual parent metadata");
+    assert!(
+        !parent.swap_limit_zero || parent.swap_current_bytes != 0,
+        "real scope boundary cannot use the inherited no-swap shortcut"
+    );
+    let uid = fs::metadata("/proc/self").unwrap().uid();
+    let bus = format!("/run/user/{uid}/bus");
+    if absent_bus {
+        assert!(
+            std::os::unix::net::UnixStream::connect(&bus).is_err(),
+            "absent-bus fixture must actually deny the canonical user socket"
+        );
+    }
+    let env = TestEnv::new();
+    let model = env.work().join("tokenizer-only.gguf");
+    tokenizer_fixture(&model);
+    let controller = TcpListener::bind("127.0.0.1:0").unwrap();
+    controller.set_nonblocking(true).unwrap();
+    let url = format!("http://{}", controller.local_addr().unwrap());
+    let bin = python_shims(&env);
+    let marker = env.tmp().join("python-invoked");
+    env.write("home/.oxa/agent/settings.json", &json!({
+        "defaultProjectTrust":"always", "defaultThinkingLevel":"off", "retry":{"enabled":false},
+        "oxa":{"local":{
+            "binary":engine, "startup_timeout_seconds":10,
+            "environment":{"PATH":bin,"OXA_TEST_PYTHON_MARKER":marker},
+            "models":{"synthetic":{"model":model,"arguments":["--engine","stub","--stub-reply","native-local-proof","--reasoning","off"]}},
+            "limits":{"synthetic":{"context_window":4096,"max_output":64,
+                "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}
+        }}
+    }).to_string());
+    let stdout = env.tmp().join("scope-stdout");
+    let stderr = env.tmp().join("scope-stderr");
+    let trace = env.tmp().join("scope.trace");
+    let mut child = TracedChild(
+        Command::new(required_tracer())
+            .args(["--kill-on-exit", "-f", "-e", "trace=execve,connect", "-o"])
+            .arg(&trace)
+            .arg(binary)
+            .args([
+                "--mode",
+                "rpc",
+                "--offline",
+                "--no-session",
+                "--no-tools",
+                "--model",
+                "synthetic",
+            ])
+            .env_clear()
+            .envs(env.envs(&url))
+            .env("PATH", &bin)
+            .env("OXA_TEST_PYTHON_MARKER", &marker)
+            .current_dir(env.work())
+            .stdin(Stdio::piped())
+            .stdout(File::create(&stdout).unwrap())
+            .stderr(File::create(&stderr).unwrap())
+            .spawn()
+            .expect("spawn exact release RPC binary"),
+    );
+    let mut input = child.0.stdin.take().unwrap();
+    writeln!(input, "{}", json!({"type":"prompt","message":"reply briefly"})).unwrap();
+    input.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut observed = None;
+    loop {
+        let text = fs::read_to_string(&trace).unwrap_or_default();
+        let oxa_pid = text.lines().find_map(|line| {
+            (line.contains(&format!("execve(\"{}\"", binary.display())) && line.ends_with("= 0"))
+                .then(|| line.split_whitespace().next()?.parse::<u32>().ok())
+                .flatten()
+        });
+        let pid = text.lines().find_map(|line| {
+            (line.contains(&format!("execve(\"{}\"", engine.display())) && line.ends_with("= 0"))
+                .then(|| line.split_whitespace().next()?.parse::<u32>().ok())
+                .flatten()
+        });
+        if let Some(pid) = pid {
+            if let Ok(membership) = fs::read_to_string(format!("/proc/{pid}/cgroup")) {
+                if let Some(relative) = membership.lines().find_map(|s| s.strip_prefix("0::/")) {
+                    assert!(Path::new(relative)
+                        .components()
+                        .all(|c| matches!(c, std::path::Component::Normal(_))));
+                    let path = Path::new("/sys/fs/cgroup").join(relative);
+                    let unit = path.file_name().unwrap().to_str().unwrap();
+                    if unit.starts_with("oxa-local-") && unit.ends_with(".scope") {
+                        let owner = oxa_pid.expect("exact traced oxa PID");
+                        let prefix = format!("oxa-local-{owner}-{pid}-");
+                        let serial = unit
+                            .strip_prefix(&prefix)
+                            .and_then(|s| s.strip_suffix(".scope"))
+                            .expect("scope must belong to exact traced oxa/engine PIDs");
+                        assert!(serial.parse::<u64>().is_ok(), "scope uniqueness serial");
+                        let sample = oxc_local::memory::MemorySource::default()
+                            .sample_child(pid)
+                            .expect("complete actual owned-child sample");
+                        assert!(sample.swap_limit_zero, "scope child swap limit");
+                        assert_eq!(sample.swap_current_bytes, 0, "scope child swap current");
+                        if observed.is_none() {
+                            eprintln!("REAL-SCOPE child_sample={sample:?}");
+                        }
+                        observed = Some((pid, path));
+                    }
+                }
+            }
+        }
+        let output = fs::read_to_string(&stdout).unwrap();
+        let errors = fs::read_to_string(&stderr).unwrap();
+        if absent_bus {
+            assert!(observed.is_none(), "absent bus must not create a real scope");
+            assert!(!output.contains("native-local-proof"), "unadmitted completion");
+            let diagnostic = format!("{output}\n{errors}");
+            if diagnostic.contains("systemd user bus StartTransientUnit") {
+                assert!(
+                    diagnostic.contains("no swap-enabled fallback")
+                        && diagnostic.contains("loginctl enable-linger $USER"),
+                    "missing no-fallback diagnostic"
+                );
+                break;
+            }
+        } else if observed.is_some() && output.contains("native-local-proof") {
+            break;
+        }
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "RPC exited before required scope evidence: {errors}"
+        );
+        assert!(
+            Instant::now() < deadline,
+            "scope task evidence timed out: {errors}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    drop(input);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "RPC cleanup timed out");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    if !absent_bus {
+        assert!(status.success(), "{}", fs::read_to_string(&stderr).unwrap());
+        let (pid, path) = observed.expect("real scope is mandatory");
+        while Path::new(&format!("/proc/{pid}")).exists() || path.exists() {
+            assert!(Instant::now() < deadline, "owned scope/child cleanup timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let unit = path.file_name().unwrap().to_str().unwrap();
+        loop {
+            // Observer infrastructure is outside the traced subject. The native
+            // launcher must still use D-Bus directly, without wrapper execs.
+            let result = Command::new("/usr/bin/busctl")
+                .env_clear()
+                .env("LC_ALL", "C")
+                .arg(format!("--address=unix:path={bus}"))
+                .args([
+                    "--timeout=3",
+                    "--json=short",
+                    "--allow-interactive-authorization=no",
+                    "call",
+                    "org.freedesktop.systemd1",
+                    "/org/freedesktop/systemd1",
+                    "org.freedesktop.systemd1.Manager",
+                    "ListUnits",
+                ])
+                .output()
+                .expect("scope collection observer must exist");
+            assert!(
+                result.status.success(),
+                "user manager must answer collection query"
+            );
+            let listing: serde_json::Value =
+                serde_json::from_slice(&result.stdout).expect("typed systemd unit listing");
+            assert_eq!(listing["type"], "a(ssssssouso)", "systemd unit-list signature");
+            assert!(listing["data"][0].is_array(), "systemd unit-list rows");
+            if !listing["data"][0]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row[0] == unit)
+            {
+                eprintln!("REAL-SCOPE owned_child_exited=true scope_collected=true");
+                break;
+            }
+            assert!(Instant::now() < deadline, "systemd scope collection timed out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    } else {
+        assert!(!status.success(), "absent user bus must return nonzero");
+    }
+    let text = fs::read_to_string(&trace).unwrap();
+    let mut executed = std::collections::BTreeSet::new();
+    for line in text
+        .lines()
+        .filter(|s| s.contains("execve(\"") && s.ends_with("= 0"))
+    {
+        let path = line.split("execve(\"").nth(1).unwrap().split('"').next().unwrap();
+        assert!(
+            Path::new(path) == binary || Path::new(path) == engine,
+            "unexpected scoped child executable"
+        );
+        executed.insert(PathBuf::from(path));
+    }
+    assert!(executed.contains(binary));
+    if !absent_bus {
+        assert!(executed.contains(engine));
+    }
+    for pid in text.lines().filter_map(|line| {
+        (line.contains(&format!("execve(\"{}\"", engine.display())) && line.ends_with("= 0"))
+            .then(|| line.split_whitespace().next()?.parse::<u32>().ok())
+            .flatten()
+    }) {
+        assert!(
+            !Path::new(&format!("/proc/{pid}")).exists(),
+            "owned engine survived RPC exit"
+        );
+    }
+    for port in [8092, controller.local_addr().unwrap().port()] {
+        assert!(
+            !text.contains(&format!("_port=htons({port})")),
+            "legacy controller connection"
+        );
+    }
+    no_controller_connection(&controller);
+    assert!(!marker.exists(), "Python shim invoked");
+    assert!(
+        !env.home().join(".config/oxc").exists(),
+        "local task must need no cloud credentials"
+    );
 }
