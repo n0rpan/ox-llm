@@ -38,6 +38,8 @@ pub fn no_tool_alias(flag: &str) -> Option<&'static str> {
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    /// Typed commands admitted by the shared registry; arguments never enter Debug output.
+    Registered(oxa_interactive::command_registry::CommandId, RegistryArgs),
     #[cfg(feature = "share")]
     Share(Vec<String>),
     /// Read the live snapshot of a saved session.
@@ -60,6 +62,19 @@ pub enum Subcommand {
     Wipe(Vec<String>),
     /// Publish a follow-up to a session's file inbox.
     Send(Vec<String>),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RegistryArgs(pub Vec<String>);
+impl std::fmt::Debug for RegistryArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RegistryArgs([redacted])")
+    }
+}
+
+pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
+    use oxa_interactive::command_registry::CommandId;
+    !matches!(id, CommandId::Help | CommandId::WorkStatus | CommandId::WorkBoard)
 }
 
 /// Login words can contain a mistakenly pasted callback. Never expose them
@@ -622,7 +637,10 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
         // another option or `--` appears, later words retain their positional meaning.
         if !stop
             && (i == 1
-                || (matches!(arg, "send" | "work") && argv[..i - 1].iter().all(|word| word == "--offline")))
+                || ((matches!(arg, "send" | "work")
+                    || oxa_interactive::command_registry::parse_cli(&argv[i - 1..])
+                        .is_some_and(|invocation| registry_owned(invocation.command.id)))
+                    && argv[..i - 1].iter().all(|word| word == "--offline")))
         {
             if let Some(sub) = subcommand(arg, &argv[i..])? {
                 a.subcommand = Some(sub);
@@ -1031,6 +1049,11 @@ pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
     out.push_str("Commands:\n");
     for (left, desc) in COMMANDS {
         out.push_str(&format!("  {left:<36}{desc}\n"));
+    }
+    for entry in oxa_interactive::command_registry::entries(oxa_interactive::command_registry::Surface::Cli)
+        .filter(|entry| registry_owned(entry.id))
+    {
+        out.push_str(&format!("  oxa {:<32}{}\n", entry.path.join(" "), entry.summary));
     }
     out.push_str("\nOptions:\n");
     for (left, desc) in OPTIONS {

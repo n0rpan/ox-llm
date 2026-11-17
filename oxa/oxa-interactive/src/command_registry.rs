@@ -59,6 +59,20 @@ impl Surfaces {
     }
 }
 
+// Reservations are invisible until the corresponding consumer handler is integrated.
+const LEAD_PENDING: Surfaces = Surfaces {
+    cli: Availability::Exception("Lead handler integration is pending"),
+    slash: Availability::Exception("Lead handler integration is pending"),
+    menu: Availability::Exception("Lead menu integration is pending"),
+    web: Availability::Exception("Lead web adapter integration is pending"),
+};
+const NO_REQUIREMENTS: Requirements = Requirements {
+    restart: false,
+    browser: false,
+    tty: false,
+    owner_only: false,
+};
+
 #[derive(Clone, Copy, Debug)]
 pub struct Declaration {
     pub id: CommandId,
