@@ -1418,6 +1418,7 @@ impl<'a> Loop<'a> {
                 return;
             }
             if self.running() {
+                self.abort_requested = true;
                 self.handle.abort();
             }
             if matches!(self.vm.status.activity, Activity::Retrying { .. }) {
