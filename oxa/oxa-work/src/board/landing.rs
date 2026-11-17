@@ -16,12 +16,19 @@ pub enum LatestReviews {
     Unresolved,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RejectionCause<'a> {
+    Unknown,
+    MergeConflict,
+    FailedTests(&'a [&'a str]),
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Rejection<'a> {
     pub head: &'a str,
     pub main: &'a str,
-    /// Exact failing test names from the queue receipt, for the author's notice.
-    pub failing_tests: &'a [&'a str],
+    /// Failed test names must come from the rejected merge-group run.
+    pub cause: RejectionCause<'a>,
     pub notified: bool,
     /// The caller retains the retry receipt across subsequent rejections.
     pub retry_used: bool,
@@ -63,7 +70,7 @@ pub enum Next {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Notice<'a> {
     pub head: &'a str,
-    pub failing_tests: &'a [&'a str],
+    pub cause: RejectionCause<'a>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,12 +130,10 @@ impl Policy {
             };
         }
         let notify_rejection = match queue {
-            Queue::Rejected(r) if !r.notified && !r.head.is_empty() && !r.failing_tests.is_empty() => {
-                Some(Notice {
-                    head: r.head,
-                    failing_tests: r.failing_tests,
-                })
-            }
+            Queue::Rejected(r) if !r.notified && !r.head.is_empty() => match r.cause {
+                RejectionCause::Unknown | RejectionCause::FailedTests([]) => None,
+                cause => Some(Notice { head: r.head, cause }),
+            },
             _ => None,
         };
         let next = match (reviews, queue) {
@@ -138,13 +143,19 @@ impl Policy {
             (_, Queue::Queued { .. }) => Next::AlreadyQueued,
             _ if entry.action != Action::Ready || !entry.eligible => Next::WaitBoard,
             (_, Queue::Unknown) => Next::WaitQueue,
-            (_, Queue::Absent) => Next::Enqueue,
+            (_, Queue::Absent) if !main.is_empty() => Next::Enqueue,
+            (_, Queue::Absent) => Next::WaitReconciliation,
             (_, Queue::Rejected(r))
                 if r.head != entry.head || r.head.is_empty() || r.main.is_empty() || main.is_empty() =>
             {
                 Next::WaitReconciliation
             }
-            (_, Queue::Rejected(r)) if !r.notified => Next::WaitNotification,
+            (_, Queue::Rejected(r))
+                if !r.notified
+                    || matches!(r.cause, RejectionCause::Unknown | RejectionCause::FailedTests([])) =>
+            {
+                Next::WaitNotification
+            }
             (_, Queue::Rejected(r)) if r.retry_used => Next::RetryExhausted,
             (_, Queue::Rejected(r)) if r.main == main => Next::WaitMain,
             (_, Queue::Rejected(_)) => Next::Retry,

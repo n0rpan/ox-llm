@@ -41,7 +41,7 @@ fn rejection() -> Rejection<'static> {
     Rejection {
         head: "head-one",
         main: "main-one",
-        failing_tests: &["synthetic_regression"],
+        cause: RejectionCause::FailedTests(&["synthetic_regression"]),
         notified: false,
         retry_used: false,
     }
@@ -85,19 +85,34 @@ fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves(
         notice.notify_rejection,
         Some(Notice {
             head: "head-one",
-            failing_tests: &["synthetic_regression"],
+            cause: RejectionCause::FailedTests(&["synthetic_regression"]),
         })
     );
     assert_eq!(notice.next, Next::WaitNotification);
     let missing_tests = plan(
         Rejection {
-            failing_tests: &[],
+            cause: RejectionCause::FailedTests(&[]),
             ..rejected
         },
         "main-two",
     );
     assert_eq!(missing_tests.notify_rejection, None);
     assert_eq!(missing_tests.next, Next::WaitNotification);
+    let conflict = plan(
+        Rejection {
+            cause: RejectionCause::MergeConflict,
+            ..rejected
+        },
+        "main-two",
+    );
+    assert_eq!(
+        conflict.notify_rejection,
+        Some(Notice {
+            head: "head-one",
+            cause: RejectionCause::MergeConflict,
+        })
+    );
+    assert_eq!(conflict.next, Next::WaitNotification);
     rejected.notified = true;
     assert_eq!(plan(rejected, "main-one").next, Next::WaitMain);
     assert_eq!(plan(rejected, "main-two").next, Next::Retry);
