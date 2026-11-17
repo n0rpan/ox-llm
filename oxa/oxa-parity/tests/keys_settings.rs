@@ -3823,7 +3823,9 @@ fn local_v_cache_thp_settings_real_cli_saves_shared_key_and_shows_next_load() {
     t.type_text("/settings");
     t.key("enter");
     t.wait_text("Settings");
-    t.type_text("v cache thp");
+    // Menu input is not the editor; spaces toggle settings rather than extending search.
+    t.pty.send_text("vcachethp");
+    t.wait_text("search: vcachethp");
     t.wait_text("next model load");
     t.wait_text("1.2-1.4 GiB");
     t.key("enter");
