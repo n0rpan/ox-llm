@@ -312,6 +312,37 @@ pub(crate) fn unmounted_home_note(output: &str, home: &str, cwd: &Path) -> Optio
     None
 }
 
+/// #996: the sandbox home is an empty mount, so a write to a path under it that is not bound
+/// (another helper's directory, `~/.bashrc`) fails with "Read-only file system", not "No such
+/// file or directory": the note names where the session's scratch is, so a location taken from
+/// instructions written for the host (`~/.cache`) does not send the model looking for a missing
+/// path. Only a failed command's own error line counts, as in [`unmounted_home_note`].
+pub(crate) fn read_only_home_note(output: &str, home: &str, cwd: &Path, exit: Option<i32>) -> Option<String> {
+    if exit == Some(0) {
+        return None;
+    }
+    let home = home.trim_end_matches('/');
+    if home.is_empty() {
+        return None;
+    }
+    let prefix = format!("{home}/");
+    let path = output
+        .lines()
+        .filter(|l| {
+            let l = l.trim_end();
+            l.ends_with("Read-only file system") || l.ends_with("Permission denied")
+        })
+        .flat_map(|line| {
+            line.split(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '`' | ':'))
+                .filter(|tok| tok.starts_with(&prefix) && !Path::new(tok).starts_with(cwd))
+                .collect::<Vec<_>>()
+        })
+        .next()?;
+    Some(format!(
+        "{path}: not writable in the sandbox. The home directory is an empty mount and only toolchain directories, package caches and configured writable binds are writable in it. Use /tmp for this session's scratch (TMPDIR and XDG_CACHE_HOME point into it) and the workspace for anything that must persist"
+    ))
+}
+
 /// #494: git keeps `.git/config` read-only in the sandbox (a writable config could run code
 /// outside it), so a command that must rewrite it fails with "Device or resource busy" after
 /// it has done the rest, e.g. `git branch -m` renames the ref first. Say so. Only a failed
@@ -591,6 +622,11 @@ impl BashTool {
             .sandbox
             .home()
             .and_then(|h| unmounted_home_note(&output, &h.to_string_lossy(), cx.cwd));
+        let note = note.or_else(|| {
+            cx.sandbox
+                .home()
+                .and_then(|h| read_only_home_note(&output, &h.to_string_lossy(), cx.cwd, res.exit))
+        });
         let note = note.or_else(|| git_config_note(&output, res.exit));
         let note = note.or_else(|| git_exclude_note(&output, res.exit));
         let note = note.or_else(|| gh_comments_note(raw_command, &output, res.exit).map(str::to_string));
@@ -932,8 +968,6 @@ echo '\''a'\'''"#
 
     #[test]
     fn no_note_for_quoted_text_that_is_not_a_failed_command() {
-        let cwd = Path::new("/home/u/proj");
-        // GitHub issue JSON that quotes an old error: the message is mid-line, not a command's own line.
         let json = r#"{"body":"it failed: /home/u/.venv/bin/python: No such file or directory\nthen we retried","comments":[]}"#;
         assert!(unmounted_home_note(json, "/home/u", cwd).is_none());
         let prose = "The old error was /home/u/.venv/bin/python: No such file or directory when run.\n";
@@ -941,6 +975,86 @@ echo '\''a'\'''"#
         // A real error line, also with a program prefix and trailing whitespace, still gets the note.
         let real = "bash: /home/u/.venv/bin/python: No such file or directory  \n";
         assert!(unmounted_home_note(real, "/home/u", cwd).is_some());
+    }
+
+    /// #996: a write to a home path the sandbox does not bind fails with "Read-only file
+    /// system" (the home is an empty mount), not with "No such file or directory": the note
+    /// names the session's scratch so a location taken from host instructions (`~/.cache`)
+    /// does not send the model looking for a missing path.
+    #[test]
+    fn read_only_home_write_failure_points_at_the_session_scratch() {
+        let cwd = Path::new("/home/u/proj");
+        let msg = "mkdir: cannot create directory '/home/u/other-helper': Read-only file system\n";
+        let note = read_only_home_note(msg, "/home/u", cwd, Some(1)).expect("note");
+        assert!(note.contains("/home/u/other-helper"), "{note}");
+        assert!(note.contains("not writable"), "{note}");
+        assert!(note.contains("/tmp"), "{note}");
+        assert!(note.contains("TMPDIR"), "{note}");
+        assert!(note.contains("workspace"), "{note}");
+        // The "may be hidden" advice of the other note is wrong here: the home is mounted.
+        assert!(
+            unmounted_home_note(msg, "/home/u", cwd).is_none(),
+            "a read-only failure is not a missing path"
+        );
+        // Quoted text is not a failed command's own error line.
+        let quoted = "the log said: /home/u/other-helper: Read-only file system\n";
+        assert!(read_only_home_note(quoted, "/home/u", cwd, Some(0)).is_none());
+        // Outside the home, and inside the workspace: nothing applies.
+        assert!(read_only_home_note("/var/x: Read-only file system", "/home/u", cwd, Some(1)).is_none());
+        assert!(read_only_home_note("/home/u/proj/x: Permission denied", "/home/u", cwd, Some(1)).is_none());
+        assert!(read_only_home_note(msg, "", cwd, Some(1)).is_none());
+        // `Permission denied` on a home path counts too (this uid cannot write it).
+        assert!(read_only_home_note("/home/u/x: Permission denied", "/home/u", cwd, Some(1)).is_some());
+    }
+
+    /// #996: a failed write under the sandbox home names the session's scratch once; a
+    /// successful command stays quiet, and without the sandbox's home there is no note.
+    #[test]
+    fn read_only_home_write_gets_one_note_only_after_failure() {
+        let msg = "mkdir: cannot create directory '/home/u/other-helper': Read-only file system\n";
+        let failed = Fake {
+            home: Some(PathBuf::from("/home/u")),
+            ..Fake::ok(msg.as_bytes(), Some(1))
+        };
+        let (out, _) = run_with(
+            &failed,
+            json!({"command": "mkdir -p /home/u/other-helper"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(out.is_error);
+        assert!(out.text.contains("Read-only file system"), "{}", out.text);
+        assert!(
+            out.text.contains("/home/u/other-helper: not writable"),
+            "{}",
+            out.text
+        );
+        let notes = out
+            .text
+            .matches("workspace for anything that must persist")
+            .count();
+        assert_eq!(notes, 1, "{}", out.text);
+        // The same command that succeeded gets nothing.
+        let ok = Fake {
+            home: Some(PathBuf::from("/home/u")),
+            ..Fake::ok(b"", Some(0))
+        };
+        let (out, _) = run_with(
+            &ok,
+            json!({"command": "mkdir -p /home/u/other-helper"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(!out.is_error);
+        assert!(!out.text.contains("must persist"), "{}", out.text);
+        // No sandbox home: the error text alone is all the tool knows.
+        let (out, _) = run_with(
+            &Fake::ok(msg.as_bytes(), Some(1)),
+            json!({"command": "mkdir -p /home/u/other-helper"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(!out.text.contains("must persist"), "{}", out.text);
     }
 
     #[test]

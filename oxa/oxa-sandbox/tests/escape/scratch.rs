@@ -151,6 +151,51 @@ fn tmp_persists_between_calls_and_is_removed_at_the_end() {
     assert!(!dir.exists(), "the session directory outlived the session");
 }
 
+/// #996: helpers hardcode the cache home path (`CARGO_TARGET_DIR=$HOME/.cache/...`, a git
+/// hook's log), which is not `$XDG_CACHE_HOME`. The host cache home is read-only inside, so the
+/// session binds its own empty directory there: the writes work, land in the session directory
+/// and are deleted with it, while a shared package cache under `~/.cache` stays the user's, and
+/// another session's directory is not exposed through it.
+#[test]
+fn home_cache_path_is_writable_in_the_session_without_touching_the_host() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(home_file(&env, ".cache/sccache")).unwrap();
+    let Some((sb, dir)) = session(&env) else {
+        return;
+    };
+    let (exit, out) = run(
+        &sb,
+        &env.work(),
+        "mkdir -p \"$HOME/.cache/scratch-target\" && echo target > \"$HOME/.cache/scratch-target/f\" \
+         && touch \"$HOME/.cache/.marker\" && touch \"$HOME/.cache/sccache/shared\" && echo written",
+        true,
+        false,
+    );
+    assert_ok(exit, &out, "home cache");
+    assert!(out.contains("written"), "{out}");
+    // The build output and the marker are the session's, not the host cache home's.
+    assert!(dir.join(".cache-home/scratch-target/f").is_file(), "{dir:?}");
+    assert!(!home_file(&env, ".cache/scratch-target").exists());
+    assert!(!home_file(&env, ".cache/.marker").exists());
+    // A read-write bound package cache under `~/.cache` still stays shared.
+    assert!(
+        home_file(&env, ".cache/sccache/shared").exists(),
+        "the shared cache was not the user's"
+    );
+    // The scratch root (other sessions' directories) is not shown through the cache home.
+    let (exit, out) = run(
+        &sb,
+        &env.work(),
+        "test ! -e \"$HOME/.cache/oxa\" && echo absent",
+        true,
+        false,
+    );
+    assert_ok(exit, &out, "scratch root");
+    assert!(out.contains("absent"), "{out}");
+    drop(sb);
+    assert!(!dir.exists(), "the session directory outlived the session");
+}
+
 /// The cache home is writable for every XDG tool (#362 gh, #400/#446 sccache, pip), and a
 /// read-write package cache under `~/.cache` stays the shared one.
 #[test]

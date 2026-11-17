@@ -75,7 +75,7 @@ pub const BASH: ToolText = ToolText {
     guidelines: &[
         "You can inspect OXA_* environment variables for current model and session details.",
         BASH_PROCESS_LIFETIME,
-        "Bash sandbox persistence: workspace writes persist except protected paths; configured writable binds, package caches and permitted git data also persist. Other paths are read-only or hidden. /tmp is this session's private scratch (TMPDIR and XDG_CACHE_HOME point into it): it persists between commands of this session and is deleted when the session ends (/new, /resume, fork, clone, switching session or quitting oxa); a resumed session starts with an empty /tmp. Save deliverables in the working directory, never claim a scratch file was saved on the host, and report write failures instead of claiming success. Plan mode keeps workspace files read-only.",
+        "Bash sandbox persistence: workspace writes persist except protected paths; configured writable binds, package caches and permitted git data also persist. Other paths are read-only or hidden. /tmp is this session's private scratch (TMPDIR and XDG_CACHE_HOME point into it, and $HOME/.cache is this session's own cache directory except for the shared package caches): it persists between commands of this session and is deleted when the session ends (/new, /resume, fork, clone, switching session or quitting oxa); a resumed session starts with an empty /tmp and an empty $HOME/.cache. Save deliverables in the working directory, never claim a scratch file was saved on the host, and report write failures instead of claiming success. Plan mode keeps workspace files read-only.",
     ],
 };
 

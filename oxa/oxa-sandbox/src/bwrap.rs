@@ -126,6 +126,29 @@ pub(crate) fn bwrap_args_homes(
     // Pins and layout mounts share parent-first order: a cache bind cannot hide a pin,
     // and a pin cannot hide a read-only descendant. The cwd is already a mount point.
     let hook_pins = hook_parent_pins(&hooks, &mounts);
+    // #996: `$HOME/.cache` is the path helpers hardcode (`CARGO_TARGET_DIR=$HOME/.cache/...`,
+    // `touch ~/.cache/x`, a git hook's log). The host cache home is read-only inside and a
+    // cache directory that did not exist when the layout was built is not bound at all, so a
+    // session's own empty directory is bound there: those writes land in the session and are
+    // deleted with it. The read-write bound caches keep their own binds under
+    // `$HOME/.cache/<name>` (sorted after this parent) and stay shared. A cwd inside the cache
+    // home keeps the workspace bind, and a user bind of the cache home (or one above it) keeps
+    // its own access; without a session directory nothing changes.
+    let home_cache = home_c.join(".cache");
+    let user_bind = layout
+        .read
+        .iter()
+        .chain(layout.write.iter())
+        .any(|b| home_cache == canon(b) || home_cache.starts_with(canon(b)));
+    let session_cache = match layout.scratch.as_ref() {
+        Some(sc) if !cwd_c.starts_with(&home_cache) && !user_bind => Some(sc.cache_home_dir()),
+        _ => None,
+    };
+    if let Some(dir) = &session_cache {
+        let dir = dir.to_string_lossy();
+        let cache = home_cache.to_string_lossy();
+        push(&mut a, &["--bind", &dir, &cache]);
+    }
     // B2: toolchains read-only, caches read-write, in path order (a parent before its child).
     let mut binds: Vec<(&Path, bool)> = layout
         .read

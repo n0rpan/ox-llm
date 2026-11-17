@@ -1158,6 +1158,80 @@ fn user_cache_home_keeps_its_read_write_caches() {
     assert_eq!(l.cache_home, home.join(".cache"));
 }
 
+/// A `Bwrap` for `layout` with a session directory ([`Bwrap::for_session`]): the argv then
+/// carries the session's own bind of the cache home path, beside its `/tmp`.
+fn session_layout(layout: &Layout, env: &TestEnv) -> Bwrap {
+    Bwrap {
+        bwrap: PathBuf::from("/usr/bin/bwrap"),
+        home: env.home(),
+        layout: Layout {
+            scratch_root: Some(oxa_sandbox::scratch_root(&env.home())),
+            ..layout.clone()
+        },
+    }
+    .session()
+}
+
+/// #996: a helper (a git hook writing its log, a tool that hardcodes the cache home path such
+/// as `CARGO_TARGET_DIR=$HOME/.cache/...`) writes below `~/.cache` although `$XDG_CACHE_HOME`
+/// already points at the session's `/tmp/.cache`. The host cache home stays read-only inside,
+/// so a session binds its own empty directory at `$HOME/.cache`: the writes land in the session
+/// and are deleted with it, while the read-write bound package caches under `~/.cache/<name>`
+/// follow that parent bind and stay the user's. Without a session directory (an exec hook, a
+/// supervised check) everything stays as it was, and a cwd or a user bind inside the cache home
+/// keeps its own access.
+#[test]
+fn the_session_home_cache_is_the_sessions_own() {
+    let env = TestEnv::new();
+    let home = env.home();
+    for d in [".cache/pip", ".cache/project"] {
+        std::fs::create_dir_all(home.join(d)).unwrap();
+    }
+    let cache = home.join(".cache").display().to_string();
+    let mirror = |a: &[String]| {
+        a.windows(3)
+            .position(|w| w[0] == "--bind" && w[1].ends_with(".cache-home") && w[2] == cache)
+    };
+    // The process sandbox has no session directory: the read-only home tmpfs stays.
+    let a = bwrap_args_with(&spec("true", &env.work(), true), &home, &machine(&env));
+    assert!(mirror(&a).is_none(), "{a:?}");
+    // A session: its own directory, before the shared package cache below it.
+    let b = session_layout(&machine(&env), &env);
+    let a = bwrap_args_with(&spec("true", &env.work(), true), &home, &b.layout);
+    let own = mirror(&a).expect("the session's cache home");
+    let pip = a
+        .windows(3)
+        .position(|w| w[0] == "--bind" && w[2] == home.join(".cache/pip").display().to_string())
+        .expect("the shared package cache");
+    assert!(own < pip, "the parent bind must come first: {a:?}");
+    // The bind's source lives in the session directory and is empty: only the linked caches
+    // (`/tmp/.cache`) carry the shared ones, so no host cache entry is mirrored here.
+    let scratch = b.layout.scratch.as_ref().expect("a session directory");
+    let dir = scratch.cache_home_dir();
+    assert_eq!(dir, scratch.path().join(".cache-home"));
+    assert!(dir.is_dir());
+    assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "{dir:?}");
+    // A workspace inside the cache home keeps the workspace bind.
+    let a = bwrap_args_with(
+        &spec("true", &home.join(".cache/project"), true),
+        &home,
+        &b.layout,
+    );
+    assert!(mirror(&a).is_none(), "{a:?}");
+    // A user setting that binds the cache home keeps its own access, read-only or writable.
+    for read in [true, false] {
+        let mut l = machine(&env);
+        if read {
+            l.read.push(home.join(".cache"));
+        } else {
+            l.write.push(home.join(".cache"));
+        }
+        let b = session_layout(&l, &env);
+        let a = bwrap_args_with(&spec("true", &env.work(), true), &home, &b.layout);
+        assert!(mirror(&a).is_none(), "a user bind keeps its access: {a:?}");
+    }
+}
+
 /// #457 review: each session of one `Bwrap` gets its own directory at `/tmp`, removed when
 /// that session's sandbox is dropped; the process sandbox keeps a per-command tmpfs. When no
 /// directory can be made, the session falls back to the tmpfs and its notice says so.
