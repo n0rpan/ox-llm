@@ -306,6 +306,15 @@ pub(crate) fn report(
 mod tests {
     use super::*;
     use oxa_fake::TestEnv;
+
+    #[test]
+    fn locked_report_command_refuses_oversized_stdout() {
+        let env = TestEnv::new();
+        let lock = File::open("/dev/null").unwrap();
+        let args = words(&["-c", "1048577", "/dev/zero"]);
+        assert!(process("/usr/bin/head", &args, &env.work(), &lock).is_none());
+    }
+
     fn note() -> ProblemNote {
         ProblemNote {
             title: "oxa work commit is read only".into(),
