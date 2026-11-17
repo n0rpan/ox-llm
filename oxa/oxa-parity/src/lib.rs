@@ -5,8 +5,7 @@
 //! Golden fixtures live in `fixtures/goldens/`. Retired IDs are never reused.
 //!
 //! Tests drive the real binaries inside an isolated `TestEnv`, or call crates directly
-//! for library contracts. Bare libtest runs refresh child binaries automatically. Before
-//! nextest, build them explicitly: `cargo build -p oxa-cli -p oxa-fake` (same Cargo profile).
+//! for library contracts. Build binaries first: `cargo build -p oxa-cli -p oxa-fake`.
 //! Interactive tests use real pseudo-terminals and inspect the rendered screen. Sandbox,
 //! permission, trust, offline, MCP and extension-hook behavior remain required contracts.
 //! Run the whole workspace with oxa's defaults; no alternate profile is required.
@@ -30,27 +29,21 @@ fn sibling(name: &str, var: &str) -> PathBuf {
         p.pop();
     }
     let bin = p.join(name);
-    // Cargo does not build another package's binaries just because this test crate depends
-    // on its libraries. An existing sibling can therefore still contain yesterday's code.
-    // Bare libtest runs refresh once per process; nextest uses explicitly prebuilt children
-    // (including the CI archive), and must not start Cargo in every individual test process.
-    if !bin.exists() || std::env::var_os("NEXTEST").is_none() {
+    if !bin.exists() {
         build_binaries(&p);
     }
     bin
 }
 
-/// Refresh `oxa` and `oxa-fake` once for a bare libtest run, or build missing children.
-/// Explicit `OXA_BIN` / `OXA_FAKE_BIN` overrides and nextest's prebuilt artifacts are trusted.
+/// Build `oxa` and `oxa-fake` once when a bare `cargo test -p oxa-parity` finds them missing.
 fn build_binaries(profile_dir: &std::path::Path) {
     use std::sync::Once;
     static BUILD: Once = Once::new();
     BUILD.call_once(|| {
         let mut cmd = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()));
-        cmd.current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args(["build", "-p", "oxa-cli", "-p", "oxa-fake"]);
-        if let Some(profile) = profile_dir.file_name().filter(|n| *n != "debug") {
-            cmd.arg("--profile").arg(profile);
+        cmd.args(["build", "-p", "oxa-cli", "-p", "oxa-fake"]);
+        if profile_dir.file_name().is_some_and(|n| n == "release") {
+            cmd.arg("--release");
         }
         let ok = cmd.status().map(|s| s.success()).unwrap_or(false);
         assert!(ok, "building oxa and oxa-fake failed");
