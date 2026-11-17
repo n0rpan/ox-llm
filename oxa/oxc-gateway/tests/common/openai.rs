@@ -684,9 +684,17 @@ mod mock_health {
                 io::ErrorKind::ConnectionReset,
                 io::ErrorKind::TimedOut,
             ] {
-                for remaining in [0, framing - 1, framing, framing + 2] {
+                // The last wire byte, plus a budget that still covers the whole wire.
+                // A fixed `framing + 2` only lands inside the tail of the six-byte
+                // transfer end; the truncated transfer's two-byte tail puts it exactly
+                // at the end, where no write fails at all, so derive it from the tail.
+                for remaining in [0, framing - 1, framing, wire.len() - 1, wire.len()] {
                     let result = write_reply(&mut DisconnectAfter { remaining, kind }, &reply);
-                    let expected = terminal && remaining >= framing && kind != io::ErrorKind::TimedOut;
+                    // Only an actually interrupted write can report the peer close: a
+                    // budget covering every byte writes the complete reply and must
+                    // stay healthy whatever disconnect kind the peer would raise.
+                    let expected = remaining >= wire.len()
+                        || (terminal && remaining >= framing && kind != io::ErrorKind::TimedOut);
                     assert_eq!(
                         result.is_ok(),
                         expected,
