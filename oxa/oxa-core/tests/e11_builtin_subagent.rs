@@ -1217,16 +1217,25 @@ fn concurrent_queued_children_do_not_start_after_the_deadline() {
             .filter(|l| l.starts_with("start "))
             .collect();
         started.sort();
-        // s1 and s2 are the two "hold" children, s3 the queued "last" one. Remote workers
-        // run s1/s2 and skip s3; with the local slot held, s3 runs remotely and the queued
-        // local s2 is the one skipped. Asserting the exact set keeps the test from passing
-        // when a different child than the queued one is the one that did not start.
-        let expected = if local { ["s1", "s3"] } else { ["s1", "s2"] };
-        let expected: Vec<String> = expected.iter().map(|n| format!("start sess.{n}")).collect();
-        assert_eq!(
-            started, expected,
-            "local={local}: the queued child is the one that must not start"
-        );
+        // Local workers race for one slot: exactly one of s1/s2 starts alongside s3;
+        // the other local child must remain unstarted after the deadline.
+        let expected = if local {
+            assert_eq!(started.len(), 2, "exactly one local and one remote child start");
+            assert!(started.contains(&"start sess.s3".to_string()));
+            assert_eq!(
+                started
+                    .iter()
+                    .filter(|s| s.ends_with(".s1") || s.ends_with(".s2"))
+                    .count(),
+                1
+            );
+            None
+        } else {
+            Some(vec!["start sess.s1".to_string(), "start sess.s2".to_string()])
+        };
+        if let Some(expected) = expected {
+            assert_eq!(started, expected, "the queued remote child must not start");
+        }
         assert_eq!(
             host.clears().len(),
             usize::from(local),

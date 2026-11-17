@@ -390,8 +390,13 @@ impl SubagentHooks {
     /// child to wrap up at the parent's limit rather than killing it; a cancel still kills
     /// its process group.
     pub fn with_deadline(self, deadline: Instant) -> SubagentHooks {
-        *lock(&self.inner.deadline) = Some(deadline);
+        self.set_deadline(Some(deadline));
         self
+    }
+
+    /// Publish the parent's actual run deadline after session initialization completes.
+    pub fn set_deadline(&self, deadline: Option<Instant>) {
+        *lock(&self.inner.deadline) = deadline;
     }
 
     /// Read `oxa.subagent.enabled`, `oxa.subagent.softTokens`, `oxa.subagent.resultCap` and

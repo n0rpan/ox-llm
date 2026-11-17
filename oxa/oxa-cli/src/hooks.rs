@@ -52,6 +52,8 @@ pub struct HookSets {
     pub hooks: Vec<Arc<dyn Hooks>>,
     pub extensions: Option<Arc<ExtensionHost>>,
     pub mcp: Option<Arc<McpManager>>,
+    /// Shared instance: the run timer publishes its exact deadline after startup.
+    pub subagent: Option<Arc<SubagentHooks>>,
     /// The flags the loaded extensions registered (`registerFlag`), for the second pass of the
     /// argument parse.
     pub flags: Vec<oxa_proto::FlagSpec>,
@@ -206,18 +208,13 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
         match std::env::current_exe() {
             Ok(bin) => {
                 let agents = discover_agents(i.dirs, i.cwd, i.trusted);
-                let mut subagent = SubagentHooks::new(bin, agents)
-                    .with_settings(i.settings)
-                    .with_yolo(i.yolo.clone());
-                // #508: children get the time that is left of the parent's `--max-time`.
-                if let Some(at) = i
-                    .args
-                    .max_time
-                    .and_then(|d| std::time::Instant::now().checked_add(d))
-                {
-                    subagent = subagent.with_deadline(at);
-                }
-                sets.hooks.push(Arc::new(subagent));
+                let subagent = Arc::new(
+                    SubagentHooks::new(bin, agents)
+                        .with_settings(i.settings)
+                        .with_yolo(i.yolo.clone()),
+                );
+                sets.hooks.push(subagent.clone());
+                sets.subagent = Some(subagent);
             }
             Err(e) => notices.push((
                 Level::Warning,

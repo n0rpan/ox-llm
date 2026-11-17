@@ -18,6 +18,7 @@ impl LimitWatcher {
         max_time: Option<Duration>,
         max_tokens: Option<u64>,
         supervised_child: bool,
+        subagent: Option<&oxa_core::SubagentHooks>,
     ) -> Result<Option<Self>, OxaError> {
         handle.set_token_budget(max_tokens);
         // The parent's abort and kernel parent-death signal both use SIGTERM. A child
@@ -29,6 +30,9 @@ impl LimitWatcher {
                     .ok_or_else(|| OxaError::new(codes::USAGE, "--max-time is too large"))
             })
             .transpose()?;
+        if let Some(subagent) = subagent {
+            subagent.set_deadline(deadline);
+        }
         let terminated = Arc::new(AtomicBool::new(false));
         // Register escalation first: the first SIGTERM sets the flag below; any
         // subsequent signal takes its default action even if the watcher is blocked.
@@ -170,7 +174,7 @@ mod tests {
                 oxa_core::Open::New,
             )
             .unwrap();
-            let watcher = LimitWatcher::start(session.handle(), None, None, false)
+            let watcher = LimitWatcher::start(session.handle(), None, None, false, None)
                 .unwrap()
                 .unwrap();
             // Deliberately prevent the cooperative watcher from making progress.
