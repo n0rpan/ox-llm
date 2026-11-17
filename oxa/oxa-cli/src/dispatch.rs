@@ -1584,6 +1584,19 @@ fn format_tokens(count: u64) -> String {
     }
 }
 
+/// True when `dest` names the `input` session: the same path, a hard link, or a symlink that
+/// resolves to it. Writing such a destination would overwrite the session, so it is refused.
+fn aliases_source(input: &Path, dest: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    if input == dest {
+        return true;
+    }
+    match (std::fs::metadata(input), std::fs::metadata(dest)) {
+        (Ok(source), Ok(target)) => source.dev() == target.dev() && source.ino() == target.ino(),
+        _ => false,
+    }
+}
+
 /// `--export <input> [output]`: copy JSONL for a `.jsonl` destination, otherwise render HTML.
 /// The output name is derived when omitted. Prints `Exported to: <path>`.
 fn export_session(
@@ -1622,6 +1635,16 @@ fn export_inner(input: &str, output: Option<&str>, home: &Path, cwd: &Path) -> R
         Some(o) => resolve_path(home, cwd, o),
         None => default_output_name(Some(&input_path), &header.id, cwd),
     };
+    if aliases_source(&input_path, &dest) {
+        return Err(OxaError::new(
+            codes::INVALID,
+            format!(
+                "cannot export to {}: the destination is the source session",
+                dest.display()
+            ),
+        )
+        .with_hint("choose a different output path"));
+    }
     if format_for(&dest) == ExportFormat::Jsonl {
         std::fs::copy(&input_path, &dest)
             .map_err(|e| OxaError::io(&format!("cannot write {}", dest.display()), &e))?;
@@ -2169,5 +2192,84 @@ mod session_scratch_tests {
         assert!(b.is_dir(), "ending one session removed another's scratch");
         drop(second);
         assert!(!b.exists(), "the second session's scratch outlived it");
+    }
+}
+
+#[cfg(test)]
+mod export_source_tests {
+    use super::*;
+
+    /// A session file with the header `decode_header` requires, for the alias checks.
+    const HEADER: &str =
+        r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/work"}"#;
+
+    fn session(env: &oxa_fake::TestEnv) -> PathBuf {
+        let path = env.home().join("session-1.jsonl");
+        std::fs::write(&path, format!("{HEADER}\n")).unwrap();
+        path
+    }
+
+    /// `--export` must never write onto the session it reads: the same path, a hard link and a
+    /// symlink all name the source file, whatever the destination suffix.
+    #[test]
+    fn destinations_aliasing_the_source_are_detected_everywhere() {
+        let env = oxa_fake::TestEnv::new();
+        let source = session(&env);
+        let work = env.work();
+        let hard = work.join("hard.jsonl");
+        let soft = work.join("soft.html");
+        std::fs::hard_link(&source, &hard).unwrap();
+        std::os::unix::fs::symlink(&source, &soft).unwrap();
+        let sibling = work.join("copy.jsonl");
+        std::fs::write(&sibling, "other\n").unwrap();
+
+        for dest in [source.clone(), hard, soft] {
+            assert!(
+                aliases_source(&source, &dest),
+                "{} names the source session",
+                dest.display()
+            );
+        }
+        assert!(
+            !aliases_source(&source, &sibling),
+            "an existing other file is a copy"
+        );
+        assert!(
+            !aliases_source(&source, &env.home().join("missing.jsonl")),
+            "a new path is a new output"
+        );
+    }
+
+    /// The refusal is a CLI error that names the destination, so the session is left alone.
+    #[test]
+    fn exporting_onto_the_source_is_refused() {
+        let env = oxa_fake::TestEnv::new();
+        let source = session(&env);
+        let before = std::fs::read(&source).unwrap();
+        let err = export_inner(
+            source.to_str().unwrap(),
+            Some(source.to_str().unwrap()),
+            &env.home(),
+            &env.work(),
+        )
+        .expect_err("a JSONL destination naming the source must be refused");
+        assert_eq!(err.code, codes::INVALID);
+        assert!(err.message.contains("source session"), "{}", err.message);
+        assert_eq!(std::fs::read(&source).unwrap(), before);
+    }
+
+    #[test]
+    fn tmp_source_guard_premise() {
+        let env = oxa_fake::TestEnv::new();
+        let source = session(&env);
+        let before = std::fs::read(&source).unwrap();
+        let result = export_inner(
+            source.to_str().unwrap(),
+            Some(source.to_str().unwrap()),
+            &env.home(),
+            &env.work(),
+        );
+        assert!(result.is_err(), "the source must be refused: {result:?}");
+        assert_eq!(std::fs::read(&source).unwrap(), before);
     }
 }
