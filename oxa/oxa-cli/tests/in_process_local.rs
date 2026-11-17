@@ -83,3 +83,63 @@ fn invalid_enabled_local_configuration_never_falls_back_to_http() {
         assert_eq!(http.hits("GET", "/v1/models"), 0);
     }
 }
+
+#[test]
+fn identity_refresh_uses_native_defaults_without_http_and_respects_explicit_opt_out() {
+    for native in [true, false] {
+        let env = TestEnv::new();
+        let settings = if native {
+            json!({"oxa":{"local":local()}})
+        } else {
+            json!({"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}}})
+        };
+        env.write("home/.oxa/agent/settings.json", &settings.to_string());
+        env.write(
+            "work/.oxa/settings.json",
+            &json!({"oxa":{"engine":{"inProcessCloud":!native,"inProcessLocal":!native}}}).to_string(),
+        );
+        let http = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+        let output = run(&env, &http.url(), &["identity", "--refresh"]);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let identity = std::fs::read_to_string(env.home().join(".oxa/agent/identity.md")).unwrap();
+        if native {
+            assert!(
+                http.requests().is_empty(),
+                "native identity must not contact the controller fallback"
+            );
+            assert!(
+                identity.contains("synthetic"),
+                "native catalog must supply identity metadata"
+            );
+        } else {
+            assert!(
+                !http.requests().is_empty(),
+                "explicit user HTTP opt-out remains supported"
+            );
+        }
+        assert!(!env.home().join(".oxa/agent/local-engine").exists());
+    }
+}
+
+#[test]
+fn invalid_native_identity_configuration_never_falls_back_to_http() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &json!({"oxa":{"local":{}}}).to_string(),
+    );
+    let http = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let output = run(&env, &http.url(), &["identity", "--refresh"]);
+    assert!(
+        output.status.success(),
+        "identity keeps its existing best-effort metadata contract"
+    );
+    assert!(
+        http.requests().is_empty(),
+        "native configuration failure must not enable HTTP"
+    );
+}
