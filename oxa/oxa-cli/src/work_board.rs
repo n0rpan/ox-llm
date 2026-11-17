@@ -52,6 +52,69 @@ enum QueryError {
     Http(u16),
     Other(&'static str),
 }
+
+enum SnapshotError {
+    Changed(&'static str),
+    Terminal(String),
+}
+impl From<String> for SnapshotError {
+    fn from(message: String) -> Self {
+        Self::Terminal(message)
+    }
+}
+impl From<&str> for SnapshotError {
+    fn from(message: &str) -> Self {
+        Self::Terminal(message.into())
+    }
+}
+impl SnapshotError {
+    fn message(self) -> String {
+        match self {
+            Self::Changed(message) => message.into(),
+            Self::Terminal(message) => message,
+        }
+    }
+}
+
+fn identity(row: &Value) -> Result<(u64, &str), String> {
+    let number = row["number"]
+        .as_u64()
+        .filter(|n| *n > 0)
+        .ok_or("invalid PR number")?;
+    let head = row["headRefOid"]
+        .as_str()
+        .filter(|head| !head.is_empty())
+        .ok_or("missing PR head")?;
+    Ok((number, head))
+}
+
+/// Validate embedded identity pages before classifying differences as changing membership.
+fn listing_page(connection: &Value) -> Result<(&Vec<Value>, u64, bool), String> {
+    let total = connection["totalCount"].as_u64().ok_or("missing PR count")?;
+    let rows = connection["nodes"].as_array().ok_or("missing PR page")?;
+    if total > oxa_work::board::MAX_OPEN_PULL_REQUESTS as u64 || rows.len() > 100 || rows.len() as u64 > total
+    {
+        return Err("GitHub listing exceeds limit".into());
+    }
+    let more = connection["pageInfo"]["hasNextPage"]
+        .as_bool()
+        .ok_or("missing PR pagination")?;
+    if more
+        && (rows.is_empty()
+            || connection["pageInfo"]["endCursor"]
+                .as_str()
+                .is_none_or(str::is_empty))
+    {
+        return Err("invalid PR pagination progress".into());
+    }
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if !seen.insert(identity(row)?.0) {
+            return Err("duplicate PR in listing".into());
+        }
+    }
+    Ok((rows, total, more))
+}
 impl QueryError {
     fn retryable(&self) -> bool {
         matches!(self, Self::Http(502 | 503 | 504))
@@ -82,7 +145,7 @@ impl<'a> Reader<'a> {
         self.query(fields).map_err(QueryError::message)
     }
 
-    fn listing(&self, bytes: &mut usize) -> Result<(Value, Value), String> {
+    fn listing(&self, bytes: &mut usize) -> Result<(Value, Value), SnapshotError> {
         let (mut fields, mut rows, mut seen, mut cursors) =
             (LIST.to_owned(), vec![], BTreeSet::new(), BTreeSet::new());
         let mut result = Value::Null;
@@ -94,30 +157,21 @@ impl<'a> Reader<'a> {
                 result = page.clone();
             }
             let connection = &page["pullRequests"];
-            let total = connection["totalCount"].as_u64().ok_or("missing PR count")?;
-            if total > 1000
-                || connection["totalCount"] != result["pullRequests"]["totalCount"]
+            let (nodes, total, more) = listing_page(connection)?;
+            if connection["totalCount"] != result["pullRequests"]["totalCount"]
                 || page["mergeQueue"] != result["mergeQueue"]
             {
-                return Err("GitHub listing exceeds limit or changed during snapshot".into());
-            }
-            let nodes = connection["nodes"].as_array().ok_or("missing PR page")?;
-            if nodes.len() > 100 {
-                return Err("oversized PR page".into());
+                return Err(SnapshotError::Changed(
+                    "GitHub listing changed during snapshot; retry later",
+                ));
             }
             for row in nodes {
-                let number = row["number"]
-                    .as_u64()
-                    .filter(|n| *n > 0)
-                    .ok_or("invalid PR number")?;
-                if !seen.insert(number) || row["headRefOid"].as_str().is_none_or(str::is_empty) {
+                let (number, _) = identity(row)?;
+                if !seen.insert(number) {
                     return Err("duplicate PR or missing head in listing".into());
                 }
                 rows.push(row.clone());
             }
-            let more = connection["pageInfo"]["hasNextPage"]
-                .as_bool()
-                .ok_or("missing PR pagination")?;
             if !more {
                 if rows.len() as u64 != total {
                     return Err("incomplete PR listing".into());
@@ -242,11 +296,10 @@ fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
     Ok(required)
 }
 
-impl GitHub for Reader<'_> {
-    fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
+impl Reader<'_> {
+    fn acquire(&mut self, bytes: &mut usize) -> Result<Vec<PullRequest>, SnapshotError> {
         // Verify the complete paginated identity set before publishing any details.
-        let mut bytes = 0;
-        let (list, first) = self.listing(&mut bytes)?;
+        let (list, first) = self.listing(bytes)?;
         let has_queue = list["mergeQueue"].is_object();
         let numbers: Vec<u64> = nodes(&list["pullRequests"])?
             .iter()
@@ -283,16 +336,20 @@ impl GitHub for Reader<'_> {
                     size = (end - offset) / 2;
                     continue;
                 }
-                Err(error) => return Err(error.message()),
+                Err(error) => return Err(error.message().into()),
             };
-            charge(&mut bytes, read)?;
+            charge(bytes, read)?;
+            listing_page(&page["pullRequests"])?;
             if page["pullRequests"] != first {
-                return Err("open PR set changed during snapshot; retry later".into());
+                return Err(SnapshotError::Changed(
+                    "open PR set changed during snapshot; retry later",
+                ));
             }
             for n in &numbers[offset..end] {
                 let row = &page[format!("p{n}")];
-                if row["number"].as_u64() != Some(*n) || row["headRefOid"] != expected[n]["headRefOid"] {
-                    return Err("missing or mismatched PR details".into());
+                let (number, _) = identity(row)?;
+                if number != *n || row["headRefOid"] != expected[n]["headRefOid"] {
+                    return Err(SnapshotError::Changed("mismatched PR details; retry later"));
                 }
                 details[format!("p{n}")] = row.clone();
             }
@@ -301,16 +358,22 @@ impl GitHub for Reader<'_> {
                 break;
             }
         }
-        let (verified, _) = self.listing(&mut bytes)?;
+        let (verified, _) = self.listing(bytes)?;
         if verified["pullRequests"] != list["pullRequests"] || verified["mergeQueue"] != list["mergeQueue"] {
-            return Err("PR identities changed during snapshot; retry later".into());
+            return Err(SnapshotError::Changed(
+                "PR identities changed during snapshot; retry later",
+            ));
         }
         let rows = nodes(&list["pullRequests"])?
             .iter()
             .map(|pr| {
                 let row = &details[format!("p{}", pr["number"])];
-                if row["state"] != "OPEN" {
-                    return Err("PR changed during snapshot; retry later".into());
+                match row["state"].as_str() {
+                    Some("OPEN") => (),
+                    Some("CLOSED" | "MERGED") => {
+                        return Err(SnapshotError::Changed("PR changed during snapshot; retry later"))
+                    }
+                    _ => return Err(SnapshotError::from("invalid PR state")),
                 }
                 let required = required_contexts(&row["baseRef"])?;
                 let contexts = &row["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"];
@@ -399,11 +462,23 @@ impl GitHub for Reader<'_> {
                     },
                 })
             })
-            .collect();
+            .collect::<Result<Vec<_>, SnapshotError>>()?;
         if self.review_rows.is_some() {
             self.review_rows = Some(details);
         }
-        rows
+        Ok(rows)
+    }
+}
+
+impl GitHub for Reader<'_> {
+    fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
+        let mut bytes = 0;
+        // A consistency refusal gets exactly one fresh acquisition, sharing its byte budget.
+        match self.acquire(&mut bytes) {
+            Err(SnapshotError::Changed(_)) => self.acquire(&mut bytes),
+            result => result,
+        }
+        .map_err(SnapshotError::message)
     }
 }
 
