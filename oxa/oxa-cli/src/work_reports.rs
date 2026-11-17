@@ -334,6 +334,46 @@ mod tests {
         assert!(result.draft.exists());
     }
     #[test]
+    fn report_confirms_and_targets_the_same_qualified_repository() {
+        let env = TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let mut prompts = Vec::new();
+        let mut calls = Vec::new();
+        let result = report(
+            &note(),
+            &dirs,
+            &settings(),
+            &ScrubCtx::default(),
+            false,
+            &mut |prompt| {
+                prompts.push(prompt.to_owned());
+                Some(true)
+            },
+            &mut |program, args| {
+                if program != "gh" {
+                    return Some((0, "{}".into()));
+                }
+                calls.push(args.to_vec());
+                match args[1].as_str() {
+                    "list" => Some((0, "[]".into())),
+                    "create" => Some((0, "https://github.com/example/project/issues/10".into())),
+                    _ => panic!("unexpected report request: {args:?}"),
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(result.disposition, "filed");
+        assert_eq!(prompts.len(), 2);
+        assert!(prompts
+            .iter()
+            .all(|prompt| prompt.contains("github.com/example/project")));
+        assert_eq!(calls.len(), 5);
+        assert!(calls.iter().all(|args| args
+            .windows(2)
+            .any(|pair| { pair[0] == "--repo" && pair[1] == "github.com/example/project" })));
+    }
+
+    #[test]
     fn matching_issue_is_commented_after_all_queries_and_reads() {
         let env = TestEnv::new();
         let dirs = Dirs::under(env.root());
