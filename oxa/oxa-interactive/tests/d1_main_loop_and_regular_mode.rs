@@ -561,6 +561,75 @@ fn escape_aborts_and_restores_queue() {
     );
 }
 
+#[test]
+fn input_before_agent_start_is_consumed_steers_the_claimed_run() {
+    let env = TestEnv::new();
+    let (release_tx, release_rx) = mpsc::channel();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let mut s = session_deps(
+        &env,
+        Arc::new(HeldEngine::new(
+            vec![oxa_fake::ScriptTurn::text("done")],
+            release_rx,
+            entered_tx,
+        )),
+        Arc::new(MemStore::new()),
+        Open::Ephemeral,
+    );
+    let handle = s.handle();
+    let run = std::thread::spawn(move || {
+        s.prompt(
+            "first".into(),
+            Vec::new(),
+            &mut oxa_proto::VecSink(Vec::new()),
+            &mut oxa_proto::HeadlessUi::default(),
+        )
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("foreground request entered");
+    assert!(handle.is_busy());
+    // The core has started, while the front end has not consumed AgentStart yet.
+    let d = drive_handle(
+        handle.clone(),
+        &env,
+        vec![vec![ch('x'), key("enter")], vec![key("ctrl+d")]],
+        Vec::new(),
+    );
+    let queued = handle.queued();
+    handle.abort();
+    drop(release_tx);
+    let _ = run.join().expect("run thread");
+    assert_eq!(queued.0, vec!["x".to_string()]);
+    assert!(
+        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(owner)] if owner.same_instance(&handle)),
+        "a claimed foreground request must not be mistaken for an idle prompt"
+    );
+}
+
+#[test]
+fn escape_after_claim_release_keeps_input_out_of_the_stale_run_queue() {
+    let env = TestEnv::new();
+    let s = session(&env);
+    assert!(!s.handle().is_busy());
+    let d = drive(
+        &s,
+        &env,
+        vec![
+            vec![key("escape")],
+            vec![ch('x'), key("enter")],
+            vec![key("ctrl+d")],
+        ],
+        vec![WorkerMsg::Event(AgentEvent::AgentStart)],
+    );
+    assert_eq!(s.handle().queued(), (Vec::new(), Vec::new()));
+    assert!(
+        matches!(d.cmds.as_slice(), [SessionCmd::RecoveryPrompt { handle, text, .. }]
+        if handle.same_instance(&s.handle()) && text == "x"),
+        "Escape must retain the explicit recovery boundary until the next input"
+    );
+}
+
 /// #906: Enter while an aborted run is still unwinding starts a new run. The aborted run takes
 /// no further tool batch, so a steering message would sit in a queue nothing drains (the flaky
 /// `oxa-cli::i699_interrupt::tool_pty_ctrl_c_stops_tool_without_exiting` caught it: the reply to
