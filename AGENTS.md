@@ -74,6 +74,12 @@ Keep target directories and large scratch under your own clone or `~/.cache`; ne
 `/tmp` (it is RAM on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary
 files; preserve anything a running process of yours uses, and never clean another lane's files.
 
+That rule holds outside oxa's sandbox. Inside it the home directory is an empty mount that is made
+read-only, `~/.cache` included: only the package caches and your `oxa.sandbox.writePaths` binds are
+writable there, and the toolchain directories are read-only. A sandboxed command's scratch is `/tmp`
+(also `TMPDIR` and `XDG_CACHE_HOME`), backed by the session's directory under `~/.cache/oxa/scratch`
+on the host and deleted when the session ends, so keep anything that must survive in the workspace.
+
 Push the lane branch to start the `lane` workflow, or dispatch it explicitly:
 
 ```sh

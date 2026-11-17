@@ -1218,3 +1218,24 @@ fn every_session_has_its_own_scratch() {
         .unwrap()
         .contains("discarded after each command"));
 }
+
+/// #928: `~/.cache` holds only the package caches the layout binds, so a plain entry under it
+/// (which project instructions written for the host name as scratch space) is read-only, while
+/// a bound cache stays writable. A write there is neither hidden nor a missing file, which is
+/// why the bash tool explains the read-only error instead.
+#[test]
+fn real_home_cache_is_read_only_outside_the_bound_caches() {
+    let env = TestEnv::new();
+    env.write("home/.cache/sccache/keep", "");
+    let Some(b) = real(&env, machine(&env)) else {
+        return;
+    };
+    let work = env.work();
+    let (exit, out) = run(&b, "mkdir -p \"$HOME/.cache/build-tools\"", &work);
+    assert_ne!(exit, Some(0), "{out}");
+    assert!(out.contains("Read-only file system"), "{out}");
+    assert!(!env.home().join(".cache/build-tools").exists());
+    let (exit, out) = run(&b, "echo v > \"$HOME/.cache/sccache/probe\"", &work);
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(env.home().join(".cache/sccache/probe").exists());
+}
