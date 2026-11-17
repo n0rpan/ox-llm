@@ -98,7 +98,20 @@ pub fn connection(
         Ok(_) => ("404 Not Found", "text/plain", "Not found".into()),
         Err(status) => (status, "text/plain", "Request refused".into()),
     };
-    write!(stream, "HTTP/1.1 {status}\r\nContent-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\nReferrer-Policy: no-referrer\r\n\r\n{body}", body.len())
+    let headers = format!("HTTP/1.1 {status}\r\nContent-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\nReferrer-Policy: no-referrer\r\n\r\n", body.len());
+    write_response(
+        &mut stream,
+        &[headers.as_bytes(), body.as_bytes()],
+        Duration::from_secs(5),
+    )
+}
+
+fn write_response(stream: &mut TcpStream, parts: &[&[u8]], budget: Duration) -> std::io::Result<()> {
+    stream.set_write_timeout(Some(budget))?;
+    for part in parts {
+        stream.write_all(part)?;
+    }
+    Ok(())
 }
 
 fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
@@ -215,5 +228,36 @@ mod tests {
                 assert!(reply.starts_with("HTTP/1.1 404"));
             }
         }
+    }
+
+    #[test]
+    fn slow_reader_cannot_reset_the_total_response_write_budget() {
+        use std::sync::atomic::AtomicBool;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        client.set_read_timeout(Some(Duration::from_millis(50))).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let finished = stop.clone();
+        let reader = std::thread::spawn(move || {
+            while !finished.load(Ordering::SeqCst) {
+                if matches!(client.read(&mut [0]), Ok(0)) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+        });
+        let payload = vec![b'x'; 16 * 1024 * 1024];
+        let began = Instant::now();
+        let result = write_response(&mut server, &[&payload], Duration::from_secs(1));
+        let elapsed = began.elapsed();
+        stop.store(true, Ordering::SeqCst);
+        drop(server);
+        reader.join().unwrap();
+        assert!(result.is_err());
+        assert!(
+            elapsed < Duration::from_millis(1750),
+            "partial writes renewed the one-second budget: {elapsed:?}"
+        );
     }
 }
