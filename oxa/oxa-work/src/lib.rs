@@ -16,6 +16,10 @@ mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
 pub mod helper_queue;
+mod notes;
+mod publish;
+pub use notes::{ProblemNote, ReportRecord};
+pub use publish::{publish, report_notes};
 pub mod mirrors;
 pub mod shadow;
 mod state;
@@ -90,6 +94,16 @@ pub struct Record {
     pub head_sha: Option<String>,
     pub tree_sha: Option<String>,
     pub interruption: Option<WorkerInterruption>,
+    #[serde(default)]
+    pub pull_request: Option<String>,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub problem_notes: Vec<ProblemNote>,
+    #[serde(default)]
+    pub reports: Vec<ReportRecord>,
+    #[serde(default)]
+    pub acceptance_outcome: Option<Outcome>,
 }
 
 /// An immutable task/base/check snapshot, built before any task in its batch runs.
@@ -121,6 +135,16 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
         &["rev-parse", "--verify", &format!("{}^{{commit}}", task.base)],
     ))?;
     let commands = done_commands(policy, repo, &base_sha)?;
+    let base_ref = checked(git(
+        policy,
+        repo,
+        &["rev-parse", "--symbolic-full-name", &task.base],
+    ))?;
+    if base_ref == format!("refs/heads/{}", task.branch)
+        || base_ref == format!("refs/remotes/origin/{}", task.branch)
+    {
+        return Err("task branch must differ from its base branch".into());
+    }
     let base_alias = tree::base_alias(policy, repo, &task.base, &base_sha)?;
     Ok(PlannedTask {
         task,
@@ -134,6 +158,31 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
 /// Recover immutable inputs before consulting today's mutable base/settings.
 /// New attempts still freeze a fresh plan before any worker in the batch runs.
 pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: bool) -> Result<PlannedTask> {
+    plan_task_mode(repo, task, policy, rerun, false)
+}
+
+/// Explicit actions reuse completed execution inputs, including red results,
+/// without treating a report/publication retry as another model attempt.
+pub fn plan_task_for_actions(
+    repo: &Path,
+    task: Task,
+    policy: &RunPolicy,
+    rerun: bool,
+) -> Result<PlannedTask> {
+    plan_task_mode(repo, task, policy, rerun, true)
+}
+
+fn completed_execution(step: Step) -> bool {
+    matches!(step, Step::Finished | Step::Publishing | Step::Reporting)
+}
+
+fn plan_task_mode(
+    repo: &Path,
+    task: Task,
+    policy: &RunPolicy,
+    rerun: bool,
+    actions: bool,
+) -> Result<PlannedTask> {
     validate(&task)?;
     let Some(saved) = load_task_checkpoint(policy, &task.id)? else {
         return plan_task(repo, task, policy);
@@ -141,8 +190,9 @@ pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: boo
     if saved.task != task {
         return Err("task specification changed; use a new task id".into());
     }
-    if saved.record.step != Step::Finished
-        || (!rerun && matches!(saved.record.outcome, Outcome::Done | Outcome::NothingToDo))
+    if !(rerun && completed_execution(saved.record.step))
+        && (saved.record.step != Step::Finished
+            || (!rerun && (actions || matches!(saved.record.outcome, Outcome::Done | Outcome::NothingToDo))))
     {
         let execution = saved.execution.ok_or("missing task execution checkpoint")?;
         if saved.record.base_sha.as_deref() != Some(&execution.base) {
@@ -167,9 +217,28 @@ pub fn plan_tasks_for_run(
     policy: &RunPolicy,
     rerun: bool,
 ) -> Vec<Result<PlannedTask>> {
+    plan_tasks(repo, tasks, policy, rerun, false)
+}
+
+pub fn plan_tasks_for_actions(
+    repo: &Path,
+    tasks: &[Task],
+    policy: &RunPolicy,
+    rerun: bool,
+) -> Vec<Result<PlannedTask>> {
+    plan_tasks(repo, tasks, policy, rerun, true)
+}
+
+fn plan_tasks(
+    repo: &Path,
+    tasks: &[Task],
+    policy: &RunPolicy,
+    rerun: bool,
+    actions: bool,
+) -> Vec<Result<PlannedTask>> {
     let mut plans: Vec<_> = tasks
         .iter()
-        .map(|task| plan_task_for_run(repo, task.clone(), policy, rerun))
+        .map(|task| plan_task_mode(repo, task.clone(), policy, rerun, actions))
         .collect();
     let mut targets =
         std::collections::BTreeMap::<String, std::collections::BTreeMap<String, Vec<String>>>::new();
@@ -826,7 +895,29 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         head_sha: None,
         tree_sha: None,
         interruption: None,
+        pull_request: None,
+        draft: false,
+        problem_notes: vec![],
+        reports: vec![],
+        acceptance_outcome: None,
     }
+}
+
+/// Read a completed execution for explicit publication/report retries. The action
+/// reacquires the task lock and validates its checkpoint before making an effect.
+pub fn action_record(policy: &RunPolicy, task: &Task) -> Result<Option<Record>> {
+    validate(task)?;
+    let Some(saved) = load_task_checkpoint(policy, &task.id)? else {
+        return Ok(None);
+    };
+    if saved.task != *task {
+        return Err("task specification changed; use a new task id".into());
+    }
+    Ok(matches!(
+        saved.record.step,
+        Step::Finished | Step::Publishing | Step::Reporting
+    )
+    .then_some(saved.record))
 }
 
 fn verify_task_storage(path: &Path) -> std::io::Result<()> {
@@ -905,6 +996,21 @@ pub fn run_task_with_observer(
     rerun: bool,
     observer: &dyn CheckpointObserver,
 ) -> std::result::Result<Record, RunError> {
+    run_task_with_notes(repo, binary, planned, policy, rerun, observer, &|_| None)
+}
+
+/// The trusted frontend supplies its privacy scrubber before any worker note
+/// enters a checkpoint, observation or emitted record. Other callers discard
+/// notes by default rather than accidentally publishing model-supplied text.
+pub fn run_task_with_notes(
+    repo: &Path,
+    binary: &Path,
+    planned: &PlannedTask,
+    policy: &RunPolicy,
+    rerun: bool,
+    observer: &dyn CheckpointObserver,
+    scrub_note: &(dyn Fn(&ProblemNote) -> Option<ProblemNote> + Sync),
+) -> std::result::Result<Record, RunError> {
     let task = &planned.task;
     validate(task)?;
     let root = PathBuf::from(checked(git(policy, repo, &["rev-parse", "--show-toplevel"]))?);
@@ -967,7 +1073,12 @@ pub fn run_task_with_observer(
             return Err("task specification changed; use a new task id".into());
         }
         writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
-        if old.record.step == Step::Finished {
+        // Action recovery cannot turn a changed HEAD into fresh acceptance.
+        // Only an explicit rerun starts a new execution for these checkpoints.
+        if !rerun && matches!(old.record.step, Step::Publishing | Step::Reporting) {
+            return Ok(old.record);
+        }
+        if completed_execution(old.record.step) {
             if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
                 return Ok(old.record);
             }
@@ -988,6 +1099,11 @@ pub fn run_task_with_observer(
     };
     // Replaying the prior checkpoint precedes this first new checkpoint or action.
     let step = state.record.step;
+    let recover_accepted_save = step == Step::Saving
+        && matches!(
+            state.record.acceptance_outcome.unwrap_or(state.record.outcome),
+            Outcome::Done | Outcome::NothingToDo
+        );
     writer
         .save(&mut state, step, observer)
         .map_err(RunError::Checkpoint)?;
@@ -998,6 +1114,7 @@ pub fn run_task_with_observer(
         lock: &lock_file,
         writer: &mut writer,
         observer,
+        scrub_note,
         base_alias: planned.base_alias.as_ref(),
     })
     .drive(&mut state)
@@ -1019,6 +1136,10 @@ pub fn run_task_with_observer(
             state.record.detail = error;
         }
     }
+    state
+        .record
+        .acceptance_outcome
+        .get_or_insert(state.record.outcome);
     writer
         .save(&mut state, Step::Saving, observer)
         .map_err(RunError::Checkpoint)?;
@@ -1030,6 +1151,43 @@ pub fn run_task_with_observer(
             state.record.detail.push('\n');
         }
         state.record.detail.push_str(&format!("save: {error}"));
+        let retry = if matches!(
+            state.record.acceptance_outcome,
+            Some(Outcome::Done | Outcome::NothingToDo | Outcome::Red)
+        ) {
+            Step::Saving
+        } else {
+            // An unfinished merge/worker still needs another execution attempt.
+            Step::Finished
+        };
+        writer
+            .save(&mut state, retry, observer)
+            .map_err(RunError::Checkpoint)?;
+        return Ok(state.record);
+    }
+    state.record.outcome = state
+        .record
+        .acceptance_outcome
+        .take()
+        .unwrap_or(state.record.outcome);
+    if recover_accepted_save {
+        // A failed or interrupted save can leave a worktree that changed since
+        // acceptance. Qualify the exact recovered commit before restoring success.
+        match committed::verify_commit(&root, binary, &policy, &state, &lock_file) {
+            Ok(_) => {
+                let initial = state.execution.as_ref().and_then(|point| point.initial.as_ref());
+                state.record.outcome = if state.record.head_sha.as_ref() == initial {
+                    Outcome::NothingToDo
+                } else {
+                    Outcome::Done
+                };
+                state.record.detail.clear();
+            }
+            Err(error) => {
+                state.record.outcome = Outcome::Blocked;
+                state.record.detail = format!("save recovery: {error}");
+            }
+        }
     }
     writer
         .save(&mut state, Step::Finished, observer)

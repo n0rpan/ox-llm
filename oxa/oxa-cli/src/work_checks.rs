@@ -235,7 +235,9 @@ git --no-replace-objects commit -m {message}
         }
     }
     if failed {
-        err.write_all(&diagnostics).map_err(|e| e.to_string())?;
+        let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+        let safe = crate::report_cmd::scrub(&String::from_utf8_lossy(&diagnostics), &ctx);
+        err.write_all(safe.as_bytes()).map_err(|e| e.to_string())?;
     }
     Ok(i32::from(failed))
 }

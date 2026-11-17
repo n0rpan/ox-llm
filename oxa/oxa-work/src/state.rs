@@ -20,6 +20,8 @@ pub enum Step {
     Saving,
     #[default]
     Finished,
+    Publishing,
+    Reporting,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -134,7 +136,18 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         .get("record")
         .and_then(serde_json::Value::as_object)
         .ok_or("task checkpoint record is missing")?;
-    if record.len() != keys.len() || keys.iter().any(|key| !record.contains_key(*key)) {
+    let optional = [
+        "pull_request",
+        "draft",
+        "problem_notes",
+        "reports",
+        "acceptance_outcome",
+    ];
+    if keys.iter().any(|key| !record.contains_key(*key))
+        || record
+            .keys()
+            .any(|key| !keys.contains(&key.as_str()) && !optional.contains(&key.as_str()))
+    {
         return Err("incomplete or unknown task checkpoint record fields".into());
     }
     let state: State = serde_json::from_value(value).map_err(|e| format!("task checkpoint: {e}"))?;
