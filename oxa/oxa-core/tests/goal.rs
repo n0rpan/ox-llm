@@ -1,11 +1,11 @@
 use oxa_config::{Dirs, Settings};
-use oxa_core::{Deps, Open, RunOutcome, Session, ToolSelection};
+use oxa_core::{goal::GoalControl, Deps, Open, RunOutcome, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
 use oxa_proto::{HeadlessUi, ToolCall, VecSink};
 use oxa_resources::Resources;
 use oxa_sandbox::NoSandbox;
-use oxa_session::{Goal, GoalBudget, GoalStatus, MemStore, SessionStore};
+use oxa_session::{FsStore, Goal, GoalBudget, GoalStatus, MemStore, SessionStore};
 use std::sync::Arc;
 fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>) -> Deps {
     Deps {
@@ -35,6 +35,86 @@ fn deps(env: &TestEnv, store: Arc<dyn SessionStore>, engine: Arc<ScriptedEngine>
 fn objective(budget: GoalBudget) -> Goal {
     Goal::new("Review synthetic work and wait for more.".into(), budget, 1000).unwrap()
 }
+
+#[test]
+fn native_goal_control_rejects_stale_requests_and_persists_terminal_cancel() {
+    let env = TestEnv::new();
+    let root = env.root().join("sessions");
+    let store = Arc::new(FsStore::new(root.clone()));
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store, engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let saved = session.inner().sref.clone();
+    assert_eq!(session.goal_revision(), 0);
+
+    let mut goal = objective(GoalBudget {
+        max_tokens: Some(100),
+        ..GoalBudget::default()
+    });
+    goal.charge(Some(17), 20, true).unwrap();
+    session.set_goal(Some(goal.clone()), &mut sink).unwrap();
+    let original = session.goal_revision();
+
+    let paused = session
+        .control_goal(&saved.id, original, GoalControl::Pause, &mut sink)
+        .unwrap();
+    assert!(paused > original);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Paused);
+    assert_eq!(
+        session
+            .control_goal(&saved.id, original, GoalControl::Cancel, &mut sink)
+            .unwrap_err()
+            .code,
+        "goal_revision_conflict"
+    );
+    assert_eq!(session.goal_revision(), paused);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Paused);
+
+    let resumed = session
+        .control_goal(&saved.id, paused, GoalControl::Resume, &mut sink)
+        .unwrap();
+    assert!(resumed > paused);
+    assert_eq!(session.goal().unwrap(), goal);
+    let canceled = session
+        .control_goal(&saved.id, resumed, GoalControl::Cancel, &mut sink)
+        .unwrap();
+    assert!(canceled > resumed);
+    goal.status = GoalStatus::Canceled;
+    assert_eq!(session.goal(), Some(goal.clone()));
+    session.shutdown(&mut ui);
+    drop(session);
+
+    let store = Arc::new(FsStore::new(root));
+    let mut session = Session::open(deps(&env, store, engine), Open::Resume(saved.clone())).unwrap();
+    assert_eq!(session.goal(), Some(goal));
+    assert_eq!(session.goal_revision(), canceled);
+    for control in [GoalControl::Pause, GoalControl::Resume, GoalControl::Cancel] {
+        assert!(session
+            .control_goal(&saved.id, canceled, control, &mut sink)
+            .is_err());
+    }
+    assert_eq!(session.goal_revision(), canceled);
+
+    session.switch(Open::New, &mut sink, &mut ui).unwrap();
+    let new_id = session.state().session_id;
+    assert_ne!(saved.id, new_id);
+    session
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    let new_revision = session.goal_revision();
+    assert_eq!(
+        session
+            .control_goal(&saved.id, new_revision, GoalControl::Cancel, &mut sink)
+            .unwrap_err()
+            .code,
+        "goal_revision_conflict"
+    );
+    assert_eq!(session.goal_revision(), new_revision);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+    session.shutdown(&mut ui);
+}
+
 #[test]
 fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuation() {
     let env = TestEnv::new();
@@ -49,6 +129,7 @@ fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuatio
     session
         .set_goal(Some(objective(GoalBudget::default())), &mut sink)
         .unwrap();
+    let initial_revision = session.goal_revision();
     assert!(session.inner().active.get("goal_done").is_some());
     assert!(session.inner().active.get("wait").is_some());
     session
@@ -60,6 +141,7 @@ fn ordinary_prefix_unchanged_and_two_idle_turns_stall_with_one_fixed_continuatio
         )
         .unwrap();
     assert_eq!(session.stats().outcome, RunOutcome::Stalled);
+    assert!(session.goal_revision() > initial_revision);
     let goal = session.goal().unwrap();
     assert_eq!(goal.status, GoalStatus::Paused);
     assert_eq!(goal.turns, 2);

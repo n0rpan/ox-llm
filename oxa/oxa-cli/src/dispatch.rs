@@ -1287,6 +1287,7 @@ fn run_headless(
                 oxa_session::GoalStatus::Done => oxa_core::RunOutcome::Done,
                 oxa_session::GoalStatus::Blocked => oxa_core::RunOutcome::Blocked("goal_blocked"),
                 oxa_session::GoalStatus::Paused => oxa_core::RunOutcome::Stalled,
+                oxa_session::GoalStatus::Canceled => oxa_core::RunOutcome::Interrupted,
                 oxa_session::GoalStatus::Pursuing => oxa_core::RunOutcome::NothingToDo,
             };
             built.result_facts.goal(Some(goal));

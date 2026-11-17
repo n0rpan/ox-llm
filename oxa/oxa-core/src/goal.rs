@@ -6,6 +6,58 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Wake, Waker};
 use std::time::{Duration, Instant};
 
+/// Lifecycle requests from an already-authorized session frontend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GoalControl {
+    Pause,
+    Resume,
+    Cancel,
+}
+
+impl crate::Session {
+    /// The saved goal revision, scoped to the owner session's current ID.
+    pub fn goal_revision(&self) -> u64 {
+        Goal::revision(self.inner().tree.entries())
+    }
+
+    /// Apply a lifecycle request on the idle session owner. The frontend
+    /// authenticates the sender and must pass the session ID it bound when
+    /// accepting the request. A matching revision on another session is insufficient.
+    pub fn control_goal(
+        &mut self,
+        session_id: &str,
+        revision: u64,
+        control: GoalControl,
+        sink: &mut dyn oxa_proto::EventSink,
+    ) -> Result<u64, oxa_proto::OxaError> {
+        use oxa_proto::{codes, OxaError};
+        if self.inner().sref.id != session_id || self.goal_revision() != revision {
+            return Err(OxaError::new(
+                "goal_revision_conflict",
+                "The session or goal revision changed.",
+            ));
+        }
+        let mut goal = self
+            .goal()
+            .ok_or_else(|| OxaError::new(codes::NOT_FOUND, "The session has no goal."))?;
+        match control {
+            GoalControl::Pause if goal.status == GoalStatus::Pursuing => goal.pause(),
+            GoalControl::Resume if matches!(goal.status, GoalStatus::Paused | GoalStatus::Blocked) => {
+                goal.resume()?;
+            }
+            GoalControl::Cancel => goal.cancel()?,
+            _ => {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "The goal cannot make that transition.",
+                ))
+            }
+        }
+        self.set_goal(Some(goal), sink)?;
+        Ok(self.goal_revision())
+    }
+}
+
 pub struct GoalRuntime(Mutex<Inner>);
 struct Inner {
     goal: Goal,
