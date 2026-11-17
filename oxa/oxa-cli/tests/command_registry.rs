@@ -13,3 +13,14 @@ fn supported_registry_cli_paths_have_real_public_help() {
         );
     }
 }
+
+#[test]
+fn work_status_declaration_matches_the_existing_cli_route() {
+    let words = vec!["work".into(), "status".into(), "--json".into()];
+    let resolved = parse_cli(&words).unwrap();
+    assert_eq!(resolved.command.path, &["work", "status"]);
+    assert_eq!(resolved.args, &["--json"]);
+    let parsed = oxa_cli::parse_args(&words, &[]).unwrap();
+    assert!(matches!(parsed.subcommand, Some(oxa_cli::Subcommand::Work(rest))
+        if rest == ["status", "--json"]));
+}

@@ -94,15 +94,28 @@ commands! {
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
+    WorkStatus {
+        path: &["work", "status"],
+        aliases: &[],
+        summary: "List the saved work records and their liveness",
+        arguments: &[Argument { name: "json", kind: ArgumentKind::Flag, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("Slash handler migration is pending"),
+            menu: Availability::Exception("Menu handler migration is pending"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
+    },
     WorkBoard {
         path: &["work", "board"],
         aliases: &[],
         summary: "Show the work board",
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
         surfaces: Surfaces {
-            cli: Availability::Supported,
-            slash: Availability::Supported,
-            menu: Availability::Supported,
+            cli: Availability::Exception("Work board handler has not landed"),
+            slash: Availability::Exception("Work board handler has not landed"),
+            menu: Availability::Exception("Work board handler has not landed"),
             web: Availability::Exception("No web frontend is shipped"),
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
@@ -179,11 +192,22 @@ mod tests {
         for entry in COMMANDS {
             for path in std::iter::once(entry.path).chain(entry.aliases.iter().copied()) {
                 let input = words(&format!("{} work board --help", path.join(" ")));
-                for parsed in [parse_cli(&input), dispatch_slash(&input)] {
-                    let parsed = parsed.expect("declared surface resolves");
-                    assert_eq!(parsed.command.id, entry.id);
-                    assert_eq!(parsed.args, words("work board --help"));
-                    assert!(parsed.help_requested);
+                for (surface, parsed) in [
+                    (Surface::Cli, parse_cli(&input)),
+                    (Surface::Slash, dispatch_slash(&input)),
+                ] {
+                    match entry.surfaces.at(surface) {
+                        Availability::Supported => {
+                            let parsed = parsed.expect("declared surface resolves");
+                            assert_eq!(parsed.command.id, entry.id);
+                            assert_eq!(parsed.args, words("work board --help"));
+                            assert!(parsed.help_requested);
+                        }
+                        Availability::Exception(reason) => {
+                            assert!(!reason.trim().is_empty());
+                            assert!(parsed.is_none(), "unavailable surface must not resolve");
+                        }
+                    }
                 }
             }
             for surface in [Surface::Cli, Surface::Slash, Surface::Menu, Surface::Web] {
