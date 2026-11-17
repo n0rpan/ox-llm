@@ -5,6 +5,38 @@ use super::{
 };
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+
+/// Hash-check the captured base before checkout or a resumed worker can consume it.
+pub(crate) fn verify_objects(policy: &RunPolicy, repo: &Path, base: &str) -> Result<()> {
+    let status = git(
+        policy,
+        repo,
+        &[
+            "-c",
+            "core.alternateRefsCommand=:",
+            "-c",
+            "core.commitGraph=false",
+            "-c",
+            "fsck.skipList=/dev/null",
+            "fsck",
+            "--full",
+            "--strict",
+            "--no-reflogs",
+            "--no-dangling",
+            base,
+        ],
+    )
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .map_err(|_| "cannot verify captured base objects")?;
+    if !status.success() {
+        return Err("captured base object integrity failed; work retained".into());
+    }
+    Ok(())
+}
 
 pub(crate) struct Prepared {
     pub initial: String,
@@ -89,6 +121,7 @@ pub(crate) fn prepare(
     policy: &RunPolicy,
     lock: &fs::File,
 ) -> Result<Prepared> {
+    verify_objects(policy, repo, base)?;
     let retained = tree.exists();
     if !retained {
         let branch = format!("refs/heads/{}", task.branch);

@@ -570,6 +570,8 @@ fn cmd_sign_in(
     }
 
     let mut io = CliLoginIo::new(&name, out);
+    // `!command` values run as in `connect_all`: the same (allow-all) gate, home and cwd.
+    let run = |c: &str| oxa_mcp::run_value_command(&|_: &oxa_proto::Access| true, &dirs.home, cwd, c);
     let signed = oxa_mcp::login(
         &name,
         &http,
@@ -577,6 +579,7 @@ fn cmd_sign_in(
         &mut io,
         Duration::from_secs(timeout_s),
         &oxa_proto::CancelToken::new(),
+        &run,
     );
     if let Err(e) = signed {
         let line = if e.code == codes::TIMEOUT || e.code == codes::ABORTED {

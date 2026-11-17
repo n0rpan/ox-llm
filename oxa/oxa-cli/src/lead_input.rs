@@ -92,6 +92,9 @@ pub fn situation(path: &Path, uid: u32) -> Result<Snapshot> {
     file.take(MAX_SNAPSHOT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "cannot read situation")?;
+    if bytes.len() > MAX_SNAPSHOT_BYTES {
+        return Err("runner situation exceeds limit");
+    }
     Snapshot::from_json(&bytes).map_err(|_| "invalid runner situation")
 }
 
@@ -206,5 +209,25 @@ mod tests {
         assert_eq!(situation(&path, uid).unwrap(), snapshot);
         fs::write(&path, b"sensitive synthetic malformed data").unwrap();
         assert_eq!(situation(&path, uid).unwrap_err(), "invalid runner situation");
+    }
+
+    #[test]
+    fn situation_reports_inputs_over_the_size_limit() {
+        let env = TestEnv::new();
+        let source = include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl");
+        let expected = source
+            .lines()
+            .find_map(|line| Snapshot::from_json(line.as_bytes()).ok())
+            .unwrap();
+        let mut bytes = expected.to_json().unwrap();
+        bytes.resize(MAX_SNAPSHOT_BYTES, b' ');
+        let (path, uid) = fixture(&env, &bytes);
+        assert_eq!(situation(&path, uid).unwrap(), expected);
+        bytes.push(b' ');
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            situation(&path, uid).unwrap_err(),
+            "runner situation exceeds limit"
+        );
     }
 }

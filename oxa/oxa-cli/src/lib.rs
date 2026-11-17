@@ -27,11 +27,15 @@ mod home_cwd;
 mod hooks;
 mod identity_cmd;
 mod in_process;
+pub mod lead;
 pub mod lead_access;
+pub mod lead_http;
 pub mod lead_input;
 pub mod lead_page;
 pub mod lead_panels;
 pub mod lead_peer;
+mod lead_preset;
+pub mod lead_runs;
 mod limits;
 mod login_cmd;
 mod mcp_cmd;
@@ -46,6 +50,7 @@ mod wipe_cmd;
 mod work_board;
 mod work_checks;
 mod work_cmd;
+pub mod work_refill;
 
 pub use args::{
     no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand, NO_TOOL_ALIASES,
@@ -58,7 +63,7 @@ pub use identity_cmd::{identity_facts, run_identity, write_identity};
 pub use mcp_cmd::run_mcp;
 pub use pkg_cmd::run_pkg;
 pub use report_cmd::{
-    clean_notes, parse_draft, report_repo, run_report_issue, save_draft, scrub, submit, Confirm, Runner,
-    ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED, SETTING_REPORT_REPO,
+    clean_notes, parse_draft, process_runner, report_repo, run_report_issue, save_draft, scrub, submit,
+    Confirm, Runner, ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED, SETTING_REPORT_REPO,
 };
 pub use wipe_cmd::{run_wipe, WipeIo};

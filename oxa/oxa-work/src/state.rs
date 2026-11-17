@@ -1,10 +1,10 @@
 //! Private durable task checkpoints. Observers never receive or mutate State.
 use crate::{checkpoint, Outcome, Record, Result, Task};
+pub(crate) use oxa_proto::time::now_ms;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const VERSION: u64 = 1;
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
@@ -78,15 +78,6 @@ impl State {
             deadline_at_ms,
         }
     }
-}
-
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -247,33 +238,24 @@ impl Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_dir::PrivateDir;
     use std::fs::{self, OpenOptions};
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
     };
 
-    struct Fixture(PathBuf);
+    struct Fixture(PrivateDir);
     impl Fixture {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "oxa-checkpoint-{}-{}",
-                std::process::id(),
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-            ));
-            fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
-            Self(path)
+            Self(PrivateDir::new("checkpoint"))
         }
         fn path(&self) -> PathBuf {
-            self.0.join("test.json")
+            self.0.path().join("test.json")
         }
     }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+
     fn state() -> State {
         let task = Task {
             id: "test".into(),
@@ -313,14 +295,14 @@ mod tests {
                 .unwrap();
             let before = fs::read(fixture.path()).unwrap();
             let policy = crate::RunPolicy {
-                git_binary: fixture.0.join("unavailable-git"),
+                git_binary: fixture.0.path().join("unavailable-git"),
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,
                 offline: true,
-                storage: fixture.0.clone(),
+                storage: fixture.0.path().to_path_buf(),
             };
             for rerun in [false, true] {
-                let planned = crate::plan_task_for_run(&fixture.0, state.task.clone(), &policy, rerun);
+                let planned = crate::plan_task_for_run(fixture.0.path(), state.task.clone(), &policy, rerun);
                 if step == Step::Finished && rerun {
                     assert!(planned.is_err(), "explicit new attempts require a fresh plan");
                 } else {
@@ -431,7 +413,7 @@ mod tests {
         let bytes = serde_json::to_vec(&state).unwrap();
         fs::write(fixture.path(), &bytes).unwrap();
         fs::write(
-            fixture.0.join(".checkpoint-counter"),
+            fixture.0.path().join(".checkpoint-counter"),
             serde_json::to_vec(&serde_json::json!({"version":1,"revision":u64::MAX,"pending":null})).unwrap(),
         )
         .unwrap();
@@ -495,7 +477,7 @@ mod tests {
         second.record.id = "second".into();
         second.task.branch = "agent/second".into();
         second.record.branch = "agent/second".into();
-        let second_path = fixture.0.join("second.json");
+        let second_path = fixture.0.path().join("second.json");
         let mut still_blocked = Writer::new(second_path.clone(), false);
         assert!(still_blocked
             .save(&mut second, Step::Preparing, &|_: &Record| Err(
@@ -529,7 +511,8 @@ mod tests {
         let fixture = Fixture::new();
         let state = state();
         {
-            let mut repository = checkpoint::Repository::open(&fixture.0, &|_: &Record| Ok(())).unwrap();
+            let mut repository =
+                checkpoint::Repository::open(fixture.0.path(), &|_: &Record| Ok(())).unwrap();
             assert_eq!(repository.reserve(&state.record).unwrap(), 1);
         }
         assert!(!fixture.path().exists());
@@ -553,7 +536,7 @@ mod tests {
             .save(&mut state, Step::Preparing, &|_: &Record| Ok(()))
             .unwrap();
         let durable = fs::read(fixture.path()).unwrap();
-        fs::remove_file(fixture.0.join(".checkpoint-counter")).unwrap();
+        fs::remove_file(fixture.0.path().join(".checkpoint-counter")).unwrap();
         let mut writer = Writer::new(fixture.path(), true);
         assert!(writer
             .save(&mut state, Step::Worker, &|_: &Record| -> Result<()> {
@@ -561,7 +544,7 @@ mod tests {
             })
             .is_err());
         assert_eq!(fs::read(fixture.path()).unwrap(), durable);
-        fs::write(fixture.0.join(".checkpoint-counter"), b"{").unwrap();
+        fs::write(fixture.0.path().join(".checkpoint-counter"), b"{").unwrap();
         let mut writer = Writer::new(fixture.path(), true);
         assert!(writer
             .save(&mut state, Step::Worker, &|_: &Record| -> Result<()> {
@@ -570,7 +553,7 @@ mod tests {
             .is_err());
         assert_eq!(fs::read(fixture.path()).unwrap(), durable);
         fs::write(
-            fixture.0.join(".checkpoint-counter"),
+            fixture.0.path().join(".checkpoint-counter"),
             br#"{"version":1,"revision":1}"#,
         )
         .unwrap();
@@ -595,12 +578,17 @@ mod tests {
             state.record.id = id.clone();
             state.task.branch = format!("agent/{id}");
             state.record.branch = state.task.branch.clone();
-            Writer::new(fixture.0.join(format!("{id}.json")), false)
+            Writer::new(fixture.0.path().join(format!("{id}.json")), false)
                 .save(&mut state, Step::Preparing, &|_: &Record| Ok(()))
                 .unwrap();
             assert!(state.record.checkpoint_revision > last);
             last = state.record.checkpoint_revision;
-            assert!(fs::metadata(fixture.0.join(".checkpoint-counter")).unwrap().len() < 256);
+            assert!(
+                fs::metadata(fixture.0.path().join(".checkpoint-counter"))
+                    .unwrap()
+                    .len()
+                    < 256
+            );
         }
         assert_eq!(last, 140);
     }
