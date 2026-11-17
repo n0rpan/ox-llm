@@ -203,9 +203,15 @@ const BASE: &[Entry] = &[
 const SHARE: &[Entry] = &[
     Entry {
         path: &["share"],
-        summary: "Manage private guest keys and daily limits",
-        usage: &["oxa share key <add|list|revoke>"],
+        summary: "Serve native local models and manage private guest keys",
+        usage: &["oxa share <serve|key>"],
         example: "oxa share key list",
+    },
+    Entry {
+        path: &["share", "serve"],
+        summary: "Serve selected native local models to authenticated guest devices",
+        usage: &["oxa share serve --model ALIAS [--model ALIAS] [--port PORT] [--bind ADDRESS] [--tailscale-socket PATH] [--same-owner]"],
+        example: "oxa share serve --model local-model --port 8080",
     },
     Entry {
         path: &["share", "key"],
