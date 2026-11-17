@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 mod claims;
-pub use claims::Claims;
+pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, ReleaseRecord};
 pub mod assignment;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
