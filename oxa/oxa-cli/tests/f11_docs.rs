@@ -683,13 +683,19 @@ fn cli_and_slash_tables_list_every_shipped_name() {
 
     let mut documented_flags: BTreeMap<String, (usize, BTreeSet<String>)> = BTreeMap::new();
     for (line, cell) in &rows {
-        if let Some(flag) = option_name(cell) {
-            documented_flags
-                .entry(flag)
-                .or_insert_with(|| (*line, BTreeSet::new()))
-                .1
-                .extend(option_tokens(cell));
+        let Some(flag) = option_name(cell) else {
+            continue;
+        };
+        // A table's `|---|---|` separator row begins with dashes but names no option. `--` is a
+        // shipped option and is two dashes, so only longer runs are separators.
+        if flag.len() > 2 && flag.bytes().all(|byte| byte == b'-') {
+            continue;
         }
+        documented_flags
+            .entry(flag)
+            .or_insert_with(|| (*line, BTreeSet::new()))
+            .1
+            .extend(option_tokens(cell));
     }
     let mut missing = Vec::new();
     let mut alias_gaps = Vec::new();
