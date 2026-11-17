@@ -9,6 +9,7 @@ pub mod board;
 mod checkpoint;
 mod execute;
 pub mod helper_queue;
+pub mod mirrors;
 pub mod shadow;
 mod state;
 mod status;
