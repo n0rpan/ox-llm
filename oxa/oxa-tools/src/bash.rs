@@ -374,6 +374,15 @@ pub(crate) fn gh_comments_note(command: &str, output: &str, exit: Option<i32>) -
     (exit == Some(0) && viewing && comments && !json && silent).then_some("gh prints only the comments when its output is captured, so an issue or pull request without comments gives no output; the issue text is not missing. Use `gh issue view N -R OWNER/REPO --json title,body,comments,state` (or `gh pr view`) to get the body and the comments")
 }
 
+/// #670: a detached tmux server cannot outlive the sandbox command that owns its PID namespace.
+/// Do not diagnose successful commands or quoted errors from unrelated tools.
+fn tmux_server_note(command: &str, output: &str, exit: Option<i32>) -> Option<&'static str> {
+    (exit.is_some_and(|code| code != 0)
+        && command.split_whitespace().any(|word| word == "tmux")
+        && output.lines().any(|line| line.starts_with("no server running")))
+    .then_some(descriptions::BASH_PROCESS_LIFETIME)
+}
+
 /// O-167(b): the network of a bash command. `sandbox_net` is the sandbox's answer
 /// (`oxa.sandbox.net`, default on, and never on while offline). Per mode: plan = never (a
 /// read-only mode does not gain the network silently); workspace = `sandbox_net`; ask =
@@ -585,6 +594,7 @@ impl BashTool {
         let note = note.or_else(|| git_config_note(&output, res.exit));
         let note = note.or_else(|| git_exclude_note(&output, res.exit));
         let note = note.or_else(|| gh_comments_note(raw_command, &output, res.exit).map(str::to_string));
+        let note = note.or_else(|| tmux_server_note(raw_command, &output, res.exit).map(str::to_string));
         let shown = if output.is_empty() {
             match note {
                 Some(n) if res.exit == Some(0) => format!("{}\n[{n}]", errors::BASH_NO_OUTPUT),
@@ -732,6 +742,41 @@ echo '\''a'\'''"#
         let mut streamed = String::new();
         let out = BashTool::new().run(&args, &cx, &mut |t| streamed.push_str(t));
         (out, streamed)
+    }
+
+    /// #670: explain a vanished detached server without relaxing process isolation.
+    #[test]
+    fn tmux_missing_server_explains_sandbox_lifetime() {
+        let sb = Fake::ok(b"no server running on /tmp/live.sock\n", Some(1));
+        let (out, _) = run_with(
+            &sb,
+            json!({"command": "tmux -S /tmp/live.sock capture-pane -p -t live"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(out.is_error);
+        assert!(out.text.contains("no server running on /tmp/live.sock"));
+        assert!(out.text.contains("PID namespace"), "{}", out.text);
+        assert!(out.text.contains("background: true"), "{}", out.text);
+        assert!(out.text.contains("keep the command alive"), "{}", out.text);
+    }
+
+    #[test]
+    fn tmux_lifetime_guidance_is_available_before_starting_a_server() {
+        let guidance = descriptions::BASH.guidelines.join("\n");
+        assert!(guidance.contains("tmux"));
+        assert!(guidance.contains("PID namespace"));
+        assert!(guidance.contains("keep the command alive"));
+    }
+
+    #[test]
+    fn tmux_server_note_does_not_diagnose_unrelated_failures() {
+        let missing = "no server running on /tmp/live.sock\n";
+        assert!(tmux_server_note("tmux capture-pane", missing, Some(0)).is_none());
+        assert!(tmux_server_note("tmux capture-pane", missing, None).is_none());
+        assert!(tmux_server_note("cat log.txt", missing, Some(1)).is_none());
+        assert!(tmux_server_note("tmux bad-command", "unknown command: bad-command", Some(1)).is_none());
+        assert!(tmux_server_note("tmux capture-pane", "old error: no server running", Some(1)).is_none());
     }
 
     /// #526: the note uses the sandbox's home, never the process `$HOME`.
