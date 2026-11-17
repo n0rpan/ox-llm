@@ -45,6 +45,13 @@ class Selection(unittest.TestCase):
         matrix, _, _ = lane.select(self.packages, self.packages, ['AGENTS.md', 'README.md'])
         self.assertEqual(matrix, {'include': []})
 
+    def test_native_cli_contracts_select_their_actual_crate(self):
+        matrix, _, _ = lane.select(self.packages, self.packages, ['conformance/goldens/cli.json'])
+        self.assertEqual(self.names(matrix), {
+            ('oxc-rs', 'ubuntu-24.04', ('oxc',)),
+            ('oxc-rs', 'ubuntu-24.04-arm', ('oxc',)),
+        })
+
     def test_workspace_lock_expands_that_workspace_and_real_consumers(self):
         matrix, _, _ = lane.select(self.packages, self.packages, ['oxa/Cargo.lock'])
         for entry in matrix['include']:
@@ -87,10 +94,11 @@ class Selection(unittest.TestCase):
 
     def test_native_engine_never_runs_on_free_arm_and_is_not_silently_certified(self):
         packages = {'engine/crates/server': package('server', 'engine'),
-                    'engine/crates/model': package('model', 'engine')}
+                    'engine/crates/model': package('model', 'engine'),
+                    'engine/crates/oxe-cli': package('oxe-cli', 'engine')}
         matrix, deferred, _ = lane.select(packages, packages, ['engine/Cargo.lock'])
         self.assertEqual(matrix['include'], [{'workspace': 'engine', 'runner': 'ubuntu-24.04', 'packages': ['server']}])
-        self.assertEqual(deferred, ['model'])
+        self.assertEqual(deferred, ['model', 'oxe-cli'])
 
 
 if __name__ == '__main__':

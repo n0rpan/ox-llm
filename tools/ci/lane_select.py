@@ -11,7 +11,8 @@ import subprocess
 import tomllib
 
 WORKSPACES = ('oxa', 'engine', 'oxc-rs')
-PORTABLE_ENGINE = {'server', 'gguf', 'tokenizer', 'sched', 'chat', 'oxe-cli'}
+# oxe-cli includes ISA benchmark tests that require native ARM kernels too.
+PORTABLE_ENGINE = {'server', 'gguf', 'tokenizer', 'sched', 'chat'}
 LANE_CONTRACT = {
     '.github/workflows/lane.yml', 'tools/ci/lane_select.py', 'tools/ci/lane_run.py',
     'tools/ci/lane_queue.py', 'tools/ci/lane-nextest.toml', 'tools/ci/rust_cache_key.py',
@@ -104,6 +105,9 @@ def select(current, previous, paths):
     affected = set()
     reasons = []
     for path in paths:
+        if path.startswith('conformance/'):
+            affected.update(p['name'] for p in current.values() if p['workspace'] == 'oxc-rs')
+            reasons.append(f'native CLI behavior contract: {path}')
         if path in LANE_CONTRACT or path in ('rust-toolchain', 'rust-toolchain.toml') or path.startswith('.cargo/'):
             affected.update(packages)
             reasons.append(f'shared lane/build contract: {path}')

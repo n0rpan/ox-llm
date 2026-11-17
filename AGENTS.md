@@ -67,6 +67,8 @@ consumers against main. Shared workspace manifests/locks expand the affected wor
 release-relevant features, Cargo registry/target caches via GitHub-owned actions, and standard free
 Ubuntu x64/ARM runners. Cache keys include the lockfile, toolchain and architecture; lane caches
 use their own namespace and branch scope, preserving the required workflows' main-cache policy.
+The native-controller crate runs its existing CLI conformance/refusal controls against the real
+native binary; an empty Rust unit inventory alone never qualifies it.
 Native engine tests requiring Oryon CPU features remain on the existing self-hosted route. The lane
 workflow does not replace or change the merge queue's required checks. Start full-workspace and
 release CI only when the change is close to done. Each started job records its queue delay in its

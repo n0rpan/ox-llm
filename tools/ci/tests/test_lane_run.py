@@ -10,6 +10,16 @@ spec.loader.exec_module(lane)
 
 
 class LaneRuntime(unittest.TestCase):
+    def test_empty_unit_inventory_is_only_for_native_cli_contracts(self):
+        empty = {'rust-suites': {'native': {'status': 'listed', 'testcases': {}}}}
+        self.assertEqual(lane.rust_test_count(empty, 'oxc-rs'), 0)
+        for workspace in ('oxa', 'engine'):
+            with self.assertRaises(ValueError):
+                lane.rust_test_count(empty, workspace)
+        empty['rust-suites']['native']['status'] = 'skipped'
+        with self.assertRaises(ValueError):
+            lane.rust_test_count(empty, 'oxc-rs')
+
     def test_only_selected_release_features_survive_the_tree(self):
         tree = 'oxa-cli v1 (/project/cli)|\noxa-engine v1 (/project/engine)|in-process-gateway\noxc-gateway v1 (/project/gateway)|catalog,ledger\nother v1|experimental\n'
         self.assertEqual(lane.parse_features(tree, ['oxc-gateway'], 'oxa-cli'),

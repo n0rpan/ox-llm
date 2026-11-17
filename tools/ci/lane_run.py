@@ -57,6 +57,16 @@ def cargo_arguments(packages, features):
     return arguments
 
 
+def rust_test_count(inventory, workspace):
+    suites = inventory['rust-suites'].values()
+    if any(suite['status'] != 'listed' for suite in suites):
+        raise ValueError('unlisted Rust test binary')
+    count = sum(len(suite['testcases']) for suite in suites)
+    if not count and workspace != 'oxc-rs':
+        raise ValueError('expected nonempty Rust test inventory')
+    return count
+
+
 def runtime_environment(root, home, temporary, workspace, fixtures):
     # Compiler/cache credentials never reach tests. These are the same explicit
     # synthetic HOME/XDG and mandatory-bwrap boundaries as the full workspace CI.
@@ -105,12 +115,15 @@ def main():
     inventory = artifact / 'tests.json'
     if fixtures:
         run(['cargo', 'build', '--locked', '--profile', profile, '-p', 'oxa-cli', '-p', 'oxa-fake'], cwd=workspace)
+    if workspace == 'oxc-rs':
+        run(['cargo', 'build', '--locked', '--profile', profile, *arguments, '--bin', 'oxc-native'], cwd=workspace)
     archive_profile = 'ci' if fixtures else 'default'
     run(['cargo', 'nextest', 'archive', '--locked', '--profile', archive_profile,
          '--cargo-profile', profile, *arguments, '--archive-file', str(archive)], cwd=workspace)
     with inventory.open('w') as output:
         run(['cargo', 'nextest', 'list', '--archive-file', str(archive), '--message-format', 'json'],
             cwd=workspace, stdout=output)
+    count = rust_test_count(json.loads(inventory.read_text()), workspace)
     # Only small synthetic fixtures use the hosted runner's disk-backed /tmp,
     # outside the account home required by the unchanged key-isolation guard.
     # All targets, caches and archives stay under the checkout or CI cache, never /tmp.
@@ -128,21 +141,30 @@ def main():
                 run(['cargo', 'test', '--locked', '--profile', profile, *arguments,
                      '--', '--list', '--format', 'terse'], cwd=workspace, env=env, stdout=output)
             run(['python3', '-I', str(root / 'tools/ci/engine_test_count.py'), str(libtest), str(inventory)])
-        report = root / workspace / 'target/nextest/lane/junit.xml'
-        report.unlink(missing_ok=True)
-        result = subprocess.run([nextest, 'nextest', 'run', '--profile', 'lane',
-            '--tool-config-file', 'lane:' + str(root / 'tools/ci/lane-nextest.toml'),
-            '--archive-file', str(archive), '--workspace-remap', str(root / workspace),
-            '--extract-to', str(root / workspace), '--extract-overwrite',
-            '--no-tests', 'fail', '--test-threads', '4',
-            '--success-output', 'immediate', '--failure-output', 'immediate-final'],
-            cwd=workspace, env=env)
-        # The existing guard rejects runtime skips, missing/duplicate cases and failures.
-        if workspace != 'engine':
-            run(['python3', '-I', str(root / 'tools/ci/check_oxa_report.py'),
-                 '--expected', str(inventory), str(report)])
-        if result.returncode:
-            raise SystemExit(result.returncode)
+        if count:
+            report = root / workspace / 'target/nextest/lane/junit.xml'
+            report.unlink(missing_ok=True)
+            result = subprocess.run([nextest, 'nextest', 'run', '--profile', 'lane',
+                '--tool-config-file', 'lane:' + str(root / 'tools/ci/lane-nextest.toml'),
+                '--archive-file', str(archive), '--workspace-remap', str(root / workspace),
+                '--extract-to', str(root / workspace), '--extract-overwrite',
+                '--no-tests', 'fail', '--test-threads', '4',
+                '--success-output', 'immediate', '--failure-output', 'immediate-final'],
+                cwd=workspace, env=env)
+            # The existing guard rejects runtime skips, missing/duplicate cases and failures.
+            if workspace != 'engine':
+                run(['python3', '-I', str(root / 'tools/ci/check_oxa_report.py'),
+                     '--expected', str(inventory), str(report)])
+            if result.returncode:
+                raise SystemExit(result.returncode)
+        if workspace == 'oxc-rs':
+            # This crate currently has no Rust unit cases; its existing behavior
+            # contracts drive the actual native executable, never the Python controller.
+            native_env = {**env, 'OXC_COMMAND': str(root / workspace / 'target/debug/oxc-native')}
+            run(['python3', '-I', '-m', 'unittest', 'discover', '-s', 'conformance',
+                 '-p', 'test_cli*.py', '-v'], cwd=root, env=native_env)
+            run(['python3', '-I', 'conformance/check_native_scaffold.py', native_env['OXC_COMMAND']],
+                cwd=root, env=native_env)
         doctests = subprocess.run(
             ['cargo', 'test', '--locked', '--profile', profile, *arguments, '--doc', '--no-fail-fast'],
             cwd=workspace, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
