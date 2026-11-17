@@ -126,7 +126,12 @@ impl Gateway {
     }
     /// Startup-only bounded live discovery. Reuses this gateway's HTTP pool;
     /// the temporary current-thread driver creates no second queue or daemon.
-    pub fn discover_opencode(&mut self, base: &str, timeout: Duration) -> Result<(), Error> {
+    /// A bounded stale-aware cache entry is consumed before any network call.
+    pub fn discover_opencode(
+        &mut self,
+        base: &str,
+        timeout: Duration,
+    ) -> Result<crate::opencode::cache::State, Error> {
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(Error::OpenCode(crate::opencode::client::Error::Request));
         }
@@ -141,6 +146,21 @@ impl Gateway {
                 diagnostics.clear();
             }
         }
+        result.map_err(Error::OpenCode)
+    }
+    /// One bounded background refresh of the Go catalog cache, sharing this
+    /// gateway's existing HTTP pool. It never mutates the live catalog, so a
+    /// failure cannot make any other local or configured route fatal.
+    pub fn refresh_opencode(&self, base: &str, timeout: Duration) -> Result<(), Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(Error::OpenCode(crate::opencode::client::Error::Request));
+        }
+        let driver = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| Error::OpenCode(crate::opencode::client::Error::Transport))?;
+        let result = driver.block_on(self.runtime.refresh_go(self.client.transport(), base, timeout));
+        driver.shutdown_timeout(Duration::from_secs(1));
         result.map_err(Error::OpenCode)
     }
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {

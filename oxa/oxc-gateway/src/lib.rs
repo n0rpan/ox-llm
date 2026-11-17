@@ -11,6 +11,8 @@ pub mod share;
 
 #[cfg(feature = "cloud-only")]
 pub mod catalog;
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+mod catalog_cache;
 #[cfg(feature = "ledger")]
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]

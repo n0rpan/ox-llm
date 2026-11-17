@@ -10,11 +10,16 @@ use serde_json::{json, Map, Value};
 use std::sync::{Arc, OnceLock};
 
 struct Backend {
-    gateway: Gateway,
+    gateway: Arc<Gateway>,
     driver: OnceLock<Result<tokio::runtime::Runtime, OxaError>>,
 }
 impl EmbeddedEngine {
     pub fn from_gateway(gateway: Gateway) -> Self {
+        Self::from_shared_gateway(Arc::new(gateway))
+    }
+    /// The same engine over a gateway the caller also holds, so one bounded
+    /// background refresh can share the one HTTP pool.
+    pub fn from_shared_gateway(gateway: Arc<Gateway>) -> Self {
         Self::new(Arc::new(Backend {
             gateway,
             driver: OnceLock::new(),

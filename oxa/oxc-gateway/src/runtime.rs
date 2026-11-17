@@ -43,6 +43,9 @@ pub struct Runtime {
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
     go_models: BTreeMap<String, crate::opencode::Model>,
+    /// Bounded stale-aware Go catalog metadata, beside the ledger in the same
+    /// private agent directory. Never a key, header or transcript.
+    go_cache: Option<crate::opencode::cache::Cache>,
     key_file: Result<KeyFile, crate::secrets::Error>,
     ledger_dir: PathBuf,
     ledger: OnceLock<Result<Ledger, Refusal>>,
@@ -184,6 +187,7 @@ impl Runtime {
             catalog,
             billings,
             go_models: BTreeMap::new(),
+            go_cache: None,
             key_file: KeyFile::prepare(&key_path),
             ledger_dir,
             ledger: OnceLock::new(),
@@ -198,6 +202,12 @@ impl Runtime {
     }
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
         self.catalog.models().filter(|model| supported(model.provider))
+    }
+    /// Enable catalog writes only for the owner-selected discovery setting.
+    pub fn with_catalog_cache(mut self) -> Self {
+        let directory = self.ledger_dir.parent().unwrap_or(self.ledger_dir.as_path());
+        self.go_cache = Some(crate::opencode::cache::Cache::new(directory));
+        self
     }
     fn audit(&self, model: &str, context: Context<'_>) -> Result<(Daily, Entry), Refusal> {
         if !self.ledger_enabled {
@@ -215,13 +225,17 @@ impl Runtime {
     pub(crate) fn go_model(&self, alias: &str) -> Option<&crate::opencode::Model> {
         self.go_models.get(alias)
     }
+    /// Consume the bounded stale-aware cache before any network call, then fall
+    /// back to live discovery exactly as before. A cache hit is re-validated by
+    /// the same strict parser as the wire, so it can never widen routing,
+    /// limits or admission.
     pub(crate) async fn discover_go(
         &mut self,
         client: &reqwest::Client,
         base: &str,
         timeout: std::time::Duration,
-    ) -> Result<(), crate::opencode::client::Error> {
-        use crate::opencode::client::Error;
+    ) -> Result<crate::opencode::cache::State, crate::opencode::client::Error> {
+        use crate::opencode::{cache::State, client::Error};
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.clear();
         }
@@ -231,18 +245,18 @@ impl Runtime {
         if self.subscription_limits.is_none() {
             return Err(Error::Request);
         }
-        let key = self
-            .key_file
+        // The credential store is still read before the cache, so a missing or
+        // unsafe store keeps failing at startup with the same error class and
+        // still precedes any HTTP, exactly as before.
+        let key = self.go_key()?;
+        if let Some((state, models)) = self
+            .go_cache
             .as_ref()
-            .map_err(|_| {
-                self.credential_error();
-                Error::Refused(crate::opencode::Refusal::Unauthenticated)
-            })?
-            .read("opencode")
-            .map_err(|_| {
-                self.credential_error();
-                Error::Refused(crate::opencode::Refusal::Unauthenticated)
-            })?;
+            .and_then(|cache| cache.load(base, &key, std::time::SystemTime::now()))
+        {
+            self.apply_go(&models).map_err(|_| Error::Protocol)?;
+            return Ok(state);
+        }
         let discovered = crate::opencode::client::models_observed(
             client,
             base,
@@ -252,9 +266,66 @@ impl Runtime {
             self.diagnostics.as_ref(),
         )
         .await?;
+        self.apply_go(&discovered).map_err(|_| Error::Protocol)?;
+        if let Some(cache) = &self.go_cache {
+            let _ = cache.store(base, &key, &discovered, std::time::SystemTime::now());
+        }
+        Ok(State::Fresh)
+    }
+    /// One bounded background refresh: it shares the gateway's existing HTTP
+    /// pool, never mutates the live catalog and never touches the foreground
+    /// diagnostics sink, so a catalog failure stays non-fatal to every other
+    /// local or configured route.
+    pub(crate) async fn refresh_go(
+        &self,
+        client: &reqwest::Client,
+        base: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), crate::opencode::client::Error> {
+        use crate::opencode::client::Error;
+        let cache = self.go_cache.as_ref().ok_or(Error::Request)?;
+        if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
+            return Err(Error::Request);
+        }
+        if self.subscription_limits.is_none() {
+            return Err(Error::Request);
+        }
+        let key = self.go_key()?;
+        let discovered = crate::opencode::client::models_observed(
+            client,
+            base,
+            &key,
+            timeout,
+            &oxa_proto::CancelToken::new(),
+            None,
+        )
+        .await?;
+        let _ = cache.store(base, &key, &discovered, std::time::SystemTime::now());
+        Ok(())
+    }
+    fn go_key(&self) -> Result<Key, crate::opencode::client::Error> {
+        use crate::opencode::client::Error;
+        self.key_file
+            .as_ref()
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })?
+            .read("opencode")
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })
+    }
+    fn apply_go(
+        &mut self,
+        discovered: &[crate::opencode::Model],
+    ) -> Result<(), crate::opencode::client::Error> {
+        use crate::opencode::client::Error;
         let mut models: Vec<_> = self
             .catalog
             .models()
+            .filter(|model| !self.go_models.contains_key(model.id))
             .filter_map(|m| self.catalog.configured(m.id).cloned())
             .collect();
         let mut additions = BTreeMap::new();
@@ -275,9 +346,12 @@ impl Runtime {
                 )
                 .map_err(|_| Error::Protocol)?,
             );
-            additions.insert(alias, model);
+            additions.insert(alias, model.clone());
         }
         let catalog = Catalog::new(Access::Enabled, models).map_err(|_| Error::Protocol)?;
+        for alias in self.go_models.keys() {
+            self.billings.remove(alias);
+        }
         for alias in additions.keys() {
             self.billings.insert(alias.clone(), Billing::Subscription);
         }
