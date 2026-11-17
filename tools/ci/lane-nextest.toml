@@ -1,0 +1,10 @@
+[profile.lane]
+inherits = "default"
+fail-fast = false
+retries = 0
+
+[profile.lane.junit]
+path = "junit.xml"
+store-success-output = true
+store-failure-output = true
+report-skipped = "ignored"

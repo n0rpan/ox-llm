@@ -1,4 +1,4 @@
-//! C1: `Session`, the SDK object. Owner: task C1. Signatures below are frozen; bodies are yours.
+//! C1: `Session`, the SDK object.
 // ported from pi packages/coding-agent/src/core/agent-session.ts
 use crate::agent_loop::{persist, run_loop, RunEnd};
 use crate::host::{attach_hosts, first_reply, observe_hooks, pumped, serve_host, serve_idle, Serve};
@@ -57,6 +57,8 @@ pub enum Open {
 pub struct State {
     pub session_id: String,
     pub session_file: Option<PathBuf>,
+    /// Optional live status sidecar installed by the front end.
+    pub status_file: Option<PathBuf>,
     pub session_name: Option<String>,
     pub model: String,
     /// Wave D D4b: the model runs at a cloud provider through the controller; `None` = local.
@@ -103,9 +105,13 @@ pub struct Stats {
     pub last_snap_pos: Option<u32>,
     /// B6: the engine sent a reply without `cached_tokens` (the notice was shown).
     pub cached_unreported: bool,
-    /// The last round of `done` checks had a failure (no later round passed). Print mode reads
-    /// it at the end for its exit code.
+    /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
+    /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
+    /// Whether the current agent operation's last reply stopped at its output token limit.
+    pub output_truncated: bool,
+    /// Terminal result of the last prompt or extension-triggered run.
+    pub outcome: crate::RunOutcome,
     /// Adaptive thinking on tool follow-ups (`think.rs`) of the current run. Never persisted.
     pub escalation: crate::think::Escalation,
 }
@@ -160,6 +166,21 @@ impl Drop for BusyGuard {
 }
 
 impl Session {
+    /// Outcome of the last prompt, including errors retained after the loop settles.
+    pub fn outcome(&self) -> &crate::RunOutcome {
+        &self.st.stats.outcome
+    }
+
+    /// Record a built-in command's result independently of the last agent turn.
+    pub(crate) fn set_command_outcome(&mut self, outcome: crate::RunOutcome) {
+        self.st.stats.outcome = outcome;
+    }
+
+    /// Consume the last prompt outcome before dispatching a new headless message.
+    pub fn take_outcome(&mut self) -> crate::RunOutcome {
+        std::mem::take(&mut self.st.stats.outcome)
+    }
+
     /// Open per `how`. New / Fork without a stored prefix: fire `ResourcesDiscover` and
     /// `SessionStart`, attach the host to every hook set, read `Engine::info`, build the first
     /// epoch (`epoch::open_epoch`). Resume / Continue: replay the stored prefix bytes
@@ -205,7 +226,7 @@ impl Session {
         // resumed session restores its own recorded level (`restore_settings`).
         // MOD-004: a model that does not keep its reasoning (`preserve_thinking: false`, Flash)
         // starts with thinking off unless the CLI asks for it.
-        let startup_thinking = if info.caps.preserve_thinking == Some(false) {
+        let startup_thinking = if starts_without_thinking(&info.caps) {
             ThinkingLevel::Off
         } else {
             settings.startup_thinking(model.as_deref().unwrap_or(&info.model))
@@ -228,6 +249,8 @@ impl Session {
             mode,
         };
         let mut st = SessionState {
+            goal: None,
+            output_schema: None,
             engine,
             store,
             hooks,
@@ -293,7 +316,10 @@ impl Session {
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
             return self.run_command(&name, &args, sink, ui);
         }
-        let guard = self.begin()?;
+        if self.st.goal.is_some() {
+            crate::open_epoch(&mut self.st, "goal", false, sink)?;
+        }
+        let guard = self.begin_run()?;
         let result = oxa_proto::panic::contain(|| self.run_prompt(text, parts, sink, ui))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
         let mut aborted = matches!(result, Ok(Some(RunEnd::Aborted)));
@@ -312,6 +338,15 @@ impl Session {
                 aborted = *end == Some(RunEnd::Aborted);
             }
         }
+        self.st.stats.outcome = match result
+            .as_ref()
+            .err()
+            .or(triggered.as_ref().err())
+            .or(boundary.as_ref().err())
+        {
+            Some(error) => crate::RunOutcome::from_error(error),
+            None => settled_outcome(&self.st, boundary.as_ref().ok().and_then(|end| end.as_ref())),
+        };
         flush_queue(&self.st, sink);
         // The `agent_settled` hook observes the settled run while the session is still claimed;
         // the `AgentSettled` record is the last thing a prompt does: the claim is released
@@ -328,6 +363,18 @@ impl Session {
         }
     }
 
+    /// Install a progress observer for this session and subsequent in-process switches.
+    pub fn set_progress_observer(&mut self, observer: Arc<dyn crate::ProgressObserver>) {
+        *self
+            .st
+            .shared
+            .gate
+            .progress
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(observer);
+        crate::progress::session(&self.st);
+    }
+
     /// S1 / ENG-002: run the steering and follow-up messages that are queued, as one run, when
     /// the session is idle; `Ok(None)` when nothing is queued. A front end calls it after an
     /// operation that is not a prompt (a navigation, `/compact`), because input typed during
@@ -338,7 +385,7 @@ impl Session {
         sink: &mut dyn EventSink,
         ui: &mut dyn Ui,
     ) -> Result<Option<RunEnd>, OxaError> {
-        let guard = self.begin()?;
+        let guard = self.begin_run()?;
         let ran = oxa_proto::panic::contain(|| queued_run(&mut self.st, sink, ui, true))
             .unwrap_or_else(|error| Err(recover_from_panic(&mut self.st, &error, sink)));
         let result = match ran {
@@ -351,6 +398,15 @@ impl Session {
         let triggered = settle_triggered(&mut self.st, can_run, sink, ui);
         let last = last_end(&result, &triggered);
         let boundary = crate::fire::before_settle(&mut self.st, last.clone(), sink, ui);
+        self.st.stats.outcome = match result
+            .as_ref()
+            .err()
+            .or(triggered.as_ref().err())
+            .or(boundary.as_ref().err())
+        {
+            Some(error) => crate::RunOutcome::from_error(error),
+            None => settled_outcome(&self.st, boundary.as_ref().ok().and_then(|end| end.as_ref())),
+        };
         flush_queue(&self.st, sink);
         let ran = match (&boundary, &last) {
             (Ok(Some(end)), _) | (Err(_), Some(end)) => Some(*end == RunEnd::Aborted),
@@ -358,6 +414,8 @@ impl Session {
         };
         if let Some(aborted) = ran {
             crate::fire::agent_settled(&mut self.st, aborted, sink, ui);
+        } else {
+            crate::progress::notify(&self.st, crate::Progress::Settled(self.st.stats.outcome));
         }
         drop(guard);
         emit_settled(sink, ran);
@@ -561,7 +619,7 @@ impl Session {
             .find(|h| h.commands().iter().any(|c| c.name == name))
             .cloned();
         if let Some(hook) = owner {
-            let _guard = self.begin()?;
+            let _guard = self.begin_run()?;
             // E-INT 2: the handler runs beside the session thread, which serves what it asks
             // of the host. No run is in progress, so session-shape actions apply at once.
             let result = pumped(&mut self.st, Serve::Command, sink, ui, &mut |_| {}, |ui| {
@@ -569,6 +627,10 @@ impl Session {
             });
             report_hook_errors(hook.as_ref(), sink);
             let (triggered, settled) = settle_and_report(&mut self.st, sink, ui);
+            if result.is_ok() && triggered.is_ok() && self.st.stats.outcome == crate::RunOutcome::NothingToDo
+            {
+                self.st.stats.outcome = crate::RunOutcome::Done;
+            }
             drop(_guard);
             emit_settled(sink, settled);
             return result.and(triggered);
@@ -641,6 +703,9 @@ impl Session {
         };
         State {
             session_id: st.sref.id.clone(),
+            status_file: crate::progress::observer(st)
+                .and_then(|_| crate::progress::session_file(st))
+                .map(|p| p.with_extension("status.json")),
             session_file,
             session_name: session_name(st),
             model: st.model.clone(),
@@ -666,6 +731,33 @@ impl Session {
         self.st.stats
     }
 
+    /// Set an opt-in, process-local final answer contract without changing the prefix.
+    pub fn set_output_schema(&mut self, schema: Option<crate::output_schema::OutputSchema>) {
+        self.st.output_schema = schema;
+    }
+
+    pub fn goal(&self) -> Option<oxa_session::Goal> {
+        self.st.goal.as_ref().map(|g| g.snapshot())
+    }
+
+    /// Replace the session goal while idle, persisting before exposing controls.
+    pub fn set_goal(
+        &mut self,
+        goal: Option<oxa_session::Goal>,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), OxaError> {
+        if self.st.shared.busy.load(Ordering::SeqCst) {
+            return Err(OxaError::new(codes::BUSY, "Cannot change a goal during a run."));
+        }
+        let body = goal
+            .as_ref()
+            .map_or_else(oxa_session::Goal::clear_body, oxa_session::Goal::body);
+        persist(&mut self.st, body, sink)?;
+        self.st.goal = goal.map(|g| Arc::new(crate::goal::GoalRuntime::new(g)));
+        crate::open_epoch(&mut self.st, "goal", false, sink)?;
+        Ok(())
+    }
+
     pub fn commands(&self) -> Vec<CommandSpec> {
         crate::all_commands(&self.st)
     }
@@ -679,6 +771,7 @@ impl Session {
     /// host. For a front end that replaces the session object by another one built from the
     /// same hook sets (`/new`, `/resume`, fork): the new session attaches its own host.
     pub fn close(&mut self, ui: &mut dyn Ui) {
+        crate::progress::notify(&self.st, crate::Progress::Closing);
         let mut sink = VecSink::default();
         observe_hooks(
             &mut self.st,
@@ -794,7 +887,7 @@ impl Session {
         if !crate::host::host_pending(&mut self.st) {
             return Ok(());
         }
-        let guard = self.begin()?;
+        let guard = self.begin_run()?;
         let (result, settled) = settle_and_report(&mut self.st, sink, ui);
         drop(guard);
         emit_settled(sink, settled);
@@ -818,7 +911,7 @@ impl Session {
         let Some(hook) = owner else {
             return Ok(());
         };
-        let _guard = self.begin()?;
+        let _guard = self.begin_run()?;
         let result = pumped(&mut self.st, Serve::Command, sink, ui, &mut |_| {}, |ui| {
             contained_handler(|| hook.run_shortcut(key, ui))
         });
@@ -844,6 +937,16 @@ impl Session {
     /// Claim the session for one operation. Fails with `busy` when another one holds it. The
     /// cancel tokens are cleared only after the claim, so an abort aimed at the running prompt
     /// is never lost to a later reset.
+    /// New prompt/extension work gets fresh run-local flags; prefill-only claims do not.
+    fn begin_run(&mut self) -> Result<BusyGuard, OxaError> {
+        let guard = self.begin()?;
+        crate::progress::notify(&self.st, crate::Progress::RunStart);
+        self.st.stats.done_failed = false;
+        self.st.stats.output_truncated = false;
+        crate::goal::begin(&self.st);
+        Ok(guard)
+    }
+
     fn begin(&self) -> Result<BusyGuard, OxaError> {
         let shared = self.st.shared.clone();
         if shared
@@ -857,7 +960,9 @@ impl Session {
         shared.cancel_retry.reset();
         shared.gate.bg_cancel.reset();
         shared.gate.bg_abort.store(false, Ordering::SeqCst);
-        if shared.gate.abort_next.swap(false, Ordering::SeqCst) {
+        if shared.gate.abort_next.swap(false, Ordering::SeqCst)
+            || shared.gate.interrupted.load(Ordering::SeqCst)
+        {
             // The front end accepted this run and was asked to abort it before it began.
             shared.cancel.cancel();
             shared.gate.bg_cancel.cancel();
@@ -900,13 +1005,14 @@ impl Session {
 
         // L5 (`oxa.compaction.turnStart`): an aborted turn left its tool result uncounted; the
         // prompt is compacted first when the context is already above the soft limit.
-        crate::compaction::compact_at_turn_start(st, sink, ui);
+        let can_run = compact_before_run(st, sink, ui)?;
         for wire in next_turn {
             persist(
                 st,
                 EntryBody::Msg {
                     wire,
                     parts: Vec::new(),
+                    tool: None,
                 },
                 sink,
             )?;
@@ -917,7 +1023,19 @@ impl Session {
         let mut parts = parts;
         parts.extend(note.map(Part::EnvNote));
         st.stats.user_messages += 1;
-        persist(st, EntryBody::Msg { wire, parts }, sink)?;
+        persist(
+            st,
+            EntryBody::Msg {
+                wire,
+                parts,
+                tool: None,
+            },
+            sink,
+        )?;
+
+        if !can_run {
+            return Ok(Some(RunEnd::Stopped));
+        }
 
         let payload = crate::fire::before_agent_start_payload(st, &text, images);
         match first_reply(st, HookPoint::BeforeAgentStart, &payload, sink, ui) {
@@ -950,6 +1068,23 @@ impl Session {
     }
 }
 
+/// Keep accepted input, but stop before another request when compaction spends
+/// the stored goal allowance. Queued and direct prompts use the same boundary.
+fn compact_before_run(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<bool, OxaError> {
+    crate::goal::ensure_begin(st);
+    crate::goal::checkpoint(st, false, sink)?;
+    if crate::goal::terminal(st) {
+        return Ok(false);
+    }
+    crate::compaction::compact_at_turn_start(st, sink, ui);
+    crate::goal::checkpoint(st, false, sink)?;
+    Ok(!crate::goal::terminal(st))
+}
+
 /// Settle a claimed session (see [`serve_idle`]): apply what hook sets asked for and, when
 /// `can_run` (the operation before did not abort or fail), run the turns they triggered, one
 /// after the other, until none is pending or one is aborted. `Ok(Some(end))` = the end of the
@@ -960,7 +1095,7 @@ fn settle_triggered(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<Option<RunEnd>, OxaError> {
-    if !can_run {
+    if !can_run || crate::goal::terminal(st) {
         serve_host(st, true, sink, ui);
         return Ok(None);
     }
@@ -992,6 +1127,10 @@ fn settle_and_report(
         Ok(last) => crate::fire::before_settle(st, last, sink, ui),
         Err(e) => Err(e),
     };
+    st.stats.outcome = match &triggered {
+        Ok(end) => settled_outcome(st, end.as_ref()),
+        Err(error) => crate::RunOutcome::from_error(error),
+    };
     let ran = match &triggered {
         Ok(Some(end)) => Some(*end == RunEnd::Aborted),
         Ok(None) => None,
@@ -1002,6 +1141,8 @@ fn settle_and_report(
         if let Some(aborted) = ran {
             crate::fire::agent_settled(st, aborted, sink, ui);
         }
+    } else {
+        crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
     }
     (triggered.map(|_| ()), ran)
 }
@@ -1027,6 +1168,26 @@ fn emit_settled(sink: &mut dyn EventSink, settled: Option<bool>) {
 }
 
 /// The end of the last run of an operation: a triggered turn's, else the prompt's own.
+fn settled_outcome(st: &SessionState, end: Option<&RunEnd>) -> crate::RunOutcome {
+    let outcome = crate::RunOutcome::from_end(end);
+    if outcome == crate::RunOutcome::Done {
+        if st.stats.done_failed {
+            return crate::RunOutcome::Failed("done_checks_failed");
+        }
+        if let Some(goal) = st.goal.as_ref().filter(|g| g.engaged()).map(|g| g.snapshot()) {
+            match goal.status {
+                oxa_session::GoalStatus::Blocked => return crate::RunOutcome::Blocked("goal_blocked"),
+                oxa_session::GoalStatus::Paused => return crate::RunOutcome::Stalled,
+                _ => {}
+            }
+        }
+        if st.stats.output_truncated {
+            return crate::RunOutcome::Failed("output_limit");
+        }
+    }
+    outcome
+}
+
 fn last_end(
     result: &Result<Option<RunEnd>, OxaError>,
     triggered: &Result<Option<RunEnd>, OxaError>,
@@ -1086,6 +1247,12 @@ fn settle_runs(
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
     loop {
+        if crate::goal::terminal(st) {
+            return Ok(end);
+        }
+        if end == RunEnd::Stopped && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            return run_loop(st, sink, ui);
+        }
         while end == RunEnd::Stopped {
             let follow = st.shared.take_follow_up();
             if follow.is_empty() {
@@ -1101,6 +1268,9 @@ fn settle_runs(
             return Ok(end);
         }
         crate::maybe_compact(st, true, sink, ui)?;
+        if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            return run_loop(st, sink, ui);
+        }
         if st.shared.cancel.is_cancelled() {
             return Ok(RunEnd::Aborted);
         }
@@ -1126,12 +1296,13 @@ fn queued_run(
     if taken.is_empty() {
         return Ok(None);
     }
-    if turn_start {
-        crate::compaction::compact_at_turn_start(st, sink, ui);
-    }
+    let can_run = !turn_start || compact_before_run(st, sink, ui)?;
     flush_queue(st, sink);
     for msg in taken {
         push_user(st, msg, sink)?;
+    }
+    if !can_run {
+        return Ok(Some(RunEnd::Stopped));
     }
     run_loop(st, sink, ui).map(Some)
 }
@@ -1144,6 +1315,7 @@ fn push_user(st: &mut SessionState, msg: String, sink: &mut dyn EventSink) -> Re
         EntryBody::Msg {
             wire: WireMsg::user(msg.clone()),
             parts: vec![Part::Text(msg)],
+            tool: None,
         },
         sink,
     )?;
@@ -1202,6 +1374,7 @@ fn start_new(
     st.store.commit_lock();
     st.sref = sref;
     st.tree = Tree::new(Vec::new());
+    st.goal = None;
     st.transcript = Transcript::default();
     st.stats.last_tok_s = 0.0;
     st.stats.user_messages = 0;
@@ -1265,6 +1438,7 @@ fn restore_locked(
         .with_hint("missing_cwd"));
     }
     let tree = Tree::new(st.store.load(&sref)?);
+    let goal = oxa_session::Goal::latest(tree.entries())?.map(|g| Arc::new(crate::goal::GoalRuntime::new(g)));
     let branch: Vec<Entry> = tree.branch(tree.leaf()).into_iter().cloned().collect();
     let replayed = {
         let refs: Vec<&Entry> = branch.iter().collect();
@@ -1276,6 +1450,7 @@ fn restore_locked(
     st.store.commit_lock();
     st.transcript = Transcript::project(&branch);
     st.tree = tree;
+    st.goal = goal;
     st.sref = sref;
     attach_ids(st);
     attach_hosts(st, sink, ui);
@@ -1389,9 +1564,15 @@ fn latest_of(store: &dyn SessionStore, cwd: &std::path::Path) -> Option<SessionR
 }
 
 /// Point the per-session paths at the current session id.
-fn attach_ids(st: &mut SessionState) {
+pub(crate) fn attach_ids(st: &mut SessionState) {
     let id = st.sref.id.clone();
+    st.shared.bind_session(&id);
     st.spill_dir = st.dirs.tmp_dir.join(&id);
+    st.policy.set_spill_dir(&st.spill_dir);
+    // Fork/clone history still names its ancestors' spills, even after those sessions are
+    // deleted. Follow trusted live/retained headers, never paths suggested by tool/model text.
+    let inherited = oxa_session::inherited_spill_dirs(st.store.as_ref(), &st.dirs.tmp_dir, &st.sref);
+    st.policy.set_inherited_spill_dirs(&inherited);
     refresh_tool_env(st);
 }
 
@@ -1922,6 +2103,7 @@ fn empty_prefix() -> FrozenPrefix {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_proto::{Access, Decision};
 
     fn deps(env: &oxa_fake::TestEnv, store: Arc<dyn SessionStore>) -> Deps {
         Deps {
@@ -1941,6 +2123,151 @@ mod tests {
             mode: None,
             session_id: None,
             jobs: Arc::new(oxa_tools::JobRegistry::new()),
+        }
+    }
+
+    /// #543, #555: only the active session and its fork/clone ancestors read spill output
+    /// without a prompt. Session changes must replace both scopes; codemode still asks.
+    #[test]
+    fn spill_reads_follow_the_active_session_only() {
+        let env = oxa_fake::TestEnv::new();
+        let store = Arc::new(MemStore::new());
+        let guarded_deps = || {
+            let mut d = deps(&env, store.clone());
+            d.dirs.tmp_dir = d.dirs.agent_dir.join("tmp");
+            d.policy = Box::new(oxa_perm::ModePolicy::new().with_guard(oxa_perm::PathGuard::new(
+                &d.dirs.home,
+                &d.dirs.agent_dir,
+                &d.dirs.tmp_dir,
+            )));
+            d
+        };
+        let check = |s: &Session, unrelated: &[&str], inherited: &[&str]| {
+            let st = s.inner();
+            let own = st.dirs.tmp_dir.join(&st.sref.id).join("out.txt");
+            assert_eq!(st.spill_dir, own.parent().unwrap());
+            for mode in Mode::ALL {
+                assert_eq!(
+                    st.policy.decide(mode, &Access::Read(own.clone()), &st.cwd),
+                    Decision::Allow,
+                    "the current session's output must stay readable ({mode:?})"
+                );
+                for id in inherited {
+                    let path = st.dirs.tmp_dir.join(id).join("out.txt");
+                    assert_eq!(
+                        st.policy.decide(mode, &Access::Read(path.clone()), &st.cwd),
+                        Decision::Allow,
+                        "inherited output must stay readable: {id} ({mode:?})"
+                    );
+                    assert_eq!(
+                        st.policy.decide(mode, &Access::Write(path), &st.cwd),
+                        Decision::Deny(oxa_perm::deny_reasons::SENSITIVE),
+                        "inherited output must stay read-only: {id} ({mode:?})"
+                    );
+                }
+                for id in unrelated {
+                    assert_eq!(
+                        st.policy.decide(
+                            mode,
+                            &Access::Read(st.dirs.tmp_dir.join(id).join("out.txt")),
+                            &st.cwd,
+                        ),
+                        Decision::Deny(oxa_perm::deny_reasons::SENSITIVE),
+                        "unrelated output must stay denied: {id} ({mode:?})"
+                    );
+                }
+                assert_eq!(
+                    st.policy.decide(
+                        mode,
+                        &Access::Read(st.dirs.tmp_dir.join("codemode/out.txt")),
+                        &st.cwd,
+                    ),
+                    Decision::Ask,
+                    "shared codemode output must still ask ({mode:?})"
+                );
+            }
+        };
+        let mut s = Session::open(guarded_deps(), Open::New).expect("open");
+        check(&s, &["other-session"], &[]);
+        let original = s.inner().sref.clone();
+        s.switch(Open::New, &mut VecSink::default(), &mut HeadlessUi::default())
+            .unwrap();
+        check(&s, &[&original.id], &[]);
+        let second = s.inner().sref.clone();
+        s.switch(
+            Open::Resume(original.clone()),
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+        check(&s, &[&second.id], &[]);
+        s.clone_session().expect("clone");
+        check(&s, &[&second.id, "other-session"], &[&original.id]);
+        let cloned = s.inner().sref.clone();
+        s.switch(
+            Open::Resume(second.clone()),
+            &mut VecSink::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+        check(&s, &[&original.id, &cloned.id], &[]);
+        drop(s);
+        for how in [Open::Resume(original.clone()), Open::Ephemeral] {
+            let s = Session::open(guarded_deps(), how).expect("reopen");
+            check(&s, &[&second.id, &cloned.id, "other-session"], &[]);
+        }
+        let s = Session::open(guarded_deps(), Open::Fork(original.clone())).expect("fork");
+        check(&s, &[&second.id, &cloned.id, "other-session"], &[&original.id]);
+    }
+
+    /// #576: reopening a descendant after deleting an ancestor must not add read prompts.
+    #[test]
+    fn spill_reads_survive_deleted_ancestors() {
+        let env = oxa_fake::TestEnv::new();
+        let store = Arc::new(MemStore::new());
+        let guarded_deps = || {
+            let mut d = deps(&env, store.clone());
+            d.dirs.tmp_dir = d.dirs.agent_dir.join("tmp");
+            d.policy = Box::new(oxa_perm::ModePolicy::new().with_guard(oxa_perm::PathGuard::new(
+                &d.dirs.home,
+                &d.dirs.agent_dir,
+                &d.dirs.tmp_dir,
+            )));
+            d
+        };
+        let mut s = Session::open(guarded_deps(), Open::New).unwrap();
+        let original = s.inner().sref.clone();
+        s.clone_session().unwrap();
+        let middle = s.inner().sref.clone();
+        s.clone_session().unwrap();
+        let leaf = s.inner().sref.clone();
+        let tmp_dir = s.inner().dirs.tmp_dir.clone();
+        drop(s);
+        for removed in [&middle, &original] {
+            oxa_session::remove_session_preserving_spills(store.as_ref(), &tmp_dir, removed).unwrap();
+            oxa_session::remove_spill_dir_unless_forked(store.as_ref(), &tmp_dir, removed).unwrap();
+            let reopened = Session::open(guarded_deps(), Open::Resume(leaf.clone())).unwrap();
+            let st = reopened.inner();
+            for mode in Mode::ALL {
+                for ancestor in [&original, &middle] {
+                    let path = tmp_dir.join(&ancestor.id).join("out.txt");
+                    assert_eq!(
+                        st.policy.decide(mode, &Access::Read(path.clone()), &st.cwd),
+                        Decision::Allow,
+                        "deleted ancestry must remain readable: {}",
+                        ancestor.id
+                    );
+                    assert_eq!(
+                        st.policy.decide(mode, &Access::Write(path), &st.cwd),
+                        Decision::Deny(oxa_perm::deny_reasons::SENSITIVE)
+                    );
+                }
+                assert_eq!(
+                    st.policy
+                        .decide(mode, &Access::Read(tmp_dir.join("unrelated/out.txt")), &st.cwd),
+                    Decision::Deny(oxa_perm::deny_reasons::SENSITIVE)
+                );
+            }
         }
     }
 
@@ -1987,11 +2314,39 @@ mod tests {
             .entries()
             .iter()
             .find_map(|entry| match &entry.body {
-                EntryBody::Msg { wire, parts } if wire.content.as_deref() == Some(&texts[1]) => Some(parts),
+                EntryBody::Msg { wire, parts, .. } if wire.content.as_deref() == Some(&texts[1]) => {
+                    Some(parts)
+                }
                 _ => None,
             })
             .expect("stored prompt");
         assert_eq!(crate::envnote::strip_note(&texts[1], parts), "now");
         assert!(s.st.next_turn.is_empty());
+    }
+}
+
+/// MOD-004: a local engine that does not keep reasoning in history starts with thinking off. A
+/// cloud model (`remote`) never does: it publishes `preserve_thinking: false` too, but its
+/// effort is a plain request field, so it gets the normal level (#483).
+fn starts_without_thinking(caps: &oxa_proto::EngineCaps) -> bool {
+    caps.preserve_thinking == Some(false) && !caps.remote
+}
+
+#[cfg(test)]
+mod startup_thinking_tests {
+    use super::*;
+
+    #[test]
+    fn cloud_model_does_not_start_with_thinking_off() {
+        let flash = oxa_proto::EngineCaps {
+            preserve_thinking: Some(false),
+            ..Default::default()
+        };
+        assert!(starts_without_thinking(&flash));
+        let cloud = oxa_proto::EngineCaps {
+            remote: true,
+            ..flash
+        };
+        assert!(!starts_without_thinking(&cloud));
     }
 }

@@ -1,4 +1,4 @@
-//! G5 PARITY tests (compaction). Owner: task G5.
+//! G5 PARITY tests (compaction).
 //! One test per PARITY.md row of the CMP area, named after the row id (`CMP-012` -> `fn cmp_012()`).
 //! The four meta-checks at the end read PARITY.md and this file (they are the task's acceptance).
 //!
@@ -665,22 +665,28 @@ fn cmp_010() {
     );
 }
 
-/// Invariant: W2 (cut replies are not run). A `length` reply without tool calls ends the run with
-/// stop reason `length` and no automatic continue (O-143). Tool calls inside a cut reply are not
-/// run; they get the `was not executed ... Re-issue` error result and the loop goes on.
+/// Invariant: W2 (cut tool calls are not run). A plain length cut gets a bounded continuation
+/// with a user instruction, so the next generation never ends its input in an assistant
+/// message. Cut tool calls get the `was not executed ... Re-issue` result and the loop goes on.
 #[test]
 fn cmp_011() {
-    let pi = fixture_text("goldens/compaction/cmp-011.txt");
-    assert!(pi.contains("length"), "pi documents the length stop");
-    // No automatic continue: one request, stop reason length.
+    // Plain length cuts continue to a complete reply, within the retry limit.
     let env = env_with(json!({}));
-    let srv = engine(&[cut("partial reply")], opts());
+    let srv = engine(&[cut("partial reply"), text("complete reply")], opts());
     let run = rpc(&env, &srv.url(), &[], &[prompt("first")]);
+    let reqs = srv.requests();
+    let chats = of_kind(&reqs, "chat");
     assert_eq!(
-        srv.requests().len(),
-        1,
-        "a length reply is not continued automatically"
+        chats.len(),
+        2,
+        "the length cut gets one continuation:\n{}",
+        run.raw
     );
+    assert_eq!(chats[1].messages.last().unwrap().role, Role::User);
+    assert!(chats[1]
+        .messages
+        .iter()
+        .any(|m| m.role == Role::Assistant && content(m) == "partial reply"));
     let ended = run.of("agent_end");
     assert_eq!(ended.len(), 1, "{}", run.raw);
     let last = ended[0]["messages"]
@@ -689,9 +695,10 @@ fn cmp_011() {
         .cloned()
         .unwrap_or(Value::Null);
     assert_eq!(
-        last["stopReason"], "length",
-        "the run ends with stop reason length: {last}"
+        last["stopReason"], "stop",
+        "the recovered run ends normally: {last}"
     );
+    assert_eq!(last["content"][0]["text"], "complete reply");
 
     // A tool call inside the cut reply is not run and gets the error result; the loop goes on.
     let env = env_with(json!({}));
@@ -1250,5 +1257,5 @@ fn a_rows_name_their_invariant() {
         );
         n += 1;
     }
-    assert_eq!(n, 8, "PARITY.md CMP has 8 A rows");
+    assert_eq!(n, 9, "PARITY.md CMP has 9 A rows");
 }

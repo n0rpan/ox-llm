@@ -6,7 +6,11 @@ use oxa_config::{Dirs, Settings};
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_fake::{ScriptTurn, ScriptedEngine, TestEnv};
 use oxa_perm::ModePolicy;
-use oxa_proto::{AgentEvent, CancelToken, EventSink, ExecResult, ExecSpec, HeadlessUi, OxaError, Sandbox};
+use oxa_proto::{
+    Access, AgentEvent, CancelToken, CommandSpec, EventSink, ExecResult, ExecSpec, Exposure, HeadlessUi,
+    HookPoint, HookReply, Hooks, OxaError, Sandbox, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec,
+    Ui,
+};
 use oxa_resources::Resources;
 use oxa_session::MemStore;
 use serde_json::json;
@@ -79,12 +83,28 @@ fn run_settings(
     turns: Vec<ScriptTurn>,
     sandbox: Arc<dyn Sandbox>,
 ) -> (Rec, Arc<ScriptedEngine>, bool) {
+    run_tools(env, settings, turns, sandbox, Vec::new())
+}
+
+fn run_tools(
+    env: &TestEnv,
+    settings: Settings,
+    turns: Vec<ScriptTurn>,
+    sandbox: Arc<dyn Sandbox>,
+    extra: Vec<Arc<dyn Tool>>,
+) -> (Rec, Arc<ScriptedEngine>, bool) {
     let engine = Arc::new(ScriptedEngine::new(turns));
+    let tools = oxa_tools::builtin_tools();
+    let hooks: Vec<Arc<dyn Hooks>> = if extra.is_empty() {
+        Vec::new()
+    } else {
+        vec![Arc::new(ExtTools(extra))]
+    };
     let deps = Deps {
         engine: engine.clone(),
         store: Arc::new(MemStore::new()),
-        tools: oxa_tools::builtin_tools(),
-        hooks: Vec::new(),
+        tools,
+        hooks,
         policy: Box::new(ModePolicy::new()),
         sandbox,
         settings,
@@ -562,4 +582,323 @@ fn swapped_subdir_symlink_cannot_move_the_bind_root() {
         "command: {}",
         s.command
     );
+}
+
+#[test]
+fn bash_made_change_in_a_git_repo_triggers_checks() {
+    let env = TestEnv::new();
+    let git = |args: &[&str]| {
+        let ok = std::process::Command::new("git")
+            .args(args)
+            .current_dir(env.work())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        assert!(ok, "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    let (rec, _) = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool(
+                "b1",
+                "bash",
+                &json!({"command": "echo hi > made-by-bash.txt"}).to_string(),
+            ),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(rec.checks(), vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn bash_without_changes_runs_no_checks() {
+    let env = TestEnv::new();
+    let ok = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(env.work())
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    let (rec, _) = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool("b1", "bash", &json!({"command": "ls"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert!(rec.checks().is_empty());
+}
+
+fn git_in(env: &TestEnv, args: &[&str]) {
+    let ok = std::process::Command::new("git")
+        .args(args)
+        .current_dir(env.work())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    assert!(ok, "git {args:?}");
+}
+
+#[test]
+fn bash_edit_of_an_already_untracked_file_triggers_checks() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    std::fs::write(env.work().join("new.rs"), "a\n").unwrap();
+    let (rec, _) = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool("b1", "bash", &json!({"command": "echo b >> new.rs"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(rec.checks(), vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn fingerprint_does_not_run_repository_diff_helpers() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    git_in(&env, &["config", "user.email", "t@example.invalid"]);
+    git_in(&env, &["config", "user.name", "t"]);
+    std::fs::write(env.work().join("t.txt"), "a\n").unwrap();
+    git_in(&env, &["add", "t.txt"]);
+    git_in(&env, &["commit", "-q", "-m", "x"]);
+    std::fs::write(env.work().join("helper.sh"), "#!/bin/sh\ntouch helper-ran\n").unwrap();
+    let helper = env.work().join("helper.sh");
+    git_in(&env, &["config", "diff.external", helper.to_str().unwrap()]);
+    git_in(&env, &["config", "core.fsmonitor", "touch fsmonitor-ran; false"]);
+    std::fs::write(env.work().join(".gitattributes"), "*.txt diff=x\n").unwrap();
+    git_in(&env, &["config", "diff.x.textconv", "touch textconv-ran; cat"]);
+    std::fs::set_permissions(&helper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(env.work().join("t.txt"), "b\n").unwrap();
+    let _ = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool("b1", "bash", &json!({"command": "ls"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    for m in ["helper-ran", "fsmonitor-ran", "textconv-ran"] {
+        assert!(!env.work().join(m).exists(), "{m} executed on the host");
+    }
+}
+
+#[test]
+fn fingerprint_does_not_run_repository_filters() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    git_in(&env, &["config", "user.email", "t@example.invalid"]);
+    git_in(&env, &["config", "user.name", "t"]);
+    std::fs::write(env.work().join(".gitattributes"), "*.txt filter=x\n").unwrap();
+    std::fs::write(env.work().join("t.txt"), "a\n").unwrap();
+    git_in(&env, &["add", "."]);
+    git_in(&env, &["commit", "-q", "-m", "x"]);
+    git_in(&env, &["config", "filter.x.clean", "touch filter-ran; cat"]);
+    let _ = std::fs::remove_file(env.work().join("filter-ran"));
+    std::fs::write(env.work().join("t.txt"), "bb\n").unwrap();
+    let _ = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool("b1", "bash", &json!({"command": "echo c >> t.txt"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert!(
+        !env.work().join("filter-ran").exists(),
+        "filter executed on the host"
+    );
+}
+
+#[test]
+fn tree_change_made_by_a_check_is_not_blamed_on_the_model() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    let (rec, _) = run(
+        &env,
+        json!(["echo x >> gen.txt; false"]),
+        vec![
+            write("w1", "a.txt"),
+            ScriptTurn::text("done"),
+            ScriptTurn::tool("b1", "bash", &json!({"command": "ls"}).to_string()),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(rec.checks().len(), 1, "{:?}", rec.checks());
+}
+
+/// A run the repeat guard stopped is a failed run (exit 1, class `repeat_guard`), and the done
+/// checks still run over the files it edited before it got stuck.
+#[test]
+fn repeat_guard_stop_is_a_failure_and_still_runs_the_done_checks() {
+    let env = TestEnv::new();
+    std::fs::write(env.work().join("b.txt"), "x").unwrap();
+    let mut turns = vec![write("w1", "a.txt")];
+    turns.extend((0..8).map(|i| ScriptTurn::tool(&format!("r{i}"), "read", r#"{"path":"b.txt"}"#)));
+    let engine = Arc::new(ScriptedEngine::new(turns));
+    let settings = Settings::from_values(json!({ "done": ["echo CHECKED; exit 1"] }), json!({}));
+    let deps = Deps {
+        engine: engine.clone(),
+        store: Arc::new(MemStore::new()),
+        tools: oxa_tools::builtin_tools(),
+        hooks: Vec::new(),
+        policy: Box::new(ModePolicy::new()),
+        sandbox: Arc::new(Direct),
+        settings,
+        dirs: Dirs::under(env.root()),
+        cwd: env.work(),
+        selection: ToolSelection::default(),
+        resources: Resources::default(),
+        model: None,
+        thinking: None,
+        mode: None,
+        session_id: None,
+        jobs: oxa_core::fresh_jobs(),
+    };
+    let mut s = Session::open(deps, Open::New).expect("open");
+    let mut rec = Rec::default();
+    s.prompt("go".into(), Vec::new(), &mut rec, &mut HeadlessUi::default())
+        .expect("prompt");
+    assert_eq!(*s.outcome(), oxa_core::RunOutcome::Failed("repeat_guard"));
+    assert_eq!(s.outcome().exit_code(), 1);
+    let checks = rec.checks();
+    assert_eq!(checks.len(), 1, "{checks:?}");
+    assert!(checks[0].contains("CHECKED"), "{checks:?}");
+    // The failure is reported; nothing is sent back to the model after the stop.
+    assert_eq!(engine.requests().len(), 7);
+}
+
+/// A hook set that offers tools (how extension, MCP and sub-agent tools reach a session).
+struct ExtTools(Vec<Arc<dyn Tool>>);
+
+impl Hooks for ExtTools {
+    fn fire(&self, _p: HookPoint, _payload: &serde_json::Value, _ui: &mut dyn Ui) -> HookReply {
+        HookReply::Continue
+    }
+    fn tools(&self) -> Vec<Arc<dyn Tool>> {
+        self.0.clone()
+    }
+    fn commands(&self) -> Vec<CommandSpec> {
+        Vec::new()
+    }
+    fn run_command(&self, _name: &str, _args: &str, _ui: &mut dyn Ui) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn prompt_sections(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
+}
+
+/// An extension / MCP / sub-agent style tool: not a built-in, writes a file when `write` is set.
+struct Outside {
+    spec: ToolSpec,
+    write: bool,
+}
+
+impl Outside {
+    fn tool(name: &str, write: bool) -> Arc<dyn Tool> {
+        Arc::new(Outside {
+            spec: ToolSpec {
+                name: name.to_string(),
+                description: "test tool".to_string(),
+                schema_json: "{}".to_string(),
+                class: ToolClass::Read,
+                exposure: Exposure::Direct,
+                source: Source::Extension("ext.js".to_string()),
+            },
+            write,
+        })
+    }
+}
+
+impl Tool for Outside {
+    fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+    fn default_selected(&self) -> bool {
+        true
+    }
+    fn access(&self, _args: &serde_json::Value, _cx: &ToolCtx) -> Result<Vec<Access>, String> {
+        Ok(Vec::new())
+    }
+    fn run(&self, _args: &serde_json::Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
+        if self.write {
+            std::fs::write(cx.cwd.join("made-by-tool.txt"), "x").unwrap();
+        }
+        ToolOutput::ok("ok")
+    }
+}
+
+fn outside(env: &TestEnv, write: bool) -> Vec<String> {
+    let settings = Settings::from_values(json!({ "done": ["true"] }), json!({}));
+    let (rec, _, _) = run_tools(
+        env,
+        settings,
+        vec![ScriptTurn::tool("t1", "mcp_edit", "{}"), ScriptTurn::text("done")],
+        Arc::new(Direct),
+        vec![Outside::tool("mcp_edit", write)],
+    );
+    rec.checks()
+}
+
+#[test]
+fn non_builtin_tool_edit_in_a_git_repo_triggers_checks() {
+    let env = TestEnv::new();
+    git_in(&env, &["init", "-q"]);
+    assert_eq!(outside(&env, true), vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn non_builtin_tool_edit_outside_git_triggers_checks() {
+    let env = TestEnv::new();
+    assert_eq!(outside(&env, true), vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn non_builtin_tool_edit_outside_git_with_unreadable_subdirectory_triggers_checks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    let blocked = env.work().join("unreadable");
+    std::fs::create_dir(&blocked).unwrap();
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    assert!(std::fs::read_dir(&blocked).is_err(), "fixture must be unreadable");
+    let unchanged = outside(&env, false);
+    let changed = outside(&env, true);
+    std::fs::set_permissions(&blocked, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(unchanged.is_empty(), "{unchanged:?}");
+    assert_eq!(changed, vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn non_builtin_tool_without_changes_runs_no_checks() {
+    let env = TestEnv::new();
+    std::fs::write(env.work().join("a.txt"), "a").unwrap();
+    assert!(outside(&env, false).is_empty());
+    git_in(&env, &["init", "-q"]);
+    assert!(outside(&env, false).is_empty());
+}
+
+#[test]
+fn bash_made_change_outside_git_triggers_checks() {
+    let env = TestEnv::new();
+    let (rec, _) = run(
+        &env,
+        json!(["true"]),
+        vec![
+            ScriptTurn::tool(
+                "b1",
+                "bash",
+                &json!({"command": "echo hi > made-by-bash.txt"}).to_string(),
+            ),
+            ScriptTurn::text("done"),
+        ],
+    );
+    assert_eq!(rec.checks(), vec!["done check: true ok".to_string()]);
 }

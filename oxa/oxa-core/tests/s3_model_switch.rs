@@ -314,11 +314,14 @@ fn recorder_catches_an_oversized_target_request() {
     let st = r.session.inner();
     let msgs = vec![WireMsg::user("z".repeat(r.flash_cap as usize))];
     let req = ChatRequest {
+        output_schema: None,
         prefix: &st.prefix,
         messages: &msgs,
         model: FLASH,
         max_tokens: 1,
         thinking: false,
+        thinking_budget: None,
+        thinking_level: None,
         preserve_thinking: false,
         sampling: None,
         hints: oxa_proto::Hints {

@@ -93,14 +93,17 @@ fn all_contexts() -> Vec<HintContext> {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         HintContext::Idle {
             has_text: true,
             slash: false,
+            armed: false,
         },
         HintContext::Idle {
             has_text: true,
             slash: true,
+            armed: false,
         },
         HintContext::Running,
         HintContext::Dialog,
@@ -136,8 +139,8 @@ fn hud_is_one_line_that_fits_every_width() {
 fn hud_snapshot_at_121_columns() {
     let st = full_status();
     let line = strip_ansi(&hud(&st, 121, &colour()));
-    // The full line (121 columns with the location segment) fits: no segment is dropped.
-    let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ workspace │ local";
+    // The full line (with the location segment) fits in 121 columns: no segment is dropped.
+    let expected = " OXA │ qwen3-coder-30b · medium │ CTX █████░░░░░ 45% 15k/33k │ CACHE █████ 99% │ 42.1 tok/s │ ● READY │ standard │ local";
     assert_eq!(line, expected);
 }
 
@@ -150,7 +153,7 @@ fn hud_shows_the_model_location() {
         ..full_status()
     };
     let line = plain_hud(&remote, 160);
-    assert!(line.ends_with("workspace │ cloud · anthropic"), "{line:?}");
+    assert!(line.ends_with("standard │ cloud · anthropic"), "{line:?}");
     assert!(!line.contains("local"), "{line:?}");
     let generic = StatusModel {
         model_provider: None,
@@ -174,7 +177,7 @@ fn hud_drop_order_keeps_title_and_state_down_to_40() {
 fn hud_segments_appear_monotonically_as_width_grows() {
     // A segment that shows at some width shows at every wider width (the drop order is fixed).
     let st = full_status();
-    let markers = ["tok/s", "CACHE", "15k/33k", "medium", "workspace"];
+    let markers = ["tok/s", "CACHE", "15k/33k", "medium", "standard"];
     for marker in markers {
         let mut seen = false;
         for width in 20..=200u16 {
@@ -334,6 +337,7 @@ fn hint_idle_empty_editor_shows_default_keys() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         true,
     );
@@ -367,11 +371,36 @@ fn hint_idle_empty_editor_shows_default_keys() {
     assert!(text.contains("ctrl+d exit"), "{text:?}");
 }
 
+/// #346: a first Ctrl+C on an empty editor arms the quit; the hint bar must show the clear
+/// key as the exit (warning) so the no-op press is not left unexplained, and drop the plain
+/// exit key to avoid two "exit" hints.
+#[test]
+fn hint_idle_armed_shows_clear_key_as_exit() {
+    let armed = hints(
+        HintContext::Idle {
+            has_text: false,
+            slash: false,
+            armed: true,
+        },
+        true,
+    );
+    assert!(
+        armed.contains(&format!("{} exit", key("app.clear"))),
+        "the armed exit must show the clear key: {armed:?}"
+    );
+    assert!(armed.contains("ctrl+c exit"), "{armed:?}");
+    assert!(!armed.contains("ctrl+d exit"), "{armed:?}");
+    // The other idle hints stay visible.
+    assert!(armed.contains("/ commands"), "{armed:?}");
+    assert!(armed.contains("enter send"), "{armed:?}");
+}
+
 #[test]
 fn hint_search_only_in_fullscreen() {
     let idle = HintContext::Idle {
         has_text: false,
         slash: false,
+        armed: false,
     };
     assert!(!hints(idle, false).contains("search"));
     assert!(hints(idle, true).contains("search"));
@@ -383,6 +412,7 @@ fn hint_text_contexts() {
         HintContext::Idle {
             has_text: true,
             slash: false,
+            armed: false,
         },
         false,
     );
@@ -393,6 +423,7 @@ fn hint_text_contexts() {
         HintContext::Idle {
             has_text: true,
             slash: true,
+            armed: false,
         },
         false,
     );
@@ -441,6 +472,7 @@ fn hint_rebinding_changes_the_hint() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &StatusModel::default(),
         &km,
@@ -462,6 +494,7 @@ fn hint_unbound_action_is_left_out() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &StatusModel::default(),
         &km,
@@ -481,6 +514,7 @@ fn hint_place_shown_at_140_and_hidden_at_50() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &st,
         &keymap(),
@@ -496,6 +530,7 @@ fn hint_place_shown_at_140_and_hidden_at_50() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &st,
         &keymap(),
@@ -1007,6 +1042,7 @@ fn ascii_skin_is_pure_ascii() {
         HintContext::Idle {
             has_text: false,
             slash: false,
+            armed: false,
         },
         &km,
         true,
@@ -1142,4 +1178,57 @@ fn hud_thinking_label_claude_55_effective_effort() {
     assert!(line.contains("high") && !line.contains("adaptive"), "{line}");
     let line = hud_for("qwen-local", ThinkingLevel::Off);
     assert!(line.contains("off") && !line.contains("adaptive"), "{line}");
+}
+
+#[test]
+fn waiting_behind_another_request_stays_queued() {
+    let plain = Theme::plain();
+    for (pos, place) in [(None, false), (Some(1), true), (Some(2), true)] {
+        let st = activity(Activity::Queued { pos, wait_s: 2 }, 3000);
+        let line = oxa_activity_line(&st, &keymap(), 200, &plain, Skin::Oxa).unwrap_or_default();
+        assert!(
+            line.contains("[QUEUED]") && !line.contains("STARTING"),
+            "{line:?}"
+        );
+        assert_eq!(
+            line.contains(&format!("#{}", pos.unwrap_or(0))),
+            place,
+            "{line:?}"
+        );
+    }
+}
+
+/// #343: at 60 columns a cloud model still shows where it runs and the permission mode.
+#[test]
+fn hud_keeps_location_at_60_columns() {
+    let st = StatusModel {
+        model: "anthropic/claude-haiku-5-5".to_string(),
+        model_remote: true,
+        model_provider: Some("anthropic"),
+        ..full_status()
+    };
+    for width in 60..=70u16 {
+        let line = plain_hud(&st, width);
+        assert!(
+            line.contains("cloud · anthropic"),
+            "location at {width}: {line:?}"
+        );
+        // #202: the mode is never dropped; workspace shows its autonomy level.
+        assert!(line.contains("standard"), "mode at {width}: {line:?}");
+        assert!(line.contains("READY"), "state at {width}: {line:?}");
+    }
+}
+
+#[test]
+fn hint_armed_shows_clear_key_as_exit() {
+    let idle = |armed| HintContext::Idle {
+        has_text: false,
+        slash: false,
+        armed,
+    };
+    let plain = hints(idle(false), false);
+    let armed = hints(idle(true), false);
+    assert!(plain.contains("ctrl+d exit"), "{plain:?}");
+    assert!(armed.contains("ctrl+c exit"), "{armed:?}");
+    assert!(!armed.contains("ctrl+d exit"), "{armed:?}");
 }

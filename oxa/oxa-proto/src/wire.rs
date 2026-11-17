@@ -56,6 +56,9 @@ pub struct WireMsg {
     pub tool_calls: Vec<ToolCall>,
     /// Tool role only: the id of the call this message answers.
     pub tool_call_id: Option<String>,
+    /// Private, bounded replay material for a completed assistant message only.
+    /// Omitted by `write_json`; the gateway validates its scope before use.
+    pub provider_history: Option<crate::ProviderHistory>,
 }
 
 impl WireMsg {
@@ -76,6 +79,7 @@ impl WireMsg {
             content: Some(text.into()),
             reasoning: None,
             tool_calls: Vec::new(),
+            provider_history: None,
             tool_call_id: Some(tool_call_id.into()),
         }
     }
@@ -85,6 +89,7 @@ impl WireMsg {
             content: Some(text),
             reasoning: None,
             tool_calls: Vec::new(),
+            provider_history: None,
             tool_call_id: None,
         }
     }
@@ -167,8 +172,8 @@ pub fn write_wire_json(msgs: &[WireMsg], out: &mut Vec<u8>) {
     out.push(b']');
 }
 
-/// `true` when `longer` starts with `shorter`, compared on canonical bytes (the W1 and W-guard
-/// test).
+/// `true` when `longer` starts with the unchanged `shorter` messages (W1 and
+/// W-guard), including private replay authority that visible JSON cannot replace.
 pub fn wire_is_prefix(shorter: &[WireMsg], longer: &[WireMsg]) -> bool {
     shorter.len() <= longer.len() && shorter.iter().zip(longer).all(|(a, b)| a == b)
 }
@@ -262,6 +267,8 @@ pub enum Finish {
     Stop,
     ToolCalls,
     Length,
+    /// The model declined (a refusal); the streamed text is kept, no retry.
+    ContentFilter,
 }
 
 /// `timings.*` of the engine's final chunk.

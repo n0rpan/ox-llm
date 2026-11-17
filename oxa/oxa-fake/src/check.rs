@@ -1,4 +1,4 @@
-//! B15: the invariant checker. Owner: task B15. Signatures below are frozen; bodies are yours.
+//! B15: the invariant checker.
 use crate::Recorded;
 use oxa_proto::{Role, Value, WireMsg};
 use std::collections::HashMap;

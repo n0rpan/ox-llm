@@ -1,4 +1,4 @@
-//! C5 acceptance tests: Slash-command registry. Owner: task C5.
+//! C5 acceptance tests: Slash-command registry.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -111,6 +111,8 @@ fn state(
         gate: Default::default(),
     });
     SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks,
@@ -194,6 +196,8 @@ fn builtins_list() {
         "compact",
         "resume",
         "reload",
+        "help",
+        "usage",
         "quit",
     ]
     .iter()
@@ -527,7 +531,10 @@ fn engine_and_mode_have_argument_hints() {
     let engine = cmds.iter().find(|c| c.name == "engine").expect("engine");
     assert!(engine.argument_hint.as_deref().unwrap_or("").contains("load"));
     let mode = cmds.iter().find(|c| c.name == "mode").expect("mode");
-    assert_eq!(mode.argument_hint.as_deref(), Some("<plan|workspace|ask>"));
+    assert_eq!(
+        mode.argument_hint.as_deref(),
+        Some("<standard|auto|yolo|plan|workspace|ask> [--save]")
+    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-//! C4 acceptance tests: Tree navigation, fork, clone. Owner: task C4.
+//! C4 acceptance tests: Tree navigation, fork, clone.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -61,6 +61,8 @@ fn state_with(
         gate: Default::default(),
     });
     let st = SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks,
@@ -115,6 +117,7 @@ fn say(st: &mut SessionState, text: &str) -> String {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user")
@@ -128,6 +131,7 @@ fn reply(st: &mut SessionState, text: &str) -> String {
         EntryBody::Msg {
             wire: WireMsg::assistant(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append assistant")
@@ -440,6 +444,42 @@ fn hook_before_tree_cancel_and_summary() {
     assert!(eng.requests().iter().all(|r| r.kind != "branch_summary"));
 }
 
+/// #703: a changed fork head invalidates active usage, but a clone keeps it.
+#[test]
+fn fork_invalidates_context_usage_but_clone_preserves_it() {
+    let env = TestEnv::new();
+    let (mut st, _eng, _store) = state_with(
+        &env,
+        vec![ScriptTurn::text("two"), ScriptTurn::text("four")],
+        Vec::new(),
+    );
+    say(&mut st, "one");
+    run(&mut st);
+    let second = say(&mut st, "three");
+    run(&mut st);
+    let before = st.stats;
+    assert!(before.context_tokens > 0);
+    assert!(st.last_usage.is_some());
+    let mut ui = HeadlessUi::default();
+    clone_current(&mut st, &mut ui).expect("clone");
+    assert_eq!(st.stats.context_tokens, before.context_tokens);
+    assert!(st.last_usage.is_some(), "clone has the same active context");
+
+    fork_at(&mut st, &second, &mut ui).expect("fork before second prompt");
+    assert_eq!(st.transcript.wire().len(), 2, "first exchange is retained");
+    assert_eq!(st.stats.context_tokens, st.transcript.context());
+    assert_eq!(
+        st.stats.context_tokens, 0,
+        "context is unknown until the next request"
+    );
+    assert!(
+        st.last_usage.is_none(),
+        "old head's cache usage is no longer applicable"
+    );
+    assert_eq!(st.stats.prompt_tokens, before.prompt_tokens);
+    assert_eq!(st.stats.completion_tokens, before.completion_tokens);
+}
+
 /// W3 across fork
 #[test]
 fn fork_keeps_prefix_bytes() {
@@ -742,5 +782,93 @@ fn branch_summary_budget_from_its_reserve_setting() {
             .find(|r| r.kind == "branch_summary")
             .expect("a summary request");
         assert_eq!(req.max_tokens, want.min(st.info.max_output), "{reserve:?}");
+    }
+}
+
+fn replay_reply(st: &mut SessionState, text: &str, tag: u8) -> String {
+    let mut wire = WireMsg::assistant(text);
+    wire.provider_history = Some(
+        oxa_proto::ProviderHistory::new(
+            [tag; 32],
+            [tag + 1; 32],
+            vec![json!({"type":"reasoning","encrypted_content":format!("synthetic-replay-{tag}")})],
+        )
+        .unwrap(),
+    );
+    append_entry(
+        st,
+        EntryBody::Msg {
+            wire,
+            parts: vec![],
+            tool: None,
+        },
+    )
+    .unwrap()
+    .id
+}
+
+fn replay_navigation_state(file_backed: bool) -> (TestEnv, SessionState, String) {
+    let env = TestEnv::new();
+    let (mut st, _, _) = state_with(&env, vec![], vec![]);
+    if file_backed {
+        let store = Arc::new(oxa_session::FsStore::new(env.root().join("replay-sessions")));
+        st.sref = store.create(&env.work(), None, None).unwrap();
+        st.store = store;
+    }
+    say(&mut st, "common question");
+    let common = replay_reply(&mut st, "common answer", 1);
+    say(&mut st, "branch A question");
+    replay_reply(&mut st, "branch A answer", 3);
+    say(&mut st, "longer branch A question");
+    let target = replay_reply(&mut st, "longer branch A answer", 5);
+    go(&mut st, &common, false).unwrap();
+    say(&mut st, "branch B question");
+    replay_reply(&mut st, "branch B answer", 7);
+    (env, st, target)
+}
+
+fn persisted_replay_target(st: &SessionState, target: &str) -> Vec<WireMsg> {
+    let tree = Tree::new(st.store.load(&st.sref).unwrap());
+    let branch: Vec<_> = tree.branch(target).into_iter().cloned().collect();
+    let wire = Transcript::project(&branch).wire().to_vec();
+    assert_eq!(wire.iter().filter(|m| m.provider_history.is_some()).count(), 3);
+    assert!(
+        wire.len() > st.transcript.wire().len(),
+        "also cover destination carriers beyond outgoing length"
+    );
+    wire
+}
+
+#[test]
+fn divergent_leaf_restores_the_persisted_destination_replay_exactly() {
+    for file_backed in [true, false] {
+        let (_env, mut st, target) = replay_navigation_state(file_backed);
+        let expected = persisted_replay_target(&st, &target);
+        go(&mut st, &target, false).unwrap();
+        assert_eq!(
+            st.transcript.wire(),
+            expected.as_slice(),
+            "leaf move must match direct destination projection"
+        );
+    }
+}
+
+#[test]
+fn switch_file_restores_the_persisted_destination_replay_exactly() {
+    for file_backed in [true, false] {
+        let (_env, mut st, target) = replay_navigation_state(file_backed);
+        let source = st.sref.clone();
+        let expected = persisted_replay_target(&st, &target);
+        let forked = fork_from(&mut st, &target, ForkPosition::At, &mut HeadlessUi::default()).unwrap();
+        assert_ne!(forked.sref, source);
+        assert_eq!(st.sref, forked.sref);
+        assert_eq!(
+            st.transcript.wire(),
+            expected.as_slice(),
+            "switch_file must match direct destination projection"
+        );
+        let tree = Tree::new(st.store.load(&st.sref).unwrap());
+        let branch: Vec<_> = tree.branch(tree.leaf()).into_iter().cloned().collect();
+        assert_eq!(st.transcript.wire(), Transcript::project(&branch).wire());
     }
 }

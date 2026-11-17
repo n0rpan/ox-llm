@@ -1,6 +1,12 @@
 name: release-build
 # Artifact-only qualification. No tags, schedules, credentials, or publication jobs.
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: release tag, used in the archive names
+        type: string
+        default: v0.2.0
   workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -8,26 +14,28 @@ on:
       - '.github/workflows/release-build.yml'
       - 'packaging/**'
       - 'docs/RELEASE.md'
+      - 'oxa/oxa-cli/tests/no_python_in_path.rs'
 
 permissions:
   contents: read
 
 concurrency:
   group: release-build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
   run:
     shell: bash
 
 env:
+  VERSION: ${{ inputs.version || 'v0.2.0' }}
   CARGO_HOME: /opt/cargo
   RUSTUP_HOME: /opt/rustup
   CARGO_BUILD_JOBS: '2'
 
 jobs:
   binaries:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: CPU artifacts (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -76,11 +84,33 @@ jobs:
           done
           cmp /build/first.tar.gz /build/second.tar.gz
           arch=$(uname -m)
-          cp /build/first.tar.gz "$GITHUB_WORKSPACE/dist/ox-llm-0.2.0-linux-$arch.tar.gz"
+          cp /build/first.tar.gz "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$arch.tar.gz"
           echo 'PASS: two clean builds in different source/target directories produced identical payload tarballs.' \
             > "$GITHUB_WORKSPACE/dist/REPRODUCIBILITY.txt"
           { rustc --version; cargo --version; cc --version; c++ --version; ld --version; rpm -q glibc libstdc++; } \
             > "$GITHUB_WORKSPACE/dist/TOOLCHAIN.txt"
+      - name: No-Python proof on the exact release tarball binary
+        working-directory: /build/first
+        run: |
+          set -euo pipefail
+          source packaging/release/environment.sh
+          artifact="$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).tar.gz"
+          extracted=$(mktemp -d)
+          sandbox=$(mktemp -d)
+          trap 'rm -rf "$extracted" "$sandbox"' EXIT
+          tar -xzf "$artifact" -C "$extracted"
+          test -x "$extracted/usr/bin/oxa"
+          receipt="$GITHUB_WORKSPACE/dist/NO-PYTHON-PROOF.txt"
+          { printf 'source=%s\n' "$GITHUB_SHA"; sha256sum "$artifact" | cut -d' ' -f1;
+            (cd "$extracted/usr/bin" && sha256sum oxa); } > "$receipt"
+          cd oxa
+          cargo fetch --locked
+          env -i PATH="$PATH" HOME="$sandbox" CARGO_HOME="$CARGO_HOME" RUSTUP_HOME="$RUSTUP_HOME" \
+            RUSTUP_TOOLCHAIN=1.99.1 CARGO_NET_OFFLINE=true CARGO_BUILD_JOBS="$CARGO_BUILD_JOBS" \
+            RUSTFLAGS="$RUSTFLAGS" OXA_TEST_RELEASE_OXA="$extracted/usr/bin/oxa" \
+            OXA_TEST_REQUIRE_RELEASE_ARTIFACT=1 \
+            cargo test --profile ci --locked -p oxa-cli --test no_python_in_path \
+            2>&1 | tee -a "$receipt"
       - name: Model-free source tests
         working-directory: /build/first
         run: packaging/release/check.sh
@@ -88,8 +118,9 @@ jobs:
         run: |
           cd /build/first
           mkdir -p /build/payload
-          tar -xzf "$GITHUB_WORKSPACE/dist/ox-llm-0.2.0-linux-$(uname -m).tar.gz" -C /build/payload
+          tar -xzf "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).tar.gz" -C /build/payload
           python3 -B packaging/release/sbom.py /build/payload "$GITHUB_WORKSPACE/dist/SBOM.cdx.json"
+          cp "$GITHUB_WORKSPACE/dist/SBOM.cdx.json" "$GITHUB_WORKSPACE/dist/ox-llm-$VERSION-linux-$(uname -m).sbom.cdx.json"
           python3 -B - <<'PY'
           import os, pathlib, re
           payload = pathlib.Path('/build/payload')

@@ -1,4 +1,4 @@
-//! B6: the OXA_* environment table. Owner: task B6. Signatures below are frozen; bodies are yours.
+//! B6: the OXA_* environment table.
 // ported from pi packages/coding-agent/docs/environment-variables.md
 
 /// One documented environment variable.
@@ -188,7 +188,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_SKIN",
         pi_name: None,
-        description: "pi or oxa: the look of the interactive UI for this run (over the ui.skin setting)",
+        description: "pi, oxa or ascii (ASCII glyphs only): the look of the interactive UI for this run (over the ui.skin setting)",
         supported: true,
     },
     EnvVar {

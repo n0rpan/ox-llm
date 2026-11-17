@@ -228,6 +228,30 @@ def parse_port(value: str) -> int:
                              ['unsupported_source', 'assertion_failed'])
             self.assertFalse(summary['passed'])
 
+    def test_sandbox_python_selection_is_independent_of_host(self):
+        # #286: only /usr is mounted. Exercise selection without requiring bwrap or any real
+        # system interpreter, including hosts where no sandbox-compatible Python exists.
+        venv_python = Path('/opt/venv/bin/python3')
+        local_python = Path('/usr/local/bin/python3')
+        system_python = Path('/usr/bin/python3')
+        cases = (
+            (system_python, {system_python, local_python}, {}, system_python),
+            (venv_python, {local_python, system_python}, {}, local_python),
+            (venv_python, {system_python}, {}, system_python),
+            (venv_python, set(), {}, None),
+            (venv_python, {venv_python, system_python},
+             {local_python: venv_python}, system_python),
+        )
+        for executable, files, symlinks, expected in cases:
+            with self.subTest(executable=executable, files=files, symlinks=symlinks), \
+                 patch.object(screen.sys, 'executable', str(executable)), \
+                 patch.object(screen.shutil, 'which', return_value=None), \
+                 patch.object(screen.Path, 'resolve', autospec=True,
+                              side_effect=lambda path: symlinks.get(path, path)), \
+                 patch.object(screen.Path, 'is_file', autospec=True,
+                              side_effect=lambda path: path in files):
+                self.assertEqual(screen.sandbox_python(), expected)
+
     @unittest.skipUnless(shutil.which('bwrap'), 'Linux bwrap required')
     def test_sandbox_mounts_hide_home_network_and_protect_sources(self):
         # Trusted probe only, never model output: exercise the actual sandbox contract.

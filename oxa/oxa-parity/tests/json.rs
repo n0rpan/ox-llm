@@ -1,4 +1,4 @@
-//! G6 PARITY tests (json). Owner: task G6.
+//! G6 PARITY tests (json).
 //! One test per PARITY.md row of this area, named after the row id (`JSON-012` -> `fn json_012()`).
 //!
 //! Verdicts (see PARITY.md): P rows compare with pi's documented output (`fixtures/goldens/json/

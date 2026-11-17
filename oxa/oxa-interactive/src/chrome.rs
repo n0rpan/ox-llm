@@ -1,8 +1,7 @@
-//! D6: footer, header and title. Owner: task D6. Signatures below are frozen; bodies are yours.
+//! D6: footer, header and title.
 // ported from pi packages/coding-agent/src/modes/interactive/components/{footer.ts,status-indicator.ts,keybinding-hints.ts}
 use crate::{Activity, StatusModel, ViewModel};
 use oxa_config::Keymap;
-use oxa_proto::Mode;
 use oxa_tui::{truncate_to_width, visible_width, Theme};
 
 /// pi's `formatTokens`: compact token counts (`999`, `8.0k`, `12k`, `1.5M`).
@@ -26,15 +25,6 @@ fn sanitize_status(text: &str) -> String {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-/// The theme token of a permission mode.
-fn mode_token(mode: Mode) -> &'static str {
-    match mode {
-        Mode::Plan => "modePlan",
-        Mode::Workspace => "modeWorkspace",
-        Mode::Ask => "modeAsk",
-    }
 }
 
 /// The left half of line 2: tokens, cache, prefill, context, speed and mode.
@@ -87,8 +77,8 @@ fn stats_left(st: &StatusModel, theme: &Theme, compact: bool) -> String {
     if st.degraded_context {
         parts.push(theme.fg("warning", "no summary"));
     }
-    if let Some(mode) = st.mode {
-        parts.push(theme.fg(mode_token(mode), mode.as_str()));
+    if let Some((label, token)) = st.mode_label() {
+        parts.push(theme.fg(token, label));
     }
     parts.join(" ")
 }

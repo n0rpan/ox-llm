@@ -224,10 +224,23 @@ print('PASS')
 ''' % ((SAFE_BUILTINS + ('AssertionError',)),)
 
 
+def sandbox_python():
+    """The interpreter the sandbox runs: only /usr is mounted there, so a venv or version-manager
+    python (#286) is replaced by the system one; None when there is none."""
+    python = Path(sys.executable).resolve()
+    if python.is_relative_to('/usr') and python.is_file():
+        return python
+    for name in ('/usr/local/bin/python3', '/usr/bin/python3'):
+        found = Path(name).resolve()
+        if found.is_relative_to('/usr') and found.is_file():
+            return found
+    return None
+
+
 def sandbox_argv(code_path, assertions_path, checker_path):
     bwrap = shutil.which('bwrap')
-    python = Path(sys.executable).resolve()
-    if sys.platform != 'linux' or not bwrap or not python.is_relative_to('/usr'):
+    python = sandbox_python()
+    if sys.platform != 'linux' or not bwrap or python is None:
         raise RuntimeError('requires Linux, bwrap, and a Python interpreter under /usr')
     argv = [bwrap, '--unshare-all', '--die-with-parent', '--new-session', '--clearenv',
             '--cap-drop', 'ALL', '--ro-bind', '/usr', '/usr']

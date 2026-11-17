@@ -11,7 +11,7 @@ thinking and tool output through `oxa_tui::render_markdown`, whose contract is "
 plus SGR/OSC 8". The renderer copied the bytes through: `hello \x1b[2Jworld` reached the
 terminal as a clear-screen CSI, and an autolink such as
 `<https://example.invalid/\x1b]52;c;...\x07>` reached the OSC payload because the autolink path
-did not filter control characters (the normal `[text](url)` path filtered only the URL).
+did not filter control characters (the normal inline-link path, text in brackets followed by the URL in parentheses, filtered only the URL).
 
 **Reproducer:** `tests/smoke.rs::markdown_does_not_pass_control_characters_through`, over
 `corpus/markdown-control.md`. Before the fix the rendered line contains the raw ESC/BEL; the

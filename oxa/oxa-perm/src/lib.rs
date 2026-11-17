@@ -26,6 +26,9 @@
 //!   for `net`, any command otherwise (ask mode); `Net` = the host; `Mcp` = server + tool.
 //! * "Inside cwd" is decided after resolving `..` and symlinks ([`is_inside`]): a symlink that
 //!   points outside is outside.
+//! * With a [`PathGuard`], exact home Cargo configurations (`.cargo/config.toml` and
+//!   `.cargo/config`) read without asking, like built-in skills and the session's output.
+//!   This does not grant directory access or writes, and the deny-list still wins.
 //! * Grants are per session and are never written to disk.
 #![forbid(unsafe_code)]
 
@@ -34,7 +37,7 @@ mod policy;
 mod trust;
 
 pub use paths::{is_inside, is_read_only_command, normalize};
-pub use policy::{deny_reasons, ModePolicy, PathGuard};
+pub use policy::{deny_reasons, HiddenPaths, ModePolicy, PathGuard};
 pub use trust::{
     approval_files, gated_resources, manifest, resolve_trust, summary, Approval, Changed, DefaultTrust,
     TrustInputs, TrustOutcome, TrustStore, APPROVED_KEY,

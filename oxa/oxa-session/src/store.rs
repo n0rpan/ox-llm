@@ -1,9 +1,10 @@
-//! A3: the session file store and the entry codec. Owner: task A3. Signatures below are frozen; bodies are yours.
+//! A3: the session file store and the entry codec.
 // ported from pi packages/coding-agent/src/core/session-manager.ts (file format: docs/session-format.md)
+use crate::meta::meta_of_parts;
 use crate::{SessionHeader, SessionMeta, SessionRef, SessionStore};
 use oxa_proto::{
-    codes, names, shown_why, Entry, EntryBody, FrozenPrefix, Mode, OxaError, Part, Role, ThinkingLevel,
-    ToolCall, Usage, WireMsg,
+    codes, names, shown_why, Entry, EntryBody, FrozenPrefix, Mode, OxaError, Part, ProviderHistory, Role,
+    ThinkingLevel, ToolCall, ToolMeta, Usage, WireMsg,
 };
 use serde_json::{Map, Value};
 use std::fs::{self, File, OpenOptions};
@@ -22,7 +23,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// `content`, `reasoning_content` and each tool call's `id`/`name`/`arguments` as the exact
 /// strings streamed (W2). Key order is fixed; output is deterministic.
 pub fn encode_entry(e: &Entry, out: &mut Vec<u8>) {
-    let (ty, fields) = body_fields(&e.body, e.ts_ms);
+    encode_entry_inner(e, out, true);
+}
+fn encode_entry_inner(e: &Entry, out: &mut Vec<u8>, private: bool) {
+    let (ty, mut fields) = body_fields(&e.body, e.ts_ms, private);
+    if !private {
+        let messages = match &e.body {
+            EntryBody::Compaction { .. } => fields.get_mut("details").and_then(|v| v.get_mut("keptMessages")),
+            EntryBody::Custom { custom_type, .. }
+                if custom_type == crate::Transcript::EXTENSION_REBASE_ENTRY =>
+            {
+                fields.get_mut("data").and_then(|v| v.get_mut("messages"))
+            }
+            _ => None,
+        };
+        strip_nested_history(messages, false).expect("visible encoding does not parse private state");
+    }
     let mut m = Map::new();
     m.insert("type".into(), Value::from(ty));
     m.insert("id".into(), Value::from(e.id.as_str()));
@@ -33,6 +49,16 @@ pub fn encode_entry(e: &Entry, out: &mut Vec<u8>) {
     m.insert("timestamp".into(), Value::from(iso_from_ms(e.ts_ms)));
     m.extend(fields);
     write_json(&Value::Object(m), out);
+}
+
+/// Public entry representation for hooks, RPC and exports; private replay never leaves storage.
+pub fn encode_visible_entry(e: &Entry, out: &mut Vec<u8>) {
+    encode_entry_inner(e, out, false);
+}
+
+const REPLAY_INVALID: &str = "provider_history_invalid";
+fn replay_invalid(message: impl Into<String>) -> OxaError {
+    OxaError::new(REPLAY_INVALID, message)
 }
 
 /// Parse one line. `decode_entry(encode_entry(x)) == x` for every `Entry`, bytewise on all
@@ -48,13 +74,41 @@ pub fn decode_entry(line: &[u8]) -> Result<Entry, OxaError> {
     let id = get_str(m, "id")?.to_string();
     let parent = opt_str(m, "parentId")?;
     let ts_ms = ms_from_iso(get_str(m, "timestamp")?).ok_or_else(|| invalid("bad entry timestamp"))?;
-    let body = decode_body(ty, m)?;
+    let mut body = decode_body(ty, m)?;
+    let messages = match &mut body {
+        EntryBody::Compaction { details, .. } => details.get_mut("keptMessages"),
+        EntryBody::Custom { custom_type, data }
+            if custom_type == crate::Transcript::EXTENSION_REBASE_ENTRY =>
+        {
+            data.get_mut("messages")
+        }
+        _ => None,
+    };
+    strip_nested_history(messages, true)?;
     Ok(Entry {
         id,
         parent,
         ts_ms,
         body,
     })
+}
+
+// Rebase JSON is visible input, never a source of replay authority. Still reject a
+// malformed present carrier explicitly rather than silently ignoring corrupt storage.
+fn strip_nested_history(messages: Option<&mut Value>, validate: bool) -> Result<(), OxaError> {
+    if let Some(messages) = messages.and_then(Value::as_array_mut) {
+        for message in messages {
+            if let Some(map) = message.as_object_mut() {
+                if let Some(value) = map.remove("provider_history") {
+                    if validate {
+                        ProviderHistory::from_session_value(&value)
+                            .map_err(|e| replay_invalid(e.to_string()))?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The header line (`{"type":"session","version":3,"id":..,"timestamp":..,"cwd":..[,"parentSession":..]}`).
@@ -140,16 +194,21 @@ impl SessionStore for FsStore {
         let id = match id {
             Some(given) => {
                 validate_session_id(given)?;
+                // Only an id the caller chose can collide: a fresh random id needs no scan of
+                // every stored session.
+                if find_session_path(&self.root, given).is_some() {
+                    return Err(invalid(format!("session id `{given}` already exists")));
+                }
                 given.to_string()
             }
             None => uuid_v4(),
         };
-        if find_session_path(&self.root, &id).is_some() {
-            return Err(invalid(format!("session id `{id}` already exists")));
-        }
         let dir = self.root.join(session_dir_name(cwd));
         ensure_dir(&self.root)?;
         ensure_dir(&dir)?;
+        if let Some(parent) = parent {
+            crate::spill::link_spill_stores(&self.root, parent)?;
+        }
         let ts_ms = now_ms();
         let path = dir.join(session_file_name(ts_ms, &id));
         let header = SessionHeader {
@@ -161,6 +220,12 @@ impl SessionStore for FsStore {
         };
         let mut line = Vec::new();
         encode_header(&header, &mut line);
+        // Only sessions born with store-link publication can prove that there are no
+        // undiscoverable pre-upgrade cross-store children. Never backfill this flag.
+        let mut value: Value = serde_json::from_slice(&line).expect("encoded header");
+        value["spillStoresTracked"] = Value::Bool(true);
+        line.clear();
+        write_json(&value, &mut line);
         line.push(b'\n');
         let mut f = OpenOptions::new()
             .write(true)
@@ -204,9 +269,29 @@ impl SessionStore for FsStore {
     }
 
     fn append(&self, s: &SessionRef, e: &Entry) -> Result<(), OxaError> {
+        self.append_many(s, std::slice::from_ref(e))
+    }
+
+    fn append_many(&self, s: &SessionRef, entries: &[Entry]) -> Result<(), OxaError> {
         check_safe(&s.path)?;
-        let mut line = Vec::new();
-        encode_entry(e, &mut line);
+        if entries.is_empty() {
+            return Ok(());
+        }
+        if entries
+            .iter()
+            .any(|e| matches!(e.body, EntryBody::Compaction { .. }))
+        {
+            let mut prior = self.load(s)?;
+            for entry in entries {
+                crate::transcript::validate_append(&prior, entry)?;
+                prior.push(entry.clone());
+            }
+        }
+        let mut lines = Vec::new();
+        for e in entries {
+            encode_entry(e, &mut lines);
+            lines.push(b'\n');
+        }
         let mut f = OpenOptions::new()
             .read(true)
             .append(true)
@@ -222,7 +307,7 @@ impl SessionStore for FsStore {
                 &io::Error::last_os_error(),
             ));
         }
-        let mut buf = Vec::with_capacity(line.len() + 2);
+        let mut buf = Vec::with_capacity(lines.len() + 1);
         // A torn last line (a crash mid-write) has no newline. Start a new line so the new entry
         // is not glued to the fragment. The fragment is skipped on load, never repaired in place.
         let len = f
@@ -239,8 +324,7 @@ impl SessionStore for FsStore {
                 buf.push(b'\n');
             }
         }
-        buf.extend_from_slice(&line);
-        buf.push(b'\n');
+        buf.extend_from_slice(&lines);
         // One write on an O_APPEND descriptor: concurrent appends never interleave within a line.
         f.write_all(&buf)
             .map_err(|e| OxaError::io(&format!("cannot append to {}", s.path.display()), &e))
@@ -272,6 +356,63 @@ impl SessionStore for FsStore {
             }
         }
         out
+    }
+
+    fn lists_path(&self, path: &Path) -> bool {
+        // Match session_files' two-level layout, not a prefix (roots may be nested).
+        path.parent().and_then(Path::parent) == Some(self.root.as_path())
+            && path.extension() == Some(std::ffi::OsStr::new("jsonl"))
+    }
+
+    fn spill_cleanup_sessions(&self) -> Result<Vec<SessionRef>, OxaError> {
+        let mut sessions = Vec::new();
+        check_safe(&self.root)?;
+        let entries =
+            fs::read_dir(&self.root).map_err(|e| OxaError::io("cannot enumerate session store", &e))?;
+        for entry in entries {
+            let dir = entry
+                .map_err(|e| OxaError::io("cannot enumerate session directory", &e))?
+                .path();
+            check_safe(&dir)?;
+            let meta =
+                fs::symlink_metadata(&dir).map_err(|e| OxaError::io("cannot stat session directory", &e))?;
+            if !meta.is_dir() {
+                continue;
+            }
+            let files = fs::read_dir(&dir).map_err(|e| OxaError::io("cannot enumerate session files", &e))?;
+            for file in files {
+                let path = file
+                    .map_err(|e| OxaError::io("cannot enumerate session file", &e))?
+                    .path();
+                if path.extension() != Some(std::ffi::OsStr::new("jsonl")) {
+                    continue;
+                }
+                check_safe(&path)?;
+                let header = read_header(&path)?;
+                validate_session_id(&header.id)?;
+                sessions.push(SessionRef { path, id: header.id });
+            }
+        }
+        Ok(sessions)
+    }
+
+    fn spill_stores_tracked(&self, session: &SessionRef) -> Result<bool, OxaError> {
+        check_safe(&session.path)?;
+        let value: Value = serde_json::from_slice(&read_first_line(&session.path)?)
+            .map_err(|e| invalid(format!("malformed session header: {e}")))?;
+        Ok(value["spillStoresTracked"] == Value::Bool(true))
+    }
+
+    fn spill_lifecycle_lock(&self, session: &SessionRef) -> Result<crate::SpillLifecycleLock, OxaError> {
+        crate::SpillLifecycleLock::publication(&self.root, &session.path)
+    }
+
+    fn spill_cleanup_lock(&self) -> Result<crate::SpillLifecycleLock, OxaError> {
+        crate::SpillLifecycleLock::cleanup(&self.root)
+    }
+
+    fn spill_cleanup_roots(&self) -> Result<Vec<PathBuf>, OxaError> {
+        crate::spill::linked_spill_stores(&self.root)
     }
 
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError> {
@@ -368,6 +509,7 @@ impl SessionStore for MemStore {
             .iter_mut()
             .find(|(h, _)| h.id == s.id)
             .ok_or_else(|| OxaError::new(codes::NOT_FOUND, format!("no session {}", s.id)))?;
+        crate::transcript::validate_append(entries, e)?;
         entries.push(e.clone());
         Ok(())
     }
@@ -403,6 +545,21 @@ impl SessionStore for MemStore {
                 meta_of_parts(sref, h, entries)
             })
             .collect()
+    }
+
+    fn spill_cleanup_sessions(&self) -> Result<Vec<SessionRef>, OxaError> {
+        Ok(self.list(None).into_iter().map(|meta| meta.sref).collect())
+    }
+
+    fn spill_stores_tracked(&self, _session: &SessionRef) -> Result<bool, OxaError> {
+        // In-memory sessions cannot have persisted pre-upgrade descendants.
+        Ok(true)
+    }
+
+    fn lists_path(&self, path: &Path) -> bool {
+        path.to_str()
+            .and_then(|s| s.strip_prefix("mem:"))
+            .is_some_and(|id| validate_session_id(id).is_ok())
     }
 
     fn resolve(&self, id_or_path: &str) -> Result<SessionRef, OxaError> {
@@ -444,7 +601,7 @@ fn write_json(v: &Value, out: &mut Vec<u8>) {
 }
 
 /// The entry type name and the body fields of one variant, in fixed order.
-fn body_fields(body: &EntryBody, ts_ms: u64) -> (&'static str, Map<String, Value>) {
+fn body_fields(body: &EntryBody, ts_ms: u64, private: bool) -> (&'static str, Map<String, Value>) {
     let mut f = Map::new();
     let ty = match body {
         EntryBody::Prefix(p) => {
@@ -461,7 +618,7 @@ fn body_fields(body: &EntryBody, ts_ms: u64) -> (&'static str, Map<String, Value
             f.insert("message".into(), Value::Object(msg));
             "message"
         }
-        EntryBody::Msg { wire, parts } => {
+        EntryBody::Msg { wire, parts, tool } => {
             let mut msg = Map::new();
             msg.insert("role".into(), pi_role(wire.role).into());
             msg.insert(
@@ -473,11 +630,14 @@ fn body_fields(body: &EntryBody, ts_ms: u64) -> (&'static str, Map<String, Value
             }
             msg.insert("timestamp".into(), Value::from(ts_ms));
             f.insert("message".into(), Value::Object(msg));
-            f.insert("wire".into(), wire_value(wire));
+            f.insert("wire".into(), wire_value_inner(wire, private));
             f.insert(
                 "parts".into(),
                 Value::Array(parts.iter().map(part_value).collect()),
             );
+            if let Some(t) = tool {
+                msg_tool_fields(&mut f, t);
+            }
             "message"
         }
         EntryBody::Shown { text, why } => {
@@ -523,7 +683,10 @@ fn body_fields(body: &EntryBody, ts_ms: u64) -> (&'static str, Map<String, Value
             let mut u = Map::new();
             u.insert("input".into(), Value::from(usage.prompt));
             u.insert("output".into(), Value::from(usage.completion));
-            u.insert("cacheRead".into(), Value::from(usage.cached));
+            // Not reported is not a miss: leave `cacheRead` out (decoded as `cached_missing`).
+            if !usage.cached_missing {
+                u.insert("cacheRead".into(), Value::from(usage.cached));
+            }
             u.insert("cacheWrite".into(), Value::from(0u32));
             u.insert(
                 "totalTokens".into(),
@@ -615,6 +778,9 @@ fn opt_value(s: Option<&str>) -> Value {
 
 /// The exact wire message (W2): role, content, reasoning_content and tool calls as stored.
 pub(crate) fn wire_value(w: &WireMsg) -> Value {
+    wire_value_inner(w, false)
+}
+fn wire_value_inner(w: &WireMsg, private: bool) -> Value {
     let mut m = Map::new();
     m.insert("role".into(), Value::from(w.role.as_str()));
     m.insert("content".into(), opt_value(w.content.as_deref()));
@@ -633,6 +799,9 @@ pub(crate) fn wire_value(w: &WireMsg) -> Value {
         })
         .collect();
     m.insert("tool_calls".into(), Value::Array(calls));
+    if let Some(history) = w.provider_history.as_ref().filter(|_| private) {
+        m.insert("provider_history".into(), history.to_session_value());
+    }
     if let Some(id) = &w.tool_call_id {
         m.insert("tool_call_id".into(), Value::from(id.as_str()));
     }
@@ -749,6 +918,7 @@ fn decode_message(m: &Map<String, Value>) -> Result<EntryBody, OxaError> {
         "system" | "user" | "assistant" | "toolResult" => Ok(EntryBody::Msg {
             wire: decode_wire(m, msg, role)?,
             parts: decode_parts(m)?,
+            tool: decode_tool(m),
         }),
         other => Err(invalid(format!("unknown message role `{other}`"))),
     }
@@ -784,7 +954,7 @@ fn decode_wire(
 
 /// The inverse of [`wire_value`] (W2: every field as stored).
 pub(crate) fn decode_wire_value(w: &Value) -> Result<WireMsg, OxaError> {
-    {
+    let result = (|| {
         let w = w.as_object().ok_or_else(|| invalid("wire is not an object"))?;
         let role_name = get_str(w, "role")?;
         let role =
@@ -797,14 +967,29 @@ pub(crate) fn decode_wire_value(w: &Value) -> Result<WireMsg, OxaError> {
                 .collect::<Result<Vec<_>, _>>()?,
             Some(_) => return Err(invalid("tool_calls is not an array")),
         };
+        if role != Role::Assistant && w.contains_key("provider_history") {
+            return Err(replay_invalid("Provider history requires an assistant message."));
+        }
         Ok(WireMsg {
             role,
             content: opt_str(w, "content")?,
             reasoning: opt_str(w, "reasoning_content")?,
             tool_calls,
+            provider_history: w
+                .get("provider_history")
+                .map(ProviderHistory::from_session_value)
+                .transpose()
+                .map_err(|e| replay_invalid(e.to_string()))?,
             tool_call_id: opt_str(w, "tool_call_id")?,
         })
-    }
+    })();
+    result.map_err(|error: OxaError| {
+        if w.get("provider_history").is_some() && error.code != REPLAY_INVALID {
+            replay_invalid("Malformed message containing provider history.")
+        } else {
+            error
+        }
+    })
 }
 
 fn decode_pi_wire(msg: &Map<String, Value>, role_str: &str) -> Result<WireMsg, OxaError> {
@@ -824,6 +1009,7 @@ fn decode_pi_wire(msg: &Map<String, Value>, role_str: &str) -> Result<WireMsg, O
         } else {
             Vec::new()
         },
+        provider_history: None,
         tool_call_id: if role == Role::Tool {
             msg.get("toolCallId").and_then(Value::as_str).map(String::from)
         } else {
@@ -871,6 +1057,25 @@ fn decode_tool_call(v: &Value) -> Result<ToolCall, OxaError> {
     })
 }
 
+fn msg_tool_fields(f: &mut Map<String, Value>, t: &ToolMeta) {
+    f.insert("toolError".into(), Value::Bool(t.is_error));
+    if !t.ui.is_null() {
+        f.insert("toolUi".into(), t.ui.clone());
+    }
+}
+
+fn decode_tool(m: &Map<String, Value>) -> Option<ToolMeta> {
+    let is_error = m.get("toolError").and_then(Value::as_bool);
+    let ui = m.get("toolUi").cloned();
+    if is_error.is_none() && ui.is_none() {
+        return None;
+    }
+    Some(ToolMeta {
+        is_error: is_error.unwrap_or(false),
+        ui: ui.unwrap_or(Value::Null),
+    })
+}
+
 fn decode_parts(m: &Map<String, Value>) -> Result<Vec<Part>, OxaError> {
     match m.get("parts") {
         None | Some(Value::Null) => Ok(Vec::new()),
@@ -907,7 +1112,7 @@ fn decode_usage(o: &Map<String, Value>) -> Usage {
         prompt: num("input"),
         completion: num("output"),
         cached: num("cacheRead"),
-        cached_missing: false,
+        cached_missing: o.get("cacheRead").and_then(Value::as_u64).is_none(),
     }
 }
 
@@ -1096,7 +1301,7 @@ fn uuid_v4() -> String {
 
 /// Session ids become file names and are matched by prefix: no separators, no control or
 /// whitespace characters, no leading dot.
-fn validate_session_id(id: &str) -> Result<(), OxaError> {
+pub(crate) fn validate_session_id(id: &str) -> Result<(), OxaError> {
     let bad = id.is_empty()
         || id.len() > 128
         || id.starts_with('.')
@@ -1138,7 +1343,7 @@ fn unsafe_path(path: &Path) -> OxaError {
 }
 
 /// Refuse a session file that is a symlink, or whose directory is one.
-fn check_safe(path: &Path) -> Result<(), OxaError> {
+pub(crate) fn check_safe(path: &Path) -> Result<(), OxaError> {
     if path.parent().is_some_and(is_symlink) || is_symlink(path) {
         return Err(unsafe_path(path));
     }
@@ -1146,7 +1351,7 @@ fn check_safe(path: &Path) -> Result<(), OxaError> {
 }
 
 /// Create a directory (recursively) with mode 0700. A symlink is refused.
-fn ensure_dir(p: &Path) -> Result<(), OxaError> {
+pub(crate) fn ensure_dir(p: &Path) -> Result<(), OxaError> {
     if is_symlink(p) {
         return Err(unsafe_path(p));
     }
@@ -1154,7 +1359,10 @@ fn ensure_dir(p: &Path) -> Result<(), OxaError> {
         .recursive(true)
         .mode(0o700)
         .create(p)
-        .map_err(|e| OxaError::io(&format!("cannot create session directory {}", p.display()), &e))
+        .map_err(|e| {
+            OxaError::io(&format!("cannot create session directory {}", p.display()), &e)
+                .with_hint("to keep oxa's state elsewhere, set OXA_AGENT_DIR (or OXA_SESSION_DIR, or pass --session-dir) to a writable directory")
+        })
 }
 
 fn open_err(path: &Path, e: &io::Error) -> OxaError {
@@ -1167,7 +1375,7 @@ fn open_err(path: &Path, e: &io::Error) -> OxaError {
     OxaError::io(&format!("cannot open session file {}", path.display()), e)
 }
 
-fn read_file(path: &Path) -> Result<Vec<u8>, OxaError> {
+pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, OxaError> {
     let mut f = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW)
@@ -1211,10 +1419,17 @@ fn read_session(path: &Path) -> Result<(SessionHeader, Vec<Entry>), OxaError> {
         .first()
         .ok_or_else(|| invalid(format!("{} has no header line", path.display())))?;
     let header = decode_header(first)?;
-    let entries = complete[1..]
-        .iter()
-        .filter_map(|line| decode_entry(line).ok())
-        .collect();
+    let mut entries = Vec::new();
+    for line in &complete[1..] {
+        match decode_entry(line) {
+            Ok(entry) => {
+                crate::transcript::validate_append(&entries, &entry)?;
+                entries.push(entry);
+            }
+            Err(error) if error.code == REPLAY_INVALID => return Err(error),
+            Err(_) => {} // Preserve crash-fragment/unknown-entry recovery.
+        }
+    }
     Ok((header, entries))
 }
 
@@ -1260,6 +1475,7 @@ fn find_session_path(root: &Path, id: &str) -> Option<PathBuf> {
 /// terminal; `--` before a path that starts with `-`); a success, or the file being gone
 /// afterwards, counts as trashed. Otherwise unlink.
 fn remove_session_file(path: &Path) -> Result<crate::Removed, OxaError> {
+    remove_status_sibling(path)?;
     let absolute = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let mut cmd = std::process::Command::new("trash");
     if absolute.to_string_lossy().starts_with('-') {
@@ -1299,6 +1515,7 @@ pub fn session_files_under(root: &Path) -> Vec<(PathBuf, Option<SessionHeader>)>
 /// `Ok` (the wipe is idempotent).
 pub fn purge_session_file(path: &Path) -> Result<(), OxaError> {
     check_safe(path)?;
+    remove_status_sibling(path)?;
     let _ = fs::remove_file(crate::lock_path_of(path));
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -1307,6 +1524,16 @@ pub fn purge_session_file(path: &Path) -> Result<(), OxaError> {
             &format!("cannot delete session {}", path.display()),
             &e,
         )),
+    }
+}
+
+/// Only the status artifact belonging to this session. Unlink never follows a final symlink;
+/// a directory or other removal error is reported rather than broadening the deletion.
+fn remove_status_sibling(session: &Path) -> Result<(), OxaError> {
+    match fs::remove_file(session.with_extension("status.json")) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(OxaError::io("cannot delete session status", &e)),
     }
 }
 
@@ -1378,44 +1605,6 @@ fn match_id(query: &str, ids: &[&str]) -> Result<usize, OxaError> {
             "session id prefix `{query}` is ambiguous: {n} sessions match"
         ))
         .with_hint("give more characters of the id, or the session path")),
-    }
-}
-
-/// The metadata of a session, built from its header and entries (see [`SessionMeta`]).
-fn meta_of_parts(sref: SessionRef, header: &SessionHeader, entries: &[Entry]) -> SessionMeta {
-    let mut name = None;
-    let mut modified_ms = header.ts_ms;
-    let mut message_count = 0u32;
-    let mut first_message: Option<String> = None;
-    let mut all_text = String::new();
-    for e in entries {
-        modified_ms = modified_ms.max(e.ts_ms);
-        match &e.body {
-            EntryBody::SessionInfo { name: n } => name = if n.is_empty() { None } else { Some(n.clone()) },
-            EntryBody::Msg { wire, .. } if matches!(wire.role, Role::User | Role::Assistant) => {
-                message_count += 1;
-                let text = crate::meta::message_text(&e.body);
-                if !all_text.is_empty() {
-                    all_text.push('\n');
-                }
-                all_text.push_str(text);
-                if wire.role == Role::User && first_message.is_none() && !text.trim().is_empty() {
-                    first_message = Some(text.split_whitespace().collect::<Vec<_>>().join(" "));
-                }
-            }
-            _ => {}
-        }
-    }
-    SessionMeta {
-        sref,
-        cwd: header.cwd.clone(),
-        name,
-        created_ms: header.ts_ms,
-        modified_ms,
-        message_count,
-        first_message: first_message.unwrap_or_default(),
-        all_text,
-        parent_session: header.parent_session.clone(),
     }
 }
 

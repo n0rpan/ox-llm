@@ -10,7 +10,6 @@ use oxa_fake::{parse_script, FakeModel, FakeOpts, FakeServer, Recorded, TestEnv}
 use oxa_parity::oxa_bin;
 use oxa_proto::Role;
 use std::io::Write;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
@@ -40,11 +39,28 @@ fn fake_opts(script: &str, opts: FakeOpts) -> FakeServer {
 }
 
 /// A URL where nothing listens.
+///
+/// The port stays reserved for the life of the test process: a socket that is bound but never
+/// listening refuses connections, and the kernel cannot hand the port to another test's fake
+/// engine (a dropped listener could be, which sent one test's requests to another's server).
 fn closed_url() -> String {
-    let l = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = l.local_addr().expect("addr").port();
-    drop(l);
-    format!("http://127.0.0.1:{port}")
+    // A bound but never listening socket refuses connections and keeps its port reserved for
+    // the life of the test process, so a concurrent test's server cannot be handed the same
+    // port (closing a listener and reusing its number raced with the other tests).
+    // SAFETY: plain socket/bind/getsockname calls on a zeroed, fully initialised sockaddr_in.
+    unsafe {
+        let fd = libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0);
+        assert!(fd >= 0, "socket");
+        let mut addr: libc::sockaddr_in = std::mem::zeroed();
+        addr.sin_family = libc::AF_INET as libc::sa_family_t;
+        addr.sin_addr.s_addr = u32::from_ne_bytes([127, 0, 0, 1]);
+        let len = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let sa = std::ptr::addr_of_mut!(addr).cast::<libc::sockaddr>();
+        assert_eq!(libc::bind(fd, sa, len), 0, "bind");
+        let mut got = len;
+        assert_eq!(libc::getsockname(fd, sa, &mut got), 0, "getsockname");
+        format!("http://127.0.0.1:{}", u16::from_be(addr.sin_port))
+    }
 }
 
 /// Run `oxa <args>` with `TestEnv::envs`, extra variables, optional cwd and stdin.
@@ -96,6 +112,16 @@ fn ok(o: &Output) {
     assert_eq!(code(o), 0, "exit code; stderr: {}", err(o));
 }
 
+fn terminal_result(o: &Output) -> serde_json::Value {
+    let records: Vec<serde_json::Value> = err(o)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["type"] == "oxa_result")
+        .collect();
+    assert_eq!(records.len(), 1, "exactly one terminal result: {}", err(o));
+    records.into_iter().next().unwrap()
+}
+
 fn user_texts(r: &Recorded) -> Vec<String> {
     r.messages
         .iter()
@@ -130,7 +156,7 @@ fn names(list: &[&str]) -> Vec<String> {
 }
 
 fn all_tools() -> Vec<String> {
-    names(&["bash", "edit", "find", "grep", "ls", "read", "write"])
+    names(&["ask", "bash", "edit", "find", "grep", "ls", "read", "write"])
 }
 
 /// Every `.jsonl` file below the agent directory's `sessions`.
@@ -689,7 +715,7 @@ fn cli_019() {
     );
     assert_eq!(session_files(&env).len(), 1);
 
-    // The same id from another directory: the fork offer. Declined: "Aborted.", exit 0,
+    // The same id from another directory: the fork offer. Declined: "Aborted.", exit 130,
     // nothing sent, nothing written.
     let other = env.root().join("other-19");
     std::fs::create_dir_all(&other).expect("other dir");
@@ -701,7 +727,11 @@ fn cli_019() {
         &[],
         Some(&other),
     );
-    ok(&no);
+    assert_eq!(code(&no), 130);
+    let result = terminal_result(&no);
+    assert_eq!(result["outcome"], "interrupted");
+    assert_eq!(result["error_class"], "aborted");
+    assert_eq!(result["exit_code"], 130);
     assert!(
         out(&no).contains("Session found in different project:"),
         "{}",
@@ -894,6 +924,10 @@ fn cli_026() {
 fn cli_027() {
     let server = fake(&turns(&["a", "b"]));
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/agents/worker.md",
+        "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+    );
     ok(&run(
         &env,
         &server.url(),
@@ -908,11 +942,10 @@ fn cli_027() {
     assert_eq!(tool_names(&reqs[0]), names(&["read", "ls"]));
     let minus = tool_names(&reqs[1]);
     assert!(!minus.contains(&"ls".to_string()) && minus.contains(&"read".to_string()));
-    // oxa's default selection (CLI-032): the seven built-ins plus `subagent` where O-146 offers
-    // it, so on the default (large, non-Flash) fake model `-ls` leaves seven names.
-    let default_minus_ls = names(&["bash", "edit", "find", "grep", "read", "subagent", "write"]);
+    // Lead defaults include ask plus subagent where O-146 offers it.
+    let default_minus_ls = names(&["ask", "bash", "edit", "find", "grep", "read", "subagent", "write"]);
     assert_eq!(minus, default_minus_ls, "the default selection minus ls");
-    // Below 32K the default selection is the seven built-ins: minus ls leaves six.
+    // Below 32K subagent is not offered, but lead-only ask remains.
     let small = fake_opts(
         &turns(&["a"]),
         FakeOpts {
@@ -927,7 +960,7 @@ fn cli_027() {
     ));
     assert_eq!(
         tool_names(&small.requests()[0]),
-        names(&["bash", "edit", "find", "grep", "read", "write"]),
+        names(&["ask", "bash", "edit", "find", "grep", "read", "write"]),
         "the default selection minus ls on a model below 32K"
     );
     let mixed = run(&env, &server.url(), &["-p", "-t", "read,+ls", "x"]);
@@ -1036,19 +1069,23 @@ fn cli_031() {
 }
 
 // pi: cli.md default enabled tools are read, bash, edit, write (`defaultTools` changes them)
-// invariant: A-tools all seven built-ins on by default, plus `subagent` where O-146 offers it
-// (not on the Rust Flash engine, not below a 32K window); defaultTools restores pi's four
+// invariant: all eight lead built-ins on by default, plus `subagent` with an available agent
+// where O-146 offers it (not Flash, not below 32K); an explicit defaultTools replaces them
 #[test]
 fn cli_032() {
     let server = fake(&turns(&["a", "b"]));
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/agents/worker.md",
+        "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+    );
     ok(&run(&env, &server.url(), &["-p", "--no-session", "x"]));
-    // The fake's default model is large and not Flash: the seven built-ins and `subagent`.
-    let mut seven_and_subagent = all_tools();
-    seven_and_subagent.push("subagent".to_string());
-    seven_and_subagent.sort();
-    assert_eq!(tool_names(&server.requests()[0]), seven_and_subagent);
-    // On the Flash engine and on a model below 32K the default set is exactly the seven.
+    // The fake's default model is large and not Flash: eight lead built-ins and subagent.
+    let mut defaults = all_tools();
+    defaults.push("subagent".to_string());
+    defaults.sort();
+    assert_eq!(tool_names(&server.requests()[0]), defaults);
+    // Flash and models below 32K keep ask, but do not offer subagent.
     let flash = FakeOpts {
         model: "flash".to_string(),
         models: vec![FakeModel::flash("flash", 65536, Some(2048))],
@@ -1064,7 +1101,7 @@ fn cli_032() {
         assert_eq!(
             tool_names(&srv.requests()[0]),
             all_tools(),
-            "{what}: the seven built-ins"
+            "{what}: the eight lead built-ins"
         );
     }
     env.write(
@@ -1699,8 +1736,19 @@ fn cli_064() {
     let o = run(&env, &closed_url(), &["-p", "--no-session", "x"]);
     assert_eq!(code(&o), 2);
     let e = err(&o);
-    assert_eq!(e.trim_end().lines().count(), 1, "one line: {e}");
-    assert!(e.contains("cannot reach the engine"), "{e}");
+    assert_eq!(
+        e.trim_end().lines().count(),
+        2,
+        "one diagnostic and one result: {e}"
+    );
+    assert!(
+        e.lines().next().unwrap().contains("cannot reach the engine"),
+        "{e}"
+    );
+    let result = terminal_result(&o);
+    assert_eq!(result["outcome"], "failed");
+    assert_eq!(result["error_class"], "engine_down");
+    assert_eq!(result["exit_code"], 2);
 }
 
 // ----- MOD rows ------------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-//! C5: the slash-command registry and input expansion. Owner: task C5. Signatures below are frozen; bodies are yours.
+//! C5: the slash-command registry and input expansion.
 // ported from pi packages/coding-agent/src/core/slash-commands.ts and prompt-templates.ts (expansion)
 use crate::SessionState;
 use oxa_proto::{CommandSpec, Source};
@@ -31,7 +31,11 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
         "Engine status, or load a model on the engine (replaces /llama)",
         Some("[status|load <model>]"),
     ),
-    ("mode", "Set permission mode", Some("<plan|workspace|ask>")),
+    (
+        "mode",
+        "Set permission mode",
+        Some("<standard|auto|yolo|plan|workspace|ask> [--save]"),
+    ),
     ("scoped-models", "Enable/disable models for Ctrl+P cycling", None),
     (
         "export",
@@ -67,6 +71,8 @@ const BUILTINS: &[(&str, &str, Option<&str>)] = &[
         "Reload keybindings, extensions, skills, prompts, themes, and context files",
         None,
     ),
+    ("help", "List the commands", None),
+    ("usage", "Show token usage of this session", None),
     ("quit", "Quit oxa", None),
 ];
 
@@ -240,6 +246,21 @@ fn admit(out: &mut Vec<CommandSpec>, taken: &mut HashSet<String>, c: CommandSpec
 /// A hook command, template or skill with the same name never reaches this function
 /// (`expand_input` resolves those first for the omitted names).
 pub fn run_builtin(
+    session: &mut crate::Session,
+    name: &str,
+    args: &str,
+    sink: &mut dyn oxa_proto::EventSink,
+    ui: &mut dyn oxa_proto::Ui,
+) -> Result<Vec<String>, oxa_proto::OxaError> {
+    let result = run_builtin_inner(session, name, args, sink, ui);
+    session.set_command_outcome(match &result {
+        Ok(_) => crate::RunOutcome::Done,
+        Err(error) => crate::RunOutcome::from_error(error),
+    });
+    result
+}
+
+fn run_builtin_inner(
     session: &mut crate::Session,
     name: &str,
     args: &str,

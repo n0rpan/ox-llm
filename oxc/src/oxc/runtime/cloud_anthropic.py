@@ -84,6 +84,25 @@ def _text_parts(content):
     return out
 
 
+_EMPTY_RESULT = '(no output)'
+
+
+def _tool_result_blocks(content):
+    if isinstance(content, list):
+        out = []
+        for part in content:
+            if (isinstance(part, dict) and part.get('type') == 'text'
+                    and isinstance(part.get('text'), str)):
+                out.append({'type': 'text', 'text': part['text']})
+            else:
+                kind = part.get('type') if isinstance(part, dict) else type(part).__name__
+                raise cloud.CloudError(
+                    'Tool result content part type %r is not supported by this model; '
+                    'only text parts are.' % (kind,), 400, 'invalid_value', 'messages')
+        return out or [{'type': 'text', 'text': _EMPTY_RESULT}]
+    return [{'type': 'text', 'text': str(content or '') or _EMPTY_RESULT}]
+
+
 def _tool_use(call):
     function = call.get('function') if isinstance(call, dict) else None
     if not isinstance(function, dict):
@@ -206,7 +225,7 @@ def messages_request(payload, item, key=None):
             continue
         if role == 'tool':
             block = {'type': 'tool_result', 'tool_use_id': message.get('tool_call_id') or '',
-                     'content': [{'type': 'text', 'text': str(message.get('content') or '')}]}
+                     'content': _tool_result_blocks(message.get('content'))}
             converted.append(('user', [block]))
             continue
         if role == 'assistant':
@@ -558,12 +577,19 @@ def _has_usage(message):
 def _close(st, status, error=None):
     if st.led is None:
         return
-    st.led.finish(status, error)
+    try:
+        st.led.finish(status, error)
+    except Exception:
+        cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
+        return  # Do not retry a potentially completed append.
     if getattr(st.led, 'written', True) is False:
-        cloud.mark_ledger_failure()
+        cloud.mark_ledger_failure(st.led.row.get('cost_usd'))
 
 
-def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_final=False):
+def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_final=False,
+            refused=False):
+    if hold is not None and hold.accounted:
+        return
     row = _row(item)
     if isinstance(usage, dict):
         _usage_row(row, usage, item)
@@ -573,17 +599,18 @@ def _record(st, item, hold, usage, failed, status, error, cancelled=None, usage_
     elif cancelled is not None:
         cloud.cancelled_cost(row, hold, item, *cancelled, usage_final=usage_final)
     else:
-        cloud.conservative_cost(row, hold, failed=failed)
+        cloud.conservative_cost(row, hold, failed=failed, refused=refused)
     if st.led is not None:
         st.led.row.update(row)
     _close(st, status, error)
     if hold is not None:
+        hold.accounted = True
         hold.settle()
 
 
 def _error(self, st, item, status, message, key, code='cloud_upstream_error', hold=None,
-           failed=False, usage=None):
-    _record(st, item, hold, usage, failed, status, code)
+           failed=False, usage=None, refused=False):
+    _record(st, item, hold, usage, failed, status, code, refused=refused)
     body = {'error': {'message': cloud.redact(message, key), 'type': 'cloud_error',
                       'param': 'model', 'code': code}}
     return self.json_reply(status, body)
@@ -626,9 +653,10 @@ def forward(self, st, item, key):
             data = cloud.redact(json.dumps(reply, ensure_ascii=False).encode(), key)
             if st.led is not None:
                 st.led.observe(data)
-            self.reply(200, data, 'application/json')
             _close(st, 200)
+            hold.accounted = True
             hold.settle()
+            self.reply(200, data, 'application/json')
             return
         stream = client.messages.create(**params)
         self.send_response(200)
@@ -694,7 +722,8 @@ def forward(self, st, item, key):
         message = cloud.redact(str(error), key)
         if not started:
             _error(self, st, item, status, message or 'The Anthropic provider is unavailable.',
-                   key, hold=hold, failed=True)
+                   key, hold=hold, failed=True,
+                   refused=cloud.clean_refusal(getattr(error, 'status_code', None)))
         else:
             _record(st, item, hold, translator.usage if translator else None, True,
                     status, 'cloud_stream_error')

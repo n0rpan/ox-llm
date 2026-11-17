@@ -1,4 +1,4 @@
-//! G3 PARITY tests (sessions). Owner: task G3.
+//! G3 PARITY tests (sessions).
 //! One test per PARITY.md row of this area, named after the row id (`SES-012` -> `fn ses_012()`).
 //!
 //! Every row test drives the real `oxa` binary (print mode, `--mode rpc`, flags) against the

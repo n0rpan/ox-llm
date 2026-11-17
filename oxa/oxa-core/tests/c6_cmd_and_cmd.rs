@@ -1,4 +1,4 @@
-//! C6 acceptance tests: !cmd and !!cmd. Owner: task C6.
+//! C6 acceptance tests: !cmd and !!cmd.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -55,6 +55,8 @@ fn build(
     });
     let tools: Vec<Arc<dyn Tool>> = Vec::new();
     SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks,
@@ -120,6 +122,7 @@ fn say(st: &mut SessionState, text: &str) {
         EntryBody::Msg {
             wire: WireMsg::user(text),
             parts: Vec::new(),
+            tool: None,
         },
     )
     .expect("append user");

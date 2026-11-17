@@ -1,4 +1,4 @@
-//! F9 acceptance tests: Example ports 1. Owner: task F9.
+//! F9 acceptance tests: Example ports 1.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -215,6 +215,7 @@ impl Rig {
         let cwd = self.env.work();
         let spill = self.env.tmp();
         let cx = ToolCtx {
+            checked: &[],
             cwd: &cwd,
             spill_dir: &spill,
             sandbox: &sandbox,
@@ -222,6 +223,7 @@ impl Rig {
             cancel: &cancel,
             env: &[],
             tune: Default::default(),
+            hidden: None,
         };
         tool.run(&args, &cx, &mut |_: &str| {})
     }

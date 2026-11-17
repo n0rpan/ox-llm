@@ -1,7 +1,7 @@
-//! C9: print mode and JSON mode drivers. Owner: task C9. Signatures below are frozen; bodies are yours.
+//! C9: print mode and JSON mode drivers.
 // ported from pi packages/coding-agent/src/modes/print-mode.ts
 use crate::events::{session_header_record, write_record, JsonSink};
-use oxa_core::Session;
+use oxa_core::{RunOutcome, Session};
 use oxa_proto::{
     names, shown_why, AgentEvent, EntryBody, EventMessage, EventSink, HeadlessUi, OxaError, Part, Role,
     StopReason,
@@ -15,6 +15,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// a message followed by tool calls and one line per tool call go to `err`, the final reply of
 /// the last prompt goes to `out`; every write is flushed at once, so a killed run leaves a log.
 struct PrintSink<'a> {
+    wrap_up: Option<oxa_core::Handle>,
     out: &'a mut dyn Write,
     err: &'a mut dyn Write,
     /// The last assistant message of the current prompt.
@@ -24,8 +25,14 @@ struct PrintSink<'a> {
     /// Text of a message without tool calls that may still turn out to be the final reply: a
     /// `done` check or a steering message can start another turn after it.
     pending: Option<String>,
-    /// The final reply of the last prompt, set at `AgentEnd`; written to `out` by `run_print`
-    /// once it knows the run did not fail or abort.
+    /// A local length recovery continues this same answer, byte for byte. Cloud retries
+    /// regenerate a complete answer instead; tool work starts a different final reply.
+    /// With an output schema, only the last message is validated: never prepend chunks.
+    local_model: bool,
+    pending_length: bool,
+    continued: Option<String>,
+    /// The final reply of the last prompt, selected at `AgentEnd` or successful goal
+    /// settlement; written to `out` only once the run did not fail or abort.
     final_text: Option<String>,
     notes: Vec<String>,
     started: HashMap<String, Instant>,
@@ -43,8 +50,24 @@ impl PrintSink<'_> {
 
     /// Another turn follows: the buffered text was not the final reply, so it is progress.
     fn flush_pending(&mut self) {
+        self.pending_length = false;
         if let Some(t) = self.pending.take() {
             self.progress(&t);
+        }
+    }
+
+    fn next_turn(&mut self) {
+        if self.local_model && self.pending_length {
+            self.pending_length = false;
+            if let Some(text) = self.pending.take() {
+                self.progress(&text);
+                match &mut self.continued {
+                    Some(prefix) => prefix.push_str(&text),
+                    None => self.continued = Some(text),
+                }
+            }
+        } else {
+            self.flush_pending();
         }
     }
 
@@ -97,16 +120,30 @@ impl EventSink for PrintSink<'_> {
                 self.last = Some(message.clone());
                 let text = message.msg.content.as_deref().filter(|t| !t.is_empty());
                 if !message.msg.tool_calls.is_empty() {
+                    self.continued = None;
                     if let Some(t) = text {
                         self.progress(t);
                     }
+                } else if self.local_model && message.stop == Some(StopReason::Stop) {
+                    if let Some(mut prefix) = self.continued.take() {
+                        prefix.push_str(text.unwrap_or_default());
+                        self.pending = Some(prefix);
+                    } else {
+                        self.pending = text.map(str::to_string);
+                    }
                 } else if let Some(t) = text {
                     self.pending = Some(t.to_string());
+                    self.pending_length = self.local_model && message.stop == Some(StopReason::Length);
                 }
             }
-            AgentEvent::TurnStart => self.flush_pending(),
+            AgentEvent::TurnStart => self.next_turn(),
             AgentEvent::AgentEnd { .. } => {
-                if self.is_last_prompt {
+                if self.is_last_prompt
+                    || self
+                        .wrap_up
+                        .as_ref()
+                        .is_some_and(|handle| handle.wrap_up_requested())
+                {
                     self.final_text = self.pending.take();
                 } else {
                     self.flush_pending();
@@ -117,6 +154,7 @@ impl EventSink for PrintSink<'_> {
                 tool_name,
                 args,
             } => {
+                self.continued = None;
                 self.flush_pending();
                 self.started.insert(tool_call_id.clone(), Instant::now());
                 self.progress(&tool_start_line(tool_name, args));
@@ -135,7 +173,14 @@ impl EventSink for PrintSink<'_> {
                 });
                 self.started.remove(tool_call_id);
                 let word = if result.is_error { "failed" } else { "ok" };
-                self.progress(&format!("[tool] {tool_name} {word} {secs:.1}s"));
+                let mut line = format!("[tool] {tool_name} {word} {secs:.1}s");
+                if result.is_error {
+                    if let Some(why) = result.text.lines().find(|l| !l.trim().is_empty()) {
+                        let why: String = why.trim().chars().take(160).collect();
+                        line.push_str(&format!(": {why}"));
+                    }
+                }
+                self.progress(&line);
             }
             AgentEvent::Notice { text, .. } => self.progress(text),
             AgentEvent::ExtensionError {
@@ -153,20 +198,23 @@ impl EventSink for PrintSink<'_> {
 
 /// `-p`: run each prompt in order (piped stdin text is prepended to the first one by the
 /// caller), then write only the final assistant text + `\n` to `out`. Notices and errors go to
-/// `err`. Exit code: 0 ok, 1 when the last run failed or was aborted, or when the `done`
-/// checks still failed after their repair rounds (one stderr line says so).
-pub fn run_print(
+/// `err`. Returns the aggregate typed outcome, retaining the first unsuccessful prompt.
+pub fn run_print_outcome(
     session: &mut Session,
     prompts: Vec<(String, Vec<Part>)>,
     out: &mut dyn Write,
     err: &mut dyn Write,
-) -> Result<i32, OxaError> {
+) -> Result<RunOutcome, OxaError> {
     let mut sink = PrintSink {
+        wrap_up: Some(session.handle()),
         out,
         err,
         last: None,
         is_last_prompt: false,
         pending: None,
+        local_model: !session.inner().info.caps.remote && session.inner().output_schema.is_none(),
+        pending_length: false,
+        continued: None,
         final_text: None,
         notes: Vec::new(),
         started: HashMap::new(),
@@ -174,56 +222,88 @@ pub fn run_print(
     };
     let mut ui = HeadlessUi::default();
     let mut failed = false;
-    let mut budget = false;
+    let mut outcome = RunOutcome::NothingToDo;
     let n = prompts.len();
     for (i, (text, parts)) in prompts.into_iter().enumerate() {
+        if session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
         sink.last = None;
         sink.pending = None;
+        sink.pending_length = false;
+        sink.continued = None;
+        sink.local_model = !session.inner().info.caps.remote && session.inner().output_schema.is_none();
         sink.final_text = None;
         sink.is_last_prompt = i + 1 == n;
+        let _ = session.take_outcome();
         let before = session.inner().tree.leaf().to_string();
         let lines = match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
             Ok(Message::Prompt | Message::Extension) => None,
             Ok(Message::Command(lines)) => Some(lines),
             Err(e) => {
                 let _ = writeln!(sink.err, "{}", command_error(&e));
-                return Ok(1);
+                outcome.include(RunOutcome::from_error(&e));
+                return Ok(outcome);
             }
         };
         if let Some(e) = sink.io_error.take() {
-            return Err(e);
+            return output_failure(outcome, e, sink.err);
         }
         if let Some(mut lines) = lines {
+            outcome.include(RunOutcome::Done);
             // A command message: what it shows the user (its lines and its `info`
             // notifications) is the output; warnings and errors still go to stderr.
             if sink.last.is_none() {
                 lines.extend(take_info(&mut ui));
             }
             for l in lines {
-                sink.out
-                    .write_all(format!("{l}\n").as_bytes())
-                    .map_err(|e| OxaError::io("cannot write the command output", &e))?;
+                if let Err(error) = sink.out.write_all(format!("{l}\n").as_bytes()) {
+                    return output_failure(
+                        outcome,
+                        OxaError::io("cannot write the command output", &error),
+                        sink.err,
+                    );
+                }
             }
         }
-        failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err, &mut budget);
+        failed = after_run(session, &before, &mut ui, &mut sink.notes, sink.err);
+        // The session already settled this prompt's outcome (done checks, output limit
+        // included); print only says why on stderr.
+        let settled = session.take_outcome();
+        outcome.include(settled);
+        // goal_done can settle the run on the tool-call message itself. Its
+        // content is final only after goal, schema and project checks succeed.
+        if sink.is_last_prompt
+            && settled == RunOutcome::Done
+            && sink.final_text.is_none()
+            && session
+                .goal()
+                .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Done)
+        {
+            sink.final_text = sink
+                .last
+                .as_ref()
+                .filter(|message| message.msg.tool_calls.iter().any(|call| call.name == "goal_done"))
+                .and_then(|message| message.msg.content.clone());
+        }
         // A failed or aborted run prints no reply (only known after the run).
         if !failed {
             if let Some(t) = sink.final_text.clone() {
                 sink.write_reply(&t);
                 if let Some(e) = sink.io_error.take() {
-                    return Err(e);
+                    return output_failure(outcome, e, sink.err);
                 }
             }
         }
+        explain_outcome(settled, &mut *sink.err);
+        if session.handle().wrap_up_requested() || session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
     }
 
-    let mut code = 0;
-    if done_failed(session, &mut *sink.err) {
-        code = 1;
-    }
-    if failed {
-        code = if budget { oxa_proto::EXIT_BUDGET } else { 1 };
-    } else if let Some(m) = sink.last.clone() {
+    if !failed {
         if let Some(text) = sink.final_text.take() {
             if session.inner().active.direct.is_empty() && has_tool_markup(&text) {
                 let _ = writeln!(
@@ -232,18 +312,19 @@ pub fn run_print(
                 );
             }
         }
-        if m.stop == Some(StopReason::Length) {
-            let _ = writeln!(
-                sink.err,
-                "Response was truncated: the model reached its output token limit."
-            );
-            code = 1;
-        }
     }
-    sink.out
-        .flush()
-        .map_err(|e| OxaError::io("cannot flush the reply", &e))?;
-    Ok(code)
+    if let Err(error) = sink.out.flush() {
+        return output_failure(outcome, OxaError::io("cannot flush the reply", &error), sink.err);
+    }
+    Ok(outcome)
+}
+
+fn output_failure(outcome: RunOutcome, error: OxaError, err: &mut dyn Write) -> Result<RunOutcome, OxaError> {
+    if matches!(outcome, RunOutcome::Done | RunOutcome::NothingToDo) {
+        return Err(error);
+    }
+    let _ = writeln!(err, "{error}");
+    Ok(outcome)
 }
 
 /// Whether `text` contains tool-call markup a model writes when it believes tools exist.
@@ -254,27 +335,38 @@ fn has_tool_markup(text: &str) -> bool {
 }
 
 /// `--mode json`: write the session header record, then every event as a record, for each
-/// prompt in order. Same exit codes as print.
-pub fn run_json(
+/// prompt in order. Same terminal outcomes as print.
+pub fn run_json_outcome(
     session: &mut Session,
     prompts: Vec<(String, Vec<Part>)>,
     out: &mut dyn Write,
     err: &mut dyn Write,
-) -> Result<i32, OxaError> {
-    write_record(out, &session_header_record(&session_header(session)))?;
+) -> Result<RunOutcome, OxaError> {
+    let mut header = session_header_record(&session_header(session));
+    header["statusFile"] = session
+        .state()
+        .status_file
+        .map(|p| p.to_string_lossy().into_owned())
+        .into();
+    write_record(out, &header)?;
     let mut ui = HeadlessUi::default();
     let mut sink = JsonSink {
         out: &mut *out,
         error: None,
     };
-    let mut failed = false;
-    let mut budget = false;
+    let mut outcome = RunOutcome::NothingToDo;
     for (text, parts) in prompts {
+        if session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
+        let _ = session.take_outcome();
         let before = session.inner().tree.leaf().to_string();
         match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
             Ok(Message::Prompt | Message::Extension) => {}
             // A command's lines are `notice` records (info).
             Ok(Message::Command(mut lines)) => {
+                outcome.include(RunOutcome::Done);
                 lines.extend(take_info(&mut ui));
                 for text in lines {
                     sink.emit(&AgentEvent::Notice {
@@ -285,29 +377,44 @@ pub fn run_json(
             }
             Err(e) => {
                 let _ = writeln!(err, "{}", command_error(&e));
-                return Ok(1);
+                outcome.include(RunOutcome::from_error(&e));
+                return Ok(outcome);
             }
         }
+        // Event writes cannot interrupt the request: retain its completed result
+        // before classifying a concurrent output failure.
+        let settled = session.take_outcome();
+        outcome.include(settled);
         if let Some(e) = sink.error.take() {
             let _ = writeln!(err, "{e}");
-            return Ok(1);
+            outcome.include(RunOutcome::from_error(&e));
+            return Ok(outcome);
         }
-        failed = after_run(session, &before, &mut ui, &mut Vec::new(), err, &mut budget);
+        after_run(session, &before, &mut ui, &mut Vec::new(), err);
+        explain_outcome(settled, err);
+        if session.handle().wrap_up_requested() || session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
     }
-    let done = done_failed(session, err);
-    Ok(match (failed, budget) {
-        (true, true) => oxa_proto::EXIT_BUDGET,
-        _ => i32::from(failed || done),
-    })
+    Ok(outcome)
 }
 
-/// Whether the `done` checks still failed after the repair rounds; says so on `err` once.
-fn done_failed(session: &Session, err: &mut dyn Write) -> bool {
-    let failed = session.inner().stats.done_failed;
-    if failed {
-        let _ = writeln!(err, "done checks failed: the project's done commands still fail");
+/// The stderr line for a settled outcome the session classified from the run's state; the
+/// outcome itself is the session's, never worked out again here.
+fn explain_outcome(settled: RunOutcome, err: &mut dyn Write) {
+    match settled {
+        RunOutcome::Failed("done_checks_failed") => {
+            let _ = writeln!(err, "done checks failed: the project's done commands still fail");
+        }
+        RunOutcome::Failed("output_limit") => {
+            let _ = writeln!(
+                err,
+                "Response was truncated: the model reached its output token limit."
+            );
+        }
+        _ => {}
     }
-    failed
 }
 
 /// The header of the session in use: the stored one, or one built from the session state when
@@ -404,7 +511,6 @@ fn after_run(
     ui: &mut HeadlessUi,
     notes: &mut Vec<String>,
     err: &mut dyn Write,
-    budget: &mut bool,
 ) -> bool {
     for t in notes.drain(..) {
         let _ = writeln!(err, "{t}");
@@ -422,7 +528,6 @@ fn after_run(
             if matches!(*why, shown_why::ABORTED | shown_why::FAILED | shown_why::CUT) =>
         {
             let _ = writeln!(err, "{text}");
-            *budget = text.contains("(budget_exceeded)");
             true
         }
         _ => false,
@@ -436,9 +541,62 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Run print mode and return its process exit code.
+pub fn run_print(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    run_print_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
+}
+
+/// Run JSON mode and return its process exit code.
+pub fn run_json(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    run_json_outcome(session, prompts, out, err).map(|outcome| outcome.exit_code())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxa_proto::StopReason;
+
+    /// #483: a failed call says why on the progress line.
+    #[test]
+    fn failed_tool_line_carries_the_reason() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut sink = PrintSink {
+            wrap_up: None,
+            out: &mut out,
+            err: &mut err,
+            last: None,
+            is_last_prompt: true,
+            pending: None,
+            local_model: true,
+            pending_length: false,
+            continued: None,
+            final_text: None,
+            notes: Vec::new(),
+            started: HashMap::new(),
+            io_error: None,
+        };
+        sink.emit(&AgentEvent::ToolExecutionEnd {
+            tool_call_id: "c1".into(),
+            tool_name: "read".into(),
+            result: oxa_proto::ToolOutput::error("Invalid tool arguments (empty arguments)"),
+            duration_ms: Some(0),
+        });
+        let e = String::from_utf8(err.clone()).unwrap();
+        assert!(
+            e.contains("[tool] read failed 0.0s: Invalid tool arguments (empty arguments)"),
+            "{e}"
+        );
+    }
 
     fn assistant(text: &str) -> EventMessage {
         EventMessage {
@@ -447,6 +605,7 @@ mod tests {
                 content: Some(text.to_string()),
                 reasoning: None,
                 tool_calls: Vec::new(),
+                provider_history: None,
                 tool_call_id: None,
             },
             ts_ms: 0,
@@ -465,11 +624,15 @@ mod tests {
     fn reply_followed_by_another_turn_is_progress_not_the_final_reply() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut sink = PrintSink {
+            wrap_up: None,
             out: &mut out,
             err: &mut err,
             last: None,
             is_last_prompt: true,
             pending: None,
+            local_model: true,
+            pending_length: false,
+            continued: None,
             final_text: None,
             notes: Vec::new(),
             started: HashMap::new(),

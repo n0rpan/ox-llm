@@ -1,4 +1,4 @@
-//! A6 acceptance tests: read and write tools. Owner: task A6.
+//! A6 acceptance tests: read and write tools.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -40,6 +40,7 @@ fn run_tool(tool: &dyn Tool, env: &TestEnv, args: Value) -> ToolOutput {
     let cancel = CancelToken::new();
     let sandbox = NoSandbox;
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -47,6 +48,7 @@ fn run_tool(tool: &dyn Tool, env: &TestEnv, args: Value) -> ToolOutput {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     tool.run(&args, &cx, &mut |_: &str| {})
 }
@@ -276,6 +278,7 @@ fn access_reports_normalised_paths() {
     let cancel = CancelToken::new();
     let sandbox = NoSandbox;
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &sandbox,
@@ -283,6 +286,7 @@ fn access_reports_normalised_paths() {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
 
     let read = ReadTool::new()

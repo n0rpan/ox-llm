@@ -1,4 +1,4 @@
-//! A13 acceptance tests: Line-diff renderer and width functions. Owner: task A13.
+//! A13 acceptance tests: Line-diff renderer and width functions.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -379,4 +379,112 @@ fn repaint_rewrites_the_region_from_its_first_row() {
         synced("\x1b[2A\r\x1b[J\x1b[Ka\x1b[0m\r\n\x1b[Kb\x1b[0m"),
         "up two rows from the last line, clear, rewrite"
     );
+}
+
+/// narrowing reflows the old live lines into more rows; the clear must start above all of them
+#[test]
+fn narrowing_clears_reflowed_height() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
+    let full = "x".repeat(20);
+    r.draw(&frame(&[&full, &full, &full]), &mut term);
+    term.take_output();
+    term.resize(10, 20);
+    r.draw(&frame(&[&full[..10], &full[..10], &full[..10]]), &mut term);
+    let out = term.take_output();
+    assert!(
+        out.contains("\x1b[5A\r\x1b[J"),
+        "moves up over the 6 reflowed rows: {out:?}"
+    );
+}
+
+/// the cursor partway through a reflowed line: only the rows above the cursor are climbed
+#[test]
+fn narrowing_with_cursor_at_line_start_does_not_climb() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
+    let full = "x".repeat(20);
+    let mut f = frame(&[&full]);
+    f.cursor = Some(CursorPos { row: 0, col: 0 });
+    r.draw(&f, &mut term);
+    term.take_output();
+    term.resize(10, 20);
+    let mut f = frame(&[&full[..10]]);
+    f.cursor = Some(CursorPos { row: 0, col: 0 });
+    r.draw(&f, &mut term);
+    let out = term.take_output();
+    assert!(!out.contains("A\r"), "no climb above the region: {out:?}");
+    assert!(out.contains("\r\x1b[J"), "{out:?}");
+}
+
+/// the cursor on the first cell of a reflowed row: that row is above the cursor's line start
+#[test]
+fn narrowing_with_cursor_on_row_boundary_climbs_to_its_row() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
+    let full = "x".repeat(20);
+    let mut f = frame(&[&full]);
+    f.cursor = Some(CursorPos { row: 0, col: 10 });
+    r.draw(&f, &mut term);
+    term.take_output();
+    term.resize(10, 20);
+    let mut f = frame(&[&full[..10]]);
+    f.cursor = Some(CursorPos { row: 0, col: 0 });
+    r.draw(&f, &mut term);
+    let out = term.take_output();
+    assert!(
+        out.contains("\x1b[1A\r"),
+        "climb one row to the region start: {out:?}"
+    );
+}
+
+/// a wide character that does not fit at a row end moves to the next row
+#[test]
+fn narrowing_counts_wide_character_wrap() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
+    let line = "あ".repeat(5); // 10 columns
+    r.draw(&frame(&[&line, "z"]), &mut term);
+    term.take_output();
+    term.resize(5, 20);
+    r.draw(&frame(&[&line, "z"]), &mut term);
+    let out = term.take_output();
+    // 5 columns hold two wide chars (4 cols): 3 rows, plus "z" row; cursor on last line
+    assert!(out.contains("\x1b[3A\r\x1b[J"), "{out:?}");
+}
+
+/// a terminal that does not reflow must never be climbed past the live region
+#[test]
+fn narrowing_without_reflow_never_climbs_past_the_region() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(false);
+    let full = "x".repeat(20);
+    r.draw(&frame(&[&full, &full, &full]), &mut term);
+    term.take_output();
+    term.resize(10, 20);
+    r.draw(&frame(&[&full[..10], &full[..10], &full[..10]]), &mut term);
+    let out = term.take_output();
+    assert!(out.contains("\x1b[2A\r\x1b[J"), "{out:?}");
+}
+
+/// the cursor row counts wide-character carry: the cursor on the 5th wide char (col 8) at 3 columns is row 4, not 8/3
+#[test]
+fn narrowing_cursor_row_counts_wide_carry() {
+    let mut term = TestTerminal::new(20, 20);
+    let mut r = Renderer::new(ScreenMode::Main);
+    r.set_reflow(true);
+    let line = "あ".repeat(5);
+    let mut f = frame(&[&line]);
+    f.cursor = Some(CursorPos { row: 0, col: 8 });
+    r.draw(&f, &mut term);
+    term.take_output();
+    term.resize(3, 20);
+    r.draw(&f, &mut term);
+    let out = term.take_output();
+    assert!(out.contains("\x1b[4A\r\x1b[J"), "{out:?}");
 }

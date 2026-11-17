@@ -1,4 +1,4 @@
-//! B5: keybinding ids, defaults and keybindings.json. Owner: task B5. Signatures below are frozen; bodies are yours.
+//! B5: keybinding ids, defaults and keybindings.json.
 // ported from pi packages/tui/src/keybindings.ts and packages/coding-agent/docs/keybindings.md
 use crate::{Diagnostic, Dirs};
 use oxa_proto::{KeyId, Level, Value};
@@ -489,12 +489,12 @@ const ACTIONS: &[ActionDef] = &[
     ActionDef {
         id: "app.mode.cycle",
         default_keys: &["alt+m"],
-        description: "Cycle the permission mode",
+        description: "Cycle the permission mode: standard, auto, yolo",
     },
     ActionDef {
         id: "app.yolo.toggle",
         default_keys: &["ctrl+alt+o"],
-        description: "Toggle YOLO (no permission prompts; the sandbox stays on)",
+        description: "Toggle yolo (full access: no prompts, bash without the sandbox)",
     },
 ];
 

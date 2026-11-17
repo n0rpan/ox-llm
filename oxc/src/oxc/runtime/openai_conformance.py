@@ -181,6 +181,9 @@ def chat_request(payload, flash=False, sampling=None):
         return payload, meta, notes
     result = copy.copy(payload)
     meta.stream = result.get('stream') is True
+    budget = result.get('thinking_budget')
+    if budget is not None and (type(budget) is not int or not 0 <= budget <= 2**64 - 1):
+        raise BadParam('thinking_budget must be a non-negative integer or null.', 'thinking_budget')
     _reasoning_effort(result, meta, notes, flash)
     _response_format(result, meta, notes)
     _sampling(result, meta, sampling)

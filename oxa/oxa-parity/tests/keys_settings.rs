@@ -1,4 +1,4 @@
-//! G9 PARITY tests (keys_settings). Owner: task G9.
+//! G9 PARITY tests (keys_settings).
 //! One test per PARITY.md row of this area, named after the row id (`CLI-012` -> `fn cli_012()`).
 //! The four tests below are the meta-checks of the task; the row tests are added by the task.
 //! Helpers: `oxa_parity::{oxa_bin, fake_bin, run_oxa, fixture}`, `oxa_fake::TestEnv`.
@@ -1355,11 +1355,11 @@ fn set_017() {
         "a project-level defaultProjectTrust is ignored: {}",
         stderr(&out)
     );
-    // oxa's default set on the fake's default (large, non-Flash) model: the seven built-ins and
-    // `subagent` (O-146, SET-018), not the project's `["ls"]`.
+    // No agents are installed: the lead defaults include ask, but not subagent or the
+    // untrusted project's replacement ["ls"].
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "write"],
         "the project's defaultTools is not applied"
     );
 }
@@ -1367,43 +1367,51 @@ fn set_017() {
 /// SET-018: `defaultTools`: plain names replace the defaults, `+name` adds, `-name` removes.
 #[test]
 fn set_018() {
-    // invariant: the default set is all seven built-ins (oxa has no powershell) plus `subagent`
+    fn with_agent(args: &[&str]) -> Rig {
+        let rig = Rig::with_fake(&[text("ok")], args);
+        rig.env.write(
+            "home/.oxa/agent/agents/worker.md",
+            "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+        );
+        rig
+    }
+    // invariant: with an available agent, the lead defaults include ask plus subagent
     // where O-146 offers it (not on the Rust Flash engine, not below a 32K window); the selection
     // is resolved once per prefix epoch (W3), so it is visible on the first request.
-    let rig = Rig::new(&[text("ok")]);
+    let rig = with_agent(&[]);
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
-        "the default set on a large non-Flash model: the seven built-ins and subagent"
+        ["ask", "bash", "edit", "find", "grep", "ls", "read", "subagent", "write"],
+        "the default set on a large non-Flash model: eight lead built-ins and subagent"
     );
     let flash = ["--model", "flash", "--model-row", "flash:65536:2048:flash"];
     let small = ["--n-ctx", "16384"];
     for (what, fake_args) in [("Flash", &flash[..]), ("below 32K", &small[..])] {
-        let rig = Rig::with_fake(&[text("ok")], fake_args);
+        let rig = with_agent(fake_args);
         ok(&rig.print(&[]));
         assert_eq!(
             tools(&rig.bodies()[0]),
-            ["bash", "edit", "find", "grep", "ls", "read", "write"],
-            "{what}: the default set is the seven built-ins"
+            ["ask", "bash", "edit", "find", "grep", "ls", "read", "write"],
+            "{what}: the default set is the eight lead built-ins"
         );
     }
 
     // `-name` edits the default selection (which includes `subagent`).
-    let rig = Rig::new(&[text("ok")]);
+    let rig = with_agent(&[]);
     rig.user_settings(json!({ "defaultTools": ["-bash"] }));
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["edit", "find", "grep", "ls", "read", "subagent", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "subagent", "write"],
         "-name removes"
     );
-    let rig = Rig::with_fake(&[text("ok")], &small);
+    let rig = with_agent(&small);
     rig.user_settings(json!({ "defaultTools": ["-bash"] }));
     ok(&rig.print(&[]));
     assert_eq!(
         tools(&rig.bodies()[0]),
-        ["edit", "find", "grep", "ls", "read", "write"],
+        ["ask", "edit", "find", "grep", "ls", "read", "write"],
         "-name removes (below 32K)"
     );
 
@@ -2175,7 +2183,7 @@ fn set_051() {
 
     // Ten-byte deltas; the stall starts after 200 body bytes, i.e. after the first data event
     // (a silence before any data would be retried with the same Idempotency-Key, which replays).
-    let stalled = json!({"text": "a reply that stalls half way", "chunk": 10, "fault": {"kind": "stall", "bytes": 200, "ms": 3000}});
+    let stalled = json!({"text": "a reply that stalls half way", "chunk": 10, "fault": {"kind": "stall", "bytes": 200, "ms": 6000}});
     let silent = Rig::with_fake(std::slice::from_ref(&stalled), &[]);
     silent.user_settings(json!({ "httpIdleTimeoutMs": 300, "retry": { "enabled": false } }));
     let started = std::time::Instant::now();
@@ -2187,8 +2195,8 @@ fn set_051() {
         stdout(&out)
     );
     assert!(
-        took < Duration::from_millis(2500),
-        "the idle limit (300 ms), not the 3 s stall, ended the request: {took:?}"
+        took < Duration::from_millis(5000),
+        "the idle limit (300 ms), not the 6 s stall, ended the request: {took:?}"
     );
     assert!(
         !stdout(&out).contains("a reply that stalls half way"),
@@ -2247,15 +2255,24 @@ fn set_053() {
         "a cut before the first data byte is replayed"
     );
 
-    // A cut after the first content event (350 bytes): the reply is an error, not replayed.
+    // A cut after the first content event (350 bytes): replayed while the retry policy allows (#456).
     let rig = Rig::new(&[
         json!({ "text": before, "fault": { "kind": "drop_at", "bytes": 350 } }),
         text("ok"),
     ]);
     rig.user_settings(json!({ "retry": { "baseDelayMs": 10 } }));
+    ok(&rig.print(&[]));
+    assert_eq!(rig.bodies().len(), 2, "a cut after data is replayed");
+
+    // With retry disabled the same cut is a final error.
+    let rig = Rig::new(&[
+        json!({ "text": before, "fault": { "kind": "drop_at", "bytes": 350 } }),
+        text("ok"),
+    ]);
+    rig.user_settings(json!({ "retry": { "enabled": false, "baseDelayMs": 10 } }));
     let out = rig.print(&[]);
-    assert!(!out.status.success(), "a stream cut after data is an error");
-    assert_eq!(rig.bodies().len(), 1, "no replay after the first data byte");
+    assert!(!out.status.success(), "retry.enabled false: a cut is an error");
+    assert_eq!(rig.bodies().len(), 1, "no replay when retry is disabled");
 }
 
 /// SET-054: `retry.provider.timeoutMs`, `retry.provider.maxRetries`, `retry.provider.maxRetryDelayMs`.
@@ -3329,7 +3346,13 @@ fn key_013() {
     let t = Setup::new()
         .profile(TermProfile::kitty())
         .fake(three_models())
-        .replies("model answer", 3)
+        .script(&[
+            text("model answer"),
+            // The visible answer is not an idle-session witness: hold the stream open after
+            // its content delta, longer than the harness's 250 ms screen-quiet interval.
+            json!({"text": "model answer", "fault": {"kind": "stall", "bytes": 350, "ms": 1500}}),
+            text("model answer"),
+        ])
         .start();
     assert!(footer(&t.screen()).contains("model-a"), "{:?}", t.screen());
     t.key("ctrl+l");
@@ -3355,13 +3378,15 @@ fn key_013() {
     t.type_text("two");
     t.key("enter");
     assert_eq!(t.wait_chats(2)[1].model, "model-a");
-    // The selector needs an idle session: wait until the reply to "two" is on the screen
-    // below its prompt, then for a settled screen.
-    t.wait("the second reply", |s| {
+    // The selector needs an idle session: answer text and even a quiet screen can precede
+    // the stream's end. Wait for the busy indicator to clear, just as Tui::prompt does.
+    t.wait("the second reply and idle session", |s| {
         let rows = s.rows();
-        rows.iter()
-            .position(|r| r.trim() == "two")
-            .is_some_and(|i| rows[i..].iter().any(|r| r.contains("model answer")))
+        !s.contains("Working")
+            && rows
+                .iter()
+                .position(|r| r.trim() == "two")
+                .is_some_and(|i| rows[i..].iter().any(|r| r.contains("model answer")))
     });
     t.settle();
     // ctrl+s in the selector: select and save as the default model.
@@ -3450,39 +3475,51 @@ fn key_014() {
     t.wait("f4 cycles", |s| footer(s).ends_with("• minimal"));
 }
 
-/// KEY-015: `app.mode.cycle` (alt+m): plan -> workspace -> ask.
+/// KEY-015: `app.mode.cycle` (alt+m): standard -> auto -> yolo.
 #[test]
 fn key_015() {
-    // invariant: oxa only; the mode order is plan -> workspace -> ask (the default is alt+m).
-    // The mode is display and permission state, never wire text (W3): the system prompt of
-    // the next request is the same in every mode.
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
-    let t = Setup::new().replies("ok", 2).start();
-    assert!(footer(&t.screen()).contains("workspace"));
-    t.prompt("one", "ok");
-    t.key("alt+m");
-    t.wait("ask mode", |s| footer(s).contains(" ask"));
-    t.key("alt+m");
-    t.wait("plan mode", |s| footer(s).contains(" plan"));
-    t.key("alt+m");
-    t.wait("workspace mode", |s| footer(s).contains("workspace"));
-    t.key("alt+m");
-    t.wait("ask mode", |s| footer(s).contains(" ask"));
-    t.type_text("two");
-    t.key("enter");
-    let chats = t.wait_chats(2);
-    assert_eq!(
-        chats[0].system, chats[1].system,
-        "no mode text in the frozen prefix"
-    );
-    drop(t);
+    // invariant: oxa only; the cycle is auto -> yolo -> standard (the default is alt+m).
+    // The mode is display and permission state, never wire text (W3). Under yolo the badge
+    // row `YOLO full access` sits below the footer, so look at the bottom two rows.
+    let footer = |s: &Screen| {
+        let n = s.size().0;
+        format!("{}\n{}", s.row(n - 2), s.row(n - 1))
+    };
+    let is_mode = |s: &Screen, mode: &str| footer(s).split_whitespace().any(|word| word == mode);
+    // Also keep the auto-compaction marker visible at a wider size: it must not be
+    // mistaken for auto mode. Retain the normal 80-column layout (including its YOLO row).
+    for cols in [80, 120] {
+        let t = Setup::new().size(24, cols).replies("ok", 2).start();
+        assert!(is_mode(&t.screen(), "auto"));
+        t.prompt("one", "ok");
+        // Each transition changes the footer's height under YOLO. Observe a complete, quiet
+        // frame before sending another key, not a matching substring during the repaint.
+        t.key("alt+m");
+        t.wait_steady("yolo mode", |s| is_mode(s, "yolo"));
+        t.key("alt+m");
+        let standard = t.wait_steady("standard mode", |s| is_mode(s, "standard"));
+        assert!(
+            !is_mode(&standard, "auto"),
+            "auto-compaction is not auto permission mode: {standard:?}"
+        );
+        t.key("alt+m");
+        t.wait_steady("auto mode", |s| is_mode(s, "auto"));
+        t.type_text("two");
+        t.key("enter");
+        let chats = t.wait_chats(2);
+        assert_eq!(
+            chats[0].system, chats[1].system,
+            "no mode text in the frozen prefix"
+        );
+        drop(t);
+    }
     // Rebound: f3 cycles; alt+m does not.
     let t = Setup::new().keys(json!({ "app.mode.cycle": "f3" })).start();
     t.key("alt+m");
     let s = t.settle();
-    assert!(footer(&s).contains("workspace"), "{s:?}");
+    assert!(is_mode(&s, "auto"), "{s:?}");
     t.key("f3");
-    t.wait("ask mode", |s| footer(s).contains(" ask"));
+    t.wait_steady("yolo mode", |s| is_mode(s, "yolo"));
 }
 
 /// KEY-016: display and queue: tools expand, message copy, follow-up, dequeue.

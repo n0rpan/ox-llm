@@ -9,22 +9,39 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('paths', Path(__file__).resolve().parents[1] / 'paths.py')
 paths = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(paths)
+KEYS = ('engine', 'oxa', 'lab', 'cli', 'gateway')
 
 
 class Paths(unittest.TestCase):
     def test_component_source_and_test_changes(self):
-        for component, directory in (('engine', 'engine'), ('oxa', 'oxa'), ('lab', 'oxc')):
+        for directory, components in (('engine', {'engine'}), ('oxa', {'oxa'}),
+                                      ('oxc', {'lab', 'cli', 'gateway'}), ('oxc-rs', {'cli'}),
+                                      ('conformance', {'cli'}),
+                                      ('oxa/oxc-gateway', {'oxa', 'gateway'}),
+                                      ('oxa/oxa-engine', {'oxa', 'gateway'}),
+                                      ('oxa/oxa-cli', {'oxa', 'gateway'}),
+                                      ('oxa/oxa-proto', {'oxa', 'gateway'}),
+                                      ('fuzz/oxa', {'oxa'}), ('fuzz/oxe', {'engine'})):
             for suffix in ('src/code.rs', 'tests/test_unit.py', 'Cargo.lock'):
-                with self.subTest(component=component, suffix=suffix):
+                with self.subTest(directory=directory, suffix=suffix):
                     got = paths.classify([directory + '/' + suffix])
-                    self.assertEqual({key for key in ('engine', 'oxa', 'lab') if got[key]}, {component})
+                    expected = components | {'gateway'} if directory == 'oxa' and suffix == 'Cargo.lock' else components
+                    self.assertEqual({key for key in KEYS if got[key]}, expected)
                     self.assertFalse(got['full'])
+                    self.assertFalse(got['md'])
+
+    def test_md_flags_any_markdown_or_rst_change(self):
+        self.assertTrue(paths.classify(['oxa/src/a.rs', 'fuzz/oxa/FINDINGS.md'])['md'])
+        self.assertTrue(paths.classify(['docs/page.rst'])['md'])
+        self.assertTrue(paths.classify(['oxa/oxa-resources/builtin-skills/ox-llm/SKILL.md'])['md'])
+        self.assertFalse(paths.classify(['oxa/src/a.rs', 'tools/ci/paths.py'])['md'])
+        self.assertFalse(paths.classify([], True)['md'])
 
     def test_docs_only_and_mixed_changes(self):
         got = paths.classify(['README.md', 'oxc/docs/page.md', 'oxa/docs/page.rst'], True)
         self.assertTrue(got['docs'])
         self.assertTrue(got['full'])
-        self.assertFalse(any(got[key] for key in ('engine', 'oxa', 'lab')))
+        self.assertFalse(any(got[key] for key in KEYS))
         got = paths.classify(['oxc/docs/page.md', 'oxa/src/code.rs'])
         self.assertTrue(got['oxa'])
         self.assertFalse(got['lab'])
@@ -48,7 +65,7 @@ class Paths(unittest.TestCase):
         for path in ('.github/workflows/checks.yml', 'tools/ci/paths.py', 'new-product/code',
                      'engine-other/src/code.rs', 'lab-notes.txt'):
             got = paths.classify([path])
-            self.assertTrue(all(got[key] for key in ('engine', 'oxa', 'lab')), path)
+            self.assertTrue(all(got[key] for key in KEYS), path)
 
     def test_full_event_source_runs_and_empty_diffs_are_full(self):
         self.assertTrue(paths.classify(['oxc/src/code.py'], True)['full'])
@@ -64,14 +81,15 @@ class Paths(unittest.TestCase):
         self.assertTrue(paths.classify(['README.md'], True)['full'])
 
     def test_event_entrypoint_preserves_full_gate_for_docs_and_merge_queue(self):
-        cases = [('merge_group', 'refs/heads/queue', {}, True),
-                 ('workflow_dispatch', 'refs/heads/feature', {}, True),
-                 ('schedule', 'refs/heads/main', {}, True),
-                 ('push', 'refs/heads/main', {'before': 'a' * 40, 'after': 'b' * 40}, True)]
+        # (event, ref, payload, full, every component forced on)
+        cases = [('merge_group', 'refs/heads/queue', {'merge_group': {'base_sha': 'a' * 40, 'head_sha': 'b' * 40}}, True, False),
+                 ('workflow_dispatch', 'refs/heads/feature', {}, True, True),
+                 ('schedule', 'refs/heads/main', {}, True, True),
+                 ('push', 'refs/heads/main', {'before': 'a' * 40, 'after': 'b' * 40}, True, True)]
         for draft in (False, True):
             cases.append(('pull_request', 'refs/pull/1/merge', {'pull_request': {
-                'draft': draft, 'base': {'sha': 'a' * 40}, 'head': {'sha': 'b' * 40}}}, False))
-        for event, ref, payload, full in cases:
+                'draft': draft, 'base': {'sha': 'a' * 40}, 'head': {'sha': 'b' * 40}}}, False, False))
+        for event, ref, payload, full, everything in cases:
             with self.subTest(event=event, ref=ref, draft=payload.get('pull_request', {}).get('draft')):
                 with tempfile.TemporaryDirectory() as directory:
                     source, output = Path(directory) / 'event.json', Path(directory) / 'output'
@@ -84,6 +102,9 @@ class Paths(unittest.TestCase):
                     values = dict(line.split('=', 1) for line in output.read_text().splitlines())
                     self.assertEqual(values['full'], str(full).lower())
                     self.assertEqual(values['docs'], 'true')
+                    self.assertEqual(values['md'], 'true')
+                    for key in KEYS:
+                        self.assertEqual(values[key], str(everything).lower(), key)
 
 
 class GitPaths(unittest.TestCase):
@@ -93,10 +114,40 @@ class GitPaths(unittest.TestCase):
             self.assertEqual(paths.changed_paths(event, 'pull_request'), ['oxa/src/a.rs', 'oxc/docs/a.md'])
         self.assertIn('a' * 40 + '...' + 'b' * 40, run.call_args.args[0])
 
-    def test_merge_queue_enumerates_sources_without_push_payload_fields(self):
-        with patch.object(paths.subprocess, 'check_output', return_value=b'oxa/src/a.rs\0') as run:
-            self.assertEqual(paths.changed_paths({'merge_group': {}}, 'merge_group'), ['oxa/src/a.rs'])
-        self.assertEqual(run.call_args.args[0], ['git', 'ls-files', '-z'])
+    def group(self, diff, listing=b'engine/a.rs\0oxa/a.rs\0oxc/a.py\0'):
+        event = {'merge_group': {'base_sha': 'a' * 40, 'head_sha': 'b' * 40}}
+        with patch.object(paths.subprocess, 'check_output', side_effect=[diff, listing]) as run:
+            got = paths.classify(paths.changed_paths(event, 'merge_group'), True)
+        self.assertEqual(run.call_args_list[0].args[0],
+                         ['git', 'diff', '--name-only', '-z', 'a' * 40 + '..' + 'b' * 40, '--'])
+        return {key for key in KEYS if got[key]}
+
+    def test_merge_group_classifies_only_the_group_diff(self):
+        self.assertEqual(self.group(b'oxa/oxa-core/src/a.rs\0fuzz/oxa/smoke.rs\0'), {'oxa'})
+        self.assertEqual(self.group(b'oxc-rs/src/a.rs\0conformance/t.py\0'), {'cli'})
+        self.assertEqual(self.group(b'oxa/oxc-gateway/src/a.rs\0'), {'oxa', 'gateway'})
+        self.assertEqual(self.group(b'engine/crates/server/src/a.rs\0fuzz/oxe/smoke.rs\0'), {'engine'})
+        self.assertEqual(self.group(b'oxa/src/a.rs\0engine/src/a.rs\0'), {'oxa', 'engine'})
+        self.assertEqual(self.group(b'docs/page.md\0'), set())
+        for path in (b'.github/workflows/build.yml', b'tools/ci/paths.py', b'packaging/x', b'NOTICE',
+                     b'fuzz/other/x.rs', b'oxc-gateway/src/a.rs'):
+            self.assertEqual(self.group(path + b'\0'), set(KEYS), path)
+
+    def test_empty_merge_group_diff_tests_everything(self):
+        self.assertEqual(self.group(b''), set(KEYS))
+
+    def test_merge_group_rejects_untrusted_shas(self):
+        with patch.object(paths.subprocess, 'check_output') as run:
+            for event in ({'merge_group': {'base_sha': '--x', 'head_sha': 'b' * 40}}, {'merge_group': {}}):
+                with self.assertRaises(ValueError):
+                    paths.changed_paths(event, 'merge_group')
+            run.assert_not_called()
+
+    def test_dispatch_and_schedule_enumerate_every_file(self):
+        for name in ('workflow_dispatch', 'schedule'):
+            with patch.object(paths.subprocess, 'check_output', return_value=b'oxa/src/a.rs\0') as run:
+                self.assertEqual(paths.changed_paths({}, name), ['oxa/src/a.rs'])
+            self.assertEqual(run.call_args.args[0], ['git', 'ls-files', '-z'])
 
     def test_new_branch_compares_to_main(self):
         event = {'before': '0' * 40, 'after': 'b' * 40}

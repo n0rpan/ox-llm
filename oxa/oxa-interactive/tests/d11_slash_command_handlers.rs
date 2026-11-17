@@ -1,4 +1,4 @@
-//! D11 acceptance tests: Slash command handlers. Owner: task D11.
+//! D11 acceptance tests: Slash command handlers.
 //! One test per acceptance bullet of WAVES.toml. Remove `#[ignore]` as you implement; the task is
 //! done when every test here is un-ignored and green. Add tests freely; do not delete or rename these.
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
@@ -109,7 +109,69 @@ fn every_kept_command_has_handler() {
     }
     // Plain text and unknown names are not commands.
     assert!(fx.run("hello /model").is_none());
-    assert!(fx.run("/no-such-command").is_none());
+    // A path is not a command.
+    assert!(fx.run("/tmp/file.txt what is this").is_none());
+    // Single-component absolute paths too (existing root entry, or a file name with a dot).
+    assert!(fx.run("/etc explain this directory").is_none());
+    assert!(fx.run("/README.md summarize this file").is_none());
+}
+
+/// #341: an unknown `/x` is rejected locally; `/help` and `/usage` answer locally.
+#[test]
+fn unknown_slash_is_local_error_and_help_usage_exist() {
+    let fx = Fx::new();
+    let (level, text) = notice(expect_some("/bogus", fx.run("/bogus")));
+    assert_eq!(level, Level::Error);
+    assert!(text.contains("/bogus") && text.contains("/help"), "{text}");
+    match expect_some("/help", fx.run("/help")) {
+        AppAction::ShowLines(l) => {
+            assert!(l.iter().any(|x| x.contains("/model")));
+            assert!(l.iter().any(|x| x.contains("/hotkeys")));
+        }
+        _ => panic!("/help shows lines"),
+    }
+    assert!(matches!(
+        expect_some("/usage", fx.run("/usage")),
+        AppAction::ShowLines(_)
+    ));
+    // `/cost` shows no cost, so it is not a built-in: it is an unknown command.
+    let (level, _) = notice(expect_some("/cost", fx.run("/cost")));
+    assert_eq!(level, Level::Error);
+    // A bare dotless unknown name is a typo: rejected locally.
+    let (level, _) = notice(expect_some("/zz-nope-qq", fx.run("/zz-nope-qq")));
+    assert_eq!(level, Level::Error);
+    // With text after it, it is a prompt (host independent): it reaches the model.
+    assert!(fx.run("/zz-nope-qq go").is_none());
+    assert!(fx.run("/src explain this module").is_none());
+    // A template or skill command of the session still goes to the core.
+    let mut fx = Fx::new();
+    fx.commands.push(CommandSpec {
+        name: "skill:demo".to_string(),
+        description: "demo".to_string(),
+        argument_hint: None,
+        source: Source::Extension("x".to_string()),
+    });
+    assert!(fx.run("/skill:demo").is_none());
+    // An extension command named like a name that is not built in reaches the core.
+    fx.commands.push(CommandSpec {
+        name: "deploy".to_string(),
+        description: "d".to_string(),
+        argument_hint: None,
+        source: Source::Extension("x".to_string()),
+    });
+    assert!(fx.run("/deploy").is_none());
+    // A template or extension named `help` / `usage` overrides the built-in handler.
+    for n in ["help", "usage"] {
+        let mut fx = Fx::new();
+        fx.commands.retain(|c| c.name != n);
+        fx.commands.push(CommandSpec {
+            name: n.to_string(),
+            description: "mine".to_string(),
+            argument_hint: None,
+            source: Source::Extension("x".to_string()),
+        });
+        assert!(fx.run(&format!("/{n} x")).is_none(), "/{n} override");
+    }
 }
 
 /// /engine status and load
@@ -373,4 +435,56 @@ fn busy_refuses_only_session_changes() {
         notice(dispatch_slash("/model qwen", &cx).unwrap()).0,
         Level::Warning
     );
+}
+
+/// #202: `/mode` without an argument opens the picker; `/mode <name> [--save]` sets the
+/// permission mode (and saves it); `/auto` sets auto; the table modes still work.
+#[test]
+fn mode_and_auto_set_the_permission_mode() {
+    use oxa_proto::{Mode, PermissionMode};
+    let fx = Fx::new();
+    assert!(matches!(
+        fx.run("/mode").unwrap(),
+        AppAction::Open(SelectorKind::Mode)
+    ));
+    for (line, want, saved) in [
+        ("/mode standard", PermissionMode::Standard, false),
+        ("/mode yolo --save", PermissionMode::Yolo, true),
+        ("/mode --save plan", PermissionMode::Plan, true),
+        ("/auto", PermissionMode::Auto, false),
+    ] {
+        match fx.run(line).unwrap() {
+            AppAction::SetPermissionMode { mode, save } => {
+                assert_eq!((mode, save), (want, saved), "{line}");
+            }
+            _ => panic!("{line}: not a permission-mode change"),
+        }
+    }
+    match fx.run("/mode ask").unwrap() {
+        AppAction::Many(actions) => assert!(matches!(
+            actions.as_slice(),
+            [
+                AppAction::SetPermissionMode {
+                    mode: PermissionMode::Standard,
+                    save: false
+                },
+                AppAction::Session(SessionCmd::SetMode(Mode::Ask))
+            ]
+        )),
+        _ => panic!("/mode ask: standard, then the ask table"),
+    }
+    for bad in ["/mode root", "/mode ask --save", "/mode --save", "/auto now"] {
+        assert_eq!(notice(fx.run(bad).unwrap()).0, Level::Error, "{bad}");
+    }
+}
+
+/// #202: the mode key cycles standard -> auto -> yolo -> standard; plan leaves to standard.
+#[test]
+fn the_mode_cycle_is_standard_auto_yolo() {
+    use oxa_proto::PermissionMode as P;
+    assert_eq!(P::Standard.next(), P::Auto);
+    assert_eq!(P::Auto.next(), P::Yolo);
+    assert_eq!(P::Yolo.next(), P::Standard);
+    assert_eq!(P::Plan.next(), P::Standard);
+    assert_eq!(P::DEFAULT, P::Auto);
 }
