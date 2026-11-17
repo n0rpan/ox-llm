@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- `done` checks: a command the shell cannot start (exit 127, the program is missing, or 126, it is not executable) is reported as `FAILED (not run)` with the shell's reason instead of a failed check, spends no repair round, and `-p`/`--mode json` print `done checks did not run` rather than a failure of the project's commands; the run still exits 1 because nothing was verified (#966).
+- `done` checks: an independently confirmed unavailable external command is reported as `FAILED (not run)` with the shell's reason instead of a failed check, spends no repair round, and `-p`/`--mode json` print `done checks did not run` rather than a failure of the project's commands; the run still exits 1 because nothing was verified (#966).
 
 ### Changed
 

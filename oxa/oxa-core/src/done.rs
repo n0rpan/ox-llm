@@ -2,9 +2,9 @@
 //! A run that edited files (`edit` / `write` succeeded, or a `bash`, sub-agent, MCP or extension
 //! tool call changed the work folder) and is about to stop runs them in the session sandbox; a failure goes back to the model as a user
 //! message, at most [`MAX_ROUNDS`] times. An entry `in <dir>: <command>` runs in `<dir>`, a folder
-//! of the session folder, instead of in the session folder itself. A command the shell cannot
-//! start (exit 127, not found; 126, not executable - a missing binary or toolchain) is reported
-//! as `FAILED (not run)` and is not sent back as a problem to fix: no edit makes it start.
+//! of the session folder, instead of in the session folder itself. An independently confirmed
+//! unavailable external command is `FAILED (not run)` without a repair round. Project scripts
+//! and ambiguous shell expressions remain repairable even when they return 126 or 127.
 use crate::exec::CallResult;
 use crate::SessionState;
 use oxa_proto::{shown_why, AgentEvent, EntryBody, EventMessage, EventSink, ExecSpec, Level, OxaError, Ui};
@@ -378,19 +378,32 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, bool, String, String) {
         timeout_s: Some(TIMEOUT_S),
         env: st.tool_env.clone(),
     };
+    let started = std::time::Instant::now();
     let res = st.sandbox.run(&spec, &st.shared.cancel, &mut |_| {});
     let out = tail(&strip_ansi(&String::from_utf8_lossy(&res.output)));
     if res.exit == Some(0) && !res.timed_out {
         return (true, false, format!("done check: {label} ok"), String::new());
     }
-    // The shell reports a command it could not start with 127 (not found) or 126 (not
-    // executable): a missing binary or toolchain, which no edit to the project can fix. It is
-    // not a failure of the source and costs no repair round.
+    // A shell exit alone does not prove launch failed: project scripts can return
+    // either code themselves. Only separate sandbox evidence can suppress repair.
+    let elapsed = u32::try_from(started.elapsed().as_secs()).unwrap_or(u32::MAX);
+    let remaining = TIMEOUT_S.saturating_sub(elapsed.saturating_add(1));
     let (why, unstarted) = if res.timed_out {
         ("timed out".to_string(), false)
     } else {
         match res.exit {
-            Some(127 | 126) => ("not run".to_string(), true),
+            Some(127 | 126)
+                if external_unavailable(
+                    st,
+                    &spec,
+                    cmd,
+                    child.as_deref().unwrap_or(""),
+                    &shell,
+                    remaining,
+                ) =>
+            {
+                ("not run".to_string(), true)
+            }
             Some(n) => (format!("exit {n}"), false),
             None => ("killed".to_string(), false),
         }
@@ -401,6 +414,65 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, bool, String, String) {
         format!("done check: {label} FAILED ({why})"),
         out,
     )
+}
+
+/// Verify only a simple direct command, in the same sandbox/directory and within
+/// the original timeout. Prefixes/custom shells and compound expressions are
+/// ambiguous; their failures remain repairable. Never execute the command twice.
+fn external_unavailable(
+    st: &SessionState,
+    spec: &ExecSpec,
+    cmd: &str,
+    child: &str,
+    shell: &oxa_tools::ShellConfig,
+    remaining: u32,
+) -> bool {
+    if remaining == 0
+        || shell.shell_path.is_some()
+        || shell.command_prefix.is_some()
+        || cmd.contains([
+            '\n', '\r', ';', '&', '|', '<', '>', '$', '`', '(', ')', '{', '}', '#', '\\',
+        ])
+    {
+        return false;
+    }
+    let Some(program) = cmd.split_whitespace().next().filter(|p| {
+        p.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_+-./".contains(&b))
+    }) else {
+        return false;
+    };
+    let mut probe = spec.clone();
+    probe.timeout_s = Some(remaining);
+    let missing = !program.contains('/');
+    let query = if missing {
+        // A project-relative PATH entry could supply a repairable project helper.
+        // Test that case in-shell without printing the environment.
+        format!(
+            r#"case ":$PATH:" in *::*) exit 2;; esac
+for p in ${{PATH//:/ }}; do case "$p" in "$PWD"|"$PWD"/*) exit 2;; /*) ;; *) exit 2;; esac; done
+command -v -- {}"#,
+            single_quote(program)
+        )
+    } else {
+        let (Ok(path), Ok(work)) = (Path::new(program).canonicalize(), st.cwd.canonicalize()) else {
+            return false;
+        };
+        if !Path::new(program).is_absolute() || path.starts_with(work) {
+            return false;
+        }
+        let path = single_quote(program);
+        format!("test -f {path} && ! test -x {path}")
+    };
+    probe.command = format!("{child}{query}");
+    let evidence = st.sandbox.run(&probe, &st.shared.cancel, &mut |_| {});
+    !evidence.timed_out
+        && !st.shared.cancel.is_cancelled()
+        && if missing {
+            evidence.exit == Some(1) && evidence.output.is_empty()
+        } else {
+            evidence.exit == Some(0)
+        }
 }
 
 fn tail(s: &str) -> String {

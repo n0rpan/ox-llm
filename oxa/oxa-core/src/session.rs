@@ -112,7 +112,7 @@ pub struct Stats {
     /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
     /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
-    /// The last `done` check round had an entry the shell could not start (exit 127 or 126): the
+    /// The last `done` check round independently confirmed an unavailable external command: the
     /// check did not run, so print mode says so instead of reporting a failed check.
     pub done_not_run: bool,
     /// Whether the current agent operation's last reply stopped at its output token limit.

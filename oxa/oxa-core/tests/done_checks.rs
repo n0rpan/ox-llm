@@ -329,7 +329,7 @@ fn non_executable_external_check_is_reported_as_not_run() {
 #[test]
 fn real_failure_keeps_its_round_beside_an_unstartable_check() {
     let env = TestEnv::new();
-    let (rec, engine) = run(
+    let (rec, engine, failed) = run_state(
         &env,
         json!([CHECK, "oxa-966-missing-program"]),
         vec![
@@ -338,6 +338,7 @@ fn real_failure_keeps_its_round_beside_an_unstartable_check() {
             write("c2", "fixed.txt"),
             ScriptTurn::text("done again"),
         ],
+        Arc::new(Direct),
     );
     assert_eq!(engine.requests().len(), 4);
     let reqs = engine.requests();
@@ -354,10 +355,12 @@ fn real_failure_keeps_its_round_beside_an_unstartable_check() {
         "a command that cannot start is not a project problem to fix: {repair}"
     );
     let checks = rec.checks();
-    assert!(
-        checks.iter().any(|c| c.contains("FAILED (not run)")),
-        "{checks:?}"
-    );
+    assert_eq!(checks.len(), 4, "{checks:?}");
+    assert!(checks[0].contains("FAILED (exit 3)"), "{checks:?}");
+    assert!(checks[1].contains("FAILED (not run)"), "{checks:?}");
+    assert!(checks[2].ends_with("ok"), "{checks:?}");
+    assert!(checks[3].contains("FAILED (not run)"), "{checks:?}");
+    assert!(failed, "the unavailable check never verified the source");
 }
 
 #[test]
