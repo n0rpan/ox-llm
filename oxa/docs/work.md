@@ -30,9 +30,15 @@ Active leases and a per-PR UTC daily attempt cap
 make entries ineligible without hiding them. Snapshot adapters must supply the
 complete open set, current-head required checks, unresolved findings, source-removal
 facts and review-policy approval for the PR's own diff. Callers
-own durable state and must reserve attempts and leases atomically before acting;
-this read-only core neither claims work nor writes to GitHub. CLI/shadow polling
-is a separate adapter.
+select private repository-scoped claim storage outside worker-writable binds.
+`Claims::open(root).snapshot()` supplies durable state for `Board::read`.
+Before dispatch, `claim(entry, policy, holder, now, ttl)` atomically reserves a
+lease and an attempt under a kernel file lock, then syncs state before returning.
+The default daily cap is three; a crash after reservation consumes an attempt.
+`release(number, lease)` fences stale workers and never refunds attempts. Active
+leases survive UTC midnight; corrupt state, or state that vanished after a PR's
+first reservation, fails closed. Execution, fresh-head validation and CLI polling
+remain in the adapter; core claim storage never spawns workers or writes to GitHub.
 
 `oxa work tasks.json` opts into sequential tasks in separate git worktrees.
 Run it inside the project repository. The JSON file is an array:

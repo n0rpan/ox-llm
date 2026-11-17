@@ -391,3 +391,67 @@ fn mock_still_rejects_peer_close_before_later_payload_chunks() {
     assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
     assert_eq!(failure.part, Some(openai::ReplyPart::ChunkHeader));
 }
+
+/// A client may reject Content-Type as soon as the complete headers arrive.
+#[derive(Default)]
+struct CloseOnHeaders {
+    bytes: Vec<u8>,
+    closed: bool,
+}
+impl Write for CloseOnHeaders {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.closed {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.bytes.extend_from_slice(bytes);
+        self.closed = self.bytes.windows(4).any(|window| window == b"\r\n\r\n");
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+#[test]
+fn bounded_header_refusal_finishes_http_before_peer_can_close() {
+    let reply = Reply::raw(
+        200,
+        "application/json",
+        b"synthetic-private-frame".to_vec(),
+        vec![],
+    )
+    .buffer_header_refusal();
+    let mut peer = CloseOnHeaders::default();
+    openai::write_reply(&mut peer, &reply).expect("complete the bounded header-refusal response");
+    assert!(peer.closed);
+    assert!(peer.bytes.ends_with(b"\r\n0\r\n\r\n"));
+    assert!(peer
+        .bytes
+        .windows(b"synthetic-private-frame".len())
+        .any(|window| window == b"synthetic-private-frame"));
+}
+
+#[test]
+fn buffered_header_refusal_keeps_write_and_flush_failures_strict() {
+    for (fail_at, part) in [
+        (0, openai::ReplyPart::BufferedReply),
+        (1, openai::ReplyPart::Flush),
+    ] {
+        let reply = Reply::raw(
+            200,
+            "application/json",
+            b"synthetic-private-frame".to_vec(),
+            vec![],
+        )
+        .buffer_header_refusal();
+        let mut writer = FailingReplyWriter {
+            fail_at,
+            calls: 0,
+            bytes: Vec::new(),
+        };
+        let failure = openai::write_reply(&mut writer, &reply).unwrap_err();
+        assert_eq!(failure.part, Some(part));
+        assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+        assert_eq!(writer.calls, fail_at + 1);
+        assert!(!format!("{failure:?}").contains("synthetic-private-write"));
+    }
+}
