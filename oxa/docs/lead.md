@@ -24,6 +24,9 @@ extension, MCP, subagent and codemode construction, and refuses typed shell
 escapes. It accepts model/session/TUI flags, but owns its schema and resource
 selection; explicit extension/skill/template/schema overrides and mutating tool
 requests are rejected. The same restrictions apply on continuation and reopen.
+Reload retains the preset's resources, and resuming an ordinary session rebuilds
+its prefix with the lead instructions and restricted declarations. Goal mode is
+not supported: `--goal` and saved sessions containing a goal refuse explicitly.
 Project executable resources are not trusted by this preset. Read tools still
 use ordinary path permissions; no sandbox or secret policy is relaxed.
 

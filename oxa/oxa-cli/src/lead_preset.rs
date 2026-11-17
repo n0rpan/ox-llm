@@ -21,6 +21,12 @@ pub(crate) fn apply(a: &mut Args) -> Result<(), OxaError> {
             "Live lead coordination is unavailable; use oxa lead --shadow for proposals only",
         ));
     }
+    if a.goal.is_some() {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "The lead shadow preset does not support --goal",
+        ));
+    }
     if a.output_schema.is_some()
         || a.system_prompt.is_some()
         || !a.append_system_prompt.is_empty()
@@ -64,6 +70,12 @@ pub(crate) fn schema() -> Result<oxa_core::output_schema::OutputSchema, OxaError
 /// for this preset, including on /reload. User shell escapes are also refused.
 pub(crate) struct LeadHooks;
 impl Hooks for LeadHooks {
+    fn owns_resources(&self) -> bool {
+        true
+    }
+    fn allows_goals(&self) -> bool {
+        false
+    }
     fn name(&self) -> &str {
         "builtin:lead-shadow"
     }
@@ -95,19 +107,19 @@ impl Hooks for LeadHooks {
 mod tests {
     use super::*;
 
-    #[test]
-    fn reload_keeps_ambient_templates_disabled() {
-        let env = oxa_fake::TestEnv::new();
+    fn session(
+        env: &oxa_fake::TestEnv,
+        store: Arc<oxa_session::MemStore>,
+        hooks: Vec<Arc<dyn Hooks>>,
+        how: oxa_core::Open,
+    ) -> Result<oxa_core::Session, OxaError> {
         let dirs = oxa_config::Dirs::under(env.root());
-        let prompts = dirs.agent_dir.join("prompts");
-        std::fs::create_dir_all(&prompts).unwrap();
-        std::fs::write(prompts.join("ambient.md"), "synthetic ambient template").unwrap();
-        let mut session = oxa_core::Session::open(
+        oxa_core::Session::open(
             oxa_core::Deps {
                 engine: Arc::new(oxa_fake::ScriptedEngine::new(vec![])),
-                store: Arc::new(oxa_session::MemStore::new()),
+                store,
                 tools: vec![],
-                hooks: vec![Arc::new(LeadHooks)],
+                hooks,
                 policy: Box::new(oxa_perm::ModePolicy::new()),
                 sandbox: Arc::new(oxa_sandbox::NoSandbox),
                 settings: oxa_config::Settings::default(),
@@ -121,6 +133,20 @@ mod tests {
                 session_id: None,
                 jobs: Arc::new(oxa_tools::JobRegistry::new()),
             },
+            how,
+        )
+    }
+
+    #[test]
+    fn reload_keeps_ambient_templates_disabled() {
+        let env = oxa_fake::TestEnv::new();
+        let prompts = oxa_config::Dirs::under(env.root()).agent_dir.join("prompts");
+        std::fs::create_dir_all(&prompts).unwrap();
+        std::fs::write(prompts.join("ambient.md"), "synthetic ambient template").unwrap();
+        let mut session = session(
+            &env,
+            Arc::new(oxa_session::MemStore::new()),
+            vec![Arc::new(LeadHooks)],
             oxa_core::Open::New,
         )
         .unwrap();
@@ -132,5 +158,40 @@ mod tests {
             )
             .unwrap();
         assert!(!session.commands().iter().any(|command| command.name == "ambient"));
+    }
+
+    #[test]
+    fn goals_remain_available_to_ordinary_sessions_but_not_shadow_presets() {
+        let env = oxa_fake::TestEnv::new();
+        let store = Arc::new(oxa_session::MemStore::new());
+        let goal = oxa_session::Goal::new("synthetic objective".into(), Default::default(), 1).unwrap();
+        let mut sink = oxa_proto::VecSink::default();
+        let mut ui = oxa_proto::HeadlessUi::default();
+        let mut ordinary =
+            session(&env, store.clone(), vec![Arc::new(NoHooks)], oxa_core::Open::New).unwrap();
+        ordinary.set_goal(Some(goal.clone()), &mut sink).unwrap();
+        ordinary.close(&mut ui);
+        let error = session(
+            &env,
+            store.clone(),
+            vec![Arc::new(LeadHooks)],
+            oxa_core::Open::Continue,
+        )
+        .err()
+        .expect("shadow must refuse a stored goal");
+        assert_eq!(error.code, codes::USAGE);
+        assert!(error.message.contains("goal"));
+        let resumed = session(&env, store, vec![Arc::new(NoHooks)], oxa_core::Open::Continue).unwrap();
+        assert_eq!(resumed.goal().unwrap(), goal);
+        let mut lead = session(
+            &env,
+            Arc::new(oxa_session::MemStore::new()),
+            vec![Arc::new(LeadHooks)],
+            oxa_core::Open::New,
+        )
+        .unwrap();
+        let error = lead.set_goal(Some(goal), &mut sink).unwrap_err();
+        assert_eq!(error.code, codes::USAGE);
+        assert!(lead.goal().is_none());
     }
 }
