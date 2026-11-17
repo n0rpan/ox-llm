@@ -228,6 +228,9 @@ impl Claims {
         }
         let _lock = self.lock(entry.number)?;
         let mut row = self.load(entry.number)?;
+        if self.established(entry.number)? {
+            self.mark(entry.number)?;
+        }
         if !authorize(&mut row)? {
             return Ok(None);
         }
