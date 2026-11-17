@@ -81,6 +81,9 @@ fn existing_branch_starts_at_its_pushed_head() {
     git(&env, &project(&env), &["checkout", "-b", "agent/test"]);
     commit_file(&env, "old.txt", "old version\n");
     let published = git(&env, &project(&env), &["rev-parse", "HEAD"]);
+    // The newest pushed commit drops the stale file the earlier checkout left,
+    // so the two trees differ in both directions of content.
+    git(&env, &project(&env), &["rm", "--quiet", "old.txt"]);
     commit_file(&env, "pushed.txt", "pushed version\n");
     let pushed = git(&env, &project(&env), &["rev-parse", "HEAD"]);
     git(&env, &project(&env), &["push", "--quiet", "origin", "agent/test"]);
