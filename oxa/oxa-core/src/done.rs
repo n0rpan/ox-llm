@@ -2,7 +2,9 @@
 //! A run that edited files (`edit` / `write` succeeded, or a `bash`, sub-agent, MCP or extension
 //! tool call changed the work folder) and is about to stop runs them in the session sandbox; a failure goes back to the model as a user
 //! message, at most [`MAX_ROUNDS`] times. An entry `in <dir>: <command>` runs in `<dir>`, a folder
-//! of the session folder, instead of in the session folder itself.
+//! of the session folder, instead of in the session folder itself. A command the shell cannot
+//! start (exit 127, not found; 126, not executable - a missing program or toolchain) is reported
+//! as `FAILED (not run)` and spends no repair round: no project edit makes it runnable.
 use crate::exec::CallResult;
 use crate::SessionState;
 use oxa_proto::{shown_why, AgentEvent, EntryBody, EventMessage, EventSink, ExecSpec, Level, OxaError, Ui};
@@ -203,17 +205,26 @@ pub(crate) fn check(
     }
     state.dirty = false;
     let _ = ui;
+    st.stats.done_unrunnable = false;
     let mut failed = String::new();
+    // A command the shell could not start is not repairable: the same entry fails the same way.
+    let mut any_unstarted = false;
     for cmd in &cmds {
         // A cancel stops the whole done phase: no further command, no notice, no repair text.
         if st.shared.cancel.is_cancelled() {
             return None;
         }
-        let (ok, line, out) = run_one(st, cmd);
+        let ran = run_one(st, cmd);
         if st.shared.cancel.is_cancelled() {
             return None;
         }
-        let mut text = line.clone();
+        let Ran {
+            ok,
+            unstarted,
+            line,
+            out,
+        } = ran;
+        let mut text = line;
         if !out.is_empty() {
             text.push('\n');
             text.push_str(&out);
@@ -231,18 +242,26 @@ pub(crate) fn check(
             text: text.clone(),
         });
         if !ok {
-            failed.push_str(&text);
-            failed.push_str("\n\n");
+            if unstarted {
+                any_unstarted = true;
+            } else {
+                failed.push_str(&text);
+                failed.push_str("\n\n");
+            }
         }
     }
     // A check may rewrite files (formatters, generators): that is not a model edit.
     if state.tree.is_some() {
         state.tree = tree_fingerprint(&st.cwd);
     }
-    // What print mode reads at the end: the last check round failed and nothing fixed it.
-    st.stats.done_failed = !failed.is_empty();
+    // A check that never started failed too: the source did not prove itself, and print mode
+    // says so instead of reporting a clean run.
+    st.stats.done_failed = !failed.is_empty() || any_unstarted;
     if failed.is_empty() {
         state.rounds = 0;
+        // Nothing the model writes makes the command runnable, so no repair round is spent on
+        // it: the shown notice stays and the run ends with the failed outcome.
+        st.stats.done_unrunnable = any_unstarted;
         return None;
     }
     if state.rounds >= MAX_ROUNDS {
@@ -319,8 +338,31 @@ fn single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Run one entry; returns (passed, header line, trimmed output).
-fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
+/// One `done` entry's result.
+struct Ran {
+    /// The check passed.
+    ok: bool,
+    /// The shell did not start the command (exit 127, not found; 126, not executable). Such a
+    /// failure says nothing about the project, so no repair round is spent on it.
+    unstarted: bool,
+    /// The header line of the notice.
+    line: String,
+    /// The trimmed tail of the command's output.
+    out: String,
+}
+
+impl Ran {
+    fn refused(label: &str, why: String) -> Self {
+        Self {
+            ok: false,
+            unstarted: false,
+            line: format!("done check: {label} FAILED (not run)"),
+            out: why,
+        }
+    }
+}
+
+fn run_one(st: &SessionState, entry: &str) -> Ran {
     let (dir, cmd) = parse_entry(entry);
     let label = match dir {
         Some(d) => format!("[{d}] {cmd}"),
@@ -336,15 +378,11 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
                 "cd -- {} || exit 111\n",
                 single_quote(&p.to_string_lossy())
             )),
-            Err(why) => return (false, format!("done check: {label} FAILED (not run)"), why),
+            Err(why) => return Ran::refused(&label, why),
         },
     };
     if cmd.is_empty() {
-        return (
-            false,
-            format!("done check: {label} FAILED (not run)"),
-            "no command after `:`".to_string(),
-        );
+        return Ran::refused(&label, "no command after `:`".to_string());
     }
     let shell = oxa_tools::ShellConfig {
         shell_path: st.settings.shell_path(&st.dirs.home),
@@ -354,7 +392,7 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
     // shell both start in the child folder.
     let command = match shell.command(cmd) {
         Ok(c) => format!("{}{c}", child.as_deref().unwrap_or("")),
-        Err(e) => return (false, format!("done check: {label} FAILED (not run)"), e),
+        Err(e) => return Ran::refused(&label, e),
     };
     let spec = ExecSpec {
         command,
@@ -367,17 +405,31 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
     let res = st.sandbox.run(&spec, &st.shared.cancel, &mut |_| {});
     let out = tail(&strip_ansi(&String::from_utf8_lossy(&res.output)));
     if res.exit == Some(0) && !res.timed_out {
-        return (true, format!("done check: {label} ok"), String::new());
+        return Ran {
+            ok: true,
+            unstarted: false,
+            line: format!("done check: {label} ok"),
+            out: String::new(),
+        };
     }
-    let why = if res.timed_out {
-        "timed out".to_string()
+    // The POSIX shell reports a command it could not start this way (127, not found; 126, not
+    // executable): a missing program or a toolchain absent from the sandbox PATH, which no
+    // project edit can fix.
+    let (why, unstarted) = if res.timed_out {
+        ("timed out".to_string(), false)
     } else {
         match res.exit {
-            Some(n) => format!("exit {n}"),
-            None => "killed".to_string(),
+            Some(127 | 126) => ("not run".to_string(), true),
+            Some(n) => (format!("exit {n}"), false),
+            None => ("killed".to_string(), false),
         }
     };
-    (false, format!("done check: {label} FAILED ({why})"), out)
+    Ran {
+        ok: false,
+        unstarted,
+        line: format!("done check: {label} FAILED ({why})"),
+        out,
+    }
 }
 
 fn tail(s: &str) -> String {

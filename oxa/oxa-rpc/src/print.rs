@@ -299,7 +299,7 @@ pub fn run_print_outcome(
                 sink.final_text = None;
             }
         }
-        explain_outcome(settled, &mut *sink.err);
+        explain_outcome(session, settled, &mut *sink.err);
         if stopping {
             outcome.include(RunOutcome::Interrupted);
             break;
@@ -394,7 +394,7 @@ pub fn run_json_outcome(
             return Ok(outcome);
         }
         after_run(session, &before, &mut ui, &mut Vec::new(), err);
-        explain_outcome(settled, err);
+        explain_outcome(session, settled, err);
         if session.handle().wrap_up_requested() || session.handle().interrupted() {
             outcome.include(RunOutcome::Interrupted);
             break;
@@ -405,10 +405,19 @@ pub fn run_json_outcome(
 
 /// The stderr line for a settled outcome the session classified from the run's state; the
 /// outcome itself is the session's, never worked out again here.
-fn explain_outcome(settled: RunOutcome, err: &mut dyn Write) {
+fn explain_outcome(session: &Session, settled: RunOutcome, err: &mut dyn Write) {
     match settled {
         RunOutcome::Failed("done_checks_failed") => {
-            let _ = writeln!(err, "done checks failed: the project's done commands still fail");
+            // A check the shell could not start says nothing about the source: say so instead
+            // of the generic failure, so the report does not read as a project defect.
+            if session.stats().done_unrunnable {
+                let _ = writeln!(
+                    err,
+                    "done checks could not be started: the command or its toolchain is missing (the source was not verified)"
+                );
+            } else {
+                let _ = writeln!(err, "done checks failed: the project's done commands still fail");
+            }
         }
         RunOutcome::Failed("output_limit") => {
             let _ = writeln!(
