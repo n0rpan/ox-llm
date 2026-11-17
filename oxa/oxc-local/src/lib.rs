@@ -9,6 +9,7 @@ pub mod launch_profile;
 pub mod lifecycle;
 pub mod memory;
 pub mod native;
+pub mod platform;
 
 pub mod queue;
 pub mod transport;
@@ -203,9 +204,7 @@ impl Supervisor {
         }
     }
 
-    /// Advances lifecycle, checking exit before health. Probe errors count as unhealthy.
-    /// Never retries a generation request. Caller must bound probe I/O time.
-    pub fn poll(&mut self, now: Instant, mut healthy: impl FnMut() -> io::Result<bool>) -> io::Result<State> {
+    pub(crate) fn reap(&mut self, now: Instant) -> io::Result<()> {
         if let Some(child) = self.child.as_mut() {
             if child.try_wait()?.is_some() {
                 // Clean up descendants even if the engine leader died first. Do this
@@ -218,6 +217,13 @@ impl Supervisor {
                 self.after_exit(now);
             }
         }
+        Ok(())
+    }
+
+    /// Advances lifecycle, checking exit before health. Probe errors count as unhealthy.
+    /// Never retries a generation request. Caller must bound probe I/O time.
+    pub fn poll(&mut self, now: Instant, mut healthy: impl FnMut() -> io::Result<bool>) -> io::Result<State> {
+        self.reap(now)?;
         match self.state {
             State::Backoff if now >= self.deadline => self.spawn(now)?,
             State::Starting | State::Ready => {

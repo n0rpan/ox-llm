@@ -41,10 +41,24 @@ pub struct LocalStatus {
 }
 trait Sample: Send + Sync {
     fn sample(&self) -> io::Result<MemorySample>;
+    fn child(&self, _pid: Option<u32>) -> io::Result<MemorySample> {
+        self.sample()
+    }
+    fn platform(&self) -> Option<Arc<dyn crate::platform::PlatformLauncher>> {
+        None
+    }
 }
 impl Sample for MemorySource {
     fn sample(&self) -> io::Result<MemorySample> {
         self.sample()
+            .map_err(|_| crate::platform::refused("host memory/PSI and cgroup v2 metadata readable"))
+    }
+    fn child(&self, pid: Option<u32>) -> io::Result<MemorySample> {
+        pid.map_or_else(|| self.sample(), |pid| self.sample_child(pid))
+    }
+    #[cfg(target_os = "linux")]
+    fn platform(&self) -> Option<Arc<dyn crate::platform::PlatformLauncher>> {
+        Some(Arc::new(crate::platform::LinuxLauncher(self.clone())))
     }
 }
 
@@ -162,7 +176,8 @@ impl LocalEngine {
                 return Err(invalid());
             }
         }
-        let lifecycle = Lifecycle::new(32, policy);
+        let mut lifecycle = Lifecycle::new(32, policy);
+        lifecycle.platform = source.platform();
         let status = snapshot(&lifecycle);
         let gate = lifecycle.requests();
         Ok(Self {
@@ -374,6 +389,11 @@ impl Engine for LocalEngine {
                     .and_then(|e| e.downcast_ref::<crate::lifecycle::AdmissionRefusal>())
                 {
                     OxaError::new(codes::ENGINE_DOWN, refusal.to_string())
+                } else if let Some(predicate) = error
+                    .get_ref()
+                    .and_then(|e| e.downcast_ref::<crate::platform::Predicate>())
+                {
+                    OxaError::new(codes::ENGINE_DOWN, predicate.to_string())
                 } else {
                     down()
                 }
@@ -400,18 +420,25 @@ impl Engine for LocalEngine {
                     let _ = state.lifecycle.unload(Instant::now());
                     state.target = None;
                     publish(&self.inner, &state.lifecycle);
-                    return Err(if error.kind() == io::ErrorKind::Unsupported {
-                        OxaError::new(
-                            codes::ENGINE_DOWN,
-                            concat!(
-                                "Local engine version mismatch; install matching oxe-server ",
-                                env!("CARGO_PKG_VERSION"),
-                                " beside oxa or set oxa.local.binary."
-                            ),
-                        )
-                    } else {
-                        down()
-                    });
+                    return Err(
+                        if let Some(predicate) = error
+                            .get_ref()
+                            .and_then(|e| e.downcast_ref::<crate::platform::Predicate>())
+                        {
+                            OxaError::new(codes::ENGINE_DOWN, predicate.to_string())
+                        } else if error.kind() == io::ErrorKind::Unsupported {
+                            OxaError::new(
+                                codes::ENGINE_DOWN,
+                                concat!(
+                                    "Local engine version mismatch; install matching oxe-server ",
+                                    env!("CARGO_PKG_VERSION"),
+                                    " beside oxa or set oxa.local.binary."
+                                ),
+                            )
+                        } else {
+                            down()
+                        },
+                    );
                 }
             }
             if state.lifecycle.status().state == State::Ready {
@@ -435,7 +462,7 @@ impl Engine for LocalEngine {
             request,
             &mut Monitor {
                 cancel,
-                memory: &mut || self.inner.source.sample(),
+                memory: &mut || self.inner.source.child(pid),
                 healthy: &mut || endpoint.health(pid, false),
             },
             on,
@@ -480,12 +507,13 @@ fn advance(inner: &Inner, state: &mut RuntimeState) -> io::Result<()> {
     let RuntimeState {
         lifecycle, endpoints, ..
     } = state;
+    lifecycle.reap(Instant::now())?;
     let status = lifecycle.status();
     let endpoint = status.model.and_then(|alias| endpoints.get(alias));
     let pid = status.pid;
     let starting = status.state == State::Starting;
     let result = lifecycle
-        .poll(Instant::now(), inner.source.sample(), || {
+        .poll(Instant::now(), inner.source.child(pid), || {
             endpoint.map_or(Ok(false), |e| e.health(pid, starting))
         })
         .map(|_| ());
