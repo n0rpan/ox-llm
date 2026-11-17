@@ -38,7 +38,7 @@ fn lost_pty_exits_promptly_with_hangup_status() {
     let env = TestEnv::new();
     let server = FakeServer::start(vec![ScriptTurn::text("unused")], FakeOpts::default()).unwrap();
     std::fs::write(
-        env.root().join(".oxa/agent/settings.json"),
+        env.home().join(".oxa/agent/settings.json"),
         r#"{"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}},"cacheWarming":"off","retry":{"enabled":false}}"#,
     )
     .unwrap();
