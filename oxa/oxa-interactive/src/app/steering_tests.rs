@@ -94,6 +94,17 @@ fn deps(env: &TestEnv, engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>, se
 }
 
 fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, rebind: bool) {
+    gated_prompt_with_cancel(window, instructions, follow_up, rebind, "ctrl+c", false);
+}
+
+fn gated_prompt_with_cancel(
+    window: Window,
+    instructions: Option<String>,
+    follow_up: bool,
+    rebind: bool,
+    cancel_key: &str,
+    settle_before_submit: bool,
+) {
     let env = TestEnv::new();
     let mut turns: Vec<_> = ["one", "two", "summary text", "three"]
         .into_iter()
@@ -241,8 +252,20 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         );
     }
     if window == Window::AfterExplicitAbort {
-        lp.input(&mut terminal, InputEvent::Key(Key::press("ctrl+c")));
+        lp.input(&mut terminal, InputEvent::Key(Key::press(cancel_key)));
     }
+    let mut worker = Some(worker);
+    let settled = if settle_before_submit {
+        assert!(window == Window::AfterExplicitAbort);
+        release_tx.send(()).unwrap();
+        let session = worker.take().unwrap().join().unwrap();
+        for message in out_rx.try_iter() {
+            lp.worker_msg(message);
+        }
+        Some(session)
+    } else {
+        None
+    };
     for c in "third".chars() {
         lp.input(&mut terminal, InputEvent::Key(Key::char(c)));
     }
@@ -251,8 +274,10 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         InputEvent::Key(Key::press(if follow_up { "alt+enter" } else { "enter" })),
     );
     let commands: Vec<_> = cmd_rx.try_iter().collect();
-    release_tx.send(()).unwrap();
-    let mut session = worker.join().unwrap();
+    let mut session = settled.unwrap_or_else(|| {
+        release_tx.send(()).unwrap();
+        worker.take().unwrap().join().unwrap()
+    });
     assert_eq!(
         commands.len(),
         1,
@@ -436,4 +461,22 @@ fn explicit_recovery_overtaken_by_rebind_returns_text_and_attachments() {
 #[test]
 fn explicit_follow_up_after_ctrl_c_is_not_stranded_before_settlement() {
     gated_prompt(Window::AfterExplicitAbort, None, true, false);
+}
+
+#[test]
+fn escape_and_ctrl_c_recover_next_input_on_both_sides_of_settlement() {
+    for cancel_key in ["ctrl+c", "escape"] {
+        for settle_before_submit in [false, true] {
+            for follow_up in [false, true] {
+                gated_prompt_with_cancel(
+                    Window::AfterExplicitAbort,
+                    None,
+                    follow_up,
+                    false,
+                    cancel_key,
+                    settle_before_submit,
+                );
+            }
+        }
+    }
 }
