@@ -512,7 +512,19 @@ fn bare_status_shows_the_current_sessions_view() {
     // The finished run is a fact of the status sidecar.
     assert!(row("turn").contains("outcome done"), "{:?}", row("turn"));
     assert!(row("turn").contains("phase finished"), "{:?}", row("turn"));
-    assert!(row("budget").contains("input 1"), "{:?}", row("budget"));
+    // The budget row is the sidecar's own counters, not a guess.
+    let snapshot = status(&env, &sref.id);
+    let tokens = &snapshot["tokens"];
+    for (name, value) in [
+        ("input", tokens["prompt"].as_u64().unwrap()),
+        ("output", tokens["completion"].as_u64().unwrap()),
+    ] {
+        assert!(
+            row("budget").contains(&format!("{name} {value}")),
+            "{name} {value}: {:?}",
+            row("budget")
+        );
+    }
     // A saved session has no live job registry, engine queue or engine endpoint; the view
     // says so instead of inventing a zero.
     for name in ["jobs", "queue", "engine", "child", "goal", "lead"] {
