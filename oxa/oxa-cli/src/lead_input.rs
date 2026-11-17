@@ -82,6 +82,9 @@ pub fn situation(path: &Path, uid: u32) -> Result<Snapshot> {
     file.take(MAX_SNAPSHOT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "cannot read situation")?;
+    if bytes.len() > MAX_SNAPSHOT_BYTES {
+        return Err("runner situation exceeds limit");
+    }
     Snapshot::from_json(&bytes).map_err(|_| "invalid runner situation")
 }
 
