@@ -1,16 +1,14 @@
-//! Landing plans only: acquisition, notification, retry receipts and GitHub writes
-//! remain with the existing board owner. No branch update is planned speculatively.
-use super::{Action, Entry};
+//! Landing decisions derived from a board snapshot and trusted queue observations.
+use super::{Action, Board, Entry};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Policy {
     pub enabled: bool,
 }
 
-/// The latest required review summaries, including reviews on older heads.
-/// Clear means no unresolved findings, not that approval requirements are met;
-/// the existing board's Ready action still supplies that gate. Adapters must
-/// consider every required review kind, not let a code review clear security.
+/// The latest review outcome for each required reviewer, including older heads.
+/// Clear only describes findings. The board supplies the independent approval gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LatestReviews {
     Unknown,
@@ -25,15 +23,25 @@ pub struct Rejection<'a> {
     /// Exact failing test names from the queue receipt, for the author's notice.
     pub failing_tests: &'a [&'a str],
     pub notified: bool,
-    /// The caller retains this receipt across subsequent rejection observations.
+    /// The caller retains the retry receipt across subsequent rejections.
     pub retry_used: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum Queue<'a> {
+    Unknown,
     Absent,
     Queued { since: u64 },
     Rejected(Rejection<'a>),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct Observation<'a> {
+    /// PR head at which the caller acquired these observations. Review findings
+    /// themselves may have been recorded on earlier heads.
+    pub head: &'a str,
+    pub reviews: LatestReviews,
+    pub queue: Queue<'a>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +50,7 @@ pub enum Next {
     HoldFindings,
     WaitReview,
     WaitBoard,
+    WaitQueue,
     AlreadyQueued,
     WaitNotification,
     WaitMain,
@@ -52,58 +61,98 @@ pub enum Next {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Plan {
+pub struct Notice<'a> {
+    pub head: &'a str,
+    pub failing_tests: &'a [&'a str],
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Plan<'a> {
     pub next: Next,
-    pub notify_rejection: bool,
+    pub notify_rejection: Option<Notice<'a>>,
     pub queue_alarm: bool,
 }
 
+impl Board {
+    /// Uses the board's observation time for the queue-age threshold. Missing
+    /// observations hold landing. Issue intake items have no landing decision.
+    pub fn plan_landing<'a>(
+        &self,
+        policy: Policy,
+        observations: &BTreeMap<u64, Observation<'a>>,
+        main: &str,
+    ) -> BTreeMap<u64, Plan<'a>> {
+        if !policy.enabled {
+            return BTreeMap::new();
+        }
+        self.entries
+            .iter()
+            .filter(|entry| !matches!(entry.action, Action::BuildIssue | Action::WaitIssue))
+            .map(|entry| {
+                let (reviews, queue) = observations
+                    .get(&entry.number)
+                    .filter(|facts| facts.head == entry.head)
+                    .map_or((LatestReviews::Unknown, Queue::Unknown), |facts| {
+                        (facts.reviews, facts.queue)
+                    });
+                (
+                    entry.number,
+                    policy.plan(entry, reviews, queue, main, self.observed_at),
+                )
+            })
+            .collect()
+    }
+}
+
 impl Policy {
-    /// `main` and `queue` must come from the same complete trusted snapshot as
-    /// `entry`. A plan is not a reservation: the owner must atomically revalidate
-    /// the head/main and record notification/retry before executing any write.
-    /// A rejection for another head requires explicit owner reconciliation.
-    pub fn plan(
+    /// A plan is read-only. Before execution the board owner must revalidate
+    /// the source facts and fence notification and retry with durable receipts.
+    pub fn plan<'a>(
         &self,
         entry: &Entry,
         reviews: LatestReviews,
-        queue: Queue<'_>,
+        queue: Queue<'a>,
         main: &str,
         now: u64,
-    ) -> Plan {
-        let mut plan = Plan {
-            next: Next::Disabled,
-            notify_rejection: false,
-            queue_alarm: false,
-        };
+    ) -> Plan<'a> {
         if !self.enabled {
-            return plan;
+            return Plan {
+                next: Next::Disabled,
+                notify_rejection: None,
+                queue_alarm: false,
+            };
         }
-        plan.notify_rejection = matches!(queue, Queue::Rejected(r) if !r.notified);
-        plan.queue_alarm = matches!(queue, Queue::Queued { since } if now.saturating_sub(since) > 45 * 60);
-        plan.next = if reviews == LatestReviews::Unresolved || entry.action == Action::FixFindings {
-            Next::HoldFindings
-        } else if reviews == LatestReviews::Unknown {
-            Next::WaitReview
-        } else if let Queue::Queued { .. } = queue {
-            Next::AlreadyQueued
-        } else if entry.action != Action::Ready || !entry.eligible {
-            Next::WaitBoard
-        } else {
-            match queue {
-                Queue::Absent => Next::Enqueue,
-                Queue::Queued { .. } => unreachable!(),
-                Queue::Rejected(r)
-                    if r.head != entry.head || r.head.is_empty() || r.main.is_empty() || main.is_empty() =>
-                {
-                    Next::WaitReconciliation
-                }
-                Queue::Rejected(r) if !r.notified => Next::WaitNotification,
-                Queue::Rejected(r) if r.retry_used => Next::RetryExhausted,
-                Queue::Rejected(r) if r.main == main => Next::WaitMain,
-                Queue::Rejected(_) => Next::Retry,
+        let notify_rejection = match queue {
+            Queue::Rejected(r) if !r.notified && !r.head.is_empty() && !r.failing_tests.is_empty() => {
+                Some(Notice {
+                    head: r.head,
+                    failing_tests: r.failing_tests,
+                })
             }
+            _ => None,
         };
-        plan
+        let next = match (reviews, queue) {
+            (LatestReviews::Unresolved, _) => Next::HoldFindings,
+            _ if entry.action == Action::FixFindings => Next::HoldFindings,
+            (LatestReviews::Unknown, _) => Next::WaitReview,
+            (_, Queue::Queued { .. }) => Next::AlreadyQueued,
+            _ if entry.action != Action::Ready || !entry.eligible => Next::WaitBoard,
+            (_, Queue::Unknown) => Next::WaitQueue,
+            (_, Queue::Absent) => Next::Enqueue,
+            (_, Queue::Rejected(r))
+                if r.head != entry.head || r.head.is_empty() || r.main.is_empty() || main.is_empty() =>
+            {
+                Next::WaitReconciliation
+            }
+            (_, Queue::Rejected(r)) if !r.notified => Next::WaitNotification,
+            (_, Queue::Rejected(r)) if r.retry_used => Next::RetryExhausted,
+            (_, Queue::Rejected(r)) if r.main == main => Next::WaitMain,
+            (_, Queue::Rejected(_)) => Next::Retry,
+        };
+        Plan {
+            next,
+            notify_rejection,
+            queue_alarm: matches!(queue, Queue::Queued { since } if now.saturating_sub(since) > 45 * 60),
+        }
     }
 }

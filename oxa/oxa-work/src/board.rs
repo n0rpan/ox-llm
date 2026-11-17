@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 mod claims;
 pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, ReleaseRecord};
 pub mod assignment;
-pub mod landing;
 mod intake;
+pub mod landing;
 pub use intake::{ImportState, Issue, Snapshot};
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
