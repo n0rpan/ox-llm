@@ -61,6 +61,12 @@ maintainer, who says in the PR when a hardware check is needed.
   daily-driver UI suite also runs ten stress rounds with four concurrent tests before the full gate. This extra
   job is skipped on PRs, merge groups and main pushes; manual runs can opt in with
   `nightly_oxa_arm: true`. Its cache is separate from x86 test and production ARM64 builds.
+- **Your own diff** is measured from where your branch left the fetched base, never from a local
+  branch: `git diff $(git merge-base origin/main HEAD)`, after `git fetch origin` when the fetched
+  base may be behind. A local `main` often lags `origin/main` (it is not updated by a fetch), and
+  diffing against it reports main's own progress as your change; a handful of edited files then
+  read as thousands and the real change is buried. If the merge base itself lags `origin/main`,
+  merge main into the branch before reporting the diff size.
 - **When a task is ambiguous,** open the PR as a draft with your question at the top instead of guessing.
 
 ## Build and test capacity (owner rule)
