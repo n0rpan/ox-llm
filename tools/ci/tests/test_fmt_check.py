@@ -217,7 +217,17 @@ class CallerWorkspace(unittest.TestCase):
         workspace = self.workspace(checkout / 'rust')
         member = workspace / 'crates/app/src'
         member.mkdir(parents=True)
+        (member.parent / 'Cargo.toml').write_text('[package]\nname = "member"\n')
         self.assertEqual(self.checked(script, member, env, log), workspace)
+
+    def test_standalone_package_checks_its_own_manifest(self):
+        checkout, script, env, log = self.checkout()
+        self.workspace(checkout / 'oxa')
+        package = checkout / 'standalone'
+        source = package / 'src'
+        source.mkdir(parents=True)
+        (package / 'Cargo.toml').write_text('[package]\nname = "standalone"\n')
+        self.assertEqual(self.checked(script, source, env, log), package)
 
     def test_checkout_root_falls_back_to_the_only_workspace(self):
         # The root of a repository holds no workspace itself, and the workspace folder is not

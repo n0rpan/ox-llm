@@ -166,6 +166,7 @@ const BASE: &[Entry] = &[
         usage: &[
             "oxa work <taskfile> [--rerun]",
             "oxa work --issue N --model MODEL [--rerun]",
+            "oxa work --pr N --model MODEL [--rerun]",
             "oxa work status [--json]",
             "oxa work board --shadow --repo OWNER/REPO --once",
         ],
@@ -203,9 +204,15 @@ const BASE: &[Entry] = &[
 const SHARE: &[Entry] = &[
     Entry {
         path: &["share"],
-        summary: "Manage private guest keys and daily limits",
-        usage: &["oxa share key <add|list|revoke>"],
+        summary: "Serve native local models and manage private guest keys",
+        usage: &["oxa share <serve|key>"],
         example: "oxa share key list",
+    },
+    Entry {
+        path: &["share", "serve"],
+        summary: "Serve selected native local models to authenticated guest devices",
+        usage: &["oxa share serve --model ALIAS [--model ALIAS] [--port PORT] [--bind ADDRESS] [--tailscale-socket PATH] [--same-owner]"],
+        example: "oxa share serve --model local-model --port 8080",
     },
     Entry {
         path: &["share", "key"],
@@ -278,12 +285,17 @@ pub fn text(path: &[&str]) -> Option<String> {
         })
 }
 
-/// Existing table's early CLI bridge; the shared #1062 registry will generate this route.
-pub(crate) fn from_argv(argv: &[String]) -> Option<Result<String, &'static str>> {
-    let argv = &argv[argv
+/// Supported global switches before a command do not require runtime construction.
+pub(crate) fn command_words(argv: &[String]) -> &[String] {
+    &argv[argv
         .iter()
         .take_while(|word| word.as_str() == "--offline")
-        .count()..];
+        .count()..]
+}
+
+/// Existing table's early CLI bridge; the shared #1062 registry will generate this route.
+pub(crate) fn from_argv(argv: &[String]) -> Option<Result<String, &'static str>> {
+    let argv = command_words(argv);
     let (name, words) = argv.split_first()?;
     if name == "help" {
         let path: Vec<_> = words.iter().map(String::as_str).collect();
