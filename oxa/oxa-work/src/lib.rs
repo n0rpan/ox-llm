@@ -24,6 +24,7 @@ pub type Result<T> = std::result::Result<T, String>;
 // Lead facts consume public observations and never open runner task-state files.
 pub mod events;
 mod facts_io;
+pub use facts_io::require_private_directory;
 pub mod incidents;
 pub mod situation;
 

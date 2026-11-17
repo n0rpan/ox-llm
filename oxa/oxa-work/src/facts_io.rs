@@ -25,6 +25,12 @@ fn private(metadata: &fs::Metadata, directory: bool) -> Result<()> {
     Ok(())
 }
 
+/// Require an existing owner-only directory; a symlink is not a directory proof.
+pub fn require_private_directory(path: &Path) -> Result<()> {
+    let metadata = io(fs::symlink_metadata(path), "cannot inspect private directory")?;
+    private(&metadata, true)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct Root(PathBuf);
 impl Root {
