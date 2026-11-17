@@ -516,6 +516,28 @@ fn real_a_rustup_toolchain_without_shims_runs_cargo() {
     assert!(!evil.exists());
 }
 
+/// The layout the project's own `done` check hit: the session home is a directory of its own,
+/// the toolchain lives in the account home, and the user exposed that toolchain read-only with
+/// `oxa.sandbox.readPaths`. The bind shows it; without its `bin` on `PATH` the check ran as
+/// "cargo: command not found" although the toolchain was installed and visible.
+#[test]
+fn real_a_toolchain_exposed_by_read_paths_runs_cargo() {
+    let env = TestEnv::new();
+    exe(&env, "toolchain/1.0.0/bin/cargo", "#!/bin/sh\necho cargo-ran\n");
+    let toolchain = env.root().join("toolchain/1.0.0");
+    let layout = Layout::build(&LayoutInputs {
+        home: env.home(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin:/bin".into(),
+        read_extra: vec![toolchain.clone()],
+        ..Default::default()
+    });
+    let Some(b) = real(&env, layout) else { return };
+    let (exit, out) = run(&b, "command -v cargo && cargo", &env.work());
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(out.contains("cargo-ran"), "{out}");
+}
+
 #[test]
 fn real_toolchains_under_home_run() {
     let env = TestEnv::new();
