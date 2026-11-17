@@ -159,6 +159,8 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // Read-only lead shadow preset; user settings only, default off.
+    key("oxa.lead.shadow", Kind::Bool, "false"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
     key("oxa.local", Kind::Object, "{}"),
     key("oxa.maxTurns", Kind::Number, "null"),

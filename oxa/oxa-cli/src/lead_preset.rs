@@ -4,6 +4,7 @@ use oxa_proto::{codes, CommandSpec, HookPoint, HookReply, Hooks, NoHooks, OxaErr
 use std::sync::Arc;
 
 pub(crate) const READ_TOOLS: &[&str] = &["read", "grep", "find", "ls"];
+pub(crate) const SETTING: &str = "oxa.lead.shadow";
 const SCHEMA: &str = include_str!("../../docs/lead-proposals.schema.json");
 
 pub(crate) fn apply(a: &mut Args) -> Result<(), OxaError> {
@@ -21,13 +22,15 @@ pub(crate) fn apply(a: &mut Args) -> Result<(), OxaError> {
         ));
     }
     if a.output_schema.is_some()
+        || a.system_prompt.is_some()
+        || !a.append_system_prompt.is_empty()
         || !a.extensions.is_empty()
         || !a.skills.is_empty()
         || !a.prompt_templates.is_empty()
     {
         return Err(OxaError::new(
             codes::USAGE,
-            "The lead shadow preset owns its schema and executable resources",
+            "The lead shadow preset owns its instructions, schema and executable resources",
         ));
     }
     if a.tools

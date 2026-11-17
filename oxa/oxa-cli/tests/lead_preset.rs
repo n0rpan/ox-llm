@@ -43,6 +43,8 @@ fn shadow_is_explicit_and_cannot_add_executable_resources() {
         vec!["lead", "--shadow", "--extension", "evil.js"],
         vec!["lead", "--shadow", "--skill", "other.md"],
         vec!["lead", "--shadow", "--output-schema", "other.json"],
+        vec!["lead", "--shadow", "--system-prompt", "override"],
+        vec!["lead", "--shadow", "--append-system-prompt", "override"],
     ] {
         assert!(parse(&args).is_err(), "{args:?}");
     }
@@ -58,7 +60,7 @@ fn real_print_preset_refuses_write_and_keeps_read_tools_on_continue() {
     env.write("work/evidence.txt", "synthetic bounded observation");
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"codemode":{"enabled":true},"oxa":{"subagent":{"enabled":true}}}"#,
+        r#"{"codemode":{"enabled":true},"oxa":{"lead":{"shadow":true},"subagent":{"enabled":true}}}"#,
     );
     let server = FakeServer::start(
         vec![
@@ -116,6 +118,10 @@ fn real_print_preset_refuses_write_and_keeps_read_tools_on_continue() {
 #[test]
 fn rpc_shell_escape_is_blocked_without_starting_a_process() {
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"lead":{"shadow":true}}}"#,
+    );
     let server = FakeServer::start(Vec::new(), FakeOpts::default()).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["lead", "--shadow", "--mode", "rpc", "--no-session"])
@@ -142,6 +148,10 @@ fn rpc_shell_escape_is_blocked_without_starting_a_process() {
 #[test]
 fn embedded_shadow_schema_repairs_an_unbound_action() {
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"lead":{"shadow":true}}}"#,
+    );
     let server = FakeServer::start(
         vec![
             ScriptTurn::text(r#"{"mode":"shadow","as_of_seq":0,"proposals":[{"action":"merge"}]}"#),
