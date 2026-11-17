@@ -479,6 +479,61 @@ fn real_toolchains_under_home_run() {
     assert!(!env.home().join(".cargo/bin/evil").exists());
 }
 
+/// A rustup install whose shims are missing: only `~/.rustup/toolchains/<name>/bin` holds
+/// `cargo`, which the sandbox binds read-only, so a `done` check such as
+/// `cargo fmt --check` runs it instead of reporting the program as missing.
+#[test]
+fn real_a_rustup_toolchain_without_shims_runs_cargo() {
+    let env = TestEnv::new();
+    exe(
+        &env,
+        "home/.rustup/toolchains/pinned/bin/cargo",
+        "#!/bin/sh\necho \"cargo from $(cat \"$HOME/.rustup/toolchains/pinned/version\")\"\n",
+    );
+    env.write("home/.rustup/toolchains/pinned/version", "1.0.0-test");
+    let home = env.home();
+    let layout = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin:/bin".into(),
+        ..Default::default()
+    });
+    let Some(b) = real(&env, layout) else { return };
+    let (exit, out) = run(&b, "command -v cargo && cargo", &env.work());
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(out.contains("cargo from 1.0.0-test"), "{out}");
+    // The toolchain stays read-only.
+    let (exit, _) = run(&b, "touch \"$HOME/.rustup/toolchains/pinned/bin/evil\"", &env.work());
+    assert_ne!(exit, Some(0));
+    assert!(!home.join(".rustup/toolchains/pinned/bin/evil").exists());
+}
+
+/// The session home is a directory of its own, so the account home (and the toolchain under
+/// it) stays masked; the user exposed the pinned toolchain read-only with
+/// `oxa.sandbox.readPaths`. The bind shows it, and its `bin` is on `PATH`, so the project's
+/// `done` check runs `cargo` instead of reporting "cargo: command not found".
+#[test]
+fn real_a_toolchain_exposed_by_read_paths_runs_cargo() {
+    let env = TestEnv::new();
+    exe(&env, "toolchain/1.0.0/bin/cargo", "#!/bin/sh\necho cargo-ran\n");
+    let toolchain = env.root().join("toolchain/1.0.0");
+    let layout = Layout::build(&LayoutInputs {
+        home: env.home(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin:/bin".into(),
+        read_extra: vec![toolchain.clone()],
+        ..Default::default()
+    });
+    let Some(b) = real(&env, layout) else { return };
+    let (exit, out) = run(&b, "command -v cargo && cargo", &env.work());
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(out.contains("cargo-ran"), "{out}");
+    // The toolchain stays read-only.
+    let (exit, _) = run(&b, &format!("touch {}/bin/evil", toolchain.display()), &env.work());
+    assert_ne!(exit, Some(0));
+    assert!(!toolchain.join("bin/evil").exists());
+}
+
 #[test]
 fn real_denied_files_are_neither_readable_nor_writable() {
     let env = TestEnv::new();

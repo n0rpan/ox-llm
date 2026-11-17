@@ -461,6 +461,117 @@ mod tests {
         assert!(!l.env.iter().any(|(k, _)| k == "OXA_BIN"));
     }
 
+    /// A Rust toolchain installed under the home (`~/.cargo/bin`, mise's shims, `go/bin`) is
+    /// bound read-only already, but only a login shell's profile puts it on `PATH`. A run that
+    /// never read that profile (an agent session) then approached the project's
+    /// `cargo fmt --check` as `cargo: command not found`.
+    #[test]
+    fn installed_toolchain_directories_are_on_the_sandbox_path() {
+        let root = std::env::temp_dir().join(format!("oxa-toolpath-{}", std::process::id()));
+        let home = root.join("home");
+        let mut dirs = Vec::new();
+        for (rel, name) in [
+            (".cargo/bin", "cargo"),
+            (".local/share/mise/shims", "mise"),
+            ("go/bin", "gopls"),
+        ] {
+            std::fs::create_dir_all(home.join(rel)).unwrap();
+            std::fs::write(home.join(rel).join(name), "x").unwrap();
+            dirs.push(home.join(rel).display().to_string());
+        }
+        let Layout { path, read, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: "/usr/bin:/bin".into(),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        let base = path.iter().position(|p| p == "/usr/bin").expect("base PATH");
+        for dir in &dirs {
+            let at = path.iter().position(|p| p == dir);
+            assert!(at.is_some(), "{dir} is not on the sandbox PATH: {path:?}");
+            // An installed tool never shadows a program the path already finds.
+            assert!(at.unwrap() > base, "{dir} must come after /usr/bin: {path:?}");
+            assert_eq!(path.iter().filter(|p| *p == dir).count(), 1, "{path:?}");
+        }
+        // What the PATH names is what the argv shows read-only, so a command can run it.
+        assert!(read.contains(&home.join(".cargo/bin")), "{read:?}");
+        assert!(read.contains(&home.join(".local/share/mise")), "{read:?}");
+        assert!(read.contains(&home.join("go/bin")), "{read:?}");
+    }
+
+    /// The session home is a directory of its own, so the account home stays masked; the user
+    /// exposed the pinned toolchain read-only (`oxa.sandbox.readPaths`). The bind shows it, so
+    /// its `bin` belongs on the `PATH` the command gets.
+    #[test]
+    fn a_toolchain_exposed_by_read_paths_is_on_the_sandbox_path() {
+        let root = std::env::temp_dir().join(format!("oxa-exposed-{}", std::process::id()));
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let toolchain = root.join("toolchain/1.0.0");
+        std::fs::create_dir_all(toolchain.join("bin")).unwrap();
+        std::fs::write(toolchain.join("bin/cargo"), "x").unwrap();
+        let Layout { path, read, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: "/usr/bin:/bin".into(),
+            read_extra: vec![toolchain.clone()],
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        let shown = toolchain.join("bin").display().to_string();
+        assert!(path.contains(&shown), "{path:?}");
+        // The directory the PATH names is the one the argv binds read-only.
+        assert!(read.contains(&toolchain), "{read:?}");
+    }
+
+    /// A rustup install whose shims are missing: only `~/.rustup/toolchains/<name>/bin` holds
+    /// `cargo`, and the sandbox binds that read-only, so the check can run it.
+    #[test]
+    fn a_rustup_toolchain_without_shims_is_on_the_sandbox_path() {
+        let root = std::env::temp_dir().join(format!("oxa-rustup-{}", std::process::id()));
+        let home = root.join("home");
+        let bin = home.join(".rustup/toolchains/pinned/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("cargo"), "x").unwrap();
+        // A toolchain without a `cargo` is not offered.
+        std::fs::create_dir_all(home.join(".rustup/toolchains/empty/bin")).unwrap();
+        let Layout { path, read, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: "/usr/bin:/bin".into(),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(path.contains(&bin.display().to_string()), "{path:?}");
+        assert!(
+            !path
+                .iter()
+                .any(|p| p.ends_with(".rustup/toolchains/empty/bin")),
+            "{path:?}"
+        );
+        assert!(read.contains(&home.join(".rustup")), "{read:?}");
+    }
+
+    /// A `cargo` the inherited PATH already finds keeps its place and is not joined by a
+    /// toolchain discovered later, so nothing shadows the user's own tool.
+    #[test]
+    fn a_cargo_on_the_path_keeps_the_toolchain_bins_off() {
+        let root = std::env::temp_dir().join(format!("oxa-cargopath-{}", std::process::id()));
+        let home = root.join("home");
+        let bin = home.join(".cargo/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("cargo"), "x").unwrap();
+        let rustup = home.join(".rustup/toolchains/pinned/bin");
+        std::fs::create_dir_all(&rustup).unwrap();
+        std::fs::write(rustup.join("cargo"), "x").unwrap();
+        let Layout { path, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: format!("{}:/usr/bin:/bin", bin.display()),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(path.first(), Some(&bin.display().to_string()), "{path:?}");
+        assert!(!path.contains(&rustup.display().to_string()), "{path:?}");
+    }
+
     #[test]
     fn secret_names_are_recognised() {
         for k in [
