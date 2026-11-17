@@ -74,6 +74,7 @@ fn existing_branch_fast_forwards_to_base_before_agent() {
         &["merge-base", "--is-ancestor", "main", "agent/test"],
     );
 }
+
 #[test]
 fn fresh_worktree_starts_at_the_published_task_branch_head() {
     let env = TestEnv::new();
@@ -92,11 +93,36 @@ fn fresh_worktree_starts_at_the_published_task_branch_head() {
         "from the pull request\n"
     );
     assert_eq!(git(&env, &project(&env), &["rev-parse", "agent/test"]), pushed);
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), pushed);
     assert_eq!(
-        git(&env, &project(&env), &["symbolic-ref", "--quiet", "HEAD"]),
+        git(&env, tree(&record), &["symbolic-ref", "--quiet", "HEAD"]),
         "refs/heads/agent/test"
     );
-    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), pushed);
+    // The source checkout stays where it was; only the task worktree moves.
+    assert_eq!(
+        git(&env, &project(&env), &["symbolic-ref", "--quiet", "HEAD"]),
+        "refs/heads/main"
+    );
+}
+
+#[test]
+fn unrelated_published_tip_keeps_the_base() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    // An orphan commit shares no history with the captured base, so it is not
+    // proof that the pushed branch continues this task.
+    git(&env, &project(&env), &["checkout", "--orphan", "agent/test"]);
+    commit_file(&env, "unrelated.txt", "from an unrelated history\n");
+    git(&env, &project(&env), &["push", "origin", "agent/test"]);
+    git(&env, &project(&env), &["checkout", "main"]);
+    git(&env, &project(&env), &["branch", "-D", "agent/test"]);
+    git(&env, &project(&env), &["fetch", "origin"]);
+    let base = git(&env, &project(&env), &["rev-parse", "main"]);
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), base);
+    assert!(!tree(&record).join("unrelated.txt").exists());
+    assert_eq!(git(&env, &project(&env), &["rev-parse", "agent/test"]), base);
 }
 
 #[test]

@@ -88,11 +88,15 @@ pub(crate) fn validate(policy: &RunPolicy, repo: &Path, tree: &Path, task: &Task
 /// over the base. Returns whether the local branch was created, so the caller
 /// attaches the worktree to it instead of creating the ref a second time.
 fn adopt_published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &str) -> Result<bool> {
-    let base_sha = checked(git(
+    let base_sha = match output(git(
         policy,
         repo,
-        &["rev-parse", "--verify", &format!("{base}^{{commit}}")],
-    ))?;
+        &["rev-parse", "--verify", "--quiet", &format!("{base}^{{commit}}")],
+    ))? {
+        // An unresolvable base is left to the ordinary path, which reports it.
+        out if !out.status.success() => return Ok(false),
+        out => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+    };
     let pattern = format!("refs/remotes/*/{branch}");
     let tracking = checked(git(
         policy,
@@ -129,8 +133,12 @@ fn adopt_published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &st
     let [tip] = heads.as_slice() else {
         return Ok(false);
     };
-    // The branch does not exist yet, so only a zero old value can match.
-    let created = "0".repeat(40);
+    // The branch does not exist yet, so only a zero old value can match; the
+    // zero width follows the repository's hash algorithm.
+    let created = checked(git(policy, repo, &["hash-object", "--stdin"]))?
+        .chars()
+        .map(|_| '0')
+        .collect::<String>();
     let updated = output(git(
         policy,
         repo,
@@ -143,10 +151,9 @@ fn adopt_published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &st
             &created,
         ],
     ))?;
-    if !updated.status.success() {
-        return Err(String::from_utf8_lossy(&updated.stderr).into());
-    }
-    Ok(true)
+    // A ref that appeared in the meantime is not an error: the caller then
+    // falls back to the existing branch, which is what it would have used.
+    Ok(updated.status.success())
 }
 
 pub(crate) fn prepare(
