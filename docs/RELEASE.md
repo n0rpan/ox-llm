@@ -1,7 +1,8 @@
 # v0.2.1 Rust-only release qualification
 
 The owner checklist is [#763](https://github.com/oxstack/ox-llm/issues/763).
-v0.2.1 installs `oxa` and `oxe-server` only. Both Rust workspaces must report
+v0.2.1 installs native `oxa`, `oxe-server` and the approved
+`local-ai-memlat-boot` utility with four inert MEMLAT templates. Both Rust workspaces must report
 component version 0.2.1; the native engine identity contract stays strict.
 v0.2.0 remains the legacy install.
 The new runtime has no Python controller payload/dependency, `oxc` wrapper,
@@ -15,10 +16,35 @@ read-only permissions and no credentials. ARM keeps the existing Oryon/ARMv8.6
 flags; x86_64 keeps the baseline CPU target. No numerical flag or hardware claim
 changes here. No weights or vendor SDK are bundled.
 
+## v0.2.1 Rust-only upgrade boundary
+
+The v0.2.1 release target (#763) installs native `oxa` and `oxe-server`, retaining
+the approved native MEMLAT utility and four inert templates, with
+native cloud/local selection: no Python runtime dependency, Python payload,
+`oxc`/diagnostics wrappers, controller daemon or service on port 8092. Packaging
+must qualify that exact artifact; historical v0.2.0 recipes are not evidence
+that the native release is ready. See [native install and upgrade](NATIVE-INSTALL.md)
+for the owner-facing v0.2.0 upgrade procedure.
+
+Keep provider keys in `~/.config/oxc/llm/cloud-secrets.json` and the compatible
+ChatGPT token in `~/.config/oxc/llm/chatgpt-auth.json`, under the same user HOME.
+Reuse them in place, retaining the refresh lock and private permissions. Do not
+require reauthentication, credential export/import, a Python migration command
+or deletion of user state merely to upgrade. Invalid/revoked credentials still
+need normal owner recovery. Sessions and caches may start cold; credential
+compatibility does not promise session, cache or usage-ledger migration.
+
+The release qualification record must identify the v0.2.1 artifact commit and
+checksums, native install/default-config checks and exact-artifact no-Python
+proof. Existing legacy services/launchers must not be mistaken for the new
+runtime. Clean-HOME proofs use synthetic credentials and mocks; an owner's real
+upgrade preserves existing private files. No release clearance, publishing or
+hardware qualification follows from this note. The sections below describe native v0.2.1 qualification.
+
 ## Artifact and package gates
 
-The workflow builds twice in different directories, stages the same two native
-commands, normalises archive metadata and compares complete tarball bytes. The
+The workflow builds twice in different directories, stages the same native
+commands and inert templates, normalises archive metadata and compares complete tarball bytes. The
 locked Cargo/licence inventory and CycloneDX SBOM retain shipped file hashes and
 explicitly describe their build/test dependency scope. SHA256SUMS covers the
 archives and metadata.
