@@ -49,7 +49,7 @@ Remaining deletion users differ from release blockers: controller CI and the two
 
 ## Python alert-file retirement audit
 
-At source `7e6e4b04`, the historical Python alert rows 5–13 in [the tracked triage](security/code-scanning-triage.md) identify **four unique files**, including the extensionless Studio entry point. The worker App cannot read current alert state (403); this maps the recorded IDs, not a new open-alert export or security verdict. These rows authorize no deletion or dismissal.
+At source `7e6e4b04`, the Python alert rows 5–13 in [the tracked triage](security/code-scanning-triage.md) identify **four unique files**, including the extensionless Studio entry point. The supplied operator open-alert export confirms all nine IDs/locations below: 19 total rows, nine Python rows, file SHA-256 `97f9209b44aae1c1f16bf6bd88a818ba6c28706b536c93b415607e94120daeca`. The worker App still lacks alert-read permission; this is snapshot evidence, not a live API query or a new security verdict. These rows authorize no deletion or dismissal.
 
 | File / bounded feature | Recorded alerts | Status | Replacement or retirement evidence; remaining deletion gate |
 |---|---|---|---|
@@ -58,7 +58,21 @@ At source `7e6e4b04`, the historical Python alert rows 5–13 in [the tracked tr
 | `oxc/tools/session_replay.py` — HTTP recording, equal-work replay, comparison and summaries | 8, 9, 10 | MISSING | [Module blocker #1119](https://github.com/oxstack/ox-llm/issues/1119). `test_session_replay.py`, `test_session_replay_output_proof.py` and `oxc/docs/HARNESSES.md` retain this workflow. Native conversation continuation is not an equal-work recording/replay replacement. Preserve the retained contracts or record explicit retirement before deletion. |
 | `oxc/tools/interim/recording_proxy.py` — metadata recorder and listener-ownership helpers | 6, 7 | MISSING | [Module blocker #1120](https://github.com/oxstack/ox-llm/issues/1120). `oxc/tools/interim/real_use_session.py`, `test_interim_adapters.py` and `test_explore1_observer.py` import it. These executable callers prevent UNUSED; no equivalent Rust consumer/test receipt was identified. |
 
-MISSING blocks only the named module's deletion. None of these four files is marked PORTED or UNUSED, and none is deleted. The separate module blockers do not add a v0.2.1 feature promise.
+The operator export's per-alert mapping is:
+
+| Alert | Rule | Severity | Exported location | File disposition |
+|---|---|---|---|---|
+| 5 | py/http-response-splitting | medium | `oxc/src/oxc/runtime/ctl_http.py:173` | DROPPED default controller front; callers still gate deletion |
+| 6 | py/http-response-splitting | medium | `oxc/tools/interim/recording_proxy.py:154` | MISSING #1120 |
+| 7 | py/http-response-splitting | medium | `oxc/tools/interim/recording_proxy.py:154` | MISSING #1120 |
+| 8 | py/http-response-splitting | medium | `oxc/tools/session_replay.py:370` | MISSING #1119 |
+| 9 | py/http-response-splitting | medium | `oxc/tools/session_replay.py:370` | MISSING #1119 |
+| 10 | py/http-response-splitting | medium | `oxc/tools/session_replay.py:374` | MISSING #1119 |
+| 11 | py/path-injection | high | `oxc/src/oxc/runtime/studio:309` | MISSING #1118 |
+| 12 | py/path-injection | high | `oxc/src/oxc/runtime/studio:309` | MISSING #1118 |
+| 13 | py/path-injection | high | `oxc/src/oxc/runtime/studio:311` | MISSING #1118 |
+
+MISSING blocks only the named module's deletion. None of these four files is marked PORTED or UNUSED, and none is deleted. The separate module blockers do not add a v0.2.1 feature promise. The export does not establish any alert fixed or dismissed; all nine are open in that supplied snapshot.
 
 ### Installed payload versus build-source archive
 
