@@ -264,6 +264,10 @@ pub(crate) struct Loop<'a> {
     /// [`WorkerMsg::JobsHandle`]). `/jobs` and the HUD count read it live, so they work while
     /// a run is in progress and follow a job that finishes while the session is idle.
     jobs: Option<Arc<oxa_core::JobRegistry>>,
+    /// #865: the running-job count of the last frame. The HUD count is sampled while drawing,
+    /// and a job that exits on its own sends no UI event, so [`Loop::tick`] compares the
+    /// registry against this and repaints when it moved.
+    jobs_running: usize,
     inbox: Option<oxa_session::Inbox>,
     files: Option<FileIndex>,
     /// Images pasted for the next prompt.
@@ -414,6 +418,7 @@ impl<'a> Loop<'a> {
             model_answered: false,
             session: SessionInfo::default(),
             jobs: None,
+            jobs_running: 0,
             inbox: None,
             files: None,
             pending_parts: Vec::new(),
@@ -1075,6 +1080,17 @@ impl<'a> Loop<'a> {
         } else {
             animating
         };
+        // #865: a background job that exits on its own emits no UI event, and the HUD count is
+        // sampled while drawing, so the frame would keep showing the old count until something
+        // else repainted. Notice the change here and repaint. (The idle wait is 250 ms, so the
+        // count drops within a frame of the job settling.)
+        if let Some(jobs) = self.jobs.as_ref() {
+            let running = jobs.running();
+            if running != self.jobs_running {
+                self.jobs_running = running;
+                self.dirty = true;
+            }
+        }
         if self.dialogs.tick(now_ms()) || animating || self.arcade.take_expired(now_ms()) {
             self.dirty = true;
         }

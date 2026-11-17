@@ -63,3 +63,31 @@ fn jobs_lists_stops_and_counts_in_the_hud() {
     rig.slash("/jobs stop job-9");
     rig.pty.wait_for_text("Unknown job: job-9").unwrap();
 }
+
+/// #865: a job that exits on its own while the session is idle emits no UI event at all. The
+/// HUD count is sampled while drawing, so the loop itself has to notice the job settling and
+/// repaint; nothing is typed and nothing is stopped here.
+#[test]
+fn hud_count_drops_when_a_job_exits_while_idle() {
+    let env = TestEnv::new();
+    let script = vec![
+        ScriptTurn::tool("c1", "bash", r#"{"command":"sleep 8","background":true}"#),
+        ScriptTurn::text("job started"),
+    ];
+    let rig = Rig::start_in(
+        env,
+        script,
+        RigOpts {
+            size: (30, 140),
+            env: vec![("OXA_SKIN".to_string(), "oxa".to_string())],
+            ..RigOpts::default()
+        },
+    );
+    rig.pty.wait_for_text("OXA │").unwrap();
+
+    rig.prompt("start a short job", "job started");
+    // The job is running and the session is idle: the HUD counts it.
+    rig.pty.wait_for_text("JOBS 1").unwrap();
+    // No input from here on: the job's own exit must drop the count on screen.
+    rig.pty.wait_for_text_gone("JOBS 1").unwrap();
+}
