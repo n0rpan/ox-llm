@@ -203,7 +203,7 @@ pub trait Engine: Send + Sync {
     fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError>;
     /// Observed local child policy without I/O; empty model means the resident child.
     /// Remote engines return None.
-    fn local_memory_status(&self, _model: &str) -> Option<(u32, &'static str)> {
+    fn local_memory_status(&self, _model: &str) -> Option<(u32, &'static str, u64)> {
         None
     }
     /// One warning line when the server advertises a newer protocol than this oxa understands,

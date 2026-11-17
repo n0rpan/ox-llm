@@ -194,9 +194,10 @@ impl StatusWriter {
             record["last_billing"] = billing.record();
         }
         if let Some(engine) = self.local_policy.as_ref() {
-            if let Some((pid, policy)) = engine.upgrade().and_then(|e| e.local_memory_status("")) {
+            if let Some((pid, policy, micros)) = engine.upgrade().and_then(|e| e.local_memory_status("")) {
                 record["local_memory_policy"] = policy.into();
                 record["local_engine_pid"] = pid.into();
+                record["local_launcher_us"] = micros.into();
             }
         }
         let bytes = serde_json::to_vec(&record)?;
@@ -450,6 +451,7 @@ pub(crate) fn run(
         if parent.is_none() || !owned || !safe || !scope {
             value.as_object_mut().unwrap().remove("local_memory_policy");
             value.as_object_mut().unwrap().remove("local_engine_pid");
+            value.as_object_mut().unwrap().remove("local_launcher_us");
         }
     }
     value["stalled"] = value["stall_deadline_ms"]

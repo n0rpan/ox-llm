@@ -101,7 +101,7 @@ impl Engine for Routed {
         }
         Err(failure.unwrap_or_else(|| OxaError::new(codes::INVALID, "No configured native models.")))
     }
-    fn local_memory_status(&self, model: &str) -> Option<(u32, &'static str)> {
+    fn local_memory_status(&self, model: &str) -> Option<(u32, &'static str, u64)> {
         if model.is_empty() {
             self.local.as_ref().ok()?.local_memory_status("")
         } else {

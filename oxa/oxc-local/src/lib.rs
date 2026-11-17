@@ -77,6 +77,7 @@ pub struct Supervisor {
     state: State,
     deadline: Instant,
     next_health: Instant,
+    pub(crate) launch_started: Instant,
     bad_health: u32,
     restarts: u32,
     wanted: bool,
@@ -105,6 +106,7 @@ impl Supervisor {
             state: State::Stopped,
             deadline: now,
             next_health: now,
+            launch_started: now,
             bad_health: 0,
             restarts: 0,
             wanted: false,
@@ -135,6 +137,7 @@ impl Supervisor {
     }
 
     fn spawn(&mut self, now: Instant) -> io::Result<()> {
+        self.launch_started = Instant::now();
         let gated = self
             .platform
             .as_ref()

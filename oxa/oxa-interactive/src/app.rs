@@ -782,7 +782,7 @@ fn session_info(s: &Session) -> SessionInfo {
         id: state.session_id,
         commands: s.commands(),
         engine_url: match s.inner().engine.local_memory_status(&state.model) {
-            Some((_, policy)) => format!("{} ({policy})", info.base_url),
+            Some((_, policy, _)) => format!("{} ({policy})", info.base_url),
             None => info.base_url.clone(),
         },
         models,

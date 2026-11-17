@@ -249,6 +249,7 @@ pub struct Lifecycle {
     retain_ready: bool,
     guard: Option<Guard>,
     scope: Option<String>,
+    pub(crate) launcher_micros: u64,
     clock: Arc<Mutex<Clock>>,
     policy: Policy,
     stop_reason: Option<StopReason>,
@@ -267,6 +268,7 @@ impl Lifecycle {
             retain_ready: false,
             guard: None,
             scope: None,
+            launcher_micros: 0,
             clock: Arc::new(Mutex::new(Clock {
                 last_use: now,
                 observed: now,
@@ -411,6 +413,14 @@ impl Lifecycle {
                     self.guard = Some(Guard::new(attached.sample, now));
                     self.scope = attached.scope;
                     self.supervisor.as_mut().unwrap().release()?;
+                    self.launcher_micros = self
+                        .supervisor
+                        .as_ref()
+                        .unwrap()
+                        .launch_started
+                        .elapsed()
+                        .as_micros()
+                        .min(u64::MAX as u128) as u64;
                 }
                 Err(error) => {
                     self.supervisor.take(); // owned Drop kills the group and reaps before lease release
