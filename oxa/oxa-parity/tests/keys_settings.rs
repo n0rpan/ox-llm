@@ -2877,7 +2877,7 @@ fn key_007() {
     };
     let bottom_origin = origin(&at_bottom).unwrap();
     t.key("pageUp");
-    let s = t.wait("a page up", |s| row_of(s, "R80").is_none());
+    let s = t.wait_steady("a page up", |s| row_of(s, "R80").is_none() && origin(s).is_some());
     let page_shift = bottom_origin - origin(&s).unwrap();
     assert!(page_shift > 0, "page up must move the transcript");
     assert!(
@@ -2899,7 +2899,9 @@ fn key_007() {
     t.wait("one line down", |s| row_of(s, "R70") == Some(r70));
     // halfPageUp: R80 leaves the view but less far than a page; halfPageDown comes back.
     t.key("f7");
-    let s = t.wait("half a page up", |s| row_of(s, "R80").is_none());
+    let s = t.wait_steady("half a page up", |s| {
+        row_of(s, "R80").is_none() && origin(s).is_some()
+    });
     let half_shift = bottom_origin - origin(&s).unwrap();
     assert!(
         half_shift > 0 && half_shift < page_shift,
