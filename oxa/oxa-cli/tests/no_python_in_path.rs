@@ -527,37 +527,39 @@ fn native_local_release_pair(binary: &Path, engine: &Path, missing_weights: bool
     let stdout = env.tmp().join("stdout");
     let stderr = env.tmp().join("stderr");
     let trace = env.tmp().join("local-process.trace");
-    let mut child = Command::new(required_tracer())
-        .args(["--kill-on-exit", "-f", "-e", "trace=execve,connect", "-o"])
-        .arg(&trace)
-        .arg(binary)
-        .args([
-            "-p",
-            "--offline",
-            "--no-session",
-            "--no-tools",
-            "--model",
-            "synthetic",
-            "reply briefly",
-        ])
-        .env_clear()
-        .envs(env.envs(&controller_url))
-        .env("PATH", &bin)
-        .env("OXA_TEST_PYTHON_MARKER", &marker)
-        .current_dir(env.work())
-        .stdin(Stdio::null())
-        .stdout(File::create(&stdout).unwrap())
-        .stderr(File::create(&stderr).unwrap())
-        .spawn()
-        .expect("spawn exact release oxa");
+    let mut child = TracedChild(
+        Command::new(required_tracer())
+            .args(["--kill-on-exit", "-f", "-e", "trace=execve,connect", "-o"])
+            .arg(&trace)
+            .arg(binary)
+            .args([
+                "-p",
+                "--offline",
+                "--no-session",
+                "--no-tools",
+                "--model",
+                "synthetic",
+                "reply briefly",
+            ])
+            .env_clear()
+            .envs(env.envs(&controller_url))
+            .env("PATH", &bin)
+            .env("OXA_TEST_PYTHON_MARKER", &marker)
+            .current_dir(env.work())
+            .stdin(Stdio::null())
+            .stdout(File::create(&stdout).unwrap())
+            .stderr(File::create(&stderr).unwrap())
+            .spawn()
+            .expect("spawn exact release oxa"),
+    );
     let deadline = Instant::now() + Duration::from_secs(30);
     let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
+        if let Some(status) = child.0.try_wait().unwrap() {
             break status;
         }
         if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
             panic!("native local release proof timed out");
         }
         std::thread::sleep(Duration::from_millis(20));
