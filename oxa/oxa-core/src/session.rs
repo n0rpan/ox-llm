@@ -255,6 +255,7 @@ impl Session {
             mode,
         };
         let mut st = SessionState {
+            goal: None,
             output_schema: None,
             engine,
             store,
@@ -320,6 +321,9 @@ impl Session {
         // instead of a prompt; no run starts unless the command triggers one.
         if let Expanded::Hook { name, args } = crate::expand_input(&self.st, &text) {
             return self.run_command(&name, &args, sink, ui);
+        }
+        if self.st.goal.is_some() {
+            crate::open_epoch(&mut self.st, "goal", false, sink)?;
         }
         let guard = self.begin_run()?;
         let result = oxa_proto::panic::contain(|| self.run_prompt(text, parts, sink, ui))
@@ -738,6 +742,28 @@ impl Session {
         self.st.output_schema = schema;
     }
 
+    pub fn goal(&self) -> Option<oxa_session::Goal> {
+        self.st.goal.as_ref().map(|g| g.snapshot())
+    }
+
+    /// Replace the session goal while idle, persisting before exposing controls.
+    pub fn set_goal(
+        &mut self,
+        goal: Option<oxa_session::Goal>,
+        sink: &mut dyn EventSink,
+    ) -> Result<(), OxaError> {
+        if self.st.shared.busy.load(Ordering::SeqCst) {
+            return Err(OxaError::new(codes::BUSY, "Cannot change a goal during a run."));
+        }
+        let body = goal
+            .as_ref()
+            .map_or_else(oxa_session::Goal::clear_body, oxa_session::Goal::body);
+        persist(&mut self.st, body, sink)?;
+        self.st.goal = goal.map(|g| Arc::new(crate::goal::GoalRuntime::new(g)));
+        crate::open_epoch(&mut self.st, "goal", false, sink)?;
+        Ok(())
+    }
+
     pub fn commands(&self) -> Vec<CommandSpec> {
         crate::all_commands(&self.st)
     }
@@ -923,6 +949,7 @@ impl Session {
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
         self.st.stats.output_truncated = false;
+        crate::goal::begin(&self.st);
         Ok(guard)
     }
 
@@ -939,7 +966,9 @@ impl Session {
         shared.cancel_retry.reset();
         shared.gate.bg_cancel.reset();
         shared.gate.bg_abort.store(false, Ordering::SeqCst);
-        if shared.gate.abort_next.swap(false, Ordering::SeqCst) {
+        if shared.gate.abort_next.swap(false, Ordering::SeqCst)
+            || shared.gate.interrupted.load(Ordering::SeqCst)
+        {
             // The front end accepted this run and was asked to abort it before it began.
             shared.cancel.cancel();
             shared.gate.bg_cancel.cancel();
@@ -982,7 +1011,7 @@ impl Session {
 
         // L5 (`oxa.compaction.turnStart`): an aborted turn left its tool result uncounted; the
         // prompt is compacted first when the context is already above the soft limit.
-        crate::compaction::compact_at_turn_start(st, sink, ui);
+        let can_run = compact_before_run(st, sink, ui)?;
         for wire in next_turn {
             persist(
                 st,
@@ -1009,6 +1038,10 @@ impl Session {
             },
             sink,
         )?;
+
+        if !can_run {
+            return Ok(Some(RunEnd::Stopped));
+        }
 
         let payload = crate::fire::before_agent_start_payload(st, &text, images);
         match first_reply(st, HookPoint::BeforeAgentStart, &payload, sink, ui) {
@@ -1041,6 +1074,23 @@ impl Session {
     }
 }
 
+/// Keep accepted input, but stop before another request when compaction spends
+/// the stored goal allowance. Queued and direct prompts use the same boundary.
+fn compact_before_run(
+    st: &mut SessionState,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+) -> Result<bool, OxaError> {
+    crate::goal::ensure_begin(st);
+    crate::goal::checkpoint(st, false, sink)?;
+    if crate::goal::terminal(st) {
+        return Ok(false);
+    }
+    crate::compaction::compact_at_turn_start(st, sink, ui);
+    crate::goal::checkpoint(st, false, sink)?;
+    Ok(!crate::goal::terminal(st))
+}
+
 /// Settle a claimed session (see [`serve_idle`]): apply what hook sets asked for and, when
 /// `can_run` (the operation before did not abort or fail), run the turns they triggered, one
 /// after the other, until none is pending or one is aborted. `Ok(Some(end))` = the end of the
@@ -1051,7 +1101,7 @@ fn settle_triggered(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<Option<RunEnd>, OxaError> {
-    if !can_run {
+    if !can_run || crate::goal::terminal(st) {
         serve_host(st, true, sink, ui);
         return Ok(None);
     }
@@ -1130,6 +1180,13 @@ fn settled_outcome(st: &SessionState, end: Option<&RunEnd>) -> crate::RunOutcome
         if st.stats.done_failed {
             return crate::RunOutcome::Failed("done_checks_failed");
         }
+        if let Some(goal) = st.goal.as_ref().filter(|g| g.engaged()).map(|g| g.snapshot()) {
+            match goal.status {
+                oxa_session::GoalStatus::Blocked => return crate::RunOutcome::Blocked("goal_blocked"),
+                oxa_session::GoalStatus::Paused => return crate::RunOutcome::Stalled,
+                _ => {}
+            }
+        }
         if st.stats.output_truncated {
             return crate::RunOutcome::Failed("output_limit");
         }
@@ -1196,6 +1253,9 @@ fn settle_runs(
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
     loop {
+        if crate::goal::terminal(st) {
+            return Ok(end);
+        }
         if end == RunEnd::Stopped && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             return run_loop(st, sink, ui);
         }
@@ -1242,12 +1302,13 @@ fn queued_run(
     if taken.is_empty() {
         return Ok(None);
     }
-    if turn_start {
-        crate::compaction::compact_at_turn_start(st, sink, ui);
-    }
+    let can_run = !turn_start || compact_before_run(st, sink, ui)?;
     flush_queue(st, sink);
     for msg in taken {
         push_user(st, msg, sink)?;
+    }
+    if !can_run {
+        return Ok(Some(RunEnd::Stopped));
     }
     run_loop(st, sink, ui).map(Some)
 }
@@ -1319,6 +1380,7 @@ fn start_new(
     st.store.commit_lock();
     st.sref = sref;
     st.tree = Tree::new(Vec::new());
+    st.goal = None;
     st.transcript = Transcript::default();
     st.stats.last_tok_s = 0.0;
     st.stats.user_messages = 0;
@@ -1382,6 +1444,7 @@ fn restore_locked(
         .with_hint("missing_cwd"));
     }
     let tree = Tree::new(st.store.load(&sref)?);
+    let goal = oxa_session::Goal::latest(tree.entries())?.map(|g| Arc::new(crate::goal::GoalRuntime::new(g)));
     let branch: Vec<Entry> = tree.branch(tree.leaf()).into_iter().cloned().collect();
     let replayed = {
         let refs: Vec<&Entry> = branch.iter().collect();
@@ -1393,6 +1456,7 @@ fn restore_locked(
     st.store.commit_lock();
     st.transcript = Transcript::project(&branch);
     st.tree = tree;
+    st.goal = goal;
     st.sref = sref;
     attach_ids(st);
     attach_hosts(st, sink, ui);

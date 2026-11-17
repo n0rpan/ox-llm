@@ -959,6 +959,9 @@ pub(crate) fn before_settle(
 ) -> Result<Option<crate::RunEnd>, OxaError> {
     use crate::RunEnd;
     loop {
+        if crate::goal::terminal(st) {
+            return Ok(last);
+        }
         if !matches!(last, Some(RunEnd::Stopped)) || st.shared.cancel.is_cancelled() {
             return Ok(last);
         }

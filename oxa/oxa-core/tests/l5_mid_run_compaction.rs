@@ -230,6 +230,86 @@ fn run_env(
 
 const SOFT: u32 = 2_000;
 
+#[test]
+fn goal_budget_spent_by_mid_run_summary_blocks_the_next_request() {
+    use oxa_session::{Goal, GoalBudget, GoalStatus};
+    let env = TestEnv::new();
+    let script = || {
+        vec![
+            step(1),
+            step(2),
+            ScriptTurn::text("Synthetic summary of earlier reads"),
+            ScriptTurn::tool(
+                "done",
+                "goal_done",
+                r#"{"status":"complete","evidence":"Synthetic work complete"}"#,
+            ),
+        ]
+    };
+    let run_goal = |budget| {
+        let engine = Arc::new(ScriptedEngine::new(script()).without_cached_tokens());
+        let mut session = open(&env, engine.clone(), vec![], cfg(SOFT, Some(true)));
+        let mut sink = VecSink::default();
+        session
+            .set_goal(
+                Some(Goal::new("Read synthetic files".into(), budget, 1000).unwrap()),
+                &mut sink,
+            )
+            .unwrap();
+        session
+            .prompt(
+                "read the files".into(),
+                vec![],
+                &mut sink,
+                &mut HeadlessUi::default(),
+            )
+            .unwrap();
+        (session, engine)
+    };
+    let (control, engine) = run_goal(GoalBudget::default());
+    assert_eq!(control.goal().unwrap().status, GoalStatus::Done);
+    let requests = engine.requests();
+    let summary = requests
+        .iter()
+        .position(|r| r.kind == "compaction")
+        .expect("mid-run summary");
+    assert_eq!(
+        requests[..summary].iter().filter(|r| r.max_tokens != 0).count(),
+        2
+    );
+    let spent_before: u64 = requests[..summary]
+        .iter()
+        .map(|r| {
+            let usage = r.usage.unwrap();
+            u64::from(usage.prompt - usage.cached) + u64::from(usage.completion)
+        })
+        .sum();
+    drop(control);
+    let (session, engine) = run_goal(GoalBudget {
+        max_tokens: Some(spent_before + 1),
+        ..GoalBudget::default()
+    });
+    assert_eq!(
+        kinds(&engine),
+        ["chat", "chat", "compaction"],
+        "summary spend must block another generating request"
+    );
+    assert_eq!(
+        engine.requests().len(),
+        summary + 1,
+        "no prefill after exhaustion either"
+    );
+    let goal = session.goal().unwrap();
+    assert_eq!(goal.status, GoalStatus::Blocked);
+    assert_eq!(goal.unknown_requests, 0);
+    assert!(goal.tokens_used > spent_before + 1);
+    assert_eq!(goal.tokens_used, session.handle().run_tokens_used());
+    assert_eq!(
+        Goal::latest(&session.inner().store.load(&session.inner().sref).unwrap()).unwrap(),
+        Some(goal)
+    );
+}
+
 /// The `STEPS`-step script: `summaries` lists after which steps a summary request is
 /// expected; `end_summary` adds the after-reply summary of the stopped run.
 fn steps(summaries: &[usize], end_summary: bool) -> Vec<ScriptTurn> {
