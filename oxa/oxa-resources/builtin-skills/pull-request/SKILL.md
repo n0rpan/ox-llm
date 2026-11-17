@@ -9,6 +9,10 @@ AGENTS.md and CONTRIBUTING.md override anything here (branch names, tiers, draft
 
 ## Branch and commits
 - Branch from the base: `agent/<task-id>-<slug>` unless the project says otherwise.
+- Measure your own change from where the branch left the base, not from the commit it started at:
+  `git diff $(git merge-base origin/<base> HEAD) HEAD`. A branch whose base has moved since it
+  started shows the base's own progress as deletions in a diff between the two commits, so a
+  small change reads as a destructive one. Look at that drift before describing the change.
 - Commit with the repository's configured identity (`git config user.name`, `user.email`). Never invent or set one. If it is empty, stop and ask.
 
 ## Open
