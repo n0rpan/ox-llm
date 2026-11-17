@@ -4,9 +4,11 @@
 //! Isolation: use `oxa_fake::TestEnv` for every file and directory; never touch the real home.
 
 use oxa_config::Keymap;
+use oxa_fake::TestEnv;
 use oxa_tui::{
-    visible_width, word_wrap_line, Applied, AutocompleteItem, AutocompleteProvider, Component, Editor,
-    EditorAction, EditorOpts, Interactive, Key, Suggestions, Theme,
+    visible_width, word_wrap_line, Applied, AutocompleteItem, AutocompleteProvider, CombinedProvider,
+    Component, Editor, EditorAction, EditorOpts, FileIndex, Interactive, Key, SlashCommand, Suggestions,
+    Theme,
 };
 
 // ---- helpers ------------------------------------------------------------------------------
@@ -477,6 +479,82 @@ fn autocomplete_list_opens_moves_and_applies() {
     t.press("escape");
     assert!(!t.e.autocomplete_open());
     assert_eq!(t.text(), "see @src/lib.rs @src");
+}
+
+fn slash_provider(env: &TestEnv, names: &[&str]) -> Box<dyn AutocompleteProvider> {
+    let commands = names
+        .iter()
+        .map(|name| SlashCommand {
+            name: (*name).to_string(),
+            description: None,
+            argument_hint: None,
+            complete_args: None,
+        })
+        .collect();
+    Box::new(CombinedProvider::new(
+        commands,
+        FileIndex::from_paths(&env.work(), vec![]),
+        &env.work(),
+        &env.home(),
+    ))
+}
+
+/// #815: initial Session/provider delivery may follow the first typed slash.
+#[test]
+fn late_initial_provider_completes_existing_slash_without_another_key() {
+    let env = TestEnv::new();
+    for draft in ["/", "/mo"] {
+        let mut t = Ed::new();
+        t.type_str(draft);
+        let cursor = t.e.cursor_pos();
+        assert!(!t.e.autocomplete_open(), "no provider has arrived yet");
+
+        t.e.set_autocomplete(Some(slash_provider(&env, &["model", "mode"])));
+
+        assert_eq!(t.text(), draft, "provider arrival preserves input");
+        assert_eq!(t.e.cursor_pos(), cursor);
+        assert!(t.e.autocomplete_open(), "late provider must complete {draft:?}");
+        let lines = t.e.render(60, &plain());
+        assert!(lines.iter().any(|line| line.contains("→ model")), "{lines:?}");
+        assert_eq!(t.press("tab"), EditorAction::Changed);
+        assert_eq!(t.text(), "/model ", "normal completion still applies");
+    }
+}
+
+#[test]
+fn provider_updates_preserve_draft_and_dismissed_completion() {
+    let env = TestEnv::new();
+    let mut t = Ed::new();
+    t.e.set_autocomplete(Some(slash_provider(&env, &["model", "mode"])));
+    t.type_str("/mo");
+    assert!(t.e.autocomplete_open());
+    t.press("escape");
+    let cursor = t.e.cursor_pos();
+
+    t.e.set_autocomplete(Some(slash_provider(&env, &["monitor"])));
+    assert!(
+        !t.e.autocomplete_open(),
+        "updates must not reopen a dismissed list"
+    );
+    assert_eq!(t.text(), "/mo");
+    assert_eq!(t.e.cursor_pos(), cursor);
+    t.type_str("n");
+    assert!(t.e.autocomplete_open(), "typing uses the replacement provider");
+    t.press("tab");
+    assert_eq!(t.text(), "/monitor ");
+
+    t.e.set_autocomplete(None);
+    assert!(!t.e.autocomplete_open());
+    assert_eq!(t.text(), "/monitor ");
+    t.e.set_text("ordinary draft");
+    let cursor = t.e.cursor_pos();
+    t.e.set_autocomplete(Some(slash_provider(&env, &["model"])));
+    assert!(
+        !t.e.autocomplete_open(),
+        "provider arrival must not force suggestions"
+    );
+    assert_eq!(t.text(), "ordinary draft");
+    assert_eq!(t.e.cursor_pos(), cursor);
 }
 
 #[test]

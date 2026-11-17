@@ -66,6 +66,40 @@ The download and extracted executable stay in ignored build output; nothing is i
 the checkout. Keep that absolute `PATH` prefix for subsequent test commands in the same runner.
 Do not skip the proof when `strace` is missing or substitute an untraced run.
 
+If `bubblewrap` is already available but host package installation is not permitted, build
+upstream `strace` inside the checkout instead (requires a C compiler, make, curl, tar and xz).
+From the repository root:
+
+```sh
+mkdir -p .local-checks/strace-src
+printf '*\n' > .local-checks/.gitignore
+curl --fail --location --proto '=https' --tlsv1.2 \
+  https://strace.io/files/7.3/strace-7.3.tar.xz \
+  -o .local-checks/strace-src/strace-7.3.tar.xz
+tar -xJf .local-checks/strace-src/strace-7.3.tar.xz -C .local-checks/strace-src
+prefix="$PWD/.local-checks/strace"
+(
+  cd .local-checks/strace-src/strace-7.3 &&
+  ./configure --prefix="$prefix" --enable-mpers=no --enable-bundled=yes &&
+  make -j2 && make install
+)
+export PATH="$prefix/bin:$PATH"
+strace -V
+(cd oxa && cargo test -p oxa-cli --test in_process_cloud \
+  native_discovery_tool_loop_and_budget_settlement_use_no_python_process)
+```
+
+The bundled headers avoid incompatibilities with newer system kernel headers; disabling
+optional multi-personality decoding avoids needing a 32-bit toolchain. Neither changes the
+native `execve` tracing used by this test. Keep this `PATH` prefix for subsequent check commands
+(and set it again in each new shell); all downloaded sources and build/install output remain
+ignored inside `.local-checks/`. No test is skipped or substituted, and no host installation
+is changed. A failure to trace (for example, denied `ptrace`) must still be fixed, not ignored.
+Keep the test's temporary directory outside any repository: its synthetic credential fixture
+is subject to the production repository-key refusal. If `TMPDIR` points inside a checkout,
+run the test with `env -u TMPDIR cargo test ...` to use the system temporary directory instead;
+`CARGO_TARGET_DIR` may still point inside the checkout for build output.
+
 ```sh
 cd oxc && ./tools/run_lab_tests.sh                       # lab
 cd engine && cargo test --release --locked --workspace --exclude qwen4exp   # engine (Flash: see engine/CONTRIBUTING.md)
