@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// `bash {command, timeout?}`: runs through `ToolCtx::sandbox` (never directly). `writable` = mode is not Plan; `net` = [`net_for`] (O-167(b): the sandbox network by mode and `oxa.sandbox.net`; `access` keeps `net: false`). Output streams to `live`; the result text is the merged output plus the exit-status, timeout or aborted line (pi's, always present); no timing text (W4). If `sandbox.check()` fails the result is that error (`is_error`). `ToolOutput::ui` = `{"exit": n|null, "timedOut": bool}`. Environment: `ToolCtx::env`.
+/// `bash {command, timeout?}`: runs through `ToolCtx::sandbox` (never directly). `writable` = mode is not Plan; `net` = [`net_for`] (O-167(b): the sandbox network by mode and `oxa.sandbox.net`; `access` keeps `net: false`). Output streams to `live`; the result text is the merged output plus the exit-status, timeout or aborted line (pi's, always present), the output cut to the tuned cap by [`with_status`] so the status keeps the last line and the spill file holds the output alone; no timing text (W4). If `sandbox.check()` fails the result is that error (`is_error`). `ToolOutput::ui` = `{"exit": n|null, "timedOut": bool}`. Environment: `ToolCtx::env`.
 #[derive(Debug, Clone)]
 pub struct BashTool {
     spec: ToolSpec,
@@ -606,41 +606,46 @@ impl BashTool {
             output.clone()
         };
 
-        if res.timed_out {
+        // Issue #992: every result names the command's own status, a successful command
+        // included. Without it a pipeline that reports its last stage (`head`, `tail`) as 0 can
+        // read as a passed check.
+        let (body, status, is_error) = if res.timed_out {
             let secs = spec.timeout_s.unwrap_or(0);
-            return ToolOutput {
-                text: errors::bash_with_status(&output, &errors::bash_timed_out(secs)),
-                is_error: true,
-                ui,
-            };
-        }
-        if cx.cancel.is_cancelled() {
-            return ToolOutput {
-                text: errors::bash_with_status(&output, errors::BASH_ABORTED),
-                is_error: true,
-                ui,
-            };
-        }
-        match res.exit {
-            None => ToolOutput {
-                text: errors::bash_with_status(&shown, errors::BASH_NO_EXIT_CODE),
-                is_error: true,
-                ui,
-            },
-            // Issue #992: a successful command names its status too. Without it a pipeline that
-            // reports its last stage (`head`, `tail`) as 0 can read as a passed check.
-            Some(0) => ToolOutput {
-                text: errors::bash_with_status(&shown, &errors::bash_exit(0)),
-                is_error: false,
-                ui,
-            },
-            Some(code) => ToolOutput {
-                text: errors::bash_with_status(&shown, &errors::bash_exit(code)),
-                is_error: true,
-                ui,
-            },
+            (output.as_str(), errors::bash_timed_out(secs), true)
+        } else if cx.cancel.is_cancelled() {
+            (output.as_str(), errors::BASH_ABORTED.to_string(), true)
+        } else {
+            match res.exit {
+                None => (shown.as_str(), errors::BASH_NO_EXIT_CODE.to_string(), true),
+                Some(0) => (shown.as_str(), errors::bash_exit(0), false),
+                Some(code) => (shown.as_str(), errors::bash_exit(code), true),
+            }
+        };
+        ToolOutput {
+            text: with_status(body, &status, cx.tune.output_cap_bytes, cx.spill_dir),
+            is_error,
+            ui,
         }
     }
+}
+
+/// The result text: the output and the status line one blank line after it (#992). With an
+/// output cap the output is cut here to the cap minus the status line, so the line is the last
+/// thing the model reads in a result that still fits the cap, the loop's `shape` finds nothing
+/// left to cut, and the spill file the mark names holds the command's output alone. `cap` 0 =
+/// no cap (the loop's shaper alone decides).
+fn with_status(output: &str, status: &str, cap: u32, spill_dir: &Path) -> String {
+    if cap < crate::shape::MIN_CAP as u32 {
+        return errors::bash_with_status(output, status);
+    }
+    let cap = cap as usize;
+    let room = cap.saturating_sub(status.len() + crate::shape::STATUS_SEPARATOR.len());
+    if room < crate::shape::MIN_CAP {
+        // A tiny cap: the line alone is all that fits.
+        return status.to_string();
+    }
+    let kept = crate::shape::shape(output.as_bytes(), room, true, spill_dir);
+    errors::bash_with_status(&kept, status)
 }
 
 /// Suppress the successful-command hint only for recognizable reads. Enumerating writers
@@ -1210,8 +1215,8 @@ echo '\''a'\'''"#
         );
         assert!(!res.is_error);
         assert!(!res.text.contains("read-only in the sandbox"), "{}", res.text);
-        // The JSON line, the blank run its trailing newline makes, and the status line.
-        assert_eq!(res.text.lines().count(), 4, "{}", res.text);
+        // The JSON line, the one blank line before the status, and the status line.
+        assert_eq!(res.text.lines().count(), 3, "{}", res.text);
         // Even a line starting with git's words does not count when the command succeeded.
         let sb = Fake::ok(b"error: could not write config file x\n", Some(0));
         let (res, _) = run_with(
@@ -1239,6 +1244,46 @@ echo '\''a'\'''"#
     }
 
     #[test]
+    fn a_cut_output_keeps_the_status_inside_the_cap_and_out_of_the_spill() {
+        let env = oxa_fake::TestEnv::new();
+        let dir = env.tmp();
+        let raw: String = (1..=5000).map(|i| format!("{i}\n")).collect();
+        let cap = 1_000u32;
+        let tune = oxa_proto::ToolTune {
+            output_cap_bytes: cap,
+            ..Default::default()
+        };
+        let sb = Fake::ok(raw.as_bytes(), Some(0));
+        let out = run_tuned_in(&sb, json!({"command": "seq 1 5000"}), tune, &dir);
+        // The loop's own shaper runs on this text; it must find nothing left to cut.
+        let shaped = crate::shape::shape(out.text.as_bytes(), cap as usize, true, &dir);
+        assert_eq!(shaped, out.text, "one result fits the cap once");
+        assert!(!out.is_error, "{}", out.text);
+        assert!(
+            out.text.len() <= cap as usize,
+            "the status fits inside the cap: {} bytes",
+            out.text.len()
+        );
+        assert!(out.text.contains("[output truncated:"), "{}", out.text);
+        assert!(
+            out.text.trim_end().ends_with("Command exited with code 0"),
+            "the status follows the kept tail: {}",
+            out.text
+        );
+        assert!(out.text.contains("\n5000\n"), "the tail is kept");
+        let spill = out
+            .text
+            .split("full output in ")
+            .nth(1)
+            .and_then(|r| r.split(']').next())
+            .expect("the mark names the spill file");
+        assert_eq!(
+            std::fs::read_to_string(spill).expect("the spill file"),
+            raw,
+            "the spill holds the command's output alone"
+        );
+    }
+
     fn exit_code_and_empty_output_lines() {
         let sb = Fake::ok(b"hi", Some(3));
         let (out, _) = run_with(&sb, json!({"command": "x"}), Mode::Workspace, &CancelToken::new());
@@ -1448,13 +1493,17 @@ echo '\''a'\'''"#
     }
 
     fn run_tuned(sb: &Fake, args: Value, tune: oxa_proto::ToolTune) -> ToolOutput {
+        run_tuned_in(sb, args, tune, Path::new("/work"))
+    }
+
+    fn run_tuned_in(sb: &Fake, args: Value, tune: oxa_proto::ToolTune, spill_dir: &Path) -> ToolOutput {
         let cwd = Path::new("/work");
         let env: Vec<(String, String)> = Vec::new();
         let cancel = CancelToken::new();
         let cx = ToolCtx {
             checked: &[],
             cwd,
-            spill_dir: cwd,
+            spill_dir,
             sandbox: sb,
             mode: Mode::Workspace,
             cancel: &cancel,
@@ -1500,7 +1549,9 @@ echo '\''a'\'''"#
         let expected = "Compiling a v1\n   \n\t\nerror: boom  \n\n\nnext\t\t\n";
         let sb = Fake::ok(raw.as_bytes(), Some(0));
         let plain = run_tuned(&sb, json!({"command": "x"}), Default::default());
-        assert_eq!(plain.text, format!("{raw}\n\nCommand exited with code 0"));
+        // The output's own trailing newline makes the blank line before the status, not a run.
+        let plain_expected = format!("{}\n\nCommand exited with code 0", raw.trim_end());
+        assert_eq!(plain.text, plain_expected);
 
         let sb = Fake::ok(raw.as_bytes(), Some(0));
         let diet = oxa_proto::ToolTune {
@@ -1508,7 +1559,10 @@ echo '\''a'\'''"#
             ..Default::default()
         };
         let out = run_tuned(&sb, json!({"command": "x"}), diet);
-        assert_eq!(out.text, format!("{expected}\n\nCommand exited with code 0"));
+        assert_eq!(
+            out.text,
+            format!("{}\n\nCommand exited with code 0", expected.trim_end())
+        );
         assert!(!out.is_error);
 
         // Deterministic and idempotent; one or two blank lines and trailing blanks are kept.

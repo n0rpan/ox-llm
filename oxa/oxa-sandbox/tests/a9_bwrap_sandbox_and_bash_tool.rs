@@ -646,11 +646,11 @@ fn bash_tool_exit_code_and_timeout_lines() {
     let out = run(serde_json::json!({ "command": "echo hi" }));
     assert!(!out.is_error, "{}", out.text);
     // Issue #992: the status line is always present, exit 0 included.
-    assert_eq!(out.text, "hi\n\n\nCommand exited with code 0");
+    assert_eq!(out.text, "hi\n\nCommand exited with code 0");
 
     let out = run(serde_json::json!({ "command": "echo hi; exit 3" }));
     assert!(out.is_error);
-    assert_eq!(out.text, "hi\n\n\nCommand exited with code 3");
+    assert_eq!(out.text, "hi\n\nCommand exited with code 3");
     assert_eq!(out.ui, serde_json::json!({ "exit": 3, "timedOut": false }));
 
     let out = run(serde_json::json!({ "command": "true" }));
@@ -709,7 +709,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
         assert!(!out.text.contains(notice), "successful output is not an error");
     }
     let out = run(serde_json::json!({ "command": "echo tmpdir /TMP" }));
-    assert_eq!(out.text, "tmpdir /TMP\n\n\nCommand exited with code 0");
+    assert_eq!(out.text, "tmpdir /TMP\n\nCommand exited with code 0");
 
     // Scratch succeeds, but the model sees its lifetime; streaming process bytes stay raw.
     let mut live = String::new();
@@ -733,7 +733,7 @@ fn bash_tool_exit_code_and_timeout_lines() {
     let a = run(serde_json::json!({ "command": "echo a; sleep 30", "timeout": 1 }));
     let b = run(serde_json::json!({ "command": "echo a; sleep 30", "timeout": 1 }));
     assert!(a.is_error);
-    assert_eq!(a.text, "a\n\n\nCommand timed out after 1 seconds");
+    assert_eq!(a.text, "a\n\nCommand timed out after 1 seconds");
     assert_eq!(a.text, b.text);
     assert_eq!(a.ui, serde_json::json!({ "exit": null, "timedOut": true }));
 }

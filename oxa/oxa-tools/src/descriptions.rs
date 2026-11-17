@@ -286,13 +286,16 @@ pub mod errors {
     pub fn bash_cwd_missing(cwd: &str) -> String {
         format!("Working directory does not exist: {cwd}\nCannot execute bash commands.")
     }
-    /// pi's `appendStatus`: output, a blank line, then the status; the status alone when the
-    /// output is empty.
+    /// pi's `appendStatus`: output, one blank line, then the status; the status alone when the
+    /// output is empty. The output's own trailing newlines (a command's does end with one) are
+    /// dropped so the blank line is exactly one: `printf hi\n` + status is
+    /// `hi\n\nCommand exited with code 0`, not a run of blank lines.
     pub fn bash_with_status(output: &str, status: &str) -> String {
-        if output.is_empty() {
+        let body = output.trim_end_matches(|c| c == '\n' || c == '\r');
+        if body.is_empty() {
             status.to_string()
         } else {
-            format!("{output}\n\n{status}")
+            format!("{body}\n\n{status}")
         }
     }
 
@@ -374,6 +377,11 @@ mod tests {
         assert_eq!(
             errors::bash_with_status("x", &errors::bash_exit(2)),
             "x\n\nCommand exited with code 2"
+        );
+        // The output's own trailing newline is the blank line before the status, not a second.
+        assert_eq!(
+            errors::bash_with_status("x\n", &errors::bash_exit(0)),
+            "x\n\nCommand exited with code 0"
         );
         assert_eq!(
             errors::notices_suffix(&[errors::ls_limit_notice(500), errors::byte_limit_notice(16384)]),

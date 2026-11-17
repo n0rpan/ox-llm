@@ -61,7 +61,11 @@ usage, so reported reasoning tokens can be one greater than the text cap.
 - **bash timeout.** A bash call with no `timeout` stops after 120 seconds.
   `oxa.bash.defaultTimeout` sets the value; `0` means none.
 - **bash exit status.** Every bash result ends with the command's own status line,
-  `Command exited with code 0` included, so a result is never read from a missing line. A
+  `Command exited with code 0` included, so a result is never read from a missing line. The
+  output and the status line are separated by exactly one blank line. An output over the
+  output cap is cut to the cap minus the status line, so the status is the last line of a
+  result that still fits the cap, and the spill file it names holds the command's output
+  alone. A
   pipeline or a `;` list reports only its last command's status: in
   `cmd | head; echo "exit: $?"` the printed status is `head`'s, not `cmd`'s.
 - **Shorter first page of `read`.** A `read` with no `offset` or `limit` returns the first 400

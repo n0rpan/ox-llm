@@ -7,9 +7,12 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 
 /// Smallest cap the shaper honours; smaller values are raised to this.
-const MIN_CAP: usize = 256;
+pub(crate) const MIN_CAP: usize = 256;
 /// The two newlines that surround the mark line.
 const NEWLINES: usize = 2;
+/// The blank line between a tool's output and its status line: the `bash` tool leaves room for
+/// it when it cuts its output to the cap itself.
+pub(crate) const STATUS_SEPARATOR: &str = "\n\n";
 
 /// Shape raw tool output for the wire.
 ///
