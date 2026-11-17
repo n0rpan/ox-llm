@@ -34,7 +34,12 @@ continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.
 This explicitly invokes your installed,
 authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
 when the environment or user settings enable offline mode.
-Issue lookup also requires source-project trust. Git and GitHub CLI host calls use
+For a pull request use `oxa work --pr 123 --model your-model`. That packet carries
+the title, body, reviews, issue comments and the names of failing checks at the
+current head, and the task branch is the pull request's own head branch. Review text
+and check names are data, bounded, and never treated as instructions.
+Both lookups are refused when the environment or user settings enable offline mode.
+GitHub lookup also requires source-project trust. Git and GitHub CLI host calls use
 validated executables outside the repository. Worker and check-supervisor PATHs
 exclude project directories, relative entries and unsafe aliases; project tools
 can still run by explicit path inside the sandbox.

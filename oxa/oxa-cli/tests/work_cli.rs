@@ -237,8 +237,8 @@ fn github_issue_input_uses_mock_gh() {
     let gh = env.write(
         "tmp/trusted-tools/gh",
         r##"#!/bin/sh
-[ "$*" = 'issue view 42 --json title,body' ] || exit 9
-printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
+[ "$*" = 'issue view 42 --json title,body,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","comments":[]}'
 "##,
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -253,6 +253,39 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
     assert_eq!(record["branch"], "agent/42-work");
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
 }
+#[test]
+fn pull_request_packet_carries_reviews_and_failing_checks() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r##"#!/bin/sh
+[ "$*" = 'pr view 42 --json title,body,headRefName,reviews,comments,statusCheckRollup' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","headRefName":"agent/review-fixes","reviews":[{"author":{"login":"reviewer"},"state":"CHANGES_REQUESTED","body":"Finding: keep the frame"},{"author":{"login":"reviewer"},"state":"APPROVED","body":""}],"comments":[],"statusCheckRollup":[{"name":"checks / oxa","conclusion":"FAILURE"},{"name":"checks / docs","conclusion":"SUCCESS"}]}'
+"##,
+    );
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text("done")],
+        &["work", "--pr", "42", "--model", "fake"],
+        Some(path),
+    );
+    assert_eq!(record["id"], "pr-42");
+    assert_eq!(record["branch"], "agent/review-fixes");
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    let checkpoint = storage(&env).join("pr-42.json");
+    let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(&checkpoint).unwrap()).unwrap();
+    let prompt = saved["execution"]["prompt"].as_str().unwrap();
+    assert!(prompt.contains("Fix the test fixture"), "{prompt}");
+    assert!(prompt.contains("Finding: keep the frame"), "{prompt}");
+    assert!(prompt.contains("checks / oxa"), "{prompt}");
+    assert!(!prompt.contains("checks / docs"), "{prompt}");
+}
+#[test]
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
     let env = TestEnv::new();

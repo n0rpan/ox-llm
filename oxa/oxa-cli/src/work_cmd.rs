@@ -16,6 +16,25 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
     .map_err(|e| e.to_string())
 }
 
+/// Offline and untrusted projects never spawn even a trusted `gh`; both inputs share it.
+fn github_lookup(
+    trusted: bool,
+    root: &Path,
+    home: &Path,
+    host_path: &std::ffi::OsStr,
+    offline: &str,
+    untrusted: &str,
+) -> Result<PathBuf, String> {
+    if oxa_proto::offline() {
+        return Err(offline.into());
+    }
+    if !trusted {
+        return Err(untrusted.into());
+    }
+    crate::netguard::trusted_executable_for("gh", Some(host_path), Some(root), Some(home))
+        .ok_or_else(|| "no trusted gh executable outside the source project".to_owned())
+}
+
 pub(crate) fn run(
     args: &[String],
     cwd: &Path,
@@ -133,31 +152,48 @@ pub(crate) fn run(
         let tasks = match task_args {
             [file] if !file.starts_with('-') => oxa_work::read_tasks(&cwd.join(file))?,
             [flag, number, model_flag, model] if flag == "--issue" && model_flag == "--model" => {
-                if oxa_proto::offline() {
-                    return Err("GitHub issue lookup is unavailable in offline mode".into());
-                }
-                if !is_trusted {
-                    return Err("source project is not trusted; approve it before issue lookup".into());
-                }
-                let gh = crate::netguard::trusted_executable_for(
-                    "gh",
-                    Some(policy.host_path.as_os_str()),
-                    Some(&root),
-                    Some(&dirs.home),
-                )
-                .ok_or("no trusted gh executable outside the source project")?;
+                let number = number.parse().map_err(|_| "invalid issue number")?;
+                let gh = github_lookup(
+                    is_trusted,
+                    &root,
+                    &dirs.home,
+                    &policy.host_path,
+                    "GitHub issue lookup is unavailable in offline mode",
+                    "source project is not trusted; approve it before issue lookup",
+                )?;
                 vec![oxa_work::issue_task(
                     &root,
                     &gh,
                     &policy.host_path,
-                    number.parse().map_err(|_| "invalid issue number")?,
+                    number,
                     model.clone(),
                 )?]
             }
-            _ => return Err(
-                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | status [--json]"
-                    .into(),
-            ),
+            [flag, number, model_flag, model] if flag == "--pr" && model_flag == "--model" => {
+                let number = number.parse().map_err(|_| "invalid pull request number")?;
+                let gh = github_lookup(
+                    is_trusted,
+                    &root,
+                    &dirs.home,
+                    &policy.host_path,
+                    "GitHub pull request lookup is unavailable in offline mode",
+                    "source project is not trusted; approve it before pull request lookup",
+                )?;
+                vec![oxa_work::pull_request_task(
+                    &root,
+                    &gh,
+                    &policy.host_path,
+                    number,
+                    model.clone(),
+                )?]
+            }
+            _ => {
+                return Err(
+                    "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] \
+                     | --pr N --model MODEL [--rerun] | status [--json]"
+                        .into(),
+                )
+            }
         };
         // Freeze every task before checkout hooks or a first worker can change
         // shared refs. A bad plan remains a per-task error, not a batch abort.
