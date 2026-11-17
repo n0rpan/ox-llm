@@ -174,7 +174,7 @@ fn refusals_are_typed_and_never_return_provider_messages_or_workspace_urls() {
 
 #[test]
 fn model_throttling_is_not_reported_as_subscription_allowance_exhaustion() {
-    let body = json!({"error":{"type":"RateLimit","message":"Synthetic model throttle"}});
+    let body = json!({"error":{"type":"RateLimit.Exceeded","message":"Synthetic model throttle"}});
     assert_eq!(opencode::refusal(429, &body).code(), "cloud_rate_limited");
     let inference = json!({"error":{"type":"inference_failed","message":"Synthetic request failure"}});
     assert_eq!(opencode::refusal(400, &inference), Refusal::Other(400));

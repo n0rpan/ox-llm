@@ -231,9 +231,9 @@ fn native_go_401_keeps_public_credentials_error_and_a_valid_refusal_receipt() {
 #[test]
 fn native_go_all_429_bodies_are_retryable_and_numeric_retry_after_is_bounded() {
     for (kind, headers, delay) in [
-        ("RateLimit", vec![("Retry-After", "7".into())], Some(7)),
+        ("RateLimit.Exceeded", vec![("Retry-After", "7".into())], Some(7)),
         (
-            "subscription_limit_reached",
+            "inference_failed",
             vec![("Retry-After", "4294967296".into())],
             None,
         ),
