@@ -22,6 +22,11 @@ pub enum Progress<'a> {
     Advanced,
     ToolStart(&'a str),
     ToolEnd,
+    /// A native goal control advanced the revision and the session store confirmed the sync.
+    /// The operation may still need a prefix refresh. This is a wake to read the bound owner.
+    GoalControlCommitted {
+        revision: u64,
+    },
     /// An operation returned, including an empty queue or a command without an agent turn.
     /// This observation does not imply an AgentSettled event or hook was emitted.
     Settled(RunOutcome),

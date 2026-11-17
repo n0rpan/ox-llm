@@ -47,6 +47,14 @@ impl Runner<'_> {
                     tree::verify_objects(self.policy, self.repo, &point(state)?.base)?;
                     tree::validate(self.policy, self.repo, &tree, &state.task)?;
                     let step = state.record.step;
+                    if step == Step::Worker && state.record.session_id.is_none() {
+                        if let Some(reviewed) = state.task.reviewed_head() {
+                            let actual = checked(git(self.policy, &tree, &["rev-parse", "HEAD"]))?;
+                            if actual != reviewed {
+                                return Err("pull request branch moved before starting the worker".into());
+                            }
+                        }
+                    }
                     let remaining = std::time::Duration::from_millis(
                         state.deadline_at_ms.saturating_sub(state::now_ms()),
                     );

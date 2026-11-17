@@ -97,7 +97,7 @@ impl<'a> Reader<'a> {
             }
             let connection = &page["pullRequests"];
             let total = connection["totalCount"].as_u64().ok_or("missing PR count")?;
-            if total > 1000
+            if total > oxa_work::board::MAX_OPEN_PULL_REQUESTS as u64
                 || connection["totalCount"] != result["pullRequests"]["totalCount"]
                 || page["mergeQueue"] != result["mergeQueue"]
             {
@@ -170,9 +170,10 @@ impl<'a> Reader<'a> {
                 "-f",
                 &format!("query={query}"),
             ]);
-        let (code, text) = crate::report_cmd::command_runner(command, Some(MAX_RESPONSE)).ok_or(invalid(
-            "GitHub read failed, exceeded its byte limit or timed out",
-        ))?;
+        let (code, text) = oxa_work::command_runner(command, Some(MAX_RESPONSE), oxa_work::COMMAND_DEADLINE)
+            .ok_or(invalid(
+                "GitHub read failed, exceeded its byte limit or timed out",
+            ))?;
         let (headers, body) = text
             .split_once("\r\n\r\n")
             .or_else(|| text.split_once("\n\n"))
@@ -257,7 +258,10 @@ impl GitHub for Reader<'_> {
         let expected: BTreeMap<_, _> = numbers.iter().zip(nodes(&list["pullRequests"])?).collect();
         let mut details = serde_json::json!({});
         let review_fields = if self.review_rows.is_some() {
-            "baseRefOid isCrossRepository authorAssociation comments(first:100){totalCount nodes{body author{login} lastEditedAt}} reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
+            "baseRefOid isCrossRepository authorAssociation
+             comments(first:100){totalCount nodes{body updatedAt lastEditedAt
+                author{login ... on Bot{databaseId}} editor{... on Bot{databaseId}}}}
+             reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
         } else {
             ""
         };

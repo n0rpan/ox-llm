@@ -132,6 +132,26 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     let page = get(port, "/", &authority, "");
     assert!(page.starts_with("HTTP/1.1 200"));
     assert!(page.contains("No open PRs in this snapshot"));
+    for (path, title) in [
+        ("/", "Status"),
+        ("/asks", "Asks"),
+        ("/board", "Board"),
+        ("/workers", "Workers"),
+        ("/usage", "Usage"),
+    ] {
+        for fragment in [false, true] {
+            let path = if fragment {
+                format!("{path}?fragment=1")
+            } else {
+                path.into()
+            };
+            let response = get(port, &path, &authority, "");
+            assert!(response.starts_with("HTTP/1.1 200"), "{path}");
+            assert!(response.contains(&format!(">{title}</h1>")), "{path}");
+            assert_eq!(response.contains("<!doctype html>"), !fragment, "{path}");
+        }
+        assert!(get(port, path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
+    }
     assert!(get(port, "/", "attacker.invalid", "").starts_with("HTTP/1.1 403"));
     assert!(get(
         port,
