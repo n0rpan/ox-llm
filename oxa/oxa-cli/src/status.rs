@@ -740,11 +740,7 @@ mod tests {
             let mut read = read_snapshot(&path).unwrap();
             strip_unproven_local(&mut read);
             for field in LOCAL_FIELDS {
-                if record.get(field).is_some() {
-                    assert_eq!(read.get(field), record.get(field), "{field}");
-                } else {
-                    assert!(read.get(field).is_none(), "{missing} must strip {field}");
-                }
+                assert!(read.get(field).is_none(), "{missing} must strip {field}");
             }
             assert_eq!(read["pid"], full["pid"]);
         }
