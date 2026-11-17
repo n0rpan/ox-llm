@@ -181,7 +181,7 @@ fn generation_pty_ctrl_c_cancels_and_keeps_prompt_usable() {
     p.wait_text("READY");
     p.wait_for(|| server.requests().iter().any(|r| r.max_tokens == 0));
     p.send(b"synthetic cancellation check\r");
-    p.wait_for(|| !server.requests().is_empty());
+    p.wait_for(|| server.requests().iter().any(|r| r.max_tokens > 0));
     eprintln!(
         "foreground_before_ctrl_c={}",
         server.requests().iter().filter(|r| r.max_tokens > 0).count()
