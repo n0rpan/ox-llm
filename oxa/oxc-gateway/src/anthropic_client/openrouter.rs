@@ -180,6 +180,7 @@ struct Stream<'a> {
     tools: BTreeMap<u64, Value>,
     reason: Option<&'static str>,
     usage: Option<Usage>,
+    reasoning_tokens: u64,
     reported_cost: Option<f64>,
 }
 impl<'a> Stream<'a> {
@@ -197,6 +198,7 @@ impl<'a> Stream<'a> {
             tools: BTreeMap::new(),
             reason: None,
             usage: None,
+            reasoning_tokens: 0,
             reported_cost: None,
         }
     }
@@ -215,7 +217,14 @@ impl<'a> Stream<'a> {
             if (self.reason.is_none() && !finishes_here) || self.usage.is_some() {
                 return Err(Error::Protocol);
             }
-            self.usage = Some(usage(raw)?);
+            let usage = usage(raw)?;
+            let reasoning_tokens = raw
+                .pointer("/completion_tokens_details/reasoning_tokens")
+                .map_or(Some(0), Value::as_u64)
+                .filter(|tokens| *tokens <= usage.output_tokens)
+                .ok_or(Error::Protocol)?;
+            self.usage = Some(usage);
+            self.reasoning_tokens = reasoning_tokens;
             // Only the upstream terminal usage can supply cost. Missing/invalid
             // values retain catalog pricing; zero is a valid reported charge.
             self.reported_cost = raw["cost"]
@@ -336,10 +345,8 @@ impl<'a> Stream<'a> {
             // Inspect that tree (including nested values and object keys) with
             // the existing exact held-key redactor before releasing any calls.
             // Refuse rather than rewrite identities or clean raw argument bytes.
-            let mut safe_arguments = arguments.clone();
-            let unsafe_arguments = redaction::value(&mut safe_arguments, self.redactor.key);
-            let mut safe_tool = tool.clone();
-            let unsafe_tool = redaction::value(&mut safe_tool, self.redactor.key);
+            let unsafe_arguments = redaction::contains_secret(&arguments, self.redactor.key.expose());
+            let unsafe_tool = redaction::contains_secret(tool, self.redactor.key.expose());
             if unsafe_arguments || unsafe_tool {
                 return Err(Error::Protocol);
             }
@@ -359,6 +366,7 @@ impl<'a> Stream<'a> {
         );
         if self.include_usage {
             let mut normalized = usage.openai();
+            normalized["completion_tokens_details"]["reasoning_tokens"] = json!(self.reasoning_tokens);
             if let Some(cost) = self.reported_cost {
                 normalized["cost"] = json!(cost);
             }
