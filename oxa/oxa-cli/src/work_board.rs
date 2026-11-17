@@ -3,11 +3,12 @@ pub mod refill_input;
 use oxa_work::board::{Board, GitHub, Mergeability, Policy, PullRequest, RequiredCi};
 use serde_json::Value;
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     io::{BufRead, IsTerminal, Read},
     path::Path,
     process::Command,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 mod review;
@@ -36,6 +37,8 @@ pub(crate) struct Reader<'a> {
     repo: &'a str,
     token: &'a str,
     review_rows: Option<Value>,
+    deadline: Cell<Instant>,
+    bytes: Cell<usize>,
 }
 
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
@@ -137,7 +140,17 @@ impl<'a> Reader<'a> {
             repo,
             token,
             review_rows: None,
+            deadline: Cell::new(Instant::now() + Duration::from_secs(120)),
+            bytes: Cell::new(0),
         }
+    }
+
+    fn time_left(&self) -> Result<Duration, QueryError> {
+        let remaining = self.deadline.get().saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(QueryError::Other("GitHub snapshot deadline exhausted"));
+        }
+        Ok(remaining)
     }
 
     /// Fixed repository fields from native callers share the bounded, redacted transport.
@@ -146,14 +159,12 @@ impl<'a> Reader<'a> {
         self.query(fields).map_err(QueryError::message)
     }
 
-    fn listing(&self, bytes: &mut usize) -> Result<(Value, Value), SnapshotError> {
+    fn listing(&self) -> Result<(Value, Value), SnapshotError> {
         let (mut fields, mut rows, mut seen, mut cursors) =
             (LIST.to_owned(), vec![], BTreeSet::new(), BTreeSet::new());
         let mut result = Value::Null;
         loop {
-            let (page, read) =
-                self.repository_read(&format!("{fields} mergeQueue(branch:\"main\"){{id}}"))?;
-            charge(bytes, read)?;
+            let (page, _) = self.repository_read(&format!("{fields} mergeQueue(branch:\"main\"){{id}}"))?;
             if result.is_null() {
                 result = page.clone();
             }
@@ -197,7 +208,11 @@ impl<'a> Reader<'a> {
         loop {
             match self.query_once(fields) {
                 Err(error) if error.retryable() && retries < 2 => {
-                    std::thread::sleep(Duration::from_millis(200 << retries));
+                    let pause = Duration::from_millis(200 << retries);
+                    if self.time_left()? <= pause {
+                        return Err(QueryError::Other("GitHub snapshot deadline exhausted"));
+                    }
+                    std::thread::sleep(pause);
                     retries += 1;
                 }
                 result => return result,
@@ -223,10 +238,18 @@ impl<'a> Reader<'a> {
                 "-f",
                 &format!("query={query}"),
             ]);
-        let (code, text) = oxa_work::command_runner(command, Some(MAX_RESPONSE), oxa_work::COMMAND_DEADLINE)
-            .ok_or(invalid(
-                "GitHub read failed, exceeded its byte limit or timed out",
-            ))?;
+        let remaining = MAX_RESPONSE
+            .checked_sub(self.bytes.get())
+            .filter(|n| *n > 0)
+            .ok_or(invalid("GitHub snapshot exceeds byte limit"))?;
+        let duration = oxa_work::COMMAND_DEADLINE.min(self.time_left()?);
+        let (code, text) = oxa_work::command_runner(command, Some(remaining), duration).ok_or(invalid(
+            "GitHub read failed: snapshot exceeds byte limit, capture refused or deadline reached",
+        ))?;
+        // Charge captured bytes, including headers and non-2xx bodies, before interpreting them.
+        let mut used = self.bytes.get();
+        charge(&mut used, text.len()).map_err(|_| invalid("GitHub snapshot exceeds byte limit"))?;
+        self.bytes.set(used);
         let (headers, body) = text
             .split_once("\r\n\r\n")
             .or_else(|| text.split_once("\n\n"))
@@ -299,9 +322,9 @@ fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
 }
 
 impl Reader<'_> {
-    fn acquire(&mut self, bytes: &mut usize) -> Result<Vec<PullRequest>, SnapshotError> {
+    fn acquire(&mut self) -> Result<Vec<PullRequest>, SnapshotError> {
         // Verify the complete paginated identity set before publishing any details.
-        let (list, first) = self.listing(bytes)?;
+        let (list, first) = self.listing()?;
         let has_queue = list["mergeQueue"].is_object();
         let numbers: Vec<u64> = nodes(&list["pullRequests"])?
             .iter()
@@ -332,7 +355,7 @@ impl Reader<'_> {
                 }}}}}}}}}}}}}}"#
                 ));
             }
-            let (page, read) = match self.query(&fields) {
+            let (page, _) = match self.query(&fields) {
                 Ok(page) => page,
                 Err(error) if error.retryable() && end - offset > 1 => {
                     size = (end - offset) / 2;
@@ -340,7 +363,6 @@ impl Reader<'_> {
                 }
                 Err(error) => return Err(error.message().into()),
             };
-            charge(bytes, read)?;
             listing_page(&page["pullRequests"])?;
             if page["pullRequests"] != first {
                 return Err(SnapshotError::Changed(
@@ -350,7 +372,10 @@ impl Reader<'_> {
             for n in &numbers[offset..end] {
                 let row = &page[format!("p{n}")];
                 let (number, _) = identity(row)?;
-                if number != *n || row["headRefOid"] != expected[n]["headRefOid"] {
+                if number != *n {
+                    return Err(SnapshotError::from("mismatched PR number"));
+                }
+                if row["headRefOid"] != expected[n]["headRefOid"] {
                     return Err(SnapshotError::Changed("mismatched PR details; retry later"));
                 }
                 details[format!("p{n}")] = row.clone();
@@ -360,7 +385,7 @@ impl Reader<'_> {
                 break;
             }
         }
-        let (verified, _) = self.listing(bytes)?;
+        let (verified, _) = self.listing()?;
         if verified["pullRequests"] != list["pullRequests"] || verified["mergeQueue"] != list["mergeQueue"] {
             return Err(SnapshotError::Changed(
                 "PR identities changed during snapshot; retry later",
@@ -465,6 +490,7 @@ impl Reader<'_> {
                 })
             })
             .collect::<Result<Vec<_>, SnapshotError>>()?;
+        self.time_left().map_err(QueryError::message)?;
         if self.review_rows.is_some() {
             self.review_rows = Some(details);
         }
@@ -474,10 +500,11 @@ impl Reader<'_> {
 
 impl GitHub for Reader<'_> {
     fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
-        let mut bytes = 0;
+        self.deadline.set(Instant::now() + Duration::from_secs(120));
+        self.bytes.set(0);
         // A consistency refusal gets exactly one fresh acquisition, sharing its byte budget.
-        match self.acquire(&mut bytes) {
-            Err(SnapshotError::Changed(_)) => self.acquire(&mut bytes),
+        match self.acquire() {
+            Err(SnapshotError::Changed(_)) => self.acquire(),
             result => result,
         }
         .map_err(SnapshotError::message)
@@ -570,14 +597,52 @@ pub(crate) fn run(
                 enabled: true,
                 ..Policy::default()
             };
-            if let Some(settings) = &review_settings {
+            let sample = if let Some(settings) = &review_settings {
                 review::sample(&mut reader, root, policy, &board_policy, settings, now)
             } else {
                 Board::read(&mut reader, &board_policy, &BTreeMap::new(), now)
                     .map(|board| (board, BTreeMap::new()))
-            }
+            }?;
+            reader.time_left().map_err(QueryError::message)?;
+            Ok(sample)
         },
         std::thread::sleep,
     )?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    use oxa_fake::TestEnv;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn exhausted_budget_refuses_launch_and_remaining_time_bounds_the_child() {
+        let test = TestEnv::new();
+        test.write("work/gh", "#!/bin/sh\nprintf started > \"$0.started\"\nsleep 3\n");
+        let program = test.work().join("gh");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = test.work().join("gh.started");
+        let reader = Reader::new(
+            &program,
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            "example/repo",
+            "synthetic-app-token",
+        );
+        reader.deadline.set(Instant::now());
+        assert!(reader.repository_read("id").is_err());
+        assert!(!marker.exists(), "an expired operation must not start a child");
+        let start = Instant::now();
+        reader.deadline.set(start + Duration::from_millis(200));
+        assert!(reader.repository_read("id").is_err());
+        assert!(
+            marker.exists(),
+            "the remaining-budget control must launch the real child"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "the last call must not get a fresh 30-second budget"
+        );
+    }
 }

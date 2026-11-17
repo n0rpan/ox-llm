@@ -459,6 +459,20 @@ fn transient_http_output_uses_the_same_snapshot_byte_budget() {
 }
 
 #[test]
+fn a_wrong_detail_number_does_not_gain_a_consistency_retry() {
+    let env = batched_fixture(1, 15, 504);
+    let path = env.work().join("rows/1.json");
+    let mut row: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    row["number"] = 2.into();
+    fs::write(path, row.to_string()).unwrap();
+    assert!(!invoke(&env, "work board --shadow --repo example/repo --once")
+        .status
+        .success());
+    assert_eq!(batch_sizes(&env), [0, 1]);
+    assert!(fs::read(log_for(&env, "example/repo")).unwrap().is_empty());
+}
+
+#[test]
 fn malformed_membership_is_not_a_consistency_retry() {
     let env = batched_fixture(2, 15, 504);
     let mut malformed: serde_json::Value =
