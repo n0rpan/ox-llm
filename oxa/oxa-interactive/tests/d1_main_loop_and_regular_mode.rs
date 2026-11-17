@@ -12,15 +12,16 @@ use oxa_interactive::{
     ViewSettings, WorkerMsg,
 };
 use oxa_proto::{
-    codes, Access, AgentEvent, CancelToken, Decision, Engine, Entry, EntryBody, EventMessage, ExecResult,
-    ExecSpec, Level, Mode, OxaError, Part, Policy, Sandbox, StopReason, ToolOutput, WireMsg,
+    codes, Access, AgentEvent, AssistantTurn, CancelToken, ChatRequest, Decision, Engine, EngineInfo, Entry,
+    EntryBody, EventMessage, ExecResult, ExecSpec, Level, Mode, OxaError, Part, Policy, Sandbox, StopReason,
+    StreamEvent, ToolOutput, WireMsg,
 };
 use oxa_resources::Resources;
 use oxa_session::{MemStore, SessionStore};
 use oxa_tui::{visible_width, InputEvent, Key, TermCaps, TestTerminal, Theme};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------------------------
 // Harness
@@ -70,8 +71,18 @@ fn session_open(
     store: Arc<dyn SessionStore>,
     open: Open,
 ) -> Session {
+    session_deps(
+        env,
+        Arc::new(ScriptedEngine::new(turns)) as Arc<dyn Engine>,
+        store,
+        open,
+    )
+}
+
+/// A session on an engine of the test's choosing, in the test's own directories.
+fn session_deps(env: &TestEnv, engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>, open: Open) -> Session {
     let deps = Deps {
-        engine: Arc::new(ScriptedEngine::new(turns)) as Arc<dyn Engine>,
+        engine,
         store,
         tools: Vec::new(),
         hooks: Vec::new(),
@@ -89,6 +100,48 @@ fn session_open(
         jobs: oxa_core::fresh_jobs(),
     };
     Session::open(deps, open).expect("open the test session")
+}
+
+/// An engine whose first `chat` blocks until the test releases it (or drops the sender): the
+/// session stays claimed (`Handle::is_busy`) while the test drives the loop against a run that
+/// is unwinding. Later requests pass through to the scripted turns.
+struct HeldEngine {
+    inner: ScriptedEngine,
+    /// Taken by the first `chat`; dropping it (a failing test) releases the run too.
+    release: Mutex<Option<Receiver<()>>>,
+    /// Signalled as the first `chat` starts, so the test knows the run is in the engine.
+    entered: Sender<()>,
+}
+
+impl HeldEngine {
+    fn new(turns: Vec<oxa_fake::ScriptTurn>, release: Receiver<()>, entered: Sender<()>) -> HeldEngine {
+        HeldEngine {
+            inner: ScriptedEngine::new(turns),
+            release: Mutex::new(Some(release)),
+            entered,
+        }
+    }
+}
+
+impl Engine for HeldEngine {
+    fn info(&self, target: Option<&str>) -> Result<EngineInfo, OxaError> {
+        self.inner.info(target)
+    }
+    fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+        self.inner.count_tokens(text)
+    }
+    fn chat(
+        &self,
+        r: &ChatRequest,
+        cancel: &CancelToken,
+        on: &mut dyn FnMut(StreamEvent),
+    ) -> Result<AssistantTurn, OxaError> {
+        if let Some(release) = self.release.lock().unwrap().take() {
+            let _ = self.entered.send(());
+            let _ = release.recv();
+        }
+        self.inner.chat(r, cancel, on)
+    }
 }
 
 fn interactive_opts(env: &TestEnv) -> InteractiveOpts {
@@ -132,6 +185,16 @@ struct Driven {
 /// Run the loop with scripted input batches (one batch per poll) and scripted worker messages
 /// queued before it starts. Every script must end with Ctrl+D on an empty editor.
 fn drive(session: &Session, env: &TestEnv, batches: Vec<Vec<InputEvent>>, worker: Vec<WorkerMsg>) -> Driven {
+    drive_handle(session.handle(), env, batches, worker)
+}
+
+/// [`drive`] on a handle alone, for a session that another thread is running.
+fn drive_handle(
+    handle: oxa_core::Handle,
+    env: &TestEnv,
+    batches: Vec<Vec<InputEvent>>,
+    worker: Vec<WorkerMsg>,
+) -> Driven {
     let mut term = TestTerminal::new(80, 24);
     for b in batches {
         term.push_input(b);
@@ -146,7 +209,7 @@ fn drive(session: &Session, env: &TestEnv, batches: Vec<Vec<InputEvent>>, worker
     let code = run_loop(
         &mut term,
         &mut opts,
-        session.handle(),
+        handle,
         cmd_tx,
         msg_rx,
         ui_rx,
@@ -490,6 +553,59 @@ fn escape_aborts_and_restores_queue() {
     );
     assert!(follow_up.is_empty());
     assert!(d.cmds.is_empty());
+}
+
+/// #906: Enter while an aborted run is still unwinding starts a new run. The aborted run takes
+/// no further tool batch, so a steering message would sit in a queue nothing drains (the flaky
+/// `oxa-cli::i699_interrupt::tool_pty_ctrl_c_stops_tool_without_exiting` caught it: the reply to
+/// the message typed after `Command aborted` never came).
+#[test]
+fn enter_while_the_run_is_aborting_starts_a_new_run() {
+    let env = TestEnv::new();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (entered_tx, entered_rx) = mpsc::channel::<()>();
+    let mut s = session_deps(
+        &env,
+        Arc::new(HeldEngine::new(
+            vec![oxa_fake::ScriptTurn::text("recovered")],
+            release_rx,
+            entered_tx,
+        )),
+        Arc::new(MemStore::new()),
+        Open::Ephemeral,
+    );
+    let handle = s.handle();
+    let run = std::thread::spawn(move || {
+        let mut sink = oxa_proto::VecSink(Vec::new());
+        let mut ui = oxa_proto::HeadlessUi::default();
+        s.prompt("first".to_string(), Vec::new(), &mut sink, &mut ui)
+    });
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the run reaches the engine");
+    handle.abort();
+    assert!(
+        handle.is_aborting(),
+        "Ctrl+C cancels the run that holds the session"
+    );
+    let d = drive_handle(
+        handle.clone(),
+        &env,
+        vec![vec![ch('x'), key("enter")], vec![key("ctrl+d")]],
+        Vec::new(),
+    );
+    assert_eq!(d.code, 0);
+    let (steering, follow_up) = handle.queued();
+    assert!(
+        steering.is_empty() && follow_up.is_empty(),
+        "nothing waits in a queue the aborted run will never drain: {steering:?} {follow_up:?}"
+    );
+    match d.cmds.as_slice() {
+        [SessionCmd::Prompt { text, .. }] => assert_eq!(text.as_str(), "x"),
+        _ => panic!("the input must start a run, not steer"),
+    }
+    drop(release_tx);
+    run.join().expect("the run ends").expect("the run settles");
 }
 
 /// ! and !!

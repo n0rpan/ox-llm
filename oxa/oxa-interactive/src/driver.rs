@@ -691,6 +691,15 @@ impl<'a> Loop<'a> {
             || (self.handle.is_busy() && !self.worker.is_preloading() && !self.worker.is_drafting())
     }
 
+    /// Whether Enter / Alt+Enter queue the text (steering / follow-up) rather than start a run:
+    /// a run is active and it still takes a tool batch. A run that is winding down after an
+    /// abort (#906) takes no further batch, so a queued message would never be delivered;
+    /// input typed in that window starts a new run instead. Only what Enter does changes:
+    /// Ctrl+C still aborts, and the footer hint still reads "steer" for that moment.
+    fn accepts_steering(&self) -> bool {
+        self.running() && !self.handle.is_aborting()
+    }
+
     pub(crate) fn animating(&self) -> bool {
         self.running()
             || self.dialogs.is_open()
@@ -1411,7 +1420,7 @@ impl<'a> Loop<'a> {
             }
             self.editor.set_text("");
             self.editor.add_history(&text);
-            if self.running() {
+            if self.accepts_steering() {
                 self.handle.follow_up(text);
                 self.sync_queue();
             } else {
@@ -1681,7 +1690,7 @@ impl<'a> Loop<'a> {
         if self.fullscreen {
             self.viewport.scroll_to_bottom();
         }
-        if self.running() {
+        if self.accepts_steering() {
             self.handle.steer(trimmed);
             self.sync_queue();
         } else {
