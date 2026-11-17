@@ -8,6 +8,7 @@ use std::fmt::Write;
 pub struct View<'a> {
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
+    pub main_red: bool,
     pub queue: Option<&'a [PullRequest]>,
     /// Source issue and its reported checkbox states; these do not establish validation.
     pub release: Option<(u64, &'a [(bool, String)])>,
@@ -58,7 +59,22 @@ pub fn document(view: &View<'_>, now: u64) -> String {
 
 /// Allow-listed HTML fragment, also used by SSE. No worktrees, sessions, errors or headers.
 pub fn content(view: &View<'_>, now: u64) -> String {
-    let mut html = String::from("<main><h1>Work in motion</h1><p class=muted>One next action. A clear place for your decisions.</p><nav aria-label=Views><a href=#board>Board</a><a href=#lanes>Lanes</a><a href=#queue>Merge queue</a><a href=#release>Release</a><a href=#asks>Asks</a></nav><section id=board><h2>Board</h2>");
+    let mut html = String::from("<main><h1>Work in motion</h1>");
+    let ask_count = view.situation.map_or(0, |s| s.asks.len());
+    if view.main_red || ask_count > 0 {
+        html.push_str("<section id=attention><h2>Needs attention</h2><ul>");
+        if view.main_red {
+            html.push_str("<li>Checks on main are failing.</li>");
+        }
+        if ask_count > 0 {
+            let _ = write!(
+                html,
+                "<li><a href=#asks>Unanswered owner decisions ({ask_count})</a></li>"
+            );
+        }
+        html.push_str("</ul></section>");
+    }
+    html.push_str("<nav aria-label=Views><a href=#board>Board</a><a href=#lanes>Lanes</a><a href=#queue>Merge queue</a><a href=#release>Release</a><a href=#asks>Asks</a></nav><section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
         let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
         let _ = write!(
@@ -206,6 +222,8 @@ mod tests {
             .filter_map(|line| Snapshot::from_json(line.as_bytes()).ok())
             .collect();
         assert!(!snapshots.is_empty());
+        assert!(snapshots.iter().any(|s| !s.asks.is_empty()));
+        assert!(snapshots.iter().any(|s| s.asks.is_empty()));
         for snapshot in snapshots {
             let page = document(
                 &View {
@@ -217,6 +235,10 @@ mod tests {
             for ask in &snapshot.asks {
                 assert!(page.contains(&escape(&ask.question)));
             }
+            assert_eq!(page.contains("Needs attention"), !snapshot.asks.is_empty());
+            if !snapshot.asks.is_empty() {
+                assert!(page.contains(&format!("Unanswered owner decisions ({})", snapshot.asks.len())));
+            }
             for running in &snapshot.running {
                 assert!(!page.contains(&running.worktree));
                 if let Some(id) = &running.session_id {
@@ -227,6 +249,32 @@ mod tests {
                 page.contains("Options, recommendation and meanwhile are unavailable")
                     || snapshot.asks.is_empty()
             );
+        }
+    }
+    #[test]
+    fn only_failed_main_rollups_render_an_alarm() {
+        for (state, red) in [
+            ("ERROR", true),
+            ("FAILURE", true),
+            ("SUCCESS", false),
+            ("PENDING", false),
+            ("EXPECTED", false),
+            ("", false),
+        ] {
+            let response = serde_json::json!({"data":{"repository":{
+                "main":{"target":{"statusCheckRollup":{"state":state}}},
+                "mergeQueue":null
+            }}});
+            let panels = crate::lead_panels::parse(&serde_json::to_vec(&response).unwrap(), None).unwrap();
+            let page = content(
+                &View {
+                    main_red: panels.main_red,
+                    ..View::default()
+                },
+                100,
+            );
+            assert_eq!(page.contains("Checks on main are failing."), red, "{state}");
+            assert_eq!(page.contains("Needs attention"), red, "{state}");
         }
     }
     #[test]

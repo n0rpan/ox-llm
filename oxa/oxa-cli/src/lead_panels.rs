@@ -1,4 +1,4 @@
-//! One read-only GraphQL projection for queue membership and a selected release issue.
+//! One read-only GraphQL projection for main CI, queue membership and a selected release issue.
 //! No scheduler decisions are inferred here. Checkbox states are reported, not validated.
 use oxa_proto::work::{PullRequest, MAX_ITEMS};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
@@ -7,6 +7,8 @@ use serde_json::Value;
 type Result<T> = std::result::Result<T, &'static str>;
 
 pub struct Panels {
+    /// True only when GitHub reports an error or failure on the current main head.
+    pub main_red: bool,
     /// None means GitHub did not supply a merge queue; Some(empty) is an observed empty queue.
     pub queue: Option<Vec<PullRequest>>,
     pub release: Option<(u64, Vec<(bool, String)>)>,
@@ -32,7 +34,13 @@ pub fn query(repo: &str, release_issue: Option<u64>) -> Result<String> {
     let release = release_issue.map_or(String::new(), |number| {
         format!("issue(number:{number}){{number body}}")
     });
-    Ok(format!("query{{repository(owner:{:?},name:{:?}){{mergeQueue{{entries(first:100){{totalCount nodes{{pullRequest{{number headRefOid}}}}}}}}{release}}}}}", parts[0], parts[1]))
+    Ok(format!(
+        "query{{repository(owner:{:?},name:{:?}){{\
+         main:ref(qualifiedName:\"refs/heads/main\"){{target{{... on Commit{{statusCheckRollup{{state}}}}}}}}\
+         mergeQueue(branch:\"main\"){{entries(first:100){{totalCount nodes{{pullRequest{{number headRefOid}}}}}}}}\
+         {release}}}}}",
+        parts[0], parts[1]
+    ))
 }
 
 /// Fixed diagnostics only. Arbitrary body/header/token/debug fields never reach the view.
@@ -97,7 +105,16 @@ pub fn parse(bytes: &[u8], release_issue: Option<u64>) -> Result<Panels> {
     } else {
         None
     };
-    Ok(Panels { queue, release })
+    let main_red = matches!(
+        repo.pointer("/main/target/statusCheckRollup/state")
+            .and_then(Value::as_str),
+        Some("ERROR" | "FAILURE")
+    );
+    Ok(Panels {
+        main_red,
+        queue,
+        release,
+    })
 }
 
 fn label(items: &mut [(bool, String)], stack: &[(Option<usize>, bool)], text: &str) -> Result<()> {
@@ -249,9 +266,15 @@ mod tests {
         assert!(parse(absent, None).unwrap().queue.is_none());
         let empty = br#"{"data":{"repository":{"mergeQueue":{"entries":{"totalCount":0,"nodes":[]}}}}}"#;
         assert!(parse(empty, None).unwrap().queue.unwrap().is_empty());
-        assert!(query("example/project", Some(19))
-            .unwrap()
-            .contains("issue(number:19)"));
+        let query_text = query("example/project", Some(19)).unwrap();
+        for field in [
+            "ref(qualifiedName:\"refs/heads/main\")",
+            "statusCheckRollup{state}",
+            "mergeQueue(branch:\"main\")",
+            "issue(number:19)",
+        ] {
+            assert!(query_text.contains(field));
+        }
         for repo in ["example", "example/project/extra", "example/\"injection"] {
             assert!(query(repo, None).is_err());
         }
