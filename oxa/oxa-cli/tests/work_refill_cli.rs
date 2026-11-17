@@ -14,6 +14,7 @@ fn invoke(env: &TestEnv, config: &Path, token: &str, offline: bool) -> std::proc
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs("http://127.0.0.1:1"))
+        .env("GH_TOKEN", "synthetic-cached")
         .env(
             "PATH",
             format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
@@ -132,7 +133,7 @@ fn private_token_and_exact_task_ref_precede_one_durable_publication() {
     let task = controls.join("task.txt");
     fs::write(
         &task,
-        b"i46 local/fake agent/44 main\nSynthetic prepared packet.\n",
+        b"i44 local/fake agent/44 main\nSynthetic prepared packet.\n",
     )
     .unwrap();
     fs::set_permissions(&task, fs::Permissions::from_mode(0o600)).unwrap();
@@ -160,7 +161,13 @@ cat "$0.reply"
     }}}).to_string()).unwrap();
     let missing = invoke(&env, &config, "", false);
     assert_eq!(missing.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("App token"));
     assert!(!env.tmp().join("gh.calls").exists());
+    fs::write(
+        &task,
+        b"i46 local/fake agent/44 main\nSynthetic prepared packet.\n",
+    )
+    .unwrap();
     let mismatch = invoke(&env, &config, "synthetic\n", false);
     assert_eq!(mismatch.status.code(), Some(2));
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
