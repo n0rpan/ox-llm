@@ -170,13 +170,12 @@ fn repeat_rejection_alarm_requires_the_retried_group_for_the_same_head() {
         })
         .repeat_rejection_alarm
     );
-    assert!(
-        !plan(Rejection {
-            cause: RejectionCause::Unknown,
-            ..rejected
-        })
-        .repeat_rejection_alarm
-    );
+    let missing_report = plan(Rejection {
+        cause: RejectionCause::Unknown,
+        ..rejected
+    });
+    assert!(missing_report.repeat_rejection_alarm);
+    assert!(missing_report.notify_rejection.is_none());
     rejected.retry = Retry::Consumed {
         first_rejected_group: "group-retry",
         admitted_group: Some("group-retry"),

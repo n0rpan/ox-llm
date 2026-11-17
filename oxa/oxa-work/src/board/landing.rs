@@ -159,7 +159,6 @@ impl Policy {
             Queue::Rejected(Rejection {
                 head,
                 merge_group_head,
-                cause,
                 retry:
                     Retry::Consumed {
                         first_rejected_group,
@@ -173,7 +172,6 @@ impl Policy {
                     && !retry_group.is_empty()
                     && retry_group != first_rejected_group
                     && retry_group == merge_group_head
-                    && cause.known()
             }
             _ => false,
         };
