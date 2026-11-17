@@ -721,6 +721,44 @@ fn inbox_rebinding_rearms_admitted_messages_without_files() {
     assert!(!handle.has_inbox_input());
 }
 
+fn write_oversized_fixture(dir: &Path, during_write: impl FnOnce()) {
+    let pending = dir.join("oversized.pending");
+    let mut file = std::fs::File::create(&pending).unwrap();
+    during_write();
+    file.write_all(&vec![b'x'; 256 * 1024 + 1]).unwrap();
+    drop(file);
+    std::fs::rename(pending, dir.join("oversized.msg")).unwrap();
+}
+
+#[test]
+fn oversized_fixture_is_not_published_until_its_payload_is_complete() {
+    let env = TestEnv::new();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let id = "fixture-publication";
+    let dir = agent.join("inbox").join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    // Both paths exist before startup scanning; this sorts after the fixture.
+    std::fs::write(dir.join("zz-scan.msg"), "scan barrier").unwrap();
+    write_oversized_fixture(&dir, || {
+        let (tx, rx) = mpsc::channel();
+        let watch = oxa_session::Inbox::watch(&agent, id, move |text| tx.send(text).is_ok()).unwrap();
+        let delivered = rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        drop(watch);
+        assert_eq!(
+            delivered, "scan barrier",
+            "startup scan consumed an incomplete fixture"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "only the complete barrier may be delivered"
+        );
+    });
+    assert_eq!(
+        std::fs::metadata(dir.join("oversized.msg")).unwrap().len(),
+        256 * 1024 + 1
+    );
+}
+
 #[test]
 fn inbox_backpressure_retains_excess_files_while_model_is_held_then_drains() {
     struct HeldFirst {
@@ -763,7 +801,7 @@ fn inbox_backpressure_retains_excess_files_while_model_is_held_then_drains() {
     let agent = Dirs::under(env.root()).agent_dir;
     let dir = agent.join("inbox").join(&id);
     // An external writer can bypass send's size validation: still never read it all.
-    std::fs::write(dir.join("oversized.msg"), vec![b'x'; 256 * 1024 + 1]).unwrap();
+    write_oversized_fixture(&dir, || {});
     for n in 0..70 {
         oxa_session::send_inbox(&agent, &id, &format!("backlog {n}")).unwrap();
     }
