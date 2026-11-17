@@ -85,7 +85,9 @@ impl Credential {
     }
     pub fn redact(&self, value: &mut Value) {
         match self {
-            Self::ApiKey(key) => redaction::value(value, key),
+            Self::ApiKey(key) => {
+                redaction::value(value, key);
+            }
             #[cfg(feature = "upstream-openai")]
             Self::Subscription(record) => {
                 redaction::secret(value, record.access_token());

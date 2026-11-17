@@ -35,7 +35,7 @@ pub(crate) fn secret(value: &mut Value, secret: &str) {
                 map.insert(name.replace(secret, "[redacted]"), item);
             }
         }
-        _ => {},
+        _ => {}
     }
 }
 
