@@ -2257,19 +2257,4 @@ mod export_source_tests {
         assert!(err.message.contains("source session"), "{}", err.message);
         assert_eq!(std::fs::read(&source).unwrap(), before);
     }
-
-    #[test]
-    fn tmp_source_guard_premise() {
-        let env = oxa_fake::TestEnv::new();
-        let source = session(&env);
-        let before = std::fs::read(&source).unwrap();
-        let result = export_inner(
-            source.to_str().unwrap(),
-            Some(source.to_str().unwrap()),
-            &env.home(),
-            &env.work(),
-        );
-        assert!(result.is_err(), "the source must be refused: {result:?}");
-        assert_eq!(std::fs::read(&source).unwrap(), before);
-    }
 }
