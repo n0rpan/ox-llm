@@ -1,6 +1,6 @@
 //! C10: RPC run-control commands.
 // ported from pi packages/coding-agent/src/modes/rpc/rpc-mode.ts (docs: rpc-commands.md)
-use crate::events::{event_to_json, message_to_json, state_to_json};
+use crate::events::{event_to_json, message_to_json, session_state};
 use crate::{Handled, RpcCommand, RpcCx, RpcUi};
 use oxa_config::QueueMode;
 use oxa_core::{Handle, Open};
@@ -25,7 +25,7 @@ pub fn handle(cx: &mut RpcCx, cmd: &RpcCommand) -> Handled {
             return queue_command(&cx.handle, cmd)
         }
         "new_session" => new_session(cx),
-        "get_state" => Ok(state_to_json(&cx.session.state())),
+        "get_state" => Ok(session_state(&cx.session)),
         "get_messages" => Ok(json!({"messages": messages(cx)})),
         "set_model" => set_model(cx, cmd),
         "cycle_model" => cycle_model(cx),

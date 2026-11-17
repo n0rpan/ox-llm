@@ -1378,7 +1378,9 @@ dependencies = [
  "oxa-core",
  "oxa-export",
  "oxa-fake",
+ "oxa-orchestrator",
  "oxa-proto",
+ "oxa-rpc",
  "oxa-session",
  "serde_json",
 ]

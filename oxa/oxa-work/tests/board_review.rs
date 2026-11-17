@@ -418,3 +418,31 @@ fn untrusted_comments_and_incomplete_or_invalid_summaries_cannot_clear_a_hold() 
         Findings::Unknown
     );
 }
+
+#[test]
+fn code_approval_requires_the_latest_unambiguous_clean_summary() {
+    let clean = summary(review(NEW, false), absent());
+    let older = summary(review(OLD, false), absent());
+    let mut resolved = review(NEW, false);
+    resolved["has_any_findings"] = true.into();
+    let resolved = summary(resolved, absent());
+    let unresolved_security = summary(review(NEW, false), review(OLD, true));
+
+    assert_eq!(
+        latest_code_approval(Some(&[connector(&clean, 12), connector(&older, 11)])).as_deref(),
+        Some(NEW)
+    );
+    for newer in [&older, &resolved, &unresolved_security] {
+        assert_eq!(
+            latest_code_approval(Some(&[connector(&clean, 12), connector(newer, 12)])),
+            None
+        );
+    }
+    for newer in [&resolved, &unresolved_security] {
+        assert_eq!(
+            latest_code_approval(Some(&[connector(&clean, 12), connector(newer, 13)])),
+            None
+        );
+    }
+    assert_eq!(latest_code_approval(None), None);
+}
