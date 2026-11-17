@@ -445,7 +445,7 @@ pub enum SessionCmd {
     /// Coalesced wake for editor input. The handle binds it to the original ordinary queues;
     /// a wake left behind by a session rebind must not run the replacement's input.
     QueuedInput(oxa_core::Handle),
-    /// Explicit input after Ctrl+C belongs to the canceled session, not a queued replacement.
+    /// Explicit input after a cancel key belongs to the canceled session, not a queued replacement.
     RecoveryPrompt {
         handle: oxa_core::Handle,
         text: String,

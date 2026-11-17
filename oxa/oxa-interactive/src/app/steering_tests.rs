@@ -295,14 +295,22 @@ fn gated_prompt_with_cancel(
     );
     let before_wake = server.requests().iter().filter(|r| r.max_tokens > 0).count();
     if window == Window::AfterExplicitAbort {
-        if settle_before_submit {
-            assert!(matches!(commands.as_slice(), [SessionCmd::Prompt { .. }]));
-        } else {
-            assert!(
-                matches!(commands.as_slice(), [SessionCmd::RecoveryPrompt { handle, .. }]
-                if handle.same_instance(&control))
-            );
-        }
+        // The recovered text must reach the session unchanged, whichever side of the
+        // settlement the explicit input lands on: a bound recovery prompt while the
+        // canceled operation still holds the session, an ordinary prompt after it.
+        let recovered = match commands.as_slice() {
+            [SessionCmd::RecoveryPrompt { handle, text, parts }] if !settle_before_submit => {
+                assert!(handle.same_instance(&control), "recovery keeps its destination");
+                assert!(parts.is_empty(), "recovery keeps its parts");
+                text
+            }
+            [SessionCmd::Prompt { text, parts }] if settle_before_submit => {
+                assert!(parts.is_empty(), "recovery keeps its parts");
+                text
+            }
+            _ => panic!("explicit input after a cancel key must be one admit"),
+        };
+        assert_eq!(recovered.trim(), "third", "the recovered text must not be lost");
         assert_eq!(*session.outcome(), oxa_core::RunOutcome::Interrupted);
     } else {
         assert_eq!(before_wake, 3);

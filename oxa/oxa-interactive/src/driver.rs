@@ -1713,9 +1713,9 @@ impl<'a> Loop<'a> {
         if self.fullscreen {
             self.viewport.scroll_to_bottom();
         }
-        // Explicit input after Ctrl+C is a new prompt, not steering for the canceled run.
-        // The worker channel runs it after that operation releases the session. Ordinary
-        // queued input still uses the existing unsuccessful-outcome guard.
+        // Explicit input after a cancel key (Ctrl+C or Escape) is a new prompt, not steering
+        // for the canceled run. The worker channel runs it after that operation releases the
+        // session. Ordinary queued input still uses the existing unsuccessful-outcome guard.
         if self.running() && !self.abort_requested {
             self.handle.steer(trimmed);
             self.wake_queued();
