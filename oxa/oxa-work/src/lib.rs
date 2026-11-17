@@ -1,7 +1,11 @@
 //! Opt-in, sequential unattended task execution. Worktrees are retained on every outcome.
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::io::{self, Read};
+use std::os::unix::{
+    fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    process::CommandExt,
+};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -220,8 +224,19 @@ pub fn saved_issue_task(policy: &RunPolicy, number: u64, model: &str) -> Result<
     Ok(Some(task))
 }
 
-fn output(mut command: Command) -> Result<Output> {
-    command.stdin(Stdio::null()).output().map_err(|e| e.to_string())
+/// The default budget for short runner metadata and GitHub reads.
+pub const COMMAND_DEADLINE: Duration = Duration::from_secs(30);
+const GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
+fn output(command: Command) -> Result<Output> {
+    capture_command(
+        command,
+        Some(GIT_OUTPUT_BYTES),
+        COMMAND_DEADLINE,
+        Stdio::null(),
+        true,
+    )
+    .map_err(|e| e.to_string())
 }
 fn checked(command: Command) -> Result<String> {
     let out = output(command)?;
@@ -230,42 +245,98 @@ fn checked(command: Command) -> Result<String> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().into())
 }
-/// Capture stdout with an optional byte limit and a 30-second child deadline.
-pub fn command_runner(mut command: Command, limit: Option<usize>) -> Option<(i32, String)> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
+
+/// Capture bounded stdout, discarding stderr, within one process and pipe deadline.
+pub fn command_runner(command: Command, limit: Option<usize>, deadline: Duration) -> Option<(i32, String)> {
+    command_runner_with_stdin(command, limit, Stdio::null(), deadline)
+}
+
+/// Capture through the same deadline and byte limit while a supervised child holds a supplied stdin.
+pub fn command_runner_with_stdin(
+    command: Command,
+    limit: Option<usize>,
+    stdin: Stdio,
+    deadline: Duration,
+) -> Option<(i32, String)> {
+    let out = capture_command(command, limit, deadline, stdin, false).ok()?;
+    Some((
+        out.status.code().unwrap_or(1),
+        String::from_utf8(out.stdout).ok()?,
+    ))
+}
+
+fn read_output(
+    pipe: impl Read + Send + 'static,
+    limit: Option<usize>,
+) -> std::thread::JoinHandle<io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
         let ceiling = limit.map_or(u64::MAX, |limit| limit.saturating_add(1) as u64);
-        let mut limited = std::io::Read::take(stdout, ceiling);
-        std::io::Read::read_to_end(&mut limited, &mut bytes).ok()?;
+        let mut bytes = Vec::new();
+        pipe.take(ceiling).read_to_end(&mut bytes)?;
         if limit.is_some_and(|limit| bytes.len() > limit) {
-            return None;
+            return Err(io::Error::other("command output exceeds limit"));
         }
-        String::from_utf8(bytes).ok()
-    });
+        Ok(bytes)
+    })
+}
+
+fn capture_command(
+    mut command: Command,
+    limit: Option<usize>,
+    deadline: Duration,
+    stdin: Stdio,
+    keep_stderr: bool,
+) -> io::Result<Output> {
     let start = Instant::now();
+    let timeout = || io::Error::new(io::ErrorKind::TimedOut, "command timed out");
+    if deadline.is_zero() {
+        return Err(timeout());
+    }
+    let mut child = command
+        .stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(if keep_stderr {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .process_group(0)
+        .spawn()?;
+    let stdout = read_output(child.stdout.take().expect("piped stdout"), limit);
+    let stderr = child.stderr.take().map(|pipe| read_output(pipe, limit));
     let status = loop {
-        match child.try_wait() {
-            // A reaped child may leave a descendant holding the stdout pipe open.
-            Ok(Some(status)) if reader.is_finished() => break status,
-            Ok(_) if start.elapsed() < Duration::from_secs(30) => {
-                std::thread::sleep(Duration::from_millis(50))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
+        let remaining = deadline.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            break Err(timeout());
+        }
+        // A descendant can keep a pipe open after the leader exits. Keep the
+        // leader unreaped until then so its PID cannot be reused before cleanup.
+        if stdout.is_finished() && stderr.as_ref().is_none_or(|pipe| pipe.is_finished()) {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) => (),
+                Err(error) => break Err(error),
             }
         }
+        std::thread::sleep(remaining.min(Duration::from_millis(2)));
     };
-    let out = reader.join().ok()??;
-    Some((status.code().unwrap_or(1), out))
+    if status.is_err() {
+        // SAFETY: process_group(0) places the child in its own group, identified by its PID.
+        unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    let status = status?;
+    let collected = |reader: std::thread::JoinHandle<io::Result<Vec<u8>>>| {
+        reader
+            .join()
+            .map_err(|_| io::Error::other("command output reader failed"))?
+    };
+    Ok(Output {
+        status,
+        stdout: collected(stdout)?,
+        stderr: stderr.map(collected).transpose()?.unwrap_or_default(),
+    })
 }
 
 fn git(policy: &RunPolicy, repo: &Path, args: &[&str]) -> Command {
@@ -396,7 +467,7 @@ const MAX_STATE_BYTES: usize = 32;
 
 fn github_json(mut command: Command, subject: &str) -> Result<serde_json::Value> {
     command.env_remove("GH_DEBUG");
-    let (code, text) = command_runner(command, Some(MAX_GITHUB_RESPONSE_BYTES))
+    let (code, text) = command_runner(command, Some(MAX_GITHUB_RESPONSE_BYTES), COMMAND_DEADLINE)
         .ok_or_else(|| format!("GitHub {subject} read failed, exceeded its byte limit or timed out"))?;
     if code != 0 {
         return Err(format!("GitHub {subject} read failed"));
@@ -865,6 +936,53 @@ pub fn run_task_with_observer(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn command_deadline_cleans_up_a_descendant_holding_stdout() {
+        let fixture = test_dir::PrivateDir::new("command-deadline");
+        let mut command = Command::new("/bin/sh");
+        command
+            .current_dir(fixture.path())
+            .args(["-c", r#"sleep 30 & printf '%s' "$!" > child.pid"#]);
+        let start = Instant::now();
+        assert!(command_runner(command, Some(4096), Duration::from_millis(500)).is_none());
+        assert!(start.elapsed() < Duration::from_secs(5));
+
+        let pid = fs::read_to_string(fixture.path().join("child.pid")).unwrap();
+        let path = format!("/proc/{}/stat", pid.parse::<u32>().unwrap());
+        let until = Instant::now() + Duration::from_secs(2);
+        loop {
+            match fs::read_to_string(&path) {
+                Ok(stat)
+                    if stat
+                        .rsplit_once(") ")
+                        .is_some_and(|(_, fields)| fields.starts_with('Z')) =>
+                {
+                    break
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+                Ok(_) if Instant::now() < until => std::thread::sleep(Duration::from_millis(10)),
+                result => panic!("descendant survived the command deadline: {result:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn command_runner_captures_supplied_stdin_with_the_same_byte_limit() {
+        let fixture = test_dir::PrivateDir::new("command-stdin");
+        let input = fixture.path().join("input");
+        fs::write(&input, "fixture").unwrap();
+        let run = |limit| {
+            command_runner_with_stdin(
+                Command::new("/bin/cat"),
+                Some(limit),
+                fs::File::open(&input).unwrap().into(),
+                COMMAND_DEADLINE,
+            )
+        };
+        assert_eq!(run(7), Some((0, "fixture".into())));
+        assert_eq!(run(6), None);
+    }
 
     fn comments(bodies: &[&str]) -> serde_json::Value {
         json!(bodies

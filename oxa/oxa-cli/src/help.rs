@@ -250,11 +250,41 @@ fn entries() -> Vec<&'static Entry> {
 
 /// The help text of exactly this command path, or `None` when no public command has it.
 pub fn text(path: &[&str]) -> Option<String> {
-    entries().into_iter().find(|e| e.path == path).map(render)
+    entries()
+        .into_iter()
+        .find(|e| e.path == path)
+        .map(render)
+        .or_else(|| {
+            use oxa_interactive::command_registry::{entries, ArgumentKind, Surface};
+            let entry = entries(Surface::Cli).find(|e| e.path == path || e.aliases.contains(&path))?;
+            let mut usage = format!("oxa {}", entry.path.join(" "));
+            for argument in entry.arguments {
+                let value = match argument.kind {
+                    ArgumentKind::Flag => format!("--{}", argument.name),
+                    ArgumentKind::Word => format!("<{}>", argument.name),
+                    ArgumentKind::Tail => format!("<{}...>", argument.name),
+                };
+                usage.push(' ');
+                usage.push_str(&if argument.required {
+                    value
+                } else {
+                    format!("[{value}]")
+                });
+            }
+            Some(format!(
+                "oxa {} - {}\n\nUsage:\n  {usage}\n",
+                entry.path.join(" "),
+                entry.summary
+            ))
+        })
 }
 
 /// Existing table's early CLI bridge; the shared #1062 registry will generate this route.
 pub(crate) fn from_argv(argv: &[String]) -> Option<Result<String, &'static str>> {
+    let argv = &argv[argv
+        .iter()
+        .take_while(|word| word.as_str() == "--offline")
+        .count()..];
     let (name, words) = argv.split_first()?;
     if name == "help" {
         let path: Vec<_> = words.iter().map(String::as_str).collect();
@@ -286,7 +316,13 @@ pub fn requested(name: &str, words: &[String]) -> Option<String> {
         }
         path.push(word.as_str());
     }
-    longest(&path).map(render)
+    longest(&path).map(render).or_else(|| {
+        let argv: Vec<_> = std::iter::once(name.to_owned())
+            .chain(words.iter().cloned())
+            .collect();
+        let invocation = oxa_interactive::command_registry::parse_cli(&argv)?;
+        text(invocation.command.path)
+    })
 }
 
 /// The text of one entry: the command, its summary, the usage lines and one example.
