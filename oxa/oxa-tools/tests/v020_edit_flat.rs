@@ -147,9 +147,86 @@ fn error_texts_per_call_match_in_both_forms() {
         std::fs::read_to_string(env.work().join("d.txt")).unwrap(),
         "x\nx\ny\n"
     );
-    // A flat call without newText has no edit: pi's "no edits" text.
+    // A flat call without newText is half a replacement: the error names the half that is
+    // missing instead of claiming the tool takes no such input (#952).
     let out = run_tool(&env.work(), &json!({"path": "d.txt", "oldText": "y"}));
+    assert_eq!(
+        out.text,
+        errors::edit_incomplete_pair("oldText (string), path (string)")
+    );
+}
+
+/// #952: arguments that reach the tool without a usable replacement must say what arrived, so
+/// a schema/field mismatch (a dropped field, another spelling) is visible instead of looking like
+/// "this tool only takes an edits array".
+#[test]
+fn unusable_arguments_name_the_fields_that_arrived() {
+    let env = TestEnv::new();
+    env.write("work/e.txt", "a\nb\n");
+
+    // Only `path` arrived (the dogfood report: the replacement fields were lost on the wire).
+    let out = run_tool(&env.work(), &json!({"path": "e.txt"}));
+    assert!(out.is_error);
+    assert_eq!(out.text, errors::edit_no_replacement("path (string)"));
+
+    // Another spelling of the two fields is echoed as it arrived.
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": "e.txt", "old_text": "a", "new_text": "z"}),
+    );
+    assert_eq!(
+        out.text,
+        errors::edit_no_replacement("new_text (string), old_text (string), path (string)")
+    );
+
+    // `newText` present but not a string, with `edits` absent.
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": "e.txt", "oldText": "a", "newText": null}),
+    );
+    assert_eq!(
+        out.text,
+        errors::edit_incomplete_pair("newText (null), oldText (string), path (string)")
+    );
+
+    // An `edits` string that is not JSON is named as such, not as "there are no edits".
+    let out = run_tool(&env.work(), &json!({"path": "e.txt", "edits": "[{oldText: a}]"}));
+    assert_eq!(
+        out.text,
+        errors::edit_unusable_edits("edits (string), path (string)")
+    );
+    // pi's fixed text still covers the one case it describes: an empty `edits` array.
+    let out = run_tool(&env.work(), &json!({"path": "e.txt", "edits": []}));
     assert_eq!(out.text, errors::EDIT_NO_EDITS);
+
+    // Every rejected call left the file alone.
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("e.txt")).unwrap(),
+        "a\nb\n"
+    );
+}
+
+#[test]
+fn rejected_arguments_never_echo_their_values() {
+    let env = TestEnv::new();
+    env.write("work/e.txt", "a\nb\n");
+    let value = "synthetic-value-1234567890";
+    let shapes = [
+        json!({"path": "e.txt", "oldText": value}),
+        json!({"path": "e.txt", "oldText": value, "newText": 7}),
+        json!({"path": "e.txt", "edits": format!("{{\"oldText\": \"{value}\"}}")}),
+        json!({"path": "e.txt", "edits": {"oldText": value}}),
+        json!({"path": "e.txt", "edits": [{"oldText": value}], "oldText": 1}),
+    ];
+    for args in shapes {
+        let out = run_tool(&env.work(), &args);
+        assert!(out.is_error, "{}", out.text);
+        assert!(!out.text.contains(value), "value echoed: {}", out.text);
+    }
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("e.txt")).unwrap(),
+        "a\nb\n"
+    );
 }
 
 #[test]

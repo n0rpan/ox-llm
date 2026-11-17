@@ -223,6 +223,29 @@ pub mod errors {
     // ---- edit (edit.ts, edit-diff.ts) ----
     pub const EDIT_NO_EDITS: &str =
         "Edit tool input is invalid. edits must contain at least one replacement.";
+    /// #952: the arguments hold no replacement at all. `fields` lists the argument names and
+    /// JSON types that arrived (sorted, never the values), so a dropped or renamed field is
+    /// visible instead of looking like a tool that only takes the `edits` array.
+    pub fn edit_no_replacement(fields: &str) -> String {
+        format!(
+            "Edit tool input is invalid. No replacement arrived: send oldText and newText as strings (the declared form), or edits as an array of {{oldText, newText}} objects. Arguments received: {fields}."
+        )
+    }
+    /// #952: one of the flat pair arrived and the other did not, or one is not a string.
+    /// `problems` lists every argument's name and JSON type, as
+    /// `newText (null), oldText (string), path (string)`.
+    pub fn edit_incomplete_pair(problems: &str) -> String {
+        format!(
+            "Edit tool input is invalid. oldText and newText must both be strings. Arguments received: {problems}."
+        )
+    }
+    /// #952: `edits` arrived but is neither a replacement, a list of them, nor such a list as
+    /// JSON text.
+    pub fn edit_unusable_edits(fields: &str) -> String {
+        format!(
+            "Edit tool input is invalid. edits must be an array of objects holding string oldText and newText. Arguments received: {fields}."
+        )
+    }
     pub fn edit_ok(count: usize, path: &str) -> String {
         format!("Successfully replaced {count} block(s) in {path}.")
     }

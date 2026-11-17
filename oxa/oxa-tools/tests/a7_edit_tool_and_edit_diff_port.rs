@@ -463,9 +463,17 @@ fn tool_error_texts() {
 
     let out = run_tool(&env.work(), &json!({"path": "a.txt", "edits": []}));
     assert!(out.is_error);
+    // #952: pi's text stays for the empty list; the other no-replacement shapes name their
+    // fields (see `v020_edit_flat.rs::unusable_arguments_name_the_fields_that_arrived`).
     assert_eq!(
         out.text,
         "Edit tool input is invalid. edits must contain at least one replacement."
+    );
+    let out = run_tool(&env.work(), &json!({"path": "a.txt"}));
+    assert!(out.is_error);
+    assert_eq!(
+        out.text,
+        "Edit tool input is invalid. No replacement arrived: send oldText and newText as strings (the declared form), or edits as an array of {oldText, newText} objects. Arguments received: path (string)."
     );
 
     let out = run_tool(

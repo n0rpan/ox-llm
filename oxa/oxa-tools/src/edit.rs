@@ -41,9 +41,40 @@ fn is_single_edit(v: &Value) -> bool {
         && v.get("newText").is_some_and(Value::is_string)
 }
 
+/// The names and JSON types of the arguments that arrived, sorted, as
+/// `newText (null), oldText (string), path (string)`. Only names and types: an argument's value
+/// never appears in an error text.
+fn describe_args(obj: &serde_json::Map<String, Value>) -> String {
+    if obj.is_empty() {
+        return "none".to_string();
+    }
+    let mut fields: Vec<(String, &str)> = obj
+        .iter()
+        .map(|(k, v)| {
+            let ty = match v {
+                Value::Null => "null",
+                Value::Bool(_) => "boolean",
+                Value::Number(_) => "number",
+                Value::String(_) => "string",
+                Value::Array(_) => "array",
+                Value::Object(_) => "object",
+            };
+            (k.clone(), ty)
+        })
+        .collect();
+    fields.sort();
+    fields
+        .iter()
+        .map(|(k, t)| format!("{k} ({t})"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The path and the edits of an `edit` call. Accepts pi's forms: `edits` as an array, as a JSON
 /// string holding one, or as one edit object; and top-level `oldText`/`newText` appended as a
-/// final edit.
+/// final edit. Arguments that hold no usable replacement are refused with a text that names the
+/// fields that arrived (#952): the flat pair is the declared form, so a lost or renamed
+/// `newText` must not read as "this tool only takes an edits array".
 fn parse_args(args: &Value) -> Result<(String, Vec<Edit>), String> {
     let obj = args
         .as_object()
@@ -53,7 +84,8 @@ fn parse_args(args: &Value) -> Result<(String, Vec<Edit>), String> {
         .and_then(Value::as_str)
         .ok_or_else(|| INVALID_PATH.to_string())?;
 
-    let mut items: Vec<Value> = match obj.get("edits") {
+    let edits_field = obj.get("edits");
+    let mut items: Vec<Value> = match edits_field {
         Some(Value::Array(a)) => a.clone(),
         Some(Value::String(s)) => match serde_json::from_str::<Value>(s) {
             Ok(Value::Array(a)) => a,
@@ -63,14 +95,28 @@ fn parse_args(args: &Value) -> Result<(String, Vec<Edit>), String> {
         Some(v) if is_single_edit(v) => vec![v.clone()],
         _ => Vec::new(),
     };
-    if let (Some(old), Some(new)) = (
+    let (old, new) = (
         obj.get("oldText").and_then(Value::as_str),
         obj.get("newText").and_then(Value::as_str),
-    ) {
+    );
+    if let (Some(old), Some(new)) = (old, new) {
         items.push(json!({"oldText": old, "newText": new}));
     }
     if items.is_empty() {
-        return Err(errors::EDIT_NO_EDITS.to_string());
+        // pi's fixed text for the one case it describes: an explicitly empty list.
+        if matches!(edits_field, Some(Value::Array(a)) if a.is_empty()) {
+            return Err(errors::EDIT_NO_EDITS.to_string());
+        }
+        let received = describe_args(obj);
+        // No `edits` at all: the declared pair is what the call should have held.
+        let edits_present = obj.get("edits").is_some_and(|v| !v.is_null());
+        return Err(if edits_present {
+            errors::edit_unusable_edits(&received)
+        } else if obj.contains_key("oldText") || obj.contains_key("newText") {
+            errors::edit_incomplete_pair(&received)
+        } else {
+            errors::edit_no_replacement(&received)
+        });
     }
 
     let mut edits = Vec::with_capacity(items.len());
