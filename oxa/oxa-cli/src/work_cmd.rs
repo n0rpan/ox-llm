@@ -298,13 +298,15 @@ impl Context {
         let mut record = if let Some(record) = cached {
             record
         } else {
-            match oxa_work::run_task_with_observer(
+            let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+            match oxa_work::run_task_with_notes(
                 &root,
                 &binary,
                 &plan,
                 &policy,
                 rerun,
                 &|_: &oxa_work::Record| Ok(()),
+                &|note| crate::work_reports::scrub_note(note, &ctx),
             ) {
                 Ok(record) => record,
                 Err(oxa_work::RunError::Blocked(detail)) => {

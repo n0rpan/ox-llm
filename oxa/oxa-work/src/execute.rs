@@ -12,6 +12,7 @@ pub(crate) struct Runner<'a> {
     pub lock: &'a File,
     pub writer: &'a mut Writer,
     pub observer: &'a dyn CheckpointObserver,
+    pub scrub_note: &'a (dyn Fn(&crate::ProblemNote) -> Option<crate::ProblemNote> + Sync),
 }
 impl Runner<'_> {
     fn advance(&mut self, state: &mut State, step: Step) -> std::result::Result<(), RunError> {
@@ -103,11 +104,11 @@ impl Runner<'_> {
                                 state.record.interruption = worker.result.interruption;
                             }
                             state.record.worker = Some(worker.result.clone());
-                            for note in &worker.notes {
+                            for note in worker.notes.iter().filter_map(self.scrub_note) {
                                 if state.record.problem_notes.len() < 5
-                                    && !state.record.problem_notes.contains(note)
+                                    && !state.record.problem_notes.contains(&note)
                                 {
-                                    state.record.problem_notes.push(note.clone());
+                                    state.record.problem_notes.push(note);
                                 }
                             }
                             state.record.session_id = worker.session.clone();

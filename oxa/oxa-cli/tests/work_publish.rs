@@ -21,8 +21,10 @@ fn configure(env: &TestEnv) -> String {
     );
     let gh = env.write("tmp/gh", r##"#!/bin/sh
 printf '%s\n' "$*" >> "$HOME/gh-calls"
+host=github.com
+if test -f "$HOME/enterprise-host"; then host=code.example.invalid; fi
 case "$1 $2" in
-  'repo view') printf '%s' '{"nameWithOwner":"example/project"}' ;;
+  'repo view') printf '{"nameWithOwner":"example/project","url":"https://%s/example/project"}' "$host" ;;
   'pr list') if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
   'api graphql') if test -f "$HOME/queued"; then printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"queue"}}}}}'; else printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}'; fi ;;
   'pr create')
@@ -33,13 +35,19 @@ case "$1 $2" in
       if test "$arg" = '--draft'; then draft=true; fi
       if test "$arg" = '--body-file'; then body_next=true; fi
     done
-    printf '{"number":1,"url":"https://github.com/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$draft" > "$HOME/pr-state.json"
-    printf '%s' 'https://github.com/example/project/pull/1' ;;
-  'pr edit') : ;;
+    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$host" "$draft" > "$HOME/pr-state.json"
+    printf 'https://%s/example/project/pull/1' "$host" ;;
+  'pr view') jq -Rs '{body:.}' "$HOME/published-body" ;;
+  'pr edit')
+    body_next=false
+    for arg in "$@"; do
+      if test "$body_next" = true; then cat "$arg" > "$HOME/published-body"; body_next=false; fi
+      if test "$arg" = '--body-file'; then body_next=true; fi
+    done ;;
   'pr ready')
     draft=false
     for arg in "$@"; do if test "$arg" = '--undo'; then draft=true; fi; done
-    printf '{"number":1,"url":"https://github.com/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$draft" > "$HOME/pr-state.json" ;;
+    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$host" "$draft" > "$HOME/pr-state.json" ;;
   *) exit 7 ;;
 esac
 "##);
@@ -184,6 +192,68 @@ fn publishes_local_branch_and_updates_same_pr_on_restart() {
     assert!(!body.contains("Finish task"));
 }
 #[test]
+fn publication_keeps_the_origin_host_for_prs_and_graphql() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let path = configure(&env);
+    env.write("home/enterprise-host", "synthetic");
+    let first = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(path.clone()),
+    );
+    assert_eq!(first["outcome"], "done", "{first}");
+    let again = run_args(&env, vec![], &["work", "../tasks.json", "--publish"], Some(path));
+    assert_eq!(again["outcome"], "done", "{again}");
+    let calls = fs::read_to_string(env.home().join("gh-calls")).unwrap();
+    assert!(
+        calls.contains("pr list --repo code.example.invalid/example/project"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("pr create --repo code.example.invalid/example/project"),
+        "{calls}"
+    );
+    assert!(
+        calls.contains("api graphql --hostname code.example.invalid"),
+        "{calls}"
+    );
+}
+
+#[test]
+fn rerun_updates_managed_metadata_without_erasing_owner_body() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let path = configure(&env);
+    let first = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(path.clone()),
+    );
+    assert_eq!(first["outcome"], "done", "{first}");
+    let body_path = env.home().join("published-body");
+    let body =
+        fs::read_to_string(&body_path).unwrap() + "\nOwner what/why and validated controls stay here.\n";
+    fs::write(&body_path, body).unwrap();
+    let next = run_args(
+        &env,
+        vec![
+            ScriptTurn::tool("update", "write", r#"{"path":"answer.txt","content":"updated"}"#),
+            ScriptTurn::text("done"),
+        ],
+        &["work", "../tasks.json", "--rerun", "--publish"],
+        Some(path),
+    );
+    assert_eq!(next["outcome"], "done", "{next}");
+    assert_ne!(next["head_sha"], first["head_sha"]);
+    let body = fs::read_to_string(body_path).unwrap();
+    assert!(body.contains("Owner what/why and validated controls stay here."));
+    assert!(body.contains(next["head_sha"].as_str().unwrap()), "{body}");
+    assert!(!body.contains(first["head_sha"].as_str().unwrap()), "{body}");
+}
+#[test]
 fn red_checks_never_push_or_create_a_pr() {
     let env = TestEnv::new();
     setup(&env, r#"["printf red > failed-check; exit 1"]"#);
@@ -281,6 +351,16 @@ fn own_problem_notes_are_captured_and_failed_search_keeps_a_local_draft() {
         Some(path),
     );
     assert_eq!(record["problem_notes"].as_array().unwrap().len(), 1);
+    assert!(
+        !serde_json::to_string(&record).unwrap().contains("token=example"),
+        "unscrubbed record output"
+    );
+    assert!(
+        !fs::read_to_string(state_path(&env))
+            .unwrap()
+            .contains("token=example"),
+        "unscrubbed checkpoint"
+    );
     assert_eq!(record["reports"][0]["disposition"], "local");
     let draft = fs::read_to_string(record["reports"][0]["draft"].as_str().unwrap()).unwrap();
     assert!(!draft.contains("token=example"));
@@ -445,7 +525,7 @@ fn unsetting_the_agent_marker_and_piping_yes_cannot_authorize_public_writes() {
         let path = configure(&env);
         env.write("tmp/gh", r##"#!/bin/sh
 case "$1 $2" in
-  'repo view') printf '%s' '{"nameWithOwner":"example/project"}' ;;
+  'repo view') printf '%s' '{"nameWithOwner":"example/project","url":"https://github.com/example/project"}' ;;
   'pr list'|'issue list') printf '[]' ;;
   'pr create'|'issue create'|'issue comment') touch "$HOME/public-write"; printf '%s' 'https://github.com/example/project/issues/1' ;;
   *) exit 7 ;;

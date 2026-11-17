@@ -96,6 +96,7 @@ fn free_space(repo: &Path, common: &Path, queue: &Path, df: &Path, policy: &RunP
         .find(|p| p.is_dir())
         .ok_or("worktree storage has no existing parent")?;
     Ok(available(repo, df, policy)?
+        .min(available(common, df, policy)?)
         .min(available(&policy.storage, df, policy)?)
         .min(available(queue, df, policy)?)
         .min(available(tree_volume, df, policy)?))
@@ -180,6 +181,17 @@ fn scan(
                         }
                         problems.push(format!("task {} was already queued; use a new id for changed work or remove the duplicate input", task.id));
                     } else {
+                        if inputs
+                            .tasks
+                            .values()
+                            .any(|(_, known)| known.branch == task.branch)
+                        {
+                            problems.push(format!(
+                                "branch {} was already queued; use a distinct branch",
+                                task.branch
+                            ));
+                            continue;
+                        }
                         inputs.tasks.insert(task.id.clone(), (file.clone(), task.clone()));
                         pending.push(Job {
                             task,
@@ -218,6 +230,25 @@ impl Drop for Workers {
             let _ = handle.join();
         }
     }
+}
+
+fn orphan_leases(storage: &Path, active: &Workers, external: &[Job]) -> Result<Vec<String>> {
+    let mut ids = vec![];
+    for entry in fs::read_dir(storage).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name();
+        let Some(id) = name.to_str().and_then(|name| name.strip_suffix(".lock")) else {
+            continue;
+        };
+        if super::valid_task_id(id)
+            && !active.handles.contains_key(id)
+            && !external.iter().any(|job| job.task.id == id)
+            && busy(storage, id)?
+        {
+            ids.push(id.to_owned());
+        }
+    }
+    Ok(ids)
 }
 
 pub fn run_queue(
@@ -274,6 +305,7 @@ pub fn run_queue(
             }
         }
         pending = ready;
+        let orphans = orphan_leases(storage, &active, &external)?;
         pending.sort_by(|a, b| (&a.modified, &a.file, a.index).cmp(&(&b.modified, &b.file, b.index)));
         let disk = free_space(repo, &common, &directory, df, policy);
         let (mut free_bytes, mut disk_error) = match disk {
@@ -281,7 +313,10 @@ pub fn run_queue(
             Err(error) => (None, Some(error)),
         };
         let mut disk_blocked = free_bytes.is_none_or(|free| free < options.min_free_bytes);
-        while !disk_blocked && active.handles.len() + external.len() < options.max && !pending.is_empty() {
+        while !disk_blocked
+            && active.handles.len() + external.len() + orphans.len() < options.max
+            && !pending.is_empty()
+        {
             // Check again for each admission: earlier workers may already be writing.
             match free_space(repo, &common, &directory, df, policy) {
                 Ok(free) => {
@@ -333,6 +368,7 @@ pub fn run_queue(
             .keys()
             .cloned()
             .chain(external.iter().map(|j| j.task.id.clone()))
+            .chain(orphans.iter().cloned())
             .collect();
         ids.sort();
         let status = QueueStatus {
@@ -361,6 +397,7 @@ pub fn run_queue(
         if options.once
             && active.handles.is_empty()
             && external.is_empty()
+            && orphans.is_empty()
             && (pending.is_empty() || disk_blocked)
         {
             return Ok(status);

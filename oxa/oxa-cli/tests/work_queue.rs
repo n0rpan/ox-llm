@@ -620,7 +620,7 @@ fn a_retained_busy_lease_without_an_input_counts_against_max() {
         },
     )
     .unwrap();
-    let mut child = command(&env, &server.url(), "1")
+    let child = command(&env, &server.url(), "1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()

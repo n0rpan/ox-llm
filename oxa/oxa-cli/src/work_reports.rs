@@ -64,6 +64,28 @@ fn visible(text: &str) -> String {
         { ch.escape_unicode().to_string() } else { ch.to_string() }
     }).collect()
 }
+pub(crate) fn scrub_note(note: &ProblemNote, ctx: &ScrubCtx) -> Option<ProblemNote> {
+    let note = ProblemNote {
+        title: visible(&scrub(&note.title, ctx)).chars().take(200).collect(),
+        notes: visible(&clean_notes(&note.notes, ctx))
+            .chars()
+            .take(2000)
+            .collect(),
+        keywords: note
+            .keywords
+            .iter()
+            .map(|query| visible(&scrub(query, ctx)).chars().take(100).collect())
+            .collect(),
+    };
+    (!note.title.trim().is_empty()
+        && !note.notes.trim().is_empty()
+        && (2..=3).contains(&note.keywords.len())
+        && note
+            .keywords
+            .iter()
+            .all(|query: &String| !query.trim().is_empty()))
+    .then_some(note)
+}
 fn matches(note: &ProblemNote, candidate: &Value) -> bool {
     let title = candidate["title"].as_str().unwrap_or_default().to_lowercase();
     if title == note.title.to_lowercase() {

@@ -576,6 +576,21 @@ pub fn run_task_with_observer(
     rerun: bool,
     observer: &dyn CheckpointObserver,
 ) -> std::result::Result<Record, RunError> {
+    run_task_with_notes(repo, binary, planned, policy, rerun, observer, &|_| None)
+}
+
+/// The trusted frontend supplies its privacy scrubber before any worker note
+/// enters a checkpoint, observation or emitted record. Other callers discard
+/// notes by default rather than accidentally publishing model-supplied text.
+pub fn run_task_with_notes(
+    repo: &Path,
+    binary: &Path,
+    planned: &PlannedTask,
+    policy: &RunPolicy,
+    rerun: bool,
+    observer: &dyn CheckpointObserver,
+    scrub_note: &(dyn Fn(&ProblemNote) -> Option<ProblemNote> + Sync),
+) -> std::result::Result<Record, RunError> {
     let task = &planned.task;
     validate(task)?;
     let root = PathBuf::from(checked(git(policy, repo, &["rev-parse", "--show-toplevel"]))?);
@@ -678,6 +693,7 @@ pub fn run_task_with_observer(
         lock: &lock_file,
         writer: &mut writer,
         observer,
+        scrub_note,
     })
     .drive(&mut state)
     {
