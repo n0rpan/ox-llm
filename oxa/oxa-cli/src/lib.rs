@@ -38,6 +38,7 @@ mod sandbox_layout;
 mod status;
 mod themes;
 mod wipe_cmd;
+mod work_board;
 mod work_checks;
 mod work_cmd;
 

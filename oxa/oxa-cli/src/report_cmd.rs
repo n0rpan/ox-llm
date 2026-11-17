@@ -424,8 +424,13 @@ fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
 
 /// The real runner: the program's stdout, killed after 30 s.
 fn process_runner(program: &str, args: &[String]) -> Option<(i32, String)> {
-    let mut child = std::process::Command::new(program)
-        .args(args)
+    let mut command = std::process::Command::new(program);
+    command.args(args);
+    command_runner(command)
+}
+
+pub(crate) fn command_runner(mut command: std::process::Command) -> Option<(i32, String)> {
+    let mut child = command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

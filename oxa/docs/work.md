@@ -1,5 +1,15 @@
 # Unattended work
 
+`oxa work board --shadow --repo OWNER/REPO` opts into read-only GitHub sampling
+immediately and every five minutes; `--once` captures one sample. It requires a
+trusted source project and an explicit `GH_TOKEN` supplied by a GitHub App caller;
+offline mode refuses before GitHub or log creation. No worker or mutation runs.
+The private, locked `work/<repository-hash>/board-shadow.jsonl` under the agent
+directory appends `{schema_version:1,observed_at,board,would_take}`. Eligible shared
+board entries form `would_take`; shadow reserves no leases or attempts. Use one
+GitHub repository per capture. Read errors and incomplete connections stop sampling.
+Limit: 100 PRs/items per connection. Unknown/no required checks stay pending; review uses GitHub's decision.
+
 The opt-in `oxa_work::board` library derives one next action per open PR from a
 single normalized GitHub snapshot. `Policy.enabled` defaults to false and makes
 no GitHub reads while disabled. Findings take precedence over failed required CI,

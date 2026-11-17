@@ -99,6 +99,9 @@ pub(crate) fn run(
             offline: oxa_proto::offline(),
             storage: dirs.agent_dir.join("work").join(key),
         };
+        if args.first().is_some_and(|arg| arg == "board") {
+            return crate::work_board::run(&args[1..], &root, env, dirs, &policy);
+        }
         if matches!(args.first().map(String::as_str), Some("status" | "--status")) {
             let json = match args {
                 [_] => false,
