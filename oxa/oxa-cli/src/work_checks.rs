@@ -109,17 +109,17 @@ pub(crate) fn run(
             return Ok(0);
         }
         SupervisorOperation::Merge { base } => {
-            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            // Local Git callbacks do not need repository network authority.
             let spec = ExecSpec {
                 command: format!("git --no-replace-objects merge --no-edit -- {}", sh_quote(&base)),
                 cwd: root,
                 writable: true,
-                net: sandbox.network(),
+                net: false,
                 timeout_s: Some(600),
                 env: git_environment(),
             };
             let mut tail = Vec::new();
-            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+            let result = b.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
                 keep_tail(&mut tail, bytes, 8192);
             });
             err.write_all(&tail).map_err(|e| e.to_string())?;
@@ -129,7 +129,7 @@ pub(crate) fn run(
             return Ok(i32::from(result.exit != Some(0)));
         }
         SupervisorOperation::Save { task_id } => {
-            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            // Keep save callbacks local, including content from an adopted head.
             let message = sh_quote(&format!("oxa work: save task {task_id}"));
             let spec = ExecSpec {
                 command: format!(
@@ -149,12 +149,12 @@ git --no-replace-objects commit -m {message}
                 ),
                 cwd: root,
                 writable: true,
-                net: sandbox.network(),
+                net: false,
                 timeout_s: Some(600),
                 env: git_environment(),
             };
             let mut tail = Vec::new();
-            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+            let result = b.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
                 keep_tail(&mut tail, bytes, 8192);
             });
             if result.exit != Some(0) || result.timed_out {
