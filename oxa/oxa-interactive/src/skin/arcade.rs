@@ -742,7 +742,8 @@ pub fn oxa_arcade_line(
     if matches!(st.activity, Activity::Idle) {
         let (how, ms) = run.finish?;
         if cells == 0 {
-            return None;
+            return (width > 0 && run.elapsed_ms.is_some())
+                .then(|| finish_line(String::new(), how, run, width, theme, skin));
         }
         let ascii = skin != Skin::Oxa;
         let art = if ascii { &ART_ASCII } else { &ART };
