@@ -781,6 +781,112 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// The dogfood failure: rustup's shims (`~/.cargo/bin`) are missing while the toolchain is
+    /// installed under `~/.rustup/toolchains/<name>/bin`, and the run inherited a `PATH` with
+    /// neither. The sandbox already binds the toolchain read-only; it must also name it.
+    #[test]
+    fn a_rustup_toolchain_without_shims_is_on_the_sandbox_path() {
+        let env = oxa_fake::TestEnv::new();
+        let bin = env.home().join(".rustup/toolchains/pinned/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("cargo"), "x").unwrap();
+        let shown = bin.display().to_string();
+        let l = Layout::build(&LayoutInputs {
+            home: env.home(),
+            agent_dir: Some(env.agent_dir()),
+            path_var: "/usr/bin:/bin".into(),
+            ..Default::default()
+        });
+        assert_eq!(l.path.first().map(String::as_str), Some("/usr/bin"));
+        assert!(l.path.contains(&shown), "{:?}", l.path);
+        assert_eq!(l.path.iter().filter(|p| **p == shown).count(), 1, "{:?}", l.path);
+        // Nothing new is exposed: the toolchain stays read-only.
+        assert!(l.read.contains(&env.home().join(".rustup")), "{:?}", l.read);
+    }
+
+    /// A toolchain installed under the home (`~/.cargo/bin`, mise's shims, `~/.local/bin`) is
+    /// appended after the user's own `PATH`, each directory once, so it cannot shadow a
+    /// program the user's shell already finds.
+    #[test]
+    fn an_installed_toolchain_directory_is_appended_after_the_users_path() {
+        let env = oxa_fake::TestEnv::new();
+        let own = env.home().join(".my-bin");
+        std::fs::create_dir_all(&own).unwrap();
+        let cargo_bin = env.home().join(".cargo/bin");
+        std::fs::create_dir_all(&cargo_bin).unwrap();
+        std::fs::write(cargo_bin.join("cargo"), "x").unwrap();
+        let shims = env.home().join(".local/share/mise/shims");
+        std::fs::create_dir_all(&shims).unwrap();
+        let user_path = format!("{}:/usr/bin:/bin", own.display());
+        let l = Layout::build(&LayoutInputs {
+            home: env.home(),
+            agent_dir: Some(env.agent_dir()),
+            path_var: user_path,
+            ..Default::default()
+        });
+        assert_eq!(l.path.first(), Some(&own.display().to_string()));
+        for dir in [&cargo_bin, &shims] {
+            let shown = dir.display().to_string();
+            assert!(l.path.contains(&shown), "{shown} missing: {:?}", l.path);
+            assert_eq!(l.path.iter().filter(|p| **p == shown).count(), 1, "{:?}", l.path);
+        }
+    }
+
+    /// The rustup fallback is a last resort: when a `PATH` directory already holds a `cargo`,
+    /// the toolchains below `~/.rustup` are not added on top of it.
+    #[test]
+    fn a_cargo_the_path_already_finds_keeps_its_place() {
+        let env = oxa_fake::TestEnv::new();
+        let cargo_bin = env.home().join(".cargo/bin");
+        std::fs::create_dir_all(&cargo_bin).unwrap();
+        std::fs::write(cargo_bin.join("cargo"), "x").unwrap();
+        let rustup_bin = env.home().join(".rustup/toolchains/pinned/bin");
+        std::fs::create_dir_all(&rustup_bin).unwrap();
+        std::fs::write(rustup_bin.join("cargo"), "x").unwrap();
+        let l = Layout::build(&LayoutInputs {
+            home: env.home(),
+            agent_dir: Some(env.agent_dir()),
+            path_var: "/usr/bin:/bin".into(),
+            ..Default::default()
+        });
+        let shim = cargo_bin.display().to_string();
+        let at = l.path.iter().position(|p| *p == shim).expect("the shims are on the PATH");
+        assert!(at > 0, "the user's own directories come first: {:?}", l.path);
+        assert!(
+            !l.path.contains(&rustup_bin.display().to_string()),
+            "no second cargo: {:?}",
+            l.path
+        );
+    }
+
+    /// A session home of its own holds no toolchain; the user exposes the installed one with
+    /// `oxa.sandbox.readPaths`. It is bound read-only already, so its `bin` joins the `PATH`.
+    #[test]
+    fn a_toolchain_exposed_with_read_paths_is_on_the_sandbox_path() {
+        let env = oxa_fake::TestEnv::new();
+        let rustup = env.root().join("data/rustup");
+        let bin = rustup.join("toolchains/pinned/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("cargo"), "x").unwrap();
+        // The same toolchain written down as its rustup home, as its `bin`, or as the
+        // toolchain directory itself.
+        for exposed in [rustup.clone(), bin.clone(), bin.parent().unwrap().to_path_buf()] {
+            let l = Layout::build(&LayoutInputs {
+                home: env.home(),
+                agent_dir: Some(env.agent_dir()),
+                path_var: "/usr/bin:/bin".into(),
+                read_extra: vec![exposed.clone()],
+                ..Default::default()
+            });
+            assert!(
+                l.path.contains(&bin.display().to_string()),
+                "{} did not put {bin:?} on the PATH: {:?}",
+                exposed.display(),
+                l.path
+            );
+        }
+    }
+
     #[test]
     fn expand() {
         let home = Path::new("/home/u");

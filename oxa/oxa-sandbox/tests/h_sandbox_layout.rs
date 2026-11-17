@@ -479,6 +479,39 @@ fn real_toolchains_under_home_run() {
     assert!(!env.home().join(".cargo/bin/evil").exists());
 }
 
+/// The dogfood report: a rustup install whose shims (`~/.cargo/bin`) are absent, only
+/// `~/.rustup/toolchains/<name>/bin` holds the binaries, and the run inherited a `PATH` with
+/// neither. The sandboxed command must find `cargo` by name and the toolchain must stay
+/// read-only.
+#[test]
+fn real_a_rustup_toolchain_without_shims_runs() {
+    let env = TestEnv::new();
+    exe(
+        &env,
+        "home/.rustup/toolchains/pinned/bin/cargo",
+        "#!/bin/sh\necho \"toolchain cargo $1\"\n",
+    );
+    exe(
+        &env,
+        "home/.rustup/toolchains/pinned/bin/rustc",
+        "#!/bin/sh\necho \"toolchain rustc $1\"\n",
+    );
+    let home = env.home();
+    let layout = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin:/bin".into(),
+        ..Default::default()
+    });
+    let Some(b) = real(&env, layout) else { return };
+    let (exit, out) = run(&b, "command -v cargo && cargo build", &env.work());
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(out.contains("toolchain cargo build"), "{out}");
+    let (exit, _) = run(&b, "touch \"$HOME/.rustup/toolchains/pinned/bin/evil\"", &env.work());
+    assert_ne!(exit, Some(0));
+    assert!(!home.join(".rustup/toolchains/pinned/bin/evil").exists());
+}
+
 #[test]
 fn real_denied_files_are_neither_readable_nor_writable() {
     let env = TestEnv::new();
