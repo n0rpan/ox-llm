@@ -80,6 +80,12 @@ pub struct HookInputs<'a> {
 /// Build the hook sets. Problems that do not stop the start (a failed extension, a bad hook
 /// entry, an `mcp.json` diagnostic) are pushed to `notices`.
 pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Result<HookSets, OxaError> {
+    if i.args.lead {
+        return Ok(HookSets {
+            hooks: vec![Arc::new(crate::lead_preset::LeadHooks)],
+            ..HookSets::default()
+        });
+    }
     let mut sets = HookSets::default();
 
     // ---- extensions ----

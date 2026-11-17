@@ -1221,6 +1221,16 @@ fn ms_from_iso(s: &str) -> Option<u64> {
     }
 }
 
+/// Parse a whole-second UTC timestamp in `YYYY-MM-DDTHH:MM:SSZ` form.
+pub fn parse_utc_seconds(s: &str) -> Option<u64> {
+    let stem = s.strip_suffix('Z')?;
+    if stem.len() != 19 || !stem.as_bytes()[..4].iter().all(u8::is_ascii_digit) || stem.as_bytes()[4] != b'-'
+    {
+        return None;
+    }
+    ms_from_iso(&format!("{stem}.000Z")).map(|ms| ms / 1000)
+}
+
 /// Howard Hinnant's `civil_from_days`: days since 1970-01-01 to (year, month, day).
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;

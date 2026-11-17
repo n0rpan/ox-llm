@@ -7,12 +7,15 @@ use std::process::{Command, Output, Stdio};
 
 pub mod board;
 mod checkpoint;
+mod committed;
+pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
 pub mod helper_queue;
 mod notes;
 mod publish;
 pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{publish, report_notes};
+pub mod mirrors;
 pub mod shadow;
 mod state;
 mod status;
@@ -30,6 +33,7 @@ pub mod events;
 mod facts_io;
 pub mod incidents;
 pub mod situation;
+pub mod standing;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -368,7 +372,9 @@ pub enum SupervisorOperation {
     Merge { base: String },
     Save { task_id: String },
     Checks { commands: Vec<String> },
+    CommittedChecks { commands: Vec<String>, index: PathBuf },
     Inspect,
+    InspectCommitted { index: PathBuf },
 }
 
 fn supervise(
@@ -420,6 +426,10 @@ fn acceptance(
         policy,
         lock,
     )?;
+    acceptance_result(out)
+}
+
+fn acceptance_result(out: Output) -> Result<String> {
     let diagnostic = String::from_utf8_lossy(&out.stderr).into_owned();
     match out.status.code() {
         Some(0) => Ok(String::new()),
@@ -597,10 +607,18 @@ pub fn run_task_with_notes(
         .read(true)
         .write(true)
         .mode(0o600)
+        .custom_flags(shadow::OWNER_FILE_FLAGS)
         .create(true)
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
+    let lock_metadata = lock_file
+        .metadata()
+        .map_err(|e| format!("cannot inspect task lock: {e}"))?;
+    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+    if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
+        return Err("cannot lock task: lock must be an owner-controlled regular file".into());
+    }
     lock_file
         .try_lock()
         .map_err(|e| format!("task {} is already running: {e}", task.id))?;

@@ -1,6 +1,6 @@
 //! Durable reservations only; execution and GitHub writes are outside this API.
 use super::{valid_worker_id, Action, AttemptState, Entry, Lease, Policy};
-use crate::Result;
+use crate::{facts_io, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 mod controls;
 pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
+mod imports;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -35,8 +36,14 @@ pub struct Claims {
 
 impl Claims {
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_for_owner(root, facts_io::effective_uid())
+    }
+
+    fn open_for_owner(root: &Path, expected_owner: u32) -> Result<Self> {
         let metadata = io(fs::symlink_metadata(root))?;
-        if !metadata.is_dir() || metadata.mode() & 0o077 != 0 || io(root.canonicalize())? != root {
+        if facts_io::private_for_owner(&metadata, true, expected_owner).is_err()
+            || io(root.canonicalize())? != root
+        {
             return Err("board claims require a canonical private directory".into());
         }
         Ok(Self {
@@ -159,6 +166,11 @@ impl Claims {
         Self::open(&self.root)?;
         let lock = io(File::open(&self.root))?;
         io(lock.lock())?;
+        self.rows_locked()
+    }
+
+    /// Caller holds the directory lock used by every reservation and control update.
+    fn rows_locked(&self) -> Result<BTreeMap<u64, Saved>> {
         let mut states = BTreeMap::new();
         for entry in io(fs::read_dir(&self.root))? {
             let name = io(entry)?.file_name();
@@ -197,7 +209,7 @@ impl Claims {
         ttl: u64,
     ) -> Result<Option<Lease>> {
         self.claim_checked(entry, policy, holder, (now, ttl), |row| {
-            Ok(row.data.policy.is_none())
+            Ok(entry.action != Action::BuildIssue && row.data.policy.is_none())
         })
     }
 
@@ -215,7 +227,7 @@ impl Claims {
             || !entry.eligible
             || matches!(
                 entry.action,
-                Action::WaitReview | Action::WaitRequiredCi | Action::WaitMergeability
+                Action::WaitReview | Action::WaitRequiredCi | Action::WaitMergeability | Action::WaitIssue
             )
         {
             return Ok(None);
@@ -231,6 +243,9 @@ impl Claims {
         let mut row = self.load(entry.number)?;
         if self.established(entry.number)? {
             self.mark(entry.number)?;
+        }
+        if row.data.import_hold {
+            return Ok(None);
         }
         if !authorize(&mut row)? {
             return Ok(None);
@@ -305,5 +320,32 @@ impl Claims {
         row.state.lease = None;
         self.save(number, row, true)?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::DirBuilderExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn claim_store_requires_the_expected_owner() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir(&self.0);
+            }
+        }
+        let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "oxa-claim-owner-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        let fixture = Fixture(path);
+        let metadata = fs::metadata(&fixture.0).unwrap();
+        assert!(Claims::open(&fixture.0).is_ok());
+        assert!(Claims::open_for_owner(&fixture.0, metadata.uid().wrapping_add(1)).is_err());
     }
 }
