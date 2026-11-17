@@ -8,8 +8,9 @@ mod anthropic;
 use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 use oxa_fake::TestEnv;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, Read};
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -46,6 +47,45 @@ fn required_release_artifact_cannot_fall_back_to_development_binary() {
     assert_eq!(
         proof_binary(Some(Path::new(env!("CARGO_BIN_EXE_oxa"))), true).unwrap(),
         proof_binary(None, false).unwrap()
+    );
+}
+
+fn verified_artifact(path: Option<&Path>, expected: Option<&str>) -> Result<PathBuf, &'static str> {
+    let path = proof_binary(path, true)?;
+    let expected = expected
+        .filter(|value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or("release artifact SHA256 is required")?;
+    let mut file = File::open(&path).map_err(|_| "release artifact is unreadable")?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 16384];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .map_err(|_| "release artifact is unreadable")?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    if format!("{:x}", hash.finalize()) != expected.to_ascii_lowercase() {
+        return Err("release artifact SHA256 mismatch");
+    }
+    Ok(path)
+}
+
+#[test]
+fn release_hash_is_mandatory_and_a_wrong_artifact_cannot_substitute() {
+    let env = TestEnv::new();
+    let path = env.write("artifact", "abc");
+    let expected = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    assert_eq!(verified_artifact(Some(&path), Some(expected)).unwrap(), path);
+    assert!(verified_artifact(None, Some(expected)).is_err());
+    assert!(verified_artifact(Some(&path), None).is_err());
+    assert!(verified_artifact(Some(&path), Some("invalid")).is_err());
+    fs::write(&path, "wrong artifact").unwrap();
+    assert_eq!(
+        verified_artifact(Some(&path), Some(expected)).unwrap_err(),
+        "release artifact SHA256 mismatch"
     );
 }
 
@@ -103,11 +143,22 @@ fn controller_trap_detects_a_connection_without_a_request() {
 #[test]
 fn print_uses_native_gateway_without_python_or_controller() {
     let release = std::env::var_os("OXA_TEST_RELEASE_OXA");
-    let binary = proof_binary(
-        release.as_deref().map(Path::new),
-        std::env::var_os("OXA_TEST_REQUIRE_RELEASE_ARTIFACT").is_some(),
-    )
-    .expect("select proof binary");
+    let required = std::env::var_os("OXA_TEST_REQUIRE_RELEASE_ARTIFACT").is_some();
+    let binary = proof_binary(release.as_deref().map(Path::new), required).expect("select proof binary");
+    // Workspace mode still exercises every existing cloud control. Release mode
+    // additionally requires the exact matched native pair; missing inputs fail.
+    let engine = required.then(|| {
+        let oxa_hash = std::env::var("OXA_TEST_RELEASE_OXA_SHA256").ok();
+        verified_artifact(Some(&binary), oxa_hash.as_deref()).expect("verify release oxa");
+        let engine = std::env::var_os("OXA_TEST_RELEASE_OXE_SERVER");
+        let engine_hash = std::env::var("OXA_TEST_RELEASE_OXE_SERVER_SHA256").ok();
+        let engine = verified_artifact(engine.as_deref().map(Path::new), engine_hash.as_deref())
+            .expect("verify release oxe-server");
+        assert_eq!(binary.file_name().unwrap(), "oxa");
+        assert_eq!(engine.file_name().unwrap(), "oxe-server");
+        assert_eq!(binary.parent(), engine.parent(), "matched extracted archive pair");
+        engine
+    });
     let env = TestEnv::new();
     let mock = MockAnthropic::start(vec![Reply::text("native-gateway-proof", 11, 7, 3, 5)]);
     let controller = TcpListener::bind("127.0.0.1:0").expect("owned controller trap");
@@ -248,4 +299,177 @@ fn print_uses_native_gateway_without_python_or_controller() {
     assert!((rows[0]["cost_usd"].as_f64().unwrap() - 0.0000459).abs() < 1e-12);
     assert!(!rows[0].to_string().contains(CREDENTIAL));
     mock.finish();
+    if let Some(engine) = engine {
+        native_local_release_pair(&binary, &engine);
+    }
+}
+
+// Same tokenizer-only, tensor-free fixture as the existing installed stub smoke.
+fn tokenizer_fixture(path: &Path) {
+    fn string(value: &str) -> Vec<u8> {
+        let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+        bytes.extend_from_slice(value.as_bytes());
+        bytes
+    }
+    let mut rows = Vec::new();
+    for (name, value) in [
+        ("tokenizer.ggml.model", "gpt2"),
+        ("tokenizer.ggml.pre", "qwen2"),
+        ("tokenizer.chat_template", "{% for message in messages %}<|im_start|>{{ message['role'] }}\n{{ message['content'] }}<|im_end|>\n{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant\n{% endif %}"),
+    ] {
+        let mut row = string(name);
+        row.extend_from_slice(&8u32.to_le_bytes());
+        row.extend(string(value));
+        rows.push(row);
+    }
+    let visible = |b: u32| (33..127).contains(&b) || (161..173).contains(&b) || (174..256).contains(&b);
+    let mut extra = 256;
+    let mut tokens = Vec::new();
+    for byte in 0..256 {
+        let code = if visible(byte) {
+            byte
+        } else {
+            let code = extra;
+            extra += 1;
+            code
+        };
+        tokens.push(char::from_u32(code).unwrap().to_string());
+    }
+    tokens.extend(
+        [
+            "<|im_start|>",
+            "<|im_end|>",
+            "<|endoftext|>",
+            "<think>",
+            "</think>",
+        ]
+        .map(str::to_owned),
+    );
+    for (name, values) in [
+        ("tokenizer.ggml.tokens", tokens),
+        ("tokenizer.ggml.merges", Vec::new()),
+    ] {
+        let mut row = string(name);
+        row.extend_from_slice(&9u32.to_le_bytes());
+        row.extend_from_slice(&8u32.to_le_bytes());
+        row.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for value in values {
+            row.extend(string(&value));
+        }
+        rows.push(row);
+    }
+    let mut eos = string("tokenizer.ggml.eos_token_id");
+    eos.extend_from_slice(&4u32.to_le_bytes());
+    eos.extend_from_slice(&257u32.to_le_bytes());
+    rows.push(eos);
+    let mut bytes = b"GGUF".to_vec();
+    bytes.extend_from_slice(&3u32.to_le_bytes());
+    bytes.extend_from_slice(&0u64.to_le_bytes());
+    bytes.extend_from_slice(&(rows.len() as u64).to_le_bytes());
+    for row in rows {
+        bytes.extend(row);
+    }
+    fs::write(path, bytes).unwrap();
+}
+
+fn native_local_release_pair(binary: &Path, engine: &Path) {
+    let env = TestEnv::new();
+    let model = env.work().join("tokenizer-only.gguf");
+    tokenizer_fixture(&model);
+    let controller = TcpListener::bind("127.0.0.1:0").expect("owned controller trap");
+    controller.set_nonblocking(true).unwrap();
+    let controller_url = format!("http://{}", controller.local_addr().unwrap());
+    let bin = python_shims(&env);
+    let marker = env.tmp().join("python-invoked");
+    env.write("home/.oxa/agent/settings.json", &json!({
+        "defaultProjectTrust":"always", "defaultThinkingLevel":"off", "retry":{"enabled":false},
+        "oxa":{"engine":{"inProcessLocal":true}, "local":{
+            "binary":engine, "startup_timeout_seconds":10,
+            "environment":{"PATH":bin,"OXA_TEST_PYTHON_MARKER":marker},
+            "models":{"synthetic":{"model":model,"arguments":["--engine","stub","--stub-reply","native-local-proof","--reasoning","off"]}},
+            "limits":{"synthetic":{"context_window":4096,"max_output":64,
+                "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}
+        }}
+    }).to_string());
+    let stdout = env.tmp().join("stdout");
+    let stderr = env.tmp().join("stderr");
+    let trace = env.tmp().join("local-process.trace");
+    let tracer = std::env::split_paths(&std::env::var_os("PATH").expect("test-tool PATH"))
+        .filter(|p| p.is_absolute())
+        .map(|p| p.join("strace"))
+        .find(|p| p.is_file())
+        .expect("strace is mandatory");
+    let mut child = Command::new(tracer)
+        .args(["--kill-on-exit", "-f", "-e", "trace=execve,connect", "-o"])
+        .arg(&trace)
+        .arg(binary)
+        .args([
+            "-p",
+            "--offline",
+            "--no-session",
+            "--no-tools",
+            "--model",
+            "synthetic",
+            "reply briefly",
+        ])
+        .env_clear()
+        .envs(env.envs(&controller_url))
+        .env("PATH", &bin)
+        .env("OXA_TEST_PYTHON_MARKER", &marker)
+        .current_dir(env.work())
+        .stdin(Stdio::null())
+        .stdout(File::create(&stdout).unwrap())
+        .stderr(File::create(&stderr).unwrap())
+        .spawn()
+        .expect("spawn exact release oxa");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("native local release proof timed out");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    no_controller_connection(&controller);
+    let trace = fs::read_to_string(trace).unwrap();
+    let mut executed = std::collections::BTreeSet::new();
+    for line in trace
+        .lines()
+        .filter(|line| line.contains("execve(\"") && line.ends_with("= 0"))
+    {
+        let path = line.split("execve(\"").nth(1).unwrap().split('"').next().unwrap();
+        assert!(
+            Path::new(path) == binary || Path::new(path) == engine,
+            "unexpected child executable"
+        );
+        executed.insert(PathBuf::from(path));
+    }
+    assert!(executed.contains(binary), "exact oxa must execute");
+    assert!(executed.contains(engine), "exact oxe-server must execute");
+    assert!(
+        trace.contains("connect("),
+        "native loopback transport must be traced"
+    );
+    for port in [8092, controller.local_addr().unwrap().port()] {
+        assert!(
+            !trace.contains(&format!("_port=htons({port})")),
+            "legacy controller connection"
+        );
+    }
+    assert!(!marker.exists(), "Python shim invoked");
+    assert!(
+        status.success(),
+        "native local proof failed: {}",
+        fs::read_to_string(stderr).unwrap()
+    );
+    assert!(fs::read_to_string(stdout).unwrap().contains("native-local-proof"));
+    assert!(
+        !env.home().join(".config/oxc").exists(),
+        "local proof must need no cloud credentials"
+    );
+    println!("PASS exact release oxa+oxe-server native-local stub; traced pair, no Python/controller");
 }
