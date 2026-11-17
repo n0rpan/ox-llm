@@ -1537,6 +1537,14 @@ fn execute(
             };
             (result, false)
         }
+        SessionCmd::RecoveryPrompt { handle, text, parts } => {
+            if handle.same_instance(&s.handle()) {
+                (run_prompt(s, text, parts, sink, ui), false)
+            } else {
+                let _ = out.send(WorkerMsg::UnsentPrompt { text, parts });
+                (Ok(()), false)
+            }
+        }
         SessionCmd::Prompt { text, parts } => (run_prompt(s, text, parts, sink, ui), false),
         SessionCmd::Compact { instructions } => {
             let mut watch = StartWatch {

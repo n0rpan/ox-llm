@@ -317,6 +317,8 @@ pub(crate) struct Loop<'a> {
     /// Assume focus until the terminal reports otherwise (unsupported terminals stay quiet).
     focused: bool,
     run_finished: bool,
+    /// Enter after explicit Ctrl+C starts a new prompt, even before settlement is observed.
+    abort_requested: bool,
     pub(crate) dirty: bool,
     /// Ctrl+C was pressed on an empty editor; a second press within two seconds quits.
     armed: bool,
@@ -449,6 +451,7 @@ impl<'a> Loop<'a> {
             sent_title: None,
             focused: true,
             run_finished: false,
+            abort_requested: false,
             dirty: true,
             armed: false,
             armed_at: None,
@@ -745,8 +748,28 @@ impl<'a> Loop<'a> {
                         inbox.retry();
                     }
                     self.run_finished = true;
+                    self.abort_requested = false;
                 }
                 apply_event(&mut self.vm, &e);
+            }
+            WorkerMsg::UnsentPrompt { text, mut parts } => {
+                self.editor.prepend_text(&text);
+                parts.append(&mut self.pending_parts);
+                self.pending_parts = parts;
+                if !self.pending_parts.is_empty() {
+                    self.vm.widgets_above.insert(
+                        "oxa.attachments".to_string(),
+                        vec![format!(
+                            "{} image(s) attached to the next prompt",
+                            self.pending_parts.len()
+                        )],
+                    );
+                }
+                self.push_notice(
+                    Level::Warning,
+                    "Recovery prompt was not sent after the session changed; it is back in the editor."
+                        .to_string(),
+                );
             }
             WorkerMsg::Done(result) => {
                 // The wire may have changed: the same draft is a new prefill.
@@ -802,6 +825,7 @@ impl<'a> Loop<'a> {
     /// and its tree, selectors and attachments are closed. Abort, steer and follow-up target
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
+        self.abort_requested = false;
         // Join the old callback before draining its queue back into the editor.
         self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
@@ -1304,6 +1328,7 @@ impl<'a> Loop<'a> {
         if self.opts.keymap.actions_for(&key.id).contains(&"app.clear")
             && (self.running() || matches!(self.vm.status.activity, Activity::Retrying { .. }))
         {
+            self.abort_requested = true;
             self.handle.abort();
             self.handle.abort_retry();
             self.dialogs.key(&key, &self.opts.keymap);
@@ -1416,13 +1441,12 @@ impl<'a> Loop<'a> {
             }
             self.editor.set_text("");
             self.editor.add_history(&text);
-            if self.running() {
+            if self.running() && !self.abort_requested {
                 self.handle.follow_up(text);
                 self.wake_queued();
                 self.sync_queue();
             } else {
-                let parts = self.take_attachments();
-                self.send(SessionCmd::Prompt { text, parts });
+                self.send_prompt(text);
             }
             return;
         }
@@ -1687,14 +1711,31 @@ impl<'a> Loop<'a> {
         if self.fullscreen {
             self.viewport.scroll_to_bottom();
         }
-        if self.running() {
+        // Explicit input after Ctrl+C is a new prompt, not steering for the canceled run.
+        // The worker channel runs it after that operation releases the session. Ordinary
+        // queued input still uses the existing unsuccessful-outcome guard.
+        if self.running() && !self.abort_requested {
             self.handle.steer(trimmed);
             self.wake_queued();
             self.sync_queue();
         } else {
-            let parts = self.take_attachments();
-            self.send(SessionCmd::Prompt { text: trimmed, parts });
+            self.send_prompt(trimmed);
         }
+    }
+
+    /// Both Enter forms use the same explicit recovery path and retain attachments.
+    fn send_prompt(&mut self, text: String) {
+        let recovering = std::mem::take(&mut self.abort_requested);
+        let parts = self.take_attachments();
+        self.send(if recovering {
+            SessionCmd::RecoveryPrompt {
+                handle: self.handle.clone(),
+                text,
+                parts,
+            }
+        } else {
+            SessionCmd::Prompt { text, parts }
+        });
     }
 
     /// Run a built-in slash command line; `false` when it is not one.
