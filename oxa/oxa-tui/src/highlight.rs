@@ -23,14 +23,14 @@ fn syntaxes() -> &'static SyntaxSet {
 /// The caller decides *when*: the interactive loop is meant to call it after the first editable
 /// frame, off the UI thread, so startup never waits for it. Nothing calls it at startup.
 pub fn warm_syntaxes() -> bool {
-    // The fast path: a later call never rebuilds the set just to fail to store it.
-    if SYNTAXES.get().is_some() {
+    warm_syntaxes_with(&SYNTAXES, SyntaxSet::load_defaults_newlines)
+}
+
+fn warm_syntaxes_with(slot: &OnceLock<SyntaxSet>, load: impl FnOnce() -> SyntaxSet) -> bool {
+    if slot.get().is_some() {
         return false;
     }
-    // Claim the slot itself instead of "check, then load, then claim": with two callers this can
-    // be called concurrently, and only the caller whose set is stored did the load. A caller that
-    // loses the race (it built a set the slot did not keep) reports `false`.
-    SYNTAXES.set(SyntaxSet::load_defaults_newlines()).is_ok()
+    slot.set(load()).is_ok()
 }
 
 /// V022 (#884): whether the bundled syntax set is loaded (the warm-up ran, or a highlight did).
@@ -230,4 +230,41 @@ pub fn language_from_path(path: &str) -> Option<&'static str> {
 /// `true` when [`highlight_code`] knows `lang`.
 pub fn language_supported(lang: &str) -> bool {
     find_syntax(lang).is_some()
+}
+
+#[cfg(test)]
+mod warm_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Barrier,
+    };
+
+    #[test]
+    fn racing_warmups_execute_one_loader_and_report_one_initializer() {
+        let slot = OnceLock::new();
+        let loads = AtomicUsize::new(0);
+        let start = Barrier::new(8);
+        let initialized = std::thread::scope(|scope| {
+            let calls: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        warm_syntaxes_with(&slot, || {
+                            loads.fetch_add(1, Ordering::SeqCst);
+                            SyntaxSet::load_defaults_newlines()
+                        })
+                    })
+                })
+                .collect();
+            calls
+                .into_iter()
+                .map(|call| call.join().unwrap())
+                .filter(|initialized| *initialized)
+                .count()
+        });
+        assert_eq!(initialized, 1, "only the initializer reports true");
+        assert_eq!(loads.load(Ordering::SeqCst), 1, "the expensive loader runs once");
+        assert!(!warm_syntaxes_with(&slot, || panic!("a warm set is not rebuilt")));
+    }
 }
