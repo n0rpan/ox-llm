@@ -29,6 +29,7 @@ mod identity_cmd;
 mod in_process;
 pub mod lead;
 pub mod lead_access;
+pub mod lead_http;
 pub mod lead_input;
 pub mod lead_page;
 pub mod lead_panels;
