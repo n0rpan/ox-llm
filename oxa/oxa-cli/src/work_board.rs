@@ -169,9 +169,10 @@ impl<'a> Reader<'a> {
                 "-f",
                 &format!("query={query}"),
             ]);
-        let (code, text) = crate::report_cmd::command_runner(command, Some(MAX_RESPONSE)).ok_or(invalid(
-            "GitHub read failed, exceeded its byte limit or timed out",
-        ))?;
+        let (code, text) = oxa_work::command_runner(command, Some(MAX_RESPONSE), oxa_work::COMMAND_DEADLINE)
+            .ok_or(invalid(
+                "GitHub read failed, exceeded its byte limit or timed out",
+            ))?;
         let (headers, body) = text
             .split_once("\r\n\r\n")
             .or_else(|| text.split_once("\n\n"))
