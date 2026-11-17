@@ -43,7 +43,7 @@ impl GitHub for Input<'_> {
                 packet.number, packet.number
             ));
         }
-        let (metadata, _) = self.reader.query(&fields).map_err(QueryError::message)?;
+        let (metadata, _) = self.reader.repository_read(&fields)?;
         let rows = nodes(&metadata["pullRequests"])?;
         let heads: BTreeMap<_, _> = rows
             .iter()
@@ -149,8 +149,12 @@ pub(super) fn run(
     let config = Path::new(config)
         .canonicalize()
         .map_err(|_| "board config unavailable")?;
-    if config.starts_with(root) {
-        return Err("board config must be outside the source project".into());
+    let authority = dirs
+        .agent_dir
+        .canonicalize()
+        .map_err(|_| "owner controls unavailable")?;
+    if config.starts_with(root) || !config.starts_with(&authority) {
+        return Err("board config must be in protected owner controls outside the source project".into());
     }
     let uid = fs::metadata(&dirs.home)
         .map_err(|_| "owner home unavailable")?
@@ -196,12 +200,14 @@ pub(super) fn run(
             .ok_or("invalid or duplicate prepared ref")?;
         let action: Action =
             serde_json::from_value(row["action"].clone()).map_err(|_| "invalid prepared action")?;
-        let path = Path::new(text(row, "taskfile")?);
-        if !path.is_absolute() || path.starts_with(root) {
-            return Err("taskfile must be outside source project".into());
+        let path = Path::new(text(row, "taskfile")?)
+            .canonicalize()
+            .map_err(|_| "taskfile unavailable")?;
+        if path.starts_with(root) || !path.starts_with(&authority) {
+            return Err("taskfile must be in protected owner controls outside source project".into());
         }
         let mut task = String::new();
-        crate::lead_input::open(path, uid)?
+        crate::lead_input::open(&path, uid)?
             .take(65_537)
             .read_to_string(&mut task)
             .map_err(|_| "cannot read prepared taskfile")?;
@@ -241,12 +247,7 @@ pub(super) fn run(
         crate::netguard::trusted_executable_for("gh", Some(&policy.host_path), Some(root), Some(&dirs.home))
             .ok_or("no trusted gh executable")?;
     let mut source = Input {
-        reader: Reader {
-            gh: &gh,
-            path: &policy.host_path,
-            repo,
-            token: &token,
-        },
+        reader: Reader::new(&gh, &policy.host_path, repo, &token),
         packets: &packets,
         intake: value["intake"] == true,
     };
