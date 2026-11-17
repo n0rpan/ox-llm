@@ -22,6 +22,15 @@ pub fn run_observed(
     args: &[&str],
     path: Option<String>,
 ) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
+    run_observed_with(env, turns, args, path, |_| {})
+}
+pub fn run_observed_with(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    path: Option<String>,
+    configure: impl FnOnce(&mut Command),
+) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
@@ -32,6 +41,7 @@ pub fn run_observed(
     if let Some(path) = path {
         command.env("PATH", path);
     }
+    configure(&mut command);
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         tx.send(confirm::output(command)).unwrap();

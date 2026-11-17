@@ -24,7 +24,12 @@ printf '%s\n' "$*" >> "$HOME/gh-calls"
 host=github.com
 if test -f "$HOME/enterprise-host"; then host=code.example.invalid; fi
 case "$1 $2" in
-  'repo view') printf '{"nameWithOwner":"example/project","url":"https://%s/example/project"}' "$host" ;;
+  'repo view')
+    if test "${GH_ENTERPRISE_TOKEN+x}" = x || test "${GITHUB_ENTERPRISE_TOKEN+x}" = x; then
+      touch "$HOME/ambient-publication-auth"
+    fi
+    printf '{"nameWithOwner":"example/project","url":"https://%s/example/project"}' "$host"
+    if test -f "$HOME/oversized-repo-response"; then head -c 1048576 /dev/zero | tr '\000' ' '; fi ;;
   'pr list') if test -f "$HOME/pr-state.json"; then printf '['; cat "$HOME/pr-state.json"; printf ']'; else printf '[]'; fi ;;
   'api graphql') if test -f "$HOME/queued"; then printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":{"id":"queue"}}}}}'; else printf '%s' '{"data":{"repository":{"pullRequest":{"mergeQueueEntry":null}}}}'; fi ;;
   'pr create')
@@ -35,7 +40,7 @@ case "$1 $2" in
       if test "$arg" = '--draft'; then draft=true; fi
       if test "$arg" = '--body-file'; then body_next=true; fi
     done
-    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$host" "$draft" > "$HOME/pr-state.json"
+    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"},"isCrossRepository":false}' "$host" "$draft" > "$HOME/pr-state.json"
     printf 'https://%s/example/project/pull/1' "$host" ;;
   'pr view') jq -Rs '{body:.}' "$HOME/published-body" ;;
   'pr edit')
@@ -47,7 +52,7 @@ case "$1 $2" in
   'pr ready')
     draft=false
     for arg in "$@"; do if test "$arg" = '--undo'; then draft=true; fi; done
-    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"}}' "$host" "$draft" > "$HOME/pr-state.json" ;;
+    printf '{"number":1,"url":"https://%s/example/project/pull/1","isDraft":%s,"headRepositoryOwner":{"login":"example"},"isCrossRepository":false}' "$host" "$draft" > "$HOME/pr-state.json" ;;
   *) exit 7 ;;
 esac
 "##);
@@ -247,6 +252,63 @@ fn publishing_requires_acceptance_without_ignored_helpers() {
     assert!(!env.home().join("push-calls").exists());
     assert!(!env.home().join("gh-calls").exists());
 }
+#[test]
+fn publication_refuses_oversized_repository_metadata_before_push() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write("home/oversized-repo-response", "");
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(env.home().join("gh-calls").exists());
+    assert!(!env.home().join("push-calls").exists());
+}
+
+#[test]
+fn publication_does_not_forward_ambient_enterprise_credentials_to_origin() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write("home/enterprise-host", "");
+    let (record, _) = work::run_observed_with(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+        |command| {
+            command.env("GH_ENTERPRISE_TOKEN", "synthetic-fixture");
+            command.env("GITHUB_ENTERPRISE_TOKEN", "synthetic-fixture");
+        },
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert!(env.home().join("push-calls").exists());
+    assert!(!env.home().join("ambient-publication-auth").exists());
+}
+
+#[test]
+fn publication_refuses_a_same_owner_fork_before_push() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    env.write(
+        "home/pr-state.json",
+        r#"{"number":1,"url":"https://github.com/example/project/pull/1","isDraft":false,"headRepositoryOwner":{"login":"example"},"isCrossRepository":true}"#,
+    );
+    env.write("home/published-body", "Synthetic fork");
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let calls = fs::read_to_string(env.home().join("gh-calls")).unwrap();
+    assert!(calls.contains("pr list"));
+    assert!(!env.home().join("push-calls").exists());
+}
+
 #[test]
 fn publishes_local_branch_and_updates_same_pr_on_restart() {
     use std::os::unix::fs::PermissionsExt;

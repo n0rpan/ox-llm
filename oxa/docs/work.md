@@ -200,7 +200,8 @@ The [checkpoint integration contract](work-state.md) defines the runner's public
 event hook. Event/situation/standing stores and their CLI adapters are a separate
 integration; this slice does not infer facts from worker prose or raw logs.
 `oxa work tasks.json --publish` pushes the accepted, saved commit to `origin` and
-creates or updates its PR through `gh`. Red acceptance never pushes; green
+creates or updates its PR through `gh`. Sign in with `gh auth login --hostname HOST`
+for the host in `origin`. Publication uses that host's saved login. Red acceptance never pushes; green
 acceptance makes the PR ready. Blocked tasks do not create PRs. Drift-only accepted reruns may update an existing PR.
 The runner checks existing PR queue membership before every push and refuses a
 queued PR; use a new task branch for follow-up work. It refuses branch changes
