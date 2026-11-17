@@ -37,7 +37,8 @@ def lane_cache_problems(text):
     condition = (
         "success() && github.event_name != 'merge_group' && github.ref != 'refs/heads/main' && "
         "(startsWith(github.ref, 'refs/heads/agent/') || startsWith(github.ref, 'refs/heads/codex/') || "
-        "startsWith(github.ref, 'refs/heads/air/') || startsWith(github.ref, 'refs/heads/runner/')) && "
+        "startsWith(github.ref, 'refs/heads/air/') || startsWith(github.ref, 'refs/heads/runner/') || "
+        "startsWith(github.ref, 'refs/heads/oxa/')) && "
         "steps.cache.outputs.cache-hit != 'true'"
     )
     steps = re.findall(r'(?m)^      - uses: actions/cache/(restore|save)@[a-f0-9]{40}[^\n]*\n'
