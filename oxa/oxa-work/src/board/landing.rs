@@ -68,7 +68,8 @@ pub struct Observation<'a> {
     pub queue: Queue<'a>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Next {
     Disabled,
     HoldFindings,
