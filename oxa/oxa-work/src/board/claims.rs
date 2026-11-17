@@ -126,6 +126,7 @@ impl Claims {
         {
             return Err("invalid board claim identity or lease".into());
         }
+        self.mark(number)?;
         Ok(saved)
     }
 

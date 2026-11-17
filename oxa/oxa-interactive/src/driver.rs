@@ -1418,6 +1418,7 @@ impl<'a> Loop<'a> {
                 return;
             }
             if self.running() {
+                self.abort_requested = true;
                 self.handle.abort();
             }
             if matches!(self.vm.status.activity, Activity::Retrying { .. }) {
@@ -1712,9 +1713,9 @@ impl<'a> Loop<'a> {
         if self.fullscreen {
             self.viewport.scroll_to_bottom();
         }
-        // Explicit input after Ctrl+C is a new prompt, not steering for the canceled run.
-        // The worker channel runs it after that operation releases the session. Ordinary
-        // queued input still uses the existing unsuccessful-outcome guard.
+        // Explicit input after a cancel key (Ctrl+C or Escape) is a new prompt, not steering
+        // for the canceled run. The worker channel runs it after that operation releases the
+        // session. Ordinary queued input still uses the existing unsuccessful-outcome guard.
         if self.running() && !self.abort_requested {
             self.handle.steer(trimmed);
             self.wake_queued();
@@ -2600,6 +2601,8 @@ impl<'a> Loop<'a> {
     /// the session file). A relative path is taken from the working directory; with no path the
     /// HTML goes to the default name (`default_output_name`, as `--export` and RPC do).
     fn export(&mut self, path: Option<PathBuf>) {
+        use std::os::unix::fs::MetadataExt;
+
         let Some(source) = self.session.file.clone() else {
             self.push_notice(
                 Level::Warning,
@@ -2608,9 +2611,23 @@ impl<'a> Loop<'a> {
             return;
         };
         let cwd = self.cwd();
-        let target = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) });
+        let target = path
+            .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+            .unwrap_or_else(|| default_output_name(Some(&source), &self.session.id, &cwd));
+        let aliases_source = source == target
+            || match (std::fs::metadata(&source), std::fs::metadata(&target)) {
+                (Ok(source), Ok(target)) => source.dev() == target.dev() && source.ino() == target.ino(),
+                _ => false,
+            };
+        if aliases_source {
+            self.push_notice(
+                Level::Error,
+                "/export: destination is the session file; choose a different path.".to_string(),
+            );
+            return;
+        }
         match target {
-            Some(target) if target.extension().is_some_and(|e| e == "jsonl") => {
+            target if target.extension().is_some_and(|e| e == "jsonl") => {
                 match std::fs::copy(&source, &target) {
                     Ok(_) => self.push_notice(
                         Level::Info,
@@ -2622,11 +2639,7 @@ impl<'a> Loop<'a> {
                     }
                 }
             }
-            Some(path) => self.send(SessionCmd::Export { path }),
-            None => {
-                let path = default_output_name(self.session.file.as_deref(), &self.session.id, &cwd);
-                self.send(SessionCmd::Export { path });
-            }
+            path => self.send(SessionCmd::Export { path }),
         }
     }
 
@@ -2698,6 +2711,7 @@ impl<'a> Loop<'a> {
             version: env!("CARGO_PKG_VERSION").to_string(),
             resources: self.resources.clone(),
             engine_url: self.session.engine_url.clone(),
+            memory_policy: self.session.memory_policy,
             model: self.vm.status.model.clone(),
             model_remote: self.vm.status.model_remote,
             model_provider: self.vm.status.model_provider,
@@ -2929,6 +2943,13 @@ impl<'a> Loop<'a> {
             self.vm.status = saved;
         } else {
             lines.extend(render_footer(&self.vm, width, &self.theme));
+        }
+        // Regular mode commits its splash once; policy changes belong in the live
+        // region so a cold load, switch or idle unload remains observable.
+        if !self.fullscreen {
+            if let Some(policy) = self.session.memory_policy {
+                lines.push(self.theme.dim(&format!("Memory: {policy}")));
+            }
         }
         (lines, cursor)
     }
@@ -3536,3 +3557,6 @@ mod block_cache_tests {
 
 #[cfg(test)]
 mod catalog_tests;
+
+#[cfg(test)]
+mod export_tests;

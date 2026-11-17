@@ -77,15 +77,21 @@ fn controls_require_authority_and_compare_revision_after_reopen() {
         .store()
         .control(3, Some(ManualAuthority::Lead), 0, Control::OwnerOnly(true))
         .unwrap();
+    let witness = fixture.0.join("3.board-claim.created");
+    fs::remove_file(&witness).unwrap();
     assert!(fixture
         .store()
         .control(3, Some(ManualAuthority::Owner), 0, Control::OwnerOnly(false))
         .is_err());
+    assert!(witness.exists());
     let rows = fixture.store().assignments().unwrap();
     assert_eq!(rows[&3].data.revision, 1);
     assert!(rows[&3].data.policy.as_ref().unwrap().owner_only);
     assert_eq!(rows[&3].state.attempts, 0);
     assert_eq!(rows[&3].assignee(10), None);
+    fs::remove_file(fixture.0.join("3.board-claim.json")).unwrap();
+    fs::remove_file(fixture.0.join("3.board-claim.lock")).unwrap();
+    assert!(fixture.store().assignments().is_err());
 }
 
 #[test]
