@@ -31,7 +31,8 @@ Tool names, descriptions and schemas are part of the system prompt. They stay th
 | Option or setting | Effect |
 |---|---|
 | `--tools a,b` (`-t`) | allowlist of names or patterns; `*` matches any characters. Only these tools are on |
-| `--exclude-tools a,b` (`-xt`) | denylist, applied after the allowlist |
+| `--exclude-tools a,b` (`-xt`) | denylist, applied after the allowlist. Repeated lists and `--no-<tool>` add to it |
+| `--no-<tool>` | one exclusion by name: `--no-read`, `--no-bash`, `--no-edit`, `--no-write`, `--no-grep`, `--no-find`, `--no-ls`, `--no-subagent`; the same as `--exclude-tools <tool>` |
 | `--no-builtin-tools` (`-nbt`) | disables the built-in tools; extension and MCP tools stay |
 | `--no-tools` (`-nt`) | disables all tools |
 | `--no-mcp` | no MCP servers connect and no MCP tools are offered |
@@ -148,7 +149,8 @@ Start oxa and run `/web-search` to see the provider, where the key came from, an
 ### Turning it off
 
 - No key: the tool is not declared at all.
-- `--no-web-search`, or `OXA_WEB_SEARCH=0` (also `false`, `no` or `off`).
+- `--no-web-search`, or `OXA_WEB_SEARCH=0` (also `false`, `no` or `off`); `1`, `true`, `yes` and `on` say on.
+- Any other tool: `--no-<tool>`, e.g. `--no-bash` or `--no-subagent`, the same as `--exclude-tools <tool>`.
 - `"oxa": { "webSearch": { "enabled": false } }` or `"provider": "none"` in settings.
 - Offline mode (`--offline`, `OXA_OFFLINE=1`, or `oxa.offline` in user settings) removes the tool, and a call that gets through is refused.
 

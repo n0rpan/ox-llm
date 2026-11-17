@@ -120,13 +120,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_ALLOW_HOME_CWD",
         pi_name: None,
-        description: "allow a session in the home directory or above it (1, true, yes), as oxa.allowHomeCwd; without it oxa refuses there (print, json, rpc) or asks (interactive)",
+        description: "allow a session in the home directory or above it (1/true/yes/on), as oxa.allowHomeCwd; without it oxa refuses there (print, json, rpc) or asks (interactive)",
         supported: true,
     },
     EnvVar {
         name: "OXA_OFFLINE",
         pi_name: Some("PI_OFFLINE"),
-        description: "hard offline switch, as --offline (1, true, yes): non-local connections refused, bash has no network, web_search off",
+        description: "hard offline switch, as --offline (1/true/yes/on): non-local connections refused, bash has no network, web_search off",
         supported: true,
     },
     // O-169: the web_search tool (oxa-web); oxa-only, pi has no built-in search.
@@ -139,7 +139,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_WEB_SEARCH",
         pi_name: None,
-        description: "0/false/no/off switches the web_search tool off (as --no-web-search)",
+        description: "0/false/no/off switches the web_search tool off, 1/true/yes/on says on (as --no-web-search)",
         supported: true,
     },
     EnvVar {
@@ -188,7 +188,7 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_CLEAR_ON_SHRINK",
         pi_name: Some("PI_CLEAR_ON_SHRINK"),
-        description: "1 clears empty rows when rendered content shrinks",
+        description: "1/true/yes/on clears empty rows when rendered content shrinks",
         supported: true,
     },
     EnvVar {
@@ -200,13 +200,13 @@ pub const ENV_TABLE: &[EnvVar] = &[
     EnvVar {
         name: "OXA_REDUCED_MOTION",
         pi_name: None,
-        description: "1 switches the animations of the oxa skin off (as the ui.reducedMotion setting)",
+        description: "1/true/yes/on switches the animations of the oxa skin off, 0/false/no/off turns them back on for one run (as the ui.reducedMotion setting)",
         supported: true,
     },
     EnvVar {
         name: "OXA_CLIPBOARD_OSC52",
         pi_name: Some("PI_CLIPBOARD_OSC52"),
-        description: "1 also copies through OSC 52",
+        description: "1/true/yes/on also copies through OSC 52",
         supported: true,
     },
     // Standard names, not renamed by pi.
@@ -235,6 +235,67 @@ pub const ENV_TABLE: &[EnvVar] = &[
         supported: true,
     },
 ];
+
+/// The documented words that turn a user-facing `OXA_*` boolean on, in any case.
+pub const TRUE_WORDS: [&str; 4] = ["1", "true", "yes", "on"];
+/// The documented words that turn a user-facing `OXA_*` boolean off, in any case.
+pub const FALSE_WORDS: [&str; 4] = ["0", "false", "no", "off"];
+
+/// One user-facing boolean environment variable: the same eight words everywhere
+/// (`1`/`true`/`yes`/`on` and `0`/`false`/`no`/`off`, any case, surrounding space ignored).
+///
+/// Unset and empty are [`EnvFlag::Unset`]; any other word is [`EnvFlag::Invalid`]. Both leave
+/// the caller's own default in place ([`EnvFlag::or`]), so a variable that is not set for a
+/// caller never changes that caller's behaviour. Internal test markers (`OXA_TEST_*`) are not
+/// parsed here: they have their own exact spelling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvFlag {
+    On,
+    Off,
+    /// Unset or empty: the caller's default applies.
+    Unset,
+    /// Set to a word outside [`TRUE_WORDS`] / [`FALSE_WORDS`]: the caller's default applies.
+    Invalid,
+}
+
+impl EnvFlag {
+    /// Parse a raw environment value. `None` (unset) and an empty or blank value are
+    /// [`EnvFlag::Unset`]; the eight documented words are matched case-insensitively.
+    pub fn parse(value: Option<&str>) -> EnvFlag {
+        let Some(v) = value.map(str::trim) else {
+            return EnvFlag::Unset;
+        };
+        if v.is_empty() {
+            return EnvFlag::Unset;
+        }
+        if TRUE_WORDS.iter().any(|w| v.eq_ignore_ascii_case(w)) {
+            EnvFlag::On
+        } else if FALSE_WORDS.iter().any(|w| v.eq_ignore_ascii_case(w)) {
+            EnvFlag::Off
+        } else {
+            EnvFlag::Invalid
+        }
+    }
+
+    /// The effective boolean: `default` for [`EnvFlag::Unset`] and [`EnvFlag::Invalid`].
+    pub fn or(self, default: bool) -> bool {
+        match self {
+            EnvFlag::On => true,
+            EnvFlag::Off => false,
+            EnvFlag::Unset | EnvFlag::Invalid => default,
+        }
+    }
+
+    /// `true` when the value was set to a word outside the documented eight.
+    pub fn is_invalid(self) -> bool {
+        self == EnvFlag::Invalid
+    }
+}
+
+/// [`EnvFlag::parse`] with the caller's default in one call.
+pub fn env_flag(value: Option<&str>, default: bool) -> bool {
+    EnvFlag::parse(value).or(default)
+}
 
 /// A snapshot of the environment. The only reader of the process environment in the workspace
 /// is [`Env::from_process`], called once from `main`.
@@ -271,5 +332,53 @@ impl Env {
     }
     pub fn pairs(&self) -> &[(String, String)] {
         &self.vars
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_eight_words_parse_in_any_case() {
+        for word in TRUE_WORDS {
+            assert_eq!(EnvFlag::parse(Some(word)), EnvFlag::On, "{word}");
+            assert_eq!(
+                EnvFlag::parse(Some(&word.to_ascii_uppercase())),
+                EnvFlag::On,
+                "{word} upper"
+            );
+        }
+        for word in FALSE_WORDS {
+            assert_eq!(EnvFlag::parse(Some(word)), EnvFlag::Off, "{word}");
+            assert_eq!(
+                EnvFlag::parse(Some(&word.to_ascii_uppercase())),
+                EnvFlag::Off,
+                "{word} upper"
+            );
+        }
+        // Mixed case, as a user types it.
+        assert_eq!(EnvFlag::parse(Some("True")), EnvFlag::On);
+        assert_eq!(EnvFlag::parse(Some("oFf")), EnvFlag::Off);
+        assert_eq!(EnvFlag::parse(Some("  yes  ")), EnvFlag::On);
+    }
+
+    #[test]
+    fn unset_empty_and_invalid_keep_the_caller_default() {
+        for v in [None, Some(""), Some("   ")] {
+            assert_eq!(EnvFlag::parse(v), EnvFlag::Unset, "{v:?}");
+        }
+        for v in ["maybe", "2", "t", "y", "no-way"] {
+            assert_eq!(EnvFlag::parse(Some(v)), EnvFlag::Invalid, "{v}");
+            assert!(EnvFlag::parse(Some(v)).is_invalid());
+        }
+        // Both keep each caller's own default, in both directions.
+        for v in [None, Some(""), Some("maybe")] {
+            assert!(EnvFlag::parse(v).or(true));
+            assert!(!EnvFlag::parse(v).or(false));
+        }
+        assert!(env_flag(Some("on"), false));
+        assert!(!env_flag(Some("off"), true));
+        assert!(env_flag(None, true) && !env_flag(None, false));
     }
 }

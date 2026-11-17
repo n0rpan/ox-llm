@@ -3,8 +3,8 @@
 //! no network, no real `gh`, no real terminal.
 
 use oxa_cli::{
-    clean_notes, identity_facts, parse_draft, report_repo, run_identity, save_draft, scrub, submit,
-    write_identity, ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED,
+    clean_notes, identity_facts, parse_draft, process_runner, report_repo, run_identity, save_draft, scrub,
+    submit, write_identity, ScrubCtx, MAX_NOTES_CHARS, REPORT_DISABLED,
 };
 use oxa_config::{Dirs, Env, Settings};
 use oxa_fake::TestEnv;
@@ -374,6 +374,42 @@ fn submit_posts_the_exact_text_after_yes() {
     assert!(String::from_utf8(out)
         .unwrap()
         .contains("Posted: https://github.com/owner/ox-llm/issues/1"));
+}
+
+/// A fake host tool: a shell script that records `who` in `marker` and prints it.
+fn fake_tool(dir: &Path, name: &str, who: &str, marker: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let file = dir.join(name);
+    let script = format!("#!/bin/sh\necho {who} >> '{}'\necho {who}\n", marker.display());
+    std::fs::write(&file, script).unwrap();
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn the_real_runner_never_runs_a_project_gh_first_on_path() {
+    let env = TestEnv::new();
+    let project = env.work();
+    let marker = env.root().join("ran.log");
+    fake_tool(&project, "gh", "project", &marker);
+    fake_tool(&env.root().join("tools"), "gh", "trusted", &marker);
+    let args = vec!["--version".to_string()];
+
+    // The project's copy comes first on PATH: the trusted one runs instead.
+    let path = format!("{}:{}", project.display(), env.root().join("tools").display());
+    let vars = Env::from_pairs(&[("PATH", path.as_str())]);
+    let home = env.home();
+    let result = process_runner(&vars, &project, &home)("gh", &args);
+    assert_eq!(result, Some((0, "trusted\n".to_string())));
+
+    // Only the project's copy on PATH: refused, nothing runs.
+    let path = project.display().to_string();
+    let vars = Env::from_pairs(&[("PATH", path.as_str())]);
+    assert_eq!(process_runner(&vars, &project, &home)("gh", &args), None);
+
+    let ran = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert_eq!(ran, "trusted\n", "the project's gh never ran");
 }
 
 // ---------------------------------------------------------------------------------------------

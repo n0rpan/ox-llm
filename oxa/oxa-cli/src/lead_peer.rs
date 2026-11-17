@@ -122,6 +122,22 @@ pub fn owner_uid(stream: &TcpStream) -> Result<u32> {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    fn sample_live_owner(stream: &TcpStream) -> Result<u32> {
+        // The kernel table is live. An ambiguous observation remains a refusal;
+        // real-socket liveness controls may obtain another sample for at most one second.
+        // Wrong/missing ownership and every other error still fail immediately.
+        let start = std::time::Instant::now();
+        loop {
+            match owner_uid(stream) {
+                Err("ambiguous peer ownership") if start.elapsed() < std::time::Duration::from_secs(1) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                result => return result,
+            }
+        }
+    }
+
     fn pair(local: &str, peer: &str) -> (SocketAddr, SocketAddr) {
         (local.parse().unwrap(), peer.parse().unwrap())
     }
@@ -192,7 +208,7 @@ mod tests {
             let listener = std::net::TcpListener::bind(bind).unwrap();
             let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
             let (server, _) = listener.accept().unwrap();
-            assert_eq!(owner_uid(&server), Ok(uid));
+            assert_eq!(sample_live_owner(&server), Ok(uid));
             drop(client);
         }
     }
@@ -211,7 +227,7 @@ mod tests {
         let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
         let (server, peer) = listener.accept().unwrap();
         assert!(peer.ip().is_ipv6(), "the kernel reports the mapped IPv4 client");
-        assert_eq!(owner_uid(&server), Ok(uid));
+        assert_eq!(sample_live_owner(&server), Ok(uid));
         drop(client);
     }
 }

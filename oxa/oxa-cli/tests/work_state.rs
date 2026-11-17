@@ -61,6 +61,30 @@ fn status(env: &TestEnv) -> serde_json::Value {
 }
 
 #[test]
+fn task_lock_requires_a_regular_owner_file() {
+    use std::os::unix::fs::symlink;
+
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    fs::create_dir_all(storage(&env)).unwrap();
+    let lock = env.write("tmp/lock-fixture", "");
+    symlink(&lock, storage(&env).join("test.lock")).unwrap();
+    let (record, requests) = run_observed(
+        &env,
+        vec![ScriptTurn::text("done")],
+        &["work", "../tasks.json"],
+        None,
+    );
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(
+        record["detail"].as_str().unwrap().contains("cannot lock task"),
+        "{record}"
+    );
+    assert!(requests.is_empty());
+    assert!(!path(&env).exists());
+}
+
+#[test]
 fn dirty_success_is_saved_and_records_the_actual_head_and_tree() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();

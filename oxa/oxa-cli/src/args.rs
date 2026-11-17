@@ -11,6 +11,30 @@ pub enum ModeArg {
     Rpc,
 }
 
+/// The `--no-<tool>` aliases (UX/DX review item 5): each is sugar for `--exclude-tools <tool>`,
+/// so one exclusion precedence (`resolve_toolset`) covers both spellings and the effective tool
+/// selection is identical. A denylist has no replacement meaning: every spelling appends to
+/// `Args::exclude_tools`, in the order given. `--no-web-search` and `--no-mcp` are not here:
+/// they also skip building the web-search hook set and the MCP manager.
+pub const NO_TOOL_ALIASES: [(&str, &str); 8] = [
+    ("--no-read", "read"),
+    ("--no-bash", "bash"),
+    ("--no-edit", "edit"),
+    ("--no-write", "write"),
+    ("--no-grep", "grep"),
+    ("--no-find", "find"),
+    ("--no-ls", "ls"),
+    ("--no-subagent", "subagent"),
+];
+
+/// The tool a `--no-<tool>` alias excludes, when `flag` is one of [`NO_TOOL_ALIASES`].
+pub fn no_tool_alias(flag: &str) -> Option<&'static str> {
+    NO_TOOL_ALIASES
+        .iter()
+        .find(|(name, _)| *name == flag)
+        .map(|(_, tool)| *tool)
+}
+
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
@@ -76,6 +100,9 @@ impl std::fmt::Debug for ApiKey {
 /// Every flag of cli.md that oxa keeps. Field comments give the spellings.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Args {
+    /// Explicit lead shadow preset; ordinary sessions retain their existing tools.
+    pub lead: bool,
+    pub shadow: bool,
     pub subcommand: Option<Subcommand>,
     /// Positional prompt words (each is one prompt in print/json mode, as pi).
     pub messages: Vec<String>,
@@ -134,7 +161,8 @@ pub struct Args {
     pub name: Option<String>,
     /// `--tools <list>` / `-t`.
     pub tools: Option<Vec<String>>,
-    /// `--exclude-tools <list>` / `-xt`.
+    /// `--exclude-tools <list>` / `-xt`, plus every `--no-<tool>` alias (see
+    /// [`NO_TOOL_ALIASES`]).
     pub exclude_tools: Vec<String>,
     /// `-nbt`, `--no-builtin-tools`.
     pub no_builtin_tools: bool,
@@ -144,6 +172,8 @@ pub struct Args {
     pub no_mcp: bool,
     /// `--no-web-search` (oxa, O-170): the `web_search` tool is off for this run.
     pub no_web_search: bool,
+    /// `--animation <mode>`: `ui.animation` for this run (over the setting, in memory only).
+    pub animation: Option<String>,
     /// `-e`, `--extension <path>` (repeatable).
     pub extensions: Vec<String>,
     /// `-ne`, `--no-extensions`.
@@ -333,10 +363,19 @@ const OPTIONS: &[(&str, &str)] = &[
         "Comma-separated denylist of tool names or patterns (*)",
     ),
     (
+        "--no-<tool>",
+        "Disable one tool: read, bash, edit, write, grep, find, ls or subagent (same as --exclude-tools <tool>)",
+    ),
+    (
+        "--animation <mode>",
+        "Animation of the oxa skin for this run: arcade, minimal or off (over ui.animation)",
+    ),
+    (
         "--no-builtin-tools, -nbt",
         "Disable built-in tools by default, keep extension and custom tools",
     ),
     ("--no-tools, -nt", "Disable all tools by default"),
+    ("--shadow", "Lead preset only: return proposals without executing actions"),
     (
         "--no-mcp",
         "Disable MCP support: no servers connect and no MCP tools",
@@ -433,6 +472,11 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         .chain(rest.iter().cloned())
         .collect();
     if let Some(invocation) = parse_cli(&words).filter(|i| registry_owned(i.command.id)) {
+        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
+            && !invocation.args.is_empty()
+        {
+            return Err(usage("registered command arguments are unavailable"));
+        }
         return Ok(Some(Subcommand::Registered(
             invocation.command.id,
             RegistryArgs(invocation.args.to_vec()),
@@ -572,6 +616,16 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
+        if !stop && i == 1 && arg == "lead" {
+            let reserved_child = oxa_interactive::command_registry::COMMANDS.iter().any(|entry| {
+                entry.path.first() == Some(&arg)
+                    && entry.path.get(1).is_some_and(|part| argv.get(i).map(String::as_str) == Some(*part))
+            });
+            if !reserved_child && argv[i..].iter().any(|word| word.split('=').next() == Some("--shadow")) {
+                a.lead = true;
+                continue;
+            }
+        }
         // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
         // another option or `--` appears, later words retain their positional meaning.
         if !stop
@@ -604,6 +658,7 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
         parse_flag(&mut a, argv, &mut i, flag, inline, ext_flags)?;
     }
     if !a.help && !a.version {
+        crate::lead_preset::apply(&mut a)?;
         check_conflicts(&a)?;
     }
     Ok(a)
@@ -618,6 +673,10 @@ fn parse_flag(
     ext: &[FlagSpec],
 ) -> Result<(), OxaError> {
     match flag {
+        "--shadow" => {
+            no_value(inline, flag)?;
+            a.shadow = true;
+        }
         "-h" | "--help" => {
             no_value(inline, flag)?;
             a.help = true;
@@ -733,8 +792,17 @@ fn parse_flag(
             check_tool_list(flag, &entries)?;
             a.tools = Some(entries);
         }
+        // Repeated `-xt` / `--exclude-tools` lists accumulate, so a later exclusion never
+        // undoes an earlier explicit one (a denylist has no replacement meaning, unlike the
+        // `--tools` allowlist). `--no-<tool>` appends to the same list, in the order given.
         "-xt" | "--exclude-tools" => {
-            a.exclude_tools = list(&value(argv, i, inline, flag, "a comma-separated list")?)
+            a.exclude_tools
+                .extend(list(&value(argv, i, inline, flag, "a comma-separated list")?))
+        }
+        _ if no_tool_alias(flag).is_some() => {
+            no_value(inline, flag)?;
+            a.exclude_tools
+                .push(no_tool_alias(flag).unwrap_or_default().to_string());
         }
         "--thinking" => {
             let v = value(argv, i, inline, flag, "a thinking level")?;
@@ -793,6 +861,16 @@ fn parse_flag(
                 )));
             }
             a.tui_mode = Some(v);
+        }
+        "--animation" => {
+            let v = value(argv, i, inline, flag, "arcade, minimal, or off")?;
+            if !oxa_interactive::skin::Animation::ALL.contains(&v.as_str()) {
+                return Err(usage(format!(
+                    "Invalid animation \"{v}\". Valid values: {}",
+                    oxa_interactive::skin::Animation::ALL.join(", ")
+                )));
+            }
+            a.animation = Some(v);
         }
         "--permission-mode" => {
             let v = value(
@@ -960,7 +1038,7 @@ fn present_flags<'a>(flags: &[(bool, &'a str)]) -> Vec<&'a str> {
 pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
     let mut out = String::new();
     out.push_str("oxa - coding agent with read, bash, edit and write tools\n\n");
-    out.push_str("Usage:\n  oxa [options] [--] [@files...] [messages...]\n\n");
+    out.push_str("Usage:\n  oxa [options] [--] [@files...] [messages...]\n  oxa lead --shadow [options] [messages...]\n\n");
     out.push_str("Commands:\n");
     for (left, desc) in COMMANDS {
         out.push_str(&format!("  {left:<36}{desc}\n"));

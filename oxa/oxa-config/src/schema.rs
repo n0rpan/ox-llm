@@ -162,6 +162,8 @@ const SCHEMA: &[KeyDef] = &[
     // Lead web access scaffold: user-layer object, disabled by default, no listener installed yet.
     // The CLI validates the fields it reads (identity mode, loopback bind, port, allow-list).
     key("oxa.lead.serve", Kind::Object, "{}"),
+    // Read-only lead shadow preset; user settings only, default off.
+    key("oxa.lead.shadow", Kind::Bool, "false"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
     key("oxa.local", Kind::Object, "{}"),
     key("oxa.maxTurns", Kind::Number, "null"),
@@ -175,6 +177,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.prefill.paste", Kind::Bool, "null"),
     key("oxa.prefill.tools", Kind::Bool, "null"),
     key("oxa.reportIssue.repo", Kind::String, "null"),
+    key("oxa.reportIssue.semanticDedupe", Kind::Bool, "false"),
     // B3 (lane harden): user settings only (read from the user file whatever the project says).
     // `greedy` = W6 `temperature: 0` (MTP on); `model` = the model card's sampling (oxa-core
     // `sampling.rs`). The seed is sent only with `model`.
