@@ -1,4 +1,4 @@
-use oxa_work::board::{RequiredCi, review::*};
+use oxa_work::board::{review::*, RequiredCi};
 
 const PATHS: &[PathRule<'_>] = &[
     PathRule {
