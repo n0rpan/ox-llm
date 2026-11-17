@@ -521,3 +521,50 @@ fn the_child_text_is_bounded_and_the_arguments_never_show() {
 fn the_subagent_tool_name_is_the_published_one() {
     assert_eq!(SUBAGENT_TOOL, oxa_tools::descriptions::subagent::NAME);
 }
+
+#[test]
+fn timed_completion_survives_static_animation_and_plain_theme() {
+    let blocks = vec![user_block(), tool_block("one")];
+    let mut state = ArcadeState::default();
+    state.observe(true, &blocks, 1_000, true);
+    state.observe(false, &blocks, 43_000, true);
+    let run = state.run(43_200);
+    let status = StatusModel::default();
+    for animation in [Animation::Off, Animation::Minimal, Animation::Arcade] {
+        for theme in [colour(), Theme::plain()] {
+            for width in [30, 60, 100] {
+                let line = oxa_arcade_line(
+                    &status,
+                    &Keymap::defaults(),
+                    animation,
+                    ArcadeScene::Charge,
+                    &run,
+                    width,
+                    &theme,
+                    Skin::Oxa,
+                )
+                .expect("finished timed runs retain a static completion line");
+                let text = strip_ansi(&line);
+                assert!(text.contains("CLEAR"), "{text:?}");
+                assert!(text.contains("42s"), "{text:?}");
+                assert!(visible_width(&line) <= usize::from(width), "{text:?}");
+                assert_eq!(line.lines().count(), 1);
+            }
+        }
+    }
+    // The existing untimed default does not gain a static completion banner.
+    let mut untimed = ArcadeState::default();
+    untimed.observe(true, &blocks, 1_000, false);
+    untimed.observe(false, &blocks, 43_000, false);
+    assert!(oxa_arcade_line(
+        &status,
+        &Keymap::defaults(),
+        Animation::Off,
+        ArcadeScene::Charge,
+        &untimed.run(43_200),
+        100,
+        &colour(),
+        Skin::Oxa,
+    )
+    .is_none());
+}
