@@ -187,6 +187,8 @@ pub fn publish(
             repo,
             &[
                 "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
                 "protocol.https.allow=always",
                 "-c",
                 "protocol.ssh.allow=always",
@@ -198,6 +200,9 @@ pub fn publish(
             ],
         );
         push.env("GIT_TERMINAL_PROMPT", "0")
+            // Metadata probes deny every transport. Only this explicit,
+            // confirmed publication may use the normal GitHub/file transports.
+            .env("GIT_ALLOW_PROTOCOL", "https:ssh:file")
             .stdin(lock.try_clone().map_err(|e| e.to_string())?);
         let pushed = push.output().map_err(|e| e.to_string())?;
         if !pushed.status.success() {

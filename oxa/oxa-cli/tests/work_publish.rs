@@ -57,10 +57,101 @@ fn edits() -> Vec<ScriptTurn> {
     ]
 }
 #[test]
+fn a_real_save_failure_retries_without_another_worker() {
+    const CHILD: &str = "OXA_SAVE_RECOVERY_TEST_ROOT";
+    if let Some(root) = std::env::var_os(CHILD) {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Mutex,
+        };
+        let root = PathBuf::from(root);
+        let project = root.join("work/project");
+        let task = oxa_work::read_tasks(&root.join("work/tasks.json"))
+            .unwrap()
+            .remove(0);
+        let policy = oxa_work::RunPolicy {
+            git_binary: "/usr/bin/git".into(),
+            host_path: std::env::var_os("PATH").unwrap(),
+            terminate_binary: Some("/usr/bin/kill".into()),
+            offline: false,
+            storage: root.join("home/.oxa/agent/work/save-recovery"),
+        };
+        let binary = std::path::Path::new(env!("CARGO_BIN_EXE_oxa"));
+        let injected = AtomicBool::new(false);
+        let lock_path = Mutex::new(None);
+        let observe = |record: &oxa_work::Record| {
+            if record.step == oxa_work::Step::Saving && !injected.swap(true, Ordering::SeqCst) {
+                let out = Command::new("/usr/bin/git")
+                    .current_dir(&record.worktree)
+                    .args(["rev-parse", "--path-format=absolute", "--git-path", "index"])
+                    .output()
+                    .map_err(|error| error.to_string())?;
+                if !out.status.success() {
+                    return Err("cannot locate synthetic index".into());
+                }
+                let path = PathBuf::from(format!("{}.lock", String::from_utf8_lossy(&out.stdout).trim()));
+                fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                    .map_err(|error| error.to_string())?;
+                *lock_path.lock().unwrap() = Some(path);
+            }
+            Ok(())
+        };
+        let plan = oxa_work::plan_task(&project, task.clone(), &policy).unwrap();
+        let first =
+            oxa_work::run_task_with_observer(&project, binary, &plan, &policy, false, &observe).unwrap();
+        assert_eq!(first.outcome, oxa_work::Outcome::Blocked, "{first:?}");
+        assert_eq!(first.step, oxa_work::Step::Saving, "{first:?}");
+        assert!(matches!(
+            first.worker.as_ref().unwrap().outcome,
+            oxa_work::WorkerOutcome::Done
+        ));
+        fs::remove_file(lock_path.into_inner().unwrap().unwrap()).unwrap();
+        let plan = oxa_work::plan_task_for_run(&project, task, &policy, false).unwrap();
+        let retry = oxa_work::run_task_with_policy(&project, binary, &plan, &policy).unwrap();
+        assert_eq!(retry.outcome, oxa_work::Outcome::Done, "{retry:?}");
+        assert_eq!(retry.step, oxa_work::Step::Finished);
+        assert_eq!(retry.session_id, first.session_id);
+        let saved = Command::new("/usr/bin/git")
+            .current_dir(&retry.worktree)
+            .args(["show", "HEAD:answer.txt"])
+            .output()
+            .unwrap();
+        assert!(saved.status.success());
+        assert_eq!(String::from_utf8(saved.stdout).unwrap(), "published");
+        return;
+    }
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let server = oxa_fake::FakeServer::start(edits(), oxa_fake::FakeOpts::default()).unwrap();
+    let out = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "a_real_save_failure_retries_without_another_worker"])
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env(CHILD, env.root())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{} / {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(server.requests().len(), 2, "save retry must not call a model");
+}
+#[test]
 fn publishes_local_branch_and_updates_same_pr_on_restart() {
+    use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     setup(&env, "[]");
     let path = configure(&env);
+    let hook = env.write(
+        "work/project/.git/hooks/pre-push",
+        "#!/bin/sh\ntouch \"$HOME/publish-hook-ran\"\n",
+    );
+    fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
     let first = run_args(
         &env,
         edits(),
@@ -68,6 +159,7 @@ fn publishes_local_branch_and_updates_same_pr_on_restart() {
         Some(path.clone()),
     );
     assert_eq!(first["outcome"], "done", "{first}");
+    assert!(!env.home().join("publish-hook-ran").exists());
     assert_eq!(first["draft"], false);
     assert_eq!(first["pull_request"], "https://github.com/example/project/pull/1");
     assert_eq!(
