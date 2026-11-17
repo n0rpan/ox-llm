@@ -1,11 +1,12 @@
 //! #861: a lost PTY must stop the real interactive process, not leave a spinning orphan.
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
+use oxa_session::{FsStore, SessionStore};
 use std::process::Command;
 
 const PTY_CLOSE: &str = r#"
 import os, pty, select, signal, subprocess, sys, time
 master, slave = pty.openpty()
-child = subprocess.Popen([sys.argv[1], '--model', 'fake-model', '--no-mcp',
+child = subprocess.Popen([sys.argv[1], '--yolo', '--model', 'fake-model', '--no-mcp',
     '--no-extensions', '--no-skills', '--no-context-files'],
     stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
@@ -17,9 +18,20 @@ try:
         assert time.monotonic() < deadline, 'interactive startup deadline'
         if select.select([master], [], [], .1)[0]:
             output += os.read(master, 65536)
-    # No controlling terminal: closing the master isolates EOF/EIO from automatic SIGHUP.
-    os.close(master)
-    master = None
+    if sys.argv[2] == 'tool':
+        os.write(master, b'Run the synthetic tool.\r')
+        deadline = time.monotonic() + 15
+        while not os.path.exists('tool-started'):
+            assert child.poll() is None, 'tool process exited before admission'
+            assert time.monotonic() < deadline, 'tool admission deadline'
+            if select.select([master], [], [], .1)[0]:
+                output += os.read(master, 65536)
+    if sys.argv[2] == 'signal':
+        child.send_signal(signal.SIGHUP)
+    else:
+        # No controlling terminal: closing the master isolates EOF/EIO from automatic SIGHUP.
+        os.close(master)
+        master = None
     try:
         code = child.wait(timeout=3)
     except subprocess.TimeoutExpired:
@@ -33,23 +45,106 @@ finally:
     child.wait(timeout=3)
 "#;
 
-#[test]
-fn lost_pty_exits_promptly_with_hangup_status() {
+fn terminal_loss(case: &str) {
     let env = TestEnv::new();
-    let server = FakeServer::start(vec![ScriptTurn::text("unused")], FakeOpts::default()).unwrap();
+    let turns = if case == "tool" {
+        vec![ScriptTurn::tool(
+            "sleeping",
+            "bash",
+            r#"{"command":"printf started > tool-started; sleep 20; printf finished > tool-finished"}"#,
+        )]
+    } else {
+        vec![ScriptTurn::text("unused")]
+    };
+    let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     std::fs::write(
         env.home().join(".oxa/agent/settings.json"),
-        r#"{"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}},"cacheWarming":"off","retry":{"enabled":false}}"#,
+        r#"{"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}},"cacheWarming":"off","permissions":{"defaultMode":"yolo"},"retry":{"enabled":false}}"#,
     )
     .unwrap();
     let output = Command::new("python3")
-        .args(["-I", "-c", PTY_CLOSE, env!("CARGO_BIN_EXE_oxa")])
+        .args(["-I", "-c", PTY_CLOSE, env!("CARGO_BIN_EXE_oxa"), case])
         .current_dir(env.work())
         .env_clear()
         .envs(env.envs(&server.url()))
         .env("TERM", "xterm-256color")
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(server.requests().is_empty(), "idle terminal loss starts no model turn");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if case == "tool" {
+        assert!(!env.work().join("tool-finished").exists());
+        assert_eq!(server.requests().len(), 1, "no final model turn on terminal loss");
+    } else {
+        assert!(
+            server.requests().is_empty(),
+            "idle terminal loss starts no model turn"
+        );
+    }
+    let sessions = FsStore::new(env.agent_dir().join("sessions")).list(None);
+    assert_eq!(sessions.len(), 1);
+}
+
+#[test]
+fn lost_pty_exits_promptly_with_hangup_status() {
+    terminal_loss("eof");
+}
+
+#[test]
+fn sighup_shuts_down_through_the_interactive_loop() {
+    terminal_loss("signal");
+}
+
+#[test]
+fn lost_pty_cancels_active_tool_and_preserves_session() {
+    terminal_loss("tool");
+}
+
+/// EOF on a pipe is normal headless completion, not an interactive terminal hangup.
+#[test]
+fn headless_stdin_eof_returns_without_a_model_turn() {
+    for mode in ["print", "rpc"] {
+        let env = TestEnv::new();
+        env.write(
+            "home/.oxa/agent/settings.json",
+            r#"{"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}},"cacheWarming":"off"}"#,
+        );
+        let server = FakeServer::start(Vec::new(), FakeOpts::default()).unwrap();
+        let output = Command::new("python3")
+            .args([
+                "-I",
+                "-c",
+                r#"
+import subprocess, sys
+args = [sys.argv[1], '--model', 'fake-model', '--no-mcp', '--no-extensions',
+    '--no-skills', '--no-context-files']
+args += ['-p'] if sys.argv[2] == 'print' else ['--mode', 'rpc']
+child = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    out, err = child.communicate(input=b'', timeout=3)
+    assert child.returncode == 4, (child.returncode, err.decode())
+    assert b'"outcome":"nothing_to_do"' in err, err.decode()
+finally:
+    if child.poll() is None:
+        child.kill()
+    child.wait(timeout=3)
+"#,
+                env!("CARGO_BIN_EXE_oxa"),
+                mode,
+            ])
+            .current_dir(env.work())
+            .env_clear()
+            .envs(env.envs(&server.url()))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(server.requests().is_empty());
+    }
 }

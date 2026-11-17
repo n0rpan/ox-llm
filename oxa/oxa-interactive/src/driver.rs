@@ -1192,6 +1192,7 @@ impl<'a> Loop<'a> {
             self.handle.cancel_background();
         }
         match ev {
+            InputEvent::TerminalClosed => self.quit = Some(129),
             InputEvent::Key(key) => self.key(term, key),
             InputEvent::Paste(text) => self.paste(&text),
             InputEvent::Mouse(m) => self.mouse(term, m),
