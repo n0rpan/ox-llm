@@ -642,13 +642,24 @@ pub enum AppAction {
     None,
     Session(SessionCmd),
     Open(SelectorKind),
-    /// O-182: switch YOLO on or off (`None` = toggle).
-    Yolo(Option<bool>),
+    /// O-182: switch YOLO on or off (`None` = toggle); `save` also writes the mode it lands on
+    /// as `permissions.defaultMode`.
+    Yolo {
+        want: Option<bool>,
+        save: bool,
+    },
     /// #202: set the permission mode (`/mode <name>`, `/auto`, the picker); `save` also writes
     /// it as `permissions.defaultMode`.
     SetPermissionMode {
         mode: oxa_proto::PermissionMode,
         save: bool,
+    },
+    /// #870: report where a setter's change lives, and write it when asked. `keys` are the
+    /// settings keys the choice is written to (empty = the change lasts for this session only);
+    /// `what` names the change in the notice (`"Model: qwen"`).
+    Persist {
+        what: String,
+        keys: Vec<(String, Value)>,
     },
     /// Show a notice block.
     Notify {

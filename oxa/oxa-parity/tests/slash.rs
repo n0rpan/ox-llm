@@ -930,3 +930,82 @@ fn slash_030() {
         "the template was not expanded"
     );
 }
+
+// ---------------------------------------------------------------- #870: setter persistence
+
+/// #870: in the real TUI, every setter says where its change lives, and only `--save` writes the
+/// user settings file. The receipt is the screen plus `settings.json` on disk.
+#[test]
+fn setters_say_where_the_change_lives() {
+    // invariant: a session-only change leaves settings.json alone; `--save` writes only its own
+    // key; a failed save is never announced as a save.
+    let mut rig = Rig::start(replies(1), RigOpts::default());
+    let settings = rig.env.agent_dir().join("settings.json");
+    let read = |key: &str| -> Option<String> {
+        let text = std::fs::read_to_string(&settings).ok()?;
+        let root: Value = serde_json::from_str(&text).ok()?;
+        let mut cur = &root;
+        for part in key.split('.') {
+            cur = cur.get(part)?;
+        }
+        cur.as_str().map(str::to_string)
+    };
+    let wait = |what: &str, a: &str, b: &str| {
+        rig.pty
+            .wait_for_named(what, |s| s.contains(a) && s.contains(b), WAIT)
+            .unwrap();
+    };
+
+    // `/theme <name>` has always saved the choice.
+    rig.slash("/theme dark");
+    wait("the theme notice", "Theme: dark", "saved to user settings");
+    assert_eq!(read("theme").as_deref(), Some("dark"));
+
+    // `/thinking` without `--save` is this session only.
+    rig.slash("/thinking high");
+    wait("the thinking notice", "Thinking: high", "this session only");
+    assert_eq!(read("defaultThinkingLevel"), None, "no write without --save");
+
+    rig.slash("/thinking high --save");
+    wait(
+        "the saved thinking notice",
+        "Thinking: high",
+        "saved to user settings",
+    );
+    assert_eq!(read("defaultThinkingLevel").as_deref(), Some("high"));
+
+    // `/model` without `--save` is this session only; with it, the default model is written.
+    rig.slash("/model fake-model");
+    wait("the model notice", "Model: fake-model", "this session only");
+    assert_eq!(read("defaultModel"), None, "no write without --save");
+
+    rig.slash("/model fake-model --save");
+    wait(
+        "the saved model notice",
+        "Model: fake-model",
+        "saved to user settings",
+    );
+    assert_eq!(read("defaultModel").as_deref(), Some("fake-model"));
+
+    // `/yolo --save` writes the mode it lands on; `/yolo off` without it does not.
+    rig.slash("/yolo on --save");
+    wait("the saved yolo notice", "Mode: yolo", "saved to user settings");
+    assert_eq!(read("permissions.defaultMode").as_deref(), Some("yolo"));
+
+    rig.slash("/yolo off");
+    wait("the yolo-off notice", "Mode: standard", "this session only");
+    assert_eq!(
+        read("permissions.defaultMode").as_deref(),
+        Some("yolo"),
+        "`/yolo off` without --save wrote nothing"
+    );
+
+    // An invalid argument writes nothing and is refused with the usage line.
+    rig.slash("/thinking loud");
+    rig.pty
+        .wait_for_text("Usage: /thinking [off|minimal|low|medium|high|xhigh|max] [--save]")
+        .unwrap();
+    assert_eq!(read("defaultThinkingLevel").as_deref(), Some("high"));
+
+    rig.quit();
+}

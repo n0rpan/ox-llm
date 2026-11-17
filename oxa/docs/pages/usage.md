@@ -122,16 +122,22 @@ Unknown ids, invalid keys and a key bound to more than one configured action are
 
 Type a slash command at the start of the editor and press Enter. Commands with a selector open it when given no arguments.
 
+A command that changes a setting says where the change lives: `saved to user settings` when it is
+written to `settings.json`, `this session only (--save makes it the default)` when it lasts until
+you quit. `--save` is the explicit spelling of "write it as the default"; a command that has always
+saved (such as `/theme <name>`) keeps doing so. A failed write is reported as an error and never
+announced as a save.
+
 | Command | What it does |
 |---|---|
-| `/model [pattern]` | select a model, or switch directly to a matching one |
+| `/model [pattern] [--save]` | select a model, or switch directly to a matching one; `--save` also makes it the default |
 | `/scoped-models` | choose which models Ctrl+P cycles through |
-| `/thinking [level]` | set the thinking level: off, minimal, low, medium, high, xhigh, max |
+| `/thinking [level] [--save]` | set the thinking level: off, minimal, low, medium, high, xhigh, max; `--save` also makes it the default |
 | `/mode [standard\|auto\|yolo\|plan\|workspace\|ask] [--save]` | set the permission mode; no argument opens the picker; `--save` makes it the default |
 | `/auto` | permission mode auto: no prompts; the sandbox and the deny-list stay on |
-| `/yolo [on\|off]` | toggle yolo, full access: no prompts, bash without the sandbox, no deny-list or protected paths for file tools |
+| `/yolo [on\|off] [--save]` | toggle yolo, full access: no prompts, bash without the sandbox, no deny-list or protected paths for file tools; `--save` makes the mode it lands on the default |
 | `/settings` | open the settings selector |
-| `/theme [name]` | choose a theme |
+| `/theme [name] [--save]` | choose a theme; the choice is saved as the default (`--save` says so explicitly) |
 | `/compact [instructions]` | compact the context now, with optional guidance for the summary |
 | `/new` | start a new session |
 | `/resume` | open the sessions picker |

@@ -4,8 +4,8 @@
 //! screen with a viewport, selection and search).
 // ported from pi packages/coding-agent/src/modes/interactive/interactive-mode.ts and packages/tui/src/tui-alt-screen.ts
 use crate::app::{
-    apply_event, blocks_from_entries, load_theme, now_ms, omarchy_theme_name, palette_watch, push_notice,
-    refresh_status, resolve_ui_theme, theme_name, view_settings, ViewEnv,
+    apply_event, blocks_from_entries, load_theme, now_ms, omarchy_theme_name, palette_watch,
+    persistence_note, push_notice, refresh_status, resolve_ui_theme, theme_name, view_settings, ViewEnv,
 };
 use crate::dialogs::trust_question;
 use crate::selectors::{
@@ -620,20 +620,28 @@ impl<'a> Loop<'a> {
     }
 
     /// O-182: `/yolo`, the `app.yolo.toggle` key. Off returns to the level before yolo.
-    fn set_yolo(&mut self, want: Option<bool>) {
+    /// #870: `save` also writes the mode it lands on as the default.
+    fn set_yolo(&mut self, want: Option<bool>, save: bool) {
         let on = self.opts.yolo.as_ref().is_some_and(|y| y.full());
         let target = if want.unwrap_or(!on) {
             PermissionMode::Yolo
         } else if on {
             PermissionMode::of(Mode::Workspace, self.yolo_prev)
         } else {
-            return self.push_notice(Level::Info, format!("Mode: {}", self.permission_mode().as_str()));
+            // Already off: nothing to switch. `--save` still records the current mode.
+            let mode = self.permission_mode();
+            let saved = save && self.persist_setting("permissions.defaultMode", mode.as_str());
+            return self.push_notice(
+                Level::Info,
+                format!("Mode: {} — {}", mode.as_str(), persistence_note(saved)),
+            );
         };
-        self.set_permission_mode(target, false);
+        self.set_permission_mode(target, save);
     }
 
     /// #202: switch the permission mode (`/mode`, `/auto`, `/yolo`, the mode key, the picker);
-    /// `save` also writes it as `permissions.defaultMode`.
+    /// `save` also writes it as `permissions.defaultMode`. #870: one notice says where the
+    /// change lives, and a failed write never announces success.
     fn set_permission_mode(&mut self, mode: PermissionMode, save: bool) {
         let Some(switch) = self.opts.yolo.clone() else {
             return self.push_notice(
@@ -663,22 +671,32 @@ impl<'a> Loop<'a> {
             Mode::Workspace
         });
         self.sync_yolo();
-        if !(mode == PermissionMode::Yolo && self.yolo_noticed && self.yolo_banner_until > now_ms()) {
+        // #870: the save comes first, so the notice can say where the change actually lives.
+        let saved = save && self.persist_setting("permissions.defaultMode", mode.as_str());
+        if save || !(mode == PermissionMode::Yolo && self.yolo_noticed && self.yolo_banner_until > now_ms()) {
             self.push_notice(
                 Level::Info,
-                format!("Mode: {} ({})", mode.as_str(), mode.describe()),
+                format!(
+                    "Mode: {} ({}) — {}",
+                    mode.as_str(),
+                    mode.describe(),
+                    persistence_note(saved)
+                ),
             );
         }
-        if save {
-            let cwd = self.cwd();
-            let value = Value::String(mode.as_str().to_string());
-            match self
-                .opts
-                .settings
-                .set(&self.opts.dirs, &cwd, "permissions.defaultMode", value, false)
-            {
-                Ok(()) => self.push_notice(Level::Info, format!("Default mode saved: {}", mode.as_str())),
-                Err(e) => self.push_notice(Level::Error, e.to_string()),
+    }
+
+    /// #870: write one settings key for a setter. `true` = the value is in the user settings
+    /// file; `false` = the write failed and the error is already shown, so the caller must not
+    /// announce a save.
+    fn persist_setting(&mut self, key: &str, value: &str) -> bool {
+        let cwd = self.cwd();
+        let value = Value::String(value.to_string());
+        match self.opts.settings.set(&self.opts.dirs, &cwd, key, value, false) {
+            Ok(()) => true,
+            Err(e) => {
+                self.push_notice(Level::Error, e.to_string());
+                false
             }
         }
     }
@@ -1448,7 +1466,7 @@ impl<'a> Loop<'a> {
             return;
         }
         if has("app.yolo.toggle") {
-            self.set_yolo(None);
+            self.set_yolo(None, false);
             return;
         }
         if has("app.mode.cycle") {
@@ -2430,8 +2448,30 @@ impl<'a> Loop<'a> {
             AppAction::Session(cmd) => self.send(cmd),
             AppAction::Open(kind) => self.open_selector(kind),
             AppAction::Notify { level, text } => self.push_notice(level, text),
-            AppAction::Yolo(want) => self.set_yolo(want),
+            AppAction::Yolo { want, save } => self.set_yolo(want, save),
             AppAction::SetPermissionMode { mode, save } => self.set_permission_mode(mode, save),
+            AppAction::Persist { what, keys } => {
+                // #870: write first, then say where the change lives. A failed write shows the
+                // error and never claims a save.
+                let cwd = self.cwd();
+                let mut saved = !keys.is_empty();
+                for (key, value) in keys {
+                    if let Err(e) = self.opts.settings.set(&self.opts.dirs, &cwd, &key, value, false) {
+                        self.push_notice(Level::Error, e.to_string());
+                        saved = false;
+                        break;
+                    }
+                }
+                if saved {
+                    let tools_expanded = self.view.tools_expanded;
+                    self.view = view_settings(&*self.opts, &self.caps);
+                    self.view.tools_expanded = tools_expanded;
+                    self.viewport.scrollbar = ScrollbarMode::parse(&self.view.scrollbar);
+                    self.viewport.wheel_lines = self.view.wheel_lines;
+                    self.wheel = wheel_accel(&self.opts.settings, &self.opts.env);
+                }
+                self.push_notice(Level::Info, format!("{what} — {}", persistence_note(saved)));
+            }
             AppAction::ShowLines(lines) => {
                 for line in lines {
                     self.push_notice(Level::Info, line);
@@ -2470,18 +2510,17 @@ impl<'a> Loop<'a> {
             AppAction::SetTheme { name, persist } => {
                 match resolve_ui_theme(&*self.opts, &name, self.caps, self.term_colors.as_ref()) {
                     Ok(theme) => {
+                        let shown = theme.name.clone();
                         self.install_theme(theme);
+                        // #870: a chosen theme says where it lives; a preview (the picker's
+                        // arrow keys) and a cancel stay silent.
                         if persist {
                             self.theme_name = name.clone();
-                            let cwd = self.cwd();
-                            let value = Value::String(name);
-                            if let Err(e) =
-                                self.opts
-                                    .settings
-                                    .set(&self.opts.dirs, &cwd, "theme", value, false)
-                            {
-                                self.push_notice(Level::Error, e.to_string());
-                            }
+                            let saved = self.persist_setting("theme", &name);
+                            self.push_notice(
+                                Level::Info,
+                                format!("Theme: {shown} — {}", persistence_note(saved)),
+                            );
                         }
                     }
                     Err(e) => self.push_notice(Level::Error, e.to_string()),

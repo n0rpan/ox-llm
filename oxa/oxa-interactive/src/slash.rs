@@ -78,6 +78,12 @@ const OMITTED: [&str; 3] = ["login", "logout", "share"];
 /// #202: the usage line of `/mode`.
 const MODE_USAGE: &str = "Usage: /mode [standard|auto|yolo|plan|workspace|ask] [--save]";
 
+/// #870: the usage line of `/model`.
+const MODEL_USAGE: &str = "Usage: /model [pattern] [--save]";
+
+/// #870: the usage line of `/thinking`.
+const THINKING_USAGE: &str = "Usage: /thinking [off|minimal|low|medium|high|xhigh|max] [--save]";
+
 /// Names added after pi: a template, skill or extension command with the same name wins.
 const OVERRIDABLE: [&str; 2] = ["help", "usage"];
 
@@ -151,19 +157,35 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
         "settings" => AppAction::Open(SelectorKind::Settings),
         "scoped-models" => AppAction::Open(SelectorKind::ScopedModels),
         "model" => {
-            if args.is_empty() {
-                AppAction::Open(SelectorKind::Model)
+            let (pattern, save) = take_save(args);
+            if pattern.is_empty() {
+                if save {
+                    usage(MODEL_USAGE)
+                } else {
+                    AppAction::Open(SelectorKind::Model)
+                }
             } else {
-                idle_or(cx, name, || switch_model(cx, args))
+                idle_or(cx, name, || model_action(cx, &pattern, save))
             }
         }
         "thinking" => {
-            if args.is_empty() {
-                AppAction::Open(SelectorKind::Thinking)
+            let (level, save) = take_save(args);
+            if level.is_empty() {
+                if save {
+                    usage(THINKING_USAGE)
+                } else {
+                    AppAction::Open(SelectorKind::Thinking)
+                }
             } else {
-                match ThinkingLevel::parse(args) {
-                    Some(level) => AppAction::Session(SessionCmd::SetThinking(level)),
-                    None => usage("Usage: /thinking [off|minimal|low|medium|high|xhigh|max]"),
+                match ThinkingLevel::parse(&level) {
+                    Some(level) => AppAction::Many(vec![
+                        AppAction::Session(SessionCmd::SetThinking(level)),
+                        persist(
+                            format!("Thinking: {}", level.as_str()),
+                            save_key(save, "defaultThinkingLevel", level.as_str()),
+                        ),
+                    ]),
+                    None => usage(THINKING_USAGE),
                 }
             }
         }
@@ -197,13 +219,16 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
             _ => usage("Usage: /auto"),
         },
         "theme" => {
-            if args.is_empty() {
-                AppAction::Open(SelectorKind::Theme)
-            } else {
-                AppAction::SetTheme {
-                    name: args.to_string(),
-                    persist: true,
+            let (name, save) = take_save(args);
+            if name.is_empty() {
+                if save {
+                    usage("Usage: /theme [name] [--save]")
+                } else {
+                    AppAction::Open(SelectorKind::Theme)
                 }
+            } else {
+                // #870: `/theme <name>` has always saved the choice; `--save` says so explicitly.
+                AppAction::SetTheme { name, persist: true }
             }
         }
         "export" => AppAction::Export {
@@ -228,16 +253,26 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
         "help" => AppAction::ShowLines(help_lines(cx)),
         "hotkeys" => AppAction::ShowLines(hotkeys_lines(cx.keymap)),
         "fork" => AppAction::Open(SelectorKind::ForkPoint),
-        // O-182: `/yolo` toggles, `/yolo on` / `/yolo off` set.
-        "yolo" => match args.trim() {
-            "" => AppAction::Yolo(None),
-            "on" => AppAction::Yolo(Some(true)),
-            "off" => AppAction::Yolo(Some(false)),
-            _ => AppAction::Notify {
-                level: Level::Warning,
-                text: "Usage: /yolo [on|off]".to_string(),
-            },
-        },
+        // O-182: `/yolo` toggles, `/yolo on` / `/yolo off` set. #870: `--save` writes the mode
+        // it lands on as the default.
+        "yolo" => {
+            let (arg, save) = take_save(args);
+            match arg.as_str() {
+                "" => AppAction::Yolo { want: None, save },
+                "on" => AppAction::Yolo {
+                    want: Some(true),
+                    save,
+                },
+                "off" => AppAction::Yolo {
+                    want: Some(false),
+                    save,
+                },
+                _ => AppAction::Notify {
+                    level: Level::Warning,
+                    text: "Usage: /yolo [on|off] [--save]".to_string(),
+                },
+            }
+        }
         "clone" => idle_or(cx, name, || AppAction::Session(SessionCmd::CloneSession)),
         "tree" => AppAction::Open(SelectorKind::Tree),
         "trust" => AppAction::Open(SelectorKind::Trust),
@@ -440,12 +475,77 @@ fn engine_action(cx: &SlashCx, args: &str) -> AppAction {
     }
 }
 
+/// #870: split the `--save` flag out of a setter's arguments. `--save` asks the setter to
+/// write its choice to the user settings file as well; the rest is the value.
+fn take_save(args: &str) -> (String, bool) {
+    let mut save = false;
+    let mut rest: Vec<&str> = Vec::new();
+    for word in args.split_whitespace() {
+        if word == "--save" {
+            save = true;
+        } else {
+            rest.push(word);
+        }
+    }
+    (rest.join(" "), save)
+}
+
+/// #870: the settings key of a setter: `--save` was asked for, or the change is session-only.
+fn save_key(save: bool, key: &str, value: &str) -> Vec<(String, String)> {
+    if save {
+        vec![(key.to_string(), value.to_string())]
+    } else {
+        Vec::new()
+    }
+}
+
+/// #870: the persistence report of a setter. Empty `keys` = the change lasts for this session
+/// only; otherwise the driver writes them and says where the change lives.
+fn persist(what: String, keys: Vec<(String, String)>) -> AppAction {
+    AppAction::Persist {
+        what,
+        keys: keys
+            .into_iter()
+            .map(|(k, v)| (k, serde_json::Value::String(v)))
+            .collect(),
+    }
+}
+
+/// `/model <pattern> [--save]`: switch the model and report where the choice lives. The
+/// `:level` suffix of the pattern also sets the thinking level, and `--save` writes both.
+fn model_action(cx: &SlashCx, pattern: &str, save: bool) -> AppAction {
+    match resolve_switch(cx, pattern) {
+        Ok((id, level)) => {
+            let mut actions = match switch_actions(id.clone(), level) {
+                AppAction::Many(actions) => actions,
+                one => vec![one],
+            };
+            let what = match level {
+                Some(level) => format!("Model: {id} (thinking: {})", level.as_str()),
+                None => format!("Model: {id}"),
+            };
+            let keys = if save {
+                let mut keys = vec![("defaultModel".to_string(), id)];
+                if let Some(level) = level {
+                    keys.push(("defaultThinkingLevel".to_string(), level.as_str().to_string()));
+                }
+                keys
+            } else {
+                Vec::new()
+            };
+            actions.push(persist(what, keys));
+            AppAction::Many(actions)
+        }
+        Err(e) => notify(Level::Error, e.to_string()),
+    }
+}
+
 /// `/model <pattern>` and `/engine load <pattern>`: the pattern is resolved against the
 /// engine's models as `--model` is (exact id, substring, glob; a `:level` suffix also sets the
 /// thinking level). Without a model list the text is sent as typed.
-fn switch_model(cx: &SlashCx, pattern: &str) -> AppAction {
+fn resolve_switch(cx: &SlashCx, pattern: &str) -> Result<(String, Option<ThinkingLevel>), OxaError> {
     if cx.models.is_empty() {
-        return AppAction::Session(SessionCmd::SetModel(pattern.to_string()));
+        return Ok((pattern.to_string(), None));
     }
     let available: Vec<ModelRef> = cx
         .models
@@ -456,17 +556,24 @@ fn switch_model(cx: &SlashCx, pattern: &str) -> AppAction {
             thinking: None,
         })
         .collect();
-    match resolve_model(pattern, None, &available) {
-        Ok(picked) => {
-            let switch = AppAction::Session(SessionCmd::SetModel(picked.model));
-            match picked.thinking {
-                Some(level) => {
-                    AppAction::Many(vec![switch, AppAction::Session(SessionCmd::SetThinking(level))])
-                }
-                None => switch,
-            }
-        }
+    resolve_model(pattern, None, &available).map(|picked| (picked.model, picked.thinking))
+}
+
+/// `/engine load <pattern>`: the session commands of a model switch (no persistence report).
+fn switch_model(cx: &SlashCx, pattern: &str) -> AppAction {
+    match resolve_switch(cx, pattern) {
+        Ok((id, level)) => switch_actions(id, level),
         Err(e) => notify(Level::Error, e.to_string()),
+    }
+}
+
+/// The session commands of a model switch: the model, then the thinking level of a `:level`
+/// suffix.
+fn switch_actions(id: String, level: Option<ThinkingLevel>) -> AppAction {
+    let switch = AppAction::Session(SessionCmd::SetModel(id));
+    match level {
+        Some(level) => AppAction::Many(vec![switch, AppAction::Session(SessionCmd::SetThinking(level))]),
+        None => switch,
     }
 }
 

@@ -887,6 +887,122 @@ fn paste_into_thinking_selector_shows_a_notice() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// #870: setter persistence is explicit and consistent
+// ---------------------------------------------------------------------------------------------
+
+/// The string at a dotted key of a settings file, or `None` when the file or the key is absent.
+fn setting_str(path: &Path, key: &str) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let root: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let mut cur = &root;
+    for part in key.split('.') {
+        cur = cur.get(part)?;
+    }
+    cur.as_str().map(str::to_string)
+}
+
+/// #870: every slash setter says where the change lives, and only `--save` writes the user
+/// settings file. A fresh isolated HOME: a session-only change leaves settings.json alone, a
+/// saved one writes only its own key and is read back by a fresh `Settings::load`.
+#[test]
+fn setter_persistence_notices_and_settings_writes() {
+    let world = World::new(vec![ScriptTurn::text("unused")]);
+    let dirs = Dirs::under(world.env.root());
+    let settings_file = dirs.settings_file();
+    // A gate for `Step::until`: the settings file holds `want` at `key` (None = the key is absent).
+    let gate = {
+        let path = settings_file.clone();
+        move |key: &'static str, want: Option<&'static str>| {
+            let path = path.clone();
+            move || setting_str(&path, key).as_deref() == want
+        }
+    };
+    let steps = vec![
+        step("open", &["oxa v"], typed("/theme dark", &["enter"])),
+        step(
+            "theme saved",
+            &["Theme: dark", "saved to user settings"],
+            typed("/mode auto", &["enter"]),
+        )
+        .until(gate("theme", Some("dark"))),
+        step(
+            "mode session only",
+            &["Mode: auto", "this session only"],
+            typed("/mode auto --save", &["enter"]),
+        )
+        .until(gate("permissions.defaultMode", None)),
+        step(
+            "mode saved",
+            &["saved to user settings"],
+            typed("/thinking high", &["enter"]),
+        )
+        .until(gate("permissions.defaultMode", Some("auto"))),
+        step(
+            "thinking session only",
+            &["Thinking: high", "this session only"],
+            typed("/thinking high --save", &["enter"]),
+        )
+        .until(gate("defaultThinkingLevel", None)),
+        step(
+            "thinking saved",
+            &["saved to user settings"],
+            typed("/model fake-model", &["enter"]),
+        )
+        .until(gate("defaultThinkingLevel", Some("high"))),
+        step(
+            "model session only",
+            &["Model: fake-model", "this session only"],
+            typed("/model fake-model --save", &["enter"]),
+        )
+        .until(gate("defaultModel", None)),
+        step(
+            "model saved",
+            &["saved to user settings"],
+            typed("/yolo on --save", &["enter"]),
+        )
+        .until(gate("defaultModel", Some("fake-model"))),
+        step(
+            "yolo saved",
+            &["Mode: yolo", "saved to user settings"],
+            typed("/yolo off", &["enter"]),
+        )
+        .until(gate("permissions.defaultMode", Some("yolo"))),
+        step(
+            "yolo session only",
+            &["this session only"],
+            typed("/exit", &["enter"]),
+        )
+        .until(gate("permissions.defaultMode", Some("yolo"))),
+    ];
+    let mut opts = world.opts(false);
+    opts.yolo = Some(oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard));
+    let session = Session::open(world.deps(), Open::New).expect("open the first session");
+    let (code, _last, _term, _first) = run_with(&world, session, opts, (200, 30), steps);
+    assert_eq!(code, 0);
+    // Only the keys the user asked to save are in the file; the session-only changes are not.
+    assert_eq!(setting_str(&settings_file, "theme").as_deref(), Some("dark"));
+    assert_eq!(
+        setting_str(&settings_file, "permissions.defaultMode").as_deref(),
+        Some("yolo"),
+        "the last `--save` wins; `/yolo off` without it wrote nothing"
+    );
+    assert_eq!(
+        setting_str(&settings_file, "defaultThinkingLevel").as_deref(),
+        Some("high")
+    );
+    assert_eq!(
+        setting_str(&settings_file, "defaultModel").as_deref(),
+        Some("fake-model")
+    );
+    // A fresh load (a restart) reads the saved values back.
+    let loaded = Settings::load(&dirs, &world.env.work(), false);
+    assert_eq!(loaded.string("theme").as_deref(), Some("dark"));
+    assert_eq!(loaded.string("permissions.defaultMode").as_deref(), Some("yolo"));
+    assert_eq!(loaded.string("defaultThinkingLevel").as_deref(), Some("high"));
+    assert_eq!(loaded.string("defaultModel").as_deref(), Some("fake-model"));
+}
+
+// ---------------------------------------------------------------------------------------------
 // X5: controls follow the session; quit is a stop signal
 // ---------------------------------------------------------------------------------------------
 

@@ -30,7 +30,10 @@ Where the user file alone counts, the table says so:
 - user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
 - project settings are trust-gated. In an untrusted project they are not read. Project files that run or load code (`hooks`, `shellPath`, `shellCommandPrefix`, `packages`, `extensions`, `skills`, `prompts`) also need the content approval described in [security.md](security.md#project-trust).
 
-Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file.
+Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file. The
+slash setters say which of the two they did: `saved to user settings` or `this session only
+(--save makes it the default)`. `--save` on `/model`, `/thinking`, `/mode` and `/yolo` writes the
+choice as the default; `/theme <name>` has always saved.
 
 ## Keys
 

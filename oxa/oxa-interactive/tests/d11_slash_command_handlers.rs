@@ -23,6 +23,8 @@ struct Fx {
     dirs: Dirs,
     cwd: PathBuf,
     commands: Vec<CommandSpec>,
+    /// The engine's model list (`/v1/models`); empty = the pattern is sent as typed.
+    models: Vec<String>,
 }
 
 impl Fx {
@@ -52,6 +54,7 @@ impl Fx {
             dirs,
             cwd,
             commands: builtin_commands(),
+            models: Vec::new(),
         }
     }
 
@@ -68,7 +71,7 @@ impl Fx {
             session_id: "sess-1",
             last_assistant_text: last,
             engine_url: "",
-            models: &[],
+            models: &self.models,
             queue: None,
         }
     }
@@ -379,14 +382,96 @@ fn reload_reports_epoch_cost() {
     assert_eq!(notice(busy).0, Level::Warning);
     assert!(matches!(expect_some("/quit", fx.run("/quit")), AppAction::Quit));
     assert!(matches!(expect_some("/exit", fx.run("/exit")), AppAction::Quit));
-    assert!(matches!(
-        expect_some("/thinking high", fx.run("/thinking high")),
-        AppAction::Session(SessionCmd::SetThinking(ThinkingLevel::High))
-    ));
+    match expect_some("/thinking high", fx.run("/thinking high")) {
+        AppAction::Many(actions) => assert!(matches!(
+            actions.as_slice(),
+            [
+                AppAction::Session(SessionCmd::SetThinking(ThinkingLevel::High)),
+                AppAction::Persist { keys, .. }
+            ] if keys.is_empty()
+        )),
+        _ => panic!("/thinking high: the level, then its persistence report"),
+    }
     assert_eq!(
         notice(expect_some("/thinking loud", fx.run("/thinking loud"))).0,
         Level::Error
     );
+}
+
+/// #870: every setter reports where its change lives, and `--save` is the explicit spelling of
+/// "write it to the user settings file". A setter without `--save` reports an empty key list
+/// (the driver then says "this session only"); `--save` names the keys it writes.
+#[test]
+fn setters_report_their_persistence() {
+    let mut fx = Fx::new();
+    // A model list, so `/model <pattern>:<level>` resolves as `--model` does.
+    fx.models = vec!["qwen".to_string(), "other".to_string()];
+    // The keys of a persistence report, or `None` when the action is not one.
+    fn keys(action: &AppAction) -> Option<Vec<(String, String)>> {
+        match action {
+            AppAction::Persist { keys, .. } => Some(
+                keys.iter()
+                    .map(|(k, v)| (k.clone(), v.as_str().unwrap_or_default().to_string()))
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+    // The last action of a `Many` (the report), or the action itself.
+    fn report(action: AppAction) -> AppAction {
+        match action {
+            AppAction::Many(mut list) => list.pop().expect("a non-empty list"),
+            one => one,
+        }
+    }
+    for (line, want) in [
+        ("/thinking high", vec![]),
+        ("/thinking high --save", vec![("defaultThinkingLevel", "high")]),
+        ("/model qwen", vec![]),
+        ("/model qwen --save", vec![("defaultModel", "qwen")]),
+        (
+            "/model qwen:low --save",
+            vec![("defaultModel", "qwen"), ("defaultThinkingLevel", "low")],
+        ),
+    ] {
+        let got = keys(&report(expect_some(line, fx.run(line))))
+            .unwrap_or_else(|| panic!("{line}: no persistence report"));
+        let want: Vec<(String, String)> = want
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        assert_eq!(got, want, "{line}");
+    }
+    // `/yolo` carries the flag on the action itself (the mode it lands on is only known then).
+    for (line, want, save) in [
+        ("/yolo", None, false),
+        ("/yolo on", Some(true), false),
+        ("/yolo off --save", Some(false), true),
+    ] {
+        match expect_some(line, fx.run(line)) {
+            AppAction::Yolo {
+                want: got,
+                save: got_save,
+            } => {
+                assert_eq!((got, got_save), (want, save), "{line}");
+            }
+            _ => panic!("{line}: not a yolo change"),
+        }
+    }
+    // `/theme <name>` has always saved; `--save` is accepted as the explicit spelling.
+    for line in ["/theme dark", "/theme dark --save"] {
+        assert!(
+            matches!(
+                expect_some(line, fx.run(line)),
+                AppAction::SetTheme { persist: true, .. }
+            ),
+            "{line}"
+        );
+    }
+    // A flag with no value is a usage error, not a silent no-op.
+    for bad in ["/model --save", "/thinking --save", "/theme --save"] {
+        assert_eq!(notice(expect_some(bad, fx.run(bad))).0, Level::Error, "{bad}");
+    }
 }
 
 /// unsupported_in_oxa

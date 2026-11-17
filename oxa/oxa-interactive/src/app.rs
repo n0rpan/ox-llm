@@ -2161,6 +2161,16 @@ pub(crate) fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// #870: the persistence half of a setter notice: where a change lives. `saved` = the value
+/// was written to the user settings file; otherwise it lasts for this session only.
+pub(crate) fn persistence_note(saved: bool) -> &'static str {
+    if saved {
+        "saved to user settings"
+    } else {
+        "this session only (--save makes it the default)"
+    }
+}
+
 #[cfg(test)]
 mod preload_tests {
     use super::*;
