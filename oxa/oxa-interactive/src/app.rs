@@ -1406,6 +1406,9 @@ pub fn status_from(state: &State, stats: &Stats, prev: &StatusModel) -> StatusMo
         yolo: prev.yolo,
         yolo_approved: prev.yolo_approved,
         autonomy: prev.autonomy,
+        // #873: the budget projection is not part of the session state; a front end that has
+        // one keeps it across settles.
+        budget: prev.budget,
     }
 }
 
