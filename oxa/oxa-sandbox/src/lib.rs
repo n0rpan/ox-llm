@@ -166,8 +166,9 @@ impl Sandbox for Bwrap {
     }
 }
 
-/// #457: the notice with a session directory at `/tmp`.
-pub const SCRATCH_NOTICE: &str = "Sandbox: /tmp is this session's own scratch (also TMPDIR and XDG_CACHE_HOME): it persists between the commands of this session and is deleted when the session ends (/new, /resume, switching session, or quitting oxa); a resumed session starts with an empty /tmp. Save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.";
+/// #457: the notice with a session directory at `/tmp` (also the session's own `$HOME/.cache`,
+/// #995).
+pub const SCRATCH_NOTICE: &str = "Sandbox: /tmp is this session's own scratch (also TMPDIR and XDG_CACHE_HOME): it persists between the commands of this session and is deleted when the session ends (/new, /resume, switching session, or quitting oxa); a resumed session starts with an empty /tmp. `$HOME/.cache` is this session's own cache directory too (the shared package caches under it stay shared). Save deliverables in the workspace. Other paths may be read-only or hidden unless explicitly bound writable.";
 
 /// Environment variables that carry a secret: kept out of the bwrap command line (visible to
 /// other processes) and handed over through `bwrap --args <fd>` instead.

@@ -9,6 +9,14 @@
 //! (directly or through a bound parent) is linked from `/tmp/.cache/<name>`, so it stays the
 //! cache of the user's own builds. Everything else a tool caches goes to the session.
 //!
+//! #995: a tool that hardcodes the cache home path (instead of reading `$XDG_CACHE_HOME`) -
+//! `CARGO_TARGET_DIR=$HOME/.cache/...`, `touch ~/.cache/x`, a git hook writing its log there -
+//! would meet the empty read-only home inside the sandbox, because the host cache home is not
+//! writable there. The session therefore also holds an empty `.cache-home`, which the argv
+//! binds at the host cache home path: those writes land in the session directory and are
+//! deleted with it, while the read-write package caches keep their own binds under
+//! `<cache home>/<name>` and stay the user's.
+//!
 //! It lives at `~/.cache/oxa/scratch/<pid>-<n>` (mode 0700, never under the agent directory).
 //! Each session gets its own (`Bwrap::session`, when a session starts, at `/new`, `/resume`,
 //! fork and clone); it is deleted when that session ends: when it is replaced by another one
@@ -54,6 +62,7 @@ impl Scratch {
         std::fs::DirBuilder::new().mode(0o700).create(&path)?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
         std::fs::create_dir(path.join(".cache"))?;
+        std::fs::create_dir(path.join(CACHE_HOME_DIR))?;
         Ok(Scratch { path })
     }
 
@@ -79,7 +88,18 @@ impl Scratch {
             }
         }
     }
+
+    /// #995: the session's own `$HOME/.cache`, bound at the host cache home path by the sandbox
+    /// argv: the directory every otherwise-unbound cache write goes to, since the host cache
+    /// home itself is not writable inside. The read-write package caches keep their own binds
+    /// under `<cache home>/<name>` and stay shared.
+    pub fn home_cache_dir(&self) -> PathBuf {
+        self.path.join(CACHE_HOME_DIR)
+    }
 }
+
+/// The session directory's name for the host cache home path (`$HOME/.cache`; #995).
+pub(crate) const CACHE_HOME_DIR: &str = ".cache-home";
 
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -112,5 +132,25 @@ fn prune(root: &Path) {
         if !Path::new("/proc").join(pid.to_string()).exists() {
             let _ = std::fs::remove_dir_all(e.path());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #995: a fresh session directory holds its own empty cache home for the argv's
+    /// `$HOME/.cache` bind, and it goes away with the session.
+    #[test]
+    fn a_session_directory_holds_an_own_cache_home() {
+        let env = oxa_fake::TestEnv::new();
+        let sc = Scratch::create(&env.tmp().join("scratch")).expect("scratch");
+        let dir = sc.home_cache_dir();
+        assert_eq!(dir, sc.path().join(".cache-home"));
+        assert!(dir.is_dir(), "{dir:?}");
+        assert_eq!(std::fs::read_dir(&dir).expect("read_dir").count(), 0);
+        let path = sc.path().to_path_buf();
+        drop(sc);
+        assert!(!path.exists(), "the session directory outlived the session");
     }
 }

@@ -35,7 +35,8 @@ pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
 /// `--dev /dev`, `--proc /proc`, `--tmpfs /tmp` (or `--bind <session dir> /tmp`, #457), `--tmpfs <home>`, the cwd (`--bind`, or
 /// `--ro-bind` when not writable or when cwd is `$HOME` / `/` / a parent of `$HOME`, B3; in a
 /// home workspace (O-199, [`cwd_mode`]) followed by `--bind` of each of
-/// [`home_workspace_entries`]), the layout's binds sorted by path (read-only toolchains, read-write
+/// [`home_workspace_entries`]), a session's own `<home>/.cache` (#995), the layout's binds
+/// sorted by path (read-only toolchains, read-write
 /// caches, B2; a bind that holds the cwd is left out), the git data outside the cwd (sbx-git:
 /// read-write dirs (read-only when one of them has a protected entry that is not plain,
 /// sbx-gitsym), read-only alternates, then the protected entries: read-only when they exist,
@@ -126,6 +127,29 @@ pub(crate) fn bwrap_args_homes(
     // Pins and layout mounts share parent-first order: a cache bind cannot hide a pin,
     // and a pin cannot hide a read-only descendant. The cwd is already a mount point.
     let hook_pins = hook_parent_pins(&hooks, &mounts);
+    // #995: `$HOME/.cache` is the cache path tools hardcode (`touch ~/.cache/x`,
+    // `CARGO_TARGET_DIR=$HOME/.cache/...`, a git post-commit hook's log), which is not
+    // `$XDG_CACHE_HOME`. The host cache home stays read-only and a cache directory that did not
+    // exist when the layout was built is not bound at all, so a session binds its own empty
+    // directory there: those writes land in the session directory and are deleted with it.
+    // The read-write package caches under it keep their own binds (sorted after this parent)
+    // and stay the user's. A workspace inside the cache home keeps the workspace bind, a user
+    // bind of the cache home (or one above it) keeps its own access, and without a session
+    // directory nothing changes. The mount point exists on the host whenever a session does:
+    // the session directory lives under `$HOME/.cache`.
+    let home_cache = home_c.join(".cache");
+    let own_home_cache = layout.scratch.as_ref().map(|sc| sc.home_cache_dir()).filter(|_| {
+        !cwd_path.starts_with(&home_cache)
+            && !layout.read.iter().chain(layout.write.iter()).any(|b| {
+                let b = canon(b);
+                home_cache == b || home_cache.starts_with(&b)
+            })
+    });
+    if let Some(dir) = &own_home_cache {
+        let dir = dir.to_string_lossy();
+        let cache = home_cache.to_string_lossy();
+        push(&mut a, &["--bind", &dir, &cache]);
+    }
     // B2: toolchains read-only, caches read-write, in path order (a parent before its child).
     let mut binds: Vec<(&Path, bool)> = layout
         .read
