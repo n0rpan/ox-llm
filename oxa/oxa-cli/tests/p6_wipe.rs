@@ -109,7 +109,10 @@ fn fixture() -> TestEnv {
     }
     // Scratch that belongs to no session (codemode writes here); only `--all` removes it.
     env.write("home/.oxa/agent/tmp/codemode/codemode-1.txt", "shared scratch");
-    env.write("home/.oxa/agent/settings.json", r#"{"oxa":{"offline":false}}"#);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"offline":false,"engine":{"inProcessCloud":false,"inProcessLocal":false}}}"#,
+    );
     env.write("home/.oxa/agent/trust.json", r#"{"trusted":["/work/proj"]}"#);
     env.write("home/.oxa/agent/models.json", r#"{"endpoints":[]}"#);
     env.write("home/.oxa/agent/mcp.json", r#"{"mcpServers":{}}"#);
@@ -432,4 +435,72 @@ fn engine_flag_reports_a_busy_engine_and_still_removed_the_files() {
         r.err
     );
     assert_no_trace(env.root(), B);
+}
+
+fn native_local_settings(env: &TestEnv, valid: bool) {
+    let local = if valid {
+        serde_json::json!({"binary":"/synthetic/not-launched-oxe",
+            "models":{"synthetic-local":{"model":"/synthetic/model.gguf"}},
+            "limits":{"synthetic-local":{"context_window":4096,"max_output":64,
+                "required_available_bytes":1048576}}})
+    } else {
+        serde_json::json!({})
+    };
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{
+            "offline":false,"engine":{"inProcessLocal":true,"inProcessCloud":false},"local":local
+        }})
+        .to_string(),
+    );
+}
+
+#[test]
+fn native_engine_flag_uses_existing_cold_owned_clear_without_controller() {
+    let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let env = fixture();
+    native_local_settings(&env, true);
+    let server = FakeServer::start(parse_script("").unwrap(), FakeOpts::default()).unwrap();
+    let r = wipe_with_engine(&env, &server.url(), &[], false, "", &["--session", A, "--engine"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r
+        .out
+        .contains(&format!("engine: cleared the state of session {A}")));
+    assert!(
+        server.clears().is_empty(),
+        "native selection must not clear via the controller"
+    );
+    assert_eq!(server.hits("GET", "/v1/models"), 0);
+    // No owned child is loaded in standalone wipe: the existing native clear
+    // operation is inert, rather than launching/attaching a process to clear it.
+    assert!(!env.agent_dir().join("local-engine").exists());
+    assert_no_trace(env.root(), A);
+}
+
+#[test]
+fn invalid_native_engine_flag_preserves_refusal_without_controller_fallback() {
+    let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let env = fixture();
+    native_local_settings(&env, false);
+    let server = FakeServer::start(parse_script("").unwrap(), FakeOpts::default()).unwrap();
+    let r = wipe_with_engine(&env, &server.url(), &[], false, "", &["--session", B, "--engine"]);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.err.contains("Invalid user local configuration"), "{}", r.err);
+    assert!(server.clears().is_empty());
+    assert_no_trace(env.root(), B);
+}
+
+#[test]
+fn project_native_opt_in_does_not_override_explicit_user_transport_opt_out() {
+    let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let env = fixture();
+    env.write(
+        "work/.oxa/settings.json",
+        r#"{"oxa":{"engine":{"inProcessLocal":true},"local":{}}}"#,
+    );
+    let server = FakeServer::start(parse_script("").unwrap(), FakeOpts::default()).unwrap();
+    let r = wipe_with_engine(&env, &server.url(), &[], false, "", &["--session", C, "--engine"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert_eq!(server.clears(), vec![C.to_string()]);
+    assert_no_trace(env.root(), C);
 }
