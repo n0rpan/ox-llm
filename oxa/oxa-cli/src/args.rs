@@ -221,6 +221,11 @@ const COMMANDS: &[(&str, &str)] = &[
         "oxa share key <add|list|revoke>",
         "Manage private guest keys and daily limits",
     ),
+    #[cfg(feature = "share")]
+    (
+        "oxa share serve --model ALIAS",
+        "Serve selected native local models to authenticated guest devices",
+    ),
     (
         "oxa status <session-id|session-file>",
         "Read a saved session's current progress and stall signal",
