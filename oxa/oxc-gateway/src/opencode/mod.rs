@@ -329,7 +329,10 @@ fn money(value: &Value) -> Result<BigDecimal, Error> {
 impl Usage {
     pub fn parse(value: &Value) -> Result<Self, Error> {
         let go = &value["opencode"];
-        if go["billing_source"] != "go" || !money(&value["cost"])?.is_zero() {
+        // Both subscription plans use Go allowance; never accept a paid balance.
+        if !matches!(go["billing_source"].as_str(), Some("go" | "go-plus"))
+            || !money(&value["cost"])?.is_zero()
+        {
             return Err(Error::Usage);
         }
         money(&go["allowance"])?;
