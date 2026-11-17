@@ -69,6 +69,10 @@ fn a_long_streamed_reply_arrives_complete_and_the_editor_still_takes_keys() {
     let typed = |s: &Screen| editor_row(s).contains('x');
     pty.wait_for_named("the typed key in the editor", typed, EXIT)
         .unwrap();
+    // Ctrl+D exits only an empty editor (`app.exit`), so erase the key again first.
+    pty.send_key("backspace");
+    let erased = |s: &Screen| editor_row(s).trim().is_empty();
+    pty.wait_for_named("the empty editor", erased, EXIT).unwrap();
     pty.send_key("ctrl+d");
     let status = pty.wait_exit(EXIT).unwrap();
     assert!(status.success(), "exit status {status}");
