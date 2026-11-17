@@ -99,6 +99,11 @@ impl Client {
         builder.build().map(Self).map_err(|_| Error::Setup)
     }
 
+    #[cfg(all(feature = "upstream-openai", feature = "anthropic-gateway"))]
+    pub(crate) fn shared_transport(&self) -> reqwest::Client {
+        self.0.clone()
+    }
+
     pub async fn stream<F>(
         &self,
         chat: Chat<'_>,
