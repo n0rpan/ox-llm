@@ -13,6 +13,21 @@ SPEC.loader.exec_module(compare)
 
 
 class ShadowComparisonTests(unittest.TestCase):
+    def test_minute_interval_can_overlap_a_snapshot_taken_after_second_zero(self):
+        samples = [dict(schema_version=1, observed_at=6030,
+                        would_take=[dict(number=42, action='ready')])]
+        self.assertEqual(list(compare.differences(samples, [(6000, 42, 'ready', 'merge-flow.log')])), [])
+
+    def test_daylight_saving_ambiguous_and_nonexistent_times_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for source in compare.SOURCES:
+                (root / source).write_text('')
+            for day, clock in [(date(2026, 11, 1), '01:30'), (date(2026, 3, 8), '02:30')]:
+                (root / 'merge-flow.log').write_text(f'{clock} enqueued #42\n')
+                with self.subTest(day=day), self.assertRaises(ValueError):
+                    compare.lab_events(root, day, ZoneInfo('America/New_York'))
+
     def test_sparse_overnight_gap_keeps_chronological_days(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -30,7 +45,7 @@ class ShadowComparisonTests(unittest.TestCase):
     def test_matches_and_differences_are_time_bounded(self):
         samples = [dict(schema_version=1, observed_at=1000, would_take=[
             dict(number=42, action='fix_required_ci'), dict(number=43, action='resolve_conflict')])]
-        events = [(999, 43, 'resolve_conflict', 'night-watch.log'),
+        events = [(900, 43, 'resolve_conflict', 'night-watch.log'),
                   (1001, 42, 'fix_required_ci', 'night-watch.log'),
                   (1100, 44, 'ready', 'merge-flow.log'),
                   (1300, 43, 'resolve_conflict', 'night-watch.log')]
