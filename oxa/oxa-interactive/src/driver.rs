@@ -305,8 +305,8 @@ pub(crate) struct Loop<'a> {
     gfx_reset: bool,
     /// O-182: the theme as loaded; `theme` is its hot variant while YOLO is on (OXA's look).
     cool_theme: Theme,
-    /// O-182: what the screen last showed of the YOLO switch, and until when its banner shows.
-    yolo_shown: Option<Autonomy>,
+    /// The effective permission mode last shown (plan takes precedence over the YOLO switch).
+    yolo_shown: Option<PermissionMode>,
     /// #202: the level `/yolo off` and Ctrl+Alt+O return to; the full-access notice was shown.
     yolo_prev: Autonomy,
     yolo_noticed: bool,
@@ -318,8 +318,9 @@ pub(crate) struct Loop<'a> {
     focused: bool,
     run_finished: bool,
     pub(crate) dirty: bool,
-    /// Ctrl+C was pressed on an empty editor; a second press quits.
+    /// Ctrl+C was pressed on an empty editor; a second press within two seconds quits.
     armed: bool,
+    armed_at: Option<std::time::Instant>,
     reset_screen: bool,
     header_pending: bool,
     pub(crate) quit: Option<i32>,
@@ -450,6 +451,7 @@ impl<'a> Loop<'a> {
             run_finished: false,
             dirty: true,
             armed: false,
+            armed_at: None,
             reset_screen: false,
             header_pending,
             quit: None,
@@ -520,9 +522,9 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// O-182: is YOLO on (the process's switch).
+    /// Whether the session effectively has full access, not just the process's switch.
     fn yolo_on(&self) -> bool {
-        self.opts.yolo.as_ref().is_some_and(|y| y.full())
+        self.permission_mode() == PermissionMode::Yolo
     }
 
     /// #202: the permission mode now: the session mode with the process's autonomy level.
@@ -571,13 +573,17 @@ impl<'a> Loop<'a> {
             self.vm.status.yolo_approved = approved;
             self.dirty = true;
         }
-        if self.yolo_shown == Some(level) {
+        if self.vm.status.autonomy != level {
+            self.vm.status.autonomy = level;
+            self.dirty = true;
+        }
+        let mode = self.permission_mode();
+        if self.yolo_shown == Some(mode) {
             return;
         }
-        let was_full = self.yolo_shown == Some(Autonomy::Yolo);
-        self.yolo_shown = Some(level);
-        let full = level == Autonomy::Yolo;
-        self.vm.status.autonomy = level;
+        let was_full = self.yolo_shown == Some(PermissionMode::Yolo);
+        self.yolo_shown = Some(mode);
+        let full = mode == PermissionMode::Yolo;
         self.dirty = true;
         if full == was_full && self.vm.status.yolo == full {
             return;
@@ -898,6 +904,16 @@ impl<'a> Loop<'a> {
         if self.scope_from_settings {
             self.scoped = self.resolved_scope();
         }
+        if matches!(self.overlay, Some(Overlay::Model(_) | Overlay::Scoped(_))) {
+            let models = self.model_choices();
+            match self.overlay.as_mut() {
+                Some(Overlay::Model(selector)) => {
+                    selector.set_models(models, &self.vm.status.model, &self.scoped);
+                }
+                Some(Overlay::Scoped(selector)) => selector.set_models(models),
+                _ => {}
+            }
+        }
         if std::mem::take(&mut self.picker_pending) {
             self.open_selector(SelectorKind::Sessions);
         }
@@ -1031,6 +1047,14 @@ impl<'a> Loop<'a> {
     }
 
     pub(crate) fn tick(&mut self, animating: bool) {
+        if self
+            .armed_at
+            .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(2))
+        {
+            self.armed = false;
+            self.armed_at = None;
+            self.dirty = true;
+        }
         // pi's look redraws on every turn of an animating loop. OXA's look redraws when its
         // animation steps: 8 times a second with the sprite, once a second (the elapsed time)
         // without motion. Everything else that changes the screen marks it dirty itself.
@@ -1265,8 +1289,27 @@ impl<'a> Loop<'a> {
     }
 
     fn key(&mut self, term: &mut dyn Terminal, key: Key) {
+        // Kitty sends release events too. They must not consume the two-press exit arm.
+        if key.kind == KeyKind::Release {
+            return;
+        }
         self.dirty = true;
-        let was_armed = std::mem::take(&mut self.armed);
+        let was_armed = std::mem::take(&mut self.armed)
+            && self
+                .armed_at
+                .take()
+                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2));
+        // Ctrl+C during a turn uses the existing cancel path, not idle clear/exit.
+        // Do this before dialogs/overlays and selection-copy can consume the key.
+        if self.opts.keymap.actions_for(&key.id).contains(&"app.clear")
+            && (self.running() || matches!(self.vm.status.activity, Activity::Retrying { .. }))
+        {
+            self.handle.abort();
+            self.handle.abort_retry();
+            self.dialogs.key(&key, &self.opts.keymap);
+            self.restore_queue();
+            return;
+        }
         if self.dialogs.is_open() {
             match self.dialogs.key(&key, &self.opts.keymap) {
                 DialogKey::NotOpen => {}
@@ -1276,9 +1319,6 @@ impl<'a> Loop<'a> {
                 }
                 DialogKey::Consumed | DialogKey::Closed => return,
             }
-        }
-        if key.kind == KeyKind::Release {
-            return;
         }
         if self.overlay.is_some() {
             self.overlay_key(term, &key);
@@ -1335,6 +1375,7 @@ impl<'a> Loop<'a> {
                 self.quit = Some(0);
             } else {
                 self.armed = true;
+                self.armed_at = Some(std::time::Instant::now());
             }
             return;
         }
@@ -3422,3 +3463,6 @@ mod block_cache_tests {
         assert_eq!(c.starts[0], 1);
     }
 }
+
+#[cfg(test)]
+mod catalog_tests;

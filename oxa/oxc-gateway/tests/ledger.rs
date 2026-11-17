@@ -54,6 +54,257 @@ fn fields() -> Value {
         "cached_tokens":80,"cache_write_tokens":10,"finish_reason":"stop"})
 }
 #[test]
+#[cfg(feature = "anthropic-client")]
+fn go_allowance_receipts_accept_only_checked_numeric_fields() {
+    let home = Home::new();
+    let daily = Ledger::open(&home.0).unwrap().day("20260102").unwrap();
+    let mut fields = json!({"remote":true,"remote_provider":"opencode","remote_model":"synthetic",
+        "cost_usd":0.0,"billing":"subscription","settled":"usage","subscription_requests":1,"subscription_tokens":5,
+        "opencode":{"allowance":0.01,"list_cost":0.02,"tokens":{"input":1,"output":4,"reasoning":2,"cache_read":0,"cache_write_5m":0,"cache_write_1h":0}}});
+    let row = daily
+        .entry("synthetic", Context::default())
+        .unwrap()
+        .append(&fields, 200, None, None)
+        .unwrap();
+    assert_eq!(row["opencode"], fields["opencode"]);
+    for (pointer, value) in [
+        ("/opencode/allowance", json!("synthetic-private-content")),
+        ("/opencode/list_cost", json!(-1)),
+        ("/opencode/tokens/input", json!(-1)),
+        ("/remote_provider", json!("chatgpt")),
+        ("/billing", json!("metered")),
+    ] {
+        let mut invalid = fields.clone();
+        *invalid.pointer_mut(pointer).unwrap() = value;
+        assert!(
+            daily
+                .entry("synthetic", Context::default())
+                .unwrap()
+                .append(&invalid, 200, None, None)
+                .is_err(),
+            "{pointer}"
+        );
+    }
+    fields["opencode"]["prompt"] = json!("synthetic-private-content");
+    assert!(daily
+        .entry("synthetic", Context::default())
+        .unwrap()
+        .append(&fields, 200, None, None)
+        .is_err());
+    assert_eq!(home.rows("20260102").len(), 1);
+}
+#[test]
+#[cfg(feature = "anthropic-gateway")]
+fn history_authentication_binds_native_items_route_account_and_exact_visible_prefix() {
+    use oxa_proto::{FrozenPrefix, ProviderHistory, ToolCall, WireMsg};
+    use oxc_gateway::catalog::{Model, Provider};
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let route = Model::new(
+        "synthetic",
+        Provider::OpenAi,
+        "synthetic-upstream",
+        "https://example.invalid",
+        1000,
+        100,
+    )
+    .unwrap();
+    let prefix = FrozenPrefix {
+        sections: vec![("system".into(), "synthetic system".into())],
+        tools_json: "[]".into(),
+        sha256: [0; 32],
+    };
+    let input = vec![WireMsg::user("read a.rs")];
+    let mut assistant = WireMsg::assistant("");
+    assistant.content = None;
+    assistant.tool_calls.push(ToolCall {
+        id: "synthetic-call".into(),
+        name: "read".into(),
+        args_raw: "{ \"path\" : \"a.rs\" }".into(),
+    });
+    let items = vec![
+        json!({"type":"reasoning","encrypted_content":"synthetic-opaque"}),
+        json!({"type":"function_call","call_id":"synthetic-call","arguments":"{ \"path\" : \"a.rs\" }"}),
+    ];
+    let signed = ledger
+        .seal_provider_history(&route, &[1; 32], &prefix, &input, &assistant, items.clone())
+        .unwrap();
+    assistant.provider_history = Some(signed.clone());
+    let mut wire = input;
+    wire.push(assistant);
+    wire.push(WireMsg::tool_result("synthetic-call", "synthetic file"));
+    Ledger::open(&home.0)
+        .unwrap()
+        .verify_provider_history(&route, &[1; 32], &prefix, &wire)
+        .unwrap();
+    let bad_account = ledger
+        .verify_provider_history(&route, &[2; 32], &prefix, &wire)
+        .unwrap_err();
+    assert_eq!(
+        (bad_account.status, bad_account.code),
+        (400, "provider_history_mismatch")
+    );
+    for (alias, provider, upstream, url) in [
+        (
+            "other",
+            Provider::OpenAi,
+            "synthetic-upstream",
+            "https://example.invalid",
+        ),
+        (
+            "synthetic",
+            Provider::Anthropic,
+            "synthetic-upstream",
+            "https://example.invalid",
+        ),
+        ("synthetic", Provider::OpenAi, "other", "https://example.invalid"),
+        (
+            "synthetic",
+            Provider::OpenAi,
+            "synthetic-upstream",
+            "https://other.invalid",
+        ),
+    ] {
+        let changed = Model::new(alias, provider, upstream, url, 1000, 100).unwrap();
+        let error = ledger
+            .verify_provider_history(&changed, &[1; 32], &prefix, &wire)
+            .unwrap_err();
+        assert_eq!((error.status, error.code), (400, "provider_history_mismatch"));
+    }
+    for index in [0, 1] {
+        let mut changed = wire.clone();
+        changed[index].content = Some("changed visible prefix".into());
+        assert_eq!(
+            ledger
+                .verify_provider_history(&route, &[1; 32], &prefix, &changed)
+                .unwrap_err()
+                .code,
+            "provider_history_mismatch"
+        );
+    }
+    let mut changed = wire.clone();
+    changed[1].tool_calls[0].args_raw = "{\"path\":\"a.rs\"}".into();
+    assert!(ledger
+        .verify_provider_history(&route, &[1; 32], &prefix, &changed)
+        .is_err());
+    let mut changed_prefix = prefix.clone();
+    changed_prefix.sections[0].1 = "changed system with unchanged caller hash".into();
+    assert!(ledger
+        .verify_provider_history(&route, &[1; 32], &changed_prefix, &wire)
+        .is_err());
+    changed_prefix = prefix.clone();
+    changed_prefix.tools_json = "[{\"type\":\"function\"}]".into();
+    assert!(ledger
+        .verify_provider_history(&route, &[1; 32], &changed_prefix, &wire)
+        .is_err());
+    for altered in [
+        vec![items[1].clone(), items[0].clone()],
+        vec![json!({"type":"reasoning","encrypted_content":"changed"})],
+    ] {
+        let mut changed = wire.clone();
+        changed[1].provider_history =
+            Some(ProviderHistory::new(*signed.scope(), *signed.prefix(), altered).unwrap());
+        let error = ledger
+            .verify_provider_history(&route, &[1; 32], &prefix, &changed)
+            .unwrap_err();
+        assert_eq!((error.status, error.code), (400, "provider_history_mismatch"));
+    }
+    let other_home = Home::new();
+    let other = Ledger::open(&other_home.0).unwrap();
+    assert!(other
+        .verify_provider_history(&route, &[1; 32], &prefix, &wire)
+        .is_err());
+    assert_eq!(
+        wire[1].provider_history.as_ref().unwrap(),
+        &signed,
+        "verification never re-signs"
+    );
+}
+
+#[test]
+#[cfg(feature = "anthropic-gateway")]
+fn an_authorized_rebase_can_continue_visible_history_only_after_dropping_old_authority() {
+    use oxa_proto::{FrozenPrefix, WireMsg};
+    use oxc_gateway::catalog::{Model, Provider};
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let route = Model::new(
+        "synthetic",
+        Provider::OpenAi,
+        "synthetic",
+        "https://example.invalid",
+        1000,
+        100,
+    )
+    .unwrap();
+    let old = FrozenPrefix {
+        sections: vec![("system".into(), "before".into())],
+        tools_json: "[]".into(),
+        sha256: [0; 32],
+    };
+    let input = vec![WireMsg::user("before")];
+    let mut assistant = WireMsg::assistant("complete visible answer");
+    assistant.provider_history = Some(
+        ledger
+            .seal_provider_history(
+                &route,
+                &[1; 32],
+                &old,
+                &input,
+                &assistant,
+                vec![json!({"type":"reasoning","encrypted_content":"synthetic"})],
+            )
+            .unwrap(),
+    );
+    let mut rebase = vec![WireMsg::user("summary"), assistant];
+    assert!(ledger
+        .verify_provider_history(&route, &[1; 32], &old, &rebase)
+        .is_err());
+    rebase[1].provider_history = None;
+    ledger
+        .verify_provider_history(&route, &[1; 32], &old, &rebase)
+        .unwrap();
+}
+#[test]
+fn subscription_rows_keep_zero_usd_and_checked_request_token_dimensions() {
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let daily = ledger.day("20260102").unwrap();
+    let good = json!({"remote":true,"remote_provider":"chatgpt","remote_model":"synthetic-model",
+        "cost_usd":0.0,"billing":"subscription","settled":"usage",
+        "subscription_requests":1,"subscription_tokens":26,"prompt_tokens":21,"completion_tokens":5});
+    let row = daily
+        .entry("synthetic-model", Context::default())
+        .unwrap()
+        .append(&good, 200, None, None)
+        .unwrap();
+    assert_eq!(row["billing"], "subscription");
+    assert_eq!(row["cost_usd"], 0.0);
+    assert_eq!(row["subscription_requests"], 1);
+    assert_eq!(row["subscription_tokens"], 26);
+    for (field, value) in [
+        ("remote_provider", json!("openai")),
+        ("cost_usd", json!(0.1)),
+        ("billing", json!("metered")),
+        ("billing", Value::Null),
+        ("subscription_requests", json!(0)),
+        ("subscription_requests", json!(2)),
+        ("subscription_tokens", json!(-1)),
+        ("subscription_tokens", Value::Null),
+        ("settled", json!("not_forwarded")),
+        ("settled", json!("refused")),
+    ] {
+        let mut invalid = good.clone();
+        invalid[field] = value;
+        assert!(daily
+            .entry("synthetic-model", Context::default())
+            .unwrap()
+            .append(&invalid, 200, None, None)
+            .is_err());
+    }
+    assert_eq!(home.rows("20260102"), vec![row]);
+}
+#[test]
 fn refused_settlement_requires_zero_cost_and_a_client_error_status() {
     let home = Home::new();
     let ledger = Ledger::open(&home.0).unwrap();
@@ -85,7 +336,9 @@ fn model() -> Model {
         upstream: "synthetic-model".into(),
         context: 1000,
         max_output: 1000,
-        price: Price::from_model(&json!({"pricing":{"input":1,"output":1}})).unwrap(),
+        billing: oxc_gateway::billing::Billing::Metered(
+            Price::from_model(&json!({"pricing":{"input":1,"output":1}})).unwrap(),
+        ),
     }
 }
 fn usage() -> Usage {
