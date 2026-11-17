@@ -24,6 +24,12 @@ pub(crate) const MODELS_DEFAULT_KEY: &str = "default";
 /// `HTTP_PROXY`, `HTTPS_PROXY`) keep their own name and have no `pi_name`.
 /// Filled by B6; consumers look names up here instead of spelling them.
 pub const ENV_TABLE: &[EnvVar] = &[
+    EnvVar {
+        name: "OXA_LEAD_BOARD_LOG",
+        pi_name: None,
+        description: "owner-selected absolute path to a private local board sample log; missing or refused input stays unavailable",
+        supported: true,
+    },
     // Process markers and the endpoint.
     EnvVar {
         name: "AI_AGENT",

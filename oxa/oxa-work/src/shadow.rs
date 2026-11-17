@@ -1,5 +1,5 @@
 //! Read-only sampling: this runner has no executor or GitHub mutation interface.
-use crate::board::{review, Board, Entry};
+use crate::board::{queue::RejectionEvidence, review, Board, Entry};
 use crate::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -20,6 +20,8 @@ struct Sample<'a> {
     would_take: Vec<&'a Entry>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     reviews: &'a BTreeMap<u64, review::Plan>,
+    #[serde(skip_serializing_if = "<[RejectionEvidence]>::is_empty")]
+    queue_rejections: &'a [RejectionEvidence],
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -171,17 +173,56 @@ pub fn run_with_reviews(
     log: &mut File,
     once: bool,
     mut snapshot: impl FnMut() -> Result<(Board, BTreeMap<u64, review::Plan>)>,
+    wait: impl FnMut(Duration),
+) -> Result<()> {
+    run_with_evidence(
+        log,
+        once,
+        || {
+            let (board, reviews) = snapshot()?;
+            Ok((board, reviews, Vec::new()))
+        },
+        wait,
+    )
+}
+
+/// Append verified Reader evidence in the existing private owner journal, in
+/// the same durable sample as the board that supplied the read fences.
+pub fn run_with_queue_evidence(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<(Board, Vec<RejectionEvidence>)>,
+    wait: impl FnMut(Duration),
+) -> Result<()> {
+    run_with_evidence(
+        log,
+        once,
+        || {
+            let (board, queue) = snapshot()?;
+            Ok((board, BTreeMap::new(), queue))
+        },
+        wait,
+    )
+}
+
+type EvidenceSample = (Board, BTreeMap<u64, review::Plan>, Vec<RejectionEvidence>);
+
+fn run_with_evidence(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<EvidenceSample>,
     mut wait: impl FnMut(Duration),
 ) -> Result<()> {
     loop {
         let started = Instant::now();
-        let (board, reviews) = snapshot()?;
+        let (board, reviews, queue_rejections) = snapshot()?;
         let sample = Sample {
             schema_version: 1,
             observed_at: board.observed_at,
             would_take: board.entries.iter().filter(|entry| entry.eligible).collect(),
             board: &board,
             reviews: &reviews,
+            queue_rejections: &queue_rejections,
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         line.push(b'\n');
