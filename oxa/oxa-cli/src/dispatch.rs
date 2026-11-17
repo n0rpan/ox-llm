@@ -7,9 +7,7 @@ use oxa_config::{
 };
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_engine::HttpEngine;
-use oxa_export::{
-    default_output_name, export_html, format_for, write_export, ExportFormat, ExportOpts, ExportTheme,
-};
+use oxa_export::{default_output_name, export_html, format_for, ExportFormat, ExportOpts, ExportTheme};
 use oxa_interactive::{
     ask_trust_interactive, image_part, run as run_interactive, ClipImage, InteractiveOpts, Reopen, ReopenFn,
     TrustChoice,
@@ -1604,8 +1602,13 @@ fn export_session(
 }
 
 fn export_inner(input: &str, output: Option<&str>, home: &Path, cwd: &Path) -> Result<PathBuf, OxaError> {
+    use std::os::unix::fs::PermissionsExt;
     let input_path = resolve_path(home, cwd, input);
-    let text = std::fs::read_to_string(&input_path)
+    let mut source = std::fs::File::open(&input_path)
+        .map_err(|e| OxaError::io(&format!("cannot read {}", input_path.display()), &e))?;
+    let mut text = String::new();
+    source
+        .read_to_string(&mut text)
         .map_err(|e| OxaError::io(&format!("cannot read {}", input_path.display()), &e))?;
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let first = lines.next().ok_or_else(|| {
@@ -1623,9 +1626,11 @@ fn export_inner(input: &str, output: Option<&str>, home: &Path, cwd: &Path) -> R
         None => default_output_name(Some(&input_path), &header.id, cwd),
     };
     if format_for(&dest) == ExportFormat::Jsonl {
-        std::fs::copy(&input_path, &dest)
-            .map_err(|e| OxaError::io(&format!("cannot write {}", dest.display()), &e))?;
-        return Ok(dest);
+        let permissions = source
+            .metadata()
+            .map_err(|e| OxaError::io("cannot inspect source session", &e))?
+            .permissions();
+        return write_session_export(&source, &dest, &text, permissions);
     }
     let opts = ExportOpts {
         theme: ExportTheme::dark(),
@@ -1636,7 +1641,37 @@ fn export_inner(input: &str, output: Option<&str>, home: &Path, cwd: &Path) -> R
         leaf: None,
     };
     let html = export_html(&header, &entries, &opts)?;
-    write_export(&dest, &html)
+    write_session_export(&source, &dest, &html, std::fs::Permissions::from_mode(0o644))
+}
+
+/// Compare the opened files before truncating: pathname checks alone race with alias replacement.
+fn write_session_export(
+    source: &std::fs::File,
+    dest: &Path,
+    text: &str,
+    permissions: std::fs::Permissions,
+) -> Result<PathBuf, OxaError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let write_error = |e: std::io::Error| OxaError::io(&format!("cannot write {}", dest.display()), &e);
+    let source_meta = source.metadata().map_err(write_error)?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dest)
+        .map_err(write_error)?;
+    let output_meta = output.metadata().map_err(write_error)?;
+    if source_meta.dev() == output_meta.dev() && source_meta.ino() == output_meta.ino() {
+        return Err(OxaError::new(
+            codes::INVALID,
+            "export destination is the source session",
+        ));
+    }
+    output.set_len(0).map_err(write_error)?;
+    output.write_all(text.as_bytes()).map_err(write_error)?;
+    output.set_permissions(permissions).map_err(write_error)?;
+    Ok(dest.to_path_buf())
 }
 
 /// The error code of a declined cross-directory fork offer (CLI-019): `run` prints
