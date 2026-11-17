@@ -1,6 +1,6 @@
 # Sandbox config checks and child waits: source inventory
 
-Status: source inventory only, for issue #880 (parent #864, owner O-383, milestone v0.2.2,
+Status: source inventory only, for issue #880 (parent #864, milestone v0.2.2,
 label `after-0.2.1`). **No runtime change, no cache, no supervision change, no security or
 durability decision and no proposed implementation.** This document records what the code does
 today so a later hard-tier architecture review starts from facts.
