@@ -16,6 +16,8 @@ import tempfile
 REPO = Path(__file__).resolve().parents[3]
 RUST = str(Path(sys.argv[1]).resolve())
 PYTHON = str(REPO / 'oxc/tools/memlat_boot.py')
+BUILDER = REPO / 'oxc/tools/memlat.py'
+FIXTURE = '/tmp/oxa-memlat-fixture'
 AUTO = 'Local AI memlat (newer-kernel)'
 COMMENT = 'Auto-rebuilt Yoga MEMLAT; stock fallback Omarchy/linux-omarchy'
 BASE = '''default_entry: Local AI memlat test (fixture)
@@ -49,15 +51,22 @@ def uki():
 def snapshot(root):
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
 
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+def snapshot_digest(files):
+    manifest = {name: digest(data) for name, data in files.items()}
+    return digest(json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode())
+
 def execute(root, implementation, args):
     # All host boot-related roots are covered before either subject starts.
     command = ['bwrap', '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
-               '--tmpfs', '/tmp', '--bind', str(root), str(root),
+               '--tmpfs', '/tmp', '--bind', str(root), FIXTURE,
                '--bind', str(root/'esp'), '/boot', '--ro-bind', str(root/'sys'), '/sys',
                '--ro-bind', str(root/'modules'), '/usr/lib/modules',
                '--bind', str(root/'locks'), '/run/lock', '--unshare-net',
-               '--setenv', 'HOME', str(root/'home'), '--setenv', 'PATH', str(root/'bin')+':/usr/bin:/bin']
-    implementation = [str(root/'oracle/local-ai-memlat-boot') if x == PYTHON else x for x in implementation]
+               '--setenv', 'HOME', FIXTURE+'/home', '--setenv', 'PATH', FIXTURE+'/bin:/usr/bin:/bin']
+    implementation = [FIXTURE+'/oracle/local-ai-memlat-boot' if x == PYTHON else x for x in implementation]
     command += implementation + args + ([] if args in (['--help'], ['bogus'], ['enable','extra'], ['--policy']) else ['--policy', '/boot/policy.json'])
     return subprocess.run(command, capture_output=True, timeout=30)
 
@@ -65,6 +74,7 @@ def fixture(root, case):
     for name in ('esp/EFI/Linux', 'esp/EFI/LocalAI', 'modules/fixture-kernel/build', 'sys/firmware/efi/efivars', 'locks', 'bin', 'home', 'oracle'):
         (root/name).mkdir(parents=True, exist_ok=True)
     shutil.copy2(PYTHON,root/'oracle/local-ai-memlat-boot')
+    shutil.copy2(BUILDER, root/'oracle/memlat.py')
     (root/'sys/firmware/efi/efivars/SecureBoot-fixture').write_bytes(b'\0'*5)
     (root/'modules/fixture-kernel/build/.config').write_text('CONFIG_SCMI_QCOM_MEMLAT_DEVFREQ=y\n')
     (root/'esp/EFI/Linux/stock.efi').write_bytes(uki())
@@ -82,7 +92,7 @@ def fixture(root, case):
                   stock_sha256=hashlib.sha256(uki()).hexdigest(), modules='/usr/lib/modules/fixture-kernel',
                   memlat_image='/boot/EFI/LocalAI/qualified.efi', memlat_sha256=hashlib.sha256(b'qualified memlat fixture').hexdigest(),
                   pending='/boot/pending', image_directory='/boot/EFI/LocalAI', boot_root='/boot',
-                  builder=str(REPO/'oxc/tools/memlat.py'), overlay='/boot/overlay.dtso', stock_dtb='/boot/stock.dtb',
+                  builder=FIXTURE+'/oracle/memlat.py', overlay='/boot/overlay.dtso', stock_dtb='/boot/stock.dtb',
                   notification_user='fixture', notification_uid=999999)
     text = BASE
     if case in ('adopted', 'lookalike', 'outside', 'duplicate', 'rebuild-adopted'):
@@ -159,7 +169,14 @@ SCENARIOS = [
 ]
 with tempfile.TemporaryDirectory(prefix='memlat-differential-') as directory:
     root=Path(directory)
-    count=0
+    receipt = {
+        'version': 1,
+        'oracle_sha256': {
+            'memlat_boot.py': digest(Path(PYTHON).read_bytes()),
+            'memlat.py': digest(BUILDER.read_bytes()),
+        },
+        'steps': [],
+    }
     for case, actions in SCENARIOS:
         for p in list(root.iterdir()):
             shutil.rmtree(p) if p.is_dir() else p.unlink()
@@ -181,8 +198,14 @@ with tempfile.TemporaryDirectory(prefix='memlat-differential-') as directory:
             if py.returncode == 0:
                 assert py.stdout.splitlines()[-1] == rust.stdout.splitlines()[-1], (case,args,py.stdout,rust.stdout)
             assert actual==expected, (case,args, {k for k in actual.keys()|expected.keys() if actual.get(k)!=expected.get(k)},py.stdout,rust.stdout,py.stderr,rust.stderr)
-            count+=1
-    print(f'{count} actual-command differential steps passed')
+            stdout = py.stdout if args == ['--help'] else py.stdout.splitlines()[-1] if py.returncode == 0 else None
+            receipt['steps'].append({
+                'case': case, 'args': args, 'exit': py.returncode,
+                'stderr': digest(py.stderr), 'stdout': digest(stdout) if stdout is not None else None,
+                'before': snapshot_digest(before), 'after': snapshot_digest(expected),
+            })
+    print(f"{len(receipt['steps'])} actual-command differential steps passed")
+    print('MEMLAT_ORACLE_V1 ' + json.dumps(receipt, separators=(',', ':')))
 
 # Exercise the real release staging script against a source-layout fixture.
 with tempfile.TemporaryDirectory(prefix='memlat-package-') as directory:

@@ -17,4 +17,5 @@ fn python_and_rust_same_boot_fixtures() {
         String::from_utf8_lossy(&result.stdout),
         String::from_utf8_lossy(&result.stderr)
     );
+    print!("{}", String::from_utf8_lossy(&result.stdout));
 }
