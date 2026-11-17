@@ -30,10 +30,7 @@ pub struct Worker {
 }
 
 pub fn valid_worker_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 128
-        && id.split([':', '/']).all(crate::valid_task_id)
-        && id.rsplit([':', '/']).next().is_some_and(|name| name.len() <= 43)
+    !id.is_empty() && id.len() <= 128 && id.split([':', '/']).all(crate::valid_task_id)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -134,11 +131,18 @@ pub struct MirrorObservation {
 
 /// Display-only deltas. No apply/write interface is enabled while write policy is unsettled.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "op", content = "worker", rename_all = "snake_case")]
+pub enum ProjectWorker {
+    Unchanged,
+    Clear,
+    Set(String),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub struct MirrorPlan {
     pub add_labels: BTreeSet<String>,
     pub remove_labels: BTreeSet<String>,
-    /// Outer None: no Project. Some(None): clear Worker. Some(Some(id)): set Worker.
-    pub project_worker: Option<Option<String>>,
+    pub project_worker: ProjectWorker,
 }
 
 impl MirrorPlan {
@@ -159,7 +163,11 @@ impl MirrorPlan {
         Ok(Self {
             add_labels: desired.difference(&current).cloned().collect(),
             remove_labels: current.difference(&desired).cloned().collect(),
-            project_worker: observed.has_project.then(|| assignee.map(str::to_owned)),
+            project_worker: if !observed.has_project {
+                ProjectWorker::Unchanged
+            } else {
+                assignee.map_or(ProjectWorker::Clear, |id| ProjectWorker::Set(id.into()))
+            },
         })
     }
 }

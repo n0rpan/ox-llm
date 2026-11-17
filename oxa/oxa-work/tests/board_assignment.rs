@@ -122,18 +122,21 @@ fn mirror_plans_clear_on_release_and_preserve_unrelated_labels() {
     let assigned = MirrorPlan::derive(Some("codex:node/slot-1"), &observed).unwrap();
     assert_eq!(assigned.add_labels, BTreeSet::from(["worker:slot-1".into()]));
     assert_eq!(assigned.remove_labels, BTreeSet::from(["worker:old".into()]));
-    assert_eq!(assigned.project_worker, Some(Some("codex:node/slot-1".into())));
+    assert_eq!(
+        assigned.project_worker,
+        ProjectWorker::Set("codex:node/slot-1".into())
+    );
     let released = MirrorPlan::derive(None, &observed).unwrap();
     assert!(released.add_labels.is_empty());
     assert_eq!(released.remove_labels, assigned.remove_labels);
-    assert_eq!(released.project_worker, Some(None));
+    assert_eq!(released.project_worker, ProjectWorker::Clear);
     let restored: MirrorPlan = serde_json::from_value(serde_json::to_value(&released).unwrap()).unwrap();
     assert_eq!(restored, released);
     assert_eq!(
         MirrorPlan::derive(None, &MirrorObservation::default())
             .unwrap()
             .project_worker,
-        None
+        ProjectWorker::Unchanged
     );
     assert!(MirrorPlan::derive(Some("bad\nworker"), &observed).is_err());
 }
