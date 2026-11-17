@@ -236,6 +236,11 @@ mod tests {
         (env, LinuxLauncher(source))
     }
     #[test]
+    fn delegation_remediation_keeps_all_controllers_in_one_shell_argument() {
+        let message = refused("child controller delegation").to_string();
+        assert!(message.contains("\"Delegate=cpu memory pids\""), "{message}");
+    }
+    #[test]
     fn scope_request_contains_child_pid_zero_swap_and_collect_without_memorymax() {
         use zbus::zvariant::Value;
         assert!(scope_exists("unrelated.scope").is_err());
