@@ -908,6 +908,7 @@ fn controls_are_rebound_to_the_new_session() {
             ..FakeOpts::default()
         },
     );
+    let server = world.server.clone();
     let steps = vec![
         step("open", &["oxa v"], typed("first", &["enter"])),
         // A final content delta does not mean the worker is idle. The queued,
@@ -932,7 +933,13 @@ fn controls_are_rebound_to_the_new_session() {
             "running",
             &["slow question", "Working..."],
             typed("steer me", &["enter"]),
-        ),
+        )
+        .until(move || {
+            server
+                .requests()
+                .iter()
+                .any(|r| r.max_tokens > 0 && last_user(r) == "slow question")
+        }),
         // The message waits in the new session's queue, shown above the editor. Escape aborts
         // the run and brings the queued message back into the editor.
         step("steered", &["Steering: steer me"], vec![key("escape")]),
