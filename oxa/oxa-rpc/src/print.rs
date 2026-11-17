@@ -225,6 +225,10 @@ pub fn run_print_outcome(
     let mut outcome = RunOutcome::NothingToDo;
     let n = prompts.len();
     for (i, (text, parts)) in prompts.into_iter().enumerate() {
+        if session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
         sink.last = None;
         sink.pending = None;
         sink.pending_length = false;
@@ -278,7 +282,7 @@ pub fn run_print_outcome(
             }
         }
         explain_outcome(settled, &mut *sink.err);
-        if session.handle().wrap_up_requested() {
+        if session.handle().wrap_up_requested() || session.handle().interrupted() {
             outcome.include(RunOutcome::Interrupted);
             break;
         }
@@ -337,6 +341,10 @@ pub fn run_json_outcome(
     };
     let mut outcome = RunOutcome::NothingToDo;
     for (text, parts) in prompts {
+        if session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
         let _ = session.take_outcome();
         let before = session.inner().tree.leaf().to_string();
         match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
@@ -369,7 +377,7 @@ pub fn run_json_outcome(
         }
         after_run(session, &before, &mut ui, &mut Vec::new(), err);
         explain_outcome(settled, err);
-        if session.handle().wrap_up_requested() {
+        if session.handle().wrap_up_requested() || session.handle().interrupted() {
             outcome.include(RunOutcome::Interrupted);
             break;
         }
