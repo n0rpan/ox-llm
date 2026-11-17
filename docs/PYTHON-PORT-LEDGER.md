@@ -14,6 +14,15 @@ PORTED means the named Rust implementation and its contract tests replace the fe
 | oxc/src/oxc/runtime/cloud_prices.py — live public OpenRouter pricing metadata | MISSING | Existing native pricing.rs parses configured prices; that is not a refresh consumer. | Retained feature issue [#628](https://github.com/oxstack/ox-llm/issues/628). Preserve bounded replies, durable last-known data and no request-path fetch before deleting this module. |
 | oxc/src/oxc/runtime/lan_share.py — production owner share controls | MISSING | Existing oxc-gateway/src/share components have loopback tests; component existence does not provide the owner CLI/control path. | Retained feature issue [#688](https://github.com/oxstack/ox-llm/issues/688); qualify its actual consumer before deletion. |
 | oxc/src/oxc/cloud_install.py — Python-only installer/venv/controller daemon | DROPPED | Direct native oxa package/default path; no replacement Python installer. | Owner retirement [#681](https://github.com/oxstack/ox-llm/issues/681); [parked feature index](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947705088). Existing lab wrapper callers still block deletion; not UNUSED. |
+| oxc/src/oxc/bootstrap.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
+| oxc/src/oxc/bootstrap_build.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
+| oxc/src/oxc/bootstrap_checks.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
+| oxc/src/oxc/bootstrap_download.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
+| oxc/src/oxc/bootstrap_guard.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
+| oxc/src/oxc/bootstrap_install.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
+| oxc/src/oxc/bootstrap_jobs.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
+| oxc/src/oxc/bootstrap_sources.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
+| oxc/src/oxc/bootstrap_transfer.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 
 Deletion gates: packaging must stop staging/smoking Python first (Air owns that hunk); qualify each remaining caller, archive archive/python-oxc, then delete only qualified rows in ledger order. A provider mapping alone does not retire its controller, CLI, Studio, metadata refresh, or legacy tests.
 
@@ -23,7 +32,7 @@ Native lab transition: existing Go profiles, ledgers, sessions and caps must rem
 
 ## Complete module inventory awaiting feature-level qualification
 
-Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The three provider modules, two MEMLAT modules and installer already mapped above are omitted here. Partial-feature rows do not qualify a whole module. Extensionless entry points oxc/src/oxc/runtime/oxc and studio also need explicit launcher/feature rows.
+Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The three provider modules, two MEMLAT modules and explicitly retired installer/bootstrap modules already mapped above are omitted here. Partial-feature rows do not qualify a whole module. Extensionless entry points oxc/src/oxc/runtime/oxc and studio also need explicit launcher/feature rows.
 
 - `oxc/benchmarks/classic/loopback_bridge.py`
 - `oxc/benchmarks/classic/screen.py`
@@ -47,15 +56,6 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/src/oxc/__init__.py`
 - `oxc/src/oxc/__main__.py`
 - `oxc/src/oxc/batch_runner.py`
-- `oxc/src/oxc/bootstrap.py`
-- `oxc/src/oxc/bootstrap_build.py`
-- `oxc/src/oxc/bootstrap_checks.py`
-- `oxc/src/oxc/bootstrap_download.py`
-- `oxc/src/oxc/bootstrap_guard.py`
-- `oxc/src/oxc/bootstrap_install.py`
-- `oxc/src/oxc/bootstrap_jobs.py`
-- `oxc/src/oxc/bootstrap_sources.py`
-- `oxc/src/oxc/bootstrap_transfer.py`
 - `oxc/src/oxc/devfreq_probe.py`
 - `oxc/src/oxc/doctor.py`
 - `oxc/src/oxc/engine_report.py`
