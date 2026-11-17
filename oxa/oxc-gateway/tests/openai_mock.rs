@@ -278,33 +278,59 @@ fn diagnostic_reply() -> Reply {
 #[test]
 fn mock_reply_write_diagnostics_identify_each_finite_part_without_error_text() {
     use openai::ReplyPart;
-    for (fail_at, expected) in [
-        ReplyPart::Headers,
-        ReplyPart::Headers,
-        ReplyPart::HeaderEnd,
-        ReplyPart::ChunkHeader,
-        ReplyPart::ChunkPayload,
-        ReplyPart::ChunkEnd,
-        ReplyPart::Flush,
-        ReplyPart::TransferEnd,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let mut writer = FailingReplyWriter {
-            fail_at,
-            calls: 0,
-            bytes: Vec::new(),
-        };
-        let failure = openai::write_reply(&mut writer, &diagnostic_reply()).unwrap_err();
-        assert_eq!(failure.part, Some(expected));
-        assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
-        assert_eq!(writer.calls, fail_at + 1, "do not continue after failed writes");
-        let finite = format!("{failure:?}");
-        assert!(finite.contains("ReplyWrite"));
-        assert!(!finite.contains("synthetic-private-write"));
-        assert!(!finite.contains("X-Synthetic"));
+    let cases = [
+        (
+            false,
+            vec![
+                ReplyPart::Headers,
+                ReplyPart::Headers,
+                ReplyPart::HeaderEnd,
+                ReplyPart::ChunkHeader,
+                ReplyPart::FinalChunk,
+                ReplyPart::Flush,
+            ],
+        ),
+        (
+            true,
+            vec![
+                ReplyPart::Headers,
+                ReplyPart::Headers,
+                ReplyPart::HeaderEnd,
+                ReplyPart::ChunkHeader,
+                ReplyPart::ChunkPayload,
+                ReplyPart::ChunkEnd,
+                ReplyPart::Flush,
+            ],
+        ),
+    ];
+    for (truncate, expected_parts) in cases {
+        for (fail_at, expected) in expected_parts.into_iter().enumerate() {
+            let mut writer = FailingReplyWriter {
+                fail_at,
+                calls: 0,
+                bytes: Vec::new(),
+            };
+            let mut reply = diagnostic_reply();
+            reply.truncate_transfer = truncate;
+            let failure = openai::write_reply(&mut writer, &reply).unwrap_err();
+            assert_eq!(failure.part, Some(expected));
+            assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+            assert_eq!(writer.calls, fail_at + 1, "do not continue after failed writes");
+            let finite = format!("{failure:?}");
+            assert!(finite.contains("ReplyWrite"));
+            assert!(!finite.contains("synthetic-private-write"));
+            assert!(!finite.contains("X-Synthetic"));
+        }
     }
+    let mut writer = FailingReplyWriter {
+        fail_at: 2,
+        calls: 0,
+        bytes: Vec::new(),
+    };
+    let empty = Reply::raw(200, "text/plain", Vec::new(), vec![]);
+    let failure = openai::write_reply(&mut writer, &empty).unwrap_err();
+    assert_eq!(failure.part, Some(ReplyPart::TransferEnd));
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
 }
 #[test]
 fn mock_reply_diagnostics_preserve_wire_flush_and_transfer_truncation() {
@@ -322,6 +348,46 @@ fn mock_reply_diagnostics_preserve_wire_flush_and_transfer_truncation() {
             expected.extend_from_slice(b"0\r\n\r\n");
         }
         assert_eq!(writer.bytes, expected);
-        assert_eq!(writer.calls, if truncate { 7 } else { 8 });
+        assert_eq!(writer.calls, if truncate { 7 } else { 6 });
     }
+}
+
+/// A peer that closes after a flushed semantic end, before a later HTTP-tail write.
+#[derive(Default)]
+struct CloseOnDoneFlush {
+    bytes: Vec<u8>,
+    closed: bool,
+}
+impl Write for CloseOnDoneFlush {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.closed {
+            return Err(std::io::ErrorKind::BrokenPipe.into());
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.closed = self
+            .bytes
+            .windows(b"data: [DONE]".len())
+            .any(|w| w == b"data: [DONE]");
+        Ok(())
+    }
+}
+#[test]
+fn mock_finishes_http_before_final_done_flush_can_close_the_peer() {
+    let reply = Reply::raw(200, "text/event-stream", b"data: [DONE]\r\n\r\n".to_vec(), vec![]);
+    let mut peer = CloseOnDoneFlush::default();
+    openai::write_reply(&mut peer, &reply).expect("HTTP framing must be complete at final flush");
+    assert!(peer.closed);
+    assert!(peer.bytes.ends_with(b"\r\n0\r\n\r\n"));
+}
+#[test]
+fn mock_still_rejects_peer_close_before_later_payload_chunks() {
+    let mut body = b"data: [DONE]\r\n\r\n".to_vec();
+    body.extend(std::iter::repeat_n(b'x', 2048));
+    let reply = Reply::raw(200, "text/event-stream", body, vec![]);
+    let failure = openai::write_reply(&mut CloseOnDoneFlush::default(), &reply).unwrap_err();
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(failure.part, Some(openai::ReplyPart::ChunkHeader));
 }

@@ -232,6 +232,8 @@ pub(super) enum ReplyPart {
     ChunkEnd,
     Flush,
     TransferEnd,
+    /// Final payload, chunk CRLF and terminal zero in one bounded write.
+    FinalChunk,
 }
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HealthFailure {
@@ -493,9 +495,25 @@ pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), 
     stream
         .write_all(b"\r\n")
         .map_err(|error| HealthFailure::reply(ReplyPart::HeaderEnd, error))?;
-    for bytes in reply.bytes.chunks(reply.fragment) {
+    let chunks = reply.bytes.chunks(reply.fragment);
+    let last = chunks.len().saturating_sub(1);
+    for (index, bytes) in chunks.enumerate() {
         write!(stream, "{:x}\r\n", bytes.len())
             .map_err(|error| HealthFailure::reply(ReplyPart::ChunkHeader, error))?;
+        if index == last && !reply.truncate_transfer {
+            // A client may stop reading as soon as it sees its semantic terminal event.
+            // Finish the HTTP message before flushing that final payload to the peer.
+            let mut complete = Vec::with_capacity(bytes.len() + 7);
+            complete.extend_from_slice(bytes);
+            complete.extend_from_slice(b"\r\n0\r\n\r\n");
+            stream
+                .write_all(&complete)
+                .map_err(|error| HealthFailure::reply(ReplyPart::FinalChunk, error))?;
+            stream
+                .flush()
+                .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error))?;
+            return Ok(());
+        }
         stream
             .write_all(bytes)
             .map_err(|error| HealthFailure::reply(ReplyPart::ChunkPayload, error))?;
