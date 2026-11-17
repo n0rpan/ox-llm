@@ -610,7 +610,12 @@ fn go_chat_401_keeps_the_public_error_without_claiming_a_local_store_failure() {
     });
     setup(&env, &format!("http://{}", mock.address()));
     let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
-    assert_eq!(output.status.code(), Some(5));
+    assert_eq!(
+        output.status.code(),
+        Some(5),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(terminal(&output)["error_class"], "cloud_credentials_unavailable");
     assert_eq!(mock.requests().len(), 2);
     let ledger = rows(&env);

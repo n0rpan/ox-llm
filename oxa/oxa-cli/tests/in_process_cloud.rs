@@ -203,16 +203,18 @@ fn native_local_credentials_diagnostic_names_attempted_store_only_on_stderr() {
 
 #[test]
 fn native_credentials_diagnostic_does_not_relabel_upstream_401_or_protocol_failure() {
-    for (reply, class, status) in [
+    for (reply, class, status, native_class) in [
         (
             Reply::error(401, "TEST upstream metadata"),
             "cloud_upstream_error",
             401,
+            "engine_http",
         ),
         (
             Reply::wire("text/event-stream", b"data: TEST\n\n"),
             "cloud_upstream_stream_broken",
             502,
+            "stream_broken",
         ),
     ] {
         let env = diagnostic_env();
@@ -229,7 +231,7 @@ fn native_credentials_diagnostic_does_not_relabel_upstream_401_or_protocol_failu
         assert!(!diagnostic.contains("attempted protected store"), "{diagnostic}");
         assert!(!diagnostic.contains("TEST upstream metadata"), "{diagnostic}");
         assert!(
-            diagnostic.contains("\"error_class\":\"engine_http\""),
+            diagnostic.contains(&format!("\"error_class\":\"{native_class}\"")),
             "{diagnostic}"
         );
         assert!(diagnostic.contains(&format!("HTTP {status}")), "{diagnostic}");
