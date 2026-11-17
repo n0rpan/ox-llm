@@ -3,6 +3,8 @@
 #[allow(dead_code)]
 #[path = "../../oxc-gateway/tests/common/anthropic.rs"]
 mod anthropic;
+#[path = "common/strace.rs"]
+mod strace;
 use anthropic::{MockAnthropic, Reply, CREDENTIAL};
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use serde_json::{json, Value};
@@ -52,15 +54,7 @@ fn run(env: &TestEnv, args: &[&str], trace: Option<&Path>) -> Output {
 }
 fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Output {
     let mut cmd = if let Some(path) = trace {
-        // Use the documented checkout-local installation when host packages are unavailable.
-        // This must still run the real tracer: missing/broken tracing remains a hard failure.
-        let local_tracer =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.local-checks/strace/bin/strace");
-        let mut cmd = Command::new(if local_tracer.is_file() {
-            local_tracer.as_os_str()
-        } else {
-            std::ffi::OsStr::new("strace")
-        });
+        let mut cmd = Command::new(strace::executable());
         cmd.args(["-f", "-e", "trace=execve", "-o"])
             .arg(path)
             .arg(env!("CARGO_BIN_EXE_oxa"));

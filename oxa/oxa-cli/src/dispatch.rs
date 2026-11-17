@@ -170,6 +170,15 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            Subcommand::Login(logout, words) => crate::login_cmd::run(
+                logout,
+                &words.0,
+                &dirs,
+                &cwd,
+                env,
+                stdin_is_tty && stdout_is_tty,
+                &mut *stdout,
+            ),
             Subcommand::Status(words) => crate::status::run(&words, &dirs, &cwd, env, &mut *stdout),
             Subcommand::Work(words) => {
                 return crate::work_cmd::run(&words, &cwd, env, &dirs, &mut *stdout, &mut *stderr)
