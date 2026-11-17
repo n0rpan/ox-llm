@@ -165,6 +165,7 @@ impl Claims {
     }
 
     /// Helper admission checks idleness and reserves under the SAME directory lock.
+    /// The target must have validated Saved state; transient lock markers are not bootstrap facts.
     /// Every outstanding target/worker lease, including expired work, requires fenced completion.
     /// Worker identity and roles must come from the trusted frontend, as with `claim_for`.
     /// Generic manual reservations retain their separate `assign`/`claim_for` semantics.
@@ -177,7 +178,8 @@ impl Claims {
         ttl: u64,
     ) -> Result<Option<Lease>> {
         self.claim_checked(entry, policy, &worker.id, (now, ttl), |row| {
-            if row.state.lease.is_some()
+            if !self.established(entry.number)?
+                || row.state.lease.is_some()
                 || self.rows_locked()?.values().any(|saved| {
                     saved
                         .state
