@@ -1,5 +1,5 @@
 use oxa_cli::lead_access::*;
-use oxa_config::{dirs_from_env, Env};
+use oxa_config::{dirs_from_env, Env, Settings};
 use oxa_fake::TestEnv;
 use serde_json::json;
 use std::net::{IpAddr, Ipv4Addr};
@@ -50,7 +50,12 @@ fn check_host(
 #[test]
 fn disabled_local_defaults_and_project_cannot_grant_access() {
     let env = TestEnv::new();
-    env.write("work/.oxa/settings.json", &json!({"oxa":{"lead":{"serve":{"enabled":true,"identity":"tailscale","allowed_identities":[OWNER]}}}}).to_string());
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"oxa":{"lead":{"serve":{
+            "enabled":true,"identity":"tailscale","allowed_identities":[OWNER]}}}})
+        .to_string(),
+    );
     let config = load(&env).unwrap();
     assert_eq!(config.mode(), Mode::Local);
     assert_eq!(config.endpoint(), (LOOPBACK, 8743));
@@ -173,4 +178,66 @@ fn endpoint_settings_are_generic_and_errors_never_reflect_input() {
         };
         assert!(!error.contains("PRIVATE_VALUE"));
     }
+}
+
+#[test]
+fn an_untrusted_forwarded_header_is_not_an_identity() {
+    let env = TestEnv::new();
+    // A loopback peer that presents the header without a verified adapter is unauthenticated,
+    // not merely "not allowed": the header alone proves nothing.
+    for value in [
+        json!({"enabled":true}),
+        json!({"enabled":true,"identity":"tailscale","allowed_identities":[OWNER]}),
+    ] {
+        let config = user(&env, value);
+        assert_eq!(
+            check(&config, Some(OWNER), &Unverified),
+            Err(Refusal::Unauthenticated)
+        );
+    }
+}
+
+#[test]
+fn only_a_loopback_bind_is_accepted() {
+    let env = TestEnv::new();
+    assert_eq!(
+        user(&env, json!({"enabled":true,"bind":"::1"})).endpoint(),
+        ("::1".parse().unwrap(), 8743)
+    );
+    for bind in ["0.0.0.0", "192.0.2.1", "::"] {
+        env.write(
+            "home/.oxa/agent/settings.json",
+            &json!({"oxa":{"lead":{"serve":{"enabled":true,"bind":bind}}}}).to_string(),
+        );
+        assert_eq!(
+            load(&env).err(),
+            Some("lead serve bind must be a loopback address"),
+            "accepted bind {bind}"
+        );
+    }
+}
+
+#[test]
+fn documented_setting_is_a_known_schema_key() {
+    let env = TestEnv::new();
+    // The page tells the user to put `oxa.lead.serve` in settings.json; an unknown key would log
+    // a diagnostic on every start, in every mode, for a user who did as documented.
+    user(
+        &env,
+        json!({"enabled":true,"identity":"tailscale","allowed_identities":[OWNER]}),
+    );
+    let test_home = env.home().display().to_string();
+    let pairs = [("HOME", test_home.as_str())];
+    let dirs = dirs_from_env(&Env::from_pairs(&pairs), None).unwrap();
+    let settings = Settings::load(&dirs, &env.work(), false);
+    let warnings: Vec<&str> = settings
+        .diagnostics()
+        .iter()
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert!(
+        warnings.is_empty(),
+        "documented settings must not warn: {warnings:?}"
+    );
+    assert!(settings.get(SETTING).is_some(), "the user layer must be read");
 }

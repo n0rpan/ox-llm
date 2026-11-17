@@ -17,6 +17,8 @@ Local browser authority includes the port and must match the configured numeric 
 proof must bind the independently authenticated expected authority to the request;
 never copy an untrusted Host header into that proof. An untrusted
 `Tailscale-User-Login` header and loopback peer alone prove nothing.
+Only a loopback `bind` is accepted: a wider address is a configuration error, and
+the access check refuses any request whose peer is not loopback.
 No provider is enabled implicitly; the shipped unverified adapter always refuses.
 
 After a reviewed listener and trusted proxy adapter are available, configure the

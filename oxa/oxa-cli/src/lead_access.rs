@@ -56,10 +56,16 @@ impl Config {
             };
         }
         if let Some(value) = values.get("bind") {
-            config.bind = value
+            let bind: IpAddr = value
                 .as_str()
                 .and_then(|text| text.parse().ok())
                 .ok_or("invalid lead serve bind")?;
+            // The access check refuses every non-loopback peer, and the documented operator step
+            // proxies to a loopback port, so a wider bind is a mistake rather than a choice.
+            if !bind.is_loopback() {
+                return Err("lead serve bind must be a loopback address");
+            }
+            config.bind = bind;
         }
         if let Some(value) = values.get("port") {
             config.port = value
@@ -163,6 +169,8 @@ pub fn read_only<T>(
         {
             Ok(read())
         }
+        // A forwarded header alone never satisfies the requirement: without a verified identity
+        // the request is unauthenticated, whichever mode is configured.
         (_, None) => Err(Refusal::Unauthenticated),
         _ => Err(Refusal::NotAllowed),
     }
