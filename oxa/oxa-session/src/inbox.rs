@@ -306,11 +306,11 @@ fn scan_batch(
         if stopped.load(Ordering::Relaxed) {
             return false;
         }
-        // A durable pickup can outlive a crash before the message unlink.
-        match receipts::already_taken(dir, &path) {
-            Ok(false) => {}
-            Ok(true) => continue,
-            Err(_) => return false,
+        // A durable pickup can outlive a crash before the message unlink. A marker this process
+        // cannot verify suppresses its own message only: a watcher has no error channel, so
+        // skipping it (rather than ending the batch) keeps the queue behind it moving.
+        if receipts::already_taken(dir, &path).unwrap_or(true) {
+            continue;
         }
         let Ok(file) = OpenOptions::new()
             .read(true)

@@ -311,3 +311,40 @@ fn inbox_durable_pickup_releases_shared_ownership_without_a_watch_receipt() {
     );
     assert!(Inbox::receipt(&agent, "released", &id).unwrap());
 }
+
+#[test]
+fn inbox_unverifiable_receipt_suppresses_only_its_message() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let stale = send_inbox(&agent, "durable", "already taken").unwrap();
+    let dir = agent.join("inbox/durable");
+    // A crash left the message behind, and its marker is now a symlink (and later a hardlink)
+    // that no pickup may trust. Every message here sorts inside the same batch, so stopping
+    // the batch would strand the one behind it.
+    let outside = env.root().join("outside");
+    fs::write(&outside, "untouched").unwrap();
+    symlink(&outside, dir.join(format!("{stale}.taken"))).unwrap();
+    send_inbox(&agent, "durable", "still queued").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "durable", move |s| tx.send(s).is_ok()).unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        "still queued",
+        "a malformed marker must not stop the watcher behind it"
+    );
+    drop(watch);
+    let receipt = dir.join(format!("{stale}.taken"));
+    fs::remove_file(&receipt).unwrap();
+    fs::hard_link(&outside, &receipt).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let watch = Inbox::watch(&agent, "durable", move |s| tx.send(s).is_ok()).unwrap();
+    fs::remove_file(dir.join(format!("{stale}.msg"))).unwrap();
+    send_inbox(&agent, "durable", "after the hardlink").unwrap();
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        "after the hardlink"
+    );
+    drop(watch);
+    assert!(Inbox::receipt(&agent, "durable", &stale).is_err());
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "untouched");
+}

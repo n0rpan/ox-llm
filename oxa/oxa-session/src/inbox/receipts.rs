@@ -16,7 +16,8 @@ fn receipt_exists(dir: &Directory, id: &str) -> io::Result<bool> {
     };
     // Receipts contain no prompt data. Fail closed on malformed markers.
     // SAFETY: geteuid has no preconditions.
-    if !meta.is_file() || meta.nlink() != 1 || meta.len() != 0 || meta.uid() != unsafe { libc::geteuid() } {
+    let mine = meta.uid() == unsafe { libc::geteuid() };
+    if !meta.is_file() || meta.nlink() != 1 || meta.len() != 0 || !mine {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid inbox receipt",
