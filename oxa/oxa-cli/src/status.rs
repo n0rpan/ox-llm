@@ -89,7 +89,7 @@ pub(crate) struct StatusWriter {
     timeout_ms: Option<u64>,
     interval: Duration,
     billing: Option<oxc_gateway::diagnostics::Diagnostics>,
-    local_policy: Option<(std::sync::Weak<dyn oxa_proto::Engine>, String)>,
+    local_policy: Option<std::sync::Weak<dyn oxa_proto::Engine>>,
 }
 
 impl StatusWriter {
@@ -98,12 +98,8 @@ impl StatusWriter {
         self
     }
 
-    pub(crate) fn with_engine(
-        mut self,
-        engine: &std::sync::Arc<dyn oxa_proto::Engine>,
-        model: Option<&str>,
-    ) -> Self {
-        self.local_policy = model.map(|model| (std::sync::Arc::downgrade(engine), model.to_owned()));
+    pub(crate) fn with_engine(mut self, engine: &std::sync::Arc<dyn oxa_proto::Engine>) -> Self {
+        self.local_policy = Some(std::sync::Arc::downgrade(engine));
         self
     }
     pub(crate) fn new(timeout: Option<Duration>) -> Self {
@@ -197,8 +193,8 @@ impl StatusWriter {
         if let Some(billing) = self.billing.as_ref().and_then(|b| b.last_billing()) {
             record["last_billing"] = billing.record();
         }
-        if let Some((engine, model)) = &self.local_policy {
-            if let Some(policy) = engine.upgrade().and_then(|e| e.local_memory_policy(model)) {
+        if let Some(engine) = self.local_policy.as_ref().filter(|_| !snapshot.remote) {
+            if let Some(policy) = engine.upgrade().and_then(|e| e.local_memory_policy("")) {
                 record["local_memory_policy"] = policy.into();
             }
         }

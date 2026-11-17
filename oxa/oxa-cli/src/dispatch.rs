@@ -885,7 +885,7 @@ fn prepare(
         Arc::new(
             crate::status::StatusWriter::new(a.stall_timeout)
                 .with_billing(cloud_diagnostics.clone())
-                .with_engine(&engine, model.as_deref()),
+                .with_engine(&engine),
         )
     });
     let result_facts = Arc::new(

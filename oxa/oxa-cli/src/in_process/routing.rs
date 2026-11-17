@@ -102,7 +102,11 @@ impl Engine for Routed {
         Err(failure.unwrap_or_else(|| OxaError::new(codes::INVALID, "No configured native models.")))
     }
     fn local_memory_policy(&self, model: &str) -> Option<&'static str> {
-        self.backend(model).ok()?.local_memory_policy(model)
+        if model.is_empty() {
+            self.local.as_ref().ok()?.local_memory_policy("")
+        } else {
+            self.backend(model).ok()?.local_memory_policy(model)
+        }
     }
     fn count_tokens(&self, _text: &str) -> Result<u32, OxaError> {
         Err(OxaError::unsupported(

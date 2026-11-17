@@ -312,7 +312,7 @@ impl Engine for LocalEngine {
     }
     fn local_memory_policy(&self, model: &str) -> Option<&'static str> {
         let status = self.status();
-        (status.model.as_deref() == Some(model))
+        (model.is_empty() || status.model.as_deref() == Some(model))
             .then_some(status.memory_policy)
             .flatten()
     }
