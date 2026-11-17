@@ -717,11 +717,32 @@ async fn normalized_tool_reply(calls: Value) -> (Completed, Vec<Value>, Vec<Valu
 }
 
 #[tokio::test]
-async fn openrouter_null_tool_identity_continuations_keep_assembled_identity() {
-    for continuation in [
-        json!({"index":3,"id":null,"function":{"arguments":"\"note.txt\"}"}}),
-        json!({"index":3,"function":{"name":null,"arguments":"\"note.txt\"}"}}),
-        json!({"index":3,"id":null,"function":{"name":null,"arguments":"\"note.txt\"}"}}),
+async fn openrouter_atomic_tool_ids_preserve_empty_and_replace_nonempty_values() {
+    for (continuation, expected_id) in [
+        (
+            json!({"index":3,"id":null,"function":{"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"function":{"name":null,"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"id":null,"function":{"name":null,"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"id":"","function":{"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"id":"synthetic-call","function":{"arguments":"\"note.txt\"}"}}),
+            "synthetic-call",
+        ),
+        (
+            json!({"index":3,"id":"replacement-call","function":{"arguments":"\"note.txt\"}"}}),
+            "replacement-call",
+        ),
     ] {
         let mock = MockAnthropic::start(vec![wire(
             vec![
@@ -747,14 +768,14 @@ async fn openrouter_null_tool_identity_continuations_keep_assembled_identity() {
             )
             .await
             .unwrap();
-        let expected = json!({"id":"synthetic-call","type":"function","function":{"name":"read","arguments":"{\"path\":\"note.txt\"}"}});
+        let expected = json!({"id":expected_id,"type":"function","function":{"name":"read","arguments":"{\"path\":\"note.txt\"}"}});
         assert_eq!(completed.assistant["tool_calls"], json!([expected]));
         let calls: Vec<_> = output
             .iter()
             .filter_map(|v| v.pointer("/choices/0/delta/tool_calls/0"))
             .collect();
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0]["id"], "synthetic-call");
+        assert_eq!(calls[0]["id"], expected_id);
         assert_eq!(calls[0]["function"], expected["function"]);
         assert_eq!(rows(&fixture)[0]["settled"], "usage");
         mock.finish();
@@ -762,12 +783,14 @@ async fn openrouter_null_tool_identity_continuations_keep_assembled_identity() {
 }
 
 #[tokio::test]
-async fn openrouter_null_identity_support_keeps_required_and_typed_identity_guards() {
+async fn openrouter_identity_support_keeps_required_typed_and_held_key_guards() {
     for call in [
         json!({"id":null,"function":{"name":"read","arguments":"{}"}}),
         json!({"id":"synthetic-call","function":{"name":null,"arguments":"{}"}}),
         json!({"id":17,"function":{"name":"read","arguments":"{}"}}),
         json!({"id":"synthetic-call","function":{"name":{},"arguments":"{}"}}),
+        json!({"id":CREDENTIAL,"function":{"name":"read","arguments":"{}"}}),
+        json!({"id":"synthetic-call","function":{"name":CREDENTIAL,"arguments":"{}"}}),
     ] {
         let mock = MockAnthropic::start(vec![wire(
             vec![json!({"choices":[{"index":0,
