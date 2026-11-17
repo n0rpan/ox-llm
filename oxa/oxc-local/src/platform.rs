@@ -28,7 +28,7 @@ impl fmt::Display for Predicate {
 }
 impl std::error::Error for Predicate {}
 pub(crate) fn refused(predicate: &'static str) -> io::Error {
-    io::Error::other(Predicate(predicate, "enable memory/pids delegation with `sudo systemctl set-property user@$(id -u).service Delegate=cpu memory pids` or use a no-swap service"))
+    io::Error::other(Predicate(predicate, "enable memory/pids delegation with `sudo systemctl set-property user@$(id -u).service \"Delegate=cpu memory pids\"` or use a no-swap service"))
 }
 pub(crate) fn no_swap(s: MemorySample) -> io::Result<MemorySample> {
     if !s.swap_limit_zero {
@@ -42,6 +42,10 @@ pub(crate) fn no_swap(s: MemorySample) -> io::Result<MemorySample> {
 
 pub const CHILD_GATE: &str = "--oxa-owned-local-child";
 /// Internal same-PID exec gate; the parent writes permission only after child policy checks.
+/// Every executable embedding `configured_engine` must dispatch this at process entry,
+/// before interpreting its own arguments (including example/helper executables).
+/// On `Some(Err(error))`, report the error and exit unsuccessfully; `Some(Ok(()))`
+/// means no further host dispatch is needed. `None` continues the ordinary entry path.
 pub fn child_entry(args: &[std::ffi::OsString]) -> Option<io::Result<()>> {
     (args.first().is_some_and(|arg| arg == CHILD_GATE)).then(|| {
         use std::{
