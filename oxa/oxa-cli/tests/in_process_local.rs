@@ -1,6 +1,6 @@
 //! Real CLI selector controls. The native task/child protocol is tested in oxc-local.
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::process::{Command, Output};
 
 fn local() -> Value {
