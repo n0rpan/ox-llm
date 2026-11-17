@@ -948,7 +948,12 @@ fn local_go_namespace_alias_with_thinking_suffix_keeps_local_ownership_offline()
         "limits":{"opencode/custom-local":{"context_window":4096,"max_output":64,
             "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}});
     fs::write(path, settings.to_string()).unwrap();
-    for model in ["opencode/custom-local", "opencode/custom-local:high"] {
+    for model in [
+        "opencode/custom-local",
+        "opencode/custom-local:high",
+        "opencode/CUSTOM-LOCAL",
+        "opencode/CUSTOM-LOCAL:high",
+    ] {
         let output = run(
             &env,
             &[
