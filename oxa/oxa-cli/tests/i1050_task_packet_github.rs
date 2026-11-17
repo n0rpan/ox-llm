@@ -9,7 +9,7 @@
 //! directions cannot disagree again.
 
 const GUIDANCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../AGENTS.md");
-const RULE: &str = "A task packet's fetch line is provenance, not an order.";
+const RULE: &str = "GitHub access has one owner per session.";
 
 /// The guidance with its line breaks flattened, so rewrapping a paragraph still matches.
 fn guidance() -> String {
@@ -23,7 +23,7 @@ fn rule(text: &str) -> &str {
         .find(RULE)
         .expect("the guidance has no rule for a packet line that says how it was fetched");
     let tail = &text[start..];
-    let scoped = "keeps the `gh` commands below unchanged.";
+    let scoped = "Below, every `gh` command is for a session that owns GitHub access.";
     let end = tail
         .find(scoped)
         .map(|i| i + scoped.len())
@@ -36,7 +36,7 @@ fn a_fetch_line_in_a_runner_owned_packet_is_not_an_order() {
     let text = guidance();
     let rule = rule(&text);
     assert!(
-        rule.contains("The session prompt decides who owns GitHub access."),
+        rule.contains("The session prompt says which; the two never apply at once."),
         "the rule has to name the instruction that decides: {rule}"
     );
     assert!(
@@ -44,7 +44,7 @@ fn a_fetch_line_in_a_runner_owned_packet_is_not_an_order() {
         "a runner-owned session must not call gh: {rule}"
     );
     assert!(
-        rule.contains("reported as missing, not fetched"),
+        rule.contains("reported as missing instead of fetched"),
         "a missing fact is reported, not fetched: {rule}"
     );
 }

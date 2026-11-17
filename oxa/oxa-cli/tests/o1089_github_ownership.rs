@@ -36,7 +36,7 @@ fn the_session_prompt_decides_who_owns_github() {
         "a runner-owned session must not call gh: {rule}"
     );
     assert!(
-        rule.contains("provenance and not an instruction to fetch it"),
+        rule.contains("provenance, not an order"),
         "a line saying how the packet was fetched is not an order to fetch it: {rule}"
     );
     assert!(

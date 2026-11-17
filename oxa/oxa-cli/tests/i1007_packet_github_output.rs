@@ -9,8 +9,8 @@
 //! owns GitHub access, so ordinary work gains no new restriction.
 
 const GUIDANCE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../AGENTS.md");
-const RULE: &str = "A session that does not own GitHub access reports a fact instead of fetching it.";
-const SCOPE: &str = "The `gh` commands below are unchanged for a session that owns GitHub.";
+const RULE: &str = "GitHub access has one owner per session.";
+const SCOPE: &str = "Below, every `gh` command is for a session that owns GitHub access.";
 
 /// The guidance with its line breaks flattened, so a rewrapped paragraph still matches.
 fn guidance() -> String {
