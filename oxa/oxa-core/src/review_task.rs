@@ -47,7 +47,11 @@ pub fn diff_argv(selection: &Selection) -> Result<Vec<String>, OxaError> {
         Selection::Uncommitted => vec!["diff".to_string()],
         Selection::Base(reference) => vec!["diff".to_string(), checked("base", reference)?],
         Selection::Commit(commit) => {
-            vec!["show".to_string(), "--format=".to_string(), checked("commit", commit)?]
+            vec![
+                "show".to_string(),
+                "--format=".to_string(),
+                checked("commit", commit)?,
+            ]
         }
     };
     argv.push("--no-ext-diff".to_string());
@@ -224,7 +228,14 @@ mod tests {
     fn commit_is_a_show_without_the_message() {
         assert_eq!(
             diff_argv(&Selection::Commit("3eb8ad14".to_string())).unwrap(),
-            ["show", "--format=", "3eb8ad14", "--no-ext-diff", "--no-textconv", "--"]
+            [
+                "show",
+                "--format=",
+                "3eb8ad14",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--"
+            ]
         );
     }
 
@@ -253,7 +264,10 @@ mod tests {
     fn a_long_file_is_cut_per_file_with_a_visible_marker_and_keeps_the_next_file() {
         let out = prompt(&two_files(), "", usize::MAX);
         assert!(out.contains("diff --git a/one.rs"), "the first file is shown");
-        assert!(out.contains("diff --git a/two.txt"), "the second file is still shown");
+        assert!(
+            out.contains("diff --git a/two.txt"),
+            "the second file is still shown"
+        );
         assert!(out.contains("cut: kept "), "the cut is visible");
         assert!(!out.contains("total limit"), "the per-file cap is enough");
         let first = out.split("diff --git a/two.txt").next().unwrap();
