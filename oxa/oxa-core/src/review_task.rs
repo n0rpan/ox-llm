@@ -153,8 +153,8 @@ fn cut_diff(diff: &str, limit: usize) -> String {
     out
 }
 
-/// The `(title, bytes)` of each file in a `git diff`, in order. `title` is the header line
-/// without `diff --git `; text before the first header (or a diff without headers) is the
+/// The `(title, bytes)` of each file in a normal or combined diff, in order. `title` is
+/// the header line without its diff-format prefix; text before the first header (or a diff without headers) is the
 /// unnamed first section, which is a piece of a file's diff rather than one of the files after
 /// the cut and so never counts as a file left out.
 fn sections(diff: &str) -> Vec<(String, &str)> {
