@@ -659,6 +659,8 @@ async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
         json!({"access_token":"","refresh_token":"synthetic-refresh","expires_in":3600}),
         json!({"access_token":KEY,"expires_in":"synthetic-refresh"}),
         json!({"access_token":"e30.eyJleHAiOjEwMDB9.synthetic","refresh_token":"synthetic-refresh","expires_in":3600}),
+        json!({"access_token":"synthetic-next-access","refresh_token":false,"expires_in":3600}),
+        json!({"access_token":"synthetic-next-access","refresh_token":42,"expires_in":3600}),
     ] {
         let refresh = MockOpenAi::start(vec![Reply::json(reply)]);
         let base = refresh.base_url();
@@ -1565,6 +1567,70 @@ async fn codex_shaped_refresh_without_expires_in_is_stored_before_forwarding() {
     assert!(forwarded);
     assert_eq!(refresh.requests().len(), 1);
     assert_eq!(upstream.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn optional_refresh_rotation_preserves_the_grant_before_forwarding() {
+    for rejected in [false, true] {
+        for rotation in [
+            None,
+            Some(Value::Null),
+            Some(json!("")),
+            Some(json!("synthetic-next-refresh")),
+        ] {
+            let fixture = Fixture::new();
+            let path = fixture.token_path(rejected);
+            let expected = rotation
+                .as_ref()
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("synthetic-refresh");
+            let mut reply = json!({"access_token":"synthetic-next-access","expires_in":3600});
+            if let Some(rotation) = &rotation {
+                reply["refresh_token"] = rotation.clone();
+            }
+            let refresh = MockOpenAi::start(vec![Reply::json(reply)]);
+            let upstream = MockOpenAi::start(if rejected {
+                vec![Reply::error(401, "token_expired", "synthetic expiry"), answer()]
+            } else {
+                vec![answer()]
+            });
+            let base = upstream.base_url();
+            let endpoint = refresh.base_url();
+            let mut sends = 0;
+            let result = Client::new()
+                .unwrap()
+                .stream(
+                    chat(&base, &payload(), &[]),
+                    subscription_auth(&path, &endpoint),
+                    &Cancellation::default(),
+                    &mut |event| {
+                        if matches!(event, Event::Sending) {
+                            sends += 1;
+                            if !rejected || sends > 1 {
+                                let stored = chatgpt_tokens::read(&path).unwrap();
+                                assert_eq!(stored.access_token(), "synthetic-next-access");
+                                assert_eq!(stored.refresh_token(), expected);
+                                assert_eq!(stored.account_id(), "synthetic-account");
+                            }
+                        }
+                        Control::Continue
+                    },
+                )
+                .await;
+            assert!(result.is_ok(), "optional rotation must retain a usable grant");
+            assert_eq!(refresh.requests().len(), 1);
+            assert_eq!(upstream.requests().len(), if rejected { 2 } else { 1 });
+            assert_eq!(
+                sends,
+                if rejected { 2 } else { 1 },
+                "every forwarding checkpoint ran"
+            );
+            assert_eq!(chatgpt_tokens::read(&path).unwrap().refresh_token(), expected);
+            refresh.assert_healthy();
+            upstream.assert_healthy();
+        }
+    }
 }
 
 #[tokio::test]

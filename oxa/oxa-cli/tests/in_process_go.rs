@@ -522,7 +522,12 @@ fn native_go_text_deltas_allow_null_or_empty_tool_calls_and_keep_final_usage() {
 
 #[test]
 fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
-    for calls in [json!({}), json!(CREDENTIAL), json!(0), json!(false)] {
+    for (case, calls) in [
+        ("object", json!({})),
+        ("string", json!(CREDENTIAL)),
+        ("number", json!(0)),
+        ("boolean", json!(false)),
+    ] {
         let env = TestEnv::new();
         let mock = MockOpenAi::start_with(|base| {
             vec![
@@ -536,6 +541,10 @@ fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
         setup(&env, &format!("http://{}", mock.address()));
         let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
         assert_eq!(terminal(&output)["error_class"], "stream_broken");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("cause=tool_shape"),
+            "malformed tool shape must be rejected before a framing/EOF error"
+        );
         assert!(!String::from_utf8_lossy(&output.stdout).contains("Synthetic invalid shape"));
         assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
         let ledger = rows(&env);
@@ -544,6 +553,7 @@ fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
         assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
         assert_eq!(ledger[0]["usage_missing"], true);
         assert_eq!(mock.requests().len(), 2);
+        eprintln!("synthetic_tool_shape_case={case}");
         mock.assert_healthy();
     }
 }
