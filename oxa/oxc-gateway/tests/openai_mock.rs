@@ -429,3 +429,29 @@ fn bounded_header_refusal_finishes_http_before_peer_can_close() {
         .windows(b"synthetic-private-frame".len())
         .any(|window| window == b"synthetic-private-frame"));
 }
+
+#[test]
+fn buffered_header_refusal_keeps_write_and_flush_failures_strict() {
+    for (fail_at, part) in [
+        (0, openai::ReplyPart::BufferedReply),
+        (1, openai::ReplyPart::Flush),
+    ] {
+        let reply = Reply::raw(
+            200,
+            "application/json",
+            b"synthetic-private-frame".to_vec(),
+            vec![],
+        )
+        .buffer_header_refusal();
+        let mut writer = FailingReplyWriter {
+            fail_at,
+            calls: 0,
+            bytes: Vec::new(),
+        };
+        let failure = openai::write_reply(&mut writer, &reply).unwrap_err();
+        assert_eq!(failure.part, Some(part));
+        assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+        assert_eq!(writer.calls, fail_at + 1);
+        assert!(!format!("{failure:?}").contains("synthetic-private-write"));
+    }
+}
