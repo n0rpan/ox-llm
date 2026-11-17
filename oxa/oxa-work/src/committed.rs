@@ -86,6 +86,10 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
         return Err("saved task has uncommitted changes".into());
     }
     let export = Export::create(policy, &record.worktree, head, tree_id, base)?;
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(export.root.join(".committed-output"))
+        .map_err(|_| "cannot create private committed-check outputs")?;
     if crate::done_commands(policy, &export.store, base)? != execution.commands {
         return Err("saved checks disagree with their captured base".into());
     }

@@ -52,6 +52,33 @@ fn a_clean_export_verifies_the_saved_head_tree_and_base_without_another_worker()
 }
 
 #[test]
+fn committed_checks_can_write_build_outputs_without_writing_source() {
+    let env = TestEnv::new();
+    setup(&env, r#"["sh check.sh"]"#);
+    let project = env.work().join("project");
+    fs::write(project.join("payload.txt"), "approved\n").unwrap();
+    fs::write(project.join("check.sh"), "#!/bin/sh\nif ! git symbolic-ref -q HEAD >/dev/null; then\n  test -n \"$OXA_WORK_OUTPUT_DIR\" || exit 1\n  mkdir -p \"$CARGO_TARGET_DIR\" || exit 1\n  cp payload.txt \"$CARGO_TARGET_DIR/artifact\" || exit 1\n  cmp payload.txt \"$CARGO_TARGET_DIR/artifact\" || exit 1\n  test \"$TMPDIR\" = \"$OXA_WORK_OUTPUT_DIR\" || exit 1\n  if printf 'forged\\n' >payload.txt; then exit 1; fi\n  ln -s \"$PWD/payload.txt\" \"$OXA_WORK_OUTPUT_DIR/alias\" || exit 1\n  if printf 'forged\\n' >\"$OXA_WORK_OUTPUT_DIR/alias\"; then exit 1; fi\nfi\n").unwrap();
+    git(&env, &project, &["add", "."]);
+    git(
+        &env,
+        &project,
+        &["commit", "-m", "Synthetic separate output control"],
+    );
+    let record = run(&env, vec![ScriptTurn::text("done")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    for home in [env.home(), env.work()] {
+        let output = verify_with_home(&env, &home);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let proof: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(proof["head_sha"], record["head_sha"]);
+    }
+}
+
+#[test]
 fn committed_checks_cannot_temporarily_replace_tracked_inputs() {
     for attack in [
         "printf 'substituted\\n' >payload.txt || exit 1\nprintf 'approved\\n' >payload.txt",
@@ -142,7 +169,7 @@ fn a_check_cannot_hide_changed_tracked_source_by_changing_its_index() {
         let output = verify(&env);
         assert_eq!(output.status.code(), Some(2), "bypass: {conceal}");
         assert!(output.stdout.is_empty());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("acceptance changed committed source"));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("clean committed acceptance failed"));
         assert_eq!(
             fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("payload.txt")).unwrap(),
             "approved\n"
@@ -158,7 +185,7 @@ fn checks_cannot_change_the_runners_committed_inspection_index() {
     fs::write(project.join("payload.txt"), "approved\n").unwrap();
     fs::write(
         project.join("check.sh"),
-        "#!/bin/sh\nif ! git symbolic-ref -q HEAD >/dev/null; then\n  test -r ../.committed-index || exit 1\n  if GIT_INDEX_FILE=../.committed-index git update-index --assume-unchanged payload.txt; then exit 1; fi\n  touch payload.txt\nfi\n",
+        "#!/bin/sh\nif ! git symbolic-ref -q HEAD >/dev/null; then\n  test -r ../.committed-index || exit 1\n  if GIT_INDEX_FILE=../.committed-index git update-index --assume-unchanged payload.txt; then exit 1; fi\n  if touch payload.txt; then exit 1; fi\nfi\n",
     )
     .unwrap();
     git(&env, &project, &["add", "."]);
@@ -219,7 +246,7 @@ fn checks_cannot_install_a_clean_filter_to_conceal_changed_source() {
         } else {
             assert_eq!(output.status.code(), Some(2));
             assert!(output.stdout.is_empty());
-            assert!(String::from_utf8_lossy(&output.stderr).contains("acceptance changed committed source"));
+            assert!(String::from_utf8_lossy(&output.stderr).contains("clean committed acceptance failed"));
         }
     }
 }

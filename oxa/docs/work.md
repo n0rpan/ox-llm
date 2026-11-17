@@ -137,8 +137,12 @@ ignored files in a retained working directory are not commit-bound evidence.
 `oxa work verify <id>` rechecks a saved successful task from its exact head in a
 fresh sandboxed checkout with an independent, strictly validated object store.
 It uses the captured base's checks and requires unchanged head/tree identities
-and a clean tracked tree before and after checking. Retained ignored helpers are
-absent. A separate index built from the verified commit stays outside the checks'
+and a clean tracked tree before and after checking. The checkout and Git metadata
+are read-only during committed checks, so transient source substitutions cannot
+pass. A separate private writable output mount is supplied as
+`OXA_WORK_OUTPUT_DIR` and `TMPDIR`; `CARGO_TARGET_DIR` points to its `target`
+subdirectory. Checks needing other generated outputs must direct them into that
+output mount. Retained ignored helpers are absent. A separate index built from the verified commit stays outside the checks'
 writable binds; final read-only inspection uses it rather than trusting index
 flags or staged entries left by a check. Verification preserves the saved offline restriction and any current
 offline request. It prints a JSON observation with the task, head, tree, base and

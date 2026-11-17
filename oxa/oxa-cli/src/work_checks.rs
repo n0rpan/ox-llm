@@ -20,8 +20,29 @@ pub(crate) fn run(
         return Err("supervisor source project is not trusted".into());
     }
     let root = cwd.canonicalize().map_err(|e| e.to_string())?;
+    let committed = matches!(&request.operation, SupervisorOperation::CommittedChecks { .. });
     let mut b = Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home).map_err(|e| e.to_string())?;
     b.layout = crate::sandbox_layout::layout(env, dirs, &root, false, &mut vec![]);
+    let outputs = if committed {
+        Some(
+            root.parent()
+                .ok_or("committed checkout has no parent")?
+                .join(".committed-output"),
+        )
+    } else {
+        None
+    };
+    if let Some(outputs) = &outputs {
+        if !std::fs::symlink_metadata(outputs).is_ok_and(|metadata| metadata.is_dir()) {
+            return Err("invalid committed-check output directory".into());
+        }
+        // No user cache/extra bind may reopen tracked inputs for writes.
+        b.layout.write.retain(|path| {
+            path.canonicalize()
+                .is_ok_and(|path| !path.starts_with(&root) && !root.starts_with(path))
+        });
+        b.layout.write.push(outputs.clone());
+    }
     if let SupervisorOperation::CommittedChecks { index, .. }
     | SupervisorOperation::InspectCommitted { index } = &request.operation
     {
@@ -170,13 +191,27 @@ git --no-replace-objects commit -m '{message}'
         } else {
             command
         };
+        let mut check_env = git_environment();
+        if let Some(outputs) = &outputs {
+            check_env.extend([
+                (
+                    "OXA_WORK_OUTPUT_DIR".into(),
+                    outputs.to_string_lossy().into_owned(),
+                ),
+                (
+                    "CARGO_TARGET_DIR".into(),
+                    outputs.join("target").to_string_lossy().into_owned(),
+                ),
+                ("TMPDIR".into(), outputs.to_string_lossy().into_owned()),
+            ]);
+        }
         let spec = ExecSpec {
             command,
             cwd: root.clone(),
-            writable: true,
+            writable: !committed,
             net: sandbox.network(),
             timeout_s: Some(600),
-            env: git_environment(),
+            env: check_env,
         };
         let mut tail = Vec::new();
         let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
