@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 mod git;
 pub use git::GitDiff;
+mod receipts;
+pub use receipts::GitHubRequestReceipt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Tier {
@@ -134,6 +136,22 @@ impl Request {
     pub fn patch_id(&self) -> &str {
         &self.key.patch_id
     }
+}
+
+/// A runner with authenticated reviewer access. Both operations are scoped to
+/// the immutable head and own diff on the request. The preflight must confirm
+/// admission and required CI and honor authenticated prior request receipts.
+pub trait RequestRemote {
+    fn current_and_admitted(&mut self, request: &Request) -> crate::Result<bool>;
+    /// One submission attempt, with no automatic retry after an uncertain response.
+    fn send_once(&mut self, request: &Request) -> crate::Result<()>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dispatch {
+    Held,
+    AlreadyReserved,
+    Sent,
 }
 
 impl Plan {

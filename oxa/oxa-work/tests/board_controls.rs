@@ -531,7 +531,10 @@ fn records_without_release_metadata_remain_readable() {
 
 #[test]
 fn review_reservations_survive_reopening_and_head_changes() {
-    use oxa_work::board::review::{self, Change, ChangeKind, Facts, Plan, Reviewer};
+    use oxa_work::board::review::{
+        self, Change, ChangeKind, Dispatch, Facts, GitHubRequestReceipt, Plan, Request, RequestRemote,
+        Reviewer,
+    };
 
     struct ReviewPr(PullRequest);
     impl GitHub for ReviewPr {
@@ -604,4 +607,52 @@ fn review_reservations_survive_reopening_and_head_changes() {
         .reserve_review_request(&changed.requests()[0], owner)
         .unwrap());
     assert_eq!(reopened.snapshot().unwrap()[&1].attempts, 0);
+
+    #[derive(Default)]
+    struct Remote {
+        eligible: bool,
+        submissions: usize,
+    }
+    impl RequestRemote for Remote {
+        fn current_and_admitted(&mut self, _: &Request) -> oxa_work::Result<bool> {
+            Ok(self.eligible)
+        }
+        fn send_once(&mut self, _: &Request) -> oxa_work::Result<()> {
+            self.submissions += 1;
+            Err("synthetic connection loss after sending".into())
+        }
+    }
+    let plan = plan(&"c".repeat(40), &"d".repeat(40));
+    let request = &plan.requests()[0];
+    let marker = request.github_marker().unwrap();
+    assert!(GitHubRequestReceipt::from_comment("review-app[bot]", "untrusted", &marker).is_none());
+    let receipt = GitHubRequestReceipt::from_comment(
+        "review-app[bot]",
+        "review-app[bot]",
+        &format!("@codex review\n{marker}"),
+    )
+    .unwrap();
+    assert_eq!(receipt.receipt().patch_id, request.patch_id());
+    assert_eq!(receipt.receipt().reviewer, Reviewer::Codex);
+
+    let mut remote = Remote::default();
+    assert_eq!(
+        reopened
+            .dispatch_review_request(&mut remote, request, owner)
+            .unwrap(),
+        Dispatch::Held
+    );
+    assert_eq!(remote.submissions, 0);
+    remote.eligible = true;
+    assert!(reopened
+        .dispatch_review_request(&mut remote, request, owner)
+        .is_err());
+    assert_eq!(
+        fixture
+            .store()
+            .dispatch_review_request(&mut remote, request, owner)
+            .unwrap(),
+        Dispatch::AlreadyReserved
+    );
+    assert_eq!(remote.submissions, 1);
 }
