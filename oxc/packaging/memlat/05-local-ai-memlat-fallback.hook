@@ -19,5 +19,5 @@ Target = usr/lib/modules/*/modules.builtin
 [Action]
 Description = Selecting stock Omarchy before kernel/DTB/bootloader changes...
 When = PreTransaction
-Exec = /usr/local/libexec/local-ai-memlat-boot prepare-update
+Exec = /usr/bin/local-ai-memlat-boot prepare-update
 AbortOnFail
