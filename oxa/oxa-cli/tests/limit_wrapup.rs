@@ -31,44 +31,15 @@ fn fixture() -> TestEnv {
     env
 }
 
-/// The time limit is measured from the run's start, which includes opening the session and
-/// sending the first request. On a loaded runner that interval can take longer than a few
-/// hundred milliseconds, so a limit that short was sometimes reached before the first turn:
-/// that turn wrapped up on its own and the final commit turn was never requested. Two
-/// seconds leave startup headroom while the held tool below still spans the deadline.
-const TIME_LIMIT: &str = "2";
-/// The first scripted tool holds past [`TIME_LIMIT`] (the limit runs from before the request).
-const TOOL_HOLD: &str = "2.5";
-
-/// The server for [`TIME_LIMIT`]: one held tool call, then the final commit turn.
-fn held_server() -> FakeServer {
-    server_holding(TOOL_HOLD)
-}
-
 fn server() -> FakeServer {
-    server_holding("0.5")
+    FakeServer::start(vec![
+        ScriptTurn::tool("edit","bash",r#"{"command":"printf draft > change.txt; printf started > started; sleep 0.5; printf finished > tool-finished"}"#),
+        ScriptTurn::tool("save","bash",r#"{"command":"git add change.txt tool-finished && git commit -m 'Save interrupted work'"}"#),
+    ],FakeOpts::default()).unwrap()
 }
 
-fn server_holding(hold: &str) -> FakeServer {
-    let edit = format!(
-        r#"{{"command":"printf draft > change.txt; printf started > started; sleep {hold}; printf finished > tool-finished"}}"#
-    );
-    FakeServer::start(
-        vec![
-            ScriptTurn::tool("edit", "bash", &edit),
-            ScriptTurn::tool(
-                "save",
-                "bash",
-                r#"{"command":"git add change.txt tool-finished && git commit -m 'Save interrupted work'"}"#,
-            ),
-        ],
-        FakeOpts::default(),
-    )
-    .unwrap()
-}
-
-fn start(env: &TestEnv, server: &FakeServer, mode: &str) -> Child {
-    start_with_limits(env, server, mode, None)
+fn start(env: &TestEnv, server: &FakeServer, mode: &str, limit: bool) -> Child {
+    start_with_max_time(env, server, mode, limit.then_some("0.2"))
 }
 
 fn start_with_max_time(env: &TestEnv, server: &FakeServer, mode: &str, max_time: Option<&str>) -> Child {
@@ -248,8 +219,8 @@ fn max_tokens_finishes_the_active_tool_then_allows_one_final_commit() {
 fn max_time_finishes_the_active_tool_then_allows_one_final_commit() {
     for mode in ["print", "json", "rpc"] {
         let env = fixture();
-        let server = held_server();
-        let mut child = start_with_limits(&env, &server, mode, Some(("--max-time", TIME_LIMIT)));
+        let server = server();
+        let mut child = start(&env, &server, mode, true);
         let _input = child.stdin.take();
         check(&env, &server, child.wait_with_output().unwrap());
     }
@@ -260,7 +231,7 @@ fn sigterm_finishes_the_active_tool_then_allows_one_final_commit() {
     for mode in ["print", "json", "rpc"] {
         let env = fixture();
         let server = server();
-        let mut child = start(&env, &server, mode);
+        let mut child = start(&env, &server, mode, false);
         let started = Instant::now();
         while !env.work().join("started").exists() {
             if child.try_wait().unwrap().is_some() {
@@ -398,7 +369,7 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
             "first instruction",
             "later instruction",
             "--max-time",
-            TIME_LIMIT,
+            "0.2",
         ])
         .output()
         .unwrap();
@@ -445,10 +416,7 @@ fn a_failed_final_request_retains_the_session_and_typed_failure() {
         FakeOpts::default(),
     )
     .unwrap();
-    // The budget refusal ends the run, so no time limit is needed to reach the final turn.
-    let mut child = start(&env, &server, "print");
-    let _input = child.stdin.take();
-    let output = child.wait_with_output().unwrap();
+    let output = start(&env, &server, "print", true).wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(oxa_proto::EXIT_BUDGET), "{stderr}");
     assert!(stderr.contains("budget_exceeded"));
@@ -561,7 +529,7 @@ fn sigterm_during_wrap_up_restores_default_termination() {
             FakeOpts::default(),
         )
         .unwrap();
-        let mut child = start_with_max_time(&env, &server, "print", limit.then_some(TIME_LIMIT));
+        let mut child = start(&env, &server, "print", limit);
         let started = Instant::now();
         while !env.work().join("started").exists() && started.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(5));
