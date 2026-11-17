@@ -170,3 +170,23 @@ fn trust_project_env_does_not_override_no_approve() {
     assert_eq!(code, 0, "{err}");
     assert!(err.contains(NOTICE), "{err}");
 }
+
+/// Issue #962: a machine without the tool (`cargo` without a Rust toolchain) reports the check
+/// as skipped instead of failing every run on a program the model cannot install. The user
+/// settings' `done` applies to every project, including an untrusted one.
+#[test]
+fn print_skips_a_check_whose_program_is_not_installed() {
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"done": ["oxa-no-such-check-program --check"]}"#,
+    );
+    let (code, out, err) = go(&env, edits_then_stops(3), &["-p", "go"]);
+    assert_eq!(code, 0, "stdout: {out}\nstderr: {err}");
+    assert!(!err.contains(FAILED), "{err}");
+    assert!(
+        err.contains("SKIPPED (") && err.contains("oxa-no-such-check-program: command not found"),
+        "{err}"
+    );
+    assert!(out.contains("finished"), "the reply is still printed: {out}");
+}

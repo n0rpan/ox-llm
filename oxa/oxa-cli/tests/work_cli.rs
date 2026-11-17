@@ -1358,3 +1358,22 @@ fn security_failed_receipt_write_never_publishes_a_torn_record() {
     assert_eq!(retained["record"]["outcome"], "running", "{retained}");
     assert!(retained["record"]["checkpoint_revision"].as_u64().unwrap() > 0);
 }
+
+/// Issue #962: on a machine without the tool (no Rust toolchain, so `cargo` is missing) an
+/// acceptance command cannot run at all. The task is blocked with the shell's own reason —
+/// never `red` (which would spend a worker turn on a program it cannot install) and never
+/// `done` (the checks did not prove the tree).
+#[test]
+fn acceptance_whose_program_is_not_installed_blocks_instead_of_turning_red() {
+    let env = TestEnv::new();
+    setup(&env, r#"["oxa-no-such-acceptance-program --check"]"#);
+    // One scripted reply only: a repair worker would have nothing left to answer with.
+    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let detail = record["detail"].as_str().unwrap();
+    assert!(detail.contains("SKIPPED ("), "{detail}");
+    assert!(
+        detail.contains("oxa-no-such-acceptance-program: command not found"),
+        "{detail}"
+    );
+}

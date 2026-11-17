@@ -106,6 +106,21 @@ impl ShellConfig {
     }
 }
 
+/// The shell's line saying that a program is not installed, if the output has one: bash's
+/// `bash: line 1: cargo: command not found`, dash's `sh: 1: cargo: not found`, zsh's
+/// `zsh:1: command not found: cargo`. Issue #962: a `done`/acceptance command that cannot run
+/// here at all (its program is not installed) is an environment problem, never a check that
+/// failed, so both callers report it instead of sending a repair round. `None` for other
+/// output: a command missing under a path and an interpreter that cannot start name a real
+/// defect and keep failing.
+pub fn command_not_found_line(out: &str) -> Option<&str> {
+    out.lines().map(str::trim_end).find(|l| {
+        l.ends_with(": command not found")
+            || l.ends_with(": not found")
+            || l.contains("command not found: ")
+    })
+}
+
 /// Cheap heuristic: some line of the command ends with a background `&` (not `&&`), or the command uses `nohup`.
 pub(crate) fn looks_backgrounded(command: &str) -> bool {
     let backgrounded_line = command.lines().any(|line| {
@@ -701,6 +716,28 @@ fn scratch_write_likely(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #962: what the shells print for a program that is not installed; anything else
+    /// (a missing interpreter, an error that merely mentions one) keeps failing the check.
+    #[test]
+    fn command_not_found_line_reads_each_shell() {
+        for (out, line) in [
+            ("bash: line 1: cargo: command not found\n", "bash: line 1: cargo: command not found"),
+            ("noise\nsh: 1: rustfmt: not found\n", "sh: 1: rustfmt: not found"),
+            ("zsh:1: command not found: npm", "zsh:1: command not found: npm"),
+        ] {
+            assert_eq!(command_not_found_line(out), Some(line), "{out:?}");
+        }
+        for out in [
+            "",
+            "error: could not compile `oxa-core`\n",
+            "bash: ./tools/check.sh: No such file or directory\n",
+            "bash: ./gen.sh: /nonexistent/interp: bad interpreter: No such file or directory\n",
+            "sh: line 1: 1234 Killed                  cargo test\n",
+        ] {
+            assert_eq!(command_not_found_line(out), None, "{out:?}");
+        }
+    }
 
     /// #532: a successful read that merely mentions /tmp gets no persistence notice.
     #[test]

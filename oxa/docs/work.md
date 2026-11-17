@@ -93,7 +93,9 @@ trust and executable-content approval before a task starts. Invoking `work` does
 not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
 missing or unusable bwrap blocks the task. Checkout and each check have the same ten-minute limit
 as agent-internal done checks. `in subdirectory: command` selects a folder inside
-that sandbox; escaping the worktree is rejected.
+that sandbox; escaping the worktree is rejected. A command whose program is not installed here
+(the shell exits 127 with its `command not found` line) did not run, so it is reported and the
+task is blocked instead of `red`: no worker turn is spent on a program it cannot install.
 The final Git inspection is also sandboxed, with a read-only workspace, no network
 and fsmonitor disabled. Clean filters stay inside that sandbox; an inspection
 error blocks the task rather than producing a clean verdict.

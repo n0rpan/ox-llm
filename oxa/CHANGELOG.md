@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-### Changed
+### Fixed
+
+- `done` checks and `oxa work` acceptance checks in an environment without the tool (issue #962): a command whose shell exits 127 with its own `command not found` line — `cargo fmt --check` on a machine with no Rust toolchain — is now shown as `SKIPPED (<that line)` instead of `FAILED`, and consumes no repair round. Before, every run in such an environment failed on a program the model cannot install. An acceptance check that is skipped this way blocks the task with the reason instead of turning it `red`.
 
 - Provider preconnect (#881): qualified as not implementable through the existing gateway pool. The pinned reqwest 0.12 transport has no preconnect or pool-insertion API, so warming the selected provider would need a real authenticated request after the first frame; no warm-up was added. The limitation and the owner's options are in [provider-preconnect.md](docs/design/provider-preconnect.md).
 - Security-relevant default change (#314): upgrading without a saved mode now selects `auto` instead of the previous prompting default. Select `--standard` or save `permissions.defaultMode: "standard"` to retain prompts. Owner-selected `yolo` deliberately disables the permission floor for file tools (including credentials and git hooks/config) and the bash sandbox; `auto` keeps both and plan remains read-only.

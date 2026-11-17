@@ -167,16 +167,34 @@ git --no-replace-objects commit -m '{message}'
             keep_tail(&mut tail, bytes, 8192);
         });
         if result.exit != Some(0) || result.timed_out {
+            // Issue #962: the program is not installed in this environment. Like an agent's
+            // `done` check, that is reported, not failed: no worker turn installs it.
+            let out = String::from_utf8_lossy(&tail).into_owned();
+            if let Some(missing) = oxa_tools::command_not_found_line(&out) {
+                let header = format!("{entry}: SKIPPED ({missing})\n");
+                keep_tail(&mut diagnostics, header.as_bytes(), 16384);
+                keep_tail(&mut diagnostics, &tail, 16384);
+                continue;
+            }
             failed = true;
             let header = format!("{entry}: exit {:?}, timeout {}\n", result.exit, result.timed_out);
             keep_tail(&mut diagnostics, header.as_bytes(), 16384);
             keep_tail(&mut diagnostics, &tail, 16384);
         }
     }
+    if !failed && diagnostics.is_empty() {
+        return Ok(0);
+    }
     if failed {
         err.write_all(&diagnostics).map_err(|e| e.to_string())?;
+        return Ok(1);
     }
-    Ok(i32::from(failed))
+    // Issue #962: every entry was skipped (its program is not installed here). The task's
+    // checks did not run, so the work is not proven green: the runner blocks it with the
+    // reasons instead of advancing to the repair step or to `done`.
+    let skipped = format!("acceptance checks did not run:\n{}", String::from_utf8_lossy(&diagnostics));
+    err.write_all(skipped.as_bytes()).map_err(|e| e.to_string())?;
+    Ok(2)
 }
 
 // Exit codes are the only result: repository callbacks cannot forge a clean

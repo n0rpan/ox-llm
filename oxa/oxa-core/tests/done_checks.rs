@@ -176,6 +176,73 @@ fn passing_check_adds_no_round() {
     assert_eq!(engine.requests().len(), 2);
 }
 
+// Issue #962: an environment without the tool (a machine with no Rust toolchain, a container
+// without `npm`) failed every run through the `done` gate, although the model can neither
+// install the program nor pass the check. Such a check is reported and skipped.
+#[test]
+fn missing_program_is_skipped_and_not_sent_back() {
+    const PROGRAM: &str = "oxa-no-such-check-program";
+    let entry = format!("{PROGRAM} --check");
+    for project in [true, false] {
+        let env = TestEnv::new();
+        let settings = if project {
+            Settings::from_values(json!({}), json!({ "done": [entry] }))
+        } else {
+            Settings::from_values(json!({ "done": [entry] }), json!({}))
+        };
+        let (rec, engine, failed) = run_settings(
+            &env,
+            settings,
+            vec![
+                write("c1", "a.txt"),
+                ScriptTurn::text("done"),
+                ScriptTurn::text("must not be requested"),
+            ],
+            Arc::new(Direct),
+        );
+        let checks = rec.checks();
+        assert_eq!(checks.len(), 1, "project={project}: {checks:?}");
+        assert!(
+            checks[0].starts_with(&format!("done check: {PROGRAM} --check SKIPPED (")),
+            "project={project}: {checks:?}"
+        );
+        // The shell's own line (its wording differs between shells) is the shown reason.
+        assert!(checks[0].ends_with(&format!("{PROGRAM}: command not found)")), "{checks:?}");
+        assert!(!failed, "project={project}: a check that cannot run is not a failed check");
+        assert_eq!(engine.requests().len(), 2, "project={project}: no repair round is spent");
+        assert_eq!(engine.remaining(), 1);
+    }
+}
+
+#[test]
+fn failing_check_is_still_a_failure_next_to_a_missing_program() {
+    let env = TestEnv::new();
+    let (rec, engine, failed) = run_state(
+        &env,
+        json!(["oxa-no-such-check-program --check", "exit 3"]),
+        vec![
+            write("c1", "a.txt"),
+            ScriptTurn::text("done"),
+            ScriptTurn::text("must not be requested"),
+        ],
+        Arc::new(Direct),
+    );
+    let checks = rec.checks();
+    assert_eq!(checks.len(), 2, "{checks:?}");
+    assert!(checks[1].starts_with("done check: exit 3 FAILED (exit 3)"), "{checks:?}");
+    assert!(failed);
+    let reqs = engine.requests();
+    let repair = reqs[2]
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == oxa_proto::Role::User)
+        .unwrap();
+    let text = repair.content.as_ref().unwrap();
+    assert!(text.contains("exit 3"), "{text}");
+    assert!(!text.contains("oxa-no-such-check-program"), "{text}");
+}
+
 #[test]
 fn no_edits_no_checks() {
     let env = TestEnv::new();

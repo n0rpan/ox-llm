@@ -3,6 +3,9 @@
 //! tool call changed the work folder) and is about to stop runs them in the session sandbox; a failure goes back to the model as a user
 //! message, at most [`MAX_ROUNDS`] times. An entry `in <dir>: <command>` runs in `<dir>`, a folder
 //! of the session folder, instead of in the session folder itself.
+//! A check whose program this environment does not have (issue #962: the shell exits 127 with
+//! its own `command not found` line, as `cargo fmt --check` does without a Rust toolchain) is
+//! reported and skipped: it is neither a failure that starts a repair round nor a failed run.
 use crate::exec::CallResult;
 use crate::SessionState;
 use oxa_proto::{shown_why, AgentEvent, EntryBody, EventMessage, EventSink, ExecSpec, Level, OxaError, Ui};
@@ -213,6 +216,10 @@ pub(crate) fn check(
         if st.shared.cancel.is_cancelled() {
             return None;
         }
+        // Issue #962: a check whose program this environment lacks (`cargo` on a machine
+        // without a Rust toolchain) is reported and skipped, never sent back as a failure:
+        // the model cannot install it, and the gate would otherwise fail every run here.
+        let skipped = line.contains(" SKIPPED (");
         let mut text = line.clone();
         if !out.is_empty() {
             text.push('\n');
@@ -227,10 +234,14 @@ pub(crate) fn check(
             sink,
         );
         sink.emit(&AgentEvent::Notice {
-            level: if ok { Level::Info } else { Level::Error },
+            level: match (ok, skipped) {
+                (true, _) => Level::Info,
+                (false, true) => Level::Warning,
+                (false, false) => Level::Error,
+            },
             text: text.clone(),
         });
-        if !ok {
+        if !ok && !skipped {
             failed.push_str(&text);
             failed.push_str("\n\n");
         }
@@ -377,6 +388,14 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
             None => "killed".to_string(),
         }
     };
+    // Issue #962: the entry cannot run here rather than failing. `cargo fmt --check` on a
+    // machine without a Rust toolchain exits 127 with the shell's own "command not found"
+    // line; no model turn can install the program or change the project's settings, so it is
+    // reported once and never sent back. Other exit 127s (a repo script that is missing, a
+    // missing shebang interpreter) name a real defect and still fail.
+    if let Some(missing) = oxa_tools::command_not_found_line(&out) {
+        return (false, format!("done check: {label} SKIPPED ({missing})"), out);
+    }
     (false, format!("done check: {label} FAILED ({why})"), out)
 }
 
