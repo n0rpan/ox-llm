@@ -334,7 +334,9 @@ fn pending_revisions_recover_before_or_after_the_fact_without_duplicate_delivery
         };
         let observation = serde_json::from_slice(&event.to_json().unwrap()).unwrap();
         if appended {
-            facts.append(event.checkpoint, event.at_ms, event.fact).unwrap();
+            facts
+                .append_prepared(event.checkpoint, event.at_ms, event.fact, |_| Ok(()))
+                .unwrap();
         }
         let document = Document {
             version: 1,
