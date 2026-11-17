@@ -235,17 +235,25 @@ pub(super) enum ReplyPart {
     /// Final payload, chunk CRLF and terminal zero in one bounded write.
     FinalChunk,
 }
+/// Finite, non-optional cause of a health failure. A failed request that is not
+/// an I/O error still names its own kind, so no report leaves it unexplained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FailureKind {
+    Io(io::ErrorKind),
+    /// A request arrived with no scripted reply left; there is no I/O error.
+    UnexpectedRequest,
+}
 #[derive(Clone, Copy, Debug)]
 pub(super) struct HealthFailure {
-    phase: IoPhase,
-    pub(super) kind: Option<io::ErrorKind>,
+    pub(super) phase: IoPhase,
+    pub(super) kind: FailureKind,
     pub(super) part: Option<ReplyPart>,
 }
 impl HealthFailure {
     fn io(phase: IoPhase, error: io::Error) -> Self {
         Self {
             phase,
-            kind: Some(error.kind()),
+            kind: FailureKind::Io(error.kind()),
             part: None,
         }
     }
@@ -344,16 +352,15 @@ impl MockOpenAi {
         requests.clone()
     }
     pub fn assert_healthy(&self) {
-        let (empty, first) = {
-            let errors = self.shared.errors.lock().unwrap();
-            (errors.is_empty(), errors.first().copied())
-        };
+        // Every recorded failure is reported, not only the first: a later peer's
+        // phase and kind must never be lost behind an earlier one. The entries
+        // hold closed test-only facts and no error text or request data.
+        let errors = self.shared.errors.lock().unwrap();
         assert!(
-            empty,
-            "mock upstream reported a connection failure phase={:?} kind={:?} part={:?}",
-            first.map(|failure| failure.phase),
-            first.and_then(|failure| failure.kind),
-            first.and_then(|failure| failure.part),
+            errors.is_empty(),
+            "mock upstream reported a connection failure count={} failures={:?}",
+            errors.len(),
+            *errors,
         );
     }
 }
@@ -452,7 +459,7 @@ fn serve(
         let reply = replies.lock().unwrap().pop_front().unwrap_or_else(|| {
             shared.errors.lock().unwrap().push(HealthFailure {
                 phase: IoPhase::UnexpectedRequest,
-                kind: None,
+                kind: FailureKind::UnexpectedRequest,
                 part: None,
             });
             Reply::error(500, "server_error", "unexpected synthetic request")

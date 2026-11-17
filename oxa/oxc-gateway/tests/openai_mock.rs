@@ -7,9 +7,34 @@ use openai::{MockOpenAi, Reply};
 use serde_json::{json, Value};
 use std::{
     io::{Read, Write},
-    net::TcpStream,
-    time::Duration,
+    net::{Shutdown, TcpStream},
+    panic::{catch_unwind, AssertUnwindSafe},
+    time::{Duration, Instant},
 };
+
+/// Wait for the mock's health verdict to name every finite fact in `until`.
+/// Peers record failures on their own threads, so the verdict is polled.
+fn health_report(mock: &MockOpenAi, until: &[&str]) -> String {
+    let started = Instant::now();
+    loop {
+        if let Err(panic) = catch_unwind(AssertUnwindSafe(|| mock.assert_healthy())) {
+            let message = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| panic.downcast_ref::<&str>().map(|text| (*text).to_owned()))
+                .expect("string panic message");
+            if until.iter().all(|fact| message.contains(fact)) {
+                return message;
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "mock failure must be observed: {:?}",
+            until
+        );
+        std::thread::yield_now();
+    }
+}
 
 fn request(mock: &MockOpenAi, body: &Value) -> TcpStream {
     let mut stream = TcpStream::connect(mock.address()).unwrap();
@@ -178,11 +203,6 @@ fn openai_mock_errors_and_retry_after() {
 /// Real loopback read failures remain unhealthy and reveal only finite facts.
 #[test]
 fn mock_read_failure_diagnostics_are_finite_and_health_remains_strict() {
-    use std::{
-        net::Shutdown,
-        panic::{catch_unwind, AssertUnwindSafe},
-        time::Instant,
-    };
     for (wire, expected) in [
         (
             b"POST /synthetic HTTP/1.1\r\nContent-Length: synthetic-private-header\r\n\r\n".as_slice(),
@@ -197,34 +217,18 @@ fn mock_read_failure_diagnostics_are_finite_and_health_remains_strict() {
         let mut peer = TcpStream::connect(mock.address()).unwrap();
         peer.write_all(wire).unwrap();
         peer.shutdown(Shutdown::Write).unwrap();
-        let started = Instant::now();
-        let panic = loop {
-            if let Err(panic) = catch_unwind(AssertUnwindSafe(|| mock.assert_healthy())) {
-                break panic;
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "mock failure must be observed"
-            );
-            std::thread::yield_now();
-        };
-        let message = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .unwrap();
-        assert!(message.contains("mock upstream reported a connection failure"));
+        let message = health_report(&mock, &["phase: RequestRead"]);
         assert!(
-            message.contains("phase=Some(RequestRead)"),
-            "finite read phase missing"
+            message.contains("count=1"),
+            "the verdict names how many failures were recorded: {message}"
         );
         assert!(
-            message.contains(&format!("kind=Some({expected})")),
-            "finite I/O kind missing"
+            message.contains(&format!("kind: Io({expected})")),
+            "finite I/O kind missing: {message}"
         );
         assert!(
-            message.contains("part=None"),
-            "non-write failures must not invent a reply part"
+            message.contains("part: None"),
+            "non-write failures must not invent a reply part: {message}"
         );
         assert!(!message.contains("synthetic-private-header"));
         assert!(
@@ -232,6 +236,47 @@ fn mock_read_failure_diagnostics_are_finite_and_health_remains_strict() {
             "invalid input never becomes a request"
         );
     }
+}
+
+/// A request with no scripted reply left is not an I/O error, but the verdict
+/// must still name a finite kind instead of leaving it unexplained.
+#[test]
+fn mock_health_names_a_finite_kind_for_an_unexpected_request() {
+    let mock = MockOpenAi::start(Vec::new());
+    let (headers, _, _) = response(request(&mock, &json!({"synthetic": "unexpected"})));
+    assert!(headers.starts_with("HTTP/1.1 500 "));
+    let message = health_report(&mock, &["phase: UnexpectedRequest"]);
+    assert!(
+        message.contains("kind: UnexpectedRequest"),
+        "the unexpected request names its own finite kind: {message}"
+    );
+    assert!(
+        !message.contains("kind: None") && !message.contains("kind=None"),
+        "no recorded failure leaves its kind unexplained: {message}"
+    );
+    assert!(message.contains("part: None"), "{message}");
+    assert_eq!(mock.requests().len(), 1);
+}
+
+/// Two peers fail for different reasons; the verdict must report both facts
+/// rather than only the first recorded one.
+#[test]
+fn mock_health_reports_every_recorded_failure_not_only_the_first() {
+    let mock = MockOpenAi::start(Vec::new());
+    let mut malformed = TcpStream::connect(mock.address()).unwrap();
+    malformed
+        .write_all(b"POST /synthetic HTTP/1.1\r\nContent-Length: synthetic-private-header\r\n\r\n")
+        .unwrap();
+    malformed.shutdown(Shutdown::Write).unwrap();
+    response(request(&mock, &json!({"synthetic": "unexpected"})));
+    let message = health_report(&mock, &["phase: RequestRead", "phase: UnexpectedRequest"]);
+    assert!(
+        message.contains("count=2"),
+        "both failures are counted: {message}"
+    );
+    assert!(message.contains("kind: Io(InvalidData)"), "{message}");
+    assert!(message.contains("kind: UnexpectedRequest"), "{message}");
+    assert!(!message.contains("synthetic-private-header"), "{message}");
 }
 
 /// Fail a chosen existing write/flush boundary without sockets or timing races.
@@ -314,7 +359,10 @@ fn mock_reply_write_diagnostics_identify_each_finite_part_without_error_text() {
             reply.truncate_transfer = truncate;
             let failure = openai::write_reply(&mut writer, &reply).unwrap_err();
             assert_eq!(failure.part, Some(expected));
-            assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+            assert_eq!(
+                failure.kind,
+                openai::FailureKind::Io(std::io::ErrorKind::BrokenPipe)
+            );
             assert_eq!(writer.calls, fail_at + 1, "do not continue after failed writes");
             let finite = format!("{failure:?}");
             assert!(finite.contains("ReplyWrite"));
@@ -330,7 +378,10 @@ fn mock_reply_write_diagnostics_identify_each_finite_part_without_error_text() {
     let empty = Reply::raw(200, "text/plain", Vec::new(), vec![]);
     let failure = openai::write_reply(&mut writer, &empty).unwrap_err();
     assert_eq!(failure.part, Some(ReplyPart::TransferEnd));
-    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(
+        failure.kind,
+        openai::FailureKind::Io(std::io::ErrorKind::BrokenPipe)
+    );
 }
 #[test]
 fn mock_reply_diagnostics_preserve_wire_flush_and_transfer_truncation() {
@@ -388,6 +439,9 @@ fn mock_still_rejects_peer_close_before_later_payload_chunks() {
     body.extend(std::iter::repeat_n(b'x', 2048));
     let reply = Reply::raw(200, "text/event-stream", body, vec![]);
     let failure = openai::write_reply(&mut CloseOnDoneFlush::default(), &reply).unwrap_err();
-    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(
+        failure.kind,
+        openai::FailureKind::Io(std::io::ErrorKind::BrokenPipe)
+    );
     assert_eq!(failure.part, Some(openai::ReplyPart::ChunkHeader));
 }
