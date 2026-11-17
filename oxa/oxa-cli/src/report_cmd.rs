@@ -7,16 +7,18 @@
 //! the identity facts (version, machine, OS, models) and the controller's `status --json`
 //! scalars and `digest --json` (numbers only). Never prompts, transcripts, file contents,
 //! emails, home paths, user or host names, IP addresses or secrets.
+mod semantic;
+
 use oxa_config::{Dirs, Env, Settings};
 use oxa_proto::{codes, OxaError};
 use oxa_resources::{read_identity, write_atomic};
 use regex::Regex;
 use serde_json::{Map, Value as Json};
 use sha2::{Digest, Sha256};
+use std::ffi::OsStr;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
 
 const USAGE: &str =
     "usage: oxa report-issue draft --title TITLE [--notes-file FILE | --notes TEXT] | oxa report-issue submit DRAFT";
@@ -318,10 +320,27 @@ pub fn report_repo(settings: &Settings) -> Option<String> {
 
 /// Post a saved draft. Order: read the draft; refuse one with text the scrubber would still
 /// change; refuse while no repository is configured ([`REPORT_DISABLED`]); print the exact
-/// title and body; ask `confirm`; only on `Some(true)` run `gh issue create --repo R --title T
-/// --body-file F`. Exit codes: 0 posted, 1 not posted, 3 reporting is off.
+/// title and body and ask `confirm` before a GitHub write. Semantic mode also
+/// verifies the report against main and routes duplicates to comments. Exit codes:
+/// 0 posted, 1 kept locally, 3 reporting is off.
 pub fn submit(
     draft: &Path,
+    settings: &Settings,
+    ctx: &ScrubCtx,
+    confirm: Confirm<'_>,
+    runner: Runner<'_>,
+    out: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    let storage = draft
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("report-ledger");
+    submit_with_storage(draft, &storage, settings, ctx, confirm, runner, out)
+}
+
+pub(super) fn submit_with_storage(
+    draft: &Path,
+    storage: &Path,
     settings: &Settings,
     ctx: &ScrubCtx,
     confirm: Confirm<'_>,
@@ -338,7 +357,11 @@ pub fn submit(
             "not an oxa issue draft (expected `Title: ..`, a blank line, the body)",
         )
     })?;
-    if scrub(&title, ctx) != title || scrub(&body, ctx) != body {
+    let control = |text: &str| {
+        text.chars().any(|ch| (ch.is_control() && !matches!(ch, '\n' | '\t'))
+            || matches!(ch, '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+    };
+    if scrub(&title, ctx) != title || scrub(&body, ctx) != body || control(&title) || control(&body) {
         writeln!(
             out,
             "Not posted: the draft contains text the scrubber removes (an email, a home path, a name or a secret). Run `oxa report-issue draft` again."
@@ -350,48 +373,78 @@ pub fn submit(
         writeln!(out, "{REPORT_DISABLED}\nDraft: {}", draft.display()).map_err(w)?;
         return Ok(3);
     };
-    writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
-    match confirm(&format!("Post this issue publicly to {repo}? Type yes to post: ")) {
-        Some(true) => {}
-        Some(false) => {
-            writeln!(out, "Not posted.").map_err(w)?;
-            return Ok(1);
+    let mut publication = if settings.bool(semantic::SETTING, false) {
+        writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
+        match semantic::plan(storage, &repo, (&title, &body), ctx, confirm, runner) {
+            Ok(publication) => Some(publication),
+            Err(reason) => {
+                writeln!(out, "Kept locally at {} ({reason}).", draft.display()).map_err(w)?;
+                return Ok(1);
+            }
         }
-        None => {
-            writeln!(
-                out,
-                "Not posted: confirmation needs a terminal. Run `oxa report-issue submit {}` yourself in a terminal.",
-                draft.display()
-            )
-            .map_err(w)?;
-            return Ok(1);
+    } else {
+        writeln!(out, "Repository: {repo}\nTitle: {title}\n\n{body}\n").map_err(w)?;
+        match confirm(&format!("Post this issue publicly to {repo}? Type yes to post: ")) {
+            Some(true) => {}
+            Some(false) => {
+                writeln!(out, "Not posted.").map_err(w)?;
+                return Ok(1);
+            }
+            None => {
+                writeln!(
+                    out,
+                    "Not posted: confirmation needs a terminal. Run `oxa report-issue submit {}` yourself in a terminal.",
+                    draft.display()
+                )
+                .map_err(w)?;
+                return Ok(1);
+            }
         }
-    }
+        None
+    };
     let body_file = draft.with_extension("body.md");
+    let body = publication
+        .as_ref()
+        .map_or(body.as_str(), |plan| plan.body.as_str());
+    let issue = publication.as_ref().and_then(|plan| plan.issue);
+    let number;
+    let mut args = if let Some(issue) = issue {
+        if confirm(&format!(
+            "Comment on {repo}#{issue}?\n\n{body}\n\nType yes to post: "
+        )) != Some(true)
+        {
+            writeln!(out, "Comment retained locally at {}.", draft.display()).map_err(w)?;
+            return Ok(1);
+        }
+        number = issue.to_string();
+        vec!["issue", "comment", &number, "--repo", &repo]
+    } else {
+        vec!["issue", "create", "--repo", &repo, "--title", &title]
+    };
+    let body_path = body_file.to_string_lossy();
+    args.extend(["--body-file", &body_path]);
+    let args: Vec<String> = args.into_iter().map(str::to_string).collect();
     write_atomic(&body_file, body.as_bytes())
         .map_err(|e| OxaError::io(&format!("cannot write {}", body_file.display()), &e))?;
-    let args: Vec<String> = [
-        "issue",
-        "create",
-        "--repo",
-        &repo,
-        "--title",
-        &title,
-        "--body-file",
-        &body_file.to_string_lossy(),
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
     let result = runner("gh", &args);
     let _ = std::fs::remove_file(&body_file);
     match result {
         Some((0, stdout)) => {
+            if let Some(plan) = &mut publication {
+                if plan.record_created(&repo, &stdout).is_err() {
+                    writeln!(out, "Posted, but the local issue receipt could not be saved.").map_err(w)?;
+                }
+            }
             writeln!(out, "Posted: {}", stdout.trim()).map_err(w)?;
             Ok(0)
         }
         Some((code, _)) => {
-            writeln!(out, "Not posted: `gh issue create` exited with {code}.").map_err(w)?;
+            writeln!(
+                out,
+                "GitHub did not confirm the write (exit {code}). Draft retained at {}.",
+                draft.display()
+            )
+            .map_err(w)?;
             Ok(1)
         }
         None => {
@@ -422,6 +475,8 @@ fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     }
 }
 
+pub(crate) use oxa_work::command_runner;
+
 /// The real runner: the program's stdout, killed after 30 s. The program is resolved through
 /// the trusted host-tool lookup (`PATH` from `env`, never inside `cwd` or a group- or
 /// world-writable directory), the same lookup `oxa work` uses for `gh`.
@@ -451,46 +506,6 @@ fn untrusted_tool(program: &str) -> String {
 (it is inside the project or in a group- or world-writable directory). Install `{program}` \
 system-wide or put it in a trusted PATH entry outside the project (for example ~/.local/bin)."
     )
-}
-
-pub(crate) fn command_runner(
-    mut command: std::process::Command,
-    limit: Option<usize>,
-) -> Option<(i32, String)> {
-    let mut child = command
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let ceiling = limit.map_or(u64::MAX, |limit| limit.saturating_add(1) as u64);
-        let mut limited = std::io::Read::take(stdout, ceiling);
-        std::io::Read::read_to_end(&mut limited, &mut bytes).ok()?;
-        if limit.is_some_and(|limit| bytes.len() > limit) {
-            return None;
-        }
-        String::from_utf8(bytes).ok()
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            // A reaped child may leave a descendant holding the stdout pipe open.
-            Ok(Some(status)) if reader.is_finished() => break status,
-            Ok(_) if start.elapsed() < Duration::from_secs(30) => {
-                std::thread::sleep(Duration::from_millis(50))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
-    let out = reader.join().ok()??;
-    Some((status.code().unwrap_or(1), out))
 }
 
 /// `oxa report-issue draft|submit ..`. Returns the exit code.
@@ -546,7 +561,41 @@ pub fn run_report_issue(
             };
             let settings = Settings::load(dirs, cwd, false);
             let mut confirm = tty_confirm(env);
-            submit(Path::new(draft), &settings, &ctx, &mut confirm, &mut runner, out)
+            let mut submit_runner = |program: &str, args: &[String]| {
+                if program == "oxa" {
+                    return semantic::judge(args.first()?, dirs, &settings, env).map(|reply| (0, reply));
+                }
+                if settings.bool(semantic::SETTING, false) {
+                    let project = cwd
+                        .ancestors()
+                        .find(|path| path.join(".git").exists())
+                        .unwrap_or(cwd);
+                    let gh = crate::netguard::trusted_executable_for(
+                        "gh",
+                        env.get("PATH").map(OsStr::new),
+                        Some(project),
+                        Some(&dirs.home),
+                    )?;
+                    let mut command = std::process::Command::new(gh);
+                    command
+                        .args(args)
+                        .current_dir(&dirs.home)
+                        .env("GH_HOST", "github.com");
+                    command_runner(command, Some(1_048_576))
+                } else {
+                    runner(program, args)
+                }
+            };
+            let draft = cwd.join(draft);
+            submit_with_storage(
+                &draft,
+                &dirs.agent_dir.join("issue-drafts/report-ledger"),
+                &settings,
+                &ctx,
+                &mut confirm,
+                &mut submit_runner,
+                out,
+            )
         }
         _ => Err(usage("report-issue needs `draft` or `submit`")),
     }
