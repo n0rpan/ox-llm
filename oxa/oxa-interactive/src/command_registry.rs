@@ -59,6 +59,20 @@ impl Surfaces {
     }
 }
 
+// Reservations are invisible until the corresponding consumer handler is integrated.
+const LEAD_PENDING: Surfaces = Surfaces {
+    cli: Availability::Exception("Lead handler integration is pending"),
+    slash: Availability::Exception("Lead handler integration is pending"),
+    menu: Availability::Exception("Lead menu integration is pending"),
+    web: Availability::Exception("Lead web adapter integration is pending"),
+};
+const NO_REQUIREMENTS: Requirements = Requirements {
+    restart: false,
+    browser: false,
+    tty: false,
+    owner_only: false,
+};
+
 #[derive(Clone, Copy, Debug)]
 pub struct Declaration {
     pub id: CommandId,
@@ -120,6 +134,46 @@ commands! {
         },
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
+    Lead {
+        path: &["lead"], aliases: &[], summary: "Open the lead command menu",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            slash: Availability::Exception("The slash menu is not available yet"),
+            menu: Availability::Supported,
+            web: Availability::Exception("Use the board navigation in the web UI"),
+        }, requirements: NO_REQUIREMENTS,
+    },
+    LeadServe {
+        path: &["lead", "serve"], aliases: &[], summary: "Serve the local lead board",
+        arguments: &[],
+        surfaces: Surfaces {
+            cli: Availability::Supported,
+            menu: Availability::Supported,
+            ..LEAD_PENDING
+        },
+        requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    LeadBoard {
+        path: &["lead", "board"], aliases: &[], summary: "Show the lead board",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+    },
+    LeadStatus {
+        path: &["lead", "status"], aliases: &[], summary: "Show lead status",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+    },
+    LeadAsks {
+        path: &["lead", "asks"], aliases: &[], summary: "Show lead questions",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+    },
+    LeadChat {
+        path: &["lead", "chat"], aliases: &[], summary: "Open lead chat",
+        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        surfaces: LEAD_PENDING, requirements: NO_REQUIREMENTS,
+    },
 }
 
 #[derive(Debug)]
@@ -134,7 +188,6 @@ pub struct Invocation<'a> {
 fn resolve(surface: Surface, words: &[String]) -> Option<Invocation<'_>> {
     COMMANDS
         .iter()
-        .filter(|command| command.surfaces.at(surface) == Availability::Supported)
         .flat_map(|command| {
             std::iter::once(command.path)
                 .chain(command.aliases.iter().copied())
@@ -144,6 +197,7 @@ fn resolve(surface: Surface, words: &[String]) -> Option<Invocation<'_>> {
             words.len() >= path.len() && words.iter().zip(*path).all(|(word, part)| word.as_str() == *part)
         })
         .max_by_key(|(_, path)| path.len())
+        .filter(|(command, _)| command.surfaces.at(surface) == Availability::Supported)
         .map(|(command, path)| Invocation {
             command,
             args: &words[path.len()..],
@@ -257,5 +311,39 @@ mod tests {
                 assert!(paths.insert(path), "duplicate command path");
             }
         }
+    }
+    #[test]
+    fn lead_family_is_reserved_without_admitting_uninstalled_handlers() {
+        let routes: &[(CommandId, &[&str])] = &[
+            (CommandId::Lead, &["lead"]),
+            (CommandId::LeadServe, &["lead", "serve"]),
+            (CommandId::LeadBoard, &["lead", "board"]),
+            (CommandId::LeadStatus, &["lead", "status"]),
+            (CommandId::LeadAsks, &["lead", "asks"]),
+            (CommandId::LeadChat, &["lead", "chat"]),
+        ];
+        for (id, path) in routes {
+            let declaration = COMMANDS.iter().find(|entry| entry.id == *id).unwrap();
+            assert_eq!(declaration.path, *path);
+            let input: Vec<_> = path.iter().map(|part| (*part).to_string()).collect();
+            let installed = matches!(id, CommandId::Lead | CommandId::LeadServe);
+            assert_eq!(
+                parse_cli(&input).map(|invocation| invocation.command.id),
+                installed.then_some(*id)
+            );
+            assert!(dispatch_slash(&input).is_none());
+            for surface in [Surface::Cli, Surface::Slash, Surface::Menu, Surface::Web] {
+                let shown = installed && matches!(surface, Surface::Cli | Surface::Menu);
+                assert_eq!(entries(surface).any(|entry| entry.id == *id), shown);
+                assert_eq!(help(surface).contains(declaration.summary), shown);
+            }
+        }
+    }
+
+    #[test]
+    fn unavailable_child_does_not_resolve_as_the_available_lead_menu() {
+        assert_eq!(parse_cli(&words("lead")).unwrap().command.id, CommandId::Lead);
+        assert!(parse_cli(&words("lead board")).is_none());
+        assert!(parse_cli(&words("lead chat private synthetic text")).is_none());
     }
 }
