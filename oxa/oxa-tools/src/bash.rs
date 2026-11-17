@@ -551,11 +551,11 @@ impl BashTool {
         }
 
         let mut output = String::from_utf8_lossy(&res.output).into_owned();
-        // #525: only a failing command gets the notice (a success that merely mentions /tmp is noise).
-        let persistence_relevant = res.exit != Some(0)
-            && (raw_command.contains("/tmp")
-                || raw_command.contains("TMPDIR")
-                || [
+        // Successful reads/mentions stay quiet; scratch writes and relevant failures get a notice.
+        let persistence_relevant = scratch_write_likely(raw_command)
+            || (res.exit != Some(0) && (raw_command.contains("/tmp") || raw_command.contains("TMPDIR")))
+            || (res.exit != Some(0)
+                && [
                     "read-only file system",
                     "permission denied",
                     "operation not permitted",
@@ -641,9 +641,111 @@ impl BashTool {
     }
 }
 
+/// Suppress the successful-command hint only for recognizable reads. Enumerating writers
+/// misses interpreters, build tools, attached output flags and custom scripts. This is a
+/// conservative hint heuristic, NOT a shell parser or a permission check; unknown syntax
+/// keeps the hint. Failed commands mentioning scratch always get it, regardless of syntax.
+fn scratch_write_likely(command: &str) -> bool {
+    if !(command.contains("/tmp") || command.contains("TMPDIR")) {
+        return false;
+    }
+    // Substitutions can write even inside a read's arguments.
+    if command.contains("$(") || command.contains('`') {
+        return true;
+    }
+    // Keep quoted/escaped shell words together so grep '->' is not a redirect and quoted
+    // separators do not invent commands. Recognize output redirects separately, including
+    // fd duplication (2>&1), which does not create a file.
+    static TOKENS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let tokens = TOKENS.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?s)(?:[0-9]*>>?|&>>?)(?:&[0-9-]+)?|[;&|()<\n]|(?:[^\s'"\\;&|()<>]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+"#,
+        )
+        .expect("shell hint tokens")
+    });
+    const READERS: &[&str] = &[
+        "echo", "printf", "ls", "cat", "grep", "head", "tail", "wc", "stat", "pwd", "test", "[", "true",
+        "false", "readlink", "basename", "dirname",
+    ];
+    let mut words = tokens.find_iter(command).map(|m| m.as_str());
+    let mut command_start = true;
+    while let Some(word) = words.next() {
+        if matches!(word, ";" | "&" | "|" | "\n") {
+            command_start = true;
+            continue;
+        }
+        let op = word.trim_start_matches(|c: char| c.is_ascii_digit());
+        if op.starts_with(">&") {
+            continue;
+        }
+        if op.starts_with('>') || op.starts_with("&>") {
+            if words.next().map(|w| w.trim_matches(['\'', '"'])) == Some("/dev/null") {
+                continue;
+            }
+            return true;
+        }
+        if matches!(word, "(" | ")" | "<") {
+            return true;
+        }
+        if command_start {
+            let name = word.trim_matches(['\'', '"']).rsplit('/').next().unwrap_or(word);
+            if !READERS.contains(&name) {
+                return true;
+            }
+            command_start = false;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #532: a successful read that merely mentions /tmp gets no persistence notice.
+    #[test]
+    fn scratch_notice_only_for_writes() {
+        for c in [
+            "grep -n '\"/tmp\"' src/lib.rs",
+            "ls /tmp 2>&1",
+            "cat /tmp/x >/dev/null",
+            "echo $TMPDIR",
+            "grep -o x /tmp/f",
+            "grep '->' /tmp/f",
+            "grep 'cp; ->' /tmp/f",
+            "echo 'tee' /tmp",
+            "ls /tmp >'/dev/null' 2>&1",
+            "printf '%s\\n' '->' /tmp/f",
+            "ls src",
+        ] {
+            assert!(!scratch_write_likely(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn scratch_notice_covers_common_writes() {
+        for c in [
+            "echo x > /tmp/f",
+            "echo x >>/tmp/f",
+            "cmd &> /tmp/log",
+            "mktemp -p /tmp",
+            "cp a /tmp/a",
+            "ls | tee /tmp/l",
+            "touch $TMPDIR/x",
+            "cd /tmp && make",
+            "cd $TMPDIR && npm install",
+            "sed -i 's/x/y/' /tmp/f",
+            "python -c \"open('/tmp/x','w').write('x')\"",
+            "gcc -o/tmp/a input.c",
+            "sort -o/tmp/x input.txt",
+            "custom-script /tmp/output",
+            "echo $(touch /tmp/f)",
+            "echo `touch /tmp/f`",
+            "cat /tmp/f\ntouch /tmp/g",
+        ] {
+            assert!(scratch_write_likely(c), "{c}");
+        }
+    }
 
     /// H (SET-055, SET-056): pi's `${prefix}\n${command}`, the custom shell through `exec`, and
     /// pi's error for a missing shell.

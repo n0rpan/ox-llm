@@ -10,6 +10,7 @@ publish.workspace = true
 [features]
 default = []
 core = ["dep:libc", "dep:serde_json", "dep:serde", "dep:sha2"]
+a2a = ["core"]
 
 [dependencies]
 libc = { workspace = true, optional = true }
@@ -18,7 +19,7 @@ serde = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
-oxa-orchestrator = { path = ".", features = ["core"] }
+oxa-orchestrator = { path = ".", features = ["core", "a2a"] }
 oxa-fake.workspace = true
 
 [lints]

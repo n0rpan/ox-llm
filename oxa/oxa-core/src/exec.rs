@@ -119,6 +119,9 @@ pub fn request(
         },
         hints,
     };
+    // A cloud request can be billed even when its reply fails or is discarded. Until the
+    // engine exposes settlement amounts, never present this session's cost as known zero.
+    st.stats.cost_unknown |= st.info.caps.remote;
     let mut stream = StreamState::default();
     let mut hooks = crate::fire::StreamHooks::new(st, opts.events);
     let progress = crate::progress::observer(st);

@@ -85,15 +85,15 @@ shows at narrow widths.
 
 - item with code:
 
-  ```sh
-    echo hi
-  ```
+  ┌─ sh ───────────────────────────────────────────────────────────────────────┐
+  │  echo hi                                                                   │
+  └────────────────────────────────────────────────────────────────────────────┘
 
-```rust
-  fn main() {
-      println!(\"hi\");
-  }
-```";
+┌─ rust ───────────────────────────────────────────────────────────────────────┐
+│  fn main() {                                                                 │
+│      println!(\"hi\");                                                         │
+│  }                                                                           │
+└──────────────────────────────────────────────────────────────────────────────┘";
 
 /// `DOC` at 120 columns: the long paragraph stays on one line.
 const GOLDEN_120: &str = "Heading one
@@ -127,15 +127,15 @@ A long paragraph that keeps going past the eighty column boundary, so wrapping s
 
 - item with code:
 
-  ```sh
-    echo hi
-  ```
+  ┌─ sh ───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │  echo hi                                                                                                           │
+  └────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
-```rust
-  fn main() {
-      println!(\"hi\");
-  }
-```";
+┌─ rust ───────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  fn main() {                                                                                                         │
+│      println!(\"hi\");                                                                                                 │
+│  }                                                                                                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘";
 
 fn plain() -> Theme {
     Theme::plain()
@@ -205,6 +205,46 @@ fn snapshot_120_cols() {
     assert_eq!(joined(&lines), GOLDEN_120);
 }
 
+/// Fences are markup, not transcript text; code has a labelled, themed frame.
+#[test]
+fn code_fences_render_as_labelled_frames() {
+    let theme = colored();
+    for (open, close) in [("```python", "```"), ("~~~python", "~~~"), ("```python", "")] {
+        let doc = format!("{open}\ndef hello():\n    return 1\n{close}");
+        let lines = render_markdown(&doc, 24, &theme, &MarkdownOpts::default());
+        let text = strip_ansi(&joined(&lines));
+        assert!(!text.contains("```") && !text.contains("~~~"), "{text}");
+        assert_eq!(strip_ansi(&lines[0]), "┌─ python ─────────────┐");
+        assert_eq!(strip_ansi(&lines[1]), "│  def hello():        │");
+        assert_eq!(strip_ansi(&lines[2]), "│      return 1        │");
+        assert_eq!(strip_ansi(lines.last().unwrap()), "└──────────────────────┘");
+        assert!(lines[0].contains(&theme.fg_code("mdCodeBlockBorder")));
+        assert!(lines[1].contains(&theme.fg_code("syntaxKeyword")));
+        assert_valid_lines(&lines, 24);
+    }
+}
+
+/// Wrapping preserves code (including wide characters) inside the frame.
+#[test]
+fn code_frames_fit_narrow_widths() {
+    let doc = "```unknown\nabcdefghij日本語\n```";
+    for width in [1, 2, 3, 4, 7, 12, 40] {
+        let lines = render_markdown(doc, width, &plain(), &MarkdownOpts::default());
+        assert_valid_lines(&lines, width as usize);
+        assert!(!joined(&lines).contains('`'));
+    }
+    let opts = MarkdownOpts {
+        code_block_indent: 0,
+        ..MarkdownOpts::default()
+    };
+    assert_eq!(
+        render_markdown("```\nabcdefghij\n```", 7, &plain(), &opts),
+        ["┌─────┐", "│abcde│", "│fghij│", "└─────┘"]
+    );
+    let unknown = render_markdown(doc, 40, &colored(), &opts);
+    assert!(unknown[1].contains(&colored().fg_code("mdCodeBlock")));
+}
+
 /// hyperlinks
 #[test]
 fn links_osc8() {
@@ -240,25 +280,55 @@ fn links_osc8() {
 fn code_block_indent_setting() {
     let doc = "```\nlet a = 1;\n  b\n```";
     let default = render_markdown(doc, 40, &plain(), &MarkdownOpts::default());
-    assert_eq!(default, vec!["```", "  let a = 1;", "    b", "```"]);
-
-    let wide = MarkdownOpts {
-        code_block_indent: 4,
-        ..MarkdownOpts::default()
-    };
     assert_eq!(
-        render_markdown(doc, 40, &plain(), &wide),
-        vec!["```", "    let a = 1;", "      b", "```"]
+        default,
+        vec![
+            "┌──────────────────────────────────────┐",
+            "│  let a = 1;                          │",
+            "│    b                                 │",
+            "└──────────────────────────────────────┘",
+        ]
     );
 
-    let flush = MarkdownOpts {
-        code_block_indent: 0,
-        ..MarkdownOpts::default()
-    };
-    assert_eq!(
-        render_markdown(doc, 40, &plain(), &flush),
-        vec!["```", "let a = 1;", "  b", "```"]
-    );
+    for (opts, first, second) in [
+        (
+            MarkdownOpts {
+                code_block_indent: 4,
+                ..MarkdownOpts::default()
+            },
+            "│    let a = 1;",
+            "│      b",
+        ),
+        (
+            MarkdownOpts {
+                code_block_indent: 0,
+                ..MarkdownOpts::default()
+            },
+            "│let a = 1;",
+            "│  b",
+        ),
+        (
+            MarkdownOpts {
+                code_block_prefix: Some("→ ".to_string()),
+                ..MarkdownOpts::default()
+            },
+            "│→ let a = 1;",
+            "│→   b",
+        ),
+    ] {
+        let lines = render_markdown(doc, 40, &plain(), &opts);
+        assert_eq!(lines[0], default[0]);
+        assert_eq!(
+            lines[1],
+            format!("{first}{}│", " ".repeat(39 - visible_width(first)))
+        );
+        assert_eq!(
+            lines[2],
+            format!("{second}{}│", " ".repeat(39 - visible_width(second)))
+        );
+        assert_eq!(lines[3], default[3]);
+        assert_valid_lines(&lines, 40);
+    }
 }
 
 /// every prefix of a document renders
@@ -297,9 +367,13 @@ fn streaming_partial_never_panics() {
 fn mermaid_as_code_block() {
     let doc = "```mermaid\ngraph TD\n  A-->B\n```";
     let lines = render_markdown(doc, 80, &plain(), &MarkdownOpts::default());
-    assert_eq!(lines, vec!["```mermaid", "  graph TD", "    A-->B", "```"]);
-    // Shown as text: no box drawing and no table layout.
-    assert!(lines.iter().all(|l| !l.contains('┌') && !l.contains('│')));
+    // The diagram source is framed code, not rendered as a diagram.
+    assert_eq!(lines.len(), 4);
+    assert!(lines[0].starts_with("┌─ mermaid "));
+    assert!(lines[1].starts_with("│  graph TD"));
+    assert!(lines[2].starts_with("│    A-->B"));
+    assert_eq!(lines[3], format!("└{}┘", "─".repeat(78)));
+    assert_valid_lines(&lines, 80);
 }
 
 /// fallback
