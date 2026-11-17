@@ -206,6 +206,30 @@ fn unusable_arguments_name_the_fields_that_arrived() {
     );
 }
 
+/// #952: telling the unusable shapes apart must not catch a call that does hold a replacement.
+/// A `null` or an empty `edits` still leaves the declared flat pair in force.
+#[test]
+fn a_null_or_empty_edits_leaves_the_flat_pair_in_force() {
+    let env = TestEnv::new();
+    env.write("work/g.txt", "a\nb\nc\n");
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": "g.txt", "edits": null, "oldText": "b", "newText": "B"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(out.text, errors::edit_ok(1, "g.txt"));
+    let out = run_tool(
+        &env.work(),
+        &json!({"path": "g.txt", "edits": [], "oldText": "c", "newText": "C"}),
+    );
+    assert!(!out.is_error, "{}", out.text);
+    assert_eq!(out.text, errors::edit_ok(1, "g.txt"));
+    assert_eq!(
+        std::fs::read_to_string(env.work().join("g.txt")).unwrap(),
+        "a\nB\nC\n"
+    );
+}
+
 #[test]
 fn rejected_arguments_never_echo_their_values() {
     let env = TestEnv::new();
