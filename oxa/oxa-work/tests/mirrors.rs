@@ -1,4 +1,4 @@
-use oxa_work::board::assignment::{ManualAuthority, MirrorObservation};
+use oxa_work::board::assignment::{ManualAuthority, MirrorObservation, ProjectWorker};
 use oxa_work::mirrors::{reconcile, AssignmentMirror};
 use std::collections::BTreeSet;
 
@@ -84,13 +84,15 @@ fn authoritative_reassignment_preserves_other_labels_and_is_idempotent() {
     );
     assert_eq!(sink.worker.as_deref(), Some("codex:fixture/worker-a"));
     assert_eq!(sink.writes, 3);
-    reconcile(
+    let plan = reconcile(
         42,
         Some("codex:fixture/worker-a"),
         Some(ManualAuthority::Owner),
         &mut sink,
     )
+    .unwrap()
     .unwrap();
+    assert_eq!(plan.project_worker, ProjectWorker::Unchanged);
     assert_eq!(sink.writes, 3);
     reconcile(42, None, Some(ManualAuthority::Lead), &mut sink).unwrap();
     assert_eq!(
@@ -114,4 +116,12 @@ fn no_project_needs_no_field_operation_and_read_failure_changes_nothing() {
     sink.fail = true;
     assert!(reconcile(42, None, Some(ManualAuthority::Owner), &mut sink).is_err());
     assert_eq!(sink.writes, 1);
+}
+
+#[test]
+fn overlong_mirror_alias_is_refused_before_io() {
+    let mut sink = FakeMirror::default();
+    let id = format!("codex:fixture/{}", "a".repeat(44));
+    assert!(reconcile(42, Some(&id), Some(ManualAuthority::Owner), &mut sink).is_err());
+    assert_eq!((sink.reads, sink.writes), (0, 0));
 }
