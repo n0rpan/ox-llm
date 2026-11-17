@@ -3217,7 +3217,10 @@ pub fn ask_trust_on(
         for ev in term.poll(250) {
             if ev == InputEvent::TerminalClosed {
                 host.close_all();
-                break 'dialog Err(OxaError::new(codes::TERMINAL_CLOSED, "terminal disconnected"));
+                break 'dialog Err(OxaError::new(
+                    oxa_proto::codes::TERMINAL_CLOSED,
+                    "terminal disconnected",
+                ));
             }
             if let InputEvent::Key(key) = ev {
                 // Ctrl+C and Ctrl+D leave the question unanswered.
