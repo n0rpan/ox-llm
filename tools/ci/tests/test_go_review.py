@@ -37,6 +37,73 @@ def finding(**changes):
 
 
 class GoReview(unittest.TestCase):
+    def run_review(self, *, pr=None, files=None, comments=None, answer=None, stale=False):
+        pr = copy.deepcopy(PR if pr is None else pr)
+        files = FILES if files is None else files
+        calls, posted, pulls = [], [], 0
+
+        def request(url, headers, body=None, **kwargs):
+            nonlocal pulls
+            calls.append(url)
+            if url == review.API + '/pulls/7':
+                pulls += 1
+                value = copy.deepcopy(pr)
+                if stale and pulls == 3:
+                    value['head']['sha'] = 'b' * 40
+                return value
+            if '/files?' in url:
+                return files
+            if '/comments?' in url:
+                return comments or []
+            if url == review.MODEL_URL:
+                payload = json.loads(body)
+                self.assertEqual(payload['model'], 'deepseek-v4.1-flash')
+                self.assertFalse(payload['stream'])
+                self.assertIn('Project guidelines:', payload['messages'][0]['content'])
+                self.assertIn('# Review rubric', payload['messages'][0]['content'])
+                self.assertIn('"overall_verdict"', payload['messages'][0]['content'])
+                self.assertNotIn('synthetic-access', payload['messages'][0]['content'])
+                return answer or response()
+            self.assertEqual(url, review.API + '/issues/7/comments')
+            posted.append(json.loads(body)['body'])
+            return {'id': 1}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            event = Path(tmp) / 'event.json'
+            event.write_text(json.dumps({'action': 'synchronize', 'pull_request': pr}))
+            env = {'HOME': tmp, 'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'pull_request',
+                   'GITHUB_REPOSITORY': review.REPO, 'GH_TOKEN': 'synthetic-github',
+                   'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'synthetic-request'}
+            with patch.dict(os.environ, env, clear=True), patch.object(review, 'request', request), \
+                    patch.object(review, 'access_token', return_value='synthetic-access') as auth:
+                review.main()
+                return calls, posted, auth.call_count
+
+    def test_complete_review_posts_one_full_sha_and_diff_hash_receipt(self):
+        calls, posted, auth = self.run_review(answer=response([finding(body='Do not emit synthetic-access')]))
+        self.assertEqual(auth, 1)
+        self.assertEqual(calls.count(review.MODEL_URL), 1)
+        self.assertEqual(len(posted), 1)
+        self.assertNotIn('synthetic-access', posted[0])
+        marker = review.MARKER.findall(posted[0])
+        self.assertEqual(len(marker), 1)
+        self.assertEqual(json.loads(marker[0]),
+                         {'sha': SHA, 'diff_hash': review.own_diff_hash(FILES), 'verdict': 'REVISE'})
+
+    def test_same_diff_on_a_different_head_spends_nothing(self):
+        marker = {'sha': 'b' * 40, 'diff_hash': review.own_diff_hash(FILES), 'verdict': 'CLEAR'}
+        comments = [{'user': {'login': 'github-actions[bot]'},
+                     'body': '<!-- go-review:v1 ' + json.dumps(marker) + ' -->'}]
+        calls, posted, auth = self.run_review(comments=comments)
+        self.assertEqual((posted, auth), ([], 0))
+        self.assertNotIn(review.MODEL_URL, calls)
+        marker['diff_hash'] = '0' * 64
+        marker['sha'] = SHA
+        comments[0]['body'] = '<!-- go-review:v1 ' + json.dumps(marker) + ' -->'
+        self.assertFalse(review.reviewed(comments, SHA, review.own_diff_hash(FILES)))
+        comments[0]['user']['login'] = 'untrusted-author'
+        self.assertFalse(review.reviewed(comments, SHA, marker['diff_hash']))
+
     def test_hash_ignores_commit_and_hunk_coordinates_but_keeps_content_and_context(self):
         moved = copy.deepcopy(FILES)
         moved[0]['patch'] = moved[0]['patch'].replace('@@ -1 +1 @@', '@@ -101 +201 @@')
@@ -46,6 +113,30 @@ class GoReview(unittest.TestCase):
         self.assertNotEqual(review.own_diff_hash(FILES), review.own_diff_hash(moved))
         moved[0]['patch'] = '@@ -1 +1 @@\n-old\n+different'
         self.assertNotEqual(review.own_diff_hash(FILES), review.own_diff_hash(moved))
+
+    def test_docs_unknown_authors_forks_and_drafts_spend_nothing(self):
+        files = [{**FILES[0], 'filename': 'oxa/docs/pages/usage.md'}]
+        self.assertEqual(self.run_review(files=files)[1:], ([], 0))
+        for mutate in (lambda p: p.update(draft=True),
+                       lambda p: p.update(author_association='NONE'),
+                       lambda p: p['head']['repo'].update(full_name='outside/fork')):
+            pr = copy.deepcopy(PR)
+            mutate(pr)
+            self.assertEqual(self.run_review(pr=pr), ([], [], 0))
+        pr = {**copy.deepcopy(PR), 'author_association': 'NONE', 'labels': [{'name': 'ok-to-review'}]}
+        self.assertEqual(self.run_review(pr=pr)[2], 1)
+
+    def test_oversize_and_truncated_diff_never_authenticate(self):
+        with self.assertRaises(review.Skipped):
+            self.run_review(pr={**PR, 'additions': 6001})
+        with self.assertRaises(review.Skipped):
+            self.run_review(files=[{**FILES[0], 'patch': '@@ -1 +1,2 @@\n-old\n+new', 'additions': 2}])
+
+    def test_stale_result_is_not_posted(self):
+        calls, posted, auth = self.run_review(stale=True)
+        self.assertEqual(auth, 1)
+        self.assertIn(review.MODEL_URL, calls)
+        self.assertEqual(posted, [])
 
     def test_bad_model_paths_ranges_verdicts_and_incomplete_output_are_refused(self):
         allowed = review.changed_lines(FILES)
@@ -61,6 +152,56 @@ class GoReview(unittest.TestCase):
         bad['choices'][0]['message']['content'] = '{"findings":[],"overall_verdict":"incorrect"}'
         with self.assertRaises(review.Refused):
             review.findings(bad, allowed, [])
+
+    def test_oidc_audience_exchange_and_masking_are_process_only(self):
+        calls = []
+
+        def request(url, headers, body=None, **kwargs):
+            calls.append((url, headers, body))
+            if len(calls) == 1:
+                return {'value': 'synthetic-oidc'}
+            return {'access_token': 'synthetic-access', 'token_type': 'Bearer'}
+
+        env = {'OPENCODE_CI_CLIENT_ID': 'synthetic-client',
+               'ACTIONS_ID_TOKEN_REQUEST_URL': 'https://pipelines.actions.githubusercontent.com/token?a=1',
+               'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'synthetic-request'}
+        with patch.dict(os.environ, env, clear=True), patch.object(review, 'request', request), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(review.access_token(), 'synthetic-access')
+            self.assertEqual(os.environ['OPENCODE_API_KEY'], 'synthetic-access')
+        audience = urllib.parse.parse_qs(urllib.parse.urlsplit(calls[0][0]).query)
+        self.assertEqual(audience['audience'], ['https://opencode.ai/console'])
+        self.assertEqual(calls[1][0], review.TOKEN_URL)
+        form = urllib.parse.parse_qs(calls[1][2].decode())
+        self.assertEqual(form['subject_token'], ['synthetic-oidc'])
+        self.assertEqual(form['client_id'], ['synthetic-client'])
+        self.assertEqual(form['grant_type'], ['urn:ietf:params:oauth:grant-type:token-exchange'])
+        self.assertEqual(form['subject_token_type'], ['urn:ietf:params:oauth:token-type:jwt'])
+        self.assertEqual(output.getvalue().splitlines(),
+                         ['::add-mask::synthetic-oidc', '::add-mask::synthetic-access'])
+
+    def test_workflow_uses_trusted_base_and_narrow_permissions(self):
+        text = (SOURCE.parents[2] / '.github/workflows/go-review.yml').read_text()
+        self.assertIn('ref: ${{ github.event.pull_request.base.sha }}', text)
+        self.assertIn('persist-credentials: false', text)
+        self.assertIn('id-token: write', text)
+        self.assertIn("vars.GO_REVIEW_ENABLED == 'true'", text)
+        self.assertIn('pull-requests: write', text)
+        self.assertNotIn('pull_request_target:', text)
+        self.assertNotIn('secrets.', text)
+
+    def test_transport_has_no_redirect_or_proxy_fallback_and_bounds_response(self):
+        with patch.object(review.urllib.request, 'build_opener') as build:
+            reply = build.return_value.open.return_value.__enter__.return_value
+            reply.read.return_value = b'x' * 11
+            with self.assertRaises(review.Refused):
+                review.request('https://example.invalid', {}, limit=10)
+            reply.read.assert_called_once_with(11)
+            self.assertIsInstance(build.call_args.args[0], review.urllib.request.ProxyHandler)
+            self.assertEqual(build.call_args.args[0].proxies, {})
+            self.assertIsInstance(build.call_args.args[1], review.NoRedirect)
+        self.assertIsNone(review.NoRedirect().redirect_request(None, None, 302, '', {}, 'https://example.invalid'))
+
 
     def test_cached_diff_requires_a_trusted_receipt(self):
         marker = {'sha': 'b' * 40, 'diff_hash': review.own_diff_hash(FILES), 'verdict': 'CLEAR'}
