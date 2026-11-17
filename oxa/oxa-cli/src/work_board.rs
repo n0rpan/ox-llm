@@ -1,4 +1,5 @@
 //! Explicitly opted-in, read-only GitHub sampling. Never invokes a worker or mutation.
+pub mod refill_input;
 use oxa_work::board::{Board, GitHub, Mergeability, Policy, PullRequest, RequiredCi};
 use serde_json::Value;
 mod refill;
