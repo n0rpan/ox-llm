@@ -45,6 +45,21 @@ class Selection(unittest.TestCase):
         matrix, _, _ = lane.select(self.packages, self.packages, ['AGENTS.md', 'README.md'])
         self.assertEqual(matrix, {'include': []})
 
+    def test_shared_oxa_behavior_inputs_cannot_skip_consumers(self):
+        for path in ('oxa/examples/extensions/custom-tool/index.js',
+                     'oxa/examples/skills/example.md', 'oxa/.config/nextest.toml'):
+            with self.subTest(path=path):
+                matrix, _, _ = lane.select(self.packages, self.packages, [path])
+                self.assertEqual(len(matrix['include']), 4)
+                for entry in matrix['include']:
+                    expected = ['app', 'leaf', 'unrelated'] if entry['workspace'] == 'oxa' else ['oxc']
+                    self.assertEqual(entry['packages'], expected)
+
+    def test_shared_documentation_does_not_start_rust_tests(self):
+        matrix, _, _ = lane.select(self.packages, self.packages,
+                                  ['oxa/README.md', 'oxa/docs/pages/quickstart.md'])
+        self.assertEqual(matrix, {'include': []})
+
     def test_native_cli_contracts_select_their_actual_crate(self):
         matrix, _, _ = lane.select(self.packages, self.packages, ['conformance/goldens/cli.json'])
         self.assertEqual(self.names(matrix), {
