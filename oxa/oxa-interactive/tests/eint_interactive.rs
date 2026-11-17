@@ -855,6 +855,66 @@ fn status_after_compact_keeps_the_estimate() {
     });
 }
 
+/// #703: forking before the first prompt must not keep the old context/cache display.
+#[test]
+fn first_message_fork_clears_context_and_cache_display() {
+    bounded(30, || {
+        let env = TestEnv::new();
+        let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("pong")]));
+        let session = Session::open(
+            deps(&env, Arc::new(MemStore::new()), engine, Vec::new()),
+            Open::New,
+        )
+        .expect("open");
+        let w = spawn_worker(session, no_reopen());
+        w.cmds
+            .send(SessionCmd::Prompt {
+                text: "hello".into(),
+                parts: Vec::new(),
+            })
+            .unwrap();
+        let events = events_until(&w, |e| matches!(e, AgentEvent::AgentSettled { .. }));
+        let first = events
+            .iter()
+            .find_map(|e| match e {
+                AgentEvent::EntryAppended { entry }
+                    if matches!(&entry.body,
+                EntryBody::Msg { wire, .. } if wire.role == oxa_proto::Role::User) =>
+                {
+                    Some(entry.id.clone())
+                }
+                _ => None,
+            })
+            .expect("first user message");
+        let before = status_after_done(&w);
+        assert!(before.context_tokens > 0);
+        w.cmds.send(SessionCmd::ForkAt { entry: first }).unwrap();
+        let (entries, forked) = loop {
+            match w.msgs.recv_timeout(Duration::from_secs(10)).expect("fork result") {
+                WorkerMsg::Reopened { entries, status } => break (entries, status),
+                WorkerMsg::Done(Err(e)) => panic!("fork failed: {e}"),
+                _ => {}
+            }
+        };
+        assert!(!entries.iter().any(|e| matches!(e.body, EntryBody::Msg { .. })));
+        assert_eq!(forked.context_tokens, 0, "old conversation is no longer active");
+        assert_eq!((forked.last_cached, forked.last_prompt), (None, None));
+        let settled = status_after_done(&w);
+        assert_eq!(
+            settled.context_tokens, 0,
+            "later refresh must not restore old context"
+        );
+        assert_eq!(
+            (settled.total_in, settled.total_out),
+            (before.total_in, before.total_out)
+        );
+        w.cmds.send(SessionCmd::Shutdown).unwrap();
+        w.done
+            .recv_timeout(Duration::from_secs(10))
+            .expect("worker ended");
+    });
+}
+
 /// A `/new` after a `/model` (and `/thinking`) switch must keep the switched model and
 /// thinking level, not fall back to the startup `--model` choice. The worker passes the model
 /// and thinking of the session it leaves to the reopen closure (which the dispatcher uses for

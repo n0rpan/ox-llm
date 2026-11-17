@@ -422,7 +422,16 @@ fn drive(
         lp.poll_asks();
 
         let animating = lp.animating();
-        let events = term.poll(if animating { 16 } else { 250 });
+        // A pending frame (including the first editable prompt) must not wait behind
+        // the idle input timeout. Still drain input first so it sees the latest state.
+        let wait_ms = if lp.dirty {
+            0
+        } else if animating {
+            16
+        } else {
+            250
+        };
+        let events = term.poll(wait_ms);
         for ev in events {
             lp.input(term, ev);
         }

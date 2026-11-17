@@ -1,6 +1,6 @@
 //! #457: the session directory at `/tmp` (persistent scratch and a writable cache home).
 
-use crate::harness::{assert_ok, assert_refused, home_file, run, sandbox_with_layout, sh, write};
+use crate::harness::{assert_ok, assert_refused, home_file, run, run_result, sandbox_with_layout, sh, write};
 use oxa_fake::TestEnv;
 use oxa_sandbox::{scratch_root, Bwrap, Layout, LayoutInputs};
 use std::path::Path;
@@ -378,9 +378,17 @@ fn cargo_builds_in_tmp_across_calls() {
     let Some((sb, _dir)) = session(&env) else {
         return;
     };
-    let build = "mkdir -p /tmp/p/src && printf '[package]\\nname=\"p\"\\nversion=\"0.1.0\"\\nedition=\"2021\"\\n' > /tmp/p/Cargo.toml && printf 'fn main(){println!(\"hi457\")}' > /tmp/p/src/main.rs && cd /tmp/p && cargo build --offline -q 2>&1";
-    let (exit, out) = run(&sb, &env.work(), build, true, false);
-    assert_ok(exit, &out, "cargo build");
+    let build = "printf 'fixture.phase=prepare\\n' && mkdir -p /tmp/p/src && printf '[package]\\nname=\"p\"\\nversion=\"0.1.0\"\\nedition=\"2021\"\\n' > /tmp/p/Cargo.toml && printf 'fn main(){println!(\"hi457\")}' > /tmp/p/src/main.rs && cd /tmp/p && printf 'fixture.phase=cargo-build\\n' && cargo build --offline -vv 2>&1";
+    let result = run_result(&sb, &env.work(), build, true, false);
+    assert_ok(
+        result.exit,
+        &format!(
+            "fixture.phase=build-return timed_out={}\n{}",
+            result.timed_out,
+            String::from_utf8_lossy(&result.output)
+        ),
+        "cargo build",
+    );
     let (exit, out) = run(&sb, &env.work(), "/tmp/p/target/debug/p", true, false);
     assert_ok(exit, &out, "run");
     assert_eq!(out.trim(), "hi457");

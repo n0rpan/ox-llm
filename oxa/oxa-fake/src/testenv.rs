@@ -101,6 +101,12 @@ impl Default for TestEnv {
     }
 }
 
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,11 +125,5 @@ mod tests {
             env.write("work/note.txt", "synthetic fixture");
         }
         assert!(!root.exists());
-    }
-}
-
-impl Drop for TestEnv {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }

@@ -305,8 +305,8 @@ pub(crate) struct Loop<'a> {
     gfx_reset: bool,
     /// O-182: the theme as loaded; `theme` is its hot variant while YOLO is on (OXA's look).
     cool_theme: Theme,
-    /// O-182: what the screen last showed of the YOLO switch, and until when its banner shows.
-    yolo_shown: Option<Autonomy>,
+    /// The effective permission mode last shown (plan takes precedence over the YOLO switch).
+    yolo_shown: Option<PermissionMode>,
     /// #202: the level `/yolo off` and Ctrl+Alt+O return to; the full-access notice was shown.
     yolo_prev: Autonomy,
     yolo_noticed: bool,
@@ -531,9 +531,9 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// O-182: is YOLO on (the process's switch).
+    /// Whether the session effectively has full access, not just the process's switch.
     fn yolo_on(&self) -> bool {
-        self.opts.yolo.as_ref().is_some_and(|y| y.full())
+        self.permission_mode() == PermissionMode::Yolo
     }
 
     /// #202: the permission mode now: the session mode with the process's autonomy level.
@@ -582,13 +582,17 @@ impl<'a> Loop<'a> {
             self.vm.status.yolo_approved = approved;
             self.dirty = true;
         }
-        if self.yolo_shown == Some(level) {
+        if self.vm.status.autonomy != level {
+            self.vm.status.autonomy = level;
+            self.dirty = true;
+        }
+        let mode = self.permission_mode();
+        if self.yolo_shown == Some(mode) {
             return;
         }
-        let was_full = self.yolo_shown == Some(Autonomy::Yolo);
-        self.yolo_shown = Some(level);
-        let full = level == Autonomy::Yolo;
-        self.vm.status.autonomy = level;
+        let was_full = self.yolo_shown == Some(PermissionMode::Yolo);
+        self.yolo_shown = Some(mode);
+        let full = mode == PermissionMode::Yolo;
         self.dirty = true;
         if full == was_full && self.vm.status.yolo == full {
             return;
@@ -908,6 +912,16 @@ impl<'a> Loop<'a> {
         self.session = info;
         if self.scope_from_settings {
             self.scoped = self.resolved_scope();
+        }
+        if matches!(self.overlay, Some(Overlay::Model(_) | Overlay::Scoped(_))) {
+            let models = self.model_choices();
+            match self.overlay.as_mut() {
+                Some(Overlay::Model(selector)) => {
+                    selector.set_models(models, &self.vm.status.model, &self.scoped);
+                }
+                Some(Overlay::Scoped(selector)) => selector.set_models(models),
+                _ => {}
+            }
         }
         if std::mem::take(&mut self.picker_pending) {
             self.open_selector(SelectorKind::Sessions);
@@ -3433,3 +3447,6 @@ mod block_cache_tests {
         assert_eq!(c.starts[0], 1);
     }
 }
+
+#[cfg(test)]
+mod catalog_tests;
