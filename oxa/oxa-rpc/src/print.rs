@@ -56,6 +56,10 @@ impl PrintSink<'_> {
     }
 
     fn next_turn(&mut self) {
+        // A new turn proves the preceding completed candidate is progress.
+        if let Some(text) = self.final_text.take() {
+            self.progress(&text);
+        }
         if self.local_model && self.pending_length {
             self.pending_length = false;
             if let Some(text) = self.pending.take() {
