@@ -2,7 +2,7 @@
 // ported from pi packages/coding-agent/src/core/tools/bash.ts (execution replaced by the sandbox)
 use crate::descriptions::{self, errors};
 use crate::jobs::{JobRegistry, JobStatus};
-use oxa_proto::{Access, ExecSpec, Mode, Sandbox, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
+use oxa_proto::{sh_quote, Access, ExecSpec, Mode, Sandbox, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -98,8 +98,8 @@ impl ShellConfig {
                 }
                 Ok(format!(
                     "exec {} -c {}",
-                    single_quote(&shell.to_string_lossy()),
-                    single_quote(&resolved)
+                    sh_quote(&shell.to_string_lossy()),
+                    sh_quote(&resolved)
                 ))
             }
         }
@@ -113,11 +113,6 @@ pub(crate) fn looks_backgrounded(command: &str) -> bool {
         t.ends_with('&') && !t.ends_with("&&")
     });
     backgrounded_line || command.split_whitespace().any(|w| w == "nohup")
-}
-
-/// `s` as one POSIX shell word.
-fn single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 impl Default for BashTool {

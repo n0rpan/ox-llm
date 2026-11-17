@@ -1355,6 +1355,7 @@ dependencies = [
 name = "oxa-proto"
 version = "0.2.0"
 dependencies = [
+ "nix",
  "serde_json",
 ]
 

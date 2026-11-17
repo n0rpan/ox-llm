@@ -378,7 +378,9 @@ fn cargo_builds_in_tmp_across_calls() {
     let Some((sb, _dir)) = session(&env) else {
         return;
     };
-    let build = "printf 'fixture.phase=prepare\\n' && mkdir -p /tmp/p/src && printf '[package]\\nname=\"p\"\\nversion=\"0.1.0\"\\nedition=\"2021\"\\n' > /tmp/p/Cargo.toml && printf 'fn main(){println!(\"hi457\")}' > /tmp/p/src/main.rs && cd /tmp/p && printf 'fixture.phase=cargo-build\\n' && cargo build --offline -vv 2>&1";
+    // This crate has no dependencies. Keep Cargo's cache database in the session scratch
+    // rather than trying to update the toolchain user's cache through the registry-only bind.
+    let build = "printf 'fixture.phase=prepare\\n' && mkdir -p /tmp/p/src && printf '[package]\\nname=\"p\"\\nversion=\"0.1.0\"\\nedition=\"2021\"\\n' > /tmp/p/Cargo.toml && printf 'fn main(){println!(\"hi457\")}' > /tmp/p/src/main.rs && cd /tmp/p && printf 'fixture.phase=cargo-build\\n' && CARGO_HOME=/tmp/cargo-home cargo build --offline -vv 2>&1";
     let result = run_result(&sb, &env.work(), build, true, false);
     assert_ok(
         result.exit,

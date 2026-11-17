@@ -1,0 +1,154 @@
+//! Queue-only consuming adapter; registration, prepared taskfiles and activation are user-owned.
+use oxa_work::board::{assignment::Worker, *};
+use oxa_work::{helper_queue, Result};
+use sha2::{Digest, Sha256};
+use std::{collections::BTreeSet, fs, path::Path};
+/// Read-only acquisition and authoritative revision/action revalidation; no write capability.
+pub trait Source: GitHub {
+    fn revalidate(&mut self, entry: &Entry) -> Result<bool>;
+}
+/// Apply the same operator-selected item partition to BOTH PR and issue intake.
+pub struct Partition {
+    pub modulus: u64,
+    pub residues: BTreeSet<u64>,
+}
+impl Partition {
+    fn contains(&self, number: u64) -> bool {
+        self.residues.contains(&(number % self.modulus))
+    }
+}
+struct Partitioned<'a, S>(&'a mut S, &'a Partition);
+impl<S: GitHub> GitHub for Partitioned<'_, S> {
+    fn snapshot(&mut self) -> Result<Snapshot> {
+        let mut snapshot = self.0.snapshot()?;
+        snapshot.pull_requests.retain(|pr| self.1.contains(pr.number));
+        snapshot.issues.retain(|issue| self.1.contains(issue.number));
+        Ok(snapshot)
+    }
+}
+/// Existing bounded taskfile bytes, frozen to the exact candidate; never a new packet builder.
+pub struct Packet<'a> {
+    pub number: u64,
+    pub revision: &'a str,
+    pub action: Action,
+    pub task: &'a str,
+}
+pub struct Receipt {
+    pub number: u64,
+    pub key: String,
+    pub lease: Lease,
+}
+
+/// Authenticated queue target; default OFF. The operator-owned pause marker survives restarts.
+pub struct Consumer<'a> {
+    pub repository: &'a str,
+    pub queue: &'a Path,
+    pub pause: &'a Path,
+    pub claims: &'a Claims,
+    pub worker: &'a Worker,
+    pub partition: &'a Partition,
+    pub policy: &'a Policy,
+    pub ttl: u64,
+}
+impl Consumer<'_> {
+    fn paused(&self) -> Result<bool> {
+        match fs::symlink_metadata(self.pause) {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(_) => Err("cannot establish board pause state".into()),
+        }
+    }
+
+    /// At most one task; any lease, even expired, blocks the worker until fenced completion.
+    /// Unknown counts refuse. Audit durably records the board before reservation, without packets.
+    pub fn once(
+        &self,
+        source: &mut impl Source,
+        packets: &[Packet<'_>],
+        now: u64,
+        mut audit: impl FnMut(&AssignmentBoard) -> Result<()>,
+    ) -> Result<Vec<Receipt>> {
+        if !self.policy.enabled || self.paused()? {
+            return Ok(vec![]);
+        }
+        if self.partition.modulus == 0
+            || self.partition.residues.is_empty()
+            || self
+                .partition
+                .residues
+                .iter()
+                .any(|r| *r >= self.partition.modulus)
+            || self.policy.max_attempts_per_day > 3
+        {
+            return Err("invalid board partition or attempt cap".into());
+        }
+        let board = self.claims.assignment_board(
+            &mut Partitioned(source, self.partition),
+            self.policy,
+            std::slice::from_ref(self.worker),
+            now,
+        )?;
+        audit(&board)?;
+        for number in board.candidates(&self.worker.id)? {
+            let entry = board.board.entries.iter().find(|e| e.number == number).unwrap();
+            if !matches!(
+                entry.action,
+                Action::FixFindings
+                    | Action::FixRequiredCi
+                    | Action::ResolveConflict
+                    | Action::AddRemoves
+                    | Action::BuildIssue
+            ) {
+                continue;
+            }
+            let matching: Vec<_> = packets.iter().filter(|p| p.number == number).collect();
+            let [packet] = matching.as_slice() else { continue };
+            if packet.revision != entry.head || packet.action != entry.action {
+                continue;
+            }
+            let identity = serde_json::to_vec(&(self.repository, number, &entry.head, entry.action))
+                .map_err(|_| "cannot encode board queue identity")?;
+            let key = format!("{:x}", Sha256::digest(identity));
+            let mut lease = None;
+            let published = helper_queue::publish_reserved(
+                self.queue,
+                &key,
+                packet.task,
+                entry.release_pinned,
+                self.policy,
+                || {
+                    if self.paused()? {
+                        return Ok(false);
+                    }
+                    let rows = self.claims.assignments()?;
+                    // Recheck under the shared queue publication lock, including other refs.
+                    if !rows.contains_key(&number)
+                        || rows.values().any(|row| {
+                            row.state
+                                .lease
+                                .as_ref()
+                                .is_some_and(|l| l.holder == self.worker.id)
+                        })
+                        || rows[&number].state.lease.is_some()
+                        || !source.revalidate(entry)?
+                        || self.paused()?
+                    {
+                        return Ok(false);
+                    }
+                    lease = self
+                        .claims
+                        .claim_idle_for(entry, self.policy, self.worker, now, self.ttl)?;
+                    Ok(lease.is_some())
+                },
+            )?;
+            if published {
+                return Ok(vec![Receipt {
+                    number,
+                    key,
+                    lease: lease.ok_or("missing queue lease")?,
+                }]);
+            }
+        }
+        Ok(vec![])
+    }
+}

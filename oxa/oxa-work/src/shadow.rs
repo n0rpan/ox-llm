@@ -1,8 +1,9 @@
 //! Read-only sampling: this runner has no executor or GitHub mutation interface.
-use crate::board::{Board, Entry};
+use crate::board::{queue::RejectionEvidence, review, Board, Entry};
 use crate::Result;
 use serde::Serialize;
-use std::fs::{File, OpenOptions};
+use std::collections::BTreeMap;
+use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
@@ -17,6 +18,16 @@ struct Sample<'a> {
     observed_at: u64,
     board: &'a Board,
     would_take: Vec<&'a Entry>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    reviews: &'a BTreeMap<u64, review::Plan>,
+    #[serde(skip_serializing_if = "<[RejectionEvidence]>::is_empty")]
+    queue_rejections: &'a [RejectionEvidence],
+}
+
+pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+
+pub(crate) fn regular_file_owned_by(metadata: &Metadata, owner: u32) -> bool {
+    metadata.is_file() && metadata.uid() == owner
 }
 
 /// Refuse links, shared files and concurrent writers before consulting GitHub.
@@ -31,13 +42,12 @@ fn open_log_for_owner(path: &Path, owner: u32) -> Result<File> {
         .append(true)
         .create(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .custom_flags(OWNER_FILE_FLAGS)
         .open(path)
         .map_err(|_| "cannot open private shadow log")?;
     let metadata = file.metadata().map_err(|_| "cannot inspect shadow log")?;
-    if !metadata.is_file()
+    if !regular_file_owned_by(&metadata, owner)
         || metadata.nlink() != 1
-        || metadata.uid() != owner
         || metadata.permissions().mode() & 0o077 != 0
     {
         return Err("shadow log must be a private regular file with one link".into());
@@ -154,16 +164,65 @@ pub fn run(
     log: &mut File,
     once: bool,
     mut snapshot: impl FnMut() -> Result<Board>,
+    wait: impl FnMut(Duration),
+) -> Result<()> {
+    run_with_reviews(log, once, || Ok((snapshot()?, BTreeMap::new())), wait)
+}
+
+pub fn run_with_reviews(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<(Board, BTreeMap<u64, review::Plan>)>,
+    wait: impl FnMut(Duration),
+) -> Result<()> {
+    run_with_evidence(
+        log,
+        once,
+        || {
+            let (board, reviews) = snapshot()?;
+            Ok((board, reviews, Vec::new()))
+        },
+        wait,
+    )
+}
+
+/// Append verified Reader evidence in the existing private owner journal, in
+/// the same durable sample as the board that supplied the read fences.
+pub fn run_with_queue_evidence(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<(Board, Vec<RejectionEvidence>)>,
+    wait: impl FnMut(Duration),
+) -> Result<()> {
+    run_with_evidence(
+        log,
+        once,
+        || {
+            let (board, queue) = snapshot()?;
+            Ok((board, BTreeMap::new(), queue))
+        },
+        wait,
+    )
+}
+
+type EvidenceSample = (Board, BTreeMap<u64, review::Plan>, Vec<RejectionEvidence>);
+
+fn run_with_evidence(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<EvidenceSample>,
     mut wait: impl FnMut(Duration),
 ) -> Result<()> {
     loop {
         let started = Instant::now();
-        let board = snapshot()?;
+        let (board, reviews, queue_rejections) = snapshot()?;
         let sample = Sample {
             schema_version: 1,
             observed_at: board.observed_at,
             would_take: board.entries.iter().filter(|entry| entry.eligible).collect(),
             board: &board,
+            reviews: &reviews,
+            queue_rejections: &queue_rejections,
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
         line.push(b'\n');

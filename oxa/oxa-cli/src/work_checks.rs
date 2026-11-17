@@ -1,6 +1,6 @@
 //! Deterministic check/inspection supervisor; no engine or model is constructed here.
 use oxa_config::{Dirs, Env, Settings};
-use oxa_proto::{CancelToken, ExecSpec, Sandbox};
+use oxa_proto::{sh_quote, CancelToken, ExecSpec, Sandbox};
 use oxa_sandbox::Bwrap;
 use oxa_work::{SupervisorOperation, SupervisorRequest};
 use std::io::Write;
@@ -66,7 +66,10 @@ pub(crate) fn run(
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
             let spec = ExecSpec {
                 command: if create {
-                    format!("git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b '{}' HEAD", branch.replace('\'', "'\\''"))
+                    format!(
+                        "git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b {} HEAD",
+                        sh_quote(&branch)
+                    )
                 } else {
                     "git --no-replace-objects checkout HEAD -- .".into()
                 },
@@ -93,10 +96,7 @@ pub(crate) fn run(
         SupervisorOperation::Merge { base } => {
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
             let spec = ExecSpec {
-                command: format!(
-                    "git --no-replace-objects merge --no-edit -- '{}'",
-                    base.replace('\'', "'\\''")
-                ),
+                command: format!("git --no-replace-objects merge --no-edit -- {}", sh_quote(&base)),
                 cwd: root,
                 writable: true,
                 net: sandbox.network(),
@@ -115,7 +115,7 @@ pub(crate) fn run(
         }
         SupervisorOperation::Save { task_id } => {
             let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
-            let message = format!("oxa work: save task {task_id}").replace('\'', "'\\''");
+            let message = sh_quote(&format!("oxa work: save task {task_id}"));
             let spec = ExecSpec {
                 command: format!(
                     r#"git --no-replace-objects diff --cached --quiet --no-ext-diff --no-textconv --diff-filter=U
@@ -129,7 +129,7 @@ git --no-replace-objects diff --cached --quiet --no-ext-diff --no-textconv
 work_changes=$?
 if test "$work_changes" -eq 0; then exit 0; fi
 if test "$work_changes" -ne 1; then exit 2; fi
-git --no-replace-objects commit -m '{message}'
+git --no-replace-objects commit -m {message}
 "#
                 ),
                 cwd: root,
@@ -185,8 +185,8 @@ git --no-replace-objects commit -m '{message}'
                 relative
             };
             format!(
-                "cd -- '{}' || exit 111\n{command}",
-                dir.to_string_lossy().replace('\'', "'\\''")
+                "cd -- {} || exit 111\n{command}",
+                sh_quote(&dir.to_string_lossy())
             )
         } else {
             command
