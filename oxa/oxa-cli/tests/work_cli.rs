@@ -237,8 +237,8 @@ fn github_issue_input_uses_mock_gh() {
     let gh = env.write(
         "tmp/trusted-tools/gh",
         r##"#!/bin/sh
-[ "$*" = 'issue view 42 --json title,body' ] || exit 9
-printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
+[ "$*" = 'issue view 42 --json title,body,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","comments":[]}'
 "##,
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -252,6 +252,49 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
     assert_eq!(record["id"], "issue-42");
     assert_eq!(record["branch"], "agent/42-work");
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+}
+
+#[test]
+fn github_issue_packet_carries_comment_findings() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r##"#!/bin/sh
+[ "$*" = 'issue view 42 --json title,body,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","comments":[{"author":{"login":"reviewer"},"body":"Review finding: keep the frame when delegating"},{"author":null,"body":""}]}'
+"##,
+    );
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    assert!(!out.stdout.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "worker made no request: {record}");
+    let prompt = requests[0]
+        .messages
+        .iter()
+        .map(|message| message.content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("Fix the test fixture"), "{prompt}");
+    assert!(
+        prompt.contains("Review finding: keep the frame when delegating"),
+        "issue comments were not in the task packet: {prompt}"
+    );
+    assert!(prompt.contains("reviewer"), "{prompt}");
 }
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
