@@ -67,7 +67,11 @@ fn offline_status_preserves_the_subcommand() {
     assert!(a.offline);
     assert_eq!(
         a.subcommand,
-        Some(Subcommand::Status(argv(&["session-1", "--session-dir", "elsewhere"])))
+        Some(Subcommand::Status(argv(&[
+            "session-1",
+            "--session-dir",
+            "elsewhere"
+        ])))
     );
     // Any other leading option keeps the old positional behaviour.
     let a = parse(&["--offline", "-p", "status"]);

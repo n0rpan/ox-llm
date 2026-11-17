@@ -595,8 +595,5 @@ fn status_reports_the_live_turn_queues_and_engine() {
     }
     // A busy session with no activity text still reports a running turn.
     let idle_busy = with_engine(oxa_interactive::Activity::Idle);
-    assert!(
-        idle_busy.iter().any(|l| l == "  Turn: running"),
-        "{idle_busy:?}"
-    );
+    assert!(idle_busy.iter().any(|l| l == "  Turn: running"), "{idle_busy:?}");
 }

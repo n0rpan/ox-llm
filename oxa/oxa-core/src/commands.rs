@@ -395,7 +395,10 @@ fn session_rows(view: StatusView, session: &crate::Session) -> StatusView {
         Some(p) => p.display().to_string(),
         None => "(ephemeral, not saved)".to_string(),
     };
-    let name = state.session_name.clone().unwrap_or_else(|| "(not set)".to_string());
+    let name = state
+        .session_name
+        .clone()
+        .unwrap_or_else(|| "(not set)".to_string());
     let mut view = view.set(Row::SessionFile, file);
     view = view.set(Row::SessionId, state.session_id.clone());
     view = view.set(Row::SessionName, name);
@@ -403,7 +406,10 @@ fn session_rows(view: StatusView, session: &crate::Session) -> StatusView {
         Row::Messages,
         messages_text(stats.user_messages, stats.assistant_messages, stats.tool_calls),
     );
-    view = view.set(Row::Tokens, tokens_text(stats.prompt_tokens, stats.completion_tokens));
+    view = view.set(
+        Row::Tokens,
+        tokens_text(stats.prompt_tokens, stats.completion_tokens),
+    );
     view = view.set(Row::Context, context_text(stats.context_tokens, state.n_ctx));
     if let Some(usage) = session.inner().last_usage {
         view = view.set(Row::LastCache, cache_text(usage.cached, usage.prompt));
@@ -440,7 +446,11 @@ fn session_status_lines(session: &crate::Session) -> Vec<String> {
 /// flight and the last job's outcome. Reads only the session's own state.
 fn turn_text(st: &SessionState) -> String {
     let busy = st.shared.busy.load(std::sync::atomic::Ordering::SeqCst);
-    let mut out = if busy { "running".to_string() } else { "idle".to_string() };
+    let mut out = if busy {
+        "running".to_string()
+    } else {
+        "idle".to_string()
+    };
     let in_flight = st.shared.gate.in_flight.load(std::sync::atomic::Ordering::SeqCst);
     if in_flight {
         out.push_str(", model request in flight");

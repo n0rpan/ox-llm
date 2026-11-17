@@ -78,9 +78,7 @@ pub use prefix::{build_prefix, build_prefix_with, tools_json, PrefixOpts};
 pub use progress::{Progress, ProgressObserver};
 pub use queue::{Gate, Handle, Queue, Shared, SwapRequest, WrapUpReason};
 pub use retry::{backoff_ms, chat_with_retry, RetryPolicy};
-pub use session::{
-    latest_of, prefill_estimate_secs, Deps, Open, OverCap, Session, State, Stats, SwitchPlan,
-};
+pub use session::{latest_of, prefill_estimate_secs, Deps, Open, OverCap, Session, State, Stats, SwitchPlan};
 pub use state::SessionState;
 pub use status_view::{context_text, messages_text, model_text, tokens_text, Row, StatusView};
 pub use subagent::{discover_agents, AgentDef, SubagentHooks};

@@ -190,7 +190,10 @@ fn status_shows_the_shared_view() {
         "  Follow-up: 0".to_string(),
         "  Background jobs: 0 running".to_string(),
     ] {
-        assert!(lines.iter().any(|l| *l == line), "{line:?} missing from {lines:?}");
+        assert!(
+            lines.iter().any(|l| *l == line),
+            "{line:?} missing from {lines:?}"
+        );
     }
     for line in [
         "  Child sessions: unavailable (no child-session listing yet)",
@@ -198,7 +201,10 @@ fn status_shows_the_shared_view() {
         "  Lead: unavailable (no lead facts for this session)",
         "  Cost: unavailable (no cost meter on this surface)",
     ] {
-        assert!(lines.iter().any(|l| *l == line), "{line:?} missing from {lines:?}");
+        assert!(
+            lines.iter().any(|l| *l == line),
+            "{line:?} missing from {lines:?}"
+        );
     }
     // A synthetic queued message is a real queue fact, not a fabricated count.
     s.handle().steer("queued steering".to_string());

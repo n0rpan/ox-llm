@@ -400,8 +400,7 @@ pub(crate) fn run(
             writeln!(out, "No saved session for this directory.")
                 .map_err(|e| OxaError::io("cannot write status", &e))?;
             for line in StatusView::new("(none)").lines() {
-                writeln!(out, "{line}")
-                    .map_err(|e| OxaError::io("cannot write status", &e))?;
+                writeln!(out, "{line}").map_err(|e| OxaError::io("cannot write status", &e))?;
             }
             return Ok(0);
         };

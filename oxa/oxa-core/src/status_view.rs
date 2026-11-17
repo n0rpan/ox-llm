@@ -233,10 +233,16 @@ mod tests {
                 headings.push(heading);
             }
         }
-        assert_eq!(headings, ["Session", "Turn", "Queues", "Engine", "Work", "Budget"]);
+        assert_eq!(
+            headings,
+            ["Session", "Turn", "Queues", "Engine", "Work", "Budget"]
+        );
         assert_eq!(lines.iter().filter(|l| **l == "Session").count(), 1);
         assert!(lines.contains(&"  Turn: idle".to_string()), "{lines:?}");
-        assert!(lines.contains(&"  Background jobs: 0 running".to_string()), "{lines:?}");
+        assert!(
+            lines.contains(&"  Background jobs: 0 running".to_string()),
+            "{lines:?}"
+        );
     }
 
     #[test]
@@ -253,7 +259,10 @@ mod tests {
         let mut view = StatusView::new("s-1");
         view = view.set(Row::Cost, "local (no metered spend)");
         let lines = view.lines();
-        assert!(lines.contains(&"  Cost: local (no metered spend)".to_string()), "{lines:?}");
+        assert!(
+            lines.contains(&"  Cost: local (no metered spend)".to_string()),
+            "{lines:?}"
+        );
         assert!(lines.contains(&"  Lead: unavailable (no lead facts for this session)".to_string()));
     }
 }

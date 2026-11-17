@@ -533,18 +533,42 @@ fn bare_status_reports_the_current_session_without_an_engine() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert!(output.status.success(), "{stderr}");
-    assert!(stdout.starts_with(&format!("Status of session {}\n", newer.id)), "{stdout}");
-    assert!(stdout.contains(&format!("  Session id: {}\n", newer.id)), "{stdout}");
-    assert!(stdout.contains("  Messages: user 1, assistant 1, tool calls 1\n"), "{stdout}");
+    assert!(
+        stdout.starts_with(&format!("Status of session {}\n", newer.id)),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("  Session id: {}\n", newer.id)),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("  Messages: user 1, assistant 1, tool calls 1\n"),
+        "{stdout}"
+    );
     assert!(stdout.contains("  Tokens: input 100, output 10\n"), "{stdout}");
-    assert!(stdout.contains("  Cache, last request: 50 / 100 tokens (50%)\n"), "{stdout}");
+    assert!(
+        stdout.contains("  Cache, last request: 50 / 100 tokens (50%)\n"),
+        "{stdout}"
+    );
     assert!(stdout.contains("  Turn: tool (bash)\n"), "{stdout}");
     assert!(stdout.contains("  Cost: $0.0000\n"), "{stdout}");
-    assert!(!stdout.contains(&older.id), "the older session is not the current one: {stdout}");
+    assert!(
+        !stdout.contains(&older.id),
+        "the older session is not the current one: {stdout}"
+    );
     // Facts this surface cannot read are unavailable with their reason, never a zero.
-    for row in ["Background jobs", "Child sessions", "Goal", "Lead", "Engine queue", "Model"] {
+    for row in [
+        "Background jobs",
+        "Child sessions",
+        "Goal",
+        "Lead",
+        "Engine queue",
+        "Model",
+    ] {
         assert!(
-            stdout.lines().any(|l| l.starts_with(&format!("  {row}: unavailable ("))),
+            stdout
+                .lines()
+                .any(|l| l.starts_with(&format!("  {row}: unavailable ("))),
             "{row} must say why it is unavailable:\n{stdout}"
         );
     }
@@ -565,7 +589,11 @@ fn bare_status_reports_failed_idle_and_stalled_turns() {
             .args(["status"])
             .output()
             .unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         String::from_utf8(output.stdout).unwrap()
     };
 
@@ -625,10 +653,20 @@ fn bare_status_without_a_snapshot_or_a_session_states_what_is_known() {
         .args(["status"])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains(&format!("Status of session {}", sref.id)), "{stdout}");
-    assert!(stdout.contains("  Messages: user 1, assistant 1, tool calls 1\n"), "{stdout}");
+    assert!(
+        stdout.contains(&format!("Status of session {}", sref.id)),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("  Messages: user 1, assistant 1, tool calls 1\n"),
+        "{stdout}"
+    );
     assert!(
         stdout.contains("  Turn: unavailable (this view receives no turn state)\n"),
         "{stdout}"
@@ -641,9 +679,16 @@ fn bare_status_without_a_snapshot_or_a_session_states_what_is_known() {
         .args(["status", "--session-dir", &empty])
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.starts_with("No saved session for this directory.\n"), "{stdout}");
+    assert!(
+        stdout.starts_with("No saved session for this directory.\n"),
+        "{stdout}"
+    );
     let jobs = "  Background jobs: unavailable (no live job registry on this surface)";
     assert!(stdout.contains(jobs), "{stdout}");
 }
