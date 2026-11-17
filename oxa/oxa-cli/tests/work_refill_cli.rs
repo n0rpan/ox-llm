@@ -200,4 +200,29 @@ cat "$0.reply"
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
     assert!(invoke(&env, &config, "synthetic\n", false).status.success());
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
+    let peer = env
+        .work()
+        .parent()
+        .unwrap()
+        .join(".oxa-worktrees")
+        .join(env.work().file_name().unwrap())
+        .join("synthetic-task");
+    fs::create_dir_all(&peer).unwrap();
+    fs::set_permissions(&peer, fs::Permissions::from_mode(0o700)).unwrap();
+    let original: serde_json::Value = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    for key in ["queue", "claims", "pause", "log"] {
+        let path = peer.join(key);
+        if matches!(key, "queue" | "claims") {
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let mut unsafe_config = original.clone();
+        unsafe_config[key] = json!(path);
+        fs::write(&config, unsafe_config.to_string()).unwrap();
+        assert_eq!(
+            invoke(&env, &config, "synthetic\n", false).status.code(),
+            Some(2),
+            "worker-writable {key} must be refused",
+        );
+    }
 }

@@ -20,6 +20,7 @@ fn private(path: &Path, uid: u32) -> Result<Value, String> {
 pub(super) fn run(
     args: &[String],
     root: &Path,
+    common: &Path,
     env: &oxa_config::Env,
     dirs: &oxa_config::Dirs,
     policy: &oxa_work::RunPolicy,
@@ -74,9 +75,7 @@ pub(super) fn run(
     }
     let owner_path = |key| -> Result<PathBuf, String> {
         let path = PathBuf::from(text(&value, key)?);
-        if !path.is_absolute() || path.starts_with(root) {
-            return Err("board state must be outside the source project".into());
-        }
+        crate::work_cmd::protected_storage(&path, root, common)?;
         Ok(path)
     };
     let queue = owner_path("queue")?;

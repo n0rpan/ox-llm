@@ -412,12 +412,13 @@ impl GitHub for Reader<'_> {
 pub(crate) fn run(
     args: &[String],
     root: &Path,
+    common: &Path,
     env: &oxa_config::Env,
     dirs: &oxa_config::Dirs,
     policy: &oxa_work::RunPolicy,
 ) -> Result<i32, String> {
     if args.first().is_some_and(|arg| arg == "--refill") {
-        return refill::run(args, root, env, dirs, policy);
+        return refill::run(args, root, common, env, dirs, policy);
     }
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
