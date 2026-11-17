@@ -31,8 +31,25 @@ impl Routed {
         // CLI model resolution needs a catalog first. If that catalog cannot
         // be discovered, retain the selected dynamic provider's saved failure
         // before the caller can replace it with a model-not-found error.
-        if let Some(error) = requested.and_then(|model| self.dynamic_error(model)) {
-            return Err(error.clone());
+        let requested_local = requested.is_some_and(|pattern| {
+            // Preflight only catalog IDs, without opening either backend. The
+            // caller remains responsible for endpoint/provider resolution.
+            let available: Vec<_> = self
+                .models()
+                .into_iter()
+                .map(|model| oxa_config::ModelRef {
+                    endpoint: String::new(),
+                    model,
+                    thinking: None,
+                })
+                .collect();
+            oxa_config::resolve_model(pattern, None, &available)
+                .is_ok_and(|resolved| self.local_models.contains(&resolved.model))
+        });
+        if !requested_local {
+            if let Some(error) = requested.and_then(|model| self.dynamic_error(model)) {
+                return Err(error.clone());
+            }
         }
         if self.local.is_err() && self.cloud.is_err() {
             return Err(self.cloud.err().unwrap());
@@ -271,6 +288,22 @@ mod tests {
             startup.cloud_models.clear();
             startup.dynamic_go = true;
             assert_eq!(startup.into_engine(Some(req.model)).err().unwrap(), saved);
+        }
+    }
+    #[test]
+    fn suffix_preflight_preserves_whole_cloud_identity_and_unknown_level_errors() {
+        for (requested, cloud_alias) in [
+            ("opencode/custom-local:high", Some("opencode/custom-local:high")),
+            ("opencode/custom-local:not-a-level", None),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let saved = oxa_proto::offline_error("synthetic Go");
+            let mut router = routed(Err(saved.clone()), calls.clone());
+            router.local_models = BTreeSet::from(["opencode/custom-local".into()]);
+            router.cloud_models = cloud_alias.into_iter().map(str::to_owned).collect();
+            router.dynamic_go = true;
+            assert_eq!(router.into_engine(Some(requested)).err().unwrap(), saved);
+            assert!(calls.lock().unwrap().is_empty());
         }
     }
     #[test]

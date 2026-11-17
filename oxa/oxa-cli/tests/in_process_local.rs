@@ -5,7 +5,7 @@ use std::process::{Command, Output};
 
 fn local() -> Value {
     json!({"binary":"/synthetic/not-launched-oxe", "models":{"synthetic":{"model":"/synthetic/model.gguf","arguments":["--engine","stub","--ctx-size","4096"]}},
-        "limits":{"synthetic":{"context_window":4096,"max_output":64,"required_available_bytes":1048576}}})
+        "limits":{"synthetic":{"context_window":4096,"max_output":64,"allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}})
 }
 fn run(env: &TestEnv, url: &str, args: &[&str]) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
