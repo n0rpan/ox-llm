@@ -23,11 +23,14 @@ fn syntaxes() -> &'static SyntaxSet {
 /// The caller decides *when*: the interactive loop is meant to call it after the first editable
 /// frame, off the UI thread, so startup never waits for it. Nothing calls it at startup.
 pub fn warm_syntaxes() -> bool {
+    // The fast path: a later call never rebuilds the set just to fail to store it.
     if SYNTAXES.get().is_some() {
         return false;
     }
-    let _ = syntaxes();
-    true
+    // Claim the slot itself instead of "check, then load, then claim": with two callers this can
+    // be called concurrently, and only the caller whose set is stored did the load. A caller that
+    // loses the race (it built a set the slot did not keep) reports `false`.
+    SYNTAXES.set(SyntaxSet::load_defaults_newlines()).is_ok()
 }
 
 /// V022 (#884): whether the bundled syntax set is loaded (the warm-up ran, or a highlight did).
