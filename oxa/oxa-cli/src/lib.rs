@@ -27,6 +27,7 @@ mod home_cwd;
 mod hooks;
 mod identity_cmd;
 mod in_process;
+pub mod lead_page;
 pub mod lead_panels;
 mod limits;
 mod login_cmd;
