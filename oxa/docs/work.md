@@ -1,5 +1,25 @@
 # Unattended work
 
+`oxa work board --shadow --repo OWNER/REPO --once` captures a read-only GitHub sample.
+For continuous five-minute sampling use `--token-stdin`: the caller supplies a fresh
+newline-terminated App token on a private pipe before each sample. No token is
+retained across samples or read from a credential file. The five-minute user timer
+may instead remint externally and repeat `--once` with `GH_TOKEN`. It requires a
+trusted source project and an explicit `GH_TOKEN` supplied by a GitHub App caller;
+offline mode refuses before GitHub or log creation. No worker or mutation runs.
+The private, locked `work/<project-hash>/board/OWNER/REPO/board-shadow.jsonl` under the agent
+directory appends `{schema_version:1,observed_at,board,would_take}`. Eligible shared
+board entries form `would_take`; shadow reserves no leases or attempts. Use one
+GitHub repository per capture. Read errors and incomplete connections stop sampling.
+Limit: 100 PRs/items per connection. Reported checks are matched against the base's
+classic protection and active repository/organization rulesets; missing required
+contexts and unknown/no required checks stay pending. Review
+requires GitHub's approval decision and all latest approving writer reviews at the
+current head; older approvals wait, including pure base merges without fresh evidence.
+Snapshot reads reject changing open-PR sets and responses above 4 MiB. Detailed
+merge state is checked; behind heads can be queue-ready when the main merge queue
+composes and validates them, without requesting pre-emptive main merges.
+
 The opt-in `oxa_work::board` library derives one next action per open PR from a
 single normalized GitHub snapshot. `Policy.enabled` defaults to false and makes
 no GitHub reads while disabled. Findings take precedence over failed required CI,
@@ -10,9 +30,15 @@ Active leases and a per-PR UTC daily attempt cap
 make entries ineligible without hiding them. Snapshot adapters must supply the
 complete open set, current-head required checks, unresolved findings, source-removal
 facts and review-policy approval for the PR's own diff. Callers
-own durable state and must reserve attempts and leases atomically before acting;
-this read-only core neither claims work nor writes to GitHub. CLI/shadow polling
-is a separate adapter.
+select private repository-scoped claim storage outside worker-writable binds.
+`Claims::open(root).snapshot()` supplies durable state for `Board::read`.
+Before dispatch, `claim(entry, policy, holder, now, ttl)` atomically reserves a
+lease and an attempt under a kernel file lock, then syncs state before returning.
+The default daily cap is three; a crash after reservation consumes an attempt.
+`release(number, lease)` fences stale workers and never refunds attempts. Active
+leases survive UTC midnight; corrupt state, or state that vanished after a PR's
+first reservation, fails closed. Execution, fresh-head validation and CLI polling
+remain in the adapter; core claim storage never spawns workers or writes to GitHub.
 
 `oxa work tasks.json` opts into sequential tasks in separate git worktrees.
 Run it inside the project repository. The JSON file is an array:
