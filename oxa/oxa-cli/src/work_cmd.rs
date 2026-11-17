@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String> {
+    let user_settings = oxa_config::Settings::load(dirs, cwd, false);
     crate::dispatch::project_trusted(
         &crate::Args::default(),
         env,
@@ -11,6 +12,7 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
         cwd,
         &oxa_perm::gated_resources(cwd),
         false,
+        &user_settings,
         &mut vec![],
     )
     .map_err(|e| e.to_string())

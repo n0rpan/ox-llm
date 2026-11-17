@@ -404,6 +404,11 @@ fn drive(
     let mut lp = Loop::new(term, opts, handle, cmds, initial);
     lp.worker = stop;
     lp.resources = resources;
+    // V022 (#884): the syntax set is loaded lazily, so the first code block in a session paid for
+    // it. Load it once, after the first frame is on screen, on a short-lived thread: startup never
+    // waits for it and no idle thread stays behind. The load is bounded (one bundled set, kept in
+    // a `OnceLock`), so repeated sessions and repeated frames cost nothing.
+    let mut warmed = false;
     let code = loop {
         // State first: worker and dialog messages, then input (so a key sees the run's state).
         let mut disconnected = false;
@@ -439,6 +444,12 @@ fn drive(
         lp.tick(animating);
         if lp.dirty {
             lp.draw(term);
+            if !warmed {
+                warmed = true;
+                let _ = thread::Builder::new()
+                    .name("oxa-syntax-warm".to_string())
+                    .spawn(oxa_tui::warm_syntaxes);
+            }
         }
         if let Some(code) = lp.quit {
             break code;

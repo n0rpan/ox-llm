@@ -637,9 +637,19 @@ fn prepare(
         cwd,
         &gated,
         mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty,
+        &user_settings,
         &mut notices,
     )?;
-    let mut settings = child.apply(Settings::load(dirs, cwd, trusted));
+    // V022 (#884): an untrusted project's second load has exactly the same inputs as the
+    // user-only one above — same `dirs`, `cwd`, trust and child override, and nothing in
+    // between changes them — so reuse the parsed settings instead of reading the same file
+    // again. A trusted project reads its own layer, and that view is never merged with the
+    // user-only one.
+    let mut settings = if trusted {
+        child.apply(Settings::load(dirs, cwd, true))
+    } else {
+        child.apply(user_settings.clone())
+    };
     // CLI-045 (pi cli.md): `--verbose` overrides `quietStartup` for this run (in memory only).
     if a.verbose {
         settings = settings.with_override("quietStartup", Value::Bool(false));
@@ -937,11 +947,14 @@ pub(crate) fn project_trusted(
     cwd: &Path,
     gated: &[String],
     interactive: bool,
+    // V022 (#884): the caller's user-only settings (`Settings::load(dirs, cwd, false)`), for the
+    // same `dirs`, `cwd` and trust, so the read is not repeated. Never the project view: this
+    // decision is made *before* trust, from the user's own layer only.
+    user_settings: &Settings,
     notices: &mut Vec<(Level, String)>,
 ) -> Result<bool, OxaError> {
     // Trust: the user's own settings decide the default; project settings load only when the
     // project is trusted.
-    let user_settings = Settings::load(dirs, cwd, false);
     let default = match user_settings.string("defaultProjectTrust").as_deref() {
         Some("always") => DefaultTrust::Trust,
         Some("never") => DefaultTrust::Untrusted,
@@ -956,7 +969,7 @@ pub(crate) fn project_trusted(
     // SEC-003 / EXT-008: the user-level and `-e` extensions answer `project_trust` before the
     // saved decision and the default (pi's `resolveProjectTrusted`).
     let extension = if approve.is_none() && !gated.is_empty() {
-        extension_trust(a, dirs, cwd, &user_settings, &mut trust_store, notices)
+        extension_trust(a, dirs, cwd, user_settings, &mut trust_store, notices)
     } else {
         None
     };
