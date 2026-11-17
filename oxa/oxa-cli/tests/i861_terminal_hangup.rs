@@ -103,7 +103,7 @@ fn lost_pty_cancels_active_tool_and_preserves_session() {
     terminal_loss("tool");
 }
 
-/// EOF on a pipe is normal headless completion, not an interactive terminal hangup.
+/// Pipe EOF preserves the existing empty-print usage error and idle RPC outcome.
 #[test]
 fn headless_stdin_eof_returns_without_a_model_turn() {
     for mode in ["print", "rpc"] {
@@ -125,8 +125,13 @@ args += ['-p'] if sys.argv[2] == 'print' else ['--mode', 'rpc']
 child = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 try:
     out, err = child.communicate(input=b'', timeout=3)
-    assert child.returncode == 4, (child.returncode, err.decode())
-    assert b'"outcome":"nothing_to_do"' in err, err.decode()
+    expected = 2 if sys.argv[2] == 'print' else 4
+    assert child.returncode == expected, (child.returncode, err.decode())
+    if sys.argv[2] == 'print':
+        assert b'"error_class":"usage"' in err, err.decode()
+        assert b'no prompt:' in err, err.decode()
+    else:
+        assert b'"outcome":"nothing_to_do"' in err, err.decode()
 finally:
     if child.poll() is None:
         child.kill()
