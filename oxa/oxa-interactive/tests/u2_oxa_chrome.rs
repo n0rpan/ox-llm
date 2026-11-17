@@ -1056,6 +1056,25 @@ fn ascii_skin_is_pure_ascii() {
     }
 }
 
+/// The splash names the endpoint and, when the engine observes one, its memory policy; an
+/// engine that observes none shows the endpoint alone, in both skins.
+#[test]
+fn splash_shows_endpoint_and_memory_policy() {
+    let theme = Theme::plain();
+    let scoped = HeaderInfo {
+        memory_policy: Some("scope"),
+        ..info()
+    };
+    for skin in [Skin::Oxa, Skin::OxaAscii] {
+        let lines = oxa_splash(&scoped, "oxa", true, 100, &theme, skin).join("\n");
+        assert!(lines.contains("127.0.0.1:8090"), "endpoint in {skin:?}: {lines}");
+        assert!(lines.contains("scope"), "policy in {skin:?}: {lines}");
+        let plain = oxa_splash(&info(), "oxa", true, 100, &theme, skin).join("\n");
+        assert!(plain.contains("127.0.0.1:8090"), "endpoint in {skin:?}: {plain}");
+        assert!(!plain.contains("scope"), "no policy in {skin:?}: {plain}");
+    }
+}
+
 #[test]
 fn ascii_skin_splash_cloud_label_is_ascii() {
     let theme = Theme::plain();

@@ -214,12 +214,6 @@ pub struct HeaderInfo {
     pub model_provider: Option<&'static str>,
 }
 
-/// The observed memory policy of the in-process engine child, after the endpoint. `None` (an
-/// engine that does not observe one) adds nothing, so the line keeps just the endpoint.
-fn memory_note(policy: Option<&'static str>) -> Option<String> {
-    policy.map(|policy| format!(" · {policy}"))
-}
-
 /// The startup header: logo line, key hints from the keymap, loaded resources. With
 /// `quiet == true` (`quietStartup`) it is empty. `vm.header_override` replaces it.
 pub fn render_header(
@@ -277,15 +271,13 @@ pub fn render_header(
         };
         format!(" · {location} · {}", info.model)
     };
-    // A real endpoint, never the policy word, and no trailing space when nothing follows.
-    out.push(truncate_to_width(
-        &theme.dim(&match memory_note(info.memory_policy) {
-            Some(note) => format!("{}{note}", info.engine_url),
-            None => info.engine_url.clone(),
-        }),
-        w,
-        "...",
-    ));
+    // The endpoint keeps its own bytes; the observed policy is a note after it, and an
+    // engine that observes none adds nothing.
+    let endpoint = match info.memory_policy {
+        Some(policy) => format!("{} · {policy}", info.engine_url),
+        None => info.engine_url.clone(),
+    };
+    out.push(truncate_to_width(&theme.dim(&endpoint), w, "..."));
     // pi `showLoadedResources`: a blank line, then per section `[Name]` (mdHeading) and the
     // compact list (dim, indented), each followed by a blank line.
     let sections: Vec<&(String, Vec<String>)> = info
