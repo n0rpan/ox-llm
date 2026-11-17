@@ -1,5 +1,5 @@
 //! Atomic publication only. The caller must reserve a core claim and authorize the target first.
-use crate::{Result, board::Policy};
+use crate::{board::Policy, Result};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};

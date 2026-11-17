@@ -1,6 +1,6 @@
 //! Queue-only consuming adapter; registration, prepared taskfiles and activation are user-owned.
 use oxa_work::board::{assignment::Worker, *};
-use oxa_work::{Result, helper_queue};
+use oxa_work::{helper_queue, Result};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fs, path::Path};
 /// Read-only acquisition and authoritative revision/action revalidation; no write capability.

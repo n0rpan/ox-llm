@@ -1,4 +1,4 @@
-//! One read-only GraphQL projection for queue membership and a selected release issue.
+//! One read-only GraphQL projection for main CI, queue membership and a selected release issue.
 //! No scheduler decisions are inferred here. Checkbox states are reported, not validated.
 use oxa_proto::work::{PullRequest, MAX_ITEMS};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
@@ -7,9 +7,22 @@ use serde_json::Value;
 type Result<T> = std::result::Result<T, &'static str>;
 
 pub struct Panels {
+    /// True only when GitHub reports an error or failure on the current main head.
+    pub main_red: bool,
+    /// Unix seconds, only when the observed main head is itself a verified merge.
+    main_merged_at: Option<u64>,
     /// None means GitHub did not supply a merge queue; Some(empty) is an observed empty queue.
     pub queue: Option<Vec<PullRequest>>,
     pub release: Option<(u64, Vec<(bool, String)>)>,
+}
+
+impl Panels {
+    /// Compare with the source observation time, so an old sample cannot become a new alarm.
+    pub fn main_merge_stalled(&self, observed_at: u64) -> bool {
+        self.main_merged_at
+            .and_then(|merged_at| observed_at.checked_sub(merged_at))
+            .is_some_and(|age| age >= 45 * 60)
+    }
 }
 
 /// The adapter sends one query per refresh, never a per-PR polling loop.
@@ -32,7 +45,18 @@ pub fn query(repo: &str, release_issue: Option<u64>) -> Result<String> {
     let release = release_issue.map_or(String::new(), |number| {
         format!("issue(number:{number}){{number body}}")
     });
-    Ok(format!("query{{repository(owner:{:?},name:{:?}){{mergeQueue{{entries(first:100){{totalCount nodes{{pullRequest{{number headRefOid}}}}}}}}{release}}}}}", parts[0], parts[1]))
+    let main = r#"main:ref(qualifiedName:"refs/heads/main"){target{... on Commit{
+        oid statusCheckRollup{state} associatedPullRequests(first:10){
+            pageInfo{hasNextPage} nodes{repository{id} baseRefName mergedAt mergeCommit{oid}}
+        }
+    }}}"#;
+    Ok(format!(
+        "query{{repository(owner:{:?},name:{:?}){{id \
+         {main}\
+         mergeQueue(branch:\"main\"){{entries(first:100){{totalCount nodes{{pullRequest{{number headRefOid}}}}}}}}\
+         {release}}}}}",
+        parts[0], parts[1]
+    ))
 }
 
 /// Fixed diagnostics only. Arbitrary body/header/token/debug fields never reach the view.
@@ -66,11 +90,7 @@ pub fn parse(bytes: &[u8], release_issue: Option<u64>) -> Result<Panels> {
                 .ok_or("invalid queued PR")?;
             let head = pr["headRefOid"]
                 .as_str()
-                .filter(|s| {
-                    matches!(s.len(), 40 | 64)
-                        && s.bytes()
-                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                })
+                .filter(|s| is_git_oid(s))
                 .ok_or("invalid queue commit")?;
             if !seen.insert(number) {
                 return Err("duplicate queue entry");
@@ -97,7 +117,41 @@ pub fn parse(bytes: &[u8], release_issue: Option<u64>) -> Result<Panels> {
     } else {
         None
     };
-    Ok(Panels { queue, release })
+    let main_red = matches!(
+        repo.pointer("/main/target/statusCheckRollup/state")
+            .and_then(Value::as_str),
+        Some("ERROR" | "FAILURE")
+    );
+    Ok(Panels {
+        main_red,
+        main_merged_at: verified_main_merge_time(repo),
+        queue,
+        release,
+    })
+}
+
+fn is_git_oid(s: &str) -> bool {
+    matches!(s.len(), 40 | 64)
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn verified_main_merge_time(repo: &Value) -> Option<u64> {
+    let repo_id = repo["id"].as_str().filter(|s| !s.is_empty())?;
+    let target = &repo["main"]["target"];
+    let head = target["oid"].as_str().filter(|s| is_git_oid(s))?;
+    let prs = &target["associatedPullRequests"];
+    if prs["pageInfo"]["hasNextPage"].as_bool() != Some(false) {
+        return None;
+    }
+    let nodes = prs["nodes"].as_array().filter(|nodes| nodes.len() <= 10)?;
+    let mut matches = nodes.iter().filter(|pr| {
+        pr["repository"]["id"].as_str() == Some(repo_id)
+            && pr["baseRefName"].as_str() == Some("main")
+            && pr["mergeCommit"]["oid"].as_str() == Some(head)
+    });
+    let time = oxa_session::parse_utc_seconds(matches.next()?["mergedAt"].as_str()?)?;
+    matches.next().is_none().then_some(time)
 }
 
 fn label(items: &mut [(bool, String)], stack: &[(Option<usize>, bool)], text: &str) -> Result<()> {
@@ -249,9 +303,16 @@ mod tests {
         assert!(parse(absent, None).unwrap().queue.is_none());
         let empty = br#"{"data":{"repository":{"mergeQueue":{"entries":{"totalCount":0,"nodes":[]}}}}}"#;
         assert!(parse(empty, None).unwrap().queue.unwrap().is_empty());
-        assert!(query("example/project", Some(19))
-            .unwrap()
-            .contains("issue(number:19)"));
+        let query_text = query("example/project", Some(19)).unwrap();
+        for field in [
+            "ref(qualifiedName:\"refs/heads/main\")",
+            "statusCheckRollup{state}",
+            "nodes{repository{id} baseRefName mergedAt mergeCommit{oid}}",
+            "mergeQueue(branch:\"main\")",
+            "issue(number:19)",
+        ] {
+            assert!(query_text.contains(field));
+        }
         for repo in ["example", "example/project/extra", "example/\"injection"] {
             assert!(query(repo, None).is_err());
         }

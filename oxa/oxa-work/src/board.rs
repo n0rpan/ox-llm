@@ -6,7 +6,9 @@ mod claims;
 pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, ReleaseRecord};
 pub mod assignment;
 mod intake;
+pub mod landing;
 pub use intake::{ImportState, Issue, Snapshot};
+pub mod review;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -135,6 +137,9 @@ pub struct Entry {
     pub attempts_today: u32,
     pub eligible: bool,
 }
+
+/// Maximum open pull requests in a complete repository board observation.
+pub const MAX_OPEN_PULL_REQUESTS: usize = 1_000;
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Board {
