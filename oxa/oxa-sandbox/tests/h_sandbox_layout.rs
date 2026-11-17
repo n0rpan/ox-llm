@@ -510,7 +510,11 @@ fn real_a_rustup_toolchain_without_shims_runs_cargo() {
     assert_eq!(exit, Some(0), "{out}");
     assert!(out.contains("cargo from 1.0.0-test"), "{out}");
     // The toolchain stays read-only.
-    let (exit, _) = run(&b, "touch \"$HOME/.rustup/toolchains/pinned/bin/evil\"", &env.work());
+    let (exit, _) = run(
+        &b,
+        "touch \"$HOME/.rustup/toolchains/pinned/bin/evil\"",
+        &env.work(),
+    );
     assert_ne!(exit, Some(0));
     let evil = home.join(".rustup/toolchains/pinned/bin/evil");
     assert!(!evil.exists());
