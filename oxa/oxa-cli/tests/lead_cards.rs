@@ -42,6 +42,7 @@ fn crowded_card_keeps_source_and_counts_within_twelve_lines() {
             branch: "feature".into(),
             worktree: "worktree".into(),
             session_id: None,
+            step: oxa_proto::work::TaskStep::Worker,
         });
     }
     s.blocked.push(Blocked {
