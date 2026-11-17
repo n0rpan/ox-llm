@@ -3738,7 +3738,8 @@ mod content_frames_tests {
         slot.drawn(60_000);
         assert_eq!(slot.frame_due_in(true, false, true, 60_000), Some(33));
         // The clock jumps back an hour mid-stream.
-        let now = 60_000 - 3_600_000;
+        const HOUR: u64 = 3_600_000;
+        let now = 60_000 + HOUR - HOUR * 2;
         assert_eq!(
             slot.frame_due_in(true, false, true, now),
             Some(0),
