@@ -281,10 +281,7 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","comments":
         .output()
         .unwrap();
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        out.status.code() == Some(0),
-        "issue task did not run: {stderr}"
-    );
+    assert_eq!(out.status.code(), Some(0), "issue task did not run: {stderr}");
     let record: serde_json::Value =
         serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {stderr}"));
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
