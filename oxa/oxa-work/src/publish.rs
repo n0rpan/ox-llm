@@ -17,13 +17,21 @@ fn context(
     observer: &dyn CheckpointObserver,
 ) -> Result<(state::Writer, File, state::State)> {
     super::validate(task)?;
+    super::verify_task_storage(&policy.storage).map_err(|e| format!("task storage: {e}"))?;
     let path = policy.storage.join(format!("{}.json", task.id));
     let lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .mode(0o600)
+        .custom_flags(super::shadow::OWNER_FILE_FLAGS)
         .open(path.with_extension("lock"))
         .map_err(|e| e.to_string())?;
+    let metadata = lock
+        .metadata()
+        .map_err(|e| format!("cannot inspect task lock: {e}"))?;
+    // SAFETY: geteuid has no arguments or preconditions.
+    if !super::shadow::regular_file_owned_by(&metadata, unsafe { libc::geteuid() }) {
+        return Err("cannot lock task: lock must be an owner-controlled regular file".into());
+    }
     lock.try_lock()
         .map_err(|e| format!("task is already running: {e}"))?;
     let value = state::load(&path)?;
