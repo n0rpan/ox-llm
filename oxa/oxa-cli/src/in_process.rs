@@ -36,6 +36,7 @@ pub(crate) fn select(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
+    requested: Option<&str>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
     if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
@@ -62,9 +63,10 @@ pub(crate) fn select(
             },
             local_models: aliases("oxa.local.models"),
             cloud_models: aliases("oxa.cloud.models"),
+            dynamic_go: user.get("oxa.cloud.opencode.enabled") == Some(&Value::Bool(true)),
             default: effective.string("defaultModel"),
         }
-        .into_engine();
+        .into_engine(requested);
     }
     if user.bool(oxc_local::LOCAL_SETTING, false) {
         return oxc_local::configured_engine(

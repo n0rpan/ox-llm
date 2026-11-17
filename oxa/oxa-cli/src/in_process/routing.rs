@@ -9,10 +9,11 @@ pub(super) struct Routed {
     pub cloud: Backend,
     pub local_models: BTreeSet<String>,
     pub cloud_models: BTreeSet<String>,
+    pub dynamic_go: bool,
     pub default: Option<String>,
 }
 impl Routed {
-    pub fn into_engine(mut self) -> Result<Arc<dyn Engine>, OxaError> {
+    pub fn into_engine(mut self, requested: Option<&str>) -> Result<Arc<dyn Engine>, OxaError> {
         if let Ok(info) = self
             .cloud
             .as_ref()
@@ -27,16 +28,31 @@ impl Routed {
                 "Native local and cloud model aliases must be distinct.",
             ));
         }
+        // CLI model resolution needs a catalog first. If that catalog cannot
+        // be discovered, retain the selected dynamic provider's saved failure
+        // before the caller can replace it with a model-not-found error.
+        if let Some(error) = requested.and_then(|model| self.dynamic_error(model)) {
+            return Err(error.clone());
+        }
         if self.local.is_err() && self.cloud.is_err() {
             return Err(self.cloud.err().unwrap());
         }
         Ok(Arc::new(self))
+    }
+    fn dynamic_error(&self, model: &str) -> Option<&OxaError> {
+        if self.dynamic_go && model.starts_with("opencode/") && !self.local_models.contains(model) {
+            self.cloud.as_ref().err()
+        } else {
+            None
+        }
     }
     fn backend(&self, model: &str) -> Result<&dyn Engine, OxaError> {
         let backend = if self.local_models.contains(model) {
             &self.local
         } else if self.cloud_models.contains(model) {
             &self.cloud
+        } else if let Some(error) = self.dynamic_error(model) {
+            return Err(error.clone());
         } else {
             return Err(OxaError::new(codes::INVALID, "Unknown native model."));
         };
@@ -157,6 +173,7 @@ mod tests {
             cloud,
             local_models: BTreeSet::from(["local".into()]),
             cloud_models: BTreeSet::from(["cloud".into()]),
+            dynamic_go: false,
             default: Some("cloud".into()),
         }
     }
@@ -164,7 +181,7 @@ mod tests {
     fn resolved_model_routes_discovery_chat_counts_and_refusal_without_fallback() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let engine = routed(Ok(Arc::new(Probe("cloud", calls.clone()))), calls.clone())
-            .into_engine()
+            .into_engine(None)
             .unwrap();
         assert_eq!(engine.info(None).unwrap().model, "cloud");
         let prefix = FrozenPrefix {
@@ -207,7 +224,7 @@ mod tests {
     fn offline_cloud_does_not_hide_local_discovery_or_fall_back_for_cloud_requests() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let engine = routed(Err(oxa_proto::offline_error("synthetic cloud")), calls.clone())
-            .into_engine()
+            .into_engine(None)
             .unwrap();
         assert_eq!(engine.info(None).unwrap().model, "local");
         assert_eq!(engine.info(Some("cloud")).unwrap_err().code, codes::OFFLINE);
@@ -218,7 +235,61 @@ mod tests {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let mut router = routed(Ok(Arc::new(Probe("cloud", calls.clone()))), calls.clone());
         router.local_models.insert("cloud".into());
-        assert!(router.into_engine().is_err());
+        assert!(router.into_engine(None).is_err());
         assert!(calls.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn dynamic_go_retains_saved_failure_without_static_alias_or_execution() {
+        let prefix = FrozenPrefix {
+            sections: vec![],
+            tools_json: "[]".into(),
+            sha256: [0; 32],
+        };
+        for saved in [
+            oxa_proto::offline_error("synthetic Go"),
+            OxaError::new(
+                "cloud_credentials_unavailable",
+                "Synthetic credentials unavailable",
+            ),
+            OxaError::new("cloud_discovery_invalid", "Synthetic discovery invalid"),
+        ] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut router = routed(Err(saved.clone()), calls.clone());
+            router.cloud_models.clear();
+            router.dynamic_go = true;
+            let engine = router.into_engine(None).unwrap();
+            assert_eq!(engine.info(None).unwrap().model, "local");
+            let req = ChatRequest::new(&prefix, &[], "opencode/synthetic");
+            assert_eq!(engine.info(Some(req.model)).unwrap_err(), saved);
+            assert_eq!(engine.count_prompt(&req).unwrap_err(), saved);
+            assert_eq!(
+                engine.chat(&req, &CancelToken::new(), &mut |_| {}).unwrap_err(),
+                saved
+            );
+            assert!(calls.lock().unwrap().is_empty());
+            let mut startup = routed(Err(saved.clone()), calls.clone());
+            startup.cloud_models.clear();
+            startup.dynamic_go = true;
+            assert_eq!(startup.into_engine(Some(req.model)).err().unwrap(), saved);
+        }
+    }
+    #[test]
+    fn disabled_or_successfully_discovered_go_does_not_claim_unknown_models() {
+        for enabled in [false, true] {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let cloud = if enabled {
+                Ok(Arc::new(Probe("cloud", calls.clone())) as Arc<dyn Engine>)
+            } else {
+                Err(oxa_proto::offline_error("synthetic Go"))
+            };
+            let mut router = routed(cloud, calls.clone());
+            router.cloud_models.clear();
+            router.dynamic_go = enabled;
+            let engine = router.into_engine(Some("opencode/unknown")).unwrap();
+            let error = engine.info(Some("opencode/unknown")).unwrap_err();
+            assert_eq!(error.code, codes::INVALID);
+            assert_eq!(error.message, "Unknown native model.");
+            assert!(calls.lock().unwrap().is_empty());
+        }
     }
 }
