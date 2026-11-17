@@ -83,7 +83,8 @@ fn durable_daily_cap_and_stale_release_fencing() {
     let store = fixture.store();
     let first = fixture.claim(10, 10).unwrap();
     assert!(fixture.claim(19, 10).is_none());
-    let second = fixture.claim(20, 10).unwrap();
+    assert!(store.release(1, &first).unwrap());
+    let second = fixture.claim(10, 10).unwrap();
     assert!(!store.release(1, &first).unwrap());
     assert!(store.release(1, &second).unwrap());
     let third = fixture.claim(21, 10).unwrap();
@@ -180,6 +181,9 @@ fn concurrent_processes_reserve_exactly_one_attempt() {
         })
         .collect();
     let mut winners = 0;
+    for _ in 0..256 {
+        fixture.store().snapshot().unwrap();
+    }
     for child in children {
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success());
