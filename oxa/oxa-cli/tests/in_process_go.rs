@@ -1146,7 +1146,14 @@ fn check_private_stream_cause(cause: &str, reply: Reply) {
     setup(&env, &format!("http://{}", mock.address()));
     let output = run(&env, &["--no-tools", "--mode", "json", "-p", "Synthetic request"]);
     assert!(!output.status.success());
-    assert_eq!(terminal(&output)["error_class"], "stream_broken");
+    assert_eq!(
+        terminal(&output)["error_class"],
+        if cause == "transport" {
+            "engine_http"
+        } else {
+            "stream_broken"
+        }
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(&format!("cause={cause}\n")),
