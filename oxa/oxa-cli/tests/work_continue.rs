@@ -86,11 +86,7 @@ fn existing_task_branch_starts_at_its_pushed_head() {
     git(&env, &project(&env), &["push", "--quiet", "origin", "agent/test"]);
     // The fetched tracking tip holds the newest pushed work while the local ref
     // still names the commit an earlier checkout had.
-    git(
-        &env,
-        &project(&env),
-        &["reset", "--quiet", "--hard", &published],
-    );
+    git(&env, &project(&env), &["reset", "--quiet", "--hard", &published]);
     git(&env, &project(&env), &["checkout", "--quiet", "main"]);
     let stale = git(&env, &project(&env), &["rev-parse", "agent/test"]);
     assert_ne!(stale, pushed);
@@ -114,11 +110,7 @@ fn a_local_commit_off_the_pushed_head_keeps_its_own_tip() {
     let published = git(&env, &project(&env), &["rev-parse", "HEAD"]);
     commit_file(&env, "pushed.txt", "pushed version\n");
     git(&env, &project(&env), &["push", "--quiet", "origin", "agent/test"]);
-    git(
-        &env,
-        &project(&env),
-        &["reset", "--quiet", "--hard", &published],
-    );
+    git(&env, &project(&env), &["reset", "--quiet", "--hard", &published]);
     // Neither side contains the other: the pushed tip omits this local commit.
     commit_file(&env, "local.txt", "local version\n");
     let local = git(&env, &project(&env), &["rev-parse", "HEAD"]);
@@ -153,12 +145,12 @@ fn several_ahead_tracking_tips_keep_the_local_tip() {
         &project(&env),
         &["update-ref", "refs/remotes/other/agent/test", &other],
     );
-    git(
-        &env,
-        &project(&env),
-        &["reset", "--quiet", "--hard", &published],
-    );
+    // Return to the branch before resetting: a reset on the detached head moves
+    // only HEAD, leaving the branch on the pushed commit.
+    git(&env, &project(&env), &["checkout", "--quiet", "agent/test"]);
+    git(&env, &project(&env), &["reset", "--quiet", "--hard", &published]);
     git(&env, &project(&env), &["checkout", "--quiet", "main"]);
+    assert_eq!(git(&env, &project(&env), &["rev-parse", "agent/test"]), published);
 
     let record = run(&env, vec![ScriptTurn::text("nothing")]);
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
