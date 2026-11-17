@@ -2,9 +2,48 @@
 //! The owner-approved caller binds the listener and supplies verified request authorization.
 use std::{
     io::{Read, Write},
-    net::TcpStream,
+    net::{TcpListener, TcpStream},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
+
+struct Slot(Arc<AtomicUsize>);
+impl Drop for Slot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Serve a caller-bound loopback listener with at most sixteen live requests.
+/// Listener configuration, feature selection and verified identity remain with the
+/// owner-reviewed caller. This transport has no command or configuration declaration.
+pub fn serve(
+    listener: TcpListener,
+    authorize: impl Fn(&TcpStream, &Request<'_>) -> bool + Send + Sync + 'static,
+    render: impl Fn(bool) -> String + Send + Sync + 'static,
+) -> std::io::Result<()> {
+    if !listener.local_addr()?.ip().is_loopback() {
+        return Err(std::io::ErrorKind::PermissionDenied.into());
+    }
+    let (authorize, render) = (Arc::new(authorize), Arc::new(render));
+    let active = Arc::new(AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let stream = stream?;
+        if active.fetch_add(1, Ordering::SeqCst) >= 16 {
+            active.fetch_sub(1, Ordering::SeqCst);
+            continue;
+        }
+        let (authorize, render, slot) = (authorize.clone(), render.clone(), Slot(active.clone()));
+        std::thread::spawn(move || {
+            let _slot = slot;
+            let _ = connection(stream, |s, r| authorize(s, r), |fragment| render(fragment));
+        });
+    }
+    Ok(())
+}
 
 /// Parsed routing/identity input, deliberately without Debug or raw header serialization.
 pub struct Request<'a> {
@@ -105,13 +144,7 @@ fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{
-        net::TcpListener,
-        sync::{
-            atomic::{AtomicUsize, Ordering},
-            Arc,
-        },
-    };
+    use std::net::TcpListener;
     fn exchange(request: &str, permitted: bool) -> (String, usize) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
