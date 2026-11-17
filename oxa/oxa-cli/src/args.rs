@@ -201,6 +201,12 @@ pub struct Args {
     pub version: bool,
     /// The hard offline switch (see the help text).
     pub offline: bool,
+    /// Explicitly expose only these native local aliases for the current owner session.
+    #[cfg(feature = "share")]
+    pub share_models: Vec<String>,
+    /// Override the Tailscale bind for this owner session.
+    #[cfg(feature = "share")]
+    pub share_bind: Option<std::net::IpAddr>,
     /// Flags registered by extensions (`registerFlag`): name -> value.
     pub extension_flags: Vec<(String, Value)>,
     /// Unknown `--long` flags seen before the extension flags are known (resolved by the
@@ -439,6 +445,10 @@ const OPTIONS: &[(&str, &str)] = &[
         "Permission mode: standard, auto, yolo, plan (or workspace, ask); default: permissions.defaultMode, else auto",
     ),
     ("--verbose", "Show verbose startup information"),
+    #[cfg(feature = "share")]
+    ("--share-model <alias>", "Share one native local model during the interactive owner session (repeatable)"),
+    #[cfg(feature = "share")]
+    ("--share-bind <address>", "Explicitly bind interactive guest sharing to this address"),
     (
         "--offline",
         "Hard offline switch: non-local connections refused, bash has no network, web_search off",
@@ -868,6 +878,25 @@ fn parse_flag(
         "-na" | "--no-approve" => {
             no_value(inline, flag)?;
             a.approve = Some(false);
+        }
+        #[cfg(feature = "share")]
+        "--share-model" => {
+            let alias = value(argv, i, inline, flag, "a native local alias")?;
+            if alias.is_empty() || a.share_models.len() >= 64 || a.share_models.contains(&alias) {
+                return Err(usage(
+                    "specify between one and 64 distinct native local sharing aliases",
+                ));
+            }
+            a.share_models.push(alias);
+        }
+        #[cfg(feature = "share")]
+        "--share-bind" => {
+            let address = value(argv, i, inline, flag, "an IP address")?;
+            a.share_bind = Some(
+                address
+                    .parse()
+                    .map_err(|_| usage("invalid --share-bind address"))?,
+            );
         }
         "--offline" => {
             no_value(inline, flag)?;

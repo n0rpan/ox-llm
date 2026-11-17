@@ -139,6 +139,31 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
 
     crate::netguard::install(a.offline, env, a.session_dir.as_deref(), &cwd);
 
+    #[cfg(feature = "share")]
+    if !a.share_models.is_empty() || a.share_bind.is_some() {
+        let refusal = if crate::share_cmd::is_agent(env) {
+            Some(OxaError::new(
+                codes::INVALID,
+                "Guest serving requires the owner outside an agent tool",
+            ))
+        } else if a.share_models.is_empty() {
+            Some(OxaError::new(
+                codes::USAGE,
+                "--share-bind requires --share-model ALIAS",
+            ))
+        } else if !loads_extensions || choose_mode(&a, stdin_is_tty, stdout_is_tty) != RunMode::Interactive {
+            Some(OxaError::new(
+                codes::USAGE,
+                "--share-model requires an interactive owner session",
+            ))
+        } else {
+            oxa_proto::check_online("starting the LAN sharing listener").err()
+        };
+        if let Some(error) = refusal {
+            return report(&mut *stderr, &error);
+        }
+    }
+
     if let Some(sub) = a.subcommand.clone() {
         let dirs = match dirs_from_env(env, None) {
             Ok(d) => d,
@@ -148,14 +173,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             #[cfg(feature = "share")]
             Subcommand::Share(words) => {
                 let serve = words.first().is_some_and(|word| word == "serve");
-                // Env::get treats empty values as unset; owner-command policy
-                // refuses marker presence, including an empty value.
-                if env.pairs().iter().any(|(name, _)| {
-                    matches!(
-                        name.as_str(),
-                        "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
-                    )
-                }) {
+                if crate::share_cmd::is_agent(env) {
                     return report(
                         &mut *stderr,
                         &OxaError::new(
@@ -402,6 +420,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
 /// Everything decided before a session is opened.
 struct Prep {
     built: Built,
+    #[cfg(feature = "share")]
+    sharing: Option<crate::share_cmd::Prepared>,
     open: Open,
     session_id: Option<String>,
     notices: Vec<(Level, String)>,
@@ -709,12 +729,23 @@ fn prepare(
             settings.string("defaultModel")
         }
     });
+    #[cfg(feature = "share")]
+    let sharing = (!a.share_models.is_empty())
+        .then(|| {
+            crate::share_cmd::prepare_session(&user_settings, dirs, a.share_models.clone(), a.share_bind)
+        })
+        .transpose()?;
+    #[cfg(feature = "share")]
+    let shared_local = sharing.as_ref().map(|prepared| prepared.local.clone());
+    #[cfg(not(feature = "share"))]
+    let shared_local = None;
     let engine = child.wrap(crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
         requested_model.as_deref(),
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
+        shared_local,
         || engine_with_settings(&endpoint, &settings),
     )?);
 
@@ -938,6 +969,8 @@ fn prepare(
     };
     Ok(Prep {
         built,
+        #[cfg(feature = "share")]
+        sharing,
         open,
         session_id,
         notices,
@@ -1458,6 +1491,8 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
 
     let Prep {
         built,
+        #[cfg(feature = "share")]
+        sharing,
         open,
         session_id,
         mut notices,
@@ -1468,6 +1503,18 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
+    };
+    #[cfg(feature = "share")]
+    let _guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
+        Ok(Some((running, address))) => {
+            notices.push((
+                Level::Info,
+                format!("Guest OpenAI API listening at http://{address}/v1"),
+            ));
+            Some(running)
+        }
+        Ok(None) => None,
+        Err(error) => return report(stderr, &error),
     };
     notices.extend(startup_notices(&built, &session));
     let yolo = built.yolo.clone();
