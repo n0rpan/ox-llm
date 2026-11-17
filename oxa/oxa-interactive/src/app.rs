@@ -140,6 +140,7 @@ pub fn run_session(
 
     let mut vm = ViewModel {
         blocks: blocks_from_entries(&branch),
+        activity_details: opts.settings.bool("ui.activityDetails", false),
         ..ViewModel::default()
     };
     for (level, text) in std::mem::take(&mut opts.notices) {
@@ -865,7 +866,9 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             tool_name,
             args,
         } => {
-            vm.status.activity = if tool_name == SUBAGENT_TOOL {
+            // #871, `ui.activityDetails`: a `subagent` call is its own activity. Off, it stays
+            // the plain tool state.
+            vm.status.activity = if tool_name == SUBAGENT_TOOL && vm.activity_details {
                 Activity::Subagent(SubagentProgress::default())
             } else {
                 Activity::Tool(tool_name.clone())
@@ -893,8 +896,9 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             partial,
         } => {
             // #871: the subagent tool's progress block is its child status; keep it as the
-            // activity's bounded name and progress, not as raw tool output.
-            if tool_name == SUBAGENT_TOOL {
+            // activity's bounded name and progress, not as raw tool output. Only when
+            // `ui.activityDetails` is on: off, the line keeps the plain tool state.
+            if tool_name == SUBAGENT_TOOL && vm.activity_details {
                 vm.status.activity = Activity::Subagent(subagent_progress(partial));
             }
             match tool_index(vm, tool_call_id) {
@@ -945,7 +949,7 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             });
             vm.status.activity = match running {
                 // #871: a subagent that is still running keeps its own state and progress.
-                Some((name, partial)) if name == SUBAGENT_TOOL => {
+                Some((name, partial)) if name == SUBAGENT_TOOL && vm.activity_details => {
                     Activity::Subagent(subagent_progress(&partial))
                 }
                 Some((name, _)) => Activity::Tool(name),
@@ -989,12 +993,13 @@ pub fn apply_event(vm: &mut ViewModel, e: &AgentEvent) {
             ..
         } => {
             // #871: the retry line names the reason, classified from the event's message so
-            // the provider's own text (and any key in it) never reaches the screen.
+            // the provider's own text (and any key in it) never reaches the screen. Off with
+            // `ui.activityDetails`: the line keeps the attempt and the delay only.
             vm.status.activity = Activity::Retrying {
                 attempt: *attempt,
                 max_attempts: *max_attempts,
                 delay_ms: *delay_ms,
-                reason: Some(retry_reason(error_message)),
+                reason: vm.activity_details.then(|| retry_reason(error_message)),
             };
             vm.status.activity_ms = 0;
         }

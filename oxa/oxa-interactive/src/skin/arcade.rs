@@ -133,11 +133,13 @@ pub struct ArcadeState {
 impl ArcadeState {
     /// Note the state of the run. `running` is "the activity line shows a state"; `blocks` is the
     /// transcript: the coins are the tool calls since the user's last message, and how the
-    /// run ended is read from the last block when the run stops.
-    pub fn observe(&mut self, running: bool, blocks: &[Block], now_ms: u64) {
+    /// run ended is read from the last block when the run stops. `elapsed` is whether the run
+    /// is timed at all (`ui.activityDetails`, #871): off, no time is kept and the closing line
+    /// reports the tool count only.
+    pub fn observe(&mut self, running: bool, blocks: &[Block], now_ms: u64, elapsed: bool) {
         if running && !self.was_running {
             self.finish = None;
-            self.started = Some(now_ms);
+            self.started = elapsed.then_some(now_ms);
             self.elapsed_ms = None;
         }
         if running || self.was_running {
@@ -818,16 +820,16 @@ mod tests {
         let mut s = ArcadeState::default();
         // An earlier run's calls are not this run's.
         let mut blocks = vec![user_block(), tool_block("old"), user_block()];
-        s.observe(true, &blocks, 0);
+        s.observe(true, &blocks, 0, true);
         assert_eq!(s.run(0), ArcadeRun::default());
         blocks.push(tool_block("a"));
-        s.observe(true, &blocks, 10);
-        s.observe(true, &blocks, 20);
+        s.observe(true, &blocks, 10, true);
+        s.observe(true, &blocks, 20, true);
         assert_eq!(s.run(20).coins, 1, "one call, however often it is drawn");
         blocks.extend([tool_block("b"), tool_block("c")]);
-        s.observe(true, &blocks, 60);
+        s.observe(true, &blocks, 60, true);
         assert_eq!(s.run(60).coins, 3);
-        s.observe(false, &blocks, 1000);
+        s.observe(false, &blocks, 1000, true);
         assert_eq!(s.run(1100).coins, 3);
         assert_eq!(s.run(1100).finish, Some((Finish::Clear, 100)));
         assert!(s.finishing(1100) && !s.take_expired(1100));
@@ -835,7 +837,7 @@ mod tests {
         assert!(s.take_expired(1000 + FINISH_MS) && !s.take_expired(1000 + FINISH_MS));
         // The next run starts from nothing.
         blocks.push(user_block());
-        s.observe(true, &blocks, 5000);
+        s.observe(true, &blocks, 5000, true);
         assert_eq!(s.run(5000), ArcadeRun::default());
     }
 
@@ -856,8 +858,8 @@ mod tests {
             Some(Finish::Fail)
         );
         let mut s = ArcadeState::default();
-        s.observe(true, &[], 0);
-        s.observe(false, &[shown(oxa_proto::shown_why::ABORTED)], 9);
+        s.observe(true, &[], 0, true);
+        s.observe(false, &[shown(oxa_proto::shown_why::ABORTED)], 9, true);
         assert!(!s.finishing(10), "an abort has no closing scene");
     }
 }

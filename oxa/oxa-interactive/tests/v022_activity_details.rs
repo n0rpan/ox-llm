@@ -1,7 +1,7 @@
 //! v0.2.2 (#871): subagent and retry activity carry bounded, readable text, and the closing
-//! line of a run reports how long it took. Public API and rendered lines only: every
-//! assertion here reads the text a user sees, so the whole file compiles on the pre-change
-//! tree and the three behaviour assertions fail there.
+//! line of a run reports how long it took, behind `ui.activityDetails` (off unless the user
+//! asks for it). Public API and rendered lines only: every assertion here reads the text a user
+//! sees, with the setting on where the detail line is the subject.
 use oxa_config::Keymap;
 use oxa_interactive::{
     apply_event, arcade_scene, oxa_activity_line_with, oxa_arcade_line, retry_reason, Activity, Animation,
@@ -59,9 +59,18 @@ fn text_line(st: &StatusModel, width: u16) -> String {
     strip_ansi(&line)
 }
 
+/// A view model with `ui.activityDetails` on (off is the default; the tests below that read
+/// the detail lines switch it on the way the setting does).
+fn details() -> ViewModel {
+    ViewModel {
+        activity_details: true,
+        ..ViewModel::default()
+    }
+}
+
 /// The activity of a `subagent` call whose tool reported `partial`.
 fn subagent(partial: &str) -> StatusModel {
-    let mut vm = ViewModel::default();
+    let mut vm = details();
     apply_event(&mut vm, &start_call("c1", "subagent"));
     apply_event(&mut vm, &update_call("c1", "subagent", partial));
     vm.status
@@ -71,7 +80,7 @@ fn subagent(partial: &str) -> StatusModel {
 /// progress line reaches the screen as readable text under an `AGENTS` badge.
 #[test]
 fn subagent_progress_is_a_distinct_agents_activity() {
-    let mut vm = ViewModel::default();
+    let mut vm = details();
     apply_event(&mut vm, &start_call("c1", "subagent"));
     assert!(
         !matches!(vm.status.activity, Activity::Tool(_)),
@@ -119,7 +128,7 @@ fn subagent_progress_is_a_distinct_agents_activity() {
 /// child that is still running, not the first line (#871 review).
 #[test]
 fn the_activity_follows_the_running_child_not_the_first_line() {
-    let mut vm = ViewModel::default();
+    let mut vm = details();
     apply_event(&mut vm, &start_call("c1", "subagent"));
     apply_event(
         &mut vm,
@@ -167,7 +176,7 @@ fn the_activity_follows_the_running_child_not_the_first_line() {
 /// reaches the screen.
 #[test]
 fn retry_shows_a_bounded_reason_with_the_attempt_and_delay() {
-    let mut vm = ViewModel::default();
+    let mut vm = details();
     apply_event(
         &mut vm,
         &AgentEvent::AutoRetryStart {
@@ -183,7 +192,7 @@ fn retry_shows_a_bounded_reason_with_the_attempt_and_delay() {
     assert!(line.contains("in 2s"), "the wait: {line:?}");
     assert!(line.contains("engine busy"), "the typed reason: {line:?}");
 
-    let mut vm = ViewModel::default();
+    let mut vm = details();
     apply_event(
         &mut vm,
         &AgentEvent::AutoRetryStart {
@@ -249,16 +258,84 @@ fn the_retry_reason_reads_the_real_engine_messages() {
     assert_eq!(retry_reason("something else entirely"), "transient error");
 }
 
+/// The unreleased detail lines are off by default (`ui.activityDetails`): a subagent call
+/// stays the plain tool state with the tool's name, and a retry keeps its attempt and delay
+/// without a reason. Turning the setting on is what names them.
+#[test]
+fn the_detail_lines_are_off_by_default() {
+    assert!(!ViewModel::default().activity_details, "off unless asked for");
+    let mut vm = ViewModel::default();
+    apply_event(&mut vm, &start_call("c1", "subagent"));
+    apply_event(
+        &mut vm,
+        &update_call("c1", "subagent", "subagent 1/1 explore: reading src/main.rs"),
+    );
+    assert_eq!(
+        vm.status.activity,
+        Activity::Tool("subagent".to_string()),
+        "the plain tool state, not the child's progress"
+    );
+    let line = text_line(&vm.status, 120);
+    assert!(!line.contains("AGENTS"), "{line:?}");
+    assert!(!line.contains("explore"), "no child's name: {line:?}");
+
+    let mut vm = ViewModel::default();
+    apply_event(
+        &mut vm,
+        &AgentEvent::AutoRetryStart {
+            attempt: 1,
+            max_attempts: 3,
+            delay_ms: 2000,
+            error_message: "the engine answered HTTP 503: queue full".to_string(),
+        },
+    );
+    assert_eq!(
+        vm.status.activity,
+        Activity::Retrying {
+            attempt: 1,
+            max_attempts: 3,
+            delay_ms: 2000,
+            reason: None,
+        },
+        "the attempt and the delay only"
+    );
+    let line = text_line(&vm.status, 120);
+    assert!(line.contains("1/3") && line.contains("in 2s"), "{line:?}");
+    assert!(!line.contains("engine busy"), "no reason: {line:?}");
+}
+
+/// `ui.activityDetails` is a known setting, off by default, and the reducer reads it from
+/// here (the interactive loop copies its value into `ViewModel::activity_details`).
+#[test]
+fn the_setting_is_known_and_off_by_default() {
+    let key = oxa_config::schema()
+        .iter()
+        .find(|k| k.key == "ui.activityDetails")
+        .expect("ui.activityDetails is in the settings schema");
+    assert!(key.supported, "a working setting, not an ignored key");
+    assert_eq!(key.default, "false", "off by default");
+    let unset = oxa_config::Settings::from_values(Value::Null, Value::Null);
+    assert!(
+        !unset.bool("ui.activityDetails", false),
+        "off unless asked for"
+    );
+    let on = oxa_config::Settings::from_values(
+        serde_json::json!({"ui": {"activityDetails": true}}),
+        Value::Null,
+    );
+    assert!(on.bool("ui.activityDetails", false), "the setting is read");
+}
+
 /// The closing `CLEAR` / `FAILED` line keeps the tool count and adds how long the run took;
-/// the count is not repeated.
+/// the count is not repeated. Untimed (the default), the count is all it reports.
 #[test]
 fn the_closing_line_reports_elapsed_time_and_the_tool_count_once() {
     let mut state = ArcadeState::default();
     let mut blocks = vec![user_block()];
-    state.observe(true, &blocks, 1_000);
+    state.observe(true, &blocks, 1_000, true);
     blocks.extend([tool_block("a"), tool_block("b"), tool_block("c")]);
-    state.observe(true, &blocks, 5_000);
-    state.observe(false, &blocks, 43_000);
+    state.observe(true, &blocks, 5_000, true);
+    state.observe(false, &blocks, 43_000, true);
     let run = state.run(43_200);
     let st = StatusModel {
         activity: Activity::Idle,
@@ -284,13 +361,33 @@ fn the_closing_line_reports_elapsed_time_and_the_tool_count_once() {
         1,
         "the tool count is not duplicated: {line:?}"
     );
+
+    // Untimed (the default), the closing line reports the count and no time.
+    let mut untimed = ArcadeState::default();
+    untimed.observe(true, &blocks, 1_000, false);
+    untimed.observe(false, &blocks, 43_000, false);
+    assert_eq!(untimed.run(43_200).elapsed_ms, None, "no time is kept");
+    let line = oxa_arcade_line(
+        &st,
+        &Keymap::defaults(),
+        Animation::Arcade,
+        ArcadeScene::Charge,
+        &untimed.run(43_200),
+        100,
+        &colour(),
+        Skin::Oxa,
+    )
+    .expect("the closing line");
+    let line = strip_ansi(&line);
+    assert!(line.contains("3 tools"), "{line:?}");
+    assert!(!line.contains("42s"), "no elapsed time: {line:?}");
 }
 
 /// Reduced motion and a plain theme keep the same facts as static text, and the line stays one
 /// line that fits the width.
 #[test]
 fn the_same_facts_survive_reduced_motion_and_plain_colour() {
-    let mut retry = ViewModel::default();
+    let mut retry = details();
     apply_event(
         &mut retry,
         &AgentEvent::AutoRetryStart {
@@ -327,7 +424,7 @@ fn the_subagent_sprite_is_its_own() {
             .expect("a running activity has a line");
         strip_ansi(&line)
     };
-    let mut tool = ViewModel::default();
+    let mut tool = details();
     apply_event(&mut tool, &start_call("c1", "read"));
     let agents = lead(&subagent("subagent 1/1 explore: running"));
     let plain = lead(&tool.status);
@@ -357,7 +454,7 @@ fn the_subagent_scene_shows_a_crate_per_child() {
         1,
         "a single child is one crate"
     );
-    let mut tool = ViewModel::default();
+    let mut tool = details();
     apply_event(&mut tool, &start_call("c1", "read"));
     assert_eq!(crates(&tool.status), 1, "a plain tool is one crate");
 }

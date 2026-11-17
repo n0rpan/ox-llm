@@ -2678,7 +2678,8 @@ impl<'a> Loop<'a> {
             // A run for the arcade is what the line shows: from the first activity to idle
             // (the handle may stay busy a moment longer; that is not a second run).
             let active = status.activity != Activity::Idle;
-            self.arcade.observe(active, &self.vm.blocks, now_ms());
+            self.arcade
+                .observe(active, &self.vm.blocks, now_ms(), self.vm.activity_details);
             let scene = ArcadeScene::from_setting(self.opts.settings.string("ui.animationScene").as_deref());
             let run = self.arcade.run(now_ms());
             let pixel_line = if self.pixels() {

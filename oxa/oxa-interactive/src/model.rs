@@ -557,6 +557,10 @@ pub struct ViewModel {
     pub footer_override: Option<Vec<String>>,
     /// Window title set by an extension.
     pub title_override: Option<String>,
+    /// Whether the activity line names the running child of a `subagent` call and a retry's
+    /// reason, and the closing line times the run (setting `ui.activityDetails`, off unless
+    /// asked for; #871). Off, the activity line keeps its plain states.
+    pub activity_details: bool,
 }
 
 // ---------------------------------------------------------------------------------------------

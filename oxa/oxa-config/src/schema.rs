@@ -272,6 +272,9 @@ const SCHEMA: &[KeyDef] = &[
         Kind::Enum(&["regular", "fullscreen"]),
         "\"fullscreen\"",
     ),
+    // #871: name a `subagent` call's child and a retry's reason on the activity line, and time
+    // the run on the closing line. Unreleased, so it is off unless the user asks for it.
+    key("ui.activityDetails", Kind::Bool, "false"),
     key(
         "ui.animation",
         Kind::Enum(&["arcade", "minimal", "off"]),

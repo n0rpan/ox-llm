@@ -367,9 +367,10 @@ fn desktop_theme_change_repaints_a_running_session() {
 #[test]
 fn a_retry_names_its_reason_on_screen() {
     let env = TestEnv::new();
+    // `ui.activityDetails` is the setting that names the retry's reason (#871, off by default).
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"oxa":{"bootPreload":false}}"#,
+        r#"{"oxa":{"bootPreload":false},"ui":{"activityDetails":true}}"#,
     );
     let rig = start_script(
         env,
@@ -407,7 +408,7 @@ fn a_subagent_call_shows_the_child_on_screen() {
     let env = TestEnv::new();
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"oxa":{"bootPreload":false}}"#,
+        r#"{"oxa":{"bootPreload":false},"ui":{"activityDetails":true}}"#,
     );
     env.write(
         "home/.oxa/agent/agents/scout.md",
