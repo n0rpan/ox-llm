@@ -1,9 +1,9 @@
 //! Opt-in, engine-independent cloud gateway building blocks.
 #![forbid(unsafe_code)]
 #[cfg(feature = "anthropic-gateway")]
-mod anthropic_replay;
-#[cfg(feature = "anthropic-gateway")]
 pub mod gateway;
+#[cfg(feature = "anthropic-gateway")]
+mod history;
 #[cfg(feature = "anthropic-gateway")]
 pub mod runtime;
 #[cfg(feature = "share")]
@@ -24,6 +24,8 @@ pub mod rate_limits;
 
 #[cfg(feature = "accounting")]
 pub mod accounting;
+#[cfg(feature = "accounting")]
+pub mod billing;
 #[cfg(feature = "accounting")]
 mod reservations;
 #[cfg(feature = "accounting")]
