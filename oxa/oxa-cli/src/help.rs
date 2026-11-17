@@ -277,12 +277,17 @@ pub fn text(path: &[&str]) -> Option<String> {
         })
 }
 
-/// Existing table's early CLI bridge; the shared #1062 registry will generate this route.
-pub(crate) fn from_argv(argv: &[String]) -> Option<Result<String, &'static str>> {
-    let argv = &argv[argv
+/// Supported global switches before a command do not require runtime construction.
+pub(crate) fn command_words(argv: &[String]) -> &[String] {
+    &argv[argv
         .iter()
         .take_while(|word| word.as_str() == "--offline")
-        .count()..];
+        .count()..]
+}
+
+/// Existing table's early CLI bridge; the shared #1062 registry will generate this route.
+pub(crate) fn from_argv(argv: &[String]) -> Option<Result<String, &'static str>> {
+    let argv = command_words(argv);
     let (name, words) = argv.split_first()?;
     if name == "help" {
         let path: Vec<_> = words.iter().map(String::as_str).collect();
