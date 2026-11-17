@@ -453,8 +453,9 @@ pub(crate) fn command_runner(
     let start = Instant::now();
     let status = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if start.elapsed() < Duration::from_secs(30) => {
+            // A reaped child may leave a descendant holding the stdout pipe open.
+            Ok(Some(status)) if reader.is_finished() => break status,
+            Ok(_) if start.elapsed() < Duration::from_secs(30) => {
                 std::thread::sleep(Duration::from_millis(50))
             }
             _ => {

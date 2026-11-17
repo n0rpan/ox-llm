@@ -41,6 +41,9 @@ fn fixture() -> (TestEnv, serde_json::Value) {
     let gh = env.write("tmp/gh", r#"#!/bin/sh
 printf 'read\n' >> gh-calls
 if [ -e expect-input ]; then IFS= read -r expected < expect-input; [ "$GH_TOKEN" = "$expected" ] || exit 93; fi
+if [ -e held-pipe ]; then
+  (n=0; while [ ! -e release-pipe ] && [ "$n" -lt 450 ]; do sleep 0.1; n=$((n+1)); done) &
+fi
 case " $* " in *' --include '*) printf 'HTTP/2.0 200 OK\r\n\r\n' ;; esac
 if [ -e oversized ]; then
   printf '{"data":{"repository":{"pullRequests":{"totalCount":0,"nodes":[]},"padding":"'
@@ -120,6 +123,7 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
         ("SUCCESS", "synthetic-head", "engine.c"),
         ("SUCCESS", "synthetic-head", "view.qml"),
         ("SUCCESS", "synthetic-head", "header.hpp"),
+        ("SUCCESS", "synthetic-head", "kernel.inc"),
     ] {
         let row = &mut detail["data"]["repository"]["p42"];
         row["mergeable"] = "MERGEABLE".into();
@@ -155,6 +159,7 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
             "fix_required_ci",
             "wait_review",
             "ready",
+            "add_removes",
             "add_removes",
             "add_removes",
             "add_removes"
@@ -403,4 +408,39 @@ fn terminal_http_failures_are_bounded_named_and_do_not_publish_a_partial_board()
     assert!(fs::read_to_string(log_for(&env, "example/repo"))
         .unwrap()
         .is_empty());
+}
+
+#[test]
+fn exited_github_child_cannot_escape_the_whole_read_deadline() {
+    use std::time::{Duration, Instant};
+    let (env, _) = fixture();
+    fs::write(env.work().join("held-pipe"), "synthetic").unwrap();
+    let mut child = command(&env, "work board --shadow --repo example/repo --once")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let ended = loop {
+        if child.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if start.elapsed() >= Duration::from_secs(35) {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // Release the finite peer before assertions, including the before-fix failure.
+    fs::write(env.work().join("release-pipe"), "release").unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        ended,
+        "a descendant-held pipe bypassed the 30-second read deadline"
+    );
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(fs::read_to_string(env.work().join("gh-calls")).unwrap(), "read\n");
+    assert!(
+        !log_for(&env, "example/repo").exists()
+            || fs::metadata(log_for(&env, "example/repo")).unwrap().len() == 0
+    );
 }

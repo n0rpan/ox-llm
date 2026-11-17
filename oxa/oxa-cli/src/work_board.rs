@@ -307,7 +307,7 @@ impl GitHub for Reader<'_> {
                             && f["path"].as_str().is_some_and(|p| {
                                 [
                                     ".rs", ".py", ".go", ".ts", ".tsx", ".js", ".jsx", ".sh", ".c", ".cc",
-                                    ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".qml",
+                                    ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx", ".inc", ".qml",
                                 ]
                                 .iter()
                                 .any(|ext| p.ends_with(ext))
