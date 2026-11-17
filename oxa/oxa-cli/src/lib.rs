@@ -29,12 +29,14 @@ mod identity_cmd;
 mod in_process;
 pub mod lead;
 pub mod lead_access;
+pub mod lead_http;
 pub mod lead_input;
 pub mod lead_page;
 pub mod lead_panels;
 pub mod lead_peer;
 mod lead_preset;
 pub mod lead_runs;
+pub mod lead_serve;
 mod limits;
 mod login_cmd;
 mod mcp_cmd;
@@ -47,8 +49,10 @@ mod status;
 mod themes;
 mod wipe_cmd;
 mod work_board;
+pub use work_board::refill_input;
 mod work_checks;
 mod work_cmd;
+pub mod work_refill;
 
 pub use args::{
     no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, RegistryArgs, Subcommand,

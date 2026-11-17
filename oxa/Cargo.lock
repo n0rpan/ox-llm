@@ -1164,6 +1164,7 @@ dependencies = [
  "oxa-fake",
  "oxa-interactive",
  "oxa-mcp",
+ "oxa-orchestrator",
  "oxa-perm",
  "oxa-proto",
  "oxa-resources",
@@ -1354,6 +1355,7 @@ dependencies = [
 name = "oxa-proto"
 version = "0.2.0"
 dependencies = [
+ "nix",
  "serde_json",
 ]
 

@@ -165,6 +165,9 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Subcommand::Registered(id, words) => {
                 use oxa_interactive::command_registry::CommandId;
                 match id {
+                    CommandId::LeadServe if words.0.is_empty() => {
+                        crate::lead_serve::run(&dirs, &cwd, env, &mut *stdout)
+                    }
                     CommandId::Lead
                     | CommandId::LeadServe
                     | CommandId::LeadBoard
