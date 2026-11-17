@@ -8,6 +8,8 @@ use crate::board::{Board, GitHub};
 pub struct AssignmentData {
     pub revision: u64,
     pub policy: Option<AssignmentPolicy>,
+    #[serde(default)]
+    pub import_hold: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -84,8 +86,17 @@ impl Claims {
         {
             return Err("invalid or duplicate worker catalog".into());
         }
+        let mut board = Board::read(github, policy, &states, now)?;
+        for entry in &mut board.entries {
+            if assignments
+                .get(&entry.number)
+                .is_some_and(|row| row.data.import_hold)
+            {
+                entry.eligible = false;
+            }
+        }
         Ok(AssignmentBoard {
-            board: Board::read(github, policy, &states, now)?,
+            board,
             assignments,
             workers: workers.to_vec(),
         })

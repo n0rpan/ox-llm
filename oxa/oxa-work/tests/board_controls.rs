@@ -1,5 +1,6 @@
 use oxa_work::board::assignment::{Control, ManualAuthority, Pin, Role, Worker, WorkerKind};
 use oxa_work::board::*;
+use std::slice::from_ref;
 use std::{collections::BTreeMap, fs, os::unix::fs::DirBuilderExt, path::PathBuf};
 
 struct Fixture(PathBuf);
@@ -165,4 +166,177 @@ fn one_snapshot_serves_all_workers_with_release_and_manual_pin_priority() {
     assert!(disabled.board.entries.is_empty());
     assert!(disabled.assignments.is_empty());
     assert_eq!(github.0, 1);
+}
+
+struct Intake(Snapshot, usize);
+impl GitHub for Intake {
+    fn snapshot(&mut self) -> oxa_work::Result<Snapshot> {
+        self.1 += 1;
+        Ok(self.0.clone())
+    }
+}
+
+#[test]
+fn typed_issue_intake_uses_one_snapshot_and_builder_authority() {
+    let fixture = Fixture::new();
+    let worker = worker("slot-1");
+    let mut source = Intake(
+        Snapshot {
+            pull_requests: FakeGitHub(0).open_pull_requests().unwrap(),
+            issues: (4..=6)
+                .map(|number| Issue {
+                    number,
+                    revision: "source-revision".into(),
+                    release_pinned: true,
+                    approved: number != 5,
+                    has_open_pull_request: number == 6,
+                })
+                .collect(),
+        },
+        0,
+    );
+    let store = fixture.store();
+    let disabled = store
+        .assignment_board(&mut source, &Policy::default(), from_ref(&worker), 10)
+        .unwrap();
+    assert!(disabled.board.entries.is_empty());
+    assert_eq!(source.1, 0);
+    let board = store
+        .assignment_board(&mut source, &policy(), from_ref(&worker), 10)
+        .unwrap();
+    assert_eq!(source.1, 1);
+    assert_eq!(board.candidates(&worker.id).unwrap(), [3, 4, 1, 2]);
+    let issue = board.board.entries.iter().find(|e| e.number == 4).unwrap();
+    assert_eq!(issue.action, Action::BuildIssue);
+    assert_eq!(issue.head, "source-revision");
+    assert!(store
+        .claim_for(issue, &policy(), &worker, 10, 10)
+        .unwrap()
+        .is_some());
+    for number in [5, 6] {
+        let waiting = board.board.entries.iter().find(|e| e.number == number).unwrap();
+        assert_eq!(waiting.action, Action::WaitIssue);
+        assert!(!waiting.eligible);
+        assert!(store
+            .claim_for(waiting, &policy(), &worker, 10, 10)
+            .unwrap()
+            .is_none());
+    }
+    source.0.issues[0].number = 3;
+    assert!(Board::read(&mut source, &policy(), &BTreeMap::new(), 10).is_err());
+}
+
+#[test]
+fn import_resumes_without_resetting_attempts_or_admitting_preserved_jobs() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let worker = worker("slot-1");
+    let incoming: BTreeMap<_, _> = [
+        (
+            3,
+            ImportState {
+                state: AttemptState {
+                    utc_day: 0,
+                    attempts: 1,
+                    lease: Some(Lease {
+                        holder: worker.id.clone(),
+                        claimed_at: Some(10),
+                        expires_at: 20,
+                        generation: (0, 1),
+                    }),
+                },
+                excluded: false,
+            },
+        ),
+        (
+            4,
+            ImportState {
+                state: AttemptState {
+                    attempts: 2,
+                    ..Default::default()
+                },
+                excluded: true,
+            },
+        ),
+    ]
+    .into();
+    assert!(store.import_snapshot(None, &incoming, 11).is_err());
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    let first = [(3, incoming[&3].clone())].into();
+    store
+        .import_snapshot(Some(ManualAuthority::Owner), &first, 11)
+        .unwrap();
+    store
+        .import_snapshot(Some(ManualAuthority::Owner), &incoming, 11)
+        .unwrap();
+    store
+        .import_snapshot(Some(ManualAuthority::Owner), &incoming, 11)
+        .unwrap();
+    let rows = store.assignments().unwrap();
+    for number in [3, 4] {
+        assert_eq!(rows[&number].state, incoming[&number].state);
+        assert_eq!(rows[&number].data.revision, 1);
+        assert!(rows[&number].data.import_hold);
+    }
+    let mut issue = entry();
+    issue.number = 4;
+    issue.action = Action::BuildIssue;
+    assert!(store
+        .claim_for(&issue, &policy(), &worker, 21, 10)
+        .unwrap()
+        .is_none());
+    assert!(store
+        .claim(&entry(), &policy(), &worker.id, 21, 10)
+        .unwrap()
+        .is_none());
+    let board = store
+        .assignment_board(&mut FakeGitHub(0), &policy(), from_ref(&worker), 21)
+        .unwrap();
+    assert!(!board.candidates(&worker.id).unwrap().contains(&3));
+    assert!(store.clear_import_hold(4, None, 1).is_err());
+    assert!(store
+        .clear_import_hold(4, Some(ManualAuthority::Lead), 0)
+        .is_err());
+    store
+        .clear_import_hold(4, Some(ManualAuthority::Lead), 1)
+        .unwrap();
+    assert!(store
+        .claim_for(&issue, &policy(), &worker, 21, 10)
+        .unwrap()
+        .is_some());
+    assert!(store
+        .import_snapshot(Some(ManualAuthority::Owner), &incoming, 21)
+        .is_err());
+    assert_eq!(store.snapshot().unwrap()[&4].attempts, 3);
+}
+
+#[test]
+fn invalid_or_conflicting_import_is_preflighted_before_any_state_write() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    store
+        .claim(&entry(), &policy(), "codex:node/slot-1", 10, 10)
+        .unwrap();
+    let mut incoming: BTreeMap<_, _> = [2, 3]
+        .map(|number| {
+            (
+                number,
+                ImportState {
+                    state: AttemptState::default(),
+                    excluded: true,
+                },
+            )
+        })
+        .into();
+    assert!(store
+        .import_snapshot(Some(ManualAuthority::Owner), &incoming, 11)
+        .is_err());
+    assert!(!fixture.0.join("2.board-claim.json").exists());
+    incoming.remove(&3);
+    incoming.get_mut(&2).unwrap().state.utc_day = 1;
+    assert!(store
+        .import_snapshot(Some(ManualAuthority::Owner), &incoming, 11)
+        .is_err());
+    assert!(!fixture.0.join("2.board-claim.json").exists());
+    assert_eq!(store.snapshot().unwrap()[&3].attempts, 1);
 }
