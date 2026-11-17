@@ -102,6 +102,7 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
             operation: SupervisorOperation::Checkout {
                 branch: saved.task.branch,
                 create: false,
+                normalize: None,
             },
         },
         policy,
@@ -635,7 +636,7 @@ mod tests {
             &fixture.source,
             &retained,
             &task,
-            &fixture.head,
+            (&fixture.head, None),
             &fixture.root.join("unavailable-worker"),
             &fixture.policy,
             &lock,

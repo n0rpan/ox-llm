@@ -257,19 +257,18 @@ pub(crate) fn run(
         };
         // Freeze every task before checkout hooks or a first worker can change
         // shared refs. A bad plan remains a per-task error, not a batch abort.
+        let plans = if is_trusted {
+            oxa_work::plan_tasks_for_run(&root, &tasks, &policy, rerun)
+        } else {
+            tasks
+                .iter()
+                .map(|_| Err("source project is not trusted; approve it before unattended work".into()))
+                .collect()
+        };
         let planned: Vec<_> = tasks
             .into_iter()
-            .map(|task| {
-                if is_trusted {
-                    oxa_work::plan_task_for_run(&root, task.clone(), &policy, rerun)
-                        .map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail)))
-                } else {
-                    Err(Box::new(oxa_work::blocked_record(
-                        &task,
-                        "source project is not trusted; approve it before unattended work".into(),
-                    )))
-                }
-            })
+            .zip(plans)
+            .map(|(task, plan)| plan.map_err(|detail| Box::new(oxa_work::blocked_record(&task, detail))))
             .collect();
         let mut code = 0;
         for task in planned {
