@@ -13,7 +13,10 @@ default port is `8743`. There are no deployment-specific port or identity rules.
 Local mode requires independently verified local OS ownership, not merely a
 loopback address. Tailscale mode requires an authenticated request-bound proxy
 identity, its matching forwarded login, and an exact `allowed_identities` match.
-An untrusted `Tailscale-User-Login` header and loopback peer alone prove nothing.
+Local browser authority includes the port and must match the configured numeric bind. Proxy
+proof must bind the independently authenticated expected authority to the request;
+never copy an untrusted Host header into that proof. An untrusted
+`Tailscale-User-Login` header and loopback peer alone prove nothing.
 No provider is enabled implicitly; the shipped unverified adapter always refuses.
 
 After a reviewed listener and trusted proxy adapter are available, configure the

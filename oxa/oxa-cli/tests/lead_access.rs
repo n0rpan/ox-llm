@@ -2,6 +2,7 @@ use oxa_cli::lead_access::*;
 use oxa_config::{dirs_from_env, Env};
 use oxa_fake::TestEnv;
 use serde_json::json;
+use std::net::{IpAddr, Ipv4Addr};
 
 struct Local;
 impl IdentityProvider for Local {
@@ -12,10 +13,13 @@ impl IdentityProvider for Local {
 struct Proxy(&'static str);
 impl IdentityProvider for Proxy {
     fn verified(&self) -> Option<VerifiedIdentity<'_>> {
-        Some(VerifiedIdentity::TailscaleLogin(self.0))
+        Some(VerifiedIdentity::TailscaleLogin(self.0, AUTHORITY))
     }
 }
 const OWNER: &str = "owner@example.invalid";
+const OWNER_PROXY: Proxy = Proxy(OWNER);
+const AUTHORITY: &str = "127.0.0.1:8743";
+const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 fn load(env: &TestEnv) -> Result<Config, &'static str> {
     let test_home = env.home().display().to_string();
     let pairs = [("HOME", test_home.as_str())];
@@ -23,24 +27,24 @@ fn load(env: &TestEnv) -> Result<Config, &'static str> {
     Config::load(&dirs, &env.work())
 }
 fn user(env: &TestEnv, value: serde_json::Value) -> Config {
-    env.write(
-        "home/.oxa/agent/settings.json",
-        &json!({"oxa":{"lead":{"serve":value}}}).to_string(),
-    );
+    let document = json!({"oxa":{"lead":{"serve":value}}});
+    assert!(oxa_config::validate(&document, "user settings").is_empty());
+    env.write("home/.oxa/agent/settings.json", &document.to_string());
     load(env).unwrap()
 }
 fn unread() {
     panic!("refusal must precede observation")
 }
 fn check(config: &Config, header: Option<&str>, identity: &impl IdentityProvider) -> Result<(), Refusal> {
-    read_only(
-        config,
-        "GET",
-        "127.0.0.1".parse().unwrap(),
-        header,
-        identity,
-        unread,
-    )
+    check_host(config, AUTHORITY, header, identity)
+}
+fn check_host(
+    config: &Config,
+    host: &str,
+    header: Option<&str>,
+    identity: &impl IdentityProvider,
+) -> Result<(), Refusal> {
+    read_only(config, "GET", LOOPBACK, host, header, identity, unread)
 }
 
 #[test]
@@ -49,23 +53,35 @@ fn disabled_local_defaults_and_project_cannot_grant_access() {
     env.write("work/.oxa/settings.json", &json!({"oxa":{"lead":{"serve":{"enabled":true,"identity":"tailscale","allowed_identities":[OWNER]}}}}).to_string());
     let config = load(&env).unwrap();
     assert_eq!(config.mode(), Mode::Local);
-    assert_eq!(config.endpoint(), ("127.0.0.1".parse().unwrap(), 8743));
+    assert_eq!(config.endpoint(), (LOOPBACK, 8743));
     assert_eq!(check(&config, None, &Local), Err(Refusal::Disabled));
     let config = user(&env, json!({"enabled":true}));
     assert_eq!(
-        check(&config, Some(OWNER), &Proxy(OWNER)),
+        check(&config, Some(OWNER), &OWNER_PROXY),
         Err(Refusal::NotAllowed)
     );
     assert_eq!(check(&config, None, &Unverified), Err(Refusal::Unauthenticated));
     let mut reads = 0;
     assert_eq!(
-        read_only(&config, "GET", "::1".parse().unwrap(), None, &Local, || {
-            reads += 1;
-            7
-        }),
+        read_only(
+            &config,
+            "GET",
+            "::1".parse().unwrap(),
+            AUTHORITY,
+            None,
+            &Local,
+            || {
+                reads += 1;
+                7
+            }
+        ),
         Ok(7)
     );
     assert_eq!(reads, 1);
+    assert_eq!(
+        check_host(&config, "attacker.invalid:8743", None, &Local),
+        Err(Refusal::NotAllowed)
+    );
 }
 
 #[test]
@@ -84,25 +100,30 @@ fn tailscale_requires_verified_request_identity_and_exact_user_allowlist() {
         check(&config, Some(OWNER), &Proxy("other@example.invalid")),
         Err(Refusal::NotAllowed)
     );
-    assert_eq!(check(&config, None, &Proxy(OWNER)), Err(Refusal::NotAllowed));
+    assert_eq!(check(&config, None, &OWNER_PROXY), Err(Refusal::NotAllowed));
     assert_eq!(
-        check(&config, Some("other@example.invalid"), &Proxy(OWNER)),
+        check(&config, Some("other@example.invalid"), &OWNER_PROXY),
         Err(Refusal::NotAllowed)
     );
     assert_eq!(
         read_only(
             &config,
             "GET",
-            "127.0.0.1".parse().unwrap(),
+            LOOPBACK,
+            AUTHORITY,
             Some(OWNER),
-            &Proxy(OWNER),
+            &OWNER_PROXY,
             || 7
         ),
         Ok(7)
     );
+    assert_eq!(
+        check_host(&config, "attacker.invalid:8743", Some(OWNER), &OWNER_PROXY),
+        Err(Refusal::NotAllowed)
+    );
     let config = user(&env, json!({"enabled":true,"identity":"tailscale"}));
     assert_eq!(
-        check(&config, Some(OWNER), &Proxy(OWNER)),
+        check(&config, Some(OWNER), &OWNER_PROXY),
         Err(Refusal::NotAllowed)
     );
 }
@@ -112,19 +133,20 @@ fn remote_peers_and_mutations_refuse_without_observations() {
     let env = TestEnv::new();
     let config = user(&env, json!({"enabled":true}));
     assert_eq!(
-        read_only(&config, "GET", "192.0.2.1".parse().unwrap(), None, &Local, unread),
+        read_only(
+            &config,
+            "GET",
+            "192.0.2.1".parse().unwrap(),
+            AUTHORITY,
+            None,
+            &Local,
+            unread
+        ),
         Err(Refusal::LocalOnly)
     );
     for method in ["POST", "PUT", "DELETE", "PATCH"] {
         assert_eq!(
-            read_only(
-                &config,
-                method,
-                "127.0.0.1".parse().unwrap(),
-                None,
-                &Local,
-                unread
-            ),
+            read_only(&config, method, LOOPBACK, AUTHORITY, None, &Local, unread),
             Err(Refusal::ReadOnly)
         );
     }

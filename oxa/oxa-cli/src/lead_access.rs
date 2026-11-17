@@ -1,6 +1,6 @@
 //! Default-off lead access scaffold. No listener or production identity adapter is installed.
 use oxa_config::{Dirs, Settings};
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 pub const SETTING: &str = "oxa.lead.serve";
@@ -99,13 +99,13 @@ impl Config {
     }
 }
 
-/// Results from a trusted request-bound transport adapter, never from an HTTP header alone.
+/// Trusted request-bound proof: local ownership, or login plus independently verified authority.
 pub enum VerifiedIdentity<'a> {
     LocalOwner,
-    TailscaleLogin(&'a str),
+    TailscaleLogin(&'a str, &'a str),
 }
 /// Future local adapters must verify OS ownership; proxy adapters must authenticate proxy
-/// provenance and bind the login to this request. Loopback is necessary, not sufficient.
+/// provenance and expected authority, binding the login to this request. Never echo raw headers.
 /// Production implementation and listener wiring require the owner's source read first.
 pub trait IdentityProvider {
     fn verified(&self) -> Option<VerifiedIdentity<'_>>;
@@ -131,6 +131,7 @@ pub fn read_only<T>(
     config: &Config,
     method: &str,
     peer: IpAddr,
+    authority: &str,
     forwarded_login: Option<&str>,
     identity: &impl IdentityProvider,
     read: impl FnOnce() -> T,
@@ -144,10 +145,21 @@ pub fn read_only<T>(
     if !peer.is_loopback() {
         return Err(Refusal::LocalOnly);
     }
+    if authority.is_empty() || authority.len() > 255 {
+        return Err(Refusal::NotAllowed);
+    }
     match (config.mode, identity.verified()) {
-        (Mode::Local, Some(VerifiedIdentity::LocalOwner)) if forwarded_login.is_none() => Ok(read()),
-        (Mode::Tailscale, Some(VerifiedIdentity::TailscaleLogin(login)))
-            if forwarded_login == Some(login) && config.allowed.iter().any(|allowed| allowed == login) =>
+        (Mode::Local, Some(VerifiedIdentity::LocalOwner))
+            if forwarded_login.is_none()
+                && authority.parse::<SocketAddr>().ok()
+                    == Some(SocketAddr::new(config.bind, config.port)) =>
+        {
+            Ok(read())
+        }
+        (Mode::Tailscale, Some(VerifiedIdentity::TailscaleLogin(login, expected)))
+            if authority.eq_ignore_ascii_case(expected)
+                && forwarded_login == Some(login)
+                && config.allowed.iter().any(|allowed| allowed == login) =>
         {
             Ok(read())
         }

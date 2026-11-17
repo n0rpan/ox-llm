@@ -40,6 +40,7 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
+| `oxa.lead.serve` | object | `{}` | User-only, default-off [lead web access](lead-web.md); local mode unless selected otherwise. |
 | `$schema` | string | `null` | editor schema hint; ignored |
 | `theme` | string | `"system"` | `system`, `dark`, `light` or a name from a theme file; also `oxa` (OXA's own dark palette) and `oxa-omarchy` (follows the current Omarchy desktop theme, read-only; `system` when there is none). With the `oxa` skin the default is `oxa-omarchy` |
 | `ui.animation` | `arcade` / `minimal` / `off` | `arcade` | what moves on the activity line of the `oxa` skin while a run is in progress: `arcade` is a one-row animated scene with a short `CLEAR` when the run is done; `minimal` is the small six-cell sprite; `off` is the static text badge. Never any sound. `ui.reducedMotion`, `NO_COLOR` and `TERM=dumb` give `off` |
