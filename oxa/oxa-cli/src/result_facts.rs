@@ -44,8 +44,14 @@ fn add(total: &mut Option<u64>, value: u64) {
 pub(crate) struct ResultFacts {
     state: Mutex<State>,
     status: Option<Arc<crate::status::StatusWriter>>,
+    billing: Option<oxc_gateway::diagnostics::Diagnostics>,
 }
 impl ResultFacts {
+    pub(crate) fn with_billing(mut self, billing: oxc_gateway::diagnostics::Diagnostics) -> Self {
+        self.billing = Some(billing);
+        self
+    }
+
     pub(crate) fn new(status: Option<Arc<crate::status::StatusWriter>>) -> Self {
         Self {
             status,
@@ -123,6 +129,12 @@ impl ResultFacts {
                 "unreported_requests":state.unreported,
             })
         });
+        if let Some(billing) = facts
+            .and_then(|f| f.billing.as_ref())
+            .and_then(|b| b.last_billing())
+        {
+            record["last_billing"] = billing.record();
+        }
         record["usage_scope"] = json!("process");
         // Successful tool calls and generated text are not checked workspace/commit evidence.
         record["files_changed"] = Value::Null;

@@ -54,6 +54,9 @@ pub(crate) fn report_diagnostics(
             let _ = write!(stderr, " {name}={value}");
         }
     }
+    if let Some(plan) = snapshot.billing_source {
+        let _ = write!(stderr, " billing_source={}", plan.as_str());
+    }
     if let Some(cause) = snapshot.cause {
         let _ = write!(stderr, " cause={}", cause.as_str());
     }

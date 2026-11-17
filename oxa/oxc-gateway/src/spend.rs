@@ -113,7 +113,7 @@ impl SpendReader {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
                 }
-                Some(value) if value == "metered" => {
+                Some(value) if value == "metered" && row["remote_provider"] != "opencode" => {
                     if matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
                         || row.get("subscription_requests").is_some()
                         || row.get("subscription_tokens").is_some()
@@ -121,8 +121,13 @@ impl SpendReader {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
                 }
-                Some(value) if value == "subscription" => {
-                    if cost != 0.0 || !matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
+                Some(value)
+                    if value == "subscription"
+                        || value == "metered" && row["remote_provider"] == "opencode" =>
+                {
+                    if (value == "subscription" && cost != 0.0)
+                        || (value == "metered" && cost <= 0.0)
+                        || !matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
                     {
                         return Err(io::ErrorKind::InvalidData.into());
                     }

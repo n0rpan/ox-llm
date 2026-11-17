@@ -382,6 +382,10 @@ where
                 buffer.push_str(&args);
             }
             if let Some(value) = chunk.get("usage").filter(|v| !v.is_null()) {
+                if let Some(diagnostics) = diagnostics {
+                    diagnostics
+                        .billing_source(super::PlanName::from_value(&value["opencode"]["billing_source"]));
+                }
                 // Accept a separate final usage frame or usage on a validated
                 // finish frame, never an interim record during generation.
                 if finish.is_none() && ending.is_none() {
