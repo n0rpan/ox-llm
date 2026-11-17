@@ -291,3 +291,23 @@ fn inbox_durable_pickup_is_ordered_bounded_private_and_wipeable() {
     assert!(!dir.exists());
     assert_eq!(fs::read_to_string(outside).unwrap(), "untouched");
 }
+
+#[test]
+fn inbox_durable_pickup_releases_shared_ownership_without_a_watch_receipt() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let id = send_inbox(&agent, "released", "still queued").unwrap();
+    // A refusing watcher retains the message and owns the inbox while it lives.
+    let watch = Inbox::watch(&agent, "released", |_| false).unwrap();
+    assert!(Inbox::take(&agent, "released").is_err());
+    assert!(
+        !Inbox::receipt(&agent, "released", &id).unwrap(),
+        "watch is not a receipt"
+    );
+    drop(watch);
+    assert_eq!(
+        Inbox::take(&agent, "released").unwrap(),
+        Some((id.clone(), "still queued".into()))
+    );
+    assert!(Inbox::receipt(&agent, "released", &id).unwrap());
+}
