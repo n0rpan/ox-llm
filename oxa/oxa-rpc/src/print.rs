@@ -31,8 +31,8 @@ struct PrintSink<'a> {
     local_model: bool,
     pending_length: bool,
     continued: Option<String>,
-    /// The final reply of the last prompt, set at `AgentEnd`; written to `out` by `run_print`
-    /// once it knows the run did not fail or abort.
+    /// The final reply of the last prompt, selected at `AgentEnd` or successful goal
+    /// settlement; written to `out` only once the run did not fail or abort.
     final_text: Option<String>,
     notes: Vec<String>,
     started: HashMap<String, Instant>,
@@ -225,6 +225,10 @@ pub fn run_print_outcome(
     let mut outcome = RunOutcome::NothingToDo;
     let n = prompts.len();
     for (i, (text, parts)) in prompts.into_iter().enumerate() {
+        if session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
         sink.last = None;
         sink.pending = None;
         sink.pending_length = false;
@@ -268,6 +272,21 @@ pub fn run_print_outcome(
         // included); print only says why on stderr.
         let settled = session.take_outcome();
         outcome.include(settled);
+        // goal_done can settle the run on the tool-call message itself. Its
+        // content is final only after goal, schema and project checks succeed.
+        if sink.is_last_prompt
+            && settled == RunOutcome::Done
+            && sink.final_text.is_none()
+            && session
+                .goal()
+                .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Done)
+        {
+            sink.final_text = sink
+                .last
+                .as_ref()
+                .filter(|message| message.msg.tool_calls.iter().any(|call| call.name == "goal_done"))
+                .and_then(|message| message.msg.content.clone());
+        }
         // A failed or aborted run prints no reply (only known after the run).
         if !failed {
             if let Some(t) = sink.final_text.clone() {
@@ -278,7 +297,7 @@ pub fn run_print_outcome(
             }
         }
         explain_outcome(settled, &mut *sink.err);
-        if session.handle().wrap_up_requested() {
+        if session.handle().wrap_up_requested() || session.handle().interrupted() {
             outcome.include(RunOutcome::Interrupted);
             break;
         }
@@ -337,6 +356,10 @@ pub fn run_json_outcome(
     };
     let mut outcome = RunOutcome::NothingToDo;
     for (text, parts) in prompts {
+        if session.handle().interrupted() {
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
         let _ = session.take_outcome();
         let before = session.inner().tree.leaf().to_string();
         match prompt_or_command(session, text, parts, &mut sink, &mut ui) {
@@ -369,7 +392,7 @@ pub fn run_json_outcome(
         }
         after_run(session, &before, &mut ui, &mut Vec::new(), err);
         explain_outcome(settled, err);
-        if session.handle().wrap_up_requested() {
+        if session.handle().wrap_up_requested() || session.handle().interrupted() {
             outcome.include(RunOutcome::Interrupted);
             break;
         }

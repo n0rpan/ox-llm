@@ -403,7 +403,13 @@ fn hint_items(ctx: HintContext, keymap: &Keymap, fullscreen: bool, theme: &Theme
             ..
         } => vec![
             if armed {
-                action_hint(keymap, "app.clear", "exit", "warning", theme)
+                action_hint(
+                    keymap,
+                    "app.clear",
+                    "exit (press again within 2s)",
+                    "warning",
+                    theme,
+                )
             } else {
                 None
             },

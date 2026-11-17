@@ -110,11 +110,29 @@ settles the request before reporting success.
 
 `anthropic-gateway` composes typed catalog configuration, private admission,
 native transport and consuming settlement. `Runtime::new` takes validated model
-routes with optional prices and explicit private paths; its default options
+routes with optional `Billing` and explicit private paths; its default options
 refuse cloud use. Discovery borrows public metadata and reads no key or ledger.
 `Gateway::chat` takes the same borrowed `oxa_proto::ChatRequest` used by the core,
 without a request-byte conversion at the engine boundary. Decoded chunks pass
 straight to reply assembly. Only the frozen tools schema needs decoding.
+
+`Billing::Metered(Price)` requires the USD budget. Explicit
+`Billing::Subscription` is limited to ChatGPT and OpenCode Go and requires both
+positive daily request and token limits in `Options.subscription_limits`.
+Subscription holds reserve one request and the full context/output token bound;
+settlement keeps token usage and writes zero USD. Unknown work retains its hold,
+and the same private cross-process lock protects both billing classes. Missing
+pricing never selects subscription billing. ChatGPT refresh configuration is
+separate in `Options.subscription`; Go reads only `opencode` from the existing
+key file and refuses API/guest origins. There is no paid-balance fallback.
+
+`Call::provider_session_hint()` supplies an opaque, provider-bound conversation
+header from the ledger salt and explicit session context. Its HMAC domain differs
+from private ledger identifiers, and it is stable across process restarts. A
+missing session is refused; raw session IDs and the salt never become headers.
+The owned `OpenAiAuthHandle::as_auth()` keeps credential borrowing separate from
+mutable Sending/usage/settlement callbacks. These library admission hooks do not
+activate an unwired provider transport or change production factory defaults.
 
 Known refusals write private zero-spend rows. Documented Anthropic HTTP refusals
 (400, 401, 403, 404, 413, 429) settle at zero as `refused`; timeout, server and
@@ -124,12 +142,42 @@ unknown paid work. Trusted terminal cache usage settles even if public usage is
 omitted or final delivery cancels. Unknown paid cancellations retain the full
 reserved charge. Done follows a successful append; later cancellation cannot
 retract an already settled reply. Failed appends block subsequent admissions.
-Opaque thinking replay is bounded and scoped to history, tools, model, endpoint
-and credential; it never appears in public chunks or ledger diagnostics.
+Opaque replay is bounded per assistant turn and authenticated to exact visible
+history, tools, model, endpoint and account. The actual assembled message receives
+its binding after settlement, sharing the provider output allocation. Private
+session records retain it across process restarts; a changed binding is refused
+before forwarding. Authorized context changes drop carriers rather than re-sign
+them. There is no process-global conversation cache. Native items never appear in
+public chunks or ledger diagnostics.
 
 The optional `oxa-engine/in-process-gateway` bridge delivers callbacks on the
 calling thread. Construction/discovery starts no worker. The first chat lazily
 creates one parked I/O worker for pooled connections and concurrent calls.
 Shared `CancelToken` notifications wake network waits directly, with no timer
-or relay token. Async consumers use `Gateway::chat` directly. Production setting
-and factory selection are the subsequent default-off S7 slice.
+or relay token. Async consumers use `Gateway::chat` directly. The user-only
+`oxa.engine.inProcessCloud` selector is default off. Its factory accepts Anthropic,
+OpenAI Responses API and explicit ChatGPT subscription routes.
+
+### OpenCode Go chat models
+
+The native factory can opt into Go with user-only `oxa.cloud.opencode.enabled`
+while `oxa.engine.inProcessCloud` is enabled. The provider base defaults to
+`https://opencode.ai/inference/go`; a user-only `base_url` overrides it for owned
+loopback fixtures. Supply the owner's positive `daily_requests` and `daily_tokens`
+under `oxa.cloud.subscription_limits`; the existing mandatory subscription caps
+and consuming settlement apply unchanged. There is no paid-balance fallback.
+
+The protected cloud key file's `opencode` entry is read by the gateway. Startup
+fetches bounded live discovery and admits chat-completions shapes only, using the
+advertised endpoint and limits. IDs are `opencode/<discovered id>`; no model table
+is maintained. Messages/Responses/unknown shape records are not chat routes.
+Discovery never opens the ledger, and offline refusal precedes key reads.
+
+Go uses the one gateway HTTP pool, shared raw SSE Framer and field redactor.
+The existing provider-bound private session hint supplies `x-opencode-session`;
+raw session IDs and the private salt never leave the ledger. API/guest origins
+cannot use the subscription. Region and rate-limit refusals are typed; upstream
+429 remains retryable and never implies allowance exhaustion. No workspace console
+URL or provider error body is exposed. Successful rows retain zero
+USD, request/token accounting and checked numeric-only allowance/list-cost/token
+metadata; arbitrary provider text cannot enter those receipt fields.

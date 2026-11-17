@@ -259,6 +259,7 @@ pub(crate) struct Loop<'a> {
     /// The worker has answered a command since `model_pending` was set (its Status settles it).
     model_answered: bool,
     session: SessionInfo,
+    inbox: Option<oxa_session::Inbox>,
     files: Option<FileIndex>,
     /// Images pasted for the next prompt.
     pending_parts: Vec<Part>,
@@ -304,8 +305,8 @@ pub(crate) struct Loop<'a> {
     gfx_reset: bool,
     /// O-182: the theme as loaded; `theme` is its hot variant while YOLO is on (OXA's look).
     cool_theme: Theme,
-    /// O-182: what the screen last showed of the YOLO switch, and until when its banner shows.
-    yolo_shown: Option<Autonomy>,
+    /// The effective permission mode last shown (plan takes precedence over the YOLO switch).
+    yolo_shown: Option<PermissionMode>,
     /// #202: the level `/yolo off` and Ctrl+Alt+O return to; the full-access notice was shown.
     yolo_prev: Autonomy,
     yolo_noticed: bool,
@@ -317,8 +318,9 @@ pub(crate) struct Loop<'a> {
     focused: bool,
     run_finished: bool,
     pub(crate) dirty: bool,
-    /// Ctrl+C was pressed on an empty editor; a second press quits.
+    /// Ctrl+C was pressed on an empty editor; a second press within two seconds quits.
     armed: bool,
+    armed_at: Option<std::time::Instant>,
     reset_screen: bool,
     header_pending: bool,
     pub(crate) quit: Option<i32>,
@@ -406,6 +408,7 @@ impl<'a> Loop<'a> {
             model_pending: None,
             model_answered: false,
             session: SessionInfo::default(),
+            inbox: None,
             files: None,
             pending_parts: Vec::new(),
             printer: RegularPrinter::new(),
@@ -448,6 +451,7 @@ impl<'a> Loop<'a> {
             run_finished: false,
             dirty: true,
             armed: false,
+            armed_at: None,
             reset_screen: false,
             header_pending,
             quit: None,
@@ -518,9 +522,9 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// O-182: is YOLO on (the process's switch).
+    /// Whether the session effectively has full access, not just the process's switch.
     fn yolo_on(&self) -> bool {
-        self.opts.yolo.as_ref().is_some_and(|y| y.full())
+        self.permission_mode() == PermissionMode::Yolo
     }
 
     /// #202: the permission mode now: the session mode with the process's autonomy level.
@@ -569,13 +573,17 @@ impl<'a> Loop<'a> {
             self.vm.status.yolo_approved = approved;
             self.dirty = true;
         }
-        if self.yolo_shown == Some(level) {
+        if self.vm.status.autonomy != level {
+            self.vm.status.autonomy = level;
+            self.dirty = true;
+        }
+        let mode = self.permission_mode();
+        if self.yolo_shown == Some(mode) {
             return;
         }
-        let was_full = self.yolo_shown == Some(Autonomy::Yolo);
-        self.yolo_shown = Some(level);
-        let full = level == Autonomy::Yolo;
-        self.vm.status.autonomy = level;
+        let was_full = self.yolo_shown == Some(PermissionMode::Yolo);
+        self.yolo_shown = Some(mode);
+        let full = mode == PermissionMode::Yolo;
         self.dirty = true;
         if full == was_full && self.vm.status.yolo == full {
             return;
@@ -733,6 +741,9 @@ impl<'a> Loop<'a> {
             WorkerMsg::Event(e) => {
                 // AgentEnd can occur between tool/follow-up turns; only settled ends a run.
                 if matches!(e, AgentEvent::AgentSettled { .. }) {
+                    if let Some(inbox) = &self.inbox {
+                        inbox.retry();
+                    }
                     self.run_finished = true;
                 }
                 apply_event(&mut self.vm, &e);
@@ -785,14 +796,19 @@ impl<'a> Loop<'a> {
         }
     }
 
-    /// The worker switched to another session object. Nothing of the old session may stay
-    /// live in the UI: its queued steering and follow-up messages come back into the editor
-    /// (with a notice; they were never sent), questions the app asked about it are dropped,
+    /// The worker switched to another session object. Its queued editor steering and
+    /// follow-up messages come back into the editor (with a notice; they were never sent),
+    /// while inbox messages retain their destinations. Questions about the old session are dropped,
     /// and its tree, selectors and attachments are closed. Abort, steer and follow-up target
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
+        // Join the old callback before draining its queue back into the editor.
+        self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
         old.abort_retry();
+        // Unlike editor input, admitted inbox text must keep its destination across a
+        // fresh Session/Shared. This includes messages admitted by a stale clone/fork watcher.
+        old.transfer_inbox_to(&self.handle);
         let queued = old.dequeue();
         if !queued.is_empty() {
             let n = queued.len();
@@ -814,6 +830,37 @@ impl<'a> Loop<'a> {
     }
 
     fn set_session(&mut self, info: SessionInfo) {
+        if self.session.id != info.id || self.inbox.is_none() {
+            // A Reopen may have recovered an already-admitted message without a file
+            // left to trigger the new watcher. Wake only the recovered destination.
+            if self.handle.has_inbox_input() && self.handle.request_inbox_wake() {
+                let _ = self.cmds.send(SessionCmd::Inbox {
+                    session_id: info.id.clone(),
+                });
+            }
+            // Stop the old callback before installing one bound to the current handle.
+            self.inbox = None;
+            let handle = self.handle.clone();
+            let cmds = self.cmds.clone();
+            let session_id = info.id.clone();
+            match oxa_session::Inbox::watch(&self.opts.dirs.agent_dir, &info.id, move |text| {
+                // A clone/fork can change the worker's identity before the UI receives
+                // its Session notification. Keep even late admissions at their destination.
+                if !handle.follow_up_for(&session_id, text) {
+                    return false;
+                }
+                if !handle.request_inbox_wake() {
+                    return true;
+                }
+                cmds.send(SessionCmd::Inbox {
+                    session_id: session_id.clone(),
+                })
+                .is_ok()
+            }) {
+                Ok(inbox) => self.inbox = Some(inbox),
+                Err(e) => self.push_notice(Level::Warning, format!("Session inbox unavailable: {e}")),
+            }
+        }
         // pi interactive-mode.ts: the autocomplete offers `/skill:name` only with
         // `enableSkillCommands` (a typed one still expands either way).
         let skill_commands = self.opts.settings.bool("enableSkillCommands", true);
@@ -856,6 +903,16 @@ impl<'a> Loop<'a> {
         self.session = info;
         if self.scope_from_settings {
             self.scoped = self.resolved_scope();
+        }
+        if matches!(self.overlay, Some(Overlay::Model(_) | Overlay::Scoped(_))) {
+            let models = self.model_choices();
+            match self.overlay.as_mut() {
+                Some(Overlay::Model(selector)) => {
+                    selector.set_models(models, &self.vm.status.model, &self.scoped);
+                }
+                Some(Overlay::Scoped(selector)) => selector.set_models(models),
+                _ => {}
+            }
         }
         if std::mem::take(&mut self.picker_pending) {
             self.open_selector(SelectorKind::Sessions);
@@ -990,6 +1047,14 @@ impl<'a> Loop<'a> {
     }
 
     pub(crate) fn tick(&mut self, animating: bool) {
+        if self
+            .armed_at
+            .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(2))
+        {
+            self.armed = false;
+            self.armed_at = None;
+            self.dirty = true;
+        }
         // pi's look redraws on every turn of an animating loop. OXA's look redraws when its
         // animation steps: 8 times a second with the sprite, once a second (the elapsed time)
         // without motion. Everything else that changes the screen marks it dirty itself.
@@ -1224,8 +1289,27 @@ impl<'a> Loop<'a> {
     }
 
     fn key(&mut self, term: &mut dyn Terminal, key: Key) {
+        // Kitty sends release events too. They must not consume the two-press exit arm.
+        if key.kind == KeyKind::Release {
+            return;
+        }
         self.dirty = true;
-        let was_armed = std::mem::take(&mut self.armed);
+        let was_armed = std::mem::take(&mut self.armed)
+            && self
+                .armed_at
+                .take()
+                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2));
+        // Ctrl+C during a turn uses the existing cancel path, not idle clear/exit.
+        // Do this before dialogs/overlays and selection-copy can consume the key.
+        if self.opts.keymap.actions_for(&key.id).contains(&"app.clear")
+            && (self.running() || matches!(self.vm.status.activity, Activity::Retrying { .. }))
+        {
+            self.handle.abort();
+            self.handle.abort_retry();
+            self.dialogs.key(&key, &self.opts.keymap);
+            self.restore_queue();
+            return;
+        }
         if self.dialogs.is_open() {
             match self.dialogs.key(&key, &self.opts.keymap) {
                 DialogKey::NotOpen => {}
@@ -1235,9 +1319,6 @@ impl<'a> Loop<'a> {
                 }
                 DialogKey::Consumed | DialogKey::Closed => return,
             }
-        }
-        if key.kind == KeyKind::Release {
-            return;
         }
         if self.overlay.is_some() {
             self.overlay_key(term, &key);
@@ -1294,6 +1375,7 @@ impl<'a> Loop<'a> {
                 self.quit = Some(0);
             } else {
                 self.armed = true;
+                self.armed_at = Some(std::time::Instant::now());
             }
             return;
         }
@@ -1331,6 +1413,7 @@ impl<'a> Loop<'a> {
             self.editor.add_history(&text);
             if self.running() {
                 self.handle.follow_up(text);
+                self.wake_queued();
                 self.sync_queue();
             } else {
                 let parts = self.take_attachments();
@@ -1601,6 +1684,7 @@ impl<'a> Loop<'a> {
         }
         if self.running() {
             self.handle.steer(trimmed);
+            self.wake_queued();
             self.sync_queue();
         } else {
             let parts = self.take_attachments();
@@ -1648,6 +1732,19 @@ impl<'a> Loop<'a> {
         })
     }
 
+    /// An active run may consume this input, but its final queue take may already be past.
+    /// Keep one handle-bound wake on the existing worker channel for that handoff window.
+    fn wake_queued(&self) {
+        if self.handle.request_queued_wake()
+            && self
+                .cmds
+                .send(SessionCmd::QueuedInput(self.handle.clone()))
+                .is_err()
+        {
+            self.handle.clear_queued_wake();
+        }
+    }
+
     /// Show the queues as they are now (the core reports them only when it takes from them).
     fn sync_queue(&mut self) {
         let (steering, follow_up) = self.handle.queued();
@@ -1670,6 +1767,9 @@ impl<'a> Loop<'a> {
 
     fn restore_queue(&mut self) {
         let queued = self.handle.dequeue();
+        if let Some(inbox) = &self.inbox {
+            inbox.retry();
+        }
         self.vm.status.steering.clear();
         self.vm.status.follow_up.clear();
         if queued.is_empty() {
@@ -3378,3 +3478,6 @@ mod block_cache_tests {
         assert_eq!(c.starts[0], 1);
     }
 }
+
+#[cfg(test)]
+mod catalog_tests;

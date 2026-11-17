@@ -4,6 +4,9 @@ use chrono::{DateTime, FixedOffset};
 use reqwest::header::HeaderMap;
 use std::time::Duration;
 
+pub mod chatgpt;
+pub use chatgpt::classify_chatgpt_refusal;
+
 // Keep the same refusal result as the native Anthropic discovery helper.
 pub use crate::anthropic_client::models::Refusal;
 
@@ -82,7 +85,7 @@ fn unsigned(value: &str) -> Option<u64> {
     value.parse().ok()
 }
 
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+pub(crate) fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     header(headers, "retry-after")
         .and_then(unsigned)
         .map(Duration::from_secs)

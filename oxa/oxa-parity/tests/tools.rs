@@ -837,14 +837,19 @@ fn tools_018() {
 
 /// TOOLS-019 (P): tool selection with defaults, `--tools`, `-xt`, `-nbt`, `-nt`, globs; exclusion wins.
 /// pi: `cli.md#tools`. INVARIANT (W3): resolved once per prefix epoch; the list is the frozen `tools` array.
-/// INVARIANT: lead defaults include ask plus subagent where O-146 offers it
-/// (not on the Rust Flash engine, not below a 32K window); it is selected like a built-in.
+/// INVARIANT: lead defaults include ask plus subagent when an agent is available and O-146
+/// offers it (not Flash, not below 32K); it is selected like a built-in.
 #[test]
 fn tools_019() {
     let env = TestEnv::new();
     let mut lead: Vec<String> = ALL_SEVEN.iter().map(|s| s.to_string()).collect();
     lead.push("ask".to_string());
     lead.sort();
+    assert_eq!(offered(&env, &[]), lead, "no agents: only lead built-ins");
+    env.write(
+        "home/.oxa/agent/agents/worker.md",
+        "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+    );
     let mut all = lead.clone();
     all.push("subagent".to_string());
     all.sort();

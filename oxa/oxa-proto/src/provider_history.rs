@@ -22,7 +22,7 @@ pub struct ProviderHistory(Arc<History>);
 struct History {
     scope: [u8; 32],
     prefix: [u8; 32],
-    items: Box<[Value]>,
+    items: Arc<[Value]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,12 +52,17 @@ impl fmt::Debug for ProviderHistory {
 
 impl ProviderHistory {
     pub fn new(scope: [u8; 32], prefix: [u8; 32], items: Vec<Value>) -> Result<Self, ProviderHistoryError> {
+        Self::from_shared_items(scope, prefix, items.into())
+    }
+    /// Share already-owned native output without copying a potentially large
+    /// private replay array. The same bounds apply to both constructors.
+    pub fn from_shared_items(
+        scope: [u8; 32],
+        prefix: [u8; 32],
+        items: Arc<[Value]>,
+    ) -> Result<Self, ProviderHistoryError> {
         validate_items(&items)?;
-        Ok(Self(Arc::new(History {
-            scope,
-            prefix,
-            items: items.into_boxed_slice(),
-        })))
+        Ok(Self(Arc::new(History { scope, prefix, items })))
     }
     pub fn scope(&self) -> &[u8; 32] {
         &self.0.scope
@@ -94,7 +99,7 @@ impl ProviderHistory {
         Ok(Self(Arc::new(History {
             scope,
             prefix,
-            items: items.clone().into_boxed_slice(),
+            items: items.clone().into(),
         })))
     }
 }
