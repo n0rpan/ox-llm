@@ -455,3 +455,25 @@ fn buffered_header_refusal_keeps_write_and_flush_failures_strict() {
         assert!(!format!("{failure:?}").contains("synthetic-private-write"));
     }
 }
+
+#[test]
+fn partial_write_followed_by_header_rejection_still_fails_health() {
+    struct ShortWrite(CloseOnHeaders);
+    impl Write for ShortWrite {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            let count = bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map_or(bytes.len(), |end| end + 4);
+            self.0.write(&bytes[..count])
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.0.flush()
+        }
+    }
+    let reply =
+        Reply::raw(200, "application/json", b"synthetic payload".to_vec(), vec![]).buffer_header_refusal();
+    let failure = openai::write_reply(&mut ShortWrite(CloseOnHeaders::default()), &reply).unwrap_err();
+    assert_eq!(failure.kind, Some(std::io::ErrorKind::BrokenPipe));
+    assert_eq!(failure.part, Some(openai::ReplyPart::BufferedReply));
+}
