@@ -128,13 +128,15 @@ def main():
                 run(['cargo', 'test', '--locked', '--profile', profile, *arguments,
                      '--', '--list', '--format', 'terse'], cwd=workspace, env=env, stdout=output)
             run(['python3', '-I', str(root / 'tools/ci/engine_test_count.py'), str(libtest), str(inventory)])
+        report = root / workspace / 'target/nextest/lane/junit.xml'
+        report.unlink(missing_ok=True)
         result = subprocess.run([nextest, 'nextest', 'run', '--profile', 'lane',
             '--tool-config-file', 'lane:' + str(root / 'tools/ci/lane-nextest.toml'),
             '--archive-file', str(archive), '--workspace-remap', str(root / workspace),
-            '--extract-to', str(root / workspace), '--no-tests', 'fail', '--test-threads', '4',
+            '--extract-to', str(root / workspace), '--extract-overwrite',
+            '--no-tests', 'fail', '--test-threads', '4',
             '--success-output', 'immediate', '--failure-output', 'immediate-final'],
             cwd=workspace, env=env)
-        report = root / workspace / 'target/nextest/lane/junit.xml'
         # The existing guard rejects runtime skips, missing/duplicate cases and failures.
         if workspace != 'engine':
             run(['python3', '-I', str(root / 'tools/ci/check_oxa_report.py'),
