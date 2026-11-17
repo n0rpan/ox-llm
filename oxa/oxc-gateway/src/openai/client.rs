@@ -1,7 +1,7 @@
 //! Responses transport only. The caller owns routing, admission and settlement.
 //! No ambient credential discovery, sign-in, continuation cache or transport Done.
 use super::{chatgpt_request, chatgpt_tokens, request, stream};
-use crate::{accounting::Usage, rate_limits, secrets::Key};
+use crate::{accounting::Usage, rate_limits, secrets::Key, sse::Framer};
 use futures_util::StreamExt;
 use reqwest::{
     header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE},
@@ -353,13 +353,11 @@ impl Client {
         let include_usage = chat.payload.pointer("/stream_options/include_usage") == Some(&Value::Bool(true));
         let mut translator = stream::Stream::new(chat.alias, chat.created, include_usage);
         let mut source = response.bytes_stream();
-        let mut decoder = Decoder::default();
+        let mut decoder = Framer::default();
         let mut received = 0usize;
         let mut redactor = Fields::new(sensitive);
-        // No response data escapes before the whole turn passes inspection.
-        // Coalesce public string fields instead of retaining a Vec of deltas;
-        // preserve the existing tool-call arrival order separately.
-        let mut pending_output = HeldOutput::default();
+        // Public text/reasoning streams through the existing field redactor.
+        // Tools and replay authority still wait for whole-turn inspection.
         let mut pending_tools = Vec::new();
         loop {
             let bytes = tokio::select! {
@@ -372,9 +370,11 @@ impl Client {
                 if received > MAX_BODY {
                     return Err(Error::TooLarge);
                 }
-                let Some(event) = decoder.push(byte)? else {
+                let Some(data) = decoder.push(byte) else {
                     continue;
                 };
+                let event: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
+                drop(data);
                 let terminal = matches!(
                     event["type"].as_str(),
                     Some("response.completed" | "response.incomplete" | "response.failed" | "error")
@@ -415,10 +415,11 @@ impl Client {
                         ..Usage::default()
                     });
                     *terminal_usage = usage.clone();
-                    // Include done-only text/reasoning in the same aggregate.
+                    // Done-only public text uses the same masked delivery as
+                    // live deltas. Nothing executable or persistent escapes.
                     for chunk in &chunks {
                         if response_data(chunk) {
-                            pending_output.push(chunk.clone())?;
+                            redactor.deliver(chunk.clone(), cancel, on)?;
                         }
                     }
                     // The exact set is the same one used for this attempt's
@@ -433,7 +434,7 @@ impl Client {
                                         .and_then(|arguments| serde_json::from_str::<Value>(arguments).ok())
                                         .is_some_and(|arguments| known_value(&arguments, &redactor.secrets))
                         })
-                        || pending_output.known(&redactor.secrets)
+                        || redactor.matched
                     {
                         return Err(Error::Protocol);
                     }
@@ -443,13 +444,12 @@ impl Client {
                             continue;
                         }
                         if response_data(&chunk) {
-                            continue; // Already held without a second delta list.
+                            continue; // Already delivered through the public redactor.
                         }
                         if chunk
                             .pointer("/choices/0/finish_reason")
                             .is_some_and(|v| !v.is_null())
                         {
-                            pending_output.deliver(&mut redactor, cancel, on)?;
                             for tool in pending_tools.drain(..) {
                                 if !withheld {
                                     redactor.deliver(tool, cancel, on)?;
@@ -489,7 +489,7 @@ impl Client {
                     if chunk.pointer("/choices/0/delta/tool_calls").is_some() {
                         pending_tools.push(chunk);
                     } else {
-                        pending_output.push(chunk)?;
+                        redactor.deliver(chunk, cancel, on)?;
                     }
                 }
             }
@@ -605,6 +605,12 @@ impl Client {
         }
     }
 
+    // Only an already-hardened native transport may be reused here.
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn from_messages_transport(messages: &crate::anthropic_client::Client) -> Self {
+        Self(messages.shared_transport())
+    }
+
     async fn refresh(
         &self,
         endpoint: Url,
@@ -632,11 +638,14 @@ impl Client {
             .as_str()
             .filter(|s| !s.is_empty())
             .ok_or(Error::Refresh)?;
-        let refresh = value
-            .get("refresh_token")
-            .map_or(Some(old.refresh_token()), Value::as_str)
-            .filter(|s| !s.is_empty())
-            .ok_or(Error::Refresh)?;
+        // Match the token-file helper: no rotation keeps the existing grant.
+        // Malformed replacements must still fail rather than lose that grant.
+        let refresh = match value.get("refresh_token") {
+            None | Some(Value::Null) => old.refresh_token(),
+            Some(Value::String(s)) if s.is_empty() => old.refresh_token(),
+            Some(Value::String(s)) => s,
+            _ => return Err(Error::Refresh),
+        };
         let expires = match value.get("expires_in") {
             Some(value) => {
                 let lifetime = value.as_u64().filter(|n| *n > 120).ok_or(Error::Refresh)?;
@@ -718,59 +727,21 @@ fn responses_endpoint(base: &str, subscription: bool) -> Result<Url, Error> {
     url.set_path(&path);
     Ok(url)
 }
-// Same line-oriented SSE framing as the Anthropic transport: CR/LF/CRLF,
-// comments, multi-line data and UTF-8 split at arbitrary byte boundaries.
-#[derive(Default)]
-struct Decoder {
-    line: Vec<u8>,
-    data: Vec<u8>,
-    after_cr: bool,
-}
-impl Decoder {
-    fn push(&mut self, byte: u8) -> Result<Option<Value>, Error> {
-        if byte == b'\n' && self.after_cr {
-            self.after_cr = false;
-            return Ok(None);
-        }
-        self.after_cr = byte == b'\r';
-        if !matches!(byte, b'\r' | b'\n') {
-            self.line.push(byte);
-            return Ok(None);
-        }
-        let line = std::mem::take(&mut self.line);
-        if line.is_empty() {
-            if self.data.is_empty() {
-                return Ok(None);
-            }
-            let data = std::mem::take(&mut self.data);
-            return serde_json::from_slice(&data[..data.len() - 1])
-                .map(Some)
-                .map_err(|_| Error::Protocol);
-        }
-        let data = if line == b"data" {
-            Some(&b""[..])
-        } else {
-            line.strip_prefix(b"data:")
-        };
-        if let Some(data) = data {
-            self.data
-                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            self.data.push(b'\n')
-        }
-        Ok(None)
-    }
-}
 // Field-local withholding prevents credentials split across decoded delta chunks
 // from escaping; transport JSON/framing is never fed to the field redactor.
 struct Fields<'a> {
     secrets: Vec<&'a str>,
     pending: BTreeMap<String, (Value, String)>,
+    // Sticky observation only, never a second copy of public output. A native
+    // terminal snapshot cannot erase a secret seen in earlier public deltas.
+    matched: bool,
 }
 impl<'a> Fields<'a> {
     fn new(secrets: Vec<&'a str>) -> Self {
         Self {
             secrets,
             pending: BTreeMap::new(),
+            matched: false,
         }
     }
     fn deliver<F: FnMut(Event) -> Control + ?Sized>(
@@ -784,6 +755,7 @@ impl<'a> Fields<'a> {
             return emit(chunk, cancel, on);
         }
         let delta = &chunk["choices"][0]["delta"];
+        self.matched |= known_value(delta, &self.secrets);
         let mut fields = Vec::new();
         if let Some(object) = delta.as_object() {
             for (key, value) in object {
@@ -807,6 +779,7 @@ impl<'a> Fields<'a> {
             let text = chunk.pointer(&path).and_then(Value::as_str).unwrap().to_owned();
             let (_, mut pending) = self.pending.remove(&id).unwrap_or((Value::Null, String::new()));
             pending.push_str(&text);
+            self.matched |= self.secrets.iter().any(|secret| pending.contains(secret));
             let (pending, suffix) = redact_fragment(&pending, &self.secrets, false);
             *chunk.pointer_mut(&path).unwrap() = Value::String(pending);
             if !suffix.is_empty() {
@@ -843,8 +816,7 @@ impl<'a> Fields<'a> {
         Ok(())
     }
 }
-// Only normalized response-data chunks enter this aggregate. Terminal/usage
-// controls and executable tool chunks retain their existing caller policy.
+// Public normalized data is distinct from terminal/usage controls and tools.
 fn response_data(chunk: &Value) -> bool {
     chunk["choices"]
         .as_array()
@@ -853,69 +825,6 @@ fn response_data(chunk: &Value) -> bool {
             .pointer("/choices/0/finish_reason")
             .is_none_or(Value::is_null)
         && chunk.pointer("/choices/0/delta/tool_calls").is_none()
-}
-// Retain one header and compact adjacent string-field runs, not a Vec of
-// repeated public JSON deltas. Runs preserve content/reasoning/refusal ordering
-// for the real consumer (including its existing content-marker handling).
-#[derive(Default)]
-struct HeldOutput {
-    header: Option<Value>,
-    runs: Vec<(String, String)>,
-}
-impl HeldOutput {
-    fn push(&mut self, chunk: Value) -> Result<(), Error> {
-        if self.header.is_none() {
-            self.header = Some(chunk);
-            return Ok(());
-        }
-        let delta = chunk
-            .pointer("/choices/0/delta")
-            .and_then(Value::as_object)
-            .ok_or(Error::Protocol)?;
-        for (field, value) in delta {
-            if let Some(text) = value.as_str() {
-                if field != "role" {
-                    if let Some((_, previous)) = self.runs.last_mut().filter(|(key, _)| key == field) {
-                        previous.push_str(text);
-                        continue;
-                    }
-                }
-                self.runs.push((field.clone(), text.to_owned()));
-            } else if !value.is_null() {
-                return Err(Error::Protocol);
-            }
-        }
-        Ok(())
-    }
-    fn known(&self, secrets: &[&str]) -> bool {
-        self.header
-            .as_ref()
-            .is_some_and(|chunk| known_value(&chunk["choices"][0]["delta"], secrets))
-            || self.runs.iter().any(|(field, text)| {
-                secrets
-                    .iter()
-                    .any(|secret| field.contains(secret) || text.contains(secret))
-            })
-    }
-    fn deliver<F: FnMut(Event) -> Control + ?Sized>(
-        &mut self,
-        redactor: &mut Fields<'_>,
-        cancel: &Cancellation,
-        on: &mut F,
-    ) -> Result<(), Error> {
-        let Some(header) = self.header.take() else {
-            return Ok(());
-        };
-        let mut template = header.clone();
-        template["choices"][0]["delta"] = serde_json::json!({});
-        redactor.deliver(header, cancel, on)?;
-        for (field, text) in self.runs.drain(..) {
-            let mut chunk = template.clone();
-            chunk["choices"][0]["delta"][field] = Value::String(text);
-            redactor.deliver(chunk, cancel, on)?;
-        }
-        Ok(())
-    }
 }
 // Exact held values only: no patterns, external discovery or replacement.
 fn known_value(value: &Value, secrets: &[&str]) -> bool {
@@ -1053,8 +962,12 @@ mod tests {
     #[test]
     fn sse_handles_crlf_multiline_unicode_and_comments() {
         let wire = b": ping\r\nevent: synthetic\r\ndata: {\"type\":\r\ndata: \"ping\",\"text\":\"\xce\xbb\"}\r\n\r\n";
-        let mut decoder = Decoder::default();
-        let events: Vec<_> = wire.iter().filter_map(|b| decoder.push(*b).unwrap()).collect();
+        let mut decoder = Framer::default();
+        let events: Vec<Value> = wire
+            .iter()
+            .filter_map(|b| decoder.push(*b))
+            .map(|data| serde_json::from_slice(&data).unwrap())
+            .collect();
         assert_eq!(events, vec![serde_json::json!({"type":"ping","text":"λ"})]);
     }
     #[test]
@@ -1077,6 +990,10 @@ mod tests {
             .filter_map(|v| v.pointer("/choices/0/delta/content")?.as_str())
             .collect();
         assert_eq!(text, "Before [redacted] after");
+        assert!(
+            fields.matched,
+            "terminal replay gate retains the live observation"
+        );
     }
     #[test]
     fn decoded_redaction_handles_unicode_and_split_secrets_without_panicking() {
@@ -1098,5 +1015,9 @@ mod tests {
             .filter_map(|v| v.pointer("/choices/0/delta/content")?.as_str())
             .collect();
         assert_eq!(text, "Before [redacted] after");
+        assert!(
+            fields.matched,
+            "terminal replay gate retains the live observation"
+        );
     }
 }

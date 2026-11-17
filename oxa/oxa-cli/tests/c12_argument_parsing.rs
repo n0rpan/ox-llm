@@ -55,6 +55,43 @@ fn send_status_and_work_preserve_subcommand_arguments() {
     }
 }
 
+/// A leading offline switch must not turn inbox delivery into a model prompt.
+#[test]
+fn offline_send_preserves_subcommand_arguments() {
+    for words in [
+        vec!["--offline", "send", "session-733", "follow up"],
+        vec![
+            "--offline",
+            "--offline",
+            "send",
+            "session-733",
+            "@literal --offline",
+        ],
+        vec!["--offline", "send", "session-733", "--offline"],
+        vec!["send", "session-733", "--offline"],
+        vec!["send", "session-733", "@literal"],
+    ] {
+        let args = parse(&words);
+        assert_eq!(args.offline, words[0] == "--offline", "{words:?}");
+        assert_eq!(
+            args.subcommand,
+            Some(Subcommand::Send(argv(&words[words.len() - 2..])))
+        );
+        assert!(args.messages.is_empty());
+        assert!(args.files.is_empty());
+    }
+    // Explicit prompts and the option terminator must still allow the word "send".
+    for words in [
+        vec!["--offline", "--", "send", "session-733", "follow up"],
+        vec!["--offline", "explain", "send"],
+        vec!["-p", "send"],
+    ] {
+        let args = parse(&words);
+        assert_eq!(args.subcommand, None, "{words:?}");
+        assert!(args.messages.iter().any(|word| word == "send"));
+    }
+}
+
 /// table test, long and short spellings
 #[test]
 fn every_flag_of_cli_md() {

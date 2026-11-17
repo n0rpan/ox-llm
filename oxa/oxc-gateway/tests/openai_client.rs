@@ -593,7 +593,7 @@ async fn final_private_usage_survives_cancelled_finish_delivery() {
 }
 
 #[tokio::test]
-async fn refreshed_and_retired_credentials_refuse_turn_without_delivery() {
+async fn refreshed_and_retired_credentials_stream_masked_but_refuse_replay_and_tools() {
     let refresh = MockOpenAi::start(vec![Reply::json(
         json!({"access_token":"synthetic-renewed-access","refresh_token":"synthetic-renewed-refresh","expires_in":3600}),
     )]);
@@ -635,7 +635,20 @@ async fn refreshed_and_retired_credentials_refuse_turn_without_delivery() {
         )
         .await;
     assert!(matches!(result, Err(client::Error::Protocol)));
-    assert!(chunks.is_empty());
+    assert!(!chunks.is_empty());
+    assert!(!probe_known_value(
+        &json!(chunks),
+        &[
+            KEY,
+            "synthetic-refresh",
+            "synthetic-renewed-access",
+            "synthetic-renewed-refresh",
+            "synthetic-account"
+        ]
+    ));
+    assert!(chunks
+        .iter()
+        .all(|c| c.pointer("/choices/0/delta/tool_calls").is_none()));
     assert_eq!(refresh.requests().len(), 1);
 }
 
@@ -646,6 +659,8 @@ async fn malformed_refresh_never_replaces_file_and_errors_are_fixed() {
         json!({"access_token":"","refresh_token":"synthetic-refresh","expires_in":3600}),
         json!({"access_token":KEY,"expires_in":"synthetic-refresh"}),
         json!({"access_token":"e30.eyJleHAiOjEwMDB9.synthetic","refresh_token":"synthetic-refresh","expires_in":3600}),
+        json!({"access_token":"synthetic-next-access","refresh_token":false,"expires_in":3600}),
+        json!({"access_token":"synthetic-next-access","refresh_token":42,"expires_in":3600}),
     ] {
         let refresh = MockOpenAi::start(vec![Reply::json(reply)]);
         let base = refresh.base_url();
@@ -1420,8 +1435,7 @@ async fn selected_read_timeout_expires_on_held_headers_and_held_sse_in_both_mode
                 "selected silence timeout did not expire while peer was held"
             );
             assert!(matches!(result.unwrap(), Err(client::Error::Transport)));
-            // No incomplete turn is released before native inspection.
-            assert!(!saw_text);
+            assert_eq!(saw_text, after_headers);
             assert!(usage.is_none());
         }
     }
@@ -1553,6 +1567,70 @@ async fn codex_shaped_refresh_without_expires_in_is_stored_before_forwarding() {
     assert!(forwarded);
     assert_eq!(refresh.requests().len(), 1);
     assert_eq!(upstream.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn optional_refresh_rotation_preserves_the_grant_before_forwarding() {
+    for rejected in [false, true] {
+        for rotation in [
+            None,
+            Some(Value::Null),
+            Some(json!("")),
+            Some(json!("synthetic-next-refresh")),
+        ] {
+            let fixture = Fixture::new();
+            let path = fixture.token_path(rejected);
+            let expected = rotation
+                .as_ref()
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .unwrap_or("synthetic-refresh");
+            let mut reply = json!({"access_token":"synthetic-next-access","expires_in":3600});
+            if let Some(rotation) = &rotation {
+                reply["refresh_token"] = rotation.clone();
+            }
+            let refresh = MockOpenAi::start(vec![Reply::json(reply)]);
+            let upstream = MockOpenAi::start(if rejected {
+                vec![Reply::error(401, "token_expired", "synthetic expiry"), answer()]
+            } else {
+                vec![answer()]
+            });
+            let base = upstream.base_url();
+            let endpoint = refresh.base_url();
+            let mut sends = 0;
+            let result = Client::new()
+                .unwrap()
+                .stream(
+                    chat(&base, &payload(), &[]),
+                    subscription_auth(&path, &endpoint),
+                    &Cancellation::default(),
+                    &mut |event| {
+                        if matches!(event, Event::Sending) {
+                            sends += 1;
+                            if !rejected || sends > 1 {
+                                let stored = chatgpt_tokens::read(&path).unwrap();
+                                assert_eq!(stored.access_token(), "synthetic-next-access");
+                                assert_eq!(stored.refresh_token(), expected);
+                                assert_eq!(stored.account_id(), "synthetic-account");
+                            }
+                        }
+                        Control::Continue
+                    },
+                )
+                .await;
+            assert!(result.is_ok(), "optional rotation must retain a usable grant");
+            assert_eq!(refresh.requests().len(), 1);
+            assert_eq!(upstream.requests().len(), if rejected { 2 } else { 1 });
+            assert_eq!(
+                sends,
+                if rejected { 2 } else { 1 },
+                "every forwarding checkpoint ran"
+            );
+            assert_eq!(chatgpt_tokens::read(&path).unwrap().refresh_token(), expected);
+            refresh.assert_healthy();
+            upstream.assert_healthy();
+        }
+    }
 }
 
 #[tokio::test]
@@ -1846,8 +1924,11 @@ async fn rejected_nonterminal_event_fails_before_a_held_peer_is_released() {
             assert!(before_release,"translator rejection waited for the held peer; subscription={subscription}, reads_disabled={}",read_timeout.is_none());
             assert_eq!(result.unwrap_err(), client::Error::Protocol);
             assert!(usage.is_none());
-            // The full turn, including prior benign text, is held on failure.
-            assert!(chunks.is_empty());
+            // Prior benign text was live, but no executable calls or error
+            // payloads escape the prompt translator refusal.
+            assert!(chunks
+                .iter()
+                .any(|c| c["choices"][0]["delta"]["content"] == "Visible output."));
             assert!(chunks
                 .iter()
                 .all(|c| c.get("error").is_none() && c.pointer("/choices/0/delta/tool_calls").is_none()));
@@ -1927,7 +2008,7 @@ fn probe_native_semantics(items: &[Value], known: &[&str]) -> bool {
 }
 
 #[tokio::test]
-async fn known_secret_turns_have_no_delivery_or_replay_authority() {
+async fn known_secret_turns_have_no_tool_execution_or_replay_authority() {
     let mut failures = Vec::new();
     let mut rows = Vec::new();
     for rotated in [false, true] {
@@ -2101,7 +2182,12 @@ async fn known_secret_turns_have_no_delivery_or_replay_authority() {
             let pass = if clean {
                 accepted_ok && replay_exact && !retained && args_equal && !tool_semantic && !forwarded
             } else {
-                refused && chunks.is_empty() && usage.as_ref().is_some_and(|u| u.output == Some(9))
+                refused
+                    && chunks
+                        .iter()
+                        .all(|chunk| chunk.pointer("/choices/0/delta/tool_calls").is_none())
+                    && !probe_known_value(&json!(chunks), &known)
+                    && usage.as_ref().is_some_and(|u| u.output == Some(9))
             };
             rows.push(json!({"profile":if rotated{"rotated_subscription"}else{"api"},"known_class":label,"placement":place,
                 "accepted":accepted_ok,"chunks":chunks.len(),"replay_retains_known_value":retained,"replay_exact":replay_exact,
@@ -2117,13 +2203,13 @@ async fn known_secret_turns_have_no_delivery_or_replay_authority() {
     }
     assert!(
         failures.is_empty(),
-        "known-secret atomic-turn contract failed in {} cases",
+        "known-secret execution/replay contract failed in {} cases",
         failures.len()
     );
 }
 
 #[tokio::test]
-async fn held_output_preserves_content_and_reasoning_order_in_real_assembler() {
+async fn live_output_preserves_content_and_reasoning_order_in_real_assembler() {
     for subscription in [false, true] {
         let output = json!([
             {"type":"message","id":"msg_order","role":"assistant","content":[{"type":"output_text","text":"<think>A</think>B"}]},
@@ -2169,5 +2255,142 @@ async fn held_output_preserves_content_and_reasoning_order_in_real_assembler() {
         assert_eq!(turn.msg.content.as_deref(), Some("B"));
         assert_eq!(turn.msg.reasoning.as_deref(), Some("AC"));
         assert_eq!(completed.output_items.as_ref(), output.as_array().unwrap());
+    }
+}
+
+#[tokio::test]
+async fn live_redacted_text_and_reasoning_precede_the_held_terminal_but_tools_do_not() {
+    for subscription in [false, true] {
+        for secret in [false, true] {
+            let fixture = Fixture::new();
+            let path = fixture.token_path(true);
+            let peer = HeldResponsesPeer::start();
+            let text = if secret {
+                format!("Visible live {KEY} text.")
+            } else {
+                "Visible live ordinary text.".into()
+            };
+            let reasoning = "Ordinary live reasoning.";
+            let tool = json!({"type":"function_call","id":"fc_live","call_id":"call_live","name":"read","arguments":"{\"path\":\"ordinary.txt\"}","status":"completed"});
+            peer.send(json!({"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_live","role":"assistant","content":[]}}));
+            // Split inside the exact held value; the existing field redactor
+            // must mask it while still making ordinary text visible live.
+            let middle = "Visible live ".len() + if secret { KEY.len() / 2 } else { 3 };
+            for part in [&text[..middle], &text[middle..]] {
+                peer.send(json!({"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":part}));
+            }
+            peer.send(json!({"type":"response.output_item.added","output_index":1,"item":{"type":"reasoning","id":"rs_live","content":[],"summary":[]}}));
+            peer.send(json!({"type":"response.reasoning_text.delta","output_index":1,"content_index":0,"delta":reasoning}));
+            peer.send(json!({"type":"response.output_item.added","output_index":2,"item":tool}));
+            peer.send(json!({"type":"response.output_item.done","output_index":2,"item":tool}));
+            let base = &peer.base;
+            let auth = if subscription {
+                subscription_auth(&path, base)
+            } else {
+                Auth::ApiKey(&fixture.key)
+            };
+            let (seen, received) = tokio::sync::oneshot::channel();
+            let mut seen = Some(seen);
+            let released = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let in_callback = released.clone();
+            let mut visible = false;
+            let mut thought = false;
+            let mut chunks = Vec::new();
+            let mut callback = |event| {
+                if let Event::Chunk(chunk) = event {
+                    if chunk.pointer("/choices/0/delta/tool_calls").is_some() {
+                        assert!(
+                            in_callback.load(Ordering::Acquire),
+                            "tool escaped before terminal authority"
+                        );
+                    }
+                    visible |= chunk["choices"][0]["delta"]["content"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty());
+                    thought |= chunk["choices"][0]["delta"]["reasoning_content"]
+                        .as_str()
+                        .is_some_and(|s| !s.is_empty());
+                    if visible && thought && !in_callback.load(Ordering::Acquire) {
+                        if let Some(seen) = seen.take() {
+                            let _ = seen.send(());
+                        }
+                    }
+                    chunks.push(chunk);
+                }
+                Control::Continue
+            };
+            let body = payload();
+            let cancel = Cancellation::default();
+            let client = Client::new().unwrap();
+            let mut usage = None;
+            let inference =
+                client.stream_with_usage(chat(base, &body, &[]), auth, &cancel, &mut callback, &mut usage);
+            let release = async {
+                received.await.expect("no visible text/reasoning before terminal");
+                released.store(true, Ordering::Release);
+                peer.send(json!({"type":"response.completed","response":{"status":"completed","output":[
+                    {"type":"message","id":"msg_live","role":"assistant","content":[{"type":"output_text","text":text}]},
+                    {"type":"reasoning","id":"rs_live","content":[{"type":"reasoning_text","text":reasoning}],"summary":[]},tool
+                ],"usage":{"input_tokens":12,"output_tokens":9}}}));
+            };
+            let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::join!(inference, release)
+            })
+            .await
+            .expect("terminal release depended on buffered output");
+            assert!(released.load(Ordering::Acquire));
+            assert!(
+                !probe_known_value(&json!(chunks), &[KEY]),
+                "live redactor exposed a held value"
+            );
+            let mut assembler = oxa_engine::ReplyAssembler::new();
+            for chunk in &chunks {
+                assembler.chunk_value(chunk).unwrap();
+            }
+            if secret {
+                assert!(matches!(result, Err(client::Error::Protocol)));
+                assert!(chunks
+                    .iter()
+                    .all(|c| c.pointer("/choices/0/delta/tool_calls").is_none()));
+                assert!(usage.as_ref().is_some_and(|u| u.output == Some(9)));
+            } else {
+                let completed = result.unwrap();
+                assert!(!completed.replay_items.is_empty());
+                assembler.chunk_value(&json!({"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":9,"total_tokens":21}})).unwrap();
+                let turn = assembler.finish(oxa_proto::ThinkingLevel::Off).unwrap();
+                assert_eq!(turn.msg.content.as_deref(), Some(text.as_str()));
+                assert_eq!(turn.msg.reasoning.as_deref(), Some(reasoning));
+                assert_eq!(turn.msg.tool_calls[0].id, "call_live");
+                assert_eq!(
+                    turn.msg.tool_calls[0].args_raw,
+                    tool["arguments"].as_str().unwrap()
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn stopping_live_text_delivery_cancels_a_held_peer_without_terminal_usage() {
+    for subscription in [false, true] {
+        let fixture = Fixture::new();
+        let path = fixture.token_path(true);
+        let peer = HeldResponsesPeer::start();
+        peer.send(held_text());
+        let auth = if subscription {
+            subscription_auth(&path, &peer.base)
+        } else {
+            Auth::ApiKey(&fixture.key)
+        };
+        let mut saw_text = false;
+        let mut usage = None;
+        let result=tokio::time::timeout(std::time::Duration::from_secs(2),Client::with_read_timeout(None).unwrap().stream_with_usage(
+            chat(&peer.base,&payload(),&[]),auth,&Cancellation::default(),&mut |event| {
+                if matches!(event,Event::Chunk(ref chunk) if chunk["choices"][0]["delta"]["content"].as_str().is_some_and(|s|!s.is_empty())) { saw_text=true;return Control::Stop; }
+                Control::Continue
+            },&mut usage)).await.expect("live cancellation waited for terminal event");
+        assert!(saw_text);
+        assert!(matches!(result, Err(client::Error::Cancelled)));
+        assert!(usage.is_none());
     }
 }

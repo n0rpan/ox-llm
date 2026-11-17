@@ -15,12 +15,11 @@ pub struct TestEnv {
 
 impl TestEnv {
     pub fn new() -> TestEnv {
-        Self::new_in(&std::env::temp_dir())
+        Self::new_in(std::env::temp_dir())
     }
-    /// Create an isolated tree under an explicit temporary directory. Tests of
-    /// repository-excluded storage must choose a base outside the checkout,
-    /// even when the runner points `TMPDIR` inside it.
-    pub fn new_in(base: &Path) -> TestEnv {
+    /// Create the same isolated layout below an explicit temporary parent.
+    /// Useful when the fixture must live outside a repository even if TMPDIR does not.
+    pub fn new_in(parent: impl AsRef<Path>) -> TestEnv {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -29,7 +28,9 @@ impl TestEnv {
         // Underscores between the numbers: `<pid>-<n>-<nanos>` can read as a date
         // (`6348-10-86`) once a process has made ten directories, and the cwd is part of the
         // system prompt, where the W3 check looks for dates.
-        let root = base.join(format!("oxa-test-{}_{}_{}", std::process::id(), n, nanos));
+        let root = parent
+            .as_ref()
+            .join(format!("oxa-test-{}_{}_{}", std::process::id(), n, nanos));
         for d in ["home/.oxa/agent", "tmp", "work"] {
             std::fs::create_dir_all(root.join(d)).expect("create test dir");
         }
