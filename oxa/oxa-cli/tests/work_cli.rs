@@ -122,6 +122,126 @@ fn clean_task_is_nothing_to_do() {
         "nothing_to_do"
     );
 }
+
+#[test]
+fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
+    use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState};
+    use std::{collections::BTreeMap, fs, io::Write, os::unix::fs::PermissionsExt, process::Stdio};
+    let env = TestEnv::new();
+    setup(&env, r#"["printf checked > native-acceptance"]"#);
+    let controls = env.agent_dir().join("native-controls");
+    let queue = controls.join("queue");
+    let root = controls.join("claims");
+    for path in [&controls, &queue, &root] {
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let claims = Claims::open(&root).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    claims
+        .import_snapshot(
+            Some(ManualAuthority::Owner),
+            &BTreeMap::from([(
+                44,
+                ImportState {
+                    state: AttemptState::default(),
+                    excluded: false,
+                },
+            )]),
+            now,
+        )
+        .unwrap();
+    let taskfile = controls.join("task.txt");
+    fs::write(&taskfile, "i44 fake agent/44 main\nSynthetic admitted task.\n").unwrap();
+    fs::set_permissions(&taskfile, fs::Permissions::from_mode(0o600)).unwrap();
+    let config = controls.join("refill.json");
+    fs::write(&config, serde_json::json!({
+        "enabled":true,"nativeExecution":true,"intake":true,"queue":queue,"claims":root,
+        "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
+        "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
+        "partition":{"modulus":22,"residues":[0]},
+        "packets":[{"number":44,"revision":"revision","action":"build_issue","branch":"agent/44","taskfile":taskfile}]
+    }).to_string()).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    let tools = trusted_tools(&env);
+    let gh = tools.join("gh");
+    fs::write(&gh, "#!/bin/sh\n[ \"$GH_TOKEN\" = synthetic ] || exit 93\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n").unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(tools.join("gh.reply"), serde_json::json!({"data":{"repository":{
+        "mergeQueue":null,"pullRequests":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
+        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"}
+    }}}).to_string()).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("PATH", &path)
+        .args([
+            "work",
+            "board",
+            "--refill",
+            "--repo",
+            "example/project",
+            "--once",
+            "--token-stdin",
+            "--config",
+        ])
+        .arg(&config)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"synthetic\n").unwrap();
+    let published = child.wait_with_output().unwrap();
+    assert!(
+        published.status.success(),
+        "{}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    let binding = claims.assignments().unwrap()[&44]
+        .data
+        .native_binding
+        .clone()
+        .unwrap();
+    let name = format!("board-{}.txt", binding.key);
+    assert!(queue.join(&name).is_file());
+    assert!(claims.snapshot().unwrap()[&44].lease.as_ref() == Some(&binding.lease));
+    let records = run_records(
+        &env,
+        vec![ScriptTurn::text("finished")],
+        &["work", "--native-queue", "--config", config.to_str().unwrap()],
+        Some(path),
+        &[],
+    );
+    assert!(records
+        .iter()
+        .any(|row| row["event"] == "task" && row["id"] == binding.native_task_id));
+    let checkpoint: serde_json::Value = serde_json::from_slice(
+        &fs::read(storage(&env).join(format!("{}.json", binding.native_task_id))).unwrap(),
+    )
+    .unwrap();
+    let record = &checkpoint["record"];
+    assert_eq!(record["id"], binding.native_task_id);
+    assert_eq!(record["branch"], binding.branch);
+    assert_eq!(record["step"], "finished");
+    assert_eq!(record["checkpoint_kind"], "task_transition");
+    assert!(record["checkpoint_revision"].as_u64().unwrap() > 0);
+    assert_eq!(
+        fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("native-acceptance"))
+            .unwrap(),
+        "checked"
+    );
+    let completed = &claims.assignments().unwrap()[&44];
+    assert!(completed.state.lease.is_none());
+    assert_eq!(completed.state.attempts, 1);
+    assert!(completed.data.native_binding.as_ref() == Some(&binding));
+    assert!(queue.join("started").join(name).is_file());
+}
 #[test]
 fn failed_checks_get_exactly_one_retry() {
     let env = TestEnv::new();
