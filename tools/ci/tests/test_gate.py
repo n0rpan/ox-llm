@@ -68,6 +68,18 @@ class Gate(unittest.TestCase):
         self.assertIn('if: always()', block)
         self.assertEqual(needs, set(jobs(self.checks)) - set(UNGATED))
 
+    def test_merge_group_always_selects_complete_oxa_workspace(self):
+        build = job_block(self.checks, 'build')
+        self.assertIn("oxa: ${{ github.event_name == 'merge_group' || needs.changes.outputs.oxa == 'true' }}", build)
+        reusable = (WORKFLOWS / 'build.yml').read_text()
+        archive = job_block(reusable, 'oxa-test-build')
+        shards = job_block(reusable, 'oxa-test-shards')
+        self.assertIn('if: inputs.heavy && inputs.oxa', archive)
+        self.assertIn('if: inputs.heavy && inputs.oxa', shards)
+        self.assertIn('cargo nextest archive --profile ci --cargo-profile ci --locked --workspace', archive)
+        self.assertIn('--partition hash:${{ matrix.shard }}/2', shards)
+        self.assertNotIn('changed_paths', archive + shards)
+
     def test_gate_checks_every_classifier_output(self):
         outputs = set(re.findall(r'^      ([a-z]+): \$\{\{ steps\.paths\.outputs\.\1 \}\}',
                                  job_block(self.checks, 'changes'), re.M))
