@@ -71,6 +71,7 @@ def problems(name, text):
             continue  # reusable-workflow call: no runner of its own
         # #795: the dedicated native ARM macOS qualification cannot use a Linux runner.
         if (name, job, value) == ('macos.yml', 'oxa-macos', 'macos-15'):
+            continue
 
         # Owner lane CI: standard free Linux runners, including explicit matrix overrides.
         free = {'ubuntu-24.04', ARM_IMAGE}
