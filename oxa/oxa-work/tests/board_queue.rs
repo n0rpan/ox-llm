@@ -30,15 +30,15 @@ fn check(id: u64, required: bool, status: &str, conclusion: &str, at: &str) -> V
     })
 }
 
-fn fixture() -> Value {
+fn fixture(conclusion: &str) -> Value {
     let before = "2026-01-01T00:00:00Z";
     let checks = [
-        check(15, true, "COMPLETED", "FAILURE", before),
-        check(11, true, "COMPLETED", "FAILURE", before),
-        check(20, false, "COMPLETED", "FAILURE", before),
+        check(15, true, "COMPLETED", conclusion, before),
+        check(11, true, "COMPLETED", conclusion, before),
+        check(20, false, "COMPLETED", conclusion, before),
         check(21, true, "COMPLETED", "SUCCESS", before),
-        check(22, true, "IN_PROGRESS", "FAILURE", before),
-        check(23, true, "COMPLETED", "FAILURE", "2026-01-01T00:00:02Z"),
+        check(22, true, "IN_PROGRESS", conclusion, before),
+        check(23, true, "COMPLETED", conclusion, "2026-01-01T00:00:02Z"),
         json!({"__typename":"StatusContext","id":24,"isRequired":true,"state":"FAILURE"}),
     ];
     json!({
@@ -58,12 +58,18 @@ fn fixture() -> Value {
 
 #[test]
 fn journals_only_required_failed_runs_of_the_removed_group_in_the_board_sample() {
+    for conclusion in ["FAILURE", "TIMED_OUT"] {
+        assert_rejection_journal(conclusion);
+    }
+}
+
+fn assert_rejection_journal(conclusion: &str) {
     let board = board();
     let evidence = queue::read(&board, |fields| {
         assert!(fields.contains("p42:pullRequest(number:42)"));
         assert!(fields.contains("isRequired(pullRequestNumber:42)"));
         assert!(fields.contains("beforeCommit{oid statusCheckRollup"));
-        Ok((fixture(), 4096))
+        Ok((fixture(conclusion), 4096))
     })
     .unwrap();
     let nonce = SystemTime::now()
@@ -113,7 +119,7 @@ fn absent_or_unverified_evidence_never_creates_a_rejection() {
         ("/beforeCommit/statusCheckRollup/contexts/totalCount", json!(101)),
         ("/createdAt", json!("2025-01-01T00:00:00Z")),
     ] {
-        let mut data = fixture();
+        let mut data = fixture("FAILURE");
         *data.pointer_mut(&format!("{path}{field}")).unwrap() = replacement;
         assert!(
             queue::read(&board, |_| Ok((data.clone(), 4096)))
@@ -126,7 +132,7 @@ fn absent_or_unverified_evidence_never_creates_a_rejection() {
 
 #[test]
 fn changed_pr_head_refuses_the_snapshot() {
-    let mut data = fixture();
+    let mut data = fixture("FAILURE");
     data["p42"]["headRefOid"] = json!(GROUP);
     assert!(queue::read(&board(), |_| Ok((data.clone(), 4096))).is_err());
 }
