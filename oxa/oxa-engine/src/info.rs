@@ -151,7 +151,9 @@ pub fn parse_info_for(
     let queue = first_u32(status, &["/queued_requests", "/active/queued_requests", "/queue"]).unwrap_or(0);
     let (prefill_only, mut caps) = capabilities(status, &limits_for);
     caps.remote = caps.remote || remote.is_some();
-    if caps.remote && oxa_proto::offline() {
+    // Untargeted discovery must expose the catalog so callers can resolve their selection.
+    // Session startup checks the resolved model, including when it uses the default.
+    if target.is_some() && caps.remote && oxa_proto::offline() {
         return Err(oxa_proto::offline_error(&format!("the cloud model {limits_for}")));
     }
     let (thinking, images) = modality(status, &limits_for);
