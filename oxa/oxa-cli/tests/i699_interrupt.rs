@@ -133,7 +133,7 @@ fn fixture(turns: Vec<ScriptTurn>) -> (TestEnv, FakeServer) {
     let env = TestEnv::new();
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"defaultProjectTrust":"always","retry":{"enabled":false},"quietStartup":false}"#,
+        r#"{"defaultProjectTrust":"always","retry":{"enabled":false},"quietStartup":false,"oxa":{"engine":{"inProcessCloud":false,"inProcessLocal":false}}}"#,
     );
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     (env, server)
