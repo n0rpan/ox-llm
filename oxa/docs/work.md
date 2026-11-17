@@ -31,11 +31,20 @@ seconds after that allowance, the runner sends SIGTERM, then SIGKILL after anoth
 available as a trusted executable outside the project; status reads do not need it.
 IDs and branches must be unique within one file. Existing task branches can be
 continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.
-This explicitly invokes your installed,
-authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
-when the environment or user settings enable offline mode.
-Issue lookup also requires source-project trust. Git and GitHub CLI host calls use
-validated executables outside the repository. Worker and check-supervisor PATHs
+This explicitly invokes your installed, authenticated `gh` CLI to fetch the issue
+title and body.
+
+For a pull request under review use `oxa work --pr 123 --model your-model`. The
+packet carries the pull request title and body, the newest comment whose first
+line starts with `VERDICT`, every inline review comment with its path and line,
+and the names of failing checks at the current head. Review text and check names
+are data, bounded, and never treated as instructions. The task branch starts at
+the reviewed head, so the worker sees the code the findings are about; a head
+that is not in this checkout is refused with a hint to fetch it first.
+
+Both GitHub lookups are refused when the environment or user settings enable
+offline mode, and both require source-project trust. Git and GitHub CLI host calls
+use validated executables outside the repository. Worker and check-supervisor PATHs
 exclude project directories, relative entries and unsafe aliases; project tools
 can still run by explicit path inside the sandbox.
 Branches must be literal names; checkout-history aliases such as `@{-1}` are refused.

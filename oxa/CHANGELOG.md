@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- `oxa work --pr N --model MODEL` (#1016): the unattended packet for a pull request carries its title, body, the newest verdict comment, every inline review comment with its path and line, and the names of failing checks at the current head. The task branch starts at the reviewed head. Review text and check names are data and bounded; malformed metadata is refused, never silently dropped.
+
 ### Changed
 
 - Provider preconnect (#881): qualified as not implementable through the existing gateway pool. The pinned reqwest 0.12 transport has no preconnect or pool-insertion API, so warming the selected provider would need a real authenticated request after the first frame; no warm-up was added. The limitation and the owner's options are in [provider-preconnect.md](docs/design/provider-preconnect.md).

@@ -110,7 +110,11 @@ pub(crate) fn prepare(
             args.push("--detach");
         }
         args.push(tree_arg);
-        args.push(if create { base } else { &task.branch });
+        args.push(if create {
+            task.start.as_deref().unwrap_or(base)
+        } else {
+            &task.branch
+        });
         // Only metadata on the host. Git still refuses a branch checked out
         // elsewhere; no task-branch update or checkout callback runs here.
         checked(git(policy, repo, &args))?;

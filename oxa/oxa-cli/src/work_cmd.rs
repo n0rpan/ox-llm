@@ -16,6 +16,23 @@ pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String
     .map_err(|e| e.to_string())
 }
 
+/// Offline and untrusted projects never spawn even a trusted `gh`; both lookups share it.
+fn github_lookup(
+    trusted: bool,
+    root: &Path,
+    home: &Path,
+    host_path: &std::ffi::OsStr,
+) -> Result<PathBuf, String> {
+    if oxa_proto::offline() {
+        return Err("GitHub issue or pull request lookup is unavailable in offline mode".into());
+    }
+    if !trusted {
+        return Err("source project is not trusted; approve it before issue or pull request lookup".into());
+    }
+    crate::netguard::trusted_executable_for("gh", Some(host_path), Some(root), Some(home))
+        .ok_or_else(|| "no trusted gh executable outside the source project".to_owned())
+}
+
 pub(crate) fn run(
     args: &[String],
     cwd: &Path,
@@ -132,30 +149,21 @@ pub(crate) fn run(
         let is_trusted = trusted(&root, env, dirs)?;
         let tasks = match task_args {
             [file] if !file.starts_with('-') => oxa_work::read_tasks(&cwd.join(file))?,
-            [flag, number, model_flag, model] if flag == "--issue" && model_flag == "--model" => {
-                if oxa_proto::offline() {
-                    return Err("GitHub issue lookup is unavailable in offline mode".into());
-                }
-                if !is_trusted {
-                    return Err("source project is not trusted; approve it before issue lookup".into());
-                }
-                let gh = crate::netguard::trusted_executable_for(
-                    "gh",
-                    Some(policy.host_path.as_os_str()),
-                    Some(&root),
-                    Some(&dirs.home),
-                )
-                .ok_or("no trusted gh executable outside the source project")?;
-                vec![oxa_work::issue_task(
-                    &root,
-                    &gh,
-                    &policy.host_path,
-                    number.parse().map_err(|_| "invalid issue number")?,
-                    model.clone(),
-                )?]
+            [flag, number, model_flag, model]
+                if matches!(flag.as_str(), "--issue" | "--pr") && model_flag == "--model" =>
+            {
+                let number = number
+                    .parse()
+                    .map_err(|_| "invalid issue or pull request number")?;
+                let gh = github_lookup(is_trusted, &root, &dirs.home, &policy.host_path)?;
+                vec![if flag == "--pr" {
+                    oxa_work::pull_request_task(&policy, &root, &gh, number, model.clone())?
+                } else {
+                    oxa_work::issue_task(&root, &gh, &policy.host_path, number, model.clone())?
+                }]
             }
             _ => return Err(
-                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | status [--json]"
+                "usage: oxa work <taskfile> [--rerun] | --issue N --model MODEL [--rerun] | --pr N --model MODEL [--rerun] | status [--json]"
                     .into(),
             ),
         };

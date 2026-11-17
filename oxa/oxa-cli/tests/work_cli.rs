@@ -328,9 +328,10 @@ esac
         .content
         .clone()
         .unwrap_or_default();
+    let start = format!("at commit {short} of the pull request branch agent/handed-off");
     for expected in [
         "Fix pull request #9",
-        &format!("at commit {short} of the pull request branch agent/handed-off"),
+        start.as_str(),
         "keep the frame",
         "src/lib.rs:12",
         "Restore the input",
@@ -341,6 +342,20 @@ esac
             "{expected} missing from the worker prompt"
         );
     }
+
+    // A head that is not in this checkout is refused before any worktree exists.
+    env.write(
+        "work/pr.json",
+        r#"{"title":"t","body":"b","headRefName":"x","headRefOid":"0123456789abcdef0123456789abcdef01234567"}"#,
+    );
+    let (out, server) = pr_run(&env, "#!/bin/sh\ncat ../pr.json\n");
+    assert_eq!(out.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("0123456789abcdef0123456789abcdef01234567 is not in this checkout"),
+        "{stderr}"
+    );
+    assert!(server.requests().is_empty(), "no worker ran");
 }
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
@@ -417,7 +432,12 @@ fn child_can_create_a_commit_with_the_real_sandbox() {
 #[test]
 fn offline_issue_input_never_spawns_gh() {
     use std::os::unix::fs::PermissionsExt;
-    for (setting, flag) in [(false, "--issue"), (true, "--issue"), (false, "--pr"), (true, "--pr")] {
+    for (setting, flag) in [
+        (false, "--issue"),
+        (true, "--issue"),
+        (false, "--pr"),
+        (true, "--pr"),
+    ] {
         let env = TestEnv::new();
         setup(&env, "[]");
         let gh = env.write(
