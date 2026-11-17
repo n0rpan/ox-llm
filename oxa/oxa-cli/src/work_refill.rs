@@ -3,12 +3,10 @@ use oxa_work::board::{assignment::Worker, *};
 use oxa_work::{Result, helper_queue};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fs, path::Path};
-
 /// Read-only acquisition and authoritative revision/action revalidation; no write capability.
 pub trait Source: GitHub {
     fn revalidate(&mut self, entry: &Entry) -> Result<bool>;
 }
-
 /// Apply the same operator-selected item partition to BOTH PR and issue intake.
 pub struct Partition {
     pub modulus: u64,
@@ -28,7 +26,6 @@ impl<S: GitHub> GitHub for Partitioned<'_, S> {
         Ok(snapshot)
     }
 }
-
 /// Existing bounded taskfile bytes, frozen to the exact candidate; never a new packet builder.
 pub struct Packet<'a> {
     pub number: u64,
@@ -42,8 +39,7 @@ pub struct Receipt {
     pub lease: Lease,
 }
 
-/// One authenticated queue target. Default Policy is OFF. The pause marker persists across
-/// restarts; only the operator may remove it after qualification. No workers are spawned here.
+/// Authenticated queue target; default OFF. The operator-owned pause marker survives restarts.
 pub struct Consumer<'a> {
     pub repository: &'a str,
     pub queue: &'a Path,
@@ -63,9 +59,8 @@ impl Consumer<'_> {
         }
     }
 
-    /// At most one task per call. Any outstanding lease, including an expired lease, keeps
-    /// this worker busy until fenced completion. Unknown bootstrap rows are never zero counts.
-    /// Audit must durably record the board before reservation/publication. It receives no packet.
+    /// At most one task; any lease, even expired, blocks the worker until fenced completion.
+    /// Unknown counts refuse. Audit durably records the board before reservation, without packets.
     pub fn once(
         &self,
         source: &mut impl Source,
