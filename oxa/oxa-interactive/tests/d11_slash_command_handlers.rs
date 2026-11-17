@@ -488,3 +488,36 @@ fn the_mode_cycle_is_standard_auto_yolo() {
     assert_eq!(P::Plan.next(), P::Standard);
     assert_eq!(P::DEFAULT, P::Auto);
 }
+
+/// #872: `/status` is the one status view: the session facts, the turn and the rows this
+/// surface cannot answer. A row without a typed fact says `unavailable:`, never a zero.
+#[test]
+fn status_shows_one_view_with_unavailable_rows() {
+    let fx = Fx::new();
+    let lines = match expect_some("/status", fx.run("/status")) {
+        AppAction::ShowLines(lines) => lines,
+        _ => panic!("/status shows lines"),
+    };
+    let row = |name: &str| {
+        lines
+            .iter()
+            .find(|l| l.trim_start().starts_with(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("no {name} row in {lines:?}"))
+            .clone()
+    };
+    assert!(lines[0].contains("Status"), "{lines:?}");
+    assert!(row("session").contains("sess-1"), "{:?}", row("session"));
+    assert!(row("session").contains("name demo"), "{:?}", row("session"));
+    assert!(row("turn").contains("idle"), "{:?}", row("turn"));
+    // This fixture has no engine, no engine queue and no background jobs.
+    for name in ["jobs", "queue", "engine"] {
+        assert!(row(name).contains("unavailable:"), "{name}: {:?}", row(name));
+    }
+    // The rows later surfaces fill are unavailable here, not zero.
+    for name in ["child", "goal", "lead"] {
+        assert!(row(name).contains("unavailable:"), "{name}: {:?}", row(name));
+    }
+    // The budget is a fact from the session statistics.
+    assert!(row("budget").contains("input 900"), "{:?}", row("budget"));
+    assert!(row("budget").contains("output 300"), "{:?}", row("budget"));
+}

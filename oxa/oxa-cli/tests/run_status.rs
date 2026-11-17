@@ -469,3 +469,64 @@ fn status_refuses_malformed_oversized_mismatched_and_symlinked_snapshots() {
     assert!(!String::from_utf8_lossy(&output.stderr).contains("PRIVATE_TEST_CONTENT"));
     assert_eq!(std::fs::read_to_string(other).unwrap(), "PRIVATE_TEST_CONTENT");
 }
+
+/// #872: bare `oxa status` shows the one status view of the current saved session. The dead
+/// loopback port proves it contacts no engine, provider or auth store.
+#[test]
+fn bare_status_shows_the_current_sessions_view() {
+    let env = TestEnv::new();
+    let srv = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let output = command(&env, &srv.url())
+        .args(["-p", "--no-tools", "go"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let sref = session(&env);
+    let output = command(&env, "http://127.0.0.1:1")
+        .arg("status")
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let row = |name: &str| {
+        text.lines()
+            .find(|l| l.trim_start().starts_with(&format!("{name} ")))
+            .unwrap_or_else(|| panic!("no {name} row in {text:?}"))
+            .to_string()
+    };
+    assert!(text.lines().next().is_some_and(|l| l.contains("Status")), "{text}");
+    assert!(row("session").contains(&sref.id), "{:?}", row("session"));
+    assert!(
+        row("session").contains(&sref.path.display().to_string()),
+        "{:?}",
+        row("session")
+    );
+    // The finished run is a fact of the status sidecar.
+    assert!(row("turn").contains("outcome done"), "{:?}", row("turn"));
+    assert!(row("turn").contains("phase finished"), "{:?}", row("turn"));
+    assert!(row("budget").contains("input 1"), "{:?}", row("budget"));
+    // A saved session has no live job registry, engine queue or engine endpoint; the view
+    // says so instead of inventing a zero.
+    for name in ["jobs", "queue", "engine", "child", "goal", "lead"] {
+        assert!(row(name).contains("unavailable:"), "{name}: {:?}", row(name));
+    }
+}
+
+/// #872: without a saved session the view refuses; an explicit id keeps its own lookup.
+#[test]
+fn bare_status_without_a_saved_session_refuses() {
+    let env = TestEnv::new();
+    let output = command(&env, "http://127.0.0.1:1")
+        .arg("status")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("no saved session"), "{err}");
+    assert!(err.contains("status <session-id"), "{err}");
+}

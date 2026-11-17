@@ -930,3 +930,30 @@ fn slash_030() {
         "the template was not expanded"
     );
 }
+
+/// #872: `/status` shows the one status view in the TUI: a session row, a turn row and
+/// explicit `unavailable:` rows. It is not a pi command, so it has no PARITY row.
+#[test]
+fn status_shows_one_view_in_the_tui() {
+    let rig = Rig::start(replies(1), RigOpts::default());
+    rig.prompt("first", "reply 1");
+    rig.slash("/status");
+    let s = rig
+        .pty
+        .wait_for_named(
+            "the status view",
+            |s| s.contains("Status") && s.contains("session") && s.contains("unavailable:"),
+            WAIT,
+        )
+        .unwrap();
+    let id = header_of(&rig.session_files()[0])["id"].clone();
+    assert!(s.contains(id.as_str().unwrap()), "the session id: {s:?}");
+    assert!(s.contains("turn"), "the turn row: {s:?}");
+    assert!(s.contains("budget"), "the budget row: {s:?}");
+    // The view is static: it starts no request of its own.
+    assert_eq!(
+        rig.generating().len(),
+        1,
+        "one prompt, no extra request from /status"
+    );
+}
