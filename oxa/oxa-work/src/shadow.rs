@@ -1,7 +1,8 @@
 //! Read-only sampling: this runner has no executor or GitHub mutation interface.
-use crate::board::{queue::RejectionEvidence, Board, Entry};
+use crate::board::{queue::RejectionEvidence, review, Board, Entry};
 use crate::Result;
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -16,9 +17,11 @@ struct Sample<'a> {
     schema_version: u32,
     observed_at: u64,
     board: &'a Board,
+    would_take: Vec<&'a Entry>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    reviews: &'a BTreeMap<u64, review::Plan>,
     #[serde(skip_serializing_if = "<[RejectionEvidence]>::is_empty")]
     queue_rejections: &'a [RejectionEvidence],
-    would_take: Vec<&'a Entry>,
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -114,50 +117,6 @@ fn recover_tail(file: &mut File, path: &Path) -> Result<()> {
         .map_err(|_| "cannot restore shadow JSONL boundary".into())
 }
 
-/// Sample immediately, then at five-minute intervals. Fail closed on read/log errors.
-/// The callback returns the shared board, including its eligibility decisions.
-pub fn run(
-    log: &mut File,
-    once: bool,
-    mut snapshot: impl FnMut() -> Result<Board>,
-    wait: impl FnMut(Duration),
-) -> Result<()> {
-    run_with_queue_evidence(log, once, || snapshot().map(|board| (board, vec![])), wait)
-}
-
-/// Append verified Reader evidence in the existing private owner journal, in
-/// the same durable sample as the board that supplied the read fences.
-pub fn run_with_queue_evidence(
-    log: &mut File,
-    once: bool,
-    mut snapshot: impl FnMut() -> Result<(Board, Vec<RejectionEvidence>)>,
-    mut wait: impl FnMut(Duration),
-) -> Result<()> {
-    loop {
-        let started = Instant::now();
-        let (board, queue_rejections) = snapshot()?;
-        let sample = Sample {
-            schema_version: 1,
-            observed_at: board.observed_at,
-            would_take: board.entries.iter().filter(|entry| entry.eligible).collect(),
-            board: &board,
-            queue_rejections: &queue_rejections,
-        };
-        let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
-        line.push(b'\n');
-        let length = log.metadata().map_err(|_| "cannot inspect shadow log")?.len();
-        if length.saturating_add(line.len() as u64) > MAX_LOG_BYTES {
-            return Err("shadow log reached its size limit; rotate it while stopped".into());
-        }
-        log.write_all(&line).map_err(|_| "cannot append shadow board")?;
-        log.sync_data().map_err(|_| "cannot sync shadow board")?;
-        if once {
-            return Ok(());
-        }
-        wait(INTERVAL.saturating_sub(started.elapsed()));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,5 +155,86 @@ mod tests {
         drop(log);
         std::fs::remove_file(path).unwrap();
         assert!(refused && unchanged);
+    }
+}
+
+/// Sample immediately, then at five-minute intervals. Fail closed on read/log errors.
+/// The callback returns the shared board, including its eligibility decisions.
+pub fn run(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<Board>,
+    wait: impl FnMut(Duration),
+) -> Result<()> {
+    run_with_reviews(log, once, || Ok((snapshot()?, BTreeMap::new())), wait)
+}
+
+pub fn run_with_reviews(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<(Board, BTreeMap<u64, review::Plan>)>,
+    wait: impl FnMut(Duration),
+) -> Result<()> {
+    run_with_evidence(
+        log,
+        once,
+        || {
+            let (board, reviews) = snapshot()?;
+            Ok((board, reviews, Vec::new()))
+        },
+        wait,
+    )
+}
+
+/// Append verified Reader evidence in the existing private owner journal, in
+/// the same durable sample as the board that supplied the read fences.
+pub fn run_with_queue_evidence(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<(Board, Vec<RejectionEvidence>)>,
+    wait: impl FnMut(Duration),
+) -> Result<()> {
+    run_with_evidence(
+        log,
+        once,
+        || {
+            let (board, queue) = snapshot()?;
+            Ok((board, BTreeMap::new(), queue))
+        },
+        wait,
+    )
+}
+
+type EvidenceSample = (Board, BTreeMap<u64, review::Plan>, Vec<RejectionEvidence>);
+
+fn run_with_evidence(
+    log: &mut File,
+    once: bool,
+    mut snapshot: impl FnMut() -> Result<EvidenceSample>,
+    mut wait: impl FnMut(Duration),
+) -> Result<()> {
+    loop {
+        let started = Instant::now();
+        let (board, reviews, queue_rejections) = snapshot()?;
+        let sample = Sample {
+            schema_version: 1,
+            observed_at: board.observed_at,
+            would_take: board.entries.iter().filter(|entry| entry.eligible).collect(),
+            board: &board,
+            reviews: &reviews,
+            queue_rejections: &queue_rejections,
+        };
+        let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
+        line.push(b'\n');
+        let length = log.metadata().map_err(|_| "cannot inspect shadow log")?.len();
+        if length.saturating_add(line.len() as u64) > MAX_LOG_BYTES {
+            return Err("shadow log reached its size limit; rotate it while stopped".into());
+        }
+        log.write_all(&line).map_err(|_| "cannot append shadow board")?;
+        log.sync_data().map_err(|_| "cannot sync shadow board")?;
+        if once {
+            return Ok(());
+        }
+        wait(INTERVAL.saturating_sub(started.elapsed()));
     }
 }

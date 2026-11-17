@@ -163,4 +163,35 @@ impl Claims {
             Ok(controls.allows(worker, entry.action))
         })
     }
+
+    /// Helper admission checks idleness and reserves under the SAME directory lock.
+    /// The target must have validated Saved state; transient lock markers are not bootstrap facts.
+    /// Every outstanding target/worker lease, including expired work, requires fenced completion.
+    /// Worker identity and roles must come from the trusted frontend, as with `claim_for`.
+    /// Generic manual reservations retain their separate `assign`/`claim_for` semantics.
+    pub fn claim_idle_for(
+        &self,
+        entry: &Entry,
+        policy: &Policy,
+        worker: &Worker,
+        now: u64,
+        ttl: u64,
+    ) -> Result<Option<Lease>> {
+        self.claim_checked(entry, policy, &worker.id, (now, ttl), |row| {
+            if !self.established(entry.number)?
+                || row.state.lease.is_some()
+                || self.rows_locked()?.values().any(|saved| {
+                    saved
+                        .state
+                        .lease
+                        .as_ref()
+                        .is_some_and(|lease| lease.holder == worker.id)
+                })
+            {
+                return Ok(false);
+            }
+            let controls = row.data.policy.get_or_insert_with(AssignmentPolicy::default);
+            Ok(controls.allows(worker, entry.action))
+        })
+    }
 }
