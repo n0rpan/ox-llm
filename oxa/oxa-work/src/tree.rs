@@ -84,7 +84,20 @@ fn fast_forward_stale_base(policy: &RunPolicy, repo: &Path, task: &Task, base: &
     }
     // Compare-and-swap: a branch that moved in the meantime keeps its new tip.
     // A normalization failure leaves the checkout as it was and never blocks.
-    let _ = output(git(policy, repo, &["update-ref", &reference, base, &old]))?;
+    // Host metadata never runs repository hooks: the reference-transaction
+    // hook belongs inside the sandbox, exactly as for worktree creation.
+    let _ = output(git(
+        policy,
+        repo,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "update-ref",
+            &reference,
+            base,
+            &old,
+        ],
+    ))?;
     Ok(())
 }
 

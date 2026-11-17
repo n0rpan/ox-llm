@@ -326,6 +326,44 @@ fn local_base_branch_checked_out_elsewhere_is_never_moved() {
 }
 
 #[test]
+fn base_branch_fast_forward_runs_no_repository_hook_on_the_host() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let hook = env.write(
+        "work/project/.git/hooks/reference-transaction",
+        "#!/bin/sh\ncat >/dev/null\nprintf escaped > \"$HOME/branch-advance-escape\"\nprintf ran > branch-advance-ran\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // The source checkout pulled `main` while its local branch stayed behind.
+    git(&env, &project(&env), &["checkout", "-b", "source"]);
+    commit_file(&env, "fetched.txt", "fetched base\n");
+    git(&env, &project(&env), &["push", "origin", "main"]);
+    let fetched = git(&env, &project(&env), &["rev-parse", "origin/main"]);
+    let stale = git(&env, &project(&env), &["rev-parse", "main"]);
+    assert_ne!(fetched, stale);
+    env.write(
+        "work/tasks.json",
+        r#"[{"id":"test","branch":"agent/test","model":"fake","base":"origin/main","prompt":"Finish task"}]"#,
+    );
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(
+        git(&env, &project(&env), &["rev-parse", "main"]),
+        fetched,
+        "the host refused to advance the base branch"
+    );
+    assert!(
+        !env.home().join("branch-advance-escape").exists(),
+        "advancing the base branch ran a host hook: {record}"
+    );
+    assert!(
+        !project(&env).join("branch-advance-ran").exists(),
+        "advancing the base branch ran a hook: {record}"
+    );
+}
+
+#[test]
 fn failed_worker_and_unfinished_merge_keep_both_causes() {
     let env = TestEnv::new();
     diverge(&env, true);
