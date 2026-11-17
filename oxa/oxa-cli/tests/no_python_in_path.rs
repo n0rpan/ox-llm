@@ -938,26 +938,37 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
     let stdout = env.tmp().join("scope-stdout");
     let stderr = env.tmp().join("scope-stderr");
     let trace = env.tmp().join("scope.trace");
+    let mut command = Command::new(required_tracer());
+    command
+        .args(["--kill-on-exit", "-f", "-e", "trace=%process,connect", "-o"])
+        .arg(&trace)
+        .arg(binary)
+        .args(["--offline", "--no-tools", "--model", "synthetic"]);
+    if absent_bus {
+        // The print command exposes task refusal as a process exit. The live
+        // RPC session is needed in the positive case to observe its owned child.
+        command.args(["-p", "--no-session", "reply briefly"]);
+    } else {
+        command.args(["--mode", "rpc"]);
+    }
     let mut child = TracedChild(
-        Command::new(required_tracer())
-            .args(["--kill-on-exit", "-f", "-e", "trace=%process,connect", "-o"])
-            .arg(&trace)
-            .arg(binary)
-            .args(["--mode", "rpc", "--offline", "--no-tools", "--model", "synthetic"])
+        command
             .env_clear()
             .envs(env.envs(&url))
             .env("PATH", &bin)
             .env("OXA_TEST_PYTHON_MARKER", &marker)
             .current_dir(env.work())
-            .stdin(Stdio::piped())
+            .stdin(if absent_bus { Stdio::null() } else { Stdio::piped() })
             .stdout(File::create(&stdout).unwrap())
             .stderr(File::create(&stderr).unwrap())
             .spawn()
-            .expect("spawn exact release RPC binary"),
+            .expect("spawn exact release oxa"),
     );
-    let mut input = child.0.stdin.take().unwrap();
-    writeln!(input, "{}", json!({"type":"prompt","message":"reply briefly"})).unwrap();
-    input.flush().unwrap();
+    let mut input = child.0.stdin.take();
+    if let Some(input) = &mut input {
+        writeln!(input, "{}", json!({"type":"prompt","message":"reply briefly"})).unwrap();
+        input.flush().unwrap();
+    }
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut observed = None;
     loop {
@@ -999,15 +1010,6 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
         if absent_bus {
             assert!(observed.is_none(), "absent bus must not create a real scope");
             assert!(!output.contains("native-local-proof"), "unadmitted completion");
-            let diagnostic = format!("{output}\n{errors}");
-            if diagnostic.contains("systemd user bus for StartTransientUnit(MemorySwapMax=0)") {
-                assert!(
-                    diagnostic.contains("no swap-enabled fallback")
-                        && diagnostic.contains("loginctl enable-linger $USER"),
-                    "missing no-fallback diagnostic"
-                );
-                break;
-            }
         } else if let Some((pid, _)) = &observed {
             use oxa_session::SessionStore;
             let sessions = oxa_session::FsStore::new(env.agent_dir().join("sessions")).list(None);
@@ -1033,10 +1035,10 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
                 }
             }
         }
-        assert!(
-            child.0.try_wait().unwrap().is_none(),
-            "RPC exited before required scope evidence: {errors}"
-        );
+        if child.0.try_wait().unwrap().is_some() {
+            assert!(absent_bus, "RPC exited before required scope evidence: {errors}");
+            break;
+        }
         assert!(
             Instant::now() < deadline,
             "scope task evidence timed out: {errors}"
@@ -1071,7 +1073,16 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
             std::thread::sleep(Duration::from_millis(20));
         }
     } else {
+        let output = fs::read_to_string(&stdout).unwrap();
+        let diagnostic = fs::read_to_string(&stderr).unwrap();
         assert!(!status.success(), "absent user bus must return nonzero");
+        assert!(!output.contains("native-local-proof"), "unadmitted completion");
+        assert!(
+            diagnostic.contains("systemd user bus for StartTransientUnit(MemorySwapMax=0)")
+                && diagnostic.contains("no swap-enabled fallback")
+                && diagnostic.contains("loginctl enable-linger $USER"),
+            "missing no-fallback diagnostic: {diagnostic}"
+        );
     }
     let text = fs::read_to_string(&trace).unwrap();
     let checked = audit_scope_trace(&text, binary, engine).expect("selected-image trace must verify");
@@ -1095,7 +1106,7 @@ fn real_scope_boundary(binary: &Path, engine: &Path, absent_bus: bool) {
     for pid in checked.pids {
         assert!(
             !Path::new(&format!("/proc/{pid}")).exists(),
-            "owned subject/gated child survived RPC exit"
+            "owned subject/gated child survived oxa exit"
         );
     }
     for port in [8092, controller.local_addr().unwrap().port()] {
