@@ -229,7 +229,7 @@ pub(crate) fn turn_end(
     ui: &mut dyn Ui,
 ) {
     observe(st, HookPoint::TurnEnd, sink, ui, |st| {
-        let aborted = st.shared.cancel.is_cancelled();
+        let aborted = st.shared.cancel.is_cancelled() || message.stop == Some(oxa_proto::StopReason::Aborted);
         json!({
             "turnIndex": index,
             "message": message_json(message),
@@ -425,6 +425,7 @@ pub(crate) fn tool_start(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) {
+    crate::progress::notify(st, crate::Progress::ToolStart(name));
     sink.emit(&AgentEvent::ToolExecutionStart {
         tool_call_id: id.to_string(),
         tool_name: name.to_string(),
@@ -450,6 +451,7 @@ pub(crate) fn tool_end(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) {
+    crate::progress::notify(st, crate::Progress::ToolEnd);
     sink.emit(&AgentEvent::ToolExecutionEnd {
         tool_call_id: id.to_string(),
         tool_name: name.to_string(),
@@ -628,7 +630,7 @@ impl Ui for PromptTap<'_> {
 }
 
 /// The title a permission prompt is reported with.
-fn access_title(a: &oxa_proto::Access) -> String {
+pub(crate) fn access_title(a: &oxa_proto::Access) -> String {
     use oxa_proto::Access;
     match a {
         Access::Read(p) => format!("read {}", p.display()),
@@ -879,6 +881,7 @@ pub(crate) fn session_start(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) {
+    crate::progress::session(st);
     observe(st, HookPoint::SessionStart, sink, ui, |_| {
         let mut v = json!({ "reason": start.reason });
         if let Some(p) = &start.previous {
@@ -940,6 +943,7 @@ pub(crate) fn agent_settled(st: &mut SessionState, aborted: bool, sink: &mut dyn
         ui,
         |_| json!({ "aborted": aborted }),
     );
+    crate::progress::notify(st, crate::Progress::Settled(st.stats.outcome));
 }
 
 /// `agent_before_settle` (pi `_runBeforeSettleBoundary`): fired after a run that ended without
@@ -955,8 +959,14 @@ pub(crate) fn before_settle(
 ) -> Result<Option<crate::RunEnd>, OxaError> {
     use crate::RunEnd;
     loop {
+        if crate::goal::terminal(st) {
+            return Ok(last);
+        }
         if !matches!(last, Some(RunEnd::Stopped)) || st.shared.cancel.is_cancelled() {
             return Ok(last);
+        }
+        if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
+            return crate::session::run_from_wire(st, sink, ui).map(Some);
         }
         if !wants(st, HookPoint::AgentBeforeSettle) {
             return Ok(last);
@@ -988,7 +998,9 @@ pub(crate) fn before_settle(
             }
             _ => false,
         };
-        let end = if appended {
+        // A limit may have arrived inside the callback even when it queued no work.
+        // Finish the promised final turn before publishing the settled outcome.
+        let end = if appended || st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             Some(crate::session::run_from_wire(st, sink, ui)?)
         } else {
             crate::session::run_pending(st, sink, ui)?

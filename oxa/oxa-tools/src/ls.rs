@@ -2,7 +2,7 @@
 // ported from pi packages/coding-agent/src/core/tools/ls.ts
 use crate::descriptions::{self, errors, limits};
 use crate::grep::{cap_output, opt_count, opt_str};
-use crate::resolve_path;
+use crate::resolve_tool_path;
 use oxa_proto::{Access, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 
 /// `ls {path?, limit?}`: entries sorted case-insensitively as pi does, directories with a trailing `/`, dotfiles included; limit default 500, below 1 is 1; pi's limit notice and empty-directory text.
@@ -45,14 +45,14 @@ impl Tool for LsTool {
     /// `[Access::Read(dir)]`.
     fn access(&self, args: &Value, cx: &ToolCtx) -> Result<Vec<Access>, String> {
         let q = parse(args)?;
-        Ok(vec![Access::Read(resolve_path(cx.cwd, &q.path))])
+        Ok(vec![Access::Read(resolve_tool_path(cx, &q.path))])
     }
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         let q = match parse(args) {
             Ok(q) => q,
             Err(e) => return ToolOutput::error(e),
         };
-        let dir = resolve_path(cx.cwd, &q.path);
+        let dir = resolve_tool_path(cx, &q.path);
         let meta = match std::fs::metadata(&dir) {
             Ok(m) => m,
             Err(_) => return ToolOutput::error(errors::path_not_found(&q.path)),
@@ -66,8 +66,15 @@ impl Tool for LsTool {
         };
 
         // Sorted case-insensitively; the raw name breaks ties so the order is total.
+        // #517: the deny-list entries of an allowed directory are not listed.
+        let real_dir = std::fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         let mut names: Vec<String> = reader
             .filter_map(|e| e.ok())
+            .filter(|e| {
+                !cx.hidden
+                    .as_ref()
+                    .is_some_and(|h| h.hides(&real_dir.join(e.file_name())))
+            })
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));

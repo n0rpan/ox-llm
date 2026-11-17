@@ -288,6 +288,19 @@ class Subscription(Base):
         self.assertEqual(self.chat(model=MODEL)[0], 200)  # 10 tokens recorded
         self.assertEqual(self.chat(model=MODEL)[0], 429)
 
+    def test_jwt_expiry_bounds_an_optimistic_oauth_lifetime(self):
+        expiry = time.time() + 30
+        access = jwt({'exp': expiry})
+        self.assertEqual(cloud_chatgpt._expiry(access, 864000), expiry)
+
+    def test_saved_optimistic_expiry_does_not_skip_jwt_refresh(self):
+        self.sign_in(expires_in=864000, access=jwt({'exp': time.time() + 30}))
+        self.start()
+        self.assertEqual(self.chat(model=MODEL)[0], 200)
+        refreshes = [c for c in self.auth.calls if c['form'].get('grant_type') == 'refresh_token']
+        self.assertEqual(len(refreshes), 1)
+        self.assertEqual(self.backend.requests[0]['headers']['authorization'], 'Bearer new-access-1')
+
     def test_expired_token_is_refreshed_once_and_stored_owner_only(self):
         self.sign_in(expires_in=-10)
         self.start()
@@ -399,6 +412,27 @@ class Subscription(Base):
         self.assertEqual(status, 403)
         self.assertEqual(json.loads(body)['error']['code'], 'cloud_not_shared')
         self.assertEqual(self.backend.requests, [])
+
+    def test_lan_guest_is_refused_the_subscription_even_with_the_share_opt_in(self):
+        self.sign_in()
+        self.start()
+        value = json.loads(self.stack.config_path.read_text())
+        value['cloud']['share_with_lan'] = True
+        self.stack.config_path.write_text(json.dumps(value))
+
+        def handle(handler, inner):
+            handler.share_client = 'guest'
+            return inner()
+        self.stack.server.share_listener = SimpleNamespace(
+            controller=SimpleNamespace(opts={'max_tokens': 100}, handle=handle))
+        self.assertNotIn(MODEL, [row['id'] for row in self.rows()])
+        status, body = self.chat(model=MODEL)
+        self.assertEqual(status, 403)
+        error = json.loads(body)['error']
+        self.assertEqual(error['code'], 'cloud_not_shared')
+        self.assertIn('subscription', error['message'])
+        self.assertEqual(self.backend.requests, [])
+        self.assertFalse(self.auth.calls)  # the account's tokens are never even refreshed for a guest
 
     def test_offline_refuses(self):
         self.sign_in()

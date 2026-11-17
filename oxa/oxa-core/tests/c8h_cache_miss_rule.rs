@@ -53,6 +53,8 @@ fn build(
         gate: Default::default(),
     });
     SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks,

@@ -55,7 +55,7 @@ pi page(s): cli.md. Tests: `oxa-parity/tests/cli.rs`.
 | CLI-029 | `-xt`, `--exclude-tools <list>`: applied last, MCP included | P |  | `cli.rs::cli_029` |
 | CLI-030 | `-nbt`, `--no-builtin-tools` | P |  | `cli.rs::cli_030` |
 | CLI-031 | `-nt`, `--no-tools` | P |  | `cli.rs::cli_031` |
-| CLI-032 | Default enabled tools are `read`, `bash`, `edit`, `write` | A | all 7 built-ins on by default; `subagent` is on too where the model allows it (not on the Rust Flash engine, not below a 32K window; `oxa.subagent.enabled` wins); `defaultTools` restores pi's four | `cli.rs::cli_032` |
+| CLI-032 | Default tools are `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `ask` | A | lead sessions also offer `subagent` where the model allows it (not Flash or below 32K; `oxa.subagent.enabled` wins); `defaultTools` replaces the selection | `cli.rs::cli_032` |
 | CLI-034 | Built-in extensions `codemode` and `tool_search` are off by default; MCP turns them on when needed | A | `tool_search` returns matches as text; calls go through the frozen `call_tool` dispatcher (W3) | `cli.rs::cli_034` |
 | CLI-035 | `-e`, `--extension <path>`: file, directory or `builtin:<name>`; repeatable | A | JavaScript in QuickJS; a `.ts` file is always rejected, with a hint to write JavaScript | `cli.rs::cli_035` |
 | CLI-036 | `-ne`, `--no-extensions`: explicit `-e` still loads | P |  | `cli.rs::cli_036` |
@@ -171,7 +171,7 @@ pi page(s): keybindings.md. Tests: `oxa-parity/tests/keys_settings.rs`.
 | KEY-012 | Sessions: `app.session.new`, `tree`, `fork`, `resume` (all none), `togglePath` (ctrl+p), `toggleSort` (ctrl+s), `toggleNamedFilter` (ctrl+n), `rename` (ctrl+r), `delete` (ctrl+d), `deleteNoninvasive` (ctrl+backspace) | P |  | `keys_settings.rs::key_012` |
 | KEY-013 | Models: `app.model.select` (ctrl+l), `cycleForward` (ctrl+p), `cycleBackward` (shift+ctrl+p), `app.models.save` (ctrl+s) | A | over engine models; a switch is a new epoch | `keys_settings.rs::key_013` |
 | KEY-014 | Thinking: `app.thinking.cycle` (shift+tab), `app.thinking.save` (ctrl+s), `app.thinking.toggle` (ctrl+t) | A | W6 boolean; shift+tab stays thinking | `keys_settings.rs::key_014` |
-| KEY-015 | `app.mode.cycle` (alt+m) | A | oxa only: plan -> workspace -> ask [P] | `keys_settings.rs::key_015` |
+| KEY-015 | `app.mode.cycle` (alt+m) | A | oxa only: standard -> auto -> yolo [P] | `keys_settings.rs::key_015` |
 | KEY-016 | Display and queue: `app.tools.expand` (ctrl+o), `app.message.copy` (ctrl+x), `app.message.followUp` (alt+enter), `app.message.dequeue` (alt+up) | P |  | `keys_settings.rs::key_016` |
 | KEY-017 | Tree: `app.tree.foldOrUp` (ctrl+left, alt+left), `unfoldOrDown` (ctrl+right, alt+right), `editLabel` (shift+l), `toggleLabelTimestamp` (shift+t) | P |  | `keys_settings.rs::key_017` |
 | KEY-018 | Tree filters: `app.tree.filter.default` (ctrl+d), `noTools` (ctrl+t), `userOnly` (ctrl+u), `labeledOnly` (ctrl+l), `all` (ctrl+a), `cycleForward` (ctrl+o), `cycleBackward` (shift+ctrl+o) | P |  | `keys_settings.rs::key_018` |
@@ -362,7 +362,7 @@ pi page(s): compaction.md. Tests: `oxa-parity/tests/compaction.rs`.
 | CMP-008 | `CompactionEntry` shape (`summary`, `firstKeptEntryId`, `tokensBefore`, `details`) | P |  | `compaction.rs::cmp_008` |
 | CMP-009 | `/compact [instructions]` adds `Additional focus:` | P |  | `compaction.rs::cmp_009` |
 | CMP-010 | Overflow recovery: compact once and retry the prompt | A | a failed reply is not on the wire (W2); one recovery retry | `compaction.rs::cmp_010` |
-| CMP-011 | Length-stop recovery ordering | P | as pi (`agent-loop.ts`), orchestrator decision O-143: no automatic continue. A `length` reply without tool calls ends the run with stop reason `length`, shown as truncated; tool calls inside a cut reply are never run and get pi's "was not executed ... Re-issue" error result, then the loop goes on. The earlier one-continue sent a generating request ending in an assistant message, which oxe refuses (400; only an H6 prefill may end in one) | `compaction.rs::cmp_011` |
+| CMP-011 | Length-stop recovery ordering | A | A plain length cut gets a bounded continuation ending in a user instruction; local history retains the cut reply and may use advertised H6 prefill. Tool calls inside a cut reply are never run and get the "was not executed ... Re-issue" error result before the loop continues. Generating requests never end in an assistant message | `compaction.rs::cmp_011` |
 | CMP-012 | `compaction_start` / `compaction_end` events with `reason` manual\|threshold\|overflow | P |  | `compaction.rs::cmp_012` |
 | CMP-013 | `session_before_compact` can cancel or supply a custom summary | P | a custom summary still lands as the W5 head | `compaction.rs::cmp_013` |
 | CMP-014 | `session_compact`, `session_compact_failed` | P |  | `compaction.rs::cmp_014` |
@@ -747,7 +747,7 @@ pi page(s): none (oxa only). Source: `OXA-ENGINE-SUPPORT.md`. Every oxa feature 
 | ENG-016 | The tool result is each child's final assistant text only, capped at `oxa.subagent.resultCap` (6 KiB) with a note naming the spill file | A | the result is prefilled at the parent's depth (no timings) | `subagent.rs::eng_016` |
 | ENG-017 | The tool is not declared on a model whose context is below 32000 unless `oxa.subagent.smallContext`; re-evaluated at a model switch | A | Flash: 16K context, disk parks only | `subagent.rs::eng_017` |
 | ENG-018 | Before the first child of a call the parent is parked: one zero-token request with `X-Oxe-Snapshot: keep` (skipped when the engine does not advertise it); the parent's next request reuses exactly the parked tokens. After every child, also a failed or aborted one, its engine state is cleared by its hint; the parent's state and shared blocks stay | A | the park and the hint clear use the snapshot and clear-by-hint requests | `subagent.rs::eng_018` |
-| ENG-019 | Abort or shutdown kills the child's process group (TERM, then KILL after 2 s) and starts no further task; the closed connection cancels the child's engine request | A | cancel propagation | `subagent.rs::eng_019` |
+| ENG-019 | Explicit abort cancels the child's process group (TERM, then KILL after 2 s); forced parent shutdown cancels its engine request and starts no further task. The first SIGTERM lets the active child finish before cooperative wrap-up | A | cancel propagation and cooperative wrap-up | `subagent.rs::eng_019`, `subagent.rs::sigterm_finishes_the_active_subagent_before_wrap_up` |
 
 ## OUT: Out-of-scope pages
 

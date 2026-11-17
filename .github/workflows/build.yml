@@ -336,7 +336,7 @@ jobs:
       - name: bubblewrap + unprivileged user namespaces
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --version
       - name: bwrap must work (else FAIL)
@@ -357,7 +357,7 @@ jobs:
           root=$(mktemp -d)
           env -i PATH="$PATH" HOME="$root" XDG_CONFIG_HOME="$root/c" XDG_STATE_HOME="$root/s" \
             XDG_DATA_HOME="$root/d" XDG_CACHE_HOME="$root/k" XDG_RUNTIME_DIR="$root/r" \
-            OXA_REQUIRE_BWRAP=1 \
+            OXA_REQUIRE_BWRAP=1 OXA_BIN="$PWD/target/ci/oxa" OXA_FAKE_BIN="$PWD/target/ci/oxa-fake" \
             "$RUNNER_TEMP/nextest/cargo-nextest" nextest run --profile ci --no-tests fail \
             --archive-file "$RUNNER_TEMP/oxa-archive/oxa-tests.tar.zst" \
             --workspace-remap "$PWD" --extract-to "$PWD" \

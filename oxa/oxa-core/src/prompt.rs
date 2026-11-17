@@ -610,6 +610,23 @@ pub fn repair_wrong_type(tool: &str, param: &str, expected: &str) -> String {
 /// Cause: the block does not follow the call format at all.
 pub const REPAIR_FORMAT: &str = "The call does not follow the format <tool_call><function=NAME><parameter=NAME>value</parameter></function></tool_call>.";
 
+/// Appended as a user message at the safe boundary of a soft termination request (W1/W3).
+pub(crate) const WRAP_UP: &str = "Wrap up now: this run is ending. Use this one short final turn to commit only changes made during this run if appropriate, or summarize the current state and remaining work. Leave pre-existing changes alone. Do not start new work.";
+
+pub(crate) const LENGTH_CONTINUE_LOCAL: &str = "The reply reached its output limit. Continue from the cutoff and finish the original task. Do not repeat completed work.";
+pub(crate) const LENGTH_RETRY_REMOTE: &str = "The previous reply reached its output limit and was discarded. Complete the original task with a shorter, complete answer.";
+
+/// Goal controls are declared only for an explicitly active stored goal.
+pub const GOAL_CONTINUE: &str = "Continue pursuing the stored goal. Use wait when no work is available. Call goal_done with evidence only when complete or blocked.";
+pub fn goal_start(objective: &str) -> String {
+    format!("Pursue this stored goal until complete or blocked. Use wait when no work is available; call goal_done with evidence to finish.\n\n{objective}")
+}
+pub const GOAL_DONE_DESCRIPTION: &str =
+    "End the active goal with a complete or blocked status and concrete evidence.";
+pub const GOAL_DONE_SCHEMA: &str = r#"{"type":"object","properties":{"status":{"type":"string","enum":["complete","blocked"]},"evidence":{"type":"string","minLength":1,"maxLength":8192}},"required":["status","evidence"],"additionalProperties":false}"#;
+pub const GOAL_WAIT_DESCRIPTION: &str = "Wait without polling for 1 to 3600 seconds, bounded by the remaining goal time budget. Cancellation interrupts the wait.";
+pub const GOAL_WAIT_SCHEMA: &str = r#"{"type":"object","properties":{"seconds":{"type":"integer","minimum":1,"maximum":3600},"reason":{"type":"string","minLength":1,"maxLength":1024}},"required":["seconds","reason"],"additionalProperties":false}"#;
+
 #[cfg(test)]
 mod tests {
     #[test]

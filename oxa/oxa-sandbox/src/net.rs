@@ -21,8 +21,10 @@ pub fn sandbox_net_setting(value: Option<&str>) -> bool {
 pub struct NetSandbox {
     inner: Arc<dyn Sandbox>,
     net: bool,
-    gh_token: std::sync::OnceLock<Option<String>>,
-    gh_source: Option<Box<dyn Fn() -> Option<String> + Send + Sync>>,
+    /// Shared by the per-session copies ([`Sandbox::for_session`]): the token is looked up
+    /// once per process, and redaction knows it in every later session.
+    gh_token: Arc<std::sync::OnceLock<Option<String>>>,
+    gh_source: Option<Arc<dyn Fn() -> Option<String> + Send + Sync>>,
 }
 
 /// The replacement for a redacted token in tool output.
@@ -95,7 +97,7 @@ impl NetSandbox {
         NetSandbox {
             inner,
             net: setting_on && !offline,
-            gh_token: std::sync::OnceLock::new(),
+            gh_token: Arc::new(std::sync::OnceLock::new()),
             gh_source: None,
         }
     }
@@ -107,7 +109,7 @@ impl NetSandbox {
     /// and never shown in [`Sandbox::bwrap_args`].
     pub fn with_gh_token(mut self, token: Option<String>) -> NetSandbox {
         let net = self.net;
-        self.gh_token = std::sync::OnceLock::new();
+        self.gh_token = Arc::new(std::sync::OnceLock::new());
         let _ = self.gh_token.set(Self::clean(net, token));
         self
     }
@@ -118,7 +120,7 @@ impl NetSandbox {
         mut self,
         source: impl Fn() -> Option<String> + Send + Sync + 'static,
     ) -> NetSandbox {
-        self.gh_source = Some(Box::new(source));
+        self.gh_source = Some(Arc::new(source));
         self
     }
 
@@ -196,8 +198,25 @@ impl NetSandbox {
 }
 
 impl Sandbox for NetSandbox {
+    fn home(&self) -> Option<&std::path::Path> {
+        self.inner.home()
+    }
     fn persistence_notice(&self) -> Option<&str> {
         self.inner.persistence_notice()
+    }
+    fn scratch_dir(&self) -> Option<&std::path::Path> {
+        self.inner.scratch_dir()
+    }
+    fn preserves_host_path(&self, path: &std::path::Path) -> bool {
+        self.inner.preserves_host_path(path)
+    }
+    fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
+        Some(Arc::new(NetSandbox {
+            inner: self.inner.for_session()?,
+            net: self.net,
+            gh_token: self.gh_token.clone(),
+            gh_source: self.gh_source.clone(),
+        }))
     }
     fn check(&self) -> Result<(), OxaError> {
         self.inner.check()
@@ -260,6 +279,49 @@ mod tests {
             n.run(&spec(true), &CancelToken::new(), &mut |_| {});
         }
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// #457: a session's copy wraps the inner sandbox's own session sandbox, keeps the network
+    /// decision, and shares the token: one lookup per process, and a later session still
+    /// redacts it.
+    #[test]
+    fn session_copy_wraps_the_inner_session_and_shares_the_token() {
+        struct PerSession(Arc<Echo>);
+        impl Sandbox for PerSession {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn for_session(&self) -> Option<Arc<dyn Sandbox>> {
+                Some(self.0.clone())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                vec!["process".into()]
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                panic!("a session must run in its own sandbox")
+            }
+        }
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let c = calls.clone();
+        let echo = Arc::new(Echo(Mutex::new(Vec::new())));
+        let n =
+            NetSandbox::new(Arc::new(PerSession(echo.clone())), true, false).with_gh_token_lazy(move || {
+                c.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Some("SYNTH_SESSION_TOKEN".into())
+            });
+        for _ in 0..2 {
+            let s = n.for_session().expect("a session sandbox");
+            assert!(s.network());
+            let r = s.run(&spec(true), &CancelToken::new(), &mut |_| {});
+            let out = String::from_utf8(r.output).unwrap();
+            assert!(!out.contains("SYNTH_SESSION_TOKEN"), "{out}");
+            assert_eq!(echo.0.lock().unwrap().len(), 1);
+            echo.0.lock().unwrap().clear();
+        }
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // An inner sandbox without session state: no copy, the process sandbox is shared.
+        let plain = NetSandbox::new(Arc::new(Echo(Mutex::new(Vec::new()))), true, false);
+        assert!(plain.for_session().is_none());
     }
 
     #[test]

@@ -17,6 +17,18 @@ $ oxa -p --continue SESSION_ID "continue with this instruction"
 
 Replace `SESSION_ID` with the printed id. `--continue=<id>` also works. A word after `--continue` is taken as the id only if a session with that id exists; otherwise it stays part of the prompt and the most recent session continues, as before. The id is never sent as a prompt. `--continue` without a value (or `-c`) selects the most recent session. `--no-session` keeps the run ephemeral and prints no session id. An explicit continuation id cannot be combined with `--no-session` or `--session`.
 
+## Send a session follow-up
+
+```console
+$ oxa send SESSION_ID "task finished, red"
+```
+
+Use the full session id. This queues one follow-up without starting an engine or requiring the session to be running. Its TUI or RPC owner consumes it when idle or at a follow-up boundary, just like queued follow-up input; it does not interrupt the active turn. A stopped session retains the message until it is opened again in TUI or RPC mode. Success means **queued**, not that the model has answered.
+
+The inbox lives at `inbox/<session-id>/` under the agent directory, in private `0700` directories with `0600` message files. Publication is an atomic rename; the owner uses inotify (no file polling, socket or daemon), including a startup scan for queued messages. The agent directory remains masked by the sandbox. Messages are limited to 256 KiB. The owner admits at most 64 messages or 1 MiB of inbox text across destinations; excess files remain on disk and are retried when the owner releases capacity, without polling. Oversized externally written files remain on disk and are not delivered. Once admitted to the owner's in-memory follow-up queue, a message file is removed. This is not transactional with the session transcript: a process crash can lose an admitted message or replay a file not yet removed. Worker prompts are unchanged.
+
+## Headless results
+
 Print, JSON and RPC runs write exactly one terminal JSON result on standard error, after diagnostics. For example:
 
 ```json
@@ -24,6 +36,16 @@ Print, JSON and RPC runs write exactly one terminal JSON result on standard erro
 ```
 
 The `outcome` is `done`, `nothing_to_do`, `blocked`, `failed` or `interrupted`. `error_class` is a stable error code (for example `engine_http`, `stream_broken`, `done_checks_failed` or `output_limit`), or `null` for successful and no-op runs. Diagnostics remain human-readable; callers should use the result and exit code instead of matching their wording.
+
+The same record also carries `session_id`, `requests`, `turns`, `tokens`, `usage_scope`, `files_changed` and `files_changed_evidence`. The session id is the current saved session, or `null` for an ephemeral/unopened session. Request and token counters cover engine calls observed in this invocation (`usage_scope: "process"`), including discarded replies, summaries and prefills; resuming does not recount saved usage. `turns` counts attempted chat/subagent calls, including retries, and excludes summary/prefill calls. Child processes report their own usage separately.
+
+`tokens` has `prompt`, `completion`, `cached`, `complete` and `unreported_requests`. Sums are over reported usage; missing usage makes them explicit lower bounds (`complete: false`), and an omitted cache count remains `null`. An in-flight request at shutdown is incomplete. Before a session opens, counters are `null` rather than a claim of zero work. `files_changed` is `null` with evidence `"unavailable"`: this worker record has no checked filesystem/commit diff. A successful tool call or model statement does not supply that evidence; the runner reports verified worktree/commit evidence separately.
+
+Every saved CLI session has a small atomic `<session>.status.json` sibling, private like the session file. `oxa status <session-id|session-file> [--session-dir <dir>]` reads it without contacting an engine. JSON mode's session header and RPC `get_state` expose its `statusFile` path. `--no-session` creates no status file.
+
+The version-1 `oxa_status` object reports `session_id`, `pid`, `started_ms`, a monotonically increasing request `step`, `phase`, `last_tool`, `tokens`, `cost_usd`, `last_progress_ms`, `stall_timeout_ms`, `stall_deadline_ms` and the final `outcome` (`oxa_result`). Phases are `idle`, `working`, `model`, `prefill`, `compaction`, `tool`, `closing` and `finished`. Times are Unix milliseconds. Counters cover this process's work on this session, including discarded replies, summaries and prefills. Failed requests with no usage make `tokens.complete` false and increment `unreported_requests`; unreported cached usage is `null`. Local provider cost is zero; cloud cost is `null` because the engine wire does not report settled USD charges. This file contains no prompts, replies, tool arguments/results or diagnostic text.
+
+`--stall-timeout <seconds>` opts into stall signalling (minimum 0.001 seconds). Status readers compare the recorded deadline to the current time; `oxa status` adds `stalled`. It is a progress signal and never cancels a task. Only advancing model/prefill/tool output and real phase boundaries update progress; repeated queue comments do not. Stream writes coalesce for at most one second or one quarter of the timeout, whichever is shorter; the deadline includes that grace so a coalesced delta cannot cause an early stall. Idle and finished sessions have no deadline. There is no polling thread or daemon, and reading status never changes it. A killed process can leave an active snapshot; its expired deadline remains visible. Settlement and shutdown hooks remain active work until they return. An unattended terminal record preserves earlier prompt failures; an interactive terminal record describes the UI exit. A status-write failure cannot report a successful process result.
 
 | Exit code | Outcome | Meaning |
 |---|---|---|
@@ -42,7 +64,27 @@ For multiple prompts, the first unsuccessful outcome is retained even if a later
 
 These results cover orderly returns, including startup refusals. A process killed before it can return cannot emit a terminal result. Help, version, export, model listing and standalone subcommands keep their existing output and status conventions (0 success, 1 runtime failure, 2 usage error).
 
-Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. Once output has streamed, a failure is returned without replaying the request. Print mode immediately flushes a one-line `retrying request in ... ms` notice to stderr; JSON and RPC modes emit it as a flushed `notice` record. Provider-level retries (`retry.provider.maxRetries`) are visible too. All attempts for a logical request reuse its idempotency key. `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
+Retries use the `retry` settings: transient gateway credentials/ledger refusals, upstream 429/5xx and connection failures retry with capped exponential backoff before output starts. Budget exhaustion, missing SDKs and other 4xx refusals are final. A transport break after output can replay the same logical request with the same idempotency key; the partial reply is shown as progress and excluded from model history. A refusal after output is final. Print mode immediately flushes retry notices to stderr; JSON and RPC modes emit flushed `notice` records. Provider-level retries (`retry.provider.maxRetries`) are visible too. `retry.enabled`, `retry.maxRetries`, `retry.baseDelayMs` and `retry.maxAgentDelayMs` control the agent-level policy; provider retries have their own configured limit.
+
+A plain reply cut at its output limit also continues under the auto-retry policy. Local models keep the cut reply as context and receive an explicit continuation instruction, with a zero-token prefill when advertised and enabled. Cloud models receive a request for a shorter complete answer, with the cut reply kept only as shown progress. Each length recovery is a new logical request with a fresh idempotency key. `retry.maxRetries` bounds consecutive length recoveries; a completed model step resets the count. Disabling auto-retry leaves the cut reply terminal with `failed/output_limit`. Exhausting the bound does the same. A pending time limit or SIGTERM goes directly to the bounded wrap-up turn.
+
+`--goal <file>` opts print/JSON mode into a persistent objective (UTF-8, at most 64 KiB). The session exposes `goal_done` and a cancellable `wait` of 1–3,600 seconds only while pursuing it. A normal assistant stop sends the same continuation instruction; two consecutive stops without tool use pause the goal with a `stalled` result. Completion or blockage requires evidence. The terminal record includes goal status, evidence and cumulative counters. A pursuing saved goal continues with `--continue` without rereading the file. Goal time and token budgets are stored with their spent counters, so restarting does not grant a fresh allowance. Ordinary sessions retain their existing tools and prefix. Interactive slash controls and inbox wake integration are separate follow-ups.
+
+`--max-time <seconds>` sets a soft runtime limit for print, JSON and RPC modes, measured after startup/session loading. Fractional seconds are accepted. At the limit, or on SIGTERM, oxa lets the active tool batch finish, then gives the agent one final turn (up to 1,024 output tokens, thinking off) to commit changes from this run or summarize its state. That final request is not retried by the agent. The session and completed tool results are retained; the outcome is `interrupted` (130), and later prompts are left unstarted. If an in-flight or final request fails, its typed failure takes precedence over interruption; a final summary cannot hide an earlier blocked or failed request. Resume with the session id and a new instruction. RPC also exits on a limit/SIGTERM while stdin is still open. `--no-session` continues to disable session storage.
+
+`--max-tokens <N>` sets a positive integer token budget for the same headless modes, with the same wrap-up and `interrupted` outcome as `--max-time`. It counts newly processed prompt tokens (`prompt - cached`, floored at zero) plus output tokens across requests in this invocation, not usage restored from a session. Cached prefix tokens are free. Each subagent gets the remaining budget at spawn; its reported assistant usage is also charged to the parent, so later queued children see the reduced amount. This is a soft budget: active requests/tools (including concurrent children) finish, and the one final wrap-up turn is allowed beyond the budget. Both limits may be used together; the first reached requests wrap-up. Without either flag, normal work is unchanged.
+
+For a top-level run, this is a graceful limit: an active tool or model request finishes before the final turn, so elapsed time can exceed the requested duration. The first SIGTERM does not cancel that tool. A further SIGTERM, or SIGTERM after the time limit has requested wrap-up, takes the default termination action so a stuck tool or final request can be stopped. This forced termination cannot guarantee a final result record or session flush. SIGKILL and process/system crashes cannot run a wrap-up turn. Supervised subagents retain immediate SIGTERM cancellation; the parent controls their cooperative completion.
+
+If a local model spends its output budget on thinking without an answer, oxa retries once with thinking off. If that fallback still reaches the output limit without text or tool calls, the run fails with `error_class: "thinking_overrun"` and exit 1 in print, JSON and RPC modes. No further generation is attempted; the terminal result distinguishes this from a broken transport or an empty successful answer.
+
+## Schema-checked answers
+
+Use `oxa -p --output-schema schema.json "your task"` to require a JSON final answer. The file is read relative to the working directory before the session starts. Supported schema keywords are `type` (`object`, `array`, `string`, `number`, `integer`), `properties`, `items`, `enum`, `required`, boolean `additionalProperties`, `minLength` (Unicode character count), and inclusive numeric `minimum`/`maximum`, including nested schemas. The string annotations `title`, `description`, and `$schema` are also accepted as metadata only; they never trigger schema fetching or reference resolution. This offline subset supports the shipped review findings schema; it is not a general Draft 2020-12 validator. Unsupported keywords and malformed schemas are rejected rather than silently ignored; external references are never fetched. The runtime's `OutputSchema::validate` API returns a JSON Pointer and reason on failure; `matches` remains available for boolean checks. Numeric answer lexemes are checked without float rounding, with the same behavior whether dependency features enable arbitrary-precision JSON or not. Priority uses the existing finite enum form; integer/minimum enforce positive line numbers, minimum/maximum constrain confidence, minLength keeps finding strings nonempty, and additionalProperties rejects unrecognized finding/root fields.
+
+The contract is supplied as a turn message, not a system/worker prefix change. Tools work normally. If the final text is not valid JSON matching the schema, oxa appends one repair instruction with the returned instance path and reason and tries again. A second mismatch fails with exit 1 and `error_class: "schema_mismatch"`; print mode emits no final answer on failure. JSON mode still streams all attempt events. The repair budget resets for each user prompt. Without the flag, no schema instructions or validation are added.
+
+Validation always happens in oxa. Only cloud models explicitly advertising the `response_format` capability also receive an upstream JSON Schema `response_format`; it is never sent to the local engine. This option is process-local, is not saved as a setting, and is not inherited by workers.
 
 ## Commands
 
@@ -54,6 +96,8 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
+| `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
+| `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
@@ -67,6 +111,28 @@ Commands take the place of the message. They do not start a session.
 `oxa report-issue draft` takes `--title <text>` (required), and the notes either inline with `--notes <text>` or from a file with `--notes-file <path>` (relative paths are taken from the current directory). It writes the draft under `issue-drafts/` in the agent directory and prints its path; it posts nothing. `oxa report-issue submit <draft>` posts it after you type `yes`.
 
 `oxa config` lists the settings as oxa resolves them.
+
+### Experimental ChatGPT sign-in
+
+Run `oxa login chatgpt --experimental` in your own terminal. It prints the
+experimental public-client notice and a browser URL; open that URL yourself.
+The loopback callback must use `http://localhost:1455/auth/callback`, with port
+1455 free. With `--paste`, paste the complete callback URL into the hidden
+terminal prompt. Sign-in expires after five minutes; Ctrl+C or Escape cancels it.
+No browser is launched automatically.
+
+The command writes only the existing private
+`~/.config/oxc/llm/chatgpt-auth.json`. It does not enable cloud access, change
+models/settings, or print tokens/account details. Login is create-only by
+default. `--replace` explicitly replaces an existing record for the same account;
+it refuses an account switch. `oxa logout chatgpt` removes the checked token
+record under the refresh lock and keeps that lock for concurrent refresh safety.
+These commands are separate from chat/RPC and unavailable from agent tools.
+
+A failure before atomic publication leaves the previous token record unchanged.
+If the directory sync fails after atomic rename, the command returns a fixed
+storage error: the new record is already visible, but its crash durability is
+uncertain. The command does not roll back the record or repeat the token exchange.
 
 ### MCP commands
 
@@ -99,6 +165,9 @@ $ oxa mcp logout <name>
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
+| `--goal <file>` | pursue a stored UTF-8 objective in print/JSON mode; continue the saved pursuing goal after restart |
+| `--max-time <seconds>` | softly limit a headless run, then allow one final wrap-up turn |
+| `--max-tokens <N>` | softly limit new prompt + output tokens in a headless run; cached tokens are free |
 | `--export <input> [output]` | export a session file to HTML and exit |
 | `--tui-mode <mode>` | `fullscreen` (default) or `regular` |
 | `--verbose` | show more start-up information |
@@ -135,8 +204,10 @@ See [tools.md](tools.md) for the tool names.
 
 | Option | Meaning |
 |---|---|
-| `--permission-mode <mode>` | `plan`, `workspace` (default) or `ask` |
-| `--yolo` | no permission prompts: every question is auto-approved; the sandbox and the deny-list stay on ([security.md](security.md#yolo-no-prompts)) |
+| `--permission-mode <mode>` | `standard`, `auto`, `yolo`, `plan`, or the table modes `workspace` and `ask`; default: the `permissions.defaultMode` setting, else `auto` |
+| `--standard` | permission mode standard: the permission table asks you |
+| `--auto` | permission mode auto: no prompts; the sandbox and the deny-list stay on |
+| `--yolo` | permission mode yolo, full access: no prompts, bash runs without the sandbox, no deny-list or protected paths for file tools ([security.md](security.md#standard-auto-and-yolo)) |
 | `--approve`, `-a` | trust the project's configuration and resources for this run |
 | `--no-approve`, `-na` | ignore the project's configuration and resources for this run |
 | `--offline` | offline mode: oxa's own non-local connections are refused, bash has no network, `web_search` is off, and `!cmd` and stdio MCP servers run without network. What it does not cover is in [security.md](security.md#offline-mode) |

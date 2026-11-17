@@ -48,7 +48,7 @@ $ oxa
 
 oxa opens the full-screen interface. Type a request in the editor at the bottom and press Enter. The model reads files with its tools, and the answer appears in the transcript above the editor. Ctrl+C clears the editor, Ctrl+D exits when the editor is empty, and Escape stops a running turn.
 
-The default permission mode is `workspace`: reads and writes inside the project run without a prompt, and bash runs in the sandbox. Writes outside the project are asked for. Bash has network access by default in this mode, so a command can send what it reads to a host. See [security.md](security.md).
+The default permission mode is `auto`: oxa does not stop to ask, bash runs in the sandbox, and the file tools still refuse credentials and other protected paths. Use `--standard` to be asked before writes outside the project, or `--yolo` for full access without the sandbox. Bash has network access by default in this mode, so a command can send what it reads to a host. See [security.md](security.md).
 
 ## Print mode
 

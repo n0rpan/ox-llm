@@ -156,7 +156,7 @@ fn names(list: &[&str]) -> Vec<String> {
 }
 
 fn all_tools() -> Vec<String> {
-    names(&["bash", "edit", "find", "grep", "ls", "read", "write"])
+    names(&["ask", "bash", "edit", "find", "grep", "ls", "read", "write"])
 }
 
 /// Every `.jsonl` file below the agent directory's `sessions`.
@@ -924,6 +924,10 @@ fn cli_026() {
 fn cli_027() {
     let server = fake(&turns(&["a", "b"]));
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/agents/worker.md",
+        "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+    );
     ok(&run(
         &env,
         &server.url(),
@@ -938,11 +942,10 @@ fn cli_027() {
     assert_eq!(tool_names(&reqs[0]), names(&["read", "ls"]));
     let minus = tool_names(&reqs[1]);
     assert!(!minus.contains(&"ls".to_string()) && minus.contains(&"read".to_string()));
-    // oxa's default selection (CLI-032): the seven built-ins plus `subagent` where O-146 offers
-    // it, so on the default (large, non-Flash) fake model `-ls` leaves seven names.
-    let default_minus_ls = names(&["bash", "edit", "find", "grep", "read", "subagent", "write"]);
+    // Lead defaults include ask plus subagent where O-146 offers it.
+    let default_minus_ls = names(&["ask", "bash", "edit", "find", "grep", "read", "subagent", "write"]);
     assert_eq!(minus, default_minus_ls, "the default selection minus ls");
-    // Below 32K the default selection is the seven built-ins: minus ls leaves six.
+    // Below 32K subagent is not offered, but lead-only ask remains.
     let small = fake_opts(
         &turns(&["a"]),
         FakeOpts {
@@ -957,7 +960,7 @@ fn cli_027() {
     ));
     assert_eq!(
         tool_names(&small.requests()[0]),
-        names(&["bash", "edit", "find", "grep", "read", "write"]),
+        names(&["ask", "bash", "edit", "find", "grep", "read", "write"]),
         "the default selection minus ls on a model below 32K"
     );
     let mixed = run(&env, &server.url(), &["-p", "-t", "read,+ls", "x"]);
@@ -1066,19 +1069,23 @@ fn cli_031() {
 }
 
 // pi: cli.md default enabled tools are read, bash, edit, write (`defaultTools` changes them)
-// invariant: A-tools all seven built-ins on by default, plus `subagent` where O-146 offers it
-// (not on the Rust Flash engine, not below a 32K window); defaultTools restores pi's four
+// invariant: all eight lead built-ins on by default, plus `subagent` with an available agent
+// where O-146 offers it (not Flash, not below 32K); an explicit defaultTools replaces them
 #[test]
 fn cli_032() {
     let server = fake(&turns(&["a", "b"]));
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/agents/worker.md",
+        "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+    );
     ok(&run(&env, &server.url(), &["-p", "--no-session", "x"]));
-    // The fake's default model is large and not Flash: the seven built-ins and `subagent`.
-    let mut seven_and_subagent = all_tools();
-    seven_and_subagent.push("subagent".to_string());
-    seven_and_subagent.sort();
-    assert_eq!(tool_names(&server.requests()[0]), seven_and_subagent);
-    // On the Flash engine and on a model below 32K the default set is exactly the seven.
+    // The fake's default model is large and not Flash: eight lead built-ins and subagent.
+    let mut defaults = all_tools();
+    defaults.push("subagent".to_string());
+    defaults.sort();
+    assert_eq!(tool_names(&server.requests()[0]), defaults);
+    // Flash and models below 32K keep ask, but do not offer subagent.
     let flash = FakeOpts {
         model: "flash".to_string(),
         models: vec![FakeModel::flash("flash", 65536, Some(2048))],
@@ -1094,7 +1101,7 @@ fn cli_032() {
         assert_eq!(
             tool_names(&srv.requests()[0]),
             all_tools(),
-            "{what}: the seven built-ins"
+            "{what}: the eight lead built-ins"
         );
     }
     env.write(

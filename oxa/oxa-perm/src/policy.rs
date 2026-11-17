@@ -3,8 +3,9 @@ use crate::paths::{is_inside, is_read_only_command, resolve_real};
 use oxa_proto::guard::{
     home_protected_paths, is_home_or_above, sensitive_paths, GIT_PROTECTED_IN_CWD, PROTECTED_IN_CWD,
 };
-use oxa_proto::{Access, Decision, Mode, Policy, ToolClass, YoloSwitch};
+use oxa_proto::{Access, Decision, Mode, PathFilter, Policy, ToolClass, YoloSwitch};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// The fixed `Decision::Deny` reasons (they become tool error text; W4).
 pub mod deny_reasons {
@@ -20,14 +21,30 @@ pub mod deny_reasons {
 }
 
 /// B3 (wave H lane `harden`): the deny-list of the file tools, the same paths the bash sandbox
-/// masks. `allow` holds the exceptions inside a denied path (the spill files of the sessions,
-/// under the agent directory's `tmp`, which the read tool must reach as before).
+/// masks. `allow` holds the exceptions inside a denied path (codemode's shared spill directory,
+/// `<tmp>/codemode`); `spill` is the current session's spill directory (`<tmp>/<session id>`).
+/// Fork/clone ancestors' spills are read-only exceptions; unrelated sessions stay denied.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PathGuard {
     deny: Vec<PathBuf>,
     allow: Vec<PathBuf>,
+    /// The current session's spill directory: the full output of a capped result is read from
+    /// here without asking (#522).
+    spill: Option<PathBuf>,
+    /// #597: the session's scratch directory, the host side of `/tmp` in the bash sandbox: what
+    /// bash wrote there is read without asking.
+    scratch: Option<PathBuf>,
+    /// Source sessions of a fork/clone: copied history still points at these outputs.
+    inherited_spills: Vec<PathBuf>,
     /// Readable exceptions inside a denied path: the built-in skills the prompt advertises.
     read_allow: Vec<PathBuf>,
+    /// Exact Cargo configuration files already exposed read-only in the bash sandbox (#611).
+    /// These bypass approval only, never the deny-list.
+    cargo_configs: Vec<PathBuf>,
+    /// Clipboard images use generated names directly under tmp, not a session directory.
+    paste_dir: Option<PathBuf>,
+    /// A pasted-image name cannot override a credential path that resolves to that image.
+    paste_deny: Vec<PathBuf>,
     /// The home directory and its startup files, keys and agent settings
     /// (`oxa_proto::guard::PROTECTED_IN_HOME`): a write asks when the cwd is the home
     /// directory or above it (O-199 first run: oxa started in `$HOME`).
@@ -37,7 +54,8 @@ pub struct PathGuard {
 
 impl PathGuard {
     /// The deny-list of `home` and `agent_dir` only (use [`PathGuard::with_real_home`] to add the
-    /// account's real home), with `tmp_dir` (the spill files) excepted.
+    /// account's real home), with codemode's spill directory under `tmp_dir` excepted. The
+    /// session's own spill directory is set with [`PathGuard::set_spill_dir`].
     pub fn new(home: &Path, agent_dir: &Path, tmp_dir: &Path) -> PathGuard {
         PathGuard::with_real_home(home, None, agent_dir, tmp_dir)
     }
@@ -56,14 +74,34 @@ impl PathGuard {
         }
         deny.sort();
         deny.dedup();
+        // Only the agent-state mask is excepted for images, never a credential mask. Keep
+        // these paths separate so a credential symlink to a generated image stays denied.
+        let mut paste_deny = sensitive_paths(home, None);
+        paste_deny.retain(|p| p != &home.join(".oxa/agent"));
+        if let Some(r) = real_home.filter(|r| *r != home) {
+            paste_deny.extend(
+                sensitive_paths(r, None)
+                    .into_iter()
+                    .filter(|p| p != &r.join(".oxa/agent")),
+            );
+        }
         let mut home_protected = home_protected_paths(home);
         if let Some(r) = real_home.filter(|r| *r != home) {
             home_protected.extend(home_protected_paths(r));
         }
         PathGuard {
             deny,
-            allow: vec![tmp_dir.to_path_buf()],
+            allow: vec![tmp_dir.join("codemode")],
+            spill: None,
+            scratch: None,
+            inherited_spills: Vec::new(),
             read_allow: vec![agent_dir.join("builtin-skills")],
+            cargo_configs: std::iter::once(home)
+                .chain(real_home)
+                .flat_map(|h| [h.join(".cargo/config.toml"), h.join(".cargo/config")])
+                .collect(),
+            paste_dir: Some(tmp_dir.to_path_buf()),
+            paste_deny,
             home: home.to_path_buf(),
             home_protected,
         }
@@ -80,14 +118,137 @@ impl PathGuard {
                 || resolve_real(cwd).is_some_and(|c| is_home_or_above(&c, &self.home)))
     }
 
-    /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
-    pub fn denies(&self, p: &Path) -> bool {
-        self.deny.iter().any(|d| is_inside(p, d)) && !self.allow.iter().any(|a| is_inside(p, a))
+    /// #597: read the session's scratch directory `dir` without asking. Reads only: it is not
+    /// on the deny-list, so a link out of it is judged at its target like any other path.
+    pub fn with_scratch(mut self, dir: &Path) -> PathGuard {
+        self.scratch = Some(dir.to_path_buf());
+        self
     }
 
-    /// Like [`PathGuard::denies`] for a read: the built-in skills are readable.
+    /// `p` (absolute) is inside the session's scratch directory.
+    fn is_scratch(&self, p: &Path) -> bool {
+        self.scratch.as_ref().is_some_and(|s| is_inside(p, s))
+    }
+
+    /// Point the exception at the spill directory of the session now running. Switching
+    /// sessions revokes inherited exceptions until its ancestry is supplied again.
+    pub fn set_spill_dir(&mut self, dir: &Path) {
+        self.spill = Some(dir.to_path_buf());
+        self.inherited_spills.clear();
+    }
+
+    /// `p` (absolute) is inside the current session's spill directory.
+    pub fn is_spill(&self, p: &Path) -> bool {
+        self.spill.as_ref().is_some_and(|s| is_inside(p, s))
+    }
+
+    /// `p` is output of this session or a fork/clone ancestor, not an unrelated session.
+    fn is_readable_spill(&self, p: &Path) -> bool {
+        self.is_spill(p) || self.inherited_spills.iter().any(|s| is_inside(p, s))
+    }
+
+    /// `p` (absolute) is on the deny-list, after resolving `..` and symlinks.
+    pub fn denies(&self, p: &Path) -> bool {
+        self.deny.iter().any(|d| is_inside(p, d))
+            && !self.allow.iter().any(|a| is_inside(p, a))
+            && !self.is_spill(p)
+    }
+
+    /// Like [`PathGuard::denies`] for a read, with skills, inherited output and pasted images
+    /// excepted. Images still go through the ordinary outside-project approval table.
     pub fn denies_read(&self, p: &Path) -> bool {
-        self.denies(p) && !self.read_allow.iter().any(|a| is_inside(p, a))
+        let pasted = self
+            .paste_dir
+            .as_ref()
+            .is_some_and(|dir| match (resolve_real(p), resolve_real(dir)) {
+                (Some(real), Some(root)) => {
+                    is_pasted_image(&real, &root) && !self.paste_deny.iter().any(|d| is_inside(&real, d))
+                }
+                _ => false,
+            });
+        self.denies(p) && !self.is_builtin_skill(p) && !self.is_readable_spill(p) && !pasted
+    }
+
+    /// `p` (absolute) is inside the built-in skills directory the agent instructions advertise.
+    pub fn is_builtin_skill(&self, p: &Path) -> bool {
+        self.read_allow.iter().any(|a| is_inside(p, a))
+    }
+
+    /// An exact Cargo config, not its directory or siblings. Resolve both sides so symlinked
+    /// homes/configs work; the caller must check the deny-list first, including the real path.
+    fn is_cargo_config(&self, p: &Path) -> bool {
+        resolve_real(p).is_some_and(|real| {
+            self.cargo_configs
+                .iter()
+                .any(|config| resolve_real(config).as_ref() == Some(&real))
+        })
+    }
+
+    /// #517: [`PathGuard::denies_read`] for the entries of a directory walk, with every list
+    /// resolved once here instead of once per entry.
+    pub fn hidden_paths(&self) -> HiddenPaths {
+        // Both forms: the written one and the real one (a symlinked home, a link to a key dir).
+        let both = |list: &[PathBuf]| -> Vec<PathBuf> {
+            let mut out: Vec<PathBuf> = list
+                .iter()
+                .flat_map(|p| [Some(p.clone()), resolve_real(p)])
+                .flatten()
+                .collect();
+            out.sort();
+            out.dedup();
+            out
+        };
+        let mut allow = both(&self.allow);
+        allow.extend(both(&self.read_allow));
+        allow.extend(both(&self.spill.iter().cloned().collect::<Vec<_>>()));
+        allow.extend(both(&self.inherited_spills));
+        HiddenPaths {
+            deny: both(&self.deny),
+            allow,
+            paste_dirs: both(&self.paste_dir.iter().cloned().collect::<Vec<_>>()),
+            paste_deny: both(&self.paste_deny),
+        }
+    }
+}
+
+/// Match only clipboard.rs's `paste-<16 lowercase hex digits>.<image extension>` directly
+/// under the resolved tmp root. Callers resolve symlinks before matching, so an image name
+/// cannot expose a key or another session's output through a link.
+fn is_pasted_image(real: &Path, tmp: &Path) -> bool {
+    if real.parent() != Some(tmp) {
+        return false;
+    }
+    let Some(name) = real.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let Some((hash, ext)) = name.strip_prefix("paste-").and_then(|n| n.split_once('.')) else {
+        return false;
+    };
+    hash.len() == 16
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        && matches!(ext, "png" | "jpg" | "gif" | "webp")
+}
+
+/// #517: the deny-list of a [`PathGuard`] as a [`PathFilter`] for walked entries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HiddenPaths {
+    deny: Vec<PathBuf>,
+    /// The readable exceptions inside a denied path (spill files, built-in skills).
+    allow: Vec<PathBuf>,
+    /// Resolved roots for generated clipboard images, including ones pasted after this snapshot.
+    paste_dirs: Vec<PathBuf>,
+    /// Credential masks still apply even to a file with a generated image name.
+    paste_deny: Vec<PathBuf>,
+}
+
+impl PathFilter for HiddenPaths {
+    fn hides(&self, real: &Path) -> bool {
+        self.deny.iter().any(|d| real.starts_with(d))
+            && !self.allow.iter().any(|a| real.starts_with(a))
+            && (!self.paste_dirs.iter().any(|d| is_pasted_image(real, d))
+                || self.paste_deny.iter().any(|d| real.starts_with(d)))
     }
 }
 
@@ -166,6 +327,8 @@ fn in_linked_git_dirs(p: &Path, cwd: &Path) -> bool {
 pub struct ModePolicy {
     grants: Vec<Access>,
     guard: PathGuard,
+    /// #517: `guard` for the file tools' directory walks (`None` without a guard).
+    hidden: Option<Arc<HiddenPaths>>,
     /// O-182: while on, a question of the table is answered with "allow" (see
     /// [`ModePolicy::with_yolo`]).
     yolo: Option<YoloSwitch>,
@@ -188,16 +351,20 @@ impl ModePolicy {
     pub fn new() -> ModePolicy {
         ModePolicy::default()
     }
-    /// B3: deny the paths of `guard` to the file tools, in every mode, whatever the grants.
+    /// B3: deny the paths of `guard` to the file tools, whatever the grants, except for
+    /// user-selected full-access `yolo` outside plan mode.
     pub fn with_guard(mut self, guard: PathGuard) -> ModePolicy {
+        self.hidden = Some(Arc::new(guard.hidden_paths()));
         self.guard = guard;
         self
     }
-    /// O-182 (YOLO): while `switch` is on, every `Decision::Ask` of the mode table becomes
-    /// `Decision::Allow` and is counted on the switch. The safety floor is not part of the
-    /// table and is unchanged: the deny-list (B3) and git's files (B4) stay `Deny`, plan
-    /// mode's `Deny`s stand, and a write to the project's protected configuration (`.oxa`,
-    /// B4: it is loaded outside the sandbox later) still asks.
+    /// O-182, #202: at `Autonomy::Auto` every `Decision::Ask` of the mode table becomes
+    /// `Decision::Allow` and is counted on the switch; the safety floor is unchanged: the
+    /// deny-list (B3) and git's files (B4) stay `Deny`, plan mode's `Deny`s stand, and a write
+    /// to the project's protected configuration (`.oxa`) still asks. At `Autonomy::Yolo` (full
+    /// access) every `Ask` and every `Deny` becomes `Allow` outside plan mode (owner's decision
+    /// on #202/#314); only questions count as auto-approved, not bypassed denials (#443).
+    /// In plan mode it answers as `Auto`.
     pub fn with_yolo(mut self, switch: YoloSwitch) -> ModePolicy {
         self.yolo = Some(switch);
         self
@@ -294,8 +461,17 @@ fn table(mode: Mode, a: &Access, cwd: &Path) -> Decision {
     }
 }
 
-impl Policy for ModePolicy {
-    fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
+/// A verdict before autonomy is applied: `AskAlways` is the safety floor's prompt, which
+/// `auto` never turns into an allow. Only user-selected `yolo` outside plan mode bypasses it.
+#[derive(Clone, Copy)]
+enum Verdict {
+    Is(Decision),
+    AskAlways,
+}
+
+impl ModePolicy {
+    /// The verdict for `a` with the grants, before YOLO.
+    fn verdict(&self, mode: Mode, a: &Access, cwd: &Path) -> Verdict {
         if let Access::Read(p) | Access::Write(p) = a {
             let abs = crate::paths::normalize(p, cwd);
             // B3: the deny-list beats the mode, the cwd and every grant.
@@ -304,32 +480,107 @@ impl Policy for ModePolicy {
                 _ => self.guard.denies(&abs),
             };
             if denied {
-                return Decision::Deny(deny_reasons::SENSITIVE);
+                return Verdict::Is(Decision::Deny(deny_reasons::SENSITIVE));
+            }
+            // #492, #522, #531, #597, #611: advertised built-in skills, this session's
+            // output (including fork/clone ancestry), scratch directory and Cargo configs
+            // are read without asking. The deny-list above still applies.
+            if matches!(a, Access::Read(_))
+                && (self.guard.is_builtin_skill(&abs)
+                    || self.guard.is_readable_spill(&abs)
+                    || self.guard.is_scratch(&abs)
+                    || self.guard.is_cargo_config(&abs))
+            {
+                return Verdict::Is(Decision::Allow);
             }
             // B4: files that run outside the sandbox later: never (git) or ask, no grant.
             if let Access::Write(_) = a {
                 let protected = protected_write(&abs, cwd)
                     .or_else(|| self.guard.protects_home_file(&abs, cwd).then_some(false));
                 match (protected, mode) {
-                    (Some(true), _) => return Decision::Deny(deny_reasons::GIT_PROTECTED),
-                    (Some(false), Mode::Plan) => return Decision::Deny(deny_reasons::PLAN_WRITE),
-                    (Some(false), _) => return Decision::Ask,
+                    (Some(true), _) => return Verdict::Is(Decision::Deny(deny_reasons::GIT_PROTECTED)),
+                    (Some(false), Mode::Plan) => {
+                        return Verdict::Is(Decision::Deny(deny_reasons::PLAN_WRITE))
+                    }
+                    (Some(false), _) => return Verdict::AskAlways,
                     (None, _) => {}
                 }
             }
         }
         // Grants only turn Ask into Allow; a Deny from the table always stands.
-        match table(mode, a, cwd) {
+        Verdict::Is(match table(mode, a, cwd) {
             Decision::Ask if self.granted(a) => Decision::Allow,
-            Decision::Ask => match &self.yolo {
+            d => d,
+        })
+    }
+}
+
+/// The stricter of two verdicts: a `Deny` (the first one's reason first), the floor's prompt,
+/// a prompt, then `Allow`.
+fn stricter(a: Verdict, b: Verdict) -> Verdict {
+    use Verdict::{AskAlways, Is};
+    match (a, b) {
+        (Is(Decision::Deny(r)), _) | (_, Is(Decision::Deny(r))) => Is(Decision::Deny(r)),
+        (AskAlways, _) | (_, AskAlways) => AskAlways,
+        (Is(Decision::Ask), _) | (_, Is(Decision::Ask)) => Is(Decision::Ask),
+        _ => Is(Decision::Allow),
+    }
+}
+
+impl Policy for ModePolicy {
+    fn decide(&self, mode: Mode, a: &Access, cwd: &Path) -> Decision {
+        self.decide_pinned(mode, a, cwd).0
+    }
+
+    /// #518: the path is resolved once; the verdict covers both the path as named and that real
+    /// location (the stricter one wins), and the real location is what the tool may open.
+    fn decide_pinned(&self, mode: Mode, a: &Access, cwd: &Path) -> (Decision, Option<PathBuf>) {
+        let (verdict, pin) = match a {
+            Access::Read(p) | Access::Write(p) => {
+                let abs = crate::paths::normalize(p, cwd);
+                // A path that does not resolve (a link loop) pins its lexical form: the open
+                // then fails or lands elsewhere and is refused.
+                let real = resolve_real(&abs).unwrap_or(abs);
+                let at_real = match a {
+                    Access::Read(_) => Access::Read(real.clone()),
+                    _ => Access::Write(real.clone()),
+                };
+                let d = stricter(self.verdict(mode, a, cwd), self.verdict(mode, &at_real, cwd));
+                (d, Some(real))
+            }
+            _ => (self.verdict(mode, a, cwd), None),
+        };
+        // Owner decision (#202/#314): yolo outside plan mode lifts every file-tool
+        // guard. Resolve and pin first, so the open still uses the checked location.
+        let full = self.yolo.as_ref().filter(|s| s.full() && mode != Mode::Plan);
+        let decision = match verdict {
+            Verdict::Is(Decision::Deny(_)) if full.is_some() => Decision::Allow,
+            Verdict::AskAlways if full.is_some() => {
+                // #443: only questions count as auto-approved; bypassed denials do not.
+                full.unwrap().count();
+                Decision::Allow
+            }
+            Verdict::AskAlways => Decision::Ask,
+            Verdict::Is(Decision::Ask) => match &self.yolo {
                 Some(switch) if switch.is_on() => {
                     switch.count();
                     Decision::Allow
                 }
                 _ => Decision::Ask,
             },
-            d => d,
-        }
+            Verdict::Is(d) => d,
+        };
+        (decision, pin)
+    }
+
+    fn set_spill_dir(&mut self, dir: &Path) {
+        self.guard.set_spill_dir(dir);
+        self.hidden = Some(Arc::new(self.guard.hidden_paths()));
+    }
+
+    fn set_inherited_spill_dirs(&mut self, dirs: &[PathBuf]) {
+        self.guard.inherited_spills = dirs.to_vec();
+        self.hidden = Some(Arc::new(self.guard.hidden_paths()));
     }
 
     fn remember(&mut self, a: &Access) {
@@ -354,5 +605,16 @@ impl Policy for ModePolicy {
         if !self.grants.contains(&grant) {
             self.grants.push(grant);
         }
+    }
+
+    fn path_filter(&self) -> Option<Arc<dyn PathFilter>> {
+        self.path_filter_for_mode(Mode::Workspace)
+    }
+
+    fn path_filter_for_mode(&self, mode: Mode) -> Option<Arc<dyn PathFilter>> {
+        if mode != Mode::Plan && self.yolo.as_ref().is_some_and(YoloSwitch::full) {
+            return None;
+        }
+        self.hidden.clone().map(|h| h as Arc<dyn PathFilter>)
     }
 }

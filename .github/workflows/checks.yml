@@ -7,8 +7,10 @@ name: checks
 # run the same set. Outputs: engine/ and fuzz/oxe/ -> `engine` (clippy, x86_64 stub server tests,
 # ARM engine and Flash builds, oxe fuzz smoke); oxa/ and fuzz/oxa/ -> `oxa` (clippy, the oxa test
 # archive and shards, the ARM oxa build, oxa fuzz smoke); oxc/ -> `lab`, `cli` and `gateway`;
-# oxc-rs/ and conformance/ -> `cli`; oxc-gateway/ -> `gateway`. Anything else (.github/, tools/,
-# packaging/, root files, a new directory) and an empty group diff count as "everything changed".
+# oxc-rs/ and conformance/ -> `cli`; oxa/oxc-gateway/ -> `gateway`.
+# The shared gateway selects oxa to check its in-process consumer.
+# Anything else (.github/, tools/, packaging/, root files, a new directory) and an empty group
+# diff count as "everything changed".
 # A push on main, the nightly run and manual runs set every output, so main runs everything after
 # each merge (one run at a time; a newer push replaces a waiting one) and catches cross-component
 # breaks that a path-gated PR or queue entry skipped. Drafts run only the classifier, the scans
@@ -119,7 +121,7 @@ jobs:
       - name: bubblewrap + unprivileged user namespaces
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           bwrap --unshare-all --ro-bind / / true
       - name: Toolchain
@@ -509,7 +511,10 @@ jobs:
           pat='(ghp_[A-Za-z0-9]{30,}|gho_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}|hf_[A-Za-z0-9]{30,}|sk-[A-Za-z0-9_-]{32,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)'
           # exclusions: synthetic fixtures; the report-issue scrubber test, whose INPUTS are fake key-shaped
           # strings it asserts are removed (exact file, reviewed 2026-11-14; same entry in sanitize-scan.allow)
-          if git grep -nIE "$pat" -- . ':!oxc/tests/fixtures' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs'; then echo "secret-like strings found"; exit 1; fi
+          # Plan item 22: exact test-only fixture of obviously fake OpenAI key/JWT/refresh
+          # shapes; asserts configured secrets disappear from errors and echoed headers.
+          # No real credentials or requests. Keep realistic inputs intact (T3 review).
+          if git grep -nIE "$pat" -- . ':!oxc/tests/fixtures' ':!oxa/oxa-cli/tests/o152_report_issue_and_identity.rs' ':!oxa/oxc-gateway/tests/redaction_openai.rs'; then echo "secret-like strings found"; exit 1; fi
           echo "no secret-like strings in $(git ls-files | wc -l) tracked files"
       - name: SDK-material check (file names, ELF objects, hexagon directories)
         # Self-contained: the exporter's full scan (text notices included) runs at export time.
@@ -579,15 +584,32 @@ jobs:
           persist-credentials: false
       - run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends bubblewrap
+          sudo apt-get install -y -q --no-install-recommends bubblewrap strace
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --component rustfmt --no-self-update
-      - run: cargo fmt --manifest-path oxc-gateway/Cargo.toml --all -- --check
-      - run: cargo check --locked --manifest-path oxc-gateway/Cargo.toml --no-default-features
-      - run: cargo clippy --locked --manifest-path oxc-gateway/Cargo.toml --all-targets --all-features -- -D warnings
-      - run: cargo build --locked --manifest-path oxc-gateway/Cargo.toml --all-features --examples
-      - run: /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
-      - run: OXC_POLICY_CONTRACT="$PWD/oxc-gateway/target/debug/examples/policy_contract" OXC_SECRETS_CONTRACT="$PWD/oxc-gateway/target/debug/examples/secrets_contract" /usr/bin/python3 -m unittest discover -s oxc-gateway/conformance -v
+      - name: Fetch locked workspace dependencies before offline tests
+        run: cargo fetch --locked --manifest-path oxa/Cargo.toml
+      - run: cargo fmt --manifest-path oxa/Cargo.toml --all -- --check
+      - run: cargo check --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --no-default-features
+      - run: cargo check --locked --manifest-path oxa/Cargo.toml -p oxa-engine --no-default-features
+      - run: cargo clippy --locked --manifest-path oxa/Cargo.toml -p oxc-gateway --all-targets --all-features -p oxa-engine -- -D warnings
+      - name: Rust gateway tests with isolated environment
+        run: |
+          gateway_test_home=$(mktemp -d)
+          # Valid synthetic JSON with another owner exercises the owner guard
+          # before the mode/content guards. Its parent remains private (0700).
+          gateway_owner_fixture="$gateway_test_home/foreign.json"
+          printf '%s\n' '{"anthropic":"synthetic-foreign-credential"}' > "$gateway_owner_fixture"
+          sudo chown 65534:65534 "$gateway_owner_fixture"
+          sudo chmod 0644 "$gateway_owner_fixture"
+          gateway_cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          gateway_rustup_home="${RUSTUP_HOME:-$HOME/.rustup}"
+          bwrap --unshare-user --unshare-net --cap-drop ALL --die-with-parent --new-session --bind / / --proc /proc --dev /dev -- \
+            env -i PATH="$PATH" HOME="$gateway_test_home" OXC_SECRET_OWNER_PATH="$gateway_owner_fixture" CARGO_HOME="$gateway_cargo_home" RUSTUP_HOME="$gateway_rustup_home" RUSTUP_TOOLCHAIN="$RUSTUP_TOOLCHAIN" \
+            bash -ec '
+              cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxc-gateway --all-features -p oxa-engine --profile ci
+              cargo test --locked --offline --manifest-path oxa/Cargo.toml -p oxa-cli --test in_process_cloud --test in_process_openai --profile ci
+            '
 
   gate:
     # The one aggregate check: every job in `needs` must succeed or be skipped; the classifier and

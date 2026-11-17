@@ -170,6 +170,7 @@ fn with_ctx<R>(env: &TestEnv, f: impl FnOnce(&ToolCtx) -> R) -> R {
     let spill = env.tmp();
     let cancel = CancelToken::new();
     let cx = ToolCtx {
+        checked: &[],
         cwd: &cwd,
         spill_dir: &spill,
         sandbox: &NoSandbox,
@@ -177,6 +178,7 @@ fn with_ctx<R>(env: &TestEnv, f: impl FnOnce(&ToolCtx) -> R) -> R {
         cancel: &cancel,
         env: &[],
         tune: Default::default(),
+        hidden: None,
     };
     f(&cx)
 }

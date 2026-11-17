@@ -142,13 +142,18 @@ enum Job {
     },
     /// Reader failures share the command FIFO so they cannot overtake an earlier run.
     Outcome(RunOutcome),
+    /// A follow-up is already in Handle's queue; wake the session even with stdin idle.
+    Inbox(String),
+    Shutdown,
 }
 
 /// What the reader and the session thread decide together, under one lock.
 #[derive(Default)]
 struct Gate {
-    /// Jobs sent to the session thread and not yet finished.
+    /// Session commands sent to the worker and not finished (outcome-only jobs claim nothing).
     pending: usize,
+    /// EOF is ordered with inbox admission: leave later files for the next owner.
+    closed: bool,
     /// A prompt was answered `started` and its run has not settled yet. Set by the reader when
     /// it accepts the prompt (pi: the run is active once `started` is sent), cleared by the
     /// session thread before the run's `agent_settled` is written.
@@ -407,25 +412,128 @@ fn session_loop(
     cache: Arc<Mutex<Published>>,
     gate: Arc<Mutex<Gate>>,
     bash_running: Arc<AtomicBool>,
+    tx: Sender<Job>,
 ) -> RunOutcome {
     let mut outcome = RunOutcome::NothingToDo;
-    while let Ok(job) = rx.recv() {
+    let mut inbox = None;
+    let mut inbox_id = String::new();
+    loop {
+        let id = cx.session.inner().sref.id.clone();
+        if inbox_id != id || inbox.is_none() {
+            drop(inbox.take());
+            inbox_id = id.clone();
+            // A prior wake may have been discarded while this destination was inactive.
+            // Re-arm it on return even when its admitted files are already gone.
+            if cx.handle.has_inbox_input() && !cx.handle.wrap_up_requested() {
+                let mut g = lock(&gate);
+                if !g.closed && cx.handle.request_inbox_wake() {
+                    g.pending += 1;
+                    if tx.send(Job::Inbox(id.clone())).is_err() {
+                        g.pending -= 1;
+                    }
+                }
+            }
+            let handle = cx.handle.clone();
+            let sender = tx.clone();
+            let gate = gate.clone();
+            match oxa_session::Inbox::watch(&cx.dirs.agent_dir, &inbox_id, move |text| {
+                let mut gate = lock(&gate);
+                if gate.closed || handle.wrap_up_requested() {
+                    return false;
+                }
+                if !handle.follow_up_for(&id, text) {
+                    return false;
+                }
+                if !handle.request_inbox_wake() {
+                    return true;
+                }
+                gate.pending += 1;
+                if sender.send(Job::Inbox(id.clone())).is_err() {
+                    gate.pending -= 1;
+                    return false;
+                }
+                true
+            }) {
+                Ok(watch) => inbox = Some(watch),
+                Err(e) => write_out(
+                    &cx.out,
+                    &event_to_json(&AgentEvent::Notice {
+                        level: Level::Warning,
+                        text: format!("Session inbox unavailable: {e}"),
+                    }),
+                ),
+            }
+        }
+        let job = if (cx.handle.wrap_up_requested() || cx.handle.interrupted()) && lock(&gate).pending == 0 {
+            match rx.try_recv() {
+                Ok(job) => job,
+                Err(_) => {
+                    outcome.include(RunOutcome::Interrupted);
+                    break;
+                }
+            }
+        } else {
+            match rx.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(job) => job,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        };
+        let inbox_wake = matches!(&job, Job::Inbox(_));
         let (cmd, reply, claimed) = match job {
             Job::Command { cmd, reply, claimed } => (cmd, reply, claimed),
             Job::Outcome(next) => {
                 outcome.include(next);
                 continue;
             }
+            Job::Inbox(id) => {
+                cx.handle.clear_inbox_wake();
+                (
+                    RpcCommand {
+                        id: None,
+                        kind: "inbox".into(),
+                        body: json!({"session_id": id}),
+                    },
+                    false,
+                    false,
+                )
+            }
+            Job::Shutdown => break,
         };
+        // Join the old watcher before any explicit session transition. Already admitted
+        // follow-ups retain their destination in the core queue.
+        if matches!(
+            cmd.kind.as_str(),
+            "new_session" | "switch_session" | "fork" | "clone"
+        ) {
+            drop(inbox.take());
+        }
         let _ = cx.session.take_outcome();
         let is_bash = cmd.kind == "bash";
         bash_running.store(is_bash, Ordering::SeqCst);
         hold_settled();
         // A1/A2: a panic in a command answers that command with an error; the session thread
         // and the session go on (a run's busy flag is released by its guard).
-        let result = oxa_proto::panic::contain(|| match cmd_run::handle(&mut cx, &cmd) {
-            Some(r) => Some(r),
-            None => handle_session(&mut cx, &cmd),
+        let result = oxa_proto::panic::contain(|| {
+            if inbox_wake {
+                if cmd.body["session_id"].as_str() == Some(&cx.session.inner().sref.id)
+                    || cx.handle.has_inbox_input()
+                {
+                    let mut sink = cmd_run::OutSink(cx.out.clone());
+                    let mut ui = RpcUi {
+                        out: cx.out.clone(),
+                        router: cx.ui.clone(),
+                    };
+                    Some(cx.session.run_queued(&mut sink, &mut ui).map(|_| Value::Null))
+                } else {
+                    Some(Ok(Value::Null))
+                }
+            } else {
+                match cmd_run::handle(&mut cx, &cmd) {
+                    Some(r) => Some(r),
+                    None => handle_session(&mut cx, &cmd),
+                }
+            }
         })
         .unwrap_or_else(|error| {
             Some(Err(OxaError::new(
@@ -434,6 +542,9 @@ fn session_loop(
             )))
         });
         let mut settled = release_settled();
+        if let Some(inbox) = &inbox {
+            inbox.retry();
+        }
         bash_running.store(false, Ordering::SeqCst);
         if claimed && settled.is_empty() {
             // The client was told `started`: it is owed the closing record even when the
@@ -446,7 +557,6 @@ fn session_loop(
             Some(Ok(_)) if cmd.kind != "prompt" && settled.is_empty() => RunOutcome::Done,
             _ => *cx.session.outcome(),
         };
-        outcome.include(current);
         for record in &mut settled {
             if let Some(fields) = record.as_object_mut() {
                 fields.insert("result".to_string(), current.record());
@@ -484,6 +594,21 @@ fn session_loop(
                 write_out(&out, &v);
             }
         }
+        if cx.handle.wrap_up_requested() || cx.handle.interrupted() {
+            // A real prompt failure precedes later reader errors. Cooperative
+            // interruption is deferred so it cannot hide an already-reported error.
+            if current != RunOutcome::Interrupted {
+                outcome.include(current);
+            }
+            for pending in rx.try_iter() {
+                if let Job::Outcome(next) = pending {
+                    outcome.include(next);
+                }
+            }
+            outcome.include(RunOutcome::Interrupted);
+            break;
+        }
+        outcome.include(current);
     }
     let mut ui = RpcUi {
         out: cx.out.clone(),
@@ -557,11 +682,14 @@ pub fn serve_outcome(
         let cache = cache.clone();
         let gate = gate.clone();
         let bash_flag = bash_running.clone();
+        let tx = tx.clone();
         thread::Builder::new()
             .name("oxa-rpc-session".to_string())
-            .spawn(move || session_loop(cx, rx, cache, gate, bash_flag))
+            .spawn(move || session_loop(cx, rx, cache, gate, bash_flag, tx))
             .map_err(|e| OxaError::io("cannot start the session thread", &e))?
     };
+    let control = handle.clone();
+    let shutdown_tx = tx.clone();
     let front = Front {
         handle,
         out,
@@ -571,12 +699,40 @@ pub fn serve_outcome(
         bash_running,
         tx,
     };
-    read_commands(input, &front);
-    // Stdin closed: no answer can arrive any more. Dialogs that wait now, and any opened
-    // later, resolve as cancelled; dropping the sender lets the session thread drain its
-    // queue and exit.
+    // A blocking stdin reader must not keep the process alive after soft termination. On
+    // EOF it closes dialogs and the job channel as before. If the caller terminates while
+    // stdin is open, the reader is detached until EOF (the CLI exits immediately afterwards).
+    let input_router = router.clone();
+    let reader = match thread::Builder::new()
+        .name("oxa-rpc-input".to_string())
+        .spawn(move || {
+            read_commands(input, &front);
+            input_router.close();
+            {
+                let mut gate = lock(&front.gate);
+                gate.closed = true;
+                let _ = front.tx.send(Job::Shutdown);
+            }
+            drop(front);
+        }) {
+        Ok(reader) => reader,
+        Err(error) => {
+            router.close();
+            let _ = shutdown_tx.send(Job::Shutdown);
+            let _ = worker.join();
+            return Err(OxaError::io("cannot start the RPC input thread", &error));
+        }
+    };
+    while !worker.is_finished() {
+        if control.wrap_up_requested() || control.interrupted() {
+            router.close();
+        }
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
     router.close();
-    drop(front);
+    if reader.is_finished() {
+        let _ = reader.join();
+    }
     Ok(worker.join().unwrap_or(RunOutcome::Failed(codes::INTERNAL)))
 }
 

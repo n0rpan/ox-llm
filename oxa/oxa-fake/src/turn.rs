@@ -110,6 +110,7 @@ impl ScriptTurn {
             content: self.text.clone(),
             reasoning: self.reasoning.clone(),
             tool_calls: self.tool_calls.clone(),
+            provider_history: None,
             tool_call_id: None,
         }
     }

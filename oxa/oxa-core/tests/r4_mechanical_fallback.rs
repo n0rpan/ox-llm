@@ -54,6 +54,8 @@ fn build(env: &TestEnv, engine: Arc<dyn Engine>, compact: CompactPolicy, setting
         gate: Default::default(),
     });
     SessionState {
+        goal: None,
+        output_schema: None,
         engine,
         store,
         hooks: Vec::new(),
@@ -158,6 +160,7 @@ fn read_call(id: &str, path: &str) -> WireMsg {
             name: "read".to_string(),
             args_raw: format!(r#"{{"path":"{path}"}}"#),
         }],
+        provider_history: None,
         tool_call_id: None,
     }
 }
