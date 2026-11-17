@@ -318,6 +318,47 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
     assert_eq!(unknown["usage_missing"], true);
     mock.assert_healthy();
 }
+
+#[test]
+fn native_go_settled_paid_and_free_usage_release_unused_usd_across_processes() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        [0.002, 0.0, 0.002]
+            .into_iter()
+            .flat_map(|cost| {
+                let mut reported = usage();
+                reported["cost"] = json!(cost);
+                reported["opencode"]["billing_source"] = json!("balance");
+                [
+                    Reply::json(discovery(base)),
+                    terminal_frames(
+                        &[json!({"choices":[{"index":0,"delta":{"content":"Synthetic settlement"},"finish_reason":"stop"}],"usage":reported})],
+                        true,
+                    ),
+                ]
+            })
+            .collect()
+    });
+    capped_go(&env, &format!("http://{}", mock.address()));
+    for _ in 0..3 {
+        let output = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic settlement"],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 3);
+    assert!(ledger.iter().all(|row| row["settled"] == "usage"));
+    let spent: f64 = ledger.iter().map(|row| row["cost_usd"].as_f64().unwrap()).sum();
+    assert_eq!(spent, 0.004);
+    assert_eq!(mock.requests().len(), 6);
+    mock.assert_healthy();
+}
 fn check_go_billing(source: Value, expected: &str, cost: f64, cap: bool) {
     let env = TestEnv::new();
     let mut final_usage = usage();
