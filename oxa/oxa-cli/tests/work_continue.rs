@@ -75,17 +75,21 @@ fn existing_branch_fast_forwards_to_base_before_agent() {
     );
 }
 
+fn published_task(env: &TestEnv) -> String {
+    setup(env, "[]");
+    git(env, &project(env), &["checkout", "-b", "agent/test"]);
+    commit_file(env, "pr.txt", "from the pull request\n");
+    git(env, &project(env), &["push", "origin", "agent/test"]);
+    git(env, &project(env), &["checkout", "main"]);
+    git(env, &project(env), &["branch", "-D", "agent/test"]);
+    git(env, &project(env), &["fetch", "origin"]);
+    git(env, &project(env), &["rev-parse", "origin/agent/test"])
+}
+
 #[test]
 fn fresh_worktree_starts_at_the_published_task_branch_head() {
     let env = TestEnv::new();
-    setup(&env, "[]");
-    git(&env, &project(&env), &["checkout", "-b", "agent/test"]);
-    commit_file(&env, "pr.txt", "from the pull request\n");
-    git(&env, &project(&env), &["push", "origin", "agent/test"]);
-    git(&env, &project(&env), &["checkout", "main"]);
-    git(&env, &project(&env), &["branch", "-D", "agent/test"]);
-    git(&env, &project(&env), &["fetch", "origin"]);
-    let pushed = git(&env, &project(&env), &["rev-parse", "origin/agent/test"]);
+    let pushed = published_task(&env);
     let record = run(&env, vec![ScriptTurn::text("nothing")]);
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
     assert_eq!(
@@ -103,6 +107,66 @@ fn fresh_worktree_starts_at_the_published_task_branch_head() {
         git(&env, &project(&env), &["symbolic-ref", "--quiet", "HEAD"]),
         "refs/heads/main"
     );
+}
+
+#[test]
+fn published_head_reference_hooks_run_only_in_the_task_sandbox() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    let pushed = published_task(&env);
+    let hook = env.write(
+        "work/project/.git/hooks/reference-transaction",
+        "#!/bin/sh\ncat >/dev/null\nprintf escaped > \"$HOME/published-head-host-hook\" 2>/dev/null || true\nprintf ran > published-head-hook-ran\n",
+    );
+    std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert!(!env.home().join("published-head-host-hook").exists(), "{record}");
+    assert!(
+        !project(&env).join("published-head-hook-ran").exists(),
+        "{record}"
+    );
+    assert!(tree(&record).join("published-head-hook-ran").exists(), "{record}");
+    assert_eq!(record["outcome"], "done", "{record}");
+    git(
+        &env,
+        tree(&record),
+        &["merge-base", "--is-ancestor", &pushed, "HEAD"],
+    );
+}
+
+#[test]
+fn a_divergent_matching_remote_tip_prevents_published_head_adoption() {
+    let env = TestEnv::new();
+    published_task(&env);
+    let base = git(&env, &project(&env), &["rev-parse", "main"]);
+    git(&env, &project(&env), &["checkout", "--orphan", "other"]);
+    commit_file(&env, "unrelated.txt", "another published history\n");
+    let other = git(&env, &project(&env), &["rev-parse", "HEAD"]);
+    git(&env, &project(&env), &["checkout", "main"]);
+    git(&env, &project(&env), &["remote", "add", "other", "../remote.git"]);
+    git(
+        &env,
+        &project(&env),
+        &["update-ref", "refs/remotes/other/agent/test", &other],
+    );
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), base);
+    assert!(!tree(&record).join("pr.txt").exists());
+}
+
+#[test]
+fn identical_matching_remote_tips_keep_the_published_head_eligible() {
+    let env = TestEnv::new();
+    let pushed = published_task(&env);
+    git(
+        &env,
+        &project(&env),
+        &["update-ref", "refs/remotes/mirror/agent/test", &pushed],
+    );
+    let record = run(&env, vec![ScriptTurn::text("nothing")]);
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(git(&env, tree(&record), &["rev-parse", "HEAD"]), pushed);
 }
 
 #[test]
