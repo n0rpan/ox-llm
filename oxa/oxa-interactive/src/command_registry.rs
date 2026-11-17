@@ -87,7 +87,7 @@ commands! {
         summary: "Show command help",
         arguments: &[Argument { name: "command", kind: ArgumentKind::Tail, required: false }],
         surfaces: Surfaces {
-            cli: Availability::Supported,
+            cli: Availability::Exception("CLI help command migration is pending"),
             slash: Availability::Supported,
             menu: Availability::Supported,
             web: Availability::Exception("No web frontend is shipped"),
@@ -228,10 +228,18 @@ mod tests {
     #[test]
     fn help_is_resolved_without_runtime_inputs_and_keeps_argument_bytes() {
         let input = vec!["help".into(), "work".into(), " board ".into()];
-        let parsed = parse_cli(&input).unwrap();
+        let parsed = dispatch_slash(&input).unwrap();
         assert!(parsed.help_requested);
         assert_eq!(parsed.args, &input[1..]);
         assert_eq!(parsed.command.requirements, Requirements::default());
+        assert!(
+            parse_cli(&input).is_none(),
+            "unmigrated CLI help is not advertised"
+        );
+        let cli = words("work status --help");
+        let parsed = parse_cli(&cli).unwrap();
+        assert!(parsed.help_requested);
+        assert_eq!(parsed.args, &cli[2..]);
         assert!(parse_cli(&words("unknown help")).is_none());
         assert!(dispatch_slash(&words("unknown")).is_none());
     }

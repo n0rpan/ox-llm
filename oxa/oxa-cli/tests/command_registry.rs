@@ -6,6 +6,12 @@ fn supported_registry_cli_paths_have_real_public_help() {
     for entry in entries(Surface::Cli) {
         let words: Vec<_> = entry.path.iter().map(|part| (*part).to_string()).collect();
         assert_eq!(parse_cli(&words).unwrap().command.id, entry.id);
+        let actual = oxa_cli::parse_args(&words, &[]).unwrap();
+        assert!(
+            actual.subcommand.is_some() || actual.help,
+            "advertised registry route is only a prompt in the real CLI: {:?}",
+            entry.path
+        );
         assert!(
             oxa_cli::text(entry.path).is_some(),
             "advertised registry route has no public CLI help: {:?}",
