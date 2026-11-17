@@ -135,10 +135,38 @@ class GoReview(unittest.TestCase):
             with self.subTest(models=models), self.assertRaises(review.Refused):
                 self.run_review(models=models)
 
+    def test_two_review_label_requests_only_the_model_missing_from_cached_diff(self):
+        _, first, _ = self.run_review()
+        comments = [{'user': {'login': 'github-actions[bot]'}, 'body': first[0]}]
+        pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
+        models = json.dumps([review.MODEL, review.ARGON])
+        calls, posted, auth = self.run_review(pr=pr, comments=comments, models=models)
+        self.assertEqual((calls.count(review.MODEL_URL), calls.count(review.ARGON_URL)), (0, 1))
+        self.assertEqual((len(posted), auth), (1, 1))
+        self.assertEqual(json.loads(review.MARKER.findall(posted[0])[0])['model'], review.ARGON)
+        comments.append({'user': {'login': 'github-actions[bot]'}, 'body': posted[0]})
+        self.assertEqual(self.run_review(pr=pr, comments=comments, models=models)[1:], ([], 0))
+
+    def test_gemini_text_metadata_and_thoughts_preserve_the_final_review(self):
+        pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
+        final_text = response([finding(title='[P2] Argon finding')])['choices'][0]['message']['content']
+        argon = {'candidates': [{'finishReason': 'STOP', 'content': {'parts': [
+            {'text': 'Thought text must stay out of JSON.', 'thought': True, 'thoughtSignature': 'c2ln'},
+            {'text': final_text, 'thoughtSignature': 'c2ln', 'partMetadata': {'source': 'synthetic'}},
+        ]}}]}
+        models = json.dumps([review.MODEL, review.ARGON])
+        _, posted, _ = self.run_review(pr=pr, models=models, argon=argon)
+        self.assertEqual(len(posted), 1)
+        self.assertIn('[P2] Argon finding', posted[0])
+        self.assertNotIn('Thought text', posted[0])
+
     def test_failed_second_review_posts_no_clear_receipt_or_fallback(self):
         pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
         for candidate in ({'finishReason': 'MAX_TOKENS', 'content': {'parts': [{'text': '{}'}]}},
-                          {'finishReason': 'STOP', 'content': {'parts': [{'functionCall': {}}]}}):
+                          {'finishReason': 'STOP', 'content': {'parts': [{'functionCall': {}}]}},
+                          {'finishReason': 'STOP', 'content': {'parts': [
+                              {'text': response()['choices'][0]['message']['content'], 'functionCall': {}}
+                          ]}}):
             with self.subTest(candidate=candidate), self.assertRaises(review.Refused):
                 self.run_review(pr=pr, models=json.dumps([review.MODEL, review.ARGON]),
                                 argon={'candidates': [candidate]})
