@@ -351,17 +351,20 @@ fn pull_request_skill_reads_supplied_review_text_before_github() {
         .expect("GitHub stays the way to read reviews where it may be used");
     assert!(supplied < github, "the supplied copy is read before GitHub");
     assert!(
-        text.contains("gh api repos/OWNER/REPO/pulls/N/reviews"),
-        "inline review comments are read too"
+        text.contains("gh api repos/OWNER/REPO/pulls/N/reviews --paginate"),
+        "GitHub owners can read review summaries"
     );
+    let inline = text
+        .find("gh api repos/OWNER/REPO/pulls/N/comments --paginate")
+        .expect("inline findings use the separate review comments endpoint");
+    assert!(github < inline, "the inline call follows supplied review text");
     let missing = text
-        .find("could not read")
-        .expect("review text that was not supplied is named, not guessed at");
-    assert!(missing > github, "the refusal follows the GitHub step");
-    assert!(
-        text.contains("has no findings"),
-        "a missing copy is not mistaken for a finding-free review"
-    );
+        .find("NEED-METADATA")
+        .expect("missing review text has an explicit handoff");
+    assert!(missing > inline, "the handoff follows the GitHub-owner step");
+    assert!(text.contains("An unread review is still pending."));
+    let owner = text.find("your session owns GitHub access").unwrap();
+    assert!(supplied < owner && owner < github);
 }
 
 #[test]
