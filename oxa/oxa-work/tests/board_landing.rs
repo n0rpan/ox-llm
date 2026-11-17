@@ -130,6 +130,40 @@ fn rejected_head_notifies_with_failing_tests_then_retries_once_after_main_moves(
 }
 
 #[test]
+fn rejection_with_unbound_head_or_group_cannot_notify_or_retry() {
+    let entry = ready();
+    let valid_group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    for (head, group) in [
+        ("old-head", valid_group),
+        (entry.head.as_str(), ""),
+        (entry.head.as_str(), "not-an-object-id"),
+        (entry.head.as_str(), entry.head.as_str()),
+    ] {
+        for notified in [false, true] {
+            let plan = policy().plan(
+                &entry,
+                LatestReviews::Clear,
+                Queue::Rejected(Rejection {
+                    head,
+                    merge_group_head: group,
+                    notified,
+                    ..rejection()
+                }),
+                "main-two",
+                0,
+            );
+            assert_eq!(plan.notify_rejection, None, "head={head:?} group={group:?}");
+            assert_eq!(
+                plan.next,
+                Next::WaitReconciliation,
+                "head={head:?} group={group:?}"
+            );
+            assert!(!plan.repeat_rejection_alarm);
+        }
+    }
+}
+
+#[test]
 fn repeat_rejection_alarm_requires_the_retried_group_for_the_same_head() {
     let entry = ready();
     let mut rejected = rejection();
