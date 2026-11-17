@@ -35,6 +35,15 @@ struct Reader<'a> {
 }
 
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
+const LIST: &str = "pullRequests(first:100,states:OPEN){totalCount pageInfo{hasNextPage endCursor} nodes{number headRefOid}}";
+
+fn charge(bytes: &mut usize, read: usize) -> Result<(), String> {
+    *bytes = bytes
+        .checked_add(read)
+        .filter(|total| *total <= MAX_RESPONSE)
+        .ok_or("GitHub snapshot exceeds byte limit")?;
+    Ok(())
+}
 
 enum QueryError {
     Http(u16),
@@ -53,6 +62,62 @@ impl QueryError {
 }
 
 impl Reader<'_> {
+    fn listing(&self, bytes: &mut usize) -> Result<(Value, Value), String> {
+        let (mut fields, mut rows, mut seen, mut cursors) =
+            (LIST.to_owned(), vec![], BTreeSet::new(), BTreeSet::new());
+        let mut result = Value::Null;
+        loop {
+            let (page, read) = self
+                .query(&format!("{fields} mergeQueue(branch:\"main\"){{id}}"))
+                .map_err(QueryError::message)?;
+            charge(bytes, read)?;
+            if result.is_null() {
+                result = page.clone();
+            }
+            let connection = &page["pullRequests"];
+            let total = connection["totalCount"].as_u64().ok_or("missing PR count")?;
+            if total > 1000
+                || connection["totalCount"] != result["pullRequests"]["totalCount"]
+                || page["mergeQueue"] != result["mergeQueue"]
+            {
+                return Err("GitHub listing exceeds limit or changed during snapshot".into());
+            }
+            let nodes = connection["nodes"].as_array().ok_or("missing PR page")?;
+            if nodes.len() > 100 {
+                return Err("oversized PR page".into());
+            }
+            for row in nodes {
+                let number = row["number"]
+                    .as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or("invalid PR number")?;
+                if !seen.insert(number) || row["headRefOid"].as_str().is_none_or(str::is_empty) {
+                    return Err("duplicate PR or missing head in listing".into());
+                }
+                rows.push(row.clone());
+            }
+            let more = connection["pageInfo"]["hasNextPage"]
+                .as_bool()
+                .ok_or("missing PR pagination")?;
+            if !more {
+                if rows.len() as u64 != total {
+                    return Err("incomplete PR listing".into());
+                }
+                let first = result["pullRequests"].clone();
+                result["pullRequests"]["nodes"] = rows.into();
+                return Ok((result, first));
+            }
+            let cursor = connection["pageInfo"]["endCursor"]
+                .as_str()
+                .filter(|c| !c.is_empty())
+                .ok_or("missing PR cursor")?;
+            if nodes.is_empty() || rows.len() as u64 >= total || !cursors.insert(cursor.to_owned()) {
+                return Err("invalid PR pagination progress".into());
+            }
+            fields = LIST.replace("states:OPEN", &format!("states:OPEN,after:{cursor:?}"));
+        }
+    }
+
     fn query(&self, fields: &str) -> Result<(Value, usize), QueryError> {
         let mut retries = 0;
         loop {
@@ -160,25 +225,17 @@ fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
 
 impl GitHub for Reader<'_> {
     fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
-        // Small detail batches retain every field and recheck the complete open set.
-        const LIST: &str = "pullRequests(first:100,states:OPEN){totalCount nodes{number}}";
-        let (list, _) = self
-            .query(&format!("{LIST} mergeQueue(branch:\"main\"){{id}}"))
-            .map_err(QueryError::message)?;
+        // Verify the complete paginated identity set before publishing any details.
+        let mut bytes = 0;
+        let (list, first) = self.listing(&mut bytes)?;
         let has_queue = list["mergeQueue"].is_object();
         let numbers: Vec<u64> = nodes(&list["pullRequests"])?
             .iter()
             .map(|pr| pr["number"].as_u64().ok_or("missing PR number"))
             .collect::<Result<_, _>>()?;
-        let ids = |connection: &Value| -> Result<BTreeSet<u64>, String> {
-            nodes(connection)?
-                .iter()
-                .map(|pr| pr["number"].as_u64().ok_or("missing PR number".into()))
-                .collect()
-        };
-        let expected = ids(&list["pullRequests"])?;
+        let expected: BTreeMap<_, _> = numbers.iter().zip(nodes(&list["pullRequests"])?).collect();
         let mut details = serde_json::json!({});
-        let (mut offset, mut size, mut bytes) = (0, 15, 0usize);
+        let (mut offset, mut size) = (0, 15);
         loop {
             let end = numbers.len().min(offset + size);
             let mut fields = LIST.to_owned();
@@ -204,16 +261,13 @@ impl GitHub for Reader<'_> {
                 }
                 Err(error) => return Err(error.message()),
             };
-            bytes = bytes
-                .checked_add(read)
-                .filter(|total| *total <= MAX_RESPONSE)
-                .ok_or("GitHub detail snapshot exceeds byte limit")?;
-            if ids(&page["pullRequests"])? != expected {
+            charge(&mut bytes, read)?;
+            if page["pullRequests"] != first {
                 return Err("open PR set changed during snapshot; retry later".into());
             }
             for n in &numbers[offset..end] {
                 let row = &page[format!("p{n}")];
-                if row["number"].as_u64() != Some(*n) {
+                if row["number"].as_u64() != Some(*n) || row["headRefOid"] != expected[n]["headRefOid"] {
                     return Err("missing or mismatched PR details".into());
                 }
                 details[format!("p{n}")] = row.clone();
@@ -222,6 +276,10 @@ impl GitHub for Reader<'_> {
             if offset == numbers.len() {
                 break;
             }
+        }
+        let (verified, _) = self.listing(&mut bytes)?;
+        if verified["pullRequests"] != list["pullRequests"] || verified["mergeQueue"] != list["mergeQueue"] {
+            return Err("PR identities changed during snapshot; retry later".into());
         }
         nodes(&list["pullRequests"])?
             .iter()

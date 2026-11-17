@@ -456,14 +456,20 @@ fn complete_paginated_boards_include_every_pr_up_to_the_limit() {
 
 #[test]
 fn later_page_failures_and_changed_heads_never_publish_partial_boards() {
-    for fault in ["http", "duplicate", "head"] {
+    for fault in ["http", "late-http", "duplicate", "head", "cursor", "identity"] {
         let env = batched_fixture(101, 15, 504);
         if fault == "http" {
             fs::write(env.work().join("fail-page"), "c100").unwrap();
-        } else if fault == "duplicate" {
+        } else if fault == "late-http" {
+            fs::write(env.work().join("fail-after"), "10").unwrap();
+        } else if matches!(fault, "duplicate" | "cursor" | "identity") {
             let path = env.work().join("pages/c100.json");
             let mut page: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-            page["nodes"][0]["number"] = 1.into();
+            match fault {
+                "duplicate" => page["nodes"][0]["number"] = 1.into(),
+                "cursor" => page["pageInfo"]["hasNextPage"] = true.into(),
+                _ => page["nodes"][0]["headRefOid"] = serde_json::Value::Null,
+            }
             fs::write(path, page.to_string()).unwrap();
         } else {
             let path = env.work().join("rows/101.json");
@@ -473,6 +479,10 @@ fn later_page_failures_and_changed_heads_never_publish_partial_boards() {
         }
         let out = invoke(&env, "work board --shadow --repo example/repo --once");
         assert!(!out.status.success(), "{fault}");
+        if fault == "late-http" {
+            assert!(String::from_utf8_lossy(&out.stderr).contains("HTTP 403"));
+            assert_eq!(batch_sizes(&env).iter().sum::<usize>(), 101);
+        }
         assert!(fs::read_to_string(log_for(&env, "example/repo"))
             .unwrap()
             .is_empty());
