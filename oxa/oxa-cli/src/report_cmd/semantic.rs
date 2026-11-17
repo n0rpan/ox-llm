@@ -286,7 +286,7 @@ pub(super) fn plan(
                 "number,title,body,labels",
             ],
         )?;
-        let row = serde_json::from_str(&response).map_err(|_| "invalid GitHub issue response")?;
+        let row: Value = serde_json::from_str(&response).map_err(|_| "invalid GitHub issue response")?;
         if row["number"].as_u64() != Some(issue) {
             return Err("GitHub returned a different issue");
         }
