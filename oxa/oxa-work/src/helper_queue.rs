@@ -1,5 +1,5 @@
 //! Atomic publication only. The caller must reserve a core claim and authorize the target first.
-use crate::{board::Policy, Result};
+use crate::{Result, board::Policy};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -36,6 +36,20 @@ impl Drop for Staged {
 /// The consumer atomically moves ready files into `started` and retains them there.
 /// No GitHub client, worker execution or parallel lease storage exists in this publisher.
 pub fn publish(queue: &Path, key: &str, task: &str, pinned: bool, policy: &Policy) -> Result<bool> {
+    publish_reserved(queue, key, task, pinned, policy, || Ok(true))
+}
+
+/// Reserve under the publication lock, after packet validation and pending/started dedupe.
+/// The callback must not access this queue. Errors after reservation are uncertain publication:
+/// retain the reservation until the trusted completion frontend reconciles the exact lease.
+pub fn publish_reserved(
+    queue: &Path,
+    key: &str,
+    task: &str,
+    pinned: bool,
+    policy: &Policy,
+    reserve: impl FnOnce() -> Result<bool>,
+) -> Result<bool> {
     if !policy.enabled {
         return Ok(false);
     }
@@ -81,6 +95,9 @@ pub fn publish(queue: &Path, key: &str, task: &str, pinned: bool, policy: &Polic
                 Err(e) => return io(Err(e)),
             }
         }
+    }
+    if !reserve()? {
+        return Ok(false);
     }
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

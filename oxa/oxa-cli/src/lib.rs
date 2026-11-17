@@ -46,6 +46,7 @@ mod wipe_cmd;
 mod work_board;
 mod work_checks;
 mod work_cmd;
+pub mod work_refill;
 
 pub use args::{
     no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand, NO_TOOL_ALIASES,
