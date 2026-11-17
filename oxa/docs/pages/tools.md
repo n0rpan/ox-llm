@@ -12,7 +12,7 @@ See [tools and context handling](tools-context.md) for the defaults and formats.
 | `bash` | exec | runs a shell command in the project in the sandbox. Parameters `command`, `timeout` (seconds). With no `timeout` it stops after 120 seconds; `oxa.bash.defaultTimeout` sets it. Output over 16 KB is cut to its first and last parts, and the full output is saved to a file the model can read |
 | `edit` | write | replaces exact text in one file. Takes one `oldText` / `newText` pair per call; the array form is still accepted. See [tools-context.md](tools-context.md) |
 | `write` | write | writes a file, creating it and its parent directories, and overwrites an existing file |
-| `grep` | read | searches file contents for `pattern`. Optional `path`, `glob`, `ignoreCase`, `literal`, `context` and `limit` (default 100 matches). Respects `.gitignore`; lines are cut at 500 characters. When matches exceed `limit`, the answer is the total and one count per file instead of the lines; see [tools-context.md](tools-context.md) |
+| `grep` | read | searches file contents for `pattern`. Optional `path`, `glob`, `ignoreCase`, `literal`, `context` and `limit` (default 100 matches). Respects `.gitignore`; lines are cut at 500 characters. When matches exceed `limit`, it keeps the first matching lines and says how to see more; see [tools-context.md](tools-context.md) |
 | `find` | read | finds files by glob `pattern` under `path`, up to `limit` results (default 1000). Respects `.gitignore` |
 | `ls` | read | lists a directory, sorted, directories with a trailing `/`, dotfiles included. Up to `limit` entries (default 500) |
 

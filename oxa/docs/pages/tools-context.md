@@ -80,9 +80,9 @@ usage, so reported reasoning tokens can be one greater than the text cap.
   `limit` are cut at the cap itself (16 KiB by default on a large context), never above
   16 KiB. A cut ends with a note inside the cap: the next `offset` for `read`, a narrower
   search for `grep`, `find` and `ls`.
-- **Count form of a large `grep`.** When the matches are more than the `limit`, `grep` answers
-  with the total and one count per file (`<path>: <n> matches`) instead of the lines. Narrow
-  the pattern, path or glob, or raise limit, to see the lines.
+- **`grep` over its `limit`.** When the matches are more than the `limit`, `grep` keeps the
+  first `limit` matching lines with their context and ends with a notice naming the doubled
+  limit. Narrow the pattern, path or glob, or raise limit, to see the rest.
 - **Conciseness rule.** The system prompt asks for short tool use and a final answer of at most
   6 lines, in place of its "be concise" rule (`oxa.diet.output`, on by default).
 - **No `<tools>` section.** The chat template renders the tool list from the tool JSON, so the
