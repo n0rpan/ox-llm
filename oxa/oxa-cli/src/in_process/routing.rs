@@ -31,6 +31,18 @@ impl Routed {
         // CLI model resolution needs a catalog first. If that catalog cannot
         // be discovered, retain the selected dynamic provider's saved failure
         // before the caller can replace it with a model-not-found error.
+        // Match the existing resolver's recognized thinking suffix, while a
+        // whole configured cloud identity (which may contain ':') wins first.
+        let requested = requested.map(|model| match model.rsplit_once(':') {
+            Some((base, level))
+                if !self.cloud_models.contains(model)
+                    && self.local_models.contains(base)
+                    && oxa_proto::ThinkingLevel::parse(level).is_some() =>
+            {
+                base
+            }
+            _ => model,
+        });
         if let Some(error) = requested.and_then(|model| self.dynamic_error(model)) {
             return Err(error.clone());
         }
