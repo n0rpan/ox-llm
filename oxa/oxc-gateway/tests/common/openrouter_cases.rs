@@ -66,6 +66,44 @@ fn chunks() -> Vec<Value> {
         json!({"choices":[],"usage":{"prompt_tokens":21,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":7}}}),
     ]
 }
+#[tokio::test]
+async fn openrouter_terminal_reasoning_tokens_are_preserved_without_double_counting() {
+    for reasoning in [None, Some(0), Some(2)] {
+        for include_usage in [false, true] {
+            let mut events = chunks();
+            if let Some(tokens) = reasoning {
+                events[3]["usage"]["completion_tokens_details"] = json!({"reasoning_tokens":tokens});
+            }
+            let mock = MockAnthropic::start(vec![wire(events, true)]);
+            let (gateway, fixture) = gateway(&mock);
+            let mut output = Vec::new();
+            gateway
+                .chat_payload(
+                    &payload(include_usage),
+                    Context::default(),
+                    &Cancellation::default(),
+                    &mut |event| {
+                        if let Event::Chunk(value) = event {
+                            output.push(value);
+                        }
+                        Control::Continue
+                    },
+                )
+                .await
+                .unwrap();
+            let usage: Vec<_> = output.iter().filter_map(|value| value.get("usage")).collect();
+            assert_eq!(usage.len(), usize::from(include_usage));
+            if include_usage {
+                assert_eq!(usage[0]["completion_tokens_details"]["reasoning_tokens"], reasoning.unwrap_or(0));
+                assert_eq!(usage[0]["completion_tokens"], 5);
+                assert_eq!(usage[0]["total_tokens"], 26);
+            }
+            let row = rows(&fixture).pop().unwrap();
+            assert_eq!(row["settled"], "usage");
+            assert_eq!(row["completion_tokens"], 5);
+        }
+    }
+}
 fn rows(fixture: &skeleton::Fixture) -> Vec<Value> {
     std::fs::read_dir(&fixture.ledger_dir)
         .unwrap()
