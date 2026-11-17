@@ -9,6 +9,7 @@ pub struct View<'a> {
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
     pub main_red: bool,
+    pub main_merge_stalled: bool,
     pub queue: Option<&'a [PullRequest]>,
     /// Source issue and its reported checkbox states; these do not establish validation.
     pub release: Option<(u64, &'a [(bool, String)])>,
@@ -61,10 +62,13 @@ pub fn document(view: &View<'_>, now: u64) -> String {
 pub fn content(view: &View<'_>, now: u64) -> String {
     let mut html = String::from("<main><h1>Work in motion</h1>");
     let ask_count = view.situation.map_or(0, |s| s.asks.len());
-    if view.main_red || ask_count > 0 {
+    if view.main_red || view.main_merge_stalled || ask_count > 0 {
         html.push_str("<section id=attention><h2>Needs attention</h2><ul>");
         if view.main_red {
             html.push_str("<li>Checks on main are failing.</li>");
+        }
+        if view.main_merge_stalled {
+            html.push_str("<li>No PR merged into main for 45 minutes or more at the last observation.</li>");
         }
         if ask_count > 0 {
             let _ = write!(
@@ -275,6 +279,49 @@ mod tests {
             );
             assert_eq!(page.contains("Checks on main are failing."), red, "{state}");
             assert_eq!(page.contains("Needs attention"), red, "{state}");
+        }
+    }
+    #[test]
+    fn merge_alarm_uses_the_main_merge_and_sample_time() {
+        use serde_json::{json, Value};
+
+        let head = "c".repeat(40);
+        let response = json!({"data":{"repository":{
+            "id":"example-repo",
+            "main":{"target":{"oid":head, "associatedPullRequests":{
+                "pageInfo":{"hasNextPage":false},
+                "nodes":[{"repository":{"id":"example-repo"}, "baseRefName":"main",
+                    "mergeCommit":{"oid":head}, "mergedAt":"1970-01-02T00:00:00Z"}]
+            }}},
+            "mergeQueue":null
+        }}});
+        let render_at = |payload: &Value, sampled_at| {
+            let panels = crate::lead_panels::parse(&serde_json::to_vec(payload).unwrap(), None).unwrap();
+            content(
+                &View {
+                    main_merge_stalled: panels.main_merge_stalled(sampled_at),
+                    ..View::default()
+                },
+                sampled_at + 3600,
+            )
+            .contains("No PR merged into main for 45 minutes")
+        };
+        const MERGED: u64 = 86_400;
+        assert!(!render_at(&response, MERGED - 1));
+        assert!(!render_at(&response, MERGED + 45 * 60 - 1));
+        assert!(render_at(&response, MERGED + 45 * 60));
+        let base = "/data/repository/main/target/associatedPullRequests";
+        for (field, value) in [
+            ("nodes/0/baseRefName", json!("elsewhere")),
+            ("nodes/0/repository/id", json!("example-fork")),
+            ("nodes/0/mergeCommit/oid", json!("d".repeat(40))),
+            ("nodes/0/mergedAt", json!("1970-02-30T00:00:00Z")),
+            ("pageInfo/hasNextPage", json!(true)),
+            ("nodes", json!([])),
+        ] {
+            let mut payload = response.clone();
+            *payload.pointer_mut(&format!("{base}/{field}")).unwrap() = value;
+            assert!(!render_at(&payload, MERGED + 45 * 60), "{field}");
         }
     }
     #[test]
