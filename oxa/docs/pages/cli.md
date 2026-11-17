@@ -94,15 +94,26 @@ Commands take the place of the message. They do not start a session.
 | `oxa remove <source> [-l]` | remove a package from the settings (`uninstall` is an alias) |
 | `oxa update [source] [--extensions]` | update installed packages, all of them or the one named |
 | `oxa list` | list the installed packages |
+| `oxa work <taskfile> \| --issue N --model MODEL` | run tasks in separate git worktrees with external acceptance checks; `oxa work status [--json]` reads its checkpoints ([work.md](../work.md)) |
 | `oxa login chatgpt --experimental [--paste] [--replace]` | explicit owner-only native ChatGPT sign-in |
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
+| `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
+| `oxa send <session-id> "text"` | queue one follow-up for the session's TUI or RPC owner |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |
+| `oxa share key <add\|list\|revoke>` | owner-only guest key and daily limit management, in a build compiled with the `share` feature |
 | `oxa report-issue <draft\|submit>` | draft a scrubbed issue for the ox-llm repository, or post a draft after confirmation |
 | `oxa wipe --session <id> \| --all [--yes] [--engine]` | remove the stored session files and spill files of one session or of all sessions. See [sessions.md](sessions.md#what-oxa-stores-and-how-to-remove-it) |
 
 `-l` (`--local`) writes to the project's `.oxa/settings.json` instead of the user settings. Package sources must be git URLs or local paths. npm sources are refused.
+
+`oxa share key` is the owner-side guest key command: `key add NAME --daily-requests N --daily-tokens N` prints a new bearer once, `key list` lists the keys without their bearers, and `key revoke ID` revokes one. The store lives under `~/.oxa/share`. Only a build compiled with the `share` feature has the command, another build refuses it, and it is refused from inside an agent tool.
+
+```console
+$ oxa share key add guest --daily-requests 100 --daily-tokens 200000
+$ oxa share key list
+```
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 
@@ -162,9 +173,11 @@ $ oxa mcp logout <name>
 | `--list-models [search]` | list the models the engine serves, optionally filtered by a fuzzy search, and exit |
 | `--thinking <level>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` |
 | `--mode <mode>` | output mode: `text` (default), `json` or `rpc` ([rpc.md](rpc.md)) |
+| `--output-schema <file>` | check the final answer against a JSON schema file (a supported subset), retrying once on mismatch |
 | `--print`, `-p` | non-interactive: process the prompts and exit |
 | `--max-time <seconds>` | softly limit a headless run, then allow one final wrap-up turn |
 | `--max-tokens <N>` | softly limit new prompt + output tokens in a headless run; cached tokens are free |
+| `--stall-timeout <seconds>` | flag a session as stalled after this long without progress; a signal that never cancels the run |
 | `--export <input> [output]` | export a session file to HTML and exit |
 | `--tui-mode <mode>` | `fullscreen` (default) or `regular` |
 | `--verbose` | show more start-up information |

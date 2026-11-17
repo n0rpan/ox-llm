@@ -5,6 +5,7 @@
 
 use oxa_fake::{parse_script, FakeOpts, FakeServer, TestEnv};
 use regex::Regex;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -521,5 +522,202 @@ fn docs_have_no_merge_conflict_markers() {
                 "{page}: conflict marker"
             );
         }
+    }
+}
+
+// ----- shipped CLI and slash inventory --------------------------------------------------------
+
+/// The name of a command signature: `oxa` and the words after it, up to the first placeholder
+/// (`<...>` or `[...]`). `oxa wipe --session <id> | --all` -> `oxa wipe --session`.
+fn signature_name(cell: &str) -> String {
+    let mut keep = Vec::new();
+    for word in cell.split_whitespace() {
+        if word.starts_with('<') || word.starts_with('[') {
+            break;
+        }
+        keep.push(word.trim_end_matches(','));
+    }
+    keep.join(" ")
+}
+
+/// The long flag of an option cell, when the cell begins with one: `--print, -p` -> `--print`.
+fn option_name(cell: &str) -> Option<String> {
+    let first = cell.split_whitespace().next()?.trim_end_matches(',');
+    if first.starts_with('-') && first.len() > 1 {
+        Some(first.to_string())
+    } else {
+        None
+    }
+}
+
+/// The first cell of every table row of `text`, with its 1-based line number: backticks stripped
+/// and `\|` kept as a literal `|`, so a cell is not cut at an escaped pipe.
+fn first_cells(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (i, line) in text.lines().enumerate() {
+        let Some(rest) = line.trim_start().strip_prefix('|') else {
+            continue;
+        };
+        let mut cell = String::new();
+        let mut escaped = false;
+        for c in rest.chars() {
+            if escaped {
+                cell.push(c);
+                escaped = false;
+                continue;
+            }
+            match c {
+                '\\' => escaped = true,
+                '|' => break,
+                c => cell.push(c),
+            }
+        }
+        out.push((i + 1, cell.replace('`', "").trim().to_string()));
+    }
+    out
+}
+
+/// The slash names of a table cell: `/quit`, `/exit` -> `quit`, `exit`. A `/` inside a word (a
+/// path, a key binding) names nothing.
+fn slash_names(cell: &str) -> Vec<String> {
+    let re = Regex::new(r"/([a-z][a-z-]*)").expect("regex");
+    let mut out = Vec::new();
+    for m in re.captures_iter(cell) {
+        let at = m.get(0).expect("match").start();
+        let before = cell[..at].chars().next_back();
+        if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '/' || c == '-') {
+            continue;
+        }
+        out.push(m[1].to_string());
+    }
+    out
+}
+
+/// Every subcommand of the `COMMANDS` table, every option of the `OPTIONS` table and every
+/// built-in slash command has a row in the user pages. Rows are matched by name only (the words
+/// of the signature before its first placeholder, or the long flag), so the descriptions, the
+/// order and the column layout stay free. Short aliases are matched inside the row of their long
+/// flag. The three slash commands oxa answers with an `unsupported_in_oxa` notice (`login`,
+/// `logout`, `share`) are named in prose instead of a row, and skill, template and extension
+/// commands (such as `/web-search`) are not part of the built-in inventory.
+#[test]
+fn cli_and_slash_tables_list_every_shipped_name() {
+    let root = repo_root();
+    let args = fs::read_to_string(root.join("oxa-cli/src/args.rs")).expect("read args.rs");
+    let commands_src = &args[args.find("const COMMANDS").expect("COMMANDS table")
+        ..args.find("const OPTIONS").expect("OPTIONS table")];
+    let options_src = &args[args.find("const OPTIONS").expect("OPTIONS table")
+        ..args.find("fn usage(").expect("end of the OPTIONS table")];
+    let command_names: Vec<String> = Regex::new(r#""(oxa [^"]*)""#)
+        .expect("regex")
+        .captures_iter(commands_src)
+        .map(|c| signature_name(&c[1]))
+        .collect();
+    assert!(
+        command_names.len() >= 12,
+        "the COMMANDS regex found {} entries; it missed them",
+        command_names.len()
+    );
+    let option_cells: Vec<String> = Regex::new(r#"\(\s*"([^"]*)"\s*,"#)
+        .expect("regex")
+        .captures_iter(options_src)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(
+        option_cells.len() >= 40,
+        "the OPTIONS regex found {} entries; it missed them",
+        option_cells.len()
+    );
+
+    let cli = fs::read_to_string(root.join("docs/pages/cli.md")).expect("read cli.md");
+    let rows = first_cells(&cli);
+    let documented: BTreeSet<String> = rows
+        .iter()
+        .filter(|(_, cell)| cell.starts_with("oxa "))
+        .map(|(_, cell)| signature_name(cell))
+        .collect();
+    let missing: Vec<&String> = command_names
+        .iter()
+        .filter(|name| !documented.contains(*name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "docs/pages/cli.md has no Commands table row for: {missing:?}"
+    );
+
+    let mut documented_flags: BTreeMap<String, (usize, String)> = BTreeMap::new();
+    for (line, cell) in &rows {
+        if let Some(flag) = option_name(cell) {
+            let entry = documented_flags.entry(flag).or_insert((*line, String::new()));
+            entry.1.push_str(cell);
+        }
+    }
+    let mut missing = Vec::new();
+    let mut alias_gaps = Vec::new();
+    for cell in &option_cells {
+        let Some(flag) = option_name(cell) else {
+            panic!("an OPTIONS entry does not begin with a flag: {cell:?}");
+        };
+        match documented_flags.get(&flag) {
+            None => missing.push(flag),
+            Some((line, documented)) => {
+                for alias in cell
+                    .split_whitespace()
+                    .skip(1)
+                    .map(|w| w.trim_end_matches(','))
+                    .filter(|w| w.starts_with('-') && *w != "--")
+                {
+                    if !documented.contains(alias) {
+                        alias_gaps.push(format!("docs/pages/cli.md:{line}: {flag} -> {alias}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "docs/pages/cli.md has no option table row for: {missing:?}"
+    );
+    assert!(
+        alias_gaps.is_empty(),
+        "an option row does not show the alias of its long flag:\n{}",
+        alias_gaps.join("\n")
+    );
+
+    let usage = fs::read_to_string(root.join("docs/pages/usage.md")).expect("read usage.md");
+    let documented: BTreeSet<String> = first_cells(&usage)
+        .iter()
+        .flat_map(|(_, cell)| slash_names(cell))
+        .collect();
+    let slash = fs::read_to_string(root.join("oxa-interactive/src/slash.rs")).expect("read slash.rs");
+    let start = slash
+        .find("pub const INTERACTIVE_COMMANDS")
+        .expect("INTERACTIVE_COMMANDS");
+    let block = &slash[start..start + slash[start..].find("];").expect("end of the list")];
+    let builtins: Vec<String> = Regex::new(r#""([a-z][a-z-]*)""#)
+        .expect("regex")
+        .captures_iter(block)
+        .map(|c| c[1].to_string())
+        .collect();
+    assert!(
+        builtins.len() >= 30,
+        "the slash regex found {} built-ins; it missed them",
+        builtins.len()
+    );
+    // Built-in commands whose answer is the fixed `unsupported_in_oxa` notice.
+    const OMITTED: [&str; 3] = ["login", "logout", "share"];
+    let missing: Vec<&String> = builtins
+        .iter()
+        .filter(|name| !documented.contains(*name) && !OMITTED.contains(&name.as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "docs/pages/usage.md has no slash table row for: {missing:?}"
+    );
+    for name in OMITTED {
+        assert!(
+            usage.contains(&format!("/{name}")),
+            "usage.md must say what /{name} does, even though it has no row"
+        );
     }
 }
