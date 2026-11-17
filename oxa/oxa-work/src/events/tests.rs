@@ -679,6 +679,46 @@ fn parent_directory_sync_error_blocks_initialization() {
 }
 
 #[test]
+fn retry_must_sync_a_visible_standing_reservation() {
+    const CHILD_ROOT: &str = "OXA_FACTS_TEST_STANDING_RESERVATION";
+    if let Some(root) = std::env::var_os(CHILD_ROOT) {
+        let root = Path::new(&root);
+        let facts = Facts::initialize(root).unwrap();
+        fs::set_permissions(root, fs::Permissions::from_mode(0o300)).unwrap();
+        let first = facts.reserve_standing().expect_err("directory sync must fail");
+        assert!(first.contains("directory"), "{first}");
+        let visible: State =
+            serde_json::from_slice(&facts.root.read(STATE, STATE_BYTES).unwrap()).unwrap();
+        assert!(visible.standing_reserved, "rename must precede the sync failure");
+        let retry = facts.reserve_standing();
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700)).unwrap();
+        let retry = retry.expect_err("retry must finish syncing the reservation");
+        assert!(retry.contains("directory"), "{retry}");
+        facts.reserve_standing().unwrap();
+        return;
+    }
+    let env = Fixture::new();
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child.env_clear().env(CHILD_ROOT, env.root()).args([
+        "--exact",
+        "events::tests::retry_must_sync_a_visible_standing_reservation",
+    ]);
+    // SAFETY: geteuid has no arguments, pointers or failure mode.
+    if unsafe { libc::geteuid() } == 0 {
+        use std::os::unix::process::CommandExt;
+        std::os::unix::fs::chown(&env.0, Some(65534), Some(65534)).unwrap();
+        child.uid(65534).gid(65534);
+    }
+    let output = child.output().unwrap();
+    assert!(
+        output.status.success(),
+        "child failed: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
 fn head_changes_and_unrelated_facts_do_not_silently_clear_blocks_or_asks() {
     let env = Fixture::new();
     let facts = env.facts();
