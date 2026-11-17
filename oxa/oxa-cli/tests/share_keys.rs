@@ -532,11 +532,9 @@ finally:
     child.wait(timeout=3)
 "#;
 
-    let home = Home::new();
-    let agent = home.0.join(".oxa/agent");
-    fs::create_dir_all(&agent).unwrap();
+    let env = oxa_fake::TestEnv::new();
     fs::write(
-        agent.join("settings.json"),
+        env.agent_dir().join("settings.json"),
         r#"{"cacheWarming":"off","defaultProjectTrust":"always","oxa":{
             "engine":{"inProcessLocal":true},
             "local":{"binary":"/synthetic/oxe-server",
@@ -547,7 +545,7 @@ finally:
         }}"#,
     )
     .unwrap();
-    let keys = Store::initialize(&home.0.join(".oxa/share")).unwrap();
+    let keys = Store::initialize(&env.home().join(".oxa/share")).unwrap();
     let key = keys
         .create(
             "Synthetic Tablet",
@@ -567,12 +565,9 @@ finally:
     let output = Command::new("python3")
         .args(["-I", "-c", PTY_STATUS, env!("CARGO_BIN_EXE_oxa")])
         .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-        .env("HOME", &home.0)
-        .env("OXA_TEST_ISOLATION", "1")
-        .env("LANG", "C.UTF-8")
+        .envs(env.envs("http://127.0.0.1:9"))
         .env("TERM", "xterm-256color")
-        .current_dir(&home.0)
+        .current_dir(env.work())
         .output()
         .unwrap();
     assert!(
