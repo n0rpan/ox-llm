@@ -53,6 +53,14 @@ fn setup(env: &TestEnv, done: &str) {
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task"}]"#,
     );
 }
+// Host-tool lookup correctly rejects group/world-writable PATH entries. Build
+// trusted fixtures with explicit permissions, independent of the runner's umask.
+fn trusted_tools(env: &TestEnv) -> PathBuf {
+    use std::os::unix::fs::DirBuilderExt;
+    let tools = env.tmp().join("trusted-tools");
+    std::fs::DirBuilder::new().mode(0o700).create(&tools).unwrap();
+    tools
+}
 fn run(env: &TestEnv, turns: Vec<ScriptTurn>) -> serde_json::Value {
     run_args(env, turns, &["work", "../tasks.json"], None)
 }
@@ -225,15 +233,16 @@ fn github_issue_input_uses_mock_gh() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     setup(&env, "[]");
+    let tools = trusted_tools(&env);
     let gh = env.write(
-        "tmp/gh",
+        "tmp/trusted-tools/gh",
         r##"#!/bin/sh
 [ "$*" = 'issue view 42 --json title,body' ] || exit 9
 printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
 "##,
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let path = format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap());
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
     let record = run_args(
         &env,
         vec![ScriptTurn::text("done")],
@@ -577,8 +586,7 @@ fn acceptance_has_no_unsandboxed_fallback() {
     use std::os::unix::fs::symlink;
     let env = TestEnv::new();
     setup(&env, r#"["printf ran > acceptance-ran"]"#);
-    let tools = env.tmp().join("tools");
-    std::fs::create_dir(&tools).unwrap();
+    let tools = trusted_tools(&env);
     for name in ["git", "sh"] {
         symlink(Path::new("/usr/bin").join(name), tools.join(name)).unwrap();
     }
@@ -650,7 +658,8 @@ fn github_lookup_ignores_project_local_executable() {
     let env = TestEnv::new();
     setup(&env, "[]");
     let bad = env.write("work/project/bin/gh", "#!/bin/sh\nprintf invoked > \"$HOME/project-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
-    let good = env.write("tmp/trusted/gh", "#!/bin/sh\nprintf invoked > \"$HOME/trusted-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    trusted_tools(&env);
+    let good = env.write("tmp/trusted-tools/gh", "#!/bin/sh\nprintf invoked > \"$HOME/trusted-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
     for path in [&bad, &good] {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
@@ -925,8 +934,7 @@ fn unavailable_sandbox_blocks_checkout_before_any_hook() {
     use std::os::unix::fs::symlink;
     let env = TestEnv::new();
     checkout_hook_fixture(&env);
-    let tools = env.tmp().join("tools");
-    std::fs::create_dir(&tools).unwrap();
+    let tools = trusted_tools(&env);
     for name in ["git", "sh"] {
         symlink(Path::new("/usr/bin").join(name), tools.join(name)).unwrap();
     }

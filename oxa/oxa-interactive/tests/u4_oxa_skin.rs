@@ -650,6 +650,76 @@ fn yolo_toggle_shows_the_flame_the_banner_and_goes_away() {
 }
 
 #[test]
+fn plan_after_yolo_hides_full_access_badge_and_animation() {
+    for skin in ["oxa", "oxa-ascii", "pi"] {
+        let term = run(
+            Vec::new(),
+            json!({"ui": {"skin": skin}}),
+            UTF8,
+            (120, 30),
+            vec![
+                step(
+                    "start",
+                    &[if skin == "pi" { "oxa v" } else { "READY" }],
+                    typed("/mode auto", &["enter"]),
+                ),
+                step("auto", &["Mode: auto"], typed("/yolo on", &["enter"])),
+                step(
+                    "yolo",
+                    &["YOLO full access: no prompts"],
+                    typed("/mode plan", &["enter"]),
+                ),
+                step("plan", &["Mode: plan"], vec![key("ctrl+d")]),
+            ],
+            |_| {},
+        );
+        let plan = strip_ansi(&term.raw_since("yolo"));
+        assert!(
+            plan.contains("read-only: plans, writes nothing"),
+            "{skin}: {plan}"
+        );
+        assert!(
+            !plan.contains("YOLO MODE"),
+            "plan has no full-access animation ({skin})"
+        );
+        assert!(!plan.contains("🔥"), "plan has no full-access flame ({skin})");
+        assert!(
+            !plan.contains("[YOLO full access]"),
+            "plan has no ASCII YOLO badge"
+        );
+        assert_eq!(
+            plan.matches("YOLO full access").count(),
+            plan.matches("YOLO full access: no prompts").count(),
+            "only the historical notice, not a live full-access status, remains ({skin})"
+        );
+    }
+}
+
+#[test]
+fn yolo_full_access_display_returns_after_leaving_plan() {
+    let term = run(
+        Vec::new(),
+        json!({}),
+        UTF8,
+        (120, 30),
+        vec![
+            step("start", &["READY"], typed("/yolo on", &["enter"])),
+            step("yolo", &["YOLO MODE"], typed("/mode plan", &["enter"])),
+            step("plan", &["Mode: plan"], typed("/mode yolo", &["enter"])),
+            step(
+                "restored",
+                &["YOLO MODE", "🔥  YOLO full access  0"],
+                vec![key("ctrl+d")],
+            ),
+        ],
+        |_| {},
+    );
+    let restored = strip_ansi(&term.raw_since("plan"));
+    assert!(restored.contains("YOLO MODE"));
+    assert!(restored.contains("🔥  YOLO full access  0"));
+}
+
+#[test]
 fn yolo_key_toggles_and_no_color_shows_a_text_badge() {
     let term = run(
         Vec::new(),

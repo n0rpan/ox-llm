@@ -226,6 +226,8 @@ fn capabilities(status: &Value, key: &str) -> (bool, EngineCaps) {
                 Some("openrouter") => Some("openrouter"),
                 Some("anthropic") => Some("anthropic"),
                 Some("openai") => Some("openai"),
+                Some("chatgpt") => Some("chatgpt"),
+                Some("opencode") => Some("opencode"),
                 _ => None,
             },
             echo: flag(c, "echo"),

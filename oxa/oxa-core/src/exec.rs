@@ -53,10 +53,15 @@ pub fn request(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<AssistantTurn, OxaError> {
-    // OXA-LOCAL-FIRST F1: a tool-result prefill still running (a host request served while a
-    // tool runs, e.g. the park before a subagent) ends first: one request in flight at a time.
-    // Nothing is sent while it is still registered (deferred, then `engine_busy`).
+    // Settle any preceding prefill before charging all work at this request boundary.
     await_tool_prefill(st, opts.background, sink)?;
+    crate::goal::checkpoint(st, false, sink)?;
+    if crate::goal::terminal(st) {
+        return Err(OxaError::new(
+            codes::BUDGET_EXHAUSTED,
+            "The stored goal cannot make another request.",
+        ));
+    }
     if st.info.caps.remote && oxa_proto::offline() {
         return Err(oxa_proto::offline_error(&format!("the cloud model {}", st.model)));
     }
@@ -127,7 +132,15 @@ pub fn request(
         );
     }
     let mut prefilled = 0;
+    let mut generated = false;
     let mut on = |ev: StreamEvent| {
+        generated |= match &ev {
+            StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
+            StreamEvent::ToolArgs { id, name, delta, .. } => {
+                id.is_some() || name.is_some() || !delta.is_empty()
+            }
+            _ => false,
+        };
         if let Some(progress) = &progress {
             let advanced = match &ev {
                 StreamEvent::Text(s) | StreamEvent::Reasoning(s) => !s.is_empty(),
@@ -145,6 +158,7 @@ pub fn request(
         hooks.raw(st, &ev, sink, ui);
         stream.handle(ev, &mut hooks.sink(st, sink, ui), opts.events)
     };
+    let pre_cancelled = cancel.is_cancelled();
     let turn = engine.chat(&req, &cancel, &mut on);
     if let Some(progress) = &progress {
         progress.notify(
@@ -155,7 +169,18 @@ pub fn request(
             },
         );
     }
-    let turn = turn?;
+    let turn = match turn {
+        Ok(turn) => turn,
+        Err(error) => {
+            if crate::goal::uncertain(&error, generated, pre_cancelled) {
+                if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+                    goal.uncertain_request()?;
+                    crate::goal::checkpoint(st, false, sink)?;
+                }
+            }
+            return Err(error);
+        }
+    };
     crate::Handle {
         shared: st.shared.clone(),
     }
@@ -344,6 +369,15 @@ pub(crate) fn run_calls(
     let mut prefilled = false;
     let mut i = 0;
     while i < n {
+        if crate::goal::terminal(st) {
+            if matches!(prepared[i].plan, Plan::Run { .. }) {
+                let p = &prepared[i];
+                crate::fire::tool_start(st, &p.id, &p.name, &p.args, sink, ui);
+            }
+            prepared[i].plan = Plan::Done(ToolOutput::error(
+                "Goal is no longer pursuing; call not executed.",
+            ));
+        }
         let mut j = i;
         while j < n && prepared[j].parallel_read() {
             j += 1;
@@ -355,7 +389,9 @@ pub(crate) fn run_calls(
             }
             i = j;
         } else {
-            let warming = !prefilled && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
+            let warming = !prefilled
+                && !(st.goal.is_some() && matches!(prepared[i].name.as_str(), "goal_done" | "wait"))
+                && start_tool_prefill(st, &prepared, &outputs, i, &mut early);
             // Held while the call runs: an unwind ends the prefill too.
             let guard = warming.then(|| PrefillGuard(st.shared.clone()));
             outputs[i] = Some(run_one(st, &prepared[i], sink, ui));
@@ -383,7 +419,10 @@ pub(crate) fn run_calls(
         // answered with a notice (the call ran; only its result text changes).
         let mut stop = false;
         let ran = matches!(p.plan, Plan::Run { .. });
-        if ran {
+        // A successful native goal wait deliberately returns the same result on
+        // every scheduled wake. Other tools and failed waits keep the guard.
+        let completed_goal_wait = st.goal.is_some() && p.name == "wait" && !output.is_error;
+        if ran && !completed_goal_wait {
             let earlier: Vec<(&str, &str, &str, bool)> = batch
                 .iter()
                 .map(|(n, a, t, failed)| (n.as_str(), a.as_str(), t.as_str(), *failed))
@@ -690,6 +729,8 @@ fn start_tool_prefill(
     let snapshot_keep = st.info.caps.snapshot_keep > 0;
     let progress = crate::progress::observer(st);
     let user_abort = st.shared.cancel.clone();
+    let background_abort = st.shared.gate.bg_cancel.clone();
+    let goal = st.goal.clone().filter(|g| g.engaged());
     let budget = crate::Handle {
         shared: st.shared.clone(),
     };
@@ -697,9 +738,17 @@ fn start_tool_prefill(
     let spawned = std::thread::Builder::new()
         .name("oxa-tool-prefill".to_string())
         .spawn(move || -> PrefillOutcome {
+            let stop = || {
+                cancel.is_cancelled()
+                    || user_abort.is_cancelled()
+                    || background_abort.is_cancelled()
+                    || goal
+                        .as_ref()
+                        .is_some_and(|goal| !goal.allows_request(budget.run_tokens_used()))
+            };
             let deadline = Instant::now() + after;
             loop {
-                if cancel.is_cancelled() || user_abort.is_cancelled() {
+                if stop() {
                     return Ok(false);
                 }
                 let now = Instant::now();
@@ -727,20 +776,25 @@ fn start_tool_prefill(
                     snapshot_keep,
                 },
             };
-            // The user's abort ends the request at once, not only when the tool returns.
+            // Abort, wrap-up and the stored goal deadline end inference while
+            // the tool still runs; the existing watcher owns cancellation.
             let done = std::sync::atomic::AtomicBool::new(false);
             std::thread::scope(|scope| {
-                let _ = std::thread::Builder::new()
+                let watcher = std::thread::Builder::new()
                     .name("oxa-tool-prefill-watch".to_string())
                     .spawn_scoped(scope, || {
                         while !done.load(Ordering::SeqCst) {
-                            if user_abort.is_cancelled() {
+                            if stop() {
                                 cancel.cancel();
                                 return;
                             }
                             std::thread::sleep(Duration::from_millis(5));
                         }
                     });
+                if watcher.is_err() || stop() {
+                    done.store(true, Ordering::SeqCst);
+                    return Ok(false);
+                }
                 if let Some(progress) = &progress {
                     progress.notify(
                         &session,
@@ -751,7 +805,8 @@ fn start_tool_prefill(
                     );
                 }
                 let mut prefilled = 0;
-                let res = engine.chat(&req, &cancel, &mut |event| {
+                let pre_cancelled = cancel.is_cancelled();
+                let mut res = engine.chat(&req, &cancel, &mut |event| {
                     if let (Some(progress), StreamEvent::Prefill { done, .. }) = (&progress, event) {
                         if done > prefilled {
                             prefilled = done;
@@ -773,6 +828,15 @@ fn start_tool_prefill(
                         u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached))
                             + u64::from(turn.usage.completion),
                     );
+                }
+                if let Err(error) = &res {
+                    if crate::goal::uncertain(error, false, pre_cancelled) {
+                        if let Some(goal) = &goal {
+                            if let Err(error) = goal.uncertain_request() {
+                                res = Err(error);
+                            }
+                        }
+                    }
                 }
                 done.store(true, Ordering::SeqCst);
                 res.map(|_| true)
@@ -1418,11 +1482,12 @@ fn guard_hooks(
 /// declared rebase (`None` = not declared: appends only).
 fn apply_rebase(
     st: &mut SessionState,
-    list: Vec<WireMsg>,
+    mut list: Vec<WireMsg>,
     declared_by: Option<&str>,
     point: HookPoint,
     sink: &mut dyn EventSink,
 ) -> Result<(), OxaError> {
+    st.transcript.prepare_rebase(&mut list);
     let wire = st.transcript.wire();
     if list.as_slice() == wire {
         return Ok(());

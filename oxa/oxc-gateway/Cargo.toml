@@ -8,7 +8,7 @@ publish.workspace = true
 
 [features]
 default = []
-share = ["dep:serde_json", "dep:nix", "dep:getrandom", "dep:hmac", "dep:sha2"]
+share = ["dep:serde_json", "dep:nix", "dep:getrandom", "dep:hmac", "dep:sha2", "dep:tokio", "tokio/net", "tokio/io-util", "dep:oxa-proto"]
 upstream-openai = ["dep:serde_json"]
 upstream-anthropic-request = ["dep:serde_json"]
 upstream-anthropic-stream = ["dep:serde_json"]
@@ -36,6 +36,9 @@ sha2 = { version = "0.10", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"], optional = true }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"], optional = true }
 futures-util = { version = "0.3", optional = true }
+
+[dev-dependencies]
+oxa-engine = { path = "../oxa-engine" }
 
 [lints.rust]
 unsafe_code = "forbid"

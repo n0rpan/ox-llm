@@ -29,6 +29,16 @@ fn go_env(
     args: &[&str],
     extra: &[(&str, &str)],
 ) -> (i32, String, String) {
+    let (code, out, err, _) = go_recorded(env, turns, args, extra);
+    (code, out, err)
+}
+
+fn go_recorded(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    extra: &[(&str, &str)],
+) -> (i32, String, String, Vec<oxa_fake::Recorded>) {
     let server = FakeServer::start(turns, FakeOpts::default()).expect("fake engine");
     let mut owned = env.envs(&server.url());
     owned.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
@@ -51,7 +61,8 @@ fn go_env(
         let text = |s: &Sink| String::from_utf8_lossy(&s.0.lock().unwrap()).into_owned();
         let _ = tx.send((code, text(&out), text(&err)));
     });
-    rx.recv_timeout(Duration::from_secs(120)).expect("oxa finished")
+    let (code, out, err) = rx.recv_timeout(Duration::from_secs(120)).expect("oxa finished");
+    (code, out, err, server.requests())
 }
 
 #[test]
@@ -135,4 +146,35 @@ fn output_schema_valid_first_answer_and_invalid_contract() {
         assert_eq!(code, 2, "{out} {err}");
         assert!(err.contains("output schema"), "{err}");
     }
+}
+
+#[test]
+fn instance_path_reaches_actual_repair_request_and_terminal_error() {
+    let env = TestEnv::new();
+    env.write(
+        "work/schema.json",
+        r#"{"type":"object","properties":{"answer":{"type":"number"}},"required":["answer"]}"#,
+    );
+    let args = ["-p", "--no-session", "--output-schema", "schema.json", "answer"];
+    let (code, out, err, requests) = go_recorded(
+        &env,
+        vec![
+            ScriptTurn::text(r#"{"answer":"wrong"}"#),
+            ScriptTurn::text(r#"{"answer":"still wrong"}"#),
+        ],
+        &args,
+        &[],
+    );
+    assert_eq!(code, 1, "{out} {err}");
+    assert_eq!(requests.len(), 2);
+    let repair = requests[1]
+        .messages
+        .iter()
+        .filter_map(|m| m.content.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(repair.contains("/answer"), "{repair}");
+    assert!(repair.contains("Wrong value type"), "{repair}");
+    assert!(err.contains("/answer"), "{err}");
+    assert!(err.contains("Wrong value type"), "{err}");
 }

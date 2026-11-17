@@ -230,3 +230,202 @@ fn processes_refresh_once() {
     }
     assert_eq!(fs::read(temp.0.join("refresh-called")).unwrap(), b"once");
 }
+
+#[test]
+fn nonblocking_refresh_reports_only_busy_and_preserves_checks() {
+    use nix::fcntl::{Flock, FlockArg};
+    let temp = Temp::new();
+    let path = temp.tokens(1.0);
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(temp.0.join("chatgpt-auth.lock"))
+        .unwrap();
+    let held = Flock::lock(file, FlockArg::LockExclusive).unwrap();
+    let before = fs::read(&path).unwrap();
+    let busy = chatgpt_tokens::try_credentials(&path, |_| -> Result<TokenRecord, Error> {
+        panic!("busy lock must not call refresh")
+    })
+    .unwrap();
+    assert!(busy.is_none());
+    assert_eq!(fs::read(&path).unwrap(), before);
+    drop(held);
+    let record = chatgpt_tokens::try_credentials(&path, |_| Ok::<_, Error>(renewed()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.access_token(), ACCESS);
+    let fresh = chatgpt_tokens::try_credentials(&path, never).unwrap().unwrap();
+    assert_eq!(fresh.access_token(), ACCESS);
+    let linked = temp.0.join("linked.json");
+    symlink(&path, &linked).unwrap();
+    assert!(matches!(
+        chatgpt_tokens::try_credentials(&linked, never),
+        Err(Error::Unavailable)
+    ));
+}
+
+#[test]
+fn jwt_expiry_bounds_optimistic_metadata_before_the_refresh_margin() {
+    let record = TokenRecord::new(
+        "e30.eyJleHAiOjEwMDB9.synthetic".into(),
+        REFRESH.into(),
+        ACCOUNT.into(),
+        1_000_000.0,
+    )
+    .unwrap();
+    assert_eq!(record.expires_at(), 1000.0);
+    assert!(!record.is_fresh_at(881.0));
+    assert!(record.is_fresh_at(879.0));
+}
+
+#[test]
+fn expiry_hint_does_not_trust_malformed_claims_or_extend_the_stored_lifetime() {
+    for access in [
+        "opaque-synthetic",
+        "e30.not+url.synthetic",
+        "e30.W10.synthetic",
+        "e30.eyJleHAiOm51bGx9.synthetic",
+        "e30.eyJleHAiOjEwMDB9=.synthetic",
+    ] {
+        let record = TokenRecord::new(access.into(), REFRESH.into(), ACCOUNT.into(), 500.0).unwrap();
+        assert_eq!(record.expires_at(), 500.0);
+    }
+    let record = TokenRecord::new(
+        "e30.eyJleHAiOjEwMDB9.synthetic".into(),
+        REFRESH.into(),
+        ACCOUNT.into(),
+        500.0,
+    )
+    .unwrap();
+    assert_eq!(record.expires_at(), 500.0);
+}
+
+#[test]
+fn owner_install_is_create_only_pinned_atomic_and_logout_keeps_the_lock() {
+    let temp = Temp::new();
+    let path = temp.0.join("chatgpt-auth.json");
+    assert_eq!(
+        chatgpt_tokens::try_install(&path, &renewed(), false, &[ACCOUNT]).unwrap(),
+        Some(())
+    );
+    assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+    let before = fs::read(&path).unwrap();
+    assert_eq!(
+        chatgpt_tokens::try_install(&path, &renewed(), false, &[]).unwrap_err(),
+        Error::Exists
+    );
+    let wrong = TokenRecord::new(
+        ACCESS.into(),
+        REFRESH.into(),
+        "other-synthetic-account".into(),
+        now() + 3600.0,
+    )
+    .unwrap();
+    assert_eq!(
+        chatgpt_tokens::try_install(&path, &wrong, true, &[]).unwrap_err(),
+        Error::Account
+    );
+    assert_eq!(
+        chatgpt_tokens::try_install(&path, &renewed(), true, &["other-synthetic-account"]).unwrap_err(),
+        Error::Account
+    );
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(
+        chatgpt_tokens::try_install(&path, &renewed(), true, &[ACCOUNT]).unwrap(),
+        Some(())
+    );
+    let lock = temp.0.join("chatgpt-auth.lock");
+    let inode = fs::metadata(&lock).unwrap().ino();
+    assert_eq!(chatgpt_tokens::try_logout(&path).unwrap(), Some(()));
+    assert!(!path.exists());
+    assert_eq!(chatgpt_tokens::try_logout(&path).unwrap(), Some(()));
+    assert_eq!(fs::metadata(&lock).unwrap().ino(), inode);
+    assert!(
+        chatgpt_tokens::credentials(&path, never).is_err(),
+        "old refresh cannot recreate a removed entry"
+    );
+}
+
+#[test]
+fn owner_install_logout_refuse_links_masks_and_nonregular_targets() {
+    for shape in ["symlink", "hardlink", "group", "other", "fifo"] {
+        let temp = Temp::new();
+        let path = temp.tokens(now() + 3600.0);
+        let before = fs::read(&path).unwrap();
+        let other = temp.0.join("other");
+        match shape {
+            "symlink" => {
+                fs::rename(&path, &other).unwrap();
+                symlink(&other, &path).unwrap();
+            }
+            "hardlink" => {
+                fs::hard_link(&path, &other).unwrap();
+            }
+            "group" => fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap(),
+            "other" => fs::set_permissions(&path, fs::Permissions::from_mode(0o604)).unwrap(),
+            "fifo" => {
+                fs::rename(&path, &other).unwrap();
+                nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRUSR).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        assert!(chatgpt_tokens::try_install(&path, &renewed(), true, &[]).is_err());
+        assert!(chatgpt_tokens::try_logout(&path).is_err());
+        let preserved = if matches!(shape, "symlink" | "fifo") {
+            &other
+        } else {
+            &path
+        };
+        assert_eq!(fs::read(preserved).unwrap(), before);
+    }
+}
+
+#[test]
+fn login_path_uses_fixed_private_components_and_never_follows_a_link() {
+    let temp = Temp::new();
+    let path = chatgpt_tokens::prepare_login_path(&temp.0).unwrap();
+    assert_eq!(path, temp.0.join(".config/oxc/llm/chatgpt-auth.json"));
+    assert!(!path.exists());
+    for suffix in [".config", ".config/oxc", ".config/oxc/llm"] {
+        assert_eq!(fs::metadata(temp.0.join(suffix)).unwrap().mode() & 0o777, 0o700);
+    }
+    let linked = Temp::new();
+    symlink(&temp.0, linked.0.join(".config")).unwrap();
+    assert!(chatgpt_tokens::prepare_login_path(&linked.0).is_err());
+    fs::set_permissions(temp.0.join(".config"), fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(chatgpt_tokens::prepare_login_path(&temp.0).is_err());
+}
+
+#[test]
+fn logout_and_install_wait_for_refresh_and_a_later_refresh_cannot_resurrect_logout() {
+    let temp = Temp::new();
+    let path = temp.tokens(0.0);
+    let (entered, inside) = std::sync::mpsc::channel();
+    let (release, wait) = std::sync::mpsc::channel();
+    let refreshing = path.clone();
+    let worker = std::thread::spawn(move || {
+        chatgpt_tokens::credentials(&refreshing, |_| {
+            entered.send(()).unwrap();
+            wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            Ok::<_, ()>(renewed())
+        })
+    });
+    inside.recv_timeout(Duration::from_secs(2)).unwrap();
+    assert!(chatgpt_tokens::try_logout(&path).unwrap().is_none());
+    assert!(chatgpt_tokens::try_install(&path, &renewed(), true, &[])
+        .unwrap()
+        .is_none());
+    release.send(()).unwrap();
+    assert!(worker.join().unwrap().is_ok());
+    assert_eq!(chatgpt_tokens::try_logout(&path).unwrap(), Some(()));
+    let called = AtomicUsize::new(0);
+    assert!(chatgpt_tokens::credentials(&path, |_| {
+        called.fetch_add(1, Ordering::SeqCst);
+        Ok::<_, ()>(renewed())
+    })
+    .is_err());
+    assert_eq!(called.load(Ordering::SeqCst), 0);
+    assert!(!path.exists());
+}

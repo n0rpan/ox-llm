@@ -1,6 +1,7 @@
 #![cfg(feature = "accounting")]
 use oxc_gateway::{
     accounting::{Budget, Model, Outcome, Usage},
+    billing::{Billing, SubscriptionLimits},
     pricing::Price,
     spend::SpendReader,
 };
@@ -41,7 +42,217 @@ fn append(path: &Path, row: &Value) -> io::Result<()> {
 
 fn model() -> Model {
     Model {provider:"openrouter".into(),upstream:"synthetic/upstream".into(),context:1000,max_output:100,
-    price:Price::from_model(&json!({"pricing":{"input_per_million":1,"output_per_million":2,"cache_read_per_million":0.1,"cache_write_per_million":1.25}})).unwrap()}
+    billing:oxc_gateway::billing::Billing::Metered(Price::from_model(&json!({"pricing":{"input_per_million":1,"output_per_million":2,"cache_read_per_million":0.1,"cache_write_per_million":1.25}})).unwrap())}
+}
+
+fn subscription() -> Model {
+    Model {
+        provider: "chatgpt".into(),
+        upstream: "synthetic-subscription".into(),
+        context: 100,
+        max_output: 20,
+        billing: Billing::Subscription,
+    }
+}
+
+#[test]
+fn subscription_reserves_full_window_and_settles_zero_usd_with_actual_token_counts() {
+    let home = Home::new();
+    let path = home.ledger();
+    let limits = Some(SubscriptionLimits::new(10, 146).unwrap());
+    let first = Budget::new(path.clone());
+    let other = Budget::new(path.clone());
+    let mut hold = first
+        .reserve_subscription(limits, true, &subscription(), 20)
+        .unwrap();
+    assert_eq!(hold.reserved(), 0.0);
+    let error = other
+        .reserve_subscription(limits, true, &subscription(), 20)
+        .err()
+        .unwrap();
+    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+    hold.mark_forwarded();
+    let row = hold
+        .finish(
+            &Usage {
+                prompt: Some(21),
+                output: Some(5),
+                cache_read: Some(7),
+                ..Usage::default()
+            },
+            Outcome::Complete,
+            |row| append(&path, row),
+        )
+        .unwrap();
+    assert_eq!(row["cost_usd"], 0.0);
+    assert_eq!(row["billing"], "subscription");
+    assert_eq!(row["subscription_requests"], 1);
+    assert_eq!(row["subscription_tokens"], 26);
+    assert_eq!(row["settled"], "usage");
+    assert_eq!(other.spend().unwrap(), 0.0);
+    let mut next = other
+        .reserve_subscription(limits, true, &subscription(), 20)
+        .unwrap();
+    next.mark_forwarded();
+    next.finish(
+        &Usage {
+            prompt: Some(21),
+            output: Some(5),
+            ..Usage::default()
+        },
+        Outcome::Complete,
+        |row| append(&path, row),
+    )
+    .unwrap();
+    let error = Budget::new(path)
+        .reserve_subscription(limits, true, &subscription(), 20)
+        .err()
+        .unwrap();
+    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+}
+
+#[test]
+fn clean_subscription_refusals_release_tokens_but_still_consume_request_allowance() {
+    let home = Home::new();
+    let path = home.ledger();
+    let limits = Some(SubscriptionLimits::new(3, 120).unwrap());
+    for _ in 0..3 {
+        let mut hold = Budget::new(path.clone())
+            .reserve_subscription(limits, true, &subscription(), 20)
+            .unwrap();
+        hold.mark_forwarded();
+        let row = hold
+            .finish(&Usage::default(), Outcome::Refused, |row| append(&path, row))
+            .unwrap();
+        assert_eq!(row["cost_usd"], 0.0);
+        assert_eq!(row["subscription_requests"], 1);
+        assert_eq!(row["subscription_tokens"], 0);
+        assert_eq!(row["settled"], "refused");
+    }
+    let error = Budget::new(path)
+        .reserve_subscription(limits, true, &subscription(), 20)
+        .err()
+        .unwrap();
+    assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+}
+
+#[test]
+fn unknown_subscription_outcomes_never_refund_the_token_reservation() {
+    for (usage, outcome) in [
+        (Usage::default(), Outcome::Complete),
+        (
+            Usage::default(),
+            Outcome::Cancelled {
+                request_bytes: 0,
+                streamed_bytes: 0,
+                usage_final: false,
+                elapsed: std::time::Duration::ZERO,
+            },
+        ),
+        (
+            Usage {
+                prompt: Some(10),
+                output: Some(5),
+                ..Usage::default()
+            },
+            Outcome::Failed,
+        ),
+        (
+            Usage {
+                prompt: Some(10),
+                output: Some(5),
+                cache_read: Some(11),
+                ..Usage::default()
+            },
+            Outcome::Complete,
+        ),
+        (
+            Usage {
+                prompt: Some(u64::MAX),
+                output: Some(1),
+                ..Usage::default()
+            },
+            Outcome::Complete,
+        ),
+    ] {
+        let home = Home::new();
+        let path = home.ledger();
+        let limits = Some(SubscriptionLimits::new(10, 239).unwrap());
+        let mut hold = Budget::new(path.clone())
+            .reserve_subscription(limits, true, &subscription(), 20)
+            .unwrap();
+        hold.mark_forwarded();
+        let row = hold.finish(&usage, outcome, |row| append(&path, row)).unwrap();
+        assert_eq!(row["subscription_tokens"], 120);
+        assert_eq!(row["usage_missing"], true);
+        assert_eq!(row["settled"], "reserved");
+        let error = Budget::new(path)
+            .reserve_subscription(limits, true, &subscription(), 20)
+            .err()
+            .unwrap();
+        assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+    }
+}
+
+#[test]
+fn subscription_requires_caps_and_cannot_make_an_api_provider_free() {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    let error = budget
+        .reserve_subscription(None, true, &subscription(), 20)
+        .err()
+        .unwrap();
+    assert_eq!(
+        (error.status, error.code),
+        (403, "subscription_limits_not_configured")
+    );
+    assert_eq!(fs::read_dir(&home.0).unwrap().count(), 0);
+    let limits = Some(SubscriptionLimits::new(3, 1000).unwrap());
+    let mut wrong = subscription();
+    wrong.provider = "openai".into();
+    for error in [
+        budget
+            .reserve_subscription(limits, true, &wrong, 20)
+            .err()
+            .unwrap(),
+        budget
+            .reserve_subscription(limits, true, &model(), 20)
+            .err()
+            .unwrap(),
+        budget
+            .reserve(&json!(1), true, &subscription(), 20)
+            .err()
+            .unwrap(),
+    ] {
+        assert_eq!((error.status, error.code), (400, "invalid_billing"));
+    }
+    assert!(!path.exists());
+}
+
+#[test]
+fn subscription_audit_failure_closes_both_classes_across_independent_instances() {
+    let home = Home::new();
+    let path = home.ledger();
+    let limits = Some(SubscriptionLimits::new(3, 1000).unwrap());
+    let mut hold = Budget::new(path.clone())
+        .reserve_subscription(limits, true, &subscription(), 20)
+        .unwrap();
+    hold.mark_forwarded();
+    assert!(hold
+        .finish(&Usage::default(), Outcome::Failed, |_| Err(
+            io::ErrorKind::Other.into()
+        ))
+        .is_err());
+    let next = Budget::new(path);
+    for error in [
+        next.reserve_subscription(limits, true, &subscription(), 20)
+            .err()
+            .unwrap(),
+        next.reserve(&json!(1), true, &model(), 20).err().unwrap(),
+    ] {
+        assert_eq!((error.status, error.code), (503, "cloud_ledger_unavailable"));
+    }
 }
 
 #[test]
@@ -148,8 +359,9 @@ fn reservations_are_atomic_and_abandoned_unforwarded_holds_release() {
         budget.reserve(&json!(1), true, &model, 0).err().unwrap().code,
         "invalid_value"
     );
-    model.price =
-        Price::from_model(&json!({"pricing":{"input_per_million":1,"output_per_million":2}})).unwrap();
+    model.billing = Billing::Metered(
+        Price::from_model(&json!({"pricing":{"input_per_million":1,"output_per_million":2}})).unwrap(),
+    );
     let barrier = Arc::new(Barrier::new(20));
     let mut jobs = Vec::new();
     for _ in 0..20 {
@@ -263,7 +475,7 @@ fn cancelled_cache_writes_include_hidden_output_and_final_usage_stays_exact() {
     let mut model = model();
     model.upstream = "anthropic/synthetic".into();
     model.context = 100_000;
-    model.price = Price::from_model(&json!({"pricing":{"input":1,"output":2}})).unwrap();
+    model.billing = Billing::Metered(Price::from_model(&json!({"pricing":{"input":1,"output":2}})).unwrap());
     let usage = Usage {
         prompt: Some(100_000),
         output: Some(0),

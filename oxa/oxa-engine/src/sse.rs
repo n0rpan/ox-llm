@@ -28,11 +28,25 @@ pub struct SseParser {
     pending_cr: bool,
     /// `data:` values of the event being assembled.
     data: Vec<String>,
+    data_bytes: usize,
 }
 
 impl SseParser {
     pub fn new() -> SseParser {
         SseParser::default()
+    }
+
+    /// Bound incomplete lines and multiline event data before buffering another
+    /// byte. Complete events may continue indefinitely without accumulating.
+    pub fn feed_bounded(&mut self, bytes: &[u8], maximum: usize) -> Result<Vec<SseEvent>, OxaError> {
+        let mut events = Vec::new();
+        for byte in bytes {
+            if self.buf.len().saturating_add(self.data_bytes) >= maximum {
+                return Err(broken("SSE event exceeds its buffer limit"));
+            }
+            events.extend(self.feed(std::slice::from_ref(byte)));
+        }
+        Ok(events)
     }
 
     /// Feed bytes; returns the events completed by them, in order.
@@ -67,6 +81,7 @@ impl SseParser {
 
     fn line(&mut self, line: String, events: &mut Vec<SseEvent>) {
         if line.is_empty() {
+            self.data_bytes = 0;
             if self.data.is_empty() {
                 return;
             }
@@ -90,6 +105,7 @@ impl SseParser {
             None => (line.as_str(), ""),
         };
         if field == "data" {
+            self.data_bytes = self.data_bytes.saturating_add(line.len());
             self.data.push(value.to_string());
         }
     }
@@ -153,6 +169,65 @@ pub fn post_sse(
     cancel: &CancelToken,
     on: &mut dyn FnMut(SseEvent) -> Flow,
 ) -> Result<SseEnd, OxaError> {
+    post_with_policy(
+        url,
+        path,
+        headers,
+        body,
+        ReadPolicy {
+            stream: opts,
+            maximum: None,
+        },
+        cancel,
+        on,
+    )
+}
+
+/// The existing SSE transport with a cap on buffered events and HTTP error bodies.
+pub struct BoundedStreamOpts {
+    pub stream: StreamOpts,
+    pub max_event_bytes: usize,
+}
+pub fn post_sse_bounded(
+    url: &Url,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &[u8],
+    opts: &BoundedStreamOpts,
+    cancel: &CancelToken,
+    on: &mut dyn FnMut(SseEvent) -> Flow,
+) -> Result<SseEnd, OxaError> {
+    if opts.max_event_bytes == 0 {
+        return Err(broken("SSE buffer limit must be positive"));
+    }
+    post_with_policy(
+        url,
+        path,
+        headers,
+        body,
+        ReadPolicy {
+            stream: &opts.stream,
+            maximum: Some(opts.max_event_bytes),
+        },
+        cancel,
+        on,
+    )
+}
+
+struct ReadPolicy<'a> {
+    stream: &'a StreamOpts,
+    maximum: Option<usize>,
+}
+fn post_with_policy(
+    url: &Url,
+    path: &str,
+    headers: &[(&str, String)],
+    body: &[u8],
+    policy: ReadPolicy<'_>,
+    cancel: &CancelToken,
+    on: &mut dyn FnMut(SseEvent) -> Flow,
+) -> Result<SseEnd, OxaError> {
+    let opts = policy.stream;
     let mut all: Vec<(&str, String)> = headers.to_vec();
     if !has_header(headers, "content-type") {
         all.push(("Content-Type", "application/json".to_string()));
@@ -182,6 +257,9 @@ pub fn post_sse(
         // Read the error body to the end; a broken body still reports the status.
         let mut body = Vec::new();
         let mut failure = dec.feed(&rest, &mut body).err();
+        if policy.maximum.is_some_and(|limit| body.len() > limit) {
+            return Err(broken("HTTP error body exceeds its buffer limit"));
+        }
         let mut buf = [0u8; 4096];
         while failure.is_none() && !dec.done() {
             match conn.read(&mut buf) {
@@ -189,6 +267,9 @@ pub fn post_sse(
                 Ok(n) => {
                     if let Err(e) = dec.feed(&buf[..n], &mut body) {
                         failure = Some(e);
+                    }
+                    if policy.maximum.is_some_and(|limit| body.len() > limit) {
+                        return Err(broken("HTTP error body exceeds its buffer limit"));
                     }
                 }
                 Err(e) => failure = Some(e),
@@ -217,7 +298,7 @@ pub fn post_sse(
         error_body: None,
         retry_after: None,
     };
-    if deliver(&rest, &mut dec, &mut parser, &mut end, on)? {
+    if deliver(&rest, &mut dec, &mut parser, &mut end, policy.maximum, on)? {
         return Ok(end);
     }
     let mut chunk = vec![0u8; 16 * 1024];
@@ -226,7 +307,7 @@ pub fn post_sse(
         if n == 0 {
             break;
         }
-        if deliver(&chunk[..n], &mut dec, &mut parser, &mut end, on)? {
+        if deliver(&chunk[..n], &mut dec, &mut parser, &mut end, policy.maximum, on)? {
             return Ok(end);
         }
     }
@@ -243,11 +324,16 @@ fn deliver(
     dec: &mut BodyDecoder,
     parser: &mut SseParser,
     end: &mut SseEnd,
+    maximum: Option<usize>,
     on: &mut dyn FnMut(SseEvent) -> Flow,
 ) -> Result<bool, OxaError> {
     let mut payload = Vec::new();
     dec.feed(bytes, &mut payload)?;
-    for ev in parser.feed(&payload) {
+    let events = match maximum {
+        Some(limit) => parser.feed_bounded(&payload, limit)?,
+        None => parser.feed(&payload),
+    };
+    for ev in events {
         let is_done = ev == SseEvent::Done;
         match ev {
             SseEvent::Data(_) => end.got_data = true,
