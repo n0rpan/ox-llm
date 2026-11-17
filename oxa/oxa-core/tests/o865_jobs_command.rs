@@ -115,20 +115,33 @@ fn stop_ends_one_job_and_leaves_the_others() {
     let jobs = Arc::new(oxa_core::JobRegistry::new());
     let mut s = open(&env, jobs.clone());
     jobs.set_sandbox(Arc::new(Plain));
-    // Two real jobs: each writes a file after a second, so a job that kept running after the
-    // stop leaves its file behind.
+    // Two real jobs. The first writes a file after a second, so a job that kept running after
+    // the stop leaves its file behind. The second waits for a file the test writes, so it is
+    // still running when the stop returns whatever the machine's load (a fixed sleep raced the
+    // stop on a loaded runner).
     let first = jobs
         .spawn(spec(&env, "echo hello; sleep 1; echo late > late.txt"))
         .expect("spawn");
     let second = jobs
-        .spawn(spec(&env, "echo second; sleep 1; echo done > done.txt"))
+        .spawn(spec(
+            &env,
+            "echo second; while [ ! -f go.txt ]; do sleep 0.1; done; echo done > done.txt",
+        ))
         .expect("spawn");
     assert_eq!(jobs.running(), 2);
     let lines = run(&mut s, &format!("stop {first}")).expect("stop");
     assert_eq!(lines, vec![format!("Stopped {first} (killed).")]);
     assert_eq!(jobs.running(), 1);
     assert_eq!(jobs.read(&first).expect("read").status, JobStatus::Killed);
-    // The other job runs to completion.
+    assert_eq!(jobs.read(&second).expect("read").status, JobStatus::Running);
+    // The stopped job's process group is gone: its second command never ran.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !env.work().join("late.txt").exists(),
+        "the stopped job kept running"
+    );
+    // The other job is untouched: it runs to completion once the test lets it.
+    std::fs::write(env.work().join("go.txt"), b"go").expect("go");
     let deadline = Instant::now() + Duration::from_secs(10);
     while jobs.read(&second).expect("read").status == JobStatus::Running {
         assert!(Instant::now() < deadline, "the second job never finished");
@@ -136,12 +149,6 @@ fn stop_ends_one_job_and_leaves_the_others() {
     }
     assert_eq!(jobs.read(&second).expect("read").status, JobStatus::Exited(0));
     assert!(env.work().join("done.txt").exists(), "the other job completed");
-    // The stopped job's process group is gone: its second command never ran.
-    std::thread::sleep(Duration::from_millis(1500));
-    assert!(
-        !env.work().join("late.txt").exists(),
-        "the stopped job kept running"
-    );
     // The listing shows the killed job first, oldest first.
     let lines = run(&mut s, "").expect("jobs");
     assert_eq!(lines[0], "Background jobs (2):");
