@@ -82,8 +82,40 @@ impl Directory {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e),
         }
-        Self::open(&path)
+        let child = Self::open(&path)?;
+        // Also sync an existing entry: a previous attempt may have created it and then
+        // failed to sync, or another writer may still be publishing it.
+        sync_directory(&self.0)?;
+        Ok(child)
     }
+}
+
+/// Create parents top-down, making each entry durable before creating a descendant.
+/// Retry also syncs an existing entry after a previous interrupted mkdir/sync pair.
+fn durable_agent_directory(path: &Path) -> io::Result<()> {
+    match DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).ok_or(e)?;
+            durable_agent_directory(parent)?;
+            return durable_agent_directory(path);
+        }
+        Err(e) => return Err(e),
+    }
+    if let Some(parent) = path.parent() {
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        let parent = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(parent)?;
+        sync_directory(&parent)?;
+    }
+    Ok(())
 }
 
 fn directory(agent_dir: &Path, id: &str) -> io::Result<Directory> {
@@ -93,7 +125,7 @@ fn directory(agent_dir: &Path, id: &str) -> io::Result<Directory> {
             "invalid session id for inbox",
         ));
     }
-    DirBuilder::new().recursive(true).mode(0o700).create(agent_dir)?;
+    durable_agent_directory(agent_dir)?;
     Directory::open(agent_dir)?.child("inbox")?.child(id)
 }
 
