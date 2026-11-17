@@ -181,6 +181,8 @@ fn generation_pty_ctrl_c_cancels_and_keeps_prompt_usable() {
     p.wait_text("READY");
     p.wait_for(|| server.requests().iter().any(|r| r.max_tokens == 0));
     p.send(b"synthetic cancellation check\r");
+    // The boot preload uses max_tokens: 0; wait for the foreground turn itself before
+    // interrupting so this control cannot mistake background prefill for generation.
     p.wait_for(|| server.requests().iter().any(|r| r.max_tokens > 0));
     eprintln!(
         "foreground_before_ctrl_c={}",

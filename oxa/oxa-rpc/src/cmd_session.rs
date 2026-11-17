@@ -183,8 +183,9 @@ fn split_truncation(stored: &str) -> (String, bool, Option<String>) {
     (stored[..at].to_string(), true, path)
 }
 
-/// `get_session_stats`: pi's field names. Cost is zero (local engine). `contextUsage` is
-/// omitted when the engine reports no context window.
+/// `get_session_stats`: pi's field names. Cost is zero for local-only work, null when a
+/// remote request's settled cost is unavailable. `contextUsage` is omitted when the engine
+/// reports no context window.
 fn session_stats(cx: &RpcCx) -> Value {
     let stats = cx.session.stats();
     let state = cx.session.state();
@@ -221,7 +222,14 @@ fn session_stats(cx: &RpcCx) -> Value {
             "total": total,
         }),
     );
-    m.insert("cost".to_string(), Value::from(0));
+    m.insert(
+        "cost".to_string(),
+        if stats.cost_unknown {
+            Value::Null
+        } else {
+            Value::from(0)
+        },
+    );
     let n_ctx = u64::from(state.n_ctx);
     if n_ctx > 0 {
         let tokens = u64::from(stats.context_tokens);
