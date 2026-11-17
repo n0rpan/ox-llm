@@ -503,7 +503,11 @@ fn real_a_rustup_toolchain_without_shims_runs_cargo() {
     assert_eq!(exit, Some(0), "{out}");
     assert!(out.contains("cargo from 1.0.0-test"), "{out}");
     // The toolchain stays read-only.
-    let (exit, _) = run(&b, "touch \"$HOME/.rustup/toolchains/pinned/bin/evil\"", &env.work());
+    let (exit, _) = run(
+        &b,
+        "touch \"$HOME/.rustup/toolchains/pinned/bin/evil\"",
+        &env.work(),
+    );
     assert_ne!(exit, Some(0));
     assert!(!home.join(".rustup/toolchains/pinned/bin/evil").exists());
 }
@@ -529,7 +533,11 @@ fn real_a_toolchain_exposed_by_read_paths_runs_cargo() {
     assert_eq!(exit, Some(0), "{out}");
     assert!(out.contains("cargo-ran"), "{out}");
     // The toolchain stays read-only.
-    let (exit, _) = run(&b, &format!("touch {}/bin/evil", toolchain.display()), &env.work());
+    let (exit, _) = run(
+        &b,
+        &format!("touch {}/bin/evil", toolchain.display()),
+        &env.work(),
+    );
     assert_ne!(exit, Some(0));
     assert!(!toolchain.join("bin/evil").exists());
 }
