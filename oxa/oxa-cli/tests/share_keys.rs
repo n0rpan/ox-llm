@@ -490,19 +490,17 @@ fn owner_session_sharing_flags_refuse_noninteractive_and_agent_invocations() {
     assert!(!home.0.join(".oxa/share").exists());
 }
 
-#[cfg(feature = "share")]
 #[test]
-fn owner_terminal_shows_guest_connections_and_durable_usage_on_demand() {
-    use oxc_gateway::share::keys::{Limits, Store};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
+fn owner_terminal_reports_share_status_only_when_enabled() {
     // The same openpty/select harness used for the terminal-loss controls.
     const PTY_STATUS: &str = r#"
 import fcntl, os, pty, select, struct, subprocess, sys, termios, time
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 48, 140, 0, 0))
 child = subprocess.Popen([
-    sys.argv[1], '--share-model', 'synthetic-model', '--share-bind', '127.0.0.1',
+    sys.argv[1],
+    *(['--share-model', 'synthetic-model', '--share-bind', '127.0.0.1']
+      if sys.argv[2] == 'enabled' else []),
     '--model', 'synthetic-model', '--no-session', '--no-mcp', '--no-extensions',
     '--no-skills', '--no-context-files', '--tui-mode', 'regular',
 ], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
@@ -519,12 +517,25 @@ try:
             if select.select([master], [], [], .1)[0]:
                 output += os.read(master, 65536)
     wait_for(b'READY')
-    assert b'Guest usage today' not in output
+    if sys.platform == 'linux':
+        with open(f'/proc/{child.pid}/status', encoding='ascii') as status:
+            resources = dict(line.split(':', 1) for line in status if ':' in line)
+        rss_kib = int(resources['VmRSS'].split()[0])
+        threads = int(resources['Threads'])
+        assert rss_kib > 0 and threads > 0
+    assert b'LAN sharing' not in output and b'Guest usage today' not in output
     os.write(master, b'/engine status\r')
-    wait_for(b'LAN sharing', b'0 connections', b'Guest usage today (UTC)',
-             b'Synthetic Tablet', b'1/10 requests', b'7/100 tokens')
+    if sys.argv[2] == 'enabled':
+        wait_for(b'LAN sharing', b'0 connections', b'Guest usage today (UTC)',
+                 b'Synthetic Tablet', b'1/10 requests', b'7/100 tokens')
+    else:
+        wait_for(b'Tool call repairs:')
+        assert b'LAN sharing' not in output and b'Guest usage today' not in output
     os.write(master, b'/quit\r')
     assert child.wait(timeout=5) == 0, 'owner terminal did not exit normally'
+    if sys.platform == 'linux':
+        print(f'Oxa share footprint {sys.argv[2]}: binary_bytes={os.stat(sys.argv[1]).st_size} '
+              f'idle_rss_kib={rss_kib} idle_threads={threads}')
 finally:
     os.close(master)
     if child.poll() is None:
@@ -545,34 +556,53 @@ finally:
         }}"#,
     )
     .unwrap();
-    let keys = Store::initialize(&env.home().join(".oxa/share")).unwrap();
-    let key = keys
-        .create(
-            "Synthetic Tablet",
-            Limits {
-                daily_requests: 10,
-                daily_tokens: 100,
-            },
-        )
-        .unwrap();
-    let day = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() / 86400;
-    keys.admit(key.bearer.expose(), day, 10)
-        .unwrap()
-        .unwrap()
-        .settle(7)
-        .unwrap();
+    let measure = |mode: &str| {
+        use std::io::Write as _;
 
-    let output = Command::new("python3")
-        .args(["-I", "-c", PTY_STATUS, env!("CARGO_BIN_EXE_oxa")])
-        .env_clear()
-        .envs(env.envs("http://127.0.0.1:9"))
-        .env("TERM", "xterm-256color")
-        .current_dir(env.work())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+        let output = Command::new("python3")
+            .args(["-I", "-c", PTY_STATUS, env!("CARGO_BIN_EXE_oxa"), mode])
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:9"))
+            .env("TERM", "xterm-256color")
+            .current_dir(env.work())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{mode}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        // Write only the numeric receipt so both existing hosted test lanes expose it.
+        std::io::stdout().write_all(&output.stdout).unwrap();
+    };
+    let share_dir = env.home().join(".oxa/share");
+    measure(if cfg!(feature = "share") {
+        "disabled"
+    } else {
+        "feature-excluded"
+    });
+    assert!(!share_dir.exists());
+    #[cfg(feature = "share")]
+    {
+        use oxc_gateway::share::keys::{Limits, Store};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let keys = Store::initialize(&share_dir).unwrap();
+        let key = keys
+            .create(
+                "Synthetic Tablet",
+                Limits {
+                    daily_requests: 10,
+                    daily_tokens: 100,
+                },
+            )
+            .unwrap();
+        let day = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() / 86400;
+        keys.admit(key.bearer.expose(), day, 10)
+            .unwrap()
+            .unwrap()
+            .settle(7)
+            .unwrap();
+        measure("enabled");
+    }
 }
