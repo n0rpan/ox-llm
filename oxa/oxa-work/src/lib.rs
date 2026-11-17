@@ -686,7 +686,7 @@ mod tests {
                 "body": "Fix the fixture",
                 "comments": [
                     {"author": {"login": "reviewer"}, "body": "Keep the frame when delegating"},
-                    {"author": None, "body": "   "},
+                    {"author": null, "body": "   "},
                 ],
             }),
         )
