@@ -1621,6 +1621,11 @@ async fn optional_refresh_rotation_preserves_the_grant_before_forwarding() {
             assert!(result.is_ok(), "optional rotation must retain a usable grant");
             assert_eq!(refresh.requests().len(), 1);
             assert_eq!(upstream.requests().len(), if rejected { 2 } else { 1 });
+            assert_eq!(
+                sends,
+                if rejected { 2 } else { 1 },
+                "every forwarding checkpoint ran"
+            );
             assert_eq!(chatgpt_tokens::read(&path).unwrap().refresh_token(), expected);
             refresh.assert_healthy();
             upstream.assert_healthy();
