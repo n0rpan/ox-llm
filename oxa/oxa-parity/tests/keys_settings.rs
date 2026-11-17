@@ -2868,8 +2868,18 @@ fn key_007() {
         reply_closed(s, "R80") && row_of(s, "R70").is_some()
     });
     let r70 = row_of(&at_bottom, "R70").unwrap();
+    // Numbered rows give a content origin independent of frame borders/editor height.
+    let origin = |screen: &Screen| {
+        screen.rows().iter().enumerate().find_map(|(row, line)| {
+            let number = row_text(line).strip_prefix('R')?.parse::<i64>().ok()?;
+            Some(number - row as i64)
+        })
+    };
+    let bottom_origin = origin(&at_bottom).unwrap();
     t.key("pageUp");
     let s = t.wait("a page up", |s| row_of(s, "R80").is_none());
+    let page_shift = bottom_origin - origin(&s).unwrap();
+    assert!(page_shift > 0, "page up must move the transcript");
     assert!(
         row_of(&s, "R70").is_none_or(|r| r > r70),
         "the view moved up\n{s:?}"
@@ -2890,9 +2900,14 @@ fn key_007() {
     // halfPageUp: R80 leaves the view but less far than a page; halfPageDown comes back.
     t.key("f7");
     let s = t.wait("half a page up", |s| row_of(s, "R80").is_none());
+    let half_shift = bottom_origin - origin(&s).unwrap();
     assert!(
-        row_of(&s, "R70").is_some(),
-        "half a page keeps R70 in view\n{s:?}"
+        half_shift > 0 && half_shift < page_shift,
+        "half-page movement must be positive and smaller than a page: {half_shift}/{page_shift}\n{s:?}"
+    );
+    assert!(
+        (2 * half_shift - page_shift).abs() <= 1,
+        "half-page movement must be half a page, rounded to a row: {half_shift}/{page_shift}\n{s:?}"
     );
     t.key("f8");
     t.wait("half a page down", |s| row_of(s, "R70") == Some(r70));
