@@ -185,7 +185,7 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
             words.retain(|w| *w != "--save");
             match words.as_slice() {
                 [] if !save => AppAction::Open(SelectorKind::Mode),
-                [name] => match (PermissionMode::parse(name), Mode::parse(name)) {
+                [word] => match (PermissionMode::parse(word), Mode::parse(word)) {
                     (Some(mode), _) => AppAction::SetPermissionMode { mode, save },
                     // The table modes `workspace` and `ask` prompt: they come with `standard`.
                     (None, Some(mode)) if !save => AppAction::Many(vec![

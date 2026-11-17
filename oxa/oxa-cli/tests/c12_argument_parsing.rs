@@ -704,10 +704,12 @@ fn pkg_alias_has_the_same_effect_as_the_package_verbs() {
         alias_settings.replace(&alias_src, "<src>"),
         original_settings.replace(&original_src, "<src>")
     );
-    // Listing through the alias shows the same installed package.
+    // Listing through the alias answers exactly as the original spelling does. The project is
+    // not trusted in either env, so both report the hidden declarations (package_list.rs covers
+    // the trusted listing).
     let (alias_list, _) = run(&alias_env, &["pkg", "list"]);
     let (original_list, _) = run(&original_env, &["list"]);
-    assert!(alias_list.contains("synthetic"), "{alias_list}");
+    assert!(alias_list.contains("not trusted"), "{alias_list}");
     assert_eq!(
         alias_list.replace(&alias_src, "<src>"),
         original_list.replace(&original_src, "<src>")
