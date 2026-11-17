@@ -62,20 +62,35 @@ pub(crate) fn run(
     let commands = match request.operation {
         SupervisorOperation::Inspect => return inspect(&b, &root),
         SupervisorOperation::InspectCommitted { index } => return inspect_committed(&b, &root, &index),
-        SupervisorOperation::Checkout { branch, create } => {
-            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+        SupervisorOperation::Checkout {
+            branch,
+            create,
+            adopted,
+        } => {
+            // Adopted content is materialized without ambient GitHub authority.
+            // The ordinary checkout path retains its existing hook policy.
+            let sandbox: Arc<dyn Sandbox> = if adopted {
+                Arc::new(b)
+            } else {
+                crate::netguard::with_net(Arc::new(b), &settings)
+            };
+            let git = if adopted {
+                "git --no-replace-objects -c core.hooksPath=/dev/null -c credential.helper="
+            } else {
+                "git --no-replace-objects"
+            };
             let spec = ExecSpec {
                 command: if create {
                     format!(
-                        "git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b {} HEAD",
+                        "{git} checkout HEAD -- . && {git} checkout -b {} HEAD",
                         sh_quote(&branch)
                     )
                 } else {
-                    "git --no-replace-objects checkout HEAD -- .".into()
+                    format!("{git} checkout HEAD -- .")
                 },
                 cwd: root,
                 writable: true,
-                net: sandbox.network(),
+                net: !adopted && sandbox.network(),
                 timeout_s: Some(600),
                 env: git_environment(),
             };

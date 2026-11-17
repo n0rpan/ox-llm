@@ -110,10 +110,11 @@ fn fresh_worktree_starts_at_the_published_task_branch_head() {
 }
 
 #[test]
-fn published_head_reference_hooks_run_only_in_the_task_sandbox() {
+fn ordinary_fresh_branch_reference_hooks_run_only_in_the_task_sandbox() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    let pushed = published_task(&env);
+    setup(&env, "[]");
+    let pushed = git(&env, &project(&env), &["rev-parse", "main"]);
     let hook = env.write(
         "work/project/.git/hooks/reference-transaction",
         "#!/bin/sh\ncat >/dev/null\nprintf escaped > \"$HOME/published-head-host-hook\" 2>/dev/null || true\nprintf ran > published-head-hook-ran\n",
@@ -145,10 +146,20 @@ fn published_checkout_hooks_have_neither_network_nor_github_credentials() {
         &["checkout", "-b", "published", "origin/agent/test"],
     );
     commit_file(&env, "checkout-policy.sh", "printf ran > adopted-hook-ran\nif test -n \"${GH_TOKEN-}\"; then printf exposed > adopted-hook-credentials; fi\nreadlink /proc/self/ns/net > adopted-hook-network\n");
+    env.write("work/project/.gitattributes", "*.payload filter=adopted\n");
+    env.write("work/project/fixture.payload", "synthetic payload\n");
+    git(
+        &env,
+        &project(&env),
+        &["add", ".gitattributes", "fixture.payload"],
+    );
+    git(&env, &project(&env), &["commit", "-m", "fixture filter input"]);
     git(&env, &project(&env), &["push", "origin", "published:agent/test"]);
     git(&env, &project(&env), &["checkout", "main"]);
     git(&env, &project(&env), &["branch", "-D", "published"]);
     git(&env, &project(&env), &["fetch", "origin"]);
+    git(&env, &project(&env), &["config", "filter.adopted.smudge", "printf ran > adopted-filter-ran; if test -n \"${GH_TOKEN-}${GITHUB_TOKEN-}\"; then printf exposed > adopted-filter-credentials; fi; if test -r \"$HOME/.config/gh/config.yml\"; then printf exposed > adopted-filter-config; fi; readlink /proc/self/ns/net > adopted-filter-network; cat"]);
+    env.write("home/.config/gh/config.yml", "version: 1\n");
     let hook = env.write(
         "work/project/.git/hooks/post-checkout",
         "#!/bin/sh\nif test -f checkout-policy.sh; then sh checkout-policy.sh; fi\n",
@@ -165,15 +176,26 @@ fn published_checkout_hooks_have_neither_network_nor_github_credentials() {
         vec![ScriptTurn::text("nothing")],
         &["work", "../tasks.json"],
         Some(path),
-        &[("OXA_TEST_ISOLATION", "0")],
+        &[
+            ("OXA_TEST_ISOLATION", "0"),
+            ("GH_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+            ("GITHUB_TOKEN", "SYNTH_AMBIENT_CREDENTIAL"),
+        ],
     );
     assert_eq!(record["outcome"], "done", "{record}");
-    assert!(tree(&record).join("adopted-hook-ran").exists(), "{record}");
+    assert!(!tree(&record).join("adopted-hook-ran").exists(), "{record}");
     assert!(
         !tree(&record).join("adopted-hook-credentials").exists(),
         "checkout exposed credentials: {record}"
     );
-    let hook_net = std::fs::read_to_string(tree(&record).join("adopted-hook-network")).unwrap();
+    assert!(!tree(&record).join("adopted-hook-network").exists(), "{record}");
+    assert!(tree(&record).join("adopted-filter-ran").exists(), "{record}");
+    assert!(
+        !tree(&record).join("adopted-filter-credentials").exists(),
+        "{record}"
+    );
+    assert!(!tree(&record).join("adopted-filter-config").exists(), "{record}");
+    let hook_net = std::fs::read_to_string(tree(&record).join("adopted-filter-network")).unwrap();
     assert_ne!(
         hook_net.trim(),
         std::fs::read_link("/proc/self/ns/net").unwrap().to_str().unwrap(),
@@ -217,10 +239,10 @@ fn identical_matching_remote_tips_keep_the_published_head_eligible() {
 }
 
 #[test]
-fn published_branch_creation_keeps_required_reference_hook_policy() {
+fn ordinary_branch_creation_keeps_required_reference_hook_policy() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    published_task(&env);
+    setup(&env, "[]");
     let hook = env.write("work/project/.git/hooks/reference-transaction", "#!/bin/sh\nwhile read old new reference; do if test \"$reference\" = refs/heads/agent/test; then echo required-published-reference-policy >&2; exit 1; fi; done\n");
     std::fs::set_permissions(hook, std::fs::Permissions::from_mode(0o755)).unwrap();
     let (record, requests) = run_observed(&env, vec![], &["work", "../tasks.json"], None);

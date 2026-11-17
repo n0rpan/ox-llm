@@ -492,13 +492,29 @@ pub struct SupervisorRequest {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SupervisorOperation {
-    Checkout { branch: String, create: bool },
-    Merge { base: String },
-    Save { task_id: String },
-    Checks { commands: Vec<String> },
-    CommittedChecks { commands: Vec<String>, index: PathBuf },
+    Checkout {
+        branch: String,
+        create: bool,
+        #[serde(default)]
+        adopted: bool,
+    },
+    Merge {
+        base: String,
+    },
+    Save {
+        task_id: String,
+    },
+    Checks {
+        commands: Vec<String>,
+    },
+    CommittedChecks {
+        commands: Vec<String>,
+        index: PathBuf,
+    },
     Inspect,
-    InspectCommitted { index: PathBuf },
+    InspectCommitted {
+        index: PathBuf,
+    },
 }
 
 fn supervise(

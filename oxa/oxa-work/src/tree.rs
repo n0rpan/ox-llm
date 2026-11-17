@@ -223,6 +223,7 @@ pub(crate) fn prepare(
                 operation: SupervisorOperation::Checkout {
                     branch: task.branch.clone(),
                     create,
+                    adopted: published.is_some(),
                 },
             },
             policy,
