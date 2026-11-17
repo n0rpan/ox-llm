@@ -445,24 +445,38 @@ mod tui {
         }
     }
 
-    /// The first row whose text (without the fullscreen scrollbar column) is exactly `needle`.
-    /// The numbered reply is completely drawn at the bottom and the turn is over: the closing
-    /// code fence row sits right after the `last` line and the "Working..." loader (blank line
-    /// plus spinner above the editor) is gone. Both arrive/leave after the last line while the
-    /// turn ends, and each shifts every transcript row above by one or two.
+    /// The text of a transcript row: without the fullscreen scrollbar column and, for a closed
+    /// code frame line, without its side borders and padding (`│  R10      │` -> `R10`).
+    pub fn row_text(r: &str) -> &str {
+        let end = r.trim_end();
+        let closed = end.ends_with('│') || end.ends_with('█');
+        let t = end.trim_end_matches(['│', '█']).trim();
+        if closed {
+            t.strip_prefix('│').map_or(t, |inner| inner.trim())
+        } else {
+            t
+        }
+    }
+
+    /// The first row whose text (without the fullscreen scrollbar column and a code frame's
+    /// side border) is exactly `needle`.
+    ///
+    /// The numbered reply is completely drawn at the bottom and the turn is over: the code
+    /// frame's bottom border sits right after the `last` line and the "Working..." loader
+    /// (blank line plus spinner above the editor) is gone. Both arrive/leave after the last
+    /// line while the turn ends, and each shifts every transcript row above by one or two.
     pub fn reply_closed(s: &Screen, last: &str) -> bool {
         !s.contains("Working")
             && row_index(s, last).is_some_and(|r| {
-                s.rows()
-                    .get(r + 1)
-                    .is_some_and(|f| f.trim_end().trim_end_matches(['│', '█']).trim() == "```")
+                s.rows().get(r + 1).is_some_and(|f| {
+                    let t = f.trim_end().trim_end_matches(['│', '█']).trim();
+                    t.starts_with('└') && t.ends_with('┘') && t.chars().all(|c| matches!(c, '└' | '┘' | '─'))
+                })
             })
     }
 
     pub fn row_index(s: &Screen, needle: &str) -> Option<usize> {
-        s.rows()
-            .iter()
-            .position(|r| r.trim_end().trim_end_matches(['│', '█']).trim() == needle)
+        s.rows().iter().position(|r| row_text(r) == needle)
     }
 
     /// Every session file (`*.jsonl`) below the agent directory.
@@ -1838,8 +1852,15 @@ fn set_034() {
     // scrollbar behavior". pi scroll-view.ts: `auto` is transient (only when the transcript is
     // taller than the view, while scrolling and for a second after: scrollbarHideDelayMs 1000);
     // `always` stays, also when the transcript fits (the thumb fills the track); `hidden` never.
-    // The scrollbar is the last column of the transcript rows.
-    let bar = |s: &Screen| (0..10u16).any(|r| s.row(r).ends_with('│') || s.row(r).ends_with('█'));
+    // The scrollbar is the last column of the transcript rows. Its track (`│`) shares its glyph
+    // with a code frame's side border, so read the last column rather than a row's last glyph.
+    let bar = |s: &Screen| {
+        let (_, cols) = s.size();
+        (0..10u16).any(|r| {
+            s.cell(r, cols.saturating_sub(1))
+                .is_some_and(|c| c.text == "│" || c.text == "█")
+        })
+    };
     let start = |settings: Value, long: bool| {
         let reply = if long {
             numbered_reply("R", 80)
@@ -1920,9 +1941,9 @@ fn set_036() {
     // unit-tested in oxa-interactive d2); Alt+wheel moves five times as far. Measured on the
     // numbered line shown in screen row 10 before and after one wheel-up event.
     let number_at = |s: &Screen, row: u16| -> Option<i64> {
-        let r = s.row(row);
-        let t = r.trim_end().trim_end_matches(['│', '█']).trim();
-        t.strip_prefix('R')?.parse().ok()
+        // `row_text` drops the scrollbar column and a code frame's side border and padding.
+        let line = s.row(row);
+        row_text(&line).strip_prefix('R')?.parse().ok()
     };
     let moved = |settings: Value, button: u32, want: i64| {
         let t = Setup::new()
@@ -2114,7 +2135,8 @@ fn set_046() {
 #[test]
 fn set_047() {
     // pi docs: settings.md `markdown.codeBlockIndent` (default two spaces) "Prefix used to
-    // indent rendered code blocks".
+    // indent rendered code blocks". The prefix sits inside the labelled frame: output pad,
+    // the frame's side border, then the configured indent.
     let line = |settings: Value| {
         let t = Setup::new()
             .settings(settings)
@@ -2122,12 +2144,19 @@ fn set_047() {
             .start();
         t.prompt("q", "let code = 1;");
         let s = t.screen();
+        assert!(
+            s.rows().iter().any(|r| r.starts_with(" ┌") && r.ends_with('┐')),
+            "the code frame: {s:?}"
+        );
         let row = s.find_row("let code = 1;").unwrap();
         s.row(row)
     };
-    assert!(line(json!({})).starts_with("   let code"), "pad 1 + two spaces");
-    assert!(line(json!({ "markdown": { "codeBlockIndent": "│ " } })).starts_with(" │ let code"));
-    assert!(line(json!({ "markdown": { "codeBlockIndent": "" } })).starts_with(" let code"));
+    assert!(
+        line(json!({})).starts_with(" │  let code"),
+        "pad 1 + side + two spaces"
+    );
+    assert!(line(json!({ "markdown": { "codeBlockIndent": "│ " } })).starts_with(" ││ let code"));
+    assert!(line(json!({ "markdown": { "codeBlockIndent": "" } })).starts_with(" │let code"));
 }
 
 /// SET-048: `markdown.mermaid` `off|final|streaming`.
@@ -2147,9 +2176,14 @@ fn set_048() {
         t.prompt("q", "graph TD; A-->B;");
         let s = t.settle();
         assert!(
-            s.contains("```mermaid"),
-            "{value:?}: the code block border\n{s:?}"
+            s.rows().iter().any(|r| r.contains("┌─ mermaid ")),
+            "{value:?}: the labelled code frame\n{s:?}"
         );
+        assert!(
+            s.contains("│  graph TD; A-->B;"),
+            "{value:?}: the diagram source inside the frame\n{s:?}"
+        );
+        assert!(!s.contains("```"), "{value:?}: fences are consumed\n{s:?}");
         assert!(!s.contains("markdown.mermaid"), "{value:?}: no diagnostic");
     }
 }
