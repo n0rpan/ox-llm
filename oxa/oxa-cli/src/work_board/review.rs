@@ -2,12 +2,9 @@ use super::{nodes, Board, GitHub, Policy, PullRequest, Reader, RequiredCi};
 use oxa_work::board::review::{
     self, Approval, Change, ChangeKind, Facts, GitDiff, GitHubRequestReceipt, PathRule, Reviewer, Tier,
 };
-use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct Settings {
     requester: String,
     codex: String,
@@ -31,7 +28,28 @@ impl Settings {
         if input.len() > 16_384 {
             return Err("board review policy exceeds the size limit".into());
         }
-        let settings: Self = serde_json::from_slice(&input).map_err(|_| "invalid board review policy")?;
+        let invalid = "invalid board review policy";
+        let raw: Value = serde_json::from_slice(&input).map_err(|_| invalid)?;
+        if raw.as_object().is_none_or(|fields| fields.len() != 6) {
+            return Err(invalid.into());
+        }
+        let login = |field: &str| raw[field].as_str().map(str::to_owned).ok_or(invalid);
+        let paths = |field: &str| {
+            raw[field]
+                .as_array()
+                .ok_or(invalid)?
+                .iter()
+                .map(|path| path.as_str().map(str::to_owned).ok_or(invalid))
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let settings = Self {
+            requester: login("requester")?,
+            codex: login("codex")?,
+            security: login("security")?,
+            owner: login("owner")?,
+            core: paths("core")?,
+            protected: paths("protected")?,
+        };
         let roles = [&settings.codex, &settings.security, &settings.owner];
         if settings.requester.is_empty()
             || roles.iter().any(|login| login.is_empty())
