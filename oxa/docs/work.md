@@ -11,6 +11,13 @@ The private, locked `work/<project-hash>/board/OWNER/REPO/board-shadow.jsonl` un
 directory appends `{schema_version:1,observed_at,board,would_take}`. Eligible shared
 board entries form `would_take`; shadow reserves no leases or attempts. Use one
 GitHub repository per capture. Read errors and incomplete connections stop sampling.
+
+Add `--landing-shadow` to record latest-review holds and queue-age alarms in `landing`.
+The sample records the observed main ref in `landing_main` independently of queue membership
+and verified merge-group rejection evidence in `queue_rejections`, including the
+removal event time.
+Use `--queue-evidence` to record only the rejection evidence alongside the board.
+
 Limit: 100 PRs/items per connection. Reported checks are matched against the base's
 classic protection and active repository/organization rulesets; missing required
 contexts and unknown/no required checks stay pending. Review
@@ -77,7 +84,26 @@ Issue lookup also requires source-project trust. Git and GitHub CLI host calls u
 validated executables outside the repository. Worker and check-supervisor PATHs
 exclude project directories, relative entries and unsafe aliases; project tools
 can still run by explicit path inside the sandbox.
+Use `oxa work --pr 123 --model your-model` for a pull request in the source
+repository. The runner supplies its body, discussion, unresolved inline reviews,
+failing checks, and changed files from the reviewed commit. Fetch that commit and
+set the local PR branch to it before running. The runner refuses a missing or
+different local tip. The worker starts at the reviewed commit and keeps the same
+tool restrictions as an issue worker. Truncated sections request missing data
+from the runner. Each reviewed commit has its own task ID and frozen packet.
+When a newer reviewed commit is already on the local branch, a finished clean
+task worktree for the same PR is left in place at a detached HEAD. The next round
+gets its own worktree. Uncommitted changes or an active task block the transition.
+For runner-owned issue and PR packets the checkout, acceptance, save, and saved
+verification supervisors run under the same GitHub and network restriction.
+
 Branches must be literal names; checkout-history aliases such as `@{-1}` are refused.
+A local base branch that lags behind the commit the base names (for example a local
+`main` after a fetch, though the runner itself never fetches) is fast-forwarded to that
+commit for the new worktree, so the task's own diff against its base shows only its own
+work. The branch is moved only when it is a strict ancestor of the base and no worktree
+has it checked out; otherwise it is left as it is. That move is host metadata, so no
+repository hook runs for it.
 Every base and acceptance command list is resolved before any task in the batch
 starts. All bases must therefore exist at batch startup. Host metadata commands
 ignore replacement objects and inherited `GIT_*` overrides, disable filesystem

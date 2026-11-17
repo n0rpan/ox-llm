@@ -27,6 +27,17 @@ pub enum WorkerInterruption {
     Deadline,
 }
 
+/// Invocation-local token counts reported by the worker at settlement.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+pub struct WorkerTokens {
+    pub prompt: Option<u64>,
+    pub completion: Option<u64>,
+    /// Cached input is included in the prompt count.
+    pub cached: Option<u64>,
+    pub complete: bool,
+    pub unreported_requests: Option<u64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct WorkerResult {
     pub outcome: WorkerOutcome,
@@ -34,6 +45,9 @@ pub struct WorkerResult {
     pub error_class: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interruption: Option<WorkerInterruption>,
+    /// Measured process usage. Older workers and interrupted processes may omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<WorkerTokens>,
 }
 
 impl WorkerResult {
@@ -97,17 +111,11 @@ pub(crate) fn run(
     if policy.offline {
         command.arg("--offline");
     }
-    if task.runner_owns_github() {
+    if policy.runner_owns_github {
         // The provider connection is host-side. The worker's tool sandbox and
         // independent tool adapters have no GitHub access.
-        command
-            .env(crate::RUNNER_GITHUB_ENV, "1")
-            .env_remove("GH_TOKEN")
-            .env_remove("GITHUB_TOKEN")
-            .env_remove("GH_ENTERPRISE_TOKEN")
-            .env_remove("GITHUB_ENTERPRISE_TOKEN")
-            .env_remove("GH_CONFIG_DIR")
-            .args(["--no-mcp", "--no-extensions", "--no-web-search"]);
+        crate::restrict_child_github(&mut command);
+        command.args(["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]);
     }
     if let Some(id) = session {
         command.arg(format!("--continue={id}"));
@@ -162,6 +170,10 @@ pub(crate) fn run(
         }
         let status = waited.status;
         if waited.deadline {
+            let tokens = terminal
+                .ok()
+                .filter(|(result, _)| status.code() == Some(result.exit_code))
+                .and_then(|(result, _)| result.tokens);
             return Ok(Worker {
                 result: WorkerResult {
                     outcome: WorkerOutcome::Interrupted,
@@ -170,6 +182,7 @@ pub(crate) fn run(
                         .unwrap_or_else(|| 128 + status.signal().unwrap_or(9)),
                     error_class: Some("worker_deadline".into()),
                     interruption: Some(WorkerInterruption::Deadline),
+                    tokens,
                 },
                 session: session.ok().flatten(),
                 diagnostic: "worker exceeded max_time and its wrap-up grace; worktree retained".into(),
@@ -219,8 +232,16 @@ fn read_result(pipe: impl Read) -> Result<(WorkerResult, String)> {
     let mut diagnostic = Vec::new();
     while let Some(bytes) = line(&mut reader)? {
         let value = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
-        if let Some(value) = value.filter(|v| v["type"] == "oxa_result") {
-            let parsed = serde_json::from_value(value).map_err(|e| format!("worker result: {e}"))?;
+        if let Some(mut value) = value.filter(|v| v["type"] == "oxa_result") {
+            let measured_process = value["usage_scope"] == "process";
+            // Usage is optional evidence. Strip it before parsing the outcome so a
+            // missing or malformed measurement cannot change the worker's disposition.
+            let tokens = value.get_mut("tokens").map(std::mem::take);
+            let mut parsed: WorkerResult =
+                serde_json::from_value(value).map_err(|e| format!("worker result: {e}"))?;
+            if measured_process {
+                parsed.tokens = tokens.and_then(|tokens| serde_json::from_value(tokens).ok());
+            }
             duplicate |= result.replace(parsed).is_some();
         } else {
             keep_tail(&mut diagnostic, &bytes, DIAGNOSTIC_CAP);
@@ -271,5 +292,61 @@ pub(crate) fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {
         let discard = (tail.len() + bytes.len()).saturating_sub(cap);
         tail.drain(..discard);
         tail.extend_from_slice(bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn terminal_process_usage_survives_serializing_the_worker_result() {
+        let receipt = json!({
+            "type": "oxa_result", "outcome": "done", "exit_code": 0, "usage_scope": "process",
+            "tokens": {
+                "prompt": 480, "completion": 21, "cached": null, "complete": false,
+                "unreported_requests": 1,
+            }
+        });
+        let (result, diagnostic) = read_result(receipt.to_string().as_bytes()).unwrap();
+        assert!(result.accepted());
+        assert!(diagnostic.is_empty());
+        let saved = serde_json::to_value(result).unwrap();
+        assert_eq!(saved["tokens"], receipt["tokens"]);
+        let restored: WorkerResult = serde_json::from_value(saved).unwrap();
+        assert_eq!(
+            restored.tokens,
+            Some(WorkerTokens {
+                prompt: Some(480),
+                completion: Some(21),
+                cached: None,
+                complete: false,
+                unreported_requests: Some(1),
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_or_unusable_usage_remains_unknown_without_changing_outcomes() {
+        let mut receipt = json!({"type": "oxa_result", "outcome": "done", "exit_code": 0});
+        let (legacy, _) = read_result(receipt.to_string().as_bytes()).unwrap();
+        assert!(legacy.accepted());
+        assert!(legacy.tokens.is_none());
+        assert!(serde_json::to_value(legacy).unwrap().get("tokens").is_none());
+
+        receipt["usage_scope"] = json!("merged_task");
+        receipt["tokens"] = json!({
+            "prompt": 0, "completion": 0, "cached": 0, "complete": true, "unreported_requests": 0
+        });
+        let (other_scope, _) = read_result(receipt.to_string().as_bytes()).unwrap();
+        assert!(other_scope.accepted());
+        assert!(other_scope.tokens.is_none());
+
+        receipt["usage_scope"] = json!("process");
+        receipt["tokens"]["prompt"] = json!("unknown");
+        let (malformed, _) = read_result(receipt.to_string().as_bytes()).unwrap();
+        assert!(malformed.accepted());
+        assert!(malformed.tokens.is_none());
     }
 }

@@ -13,7 +13,9 @@
 // (`pending`, the prompt's run claim), then write the response, the run's `agent_settled` (held
 // back while the job ran) and the `abort` responses that waited for it. A command a client
 // sends after reading any of those records therefore meets an idle session and fresh state.
-use crate::events::{event_to_json, state_to_json, write_record};
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+use crate::a2a_control::BoundControl;
+use crate::events::{event_to_json, session_state, write_record};
 use crate::{cmd_run, handle_session, Out, RpcCx, RpcUi, UiRouter};
 use oxa_core::{Handle, RunOutcome, Session};
 use oxa_proto::{codes, AgentEvent, Level, OxaError, Value};
@@ -144,6 +146,8 @@ enum Job {
     Outcome(RunOutcome),
     /// A follow-up is already in Handle's queue; wake the session even with stdin idle.
     Inbox(String),
+    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+    GoalControl(BoundControl),
     Shutdown,
 }
 
@@ -152,6 +156,9 @@ enum Job {
 struct Gate {
     /// Session commands sent to the worker and not finished (outcome-only jobs claim nothing).
     pending: usize,
+    /// Bound the typed inbox lane to one pending job on the existing session FIFO.
+    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+    control_pending: bool,
     /// EOF is ordered with inbox admission: leave later files for the next owner.
     closed: bool,
     /// A prompt was answered `started` and its run has not settled yet. Set by the reader when
@@ -399,9 +406,14 @@ fn publish(cx: &RpcCx) -> Published {
         })
         .collect();
     Published {
-        state: state_to_json(&cx.session.state()),
+        state: session_state(&cx.session),
         commands,
     }
+}
+
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+fn write_control_receipt(out: &Out, data: Value) {
+    write_out(out, &json!({"type": "goal_control_receipt", "data": data}));
 }
 
 /// The session thread: runs each job in order and writes its response. Returns when the job
@@ -416,12 +428,13 @@ fn session_loop(
 ) -> RunOutcome {
     let mut outcome = RunOutcome::NothingToDo;
     let mut inbox = None;
-    let mut inbox_id = String::new();
+    let mut inbox_session = None;
     loop {
-        let id = cx.session.inner().sref.id.clone();
-        if inbox_id != id || inbox.is_none() {
+        let session = &cx.session.inner().sref;
+        if inbox_session.as_ref() != Some(session) || inbox.is_none() {
             drop(inbox.take());
-            inbox_id = id.clone();
+            inbox_session = Some(session.clone());
+            let id = session.id.clone();
             // A prior wake may have been discarded while this destination was inactive.
             // Re-arm it on return even when its admitted files are already gone.
             if cx.handle.has_inbox_input() && !cx.handle.wrap_up_requested() {
@@ -435,9 +448,9 @@ fn session_loop(
             }
             let handle = cx.handle.clone();
             let sender = tx.clone();
-            let gate = gate.clone();
-            match oxa_session::Inbox::watch(&cx.dirs.agent_dir, &inbox_id, move |text| {
-                let mut gate = lock(&gate);
+            let follow_up_gate = gate.clone();
+            let follow_up = move |text| {
+                let mut gate = lock(&follow_up_gate);
                 if gate.closed || handle.wrap_up_requested() {
                     return false;
                 }
@@ -453,7 +466,42 @@ fn session_loop(
                     return false;
                 }
                 true
-            }) {
+            };
+            #[cfg(not(all(target_os = "linux", feature = "a2a-control")))]
+            let watch = oxa_session::Inbox::watch(&cx.dirs.agent_dir, &session.id, follow_up);
+            #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+            let watch = {
+                use oxa_session::InboxItem;
+                let control_gate = gate.clone();
+                let sender = tx.clone();
+                let out = cx.out.clone();
+                let handle = cx.handle.clone();
+                let binding = session.clone();
+                oxa_session::Inbox::watch_bound(&cx.dirs.agent_dir, session, move |item| match item {
+                    InboxItem::FollowUp(text) => follow_up(text),
+                    InboxItem::Control(packet) => {
+                        let mut gate = lock(&control_gate);
+                        if gate.closed || gate.control_pending || handle.wrap_up_requested() {
+                            return false;
+                        }
+                        let request = match oxa_orchestrator::control::decode(packet.as_bytes()) {
+                            Ok(request) => request,
+                            Err(rejection) => {
+                                write_control_receipt(&out, rejection);
+                                return true;
+                            }
+                        };
+                        let control = BoundControl::new(binding.clone(), request);
+                        if sender.send(Job::GoalControl(control)).is_err() {
+                            return false;
+                        }
+                        gate.control_pending = true;
+                        gate.pending += 1;
+                        true
+                    }
+                })
+            };
+            match watch {
                 Ok(watch) => inbox = Some(watch),
                 Err(e) => write_out(
                     &cx.out,
@@ -497,6 +545,29 @@ fn session_loop(
                     false,
                     false,
                 )
+            }
+            #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+            Job::GoalControl(control) => {
+                let id = control.id().to_owned();
+                let mut sink = cmd_run::OutSink(cx.out.clone());
+                let receipt = oxa_proto::panic::contain(|| control.apply(&mut cx.session, &mut sink))
+                    .unwrap_or_else(|_| json!({"id": id, "error": codes::INTERNAL}));
+                *lock(&cache) = publish(&cx);
+                {
+                    let mut gate = lock(&gate);
+                    gate.control_pending = false;
+                    gate.pending -= 1;
+                    write_control_receipt(&cx.out, receipt);
+                    if gate.pending == 0 {
+                        for response in std::mem::take(&mut gate.after_jobs) {
+                            write_out(&cx.out, &response);
+                        }
+                    }
+                }
+                if let Some(inbox) = &inbox {
+                    inbox.retry();
+                }
+                continue;
             }
             Job::Shutdown => break,
         };

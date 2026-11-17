@@ -11,6 +11,7 @@ use std::{
     time::{Duration, Instant, SystemTime},
 };
 
+mod landing;
 mod review;
 
 fn token_line(input: &mut dyn BufRead) -> Result<String, String> {
@@ -333,7 +334,10 @@ impl Reader<'_> {
         let expected: BTreeMap<_, _> = numbers.iter().zip(nodes(&list["pullRequests"])?).collect();
         let mut details = serde_json::json!({});
         let review_fields = if self.review_rows.is_some() {
-            "baseRefOid isCrossRepository authorAssociation comments(first:100){totalCount nodes{body author{login} lastEditedAt}} reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
+            "baseRefOid isCrossRepository authorAssociation
+             comments(first:100){totalCount nodes{body updatedAt lastEditedAt
+                author{login ... on Bot{databaseId}} editor{... on Bot{databaseId}}}}
+             reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
         } else {
             ""
         };
@@ -521,14 +525,17 @@ pub(crate) fn run(
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
         [shadow, flag, repo, options @ ..] if shadow == "--shadow" && flag == "--repo" => (repo, options),
-        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--review-policy FILE]".into()),
+        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--review-policy FILE] [--queue-evidence] [--landing-shadow]".into()),
     };
     let (mut once, mut streamed, mut review_file) = (false, false, None);
+    let (mut queue_evidence, mut landing_shadow) = (false, false);
     let mut options = options.iter();
     while let Some(option) = options.next() {
         match option.as_str() {
             "--once" => once = true,
             "--token-stdin" => streamed = true,
+            "--queue-evidence" => queue_evidence = true,
+            "--landing-shadow" => landing_shadow = true,
             "--review-policy" if review_file.is_none() => {
                 review_file = Some(options.next().ok_or("missing board review policy file")?);
             }
@@ -577,8 +584,9 @@ pub(crate) fn run(
         .mode(0o700)
         .create(&storage)
         .map_err(|_| "cannot create shadow storage")?;
+    oxa_work::require_private_directory(&storage)?;
     let mut log = oxa_work::shadow::open_log(&storage.join("board-shadow.jsonl"))?;
-    oxa_work::shadow::run_with_reviews(
+    oxa_work::shadow::run_with_landing(
         &mut log,
         once,
         || {
@@ -597,14 +605,30 @@ pub(crate) fn run(
                 enabled: true,
                 ..Policy::default()
             };
-            let sample = if let Some(settings) = &review_settings {
+            let (board, reviews) = if let Some(settings) = &review_settings {
                 review::sample(&mut reader, root, policy, &board_policy, settings, now)
             } else {
                 Board::read(&mut reader, &board_policy, &BTreeMap::new(), now)
                     .map(|board| (board, BTreeMap::new()))
             }?;
+            let queue_rejections = if queue_evidence || landing_shadow {
+                oxa_work::board::queue::read(&board, |fields| reader.repository_read(fields))?
+            } else {
+                Vec::new()
+            };
+            let (landing, landing_main) = if landing_shadow {
+                landing::review_decisions(&reader, &board)?
+            } else {
+                (BTreeMap::new(), None)
+            };
             reader.time_left().map_err(QueryError::message)?;
-            Ok(sample)
+            Ok(oxa_work::shadow::LandingSample {
+                board,
+                reviews,
+                queue_rejections,
+                landing,
+                landing_main,
+            })
         },
         std::thread::sleep,
     )?;

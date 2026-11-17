@@ -77,7 +77,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         cwd,
     } = io;
 
-    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(argv) {
+    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(crate::help::command_words(argv)) {
         if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
             && invocation.args.is_empty()
         {
@@ -184,6 +184,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             }
             #[cfg(feature = "share")]
             Subcommand::Share(words) => {
+                let serve = words.first().is_some_and(|word| word == "serve");
                 // Env::get treats empty values as unset; owner-command policy
                 // refuses marker presence, including an empty value.
                 if env.pairs().iter().any(|(name, _)| {
@@ -196,9 +197,19 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                         &mut *stderr,
                         &OxaError::new(
                             codes::INVALID,
-                            "Guest key commands require the owner outside an agent tool",
+                            if serve {
+                                "Guest serving requires the owner outside an agent tool"
+                            } else {
+                                "Guest key commands require the owner outside an agent tool"
+                            },
                         ),
                     );
+                }
+                if serve {
+                    return match crate::share_cmd::run(&words[1..], &dirs, &cwd, &mut *stdout) {
+                        Ok(()) => 0,
+                        Err(error) => report(&mut *stderr, &error),
+                    };
                 }
                 oxc_gateway::share::command::run(&words, &dirs.home.join(".oxa/share"), &mut *stdout)
                     .map(|()| 0)

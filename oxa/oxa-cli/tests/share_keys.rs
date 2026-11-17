@@ -334,3 +334,190 @@ fn output_failure_keeps_one_durable_key_without_retrying_or_leaking_diagnostics(
     assert!(!rows[0].revoked);
     assert!(store.revoke(&rows[0].id).unwrap());
 }
+
+#[cfg(feature = "share")]
+#[test]
+fn serving_refuses_agent_and_offline_before_opening_guest_storage() {
+    let home = Home::new();
+    let serve = ["share", "serve", "--model", "synthetic-model"];
+    let agent = home.marked(&serve, "OXA_CODING_AGENT", "");
+    assert!(!agent.status.success());
+    assert!(String::from_utf8_lossy(&agent.stderr).contains("Guest serving requires the owner"));
+
+    let offline = home.run(&["--offline", "share", "serve", "--model", "synthetic-model"]);
+    assert!(!offline.status.success());
+    assert!(String::from_utf8_lossy(&offline.stderr).contains("offline mode is on"));
+
+    let offline_env = home.marked(&serve, "OXA_OFFLINE", "1");
+    assert!(!offline_env.status.success());
+    assert!(String::from_utf8_lossy(&offline_env.stderr).contains("offline mode is on"));
+    assert!(!home.0.join(".oxa/share").exists());
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn serving_requires_an_owner_selected_alias_and_enabled_native_engine() {
+    let home = Home::new();
+    let missing_alias = home.run(&["share", "serve"]);
+    assert!(!missing_alias.status.success());
+    assert!(String::from_utf8_lossy(&missing_alias.stderr).contains("--model ALIAS"));
+
+    let disabled = home.run(&["share", "serve", "--model", "synthetic-model"]);
+    assert!(!disabled.status.success());
+    assert!(String::from_utf8_lossy(&disabled.stderr).contains("Enable the native local engine"));
+    assert!(!home.0.join(".oxa/share").exists());
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn native_cleartext_listener_refuses_wildcard_and_unverified_interfaces() {
+    use oxa_proto::{CancelToken, ChatRequest, StreamEvent};
+    use oxc_gateway::share::{
+        keys::Store,
+        listener::{Access, Binding, Config, Failure, Model, Tailnet},
+        native::{self, Native},
+    };
+    use std::{net::IpAddr, sync::Arc};
+
+    struct TailnetAddresses;
+    impl Tailnet for TailnetAddresses {
+        async fn addresses(&self) -> Result<Vec<IpAddr>, Failure> {
+            Ok(vec!["100.64.0.2".parse().unwrap()])
+        }
+        async fn same_owner(&self, _: IpAddr) -> Result<bool, Failure> {
+            unreachable!("no listener reaches peer authentication")
+        }
+    }
+
+    let home = Home::new();
+    let keys = Arc::new(Store::initialize(&home.0.join(".oxa/share")).unwrap());
+    let answer = Arc::new(
+        Native::new(
+            vec![Model {
+                alias: "synthetic".into(),
+                context_window: 128,
+                max_output: 8,
+                access: Access::Local,
+            }],
+            |_: &ChatRequest<'_>, _: &CancelToken, _: &mut dyn FnMut(StreamEvent)| {
+                unreachable!("the address must refuse before any guest connects")
+            },
+        )
+        .unwrap(),
+    );
+    for address in ["0.0.0.0", "::", "192.0.2.11"] {
+        let result = native::serve(
+            keys.clone(),
+            answer.clone(),
+            Arc::new(TailnetAddresses),
+            Config {
+                binding: Binding::Explicit(address.parse().unwrap()),
+                ..Config::default()
+            },
+            CancelToken::new(),
+            |_| Err(Failure::Failed),
+        );
+        assert!(matches!(result, Err(Failure::Forbidden)), "{address}: {result:?}");
+    }
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn foreground_serve_lists_only_the_owner_selected_local_models_on_loopback() {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::{SocketAddr, TcpStream};
+    use std::process::{Child, Stdio};
+    use std::time::Duration;
+
+    struct Serving(Child);
+    impl Drop for Serving {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    let home = Home::new();
+    let agent = home.0.join(".oxa/agent");
+    fs::create_dir_all(&agent).unwrap();
+    let limit = serde_json::json!({
+        "context_window":4096,"max_output":64,
+        "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}
+    });
+    let settings = serde_json::json!({"oxa":{
+        "engine":{"inProcessLocal":true},
+        "local":{"binary":"/synthetic/oxe-server",
+            "models":{
+                "synthetic-visible":{"model":"/synthetic/visible.gguf","arguments":["--engine","stub"]},
+                "synthetic-hidden":{"model":"/synthetic/hidden.gguf","arguments":["--engine","stub"]}
+            },
+            "limits":{"synthetic-visible":limit,"synthetic-hidden":limit}
+        }
+    }});
+    fs::write(agent.join("settings.json"), settings.to_string()).unwrap();
+    let added = home.run(&[
+        "share",
+        "key",
+        "add",
+        "Device",
+        "--daily-requests",
+        "10",
+        "--daily-tokens",
+        "10000",
+    ]);
+    assert!(added.status.success());
+    let key: serde_json::Value = serde_json::from_slice(&added.stdout).unwrap();
+    let bearer = key["api_key"].as_str().unwrap();
+
+    let mut serving = Serving(
+        Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args([
+                "share",
+                "serve",
+                "--model",
+                "synthetic-visible",
+                "--bind",
+                "127.0.0.1",
+            ])
+            .env_clear()
+            .env("HOME", &home.0)
+            .env("OXA_TEST_ISOLATION", "1")
+            .current_dir(&home.0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    let stdout = serving.0.stdout.take().unwrap();
+    let (send, recv) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
+        let _ = send.send(result);
+    });
+    let line = recv.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
+    reader.join().unwrap();
+    let address: SocketAddr = line
+        .trim()
+        .strip_prefix("Guest OpenAI API listening at http://")
+        .unwrap()
+        .strip_suffix("/v1")
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(address.ip().is_loopback());
+
+    let mut client = TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap();
+    client.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    write!(
+        client,
+        "GET /v1/models HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {bearer}\r\n\r\n"
+    )
+    .unwrap();
+    let mut reply = String::new();
+    client.read_to_string(&mut reply).unwrap();
+    assert!(reply.starts_with("HTTP/1.1 200"));
+    assert!(reply.contains("synthetic-visible"));
+    assert!(!reply.contains("synthetic-hidden"));
+    assert!(!reply.contains(bearer));
+}
