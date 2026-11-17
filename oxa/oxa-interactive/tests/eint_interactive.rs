@@ -64,7 +64,7 @@ impl oxa_proto::Sandbox for NoBash {
 fn deps(
     env: &TestEnv,
     store: Arc<dyn SessionStore>,
-    engine: Arc<ScriptedEngine>,
+    engine: Arc<dyn oxa_proto::Engine>,
     hooks: Vec<Arc<dyn Hooks>>,
 ) -> Deps {
     deps_with_settings(env, store, engine, hooks, Settings::default())
@@ -73,7 +73,7 @@ fn deps(
 fn deps_with_settings(
     env: &TestEnv,
     store: Arc<dyn SessionStore>,
-    engine: Arc<ScriptedEngine>,
+    engine: Arc<dyn oxa_proto::Engine>,
     hooks: Vec<Arc<dyn Hooks>>,
     settings: Settings,
 ) -> Deps {
@@ -981,5 +981,77 @@ fn new_session_keeps_the_switched_model_and_thinking() {
         w.done
             .recv_timeout(Duration::from_secs(10))
             .expect("worker ended");
+    });
+}
+
+/// A normal prompt must refresh the visible policy, and idle unload must remove it.
+#[test]
+fn local_policy_refreshes_after_prompt_and_idle_unload() {
+    struct Local {
+        inner: ScriptedEngine,
+        loaded: AtomicBool,
+    }
+    impl oxa_proto::Engine for Local {
+        fn info(&self, target: Option<&str>) -> Result<oxa_proto::EngineInfo, OxaError> {
+            let mut info = self.inner.info(target)?;
+            // This control observes the foreground load, independently of boot preload.
+            info.prefill_only = false;
+            Ok(info)
+        }
+        fn count_tokens(&self, text: &str) -> Result<u32, OxaError> {
+            self.inner.count_tokens(text)
+        }
+        fn local_memory_status(&self, _: &str) -> Option<(u32, &'static str, u64)> {
+            self.loaded.load(Ordering::SeqCst).then_some((42, "scope", 100))
+        }
+        fn chat(
+            &self,
+            r: &oxa_proto::ChatRequest,
+            c: &oxa_proto::CancelToken,
+            on: &mut dyn FnMut(oxa_proto::StreamEvent),
+        ) -> Result<oxa_proto::AssistantTurn, OxaError> {
+            self.loaded.store(true, Ordering::SeqCst);
+            self.inner.chat(r, c, on)
+        }
+    }
+    bounded(30, || {
+        let env = TestEnv::new();
+        let engine = Arc::new(Local {
+            inner: ScriptedEngine::new(vec![ScriptTurn::text("done")]),
+            loaded: AtomicBool::new(false),
+        });
+        let session = Session::open(
+            deps(&env, Arc::new(MemStore::new()), engine.clone(), Vec::new()),
+            Open::New,
+        )
+        .unwrap();
+        let w = spawn_worker(session, no_reopen());
+        let initial = match w.msgs.recv_timeout(Duration::from_secs(5)).unwrap() {
+            WorkerMsg::Session(info) => info.engine_url,
+            _ => panic!("initial session"),
+        };
+        assert!(!initial.contains("(scope)"));
+        w.cmds
+            .send(SessionCmd::Prompt {
+                text: "hello".into(),
+                parts: Vec::new(),
+            })
+            .unwrap();
+        let next_session = || loop {
+            match w
+                .msgs
+                .recv_timeout(Duration::from_secs(5))
+                .expect("policy session update")
+            {
+                WorkerMsg::Session(info) => break info.engine_url,
+                WorkerMsg::Done(result) => result.unwrap(),
+                _ => {}
+            }
+        };
+        assert_eq!(next_session(), format!("{initial} (scope)"));
+        engine.loaded.store(false, Ordering::SeqCst);
+        assert_eq!(next_session(), initial);
+        w.cmds.send(SessionCmd::Shutdown).unwrap();
+        w.done.recv_timeout(Duration::from_secs(5)).unwrap();
     });
 }

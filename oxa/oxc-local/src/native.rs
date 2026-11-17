@@ -39,6 +39,7 @@ pub struct LocalStatus {
     pub waiting: usize,
     pub stop_reason: Option<StopReason>,
     pub memory_policy: Option<&'static str>,
+    pub launcher_micros: Option<u64>,
 }
 trait Sample: Send + Sync {
     fn sample(&self) -> io::Result<MemorySample>;
@@ -310,11 +311,12 @@ impl Engine for LocalEngine {
             images: model.images,
         })
     }
-    fn local_memory_policy(&self, model: &str) -> Option<&'static str> {
+    fn local_memory_status(&self, model: &str) -> Option<(u32, &'static str, u64)> {
         let status = self.status();
-        (status.model.as_deref() == Some(model))
-            .then_some(status.memory_policy)
+        (model.is_empty() || status.model.as_deref() == Some(model))
+            .then_some(status.pid.zip(status.memory_policy))
             .flatten()
+            .map(|(pid, policy)| (pid, policy, status.launcher_micros.unwrap_or(0)))
     }
     fn count_tokens(&self, _text: &str) -> Result<u32, OxaError> {
         Err(OxaError::unsupported(
@@ -545,6 +547,7 @@ fn snapshot(lifecycle: &Lifecycle) -> LocalStatus {
         waiting: status.waiting,
         stop_reason: status.stop_reason,
         memory_policy: lifecycle.memory_policy(),
+        launcher_micros: lifecycle.memory_policy().map(|_| lifecycle.launcher_micros),
     }
 }
 fn publish(inner: &Inner, lifecycle: &Lifecycle) {
@@ -780,7 +783,7 @@ mod tests {
             pid: std::sync::atomic::AtomicU32,
         }
         impl crate::platform::PlatformLauncher for Scope {
-            fn attach(&self, pid: u32) -> io::Result<crate::platform::Attachment> {
+            fn attach(&self, pid: u32, _gated: bool) -> io::Result<crate::platform::Attachment> {
                 self.pid.store(pid, Ordering::Release);
                 let mut sample = Memory {
                     fail: AtomicBool::new(false),
@@ -814,8 +817,13 @@ mod tests {
                 assert!(engine.gate.try_acquire().is_err()); // unloaded, not a stale ready permit
             } else {
                 result.unwrap();
-                assert_eq!(engine.local_memory_policy("fake-model"), Some("scope"));
-                assert_eq!(engine.local_memory_policy("other-model"), None);
+                assert_eq!(
+                    engine
+                        .local_memory_status("fake-model")
+                        .map(|(pid, policy, _)| (pid, policy)),
+                    Some((scope.pid.load(Ordering::Acquire), "scope"))
+                );
+                assert_eq!(engine.local_memory_status("other-model"), None);
                 engine
                     .inner
                     .state
@@ -828,6 +836,7 @@ mod tests {
                 until(&engine, State::Stopped);
             }
             assert_eq!(engine.status().pid, None);
+            assert_eq!(engine.local_memory_status("fake-model"), None);
             assert!(wait_operation(&engine.gate, &CancelToken::new()).is_ok());
             assert!(!PathBuf::from(format!("/proc/{}", scope.pid.load(Ordering::Acquire))).exists());
         }
