@@ -286,7 +286,7 @@ printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","comments":
     let prompt = requests[0]
         .messages
         .iter()
-        .map(|message| message.content.as_str())
+        .filter_map(|message| message.content.as_deref())
         .collect::<Vec<_>>()
         .join("\n");
     assert!(prompt.contains("Fix the test fixture"), "{prompt}");
