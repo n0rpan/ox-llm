@@ -910,6 +910,24 @@ fn dynamic_go_startup_errors_keep_provider_ownership_with_usable_local() {
                 String::from_utf8_lossy(&local.stderr)
             );
             assert!(String::from_utf8_lossy(&local.stdout).contains("synthetic-local"));
+            if mode == "offline" && !explicit {
+                let scoped = run(
+                    &env,
+                    &[
+                        "--offline",
+                        "--models",
+                        "synthetic-local",
+                        "--no-session",
+                        "--no-tools",
+                        "-p",
+                        "Synthetic local scope",
+                    ],
+                );
+                // The explicitly scoped local backend reaches its missing-weight
+                // guard, without an unused Go default hijacking the request.
+                assert_eq!(terminal(&scoped)["error_class"], "not_found");
+                assert!(String::from_utf8_lossy(&scoped.stderr).contains("Local weights are missing"));
+            }
             assert_eq!(mock.requests().len(), hits);
             assert!(mock.requests().iter().all(|request| request.method == "GET"));
             mock.assert_healthy();
