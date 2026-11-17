@@ -4,6 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
 pub const SETTING: &str = "oxa.lead.serve";
+pub mod proxy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -18,6 +19,7 @@ pub struct Config {
     bind: IpAddr,
     port: u16,
     allowed: Vec<String>,
+    proxy: Option<proxy::Trust>,
 }
 impl Default for Config {
     fn default() -> Self {
@@ -27,6 +29,7 @@ impl Default for Config {
             bind: Ipv4Addr::LOCALHOST.into(),
             port: 8743,
             allowed: vec![],
+            proxy: None,
         }
     }
 }
@@ -38,10 +41,17 @@ impl Config {
             return Ok(Self::default());
         };
         let values = value.as_object().ok_or("invalid lead serve settings")?;
-        if values
-            .keys()
-            .any(|key| !["enabled", "identity", "bind", "port", "allowed_identities"].contains(&key.as_str()))
-        {
+        if values.keys().any(|key| {
+            ![
+                "enabled",
+                "identity",
+                "bind",
+                "port",
+                "allowed_identities",
+                "proxy",
+            ]
+            .contains(&key.as_str())
+        }) {
             return Err("unknown lead serve setting");
         }
         let mut config = Self::default();
@@ -91,6 +101,7 @@ impl Config {
                 config.allowed.push(login.to_owned());
             }
         }
+        config.proxy = proxy::Trust::parse(values.get("proxy"))?;
         Ok(config)
     }
     /// Pre-bind feature selection only; requests still require `read_only` authorization.
