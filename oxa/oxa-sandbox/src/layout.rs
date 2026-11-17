@@ -569,6 +569,52 @@ mod tests {
         assert!(path.iter().all(|p| !p.starts_with(&shown)), "{path:?}");
     }
 
+    /// A rustup install whose shims are missing (no `~/.cargo/bin`, or a run started before
+    /// rustup's profile line): only `~/.rustup/toolchains/<name>/bin` holds `cargo`, and the
+    /// bind shows it. It goes on the PATH, the first toolchain that has a `cargo` in name
+    /// order, so the PATH stays deterministic.
+    #[test]
+    fn a_rustup_toolchain_without_shims_is_on_the_sandbox_path() {
+        let root = std::env::temp_dir().join(format!("oxa-rustup-{}", std::process::id()));
+        let home = root.join("home");
+        std::fs::create_dir_all(home.join(".rustup/toolchains/0.9.0/bin")).unwrap();
+        std::fs::create_dir_all(home.join(".rustup/toolchains/1.0.0/bin")).unwrap();
+        std::fs::write(home.join(".rustup/toolchains/1.0.0/bin/cargo"), "x").unwrap();
+        let Layout { path, read, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: "/usr/bin:/bin".into(),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        let bin = home.join(".rustup/toolchains/1.0.0/bin");
+        let shown = bin.display().to_string();
+        assert!(path.contains(&shown), "{path:?}");
+        // The toolchain without a `cargo` is not named, and only one is added.
+        let rustup: Vec<&String> = path.iter().filter(|p| p.contains(".rustup")).collect();
+        assert_eq!(rustup, vec![&shown], "{path:?}");
+        // The bind is the read-only toolchain directory above it.
+        assert!(read.contains(&home.join(".rustup")), "{read:?}");
+    }
+
+    #[test]
+    fn a_cargo_on_path_keeps_the_rustup_toolchain_off_the_path() {
+        let root = std::env::temp_dir().join(format!("oxa-rustup2-{}", std::process::id()));
+        let home = root.join("home");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(home.join(".rustup/toolchains/1.0.0/bin")).unwrap();
+        std::fs::write(home.join(".rustup/toolchains/1.0.0/bin/cargo"), "x").unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::write(elsewhere.join("cargo"), "x").unwrap();
+        let Layout { path, .. } = Layout::build(&LayoutInputs {
+            home: home.clone(),
+            path_var: format!("{}:/usr/bin:/bin", elsewhere.display()),
+            ..Default::default()
+        });
+        let _ = std::fs::remove_dir_all(&root);
+        // A cargo the path already finds keeps its place; no toolchain directory is added.
+        assert!(path.iter().all(|p| !p.contains(".rustup")), "{path:?}");
+    }
+
     #[test]
     fn secret_names_are_recognised() {
         for k in [

@@ -485,6 +485,37 @@ fn real_an_installed_toolchain_is_found_without_it_on_path() {
     assert!(!home.join(".cargo/bin/evil").exists());
 }
 
+/// A rustup install whose shims are missing: only `~/.rustup/toolchains/<name>/bin` holds
+/// `cargo`, and a `done` check such as `cargo fmt --check` runs from it. It is the layout a
+/// session has when rustup installed the toolchain but its profile line is not in the
+/// environment oxa started from (`~/.cargo/bin` absent, `~/.rustup/toolchains` present).
+#[test]
+fn real_a_rustup_toolchain_without_shims_runs_cargo() {
+    let env = TestEnv::new();
+    exe(
+        &env,
+        "home/.rustup/toolchains/pinned/bin/cargo",
+        "#!/bin/sh\necho \"cargo from $(cat \"$HOME/.rustup/toolchains/pinned/version\")\"\n",
+    );
+    env.write("home/.rustup/toolchains/pinned/version", "1.0.0-test");
+    let home = env.home();
+    let layout = Layout::build(&LayoutInputs {
+        home: home.clone(),
+        agent_dir: Some(env.agent_dir()),
+        path_var: "/usr/bin:/bin".into(),
+        ..Default::default()
+    });
+    let Some(b) = real(&env, layout) else { return };
+    let (exit, out) = run(&b, "command -v cargo && cargo", &env.work());
+    assert_eq!(exit, Some(0), "{out}");
+    assert!(out.contains("cargo from 1.0.0-test"), "{out}");
+    // The toolchain stays read-only.
+    let (exit, _) = run(&b, "touch \"$HOME/.rustup/toolchains/pinned/bin/evil\"", &env.work());
+    assert_ne!(exit, Some(0));
+    let evil = home.join(".rustup/toolchains/pinned/bin/evil");
+    assert!(!evil.exists());
+}
+
 #[test]
 fn real_toolchains_under_home_run() {
     let env = TestEnv::new();
