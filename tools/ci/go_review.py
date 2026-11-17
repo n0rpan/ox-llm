@@ -15,6 +15,8 @@ API = f'https://api.github.com/repos/{REPO}'
 TOKEN_URL = 'https://opencode.ai/console/auth/oauth/token'
 MODEL_URL = 'https://opencode.ai/inference/go/openai/v1/chat/completions'
 MODEL = 'deepseek-v4.1-flash'
+ARGON = 'gemini-4-argon'
+ARGON_URL = 'https://opencode.ai/inference/go/google/v1beta/models/' + ARGON + ':generateContent'
 MAX_DIFF = 200_000
 MAX_LINES = 6000
 MAX_RESPONSE = 128_000
@@ -129,6 +131,54 @@ def reviewed(comments, sha, diff_hash):
     return False
 
 
+def review_models(pr, files):
+    # An absent list preserves the first pass; a second model is explicit opt-in.
+    raw = os.environ.get('GO_REVIEW_MODELS', '') or '["deepseek-v4.1-flash"]'
+    if len(raw) > 256:
+        raise Refused('Review model list exceeds the bound')
+    try:
+        models = json.loads(raw)
+    except ValueError:
+        raise Refused('GO_REVIEW_MODELS must be a JSON list') from None
+    if (not isinstance(models, list) or not 1 <= len(models) <= 2
+            or any(not isinstance(m, str) or m not in (MODEL, ARGON) for m in models)
+            or len(set(models)) != len(models) or models[0] != MODEL):
+        raise Refused('Unsupported review model list; no fallback model selected')
+    two = any(label.get('name') == 'two-review' for label in pr.get('labels', []))
+    prefixes = ('engine-perf/', 'oxa-work-board/', 'engine/',
+                'oxa/oxa-core/', 'oxa/oxa-work/', 'oxa/oxa-work-board/')
+    two = two or any(path.startswith(prefixes) for f in files
+                    for path in (f['filename'], f.get('previous_filename', f['filename'])))
+    return models if two else models[:1]
+
+
+def model_response(model, token, prompt, diff, session):
+    headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
+               'User-Agent': 'ox-llm-go-review/1', 'x-opencode-session': session}
+    if model == MODEL:
+        return request(MODEL_URL, headers, json.dumps({
+            'model': model, 'stream': False, 'max_tokens': 4096,
+            'response_format': {'type': 'json_object'},
+            'messages': [{'role': 'system', 'content': prompt},
+                         {'role': 'user', 'content': diff}]}).encode())
+    # The public Go models catalog advertises generate-content for this exact id.
+    result = request(ARGON_URL, headers, json.dumps({
+        'systemInstruction': {'parts': [{'text': prompt}]},
+        'contents': [{'role': 'user', 'parts': [{'text': diff}]}],
+        'generationConfig': {'maxOutputTokens': 8192,
+                             'responseMimeType': 'application/json'}}).encode())
+    candidate, = result['candidates']
+    parts = candidate['content']['parts']
+    if (candidate.get('finishReason') != 'STOP' or not isinstance(parts, list)
+            or not parts or any(not isinstance(p, dict) or set(p) != {'text'}
+                                or not isinstance(p['text'], str) for p in parts)):
+        raise Refused('Second review did not complete normally')
+    if result.get('promptFeedback', {}).get('blockReason'):
+        raise Refused('Second review was blocked; no receipt posted')
+    return {'choices': [{'finish_reason': 'stop', 'message': {
+        'content': ''.join(p['text'] for p in parts)}}]}
+
+
 def docs_only(files):
     def doc(path):
         return (path in ('README.md', 'CHANGELOG.md', 'CONTRIBUTING.md')
@@ -221,7 +271,7 @@ def main():
     if (os.environ.get('GITHUB_EVENT_NAME') != 'pull_request'
             or os.environ.get('GITHUB_REPOSITORY') != REPO
             or event.get('action') not in ('opened', 'synchronize', 'ready_for_review', 'labeled')
-            or event.get('action') == 'labeled' and event.get('label', {}).get('name') != 'ok-to-review'
+            or event.get('action') == 'labeled' and event.get('label', {}).get('name') not in ('ok-to-review', 'two-review')
             or not re.fullmatch('[0-9a-f]{40}', sha) or not eligible(pr, sha)):
         return
     number = int(pr['number'])
@@ -262,20 +312,22 @@ def main():
     diff_hash = own_diff_hash(files)
     if already_reviewed(diff_hash) or not eligible(request(pull, headers), sha):
         return
+    models = review_models(current, files)
     prompt = review_prompt()
     token = access_token()
-    response = request(MODEL_URL, {
-        'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
-        'User-Agent': 'ox-llm-go-review/1', 'x-opencode-session': f'{REPO}/pull/{number}/{sha}',
-    }, json.dumps({'model': MODEL, 'stream': False, 'max_tokens': 4096,
-                   'response_format': {'type': 'json_object'},
-                   'messages': [{'role': 'system', 'content': prompt}, {'role': 'user', 'content': diff}]}).encode())
-    rows = findings(response, allowed, [token, gh, os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']])
+    rows = []
+    for model in models:
+        response = model_response(model, token, prompt, diff, f'{REPO}/pull/{number}/{diff_hash}')
+        model_rows = findings(response, allowed, [token, gh, os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']])
+        rows.extend(f'### {model}\n\n{row}' for row in model_rows)
+        # Never spend the second request after a superseding head or completed receipt.
+        if not eligible(request(pull, headers), sha) or already_reviewed(diff_hash):
+            return
     # A synchronize/cancel or rerun must not turn a stale result into a current-head receipt.
     if not eligible(request(pull, headers), sha) or already_reviewed(diff_hash):
         return
     verdict = 'REVISE' if rows else 'CLEAR'
-    body = f'First-pass DeepSeek review of `{sha}` (diff only; advisory, no approval).\n\n'
+    body = f'First-pass Go review of `{sha}` ({", ".join(models)}; diff only; advisory, no approval).\n\n'
     body += '\n\n'.join(rows) if rows else 'No concrete findings supported by the bounded diff.'
     body += '\n\n<!-- go-review:v1 ' + json.dumps({'sha': sha, 'diff_hash': diff_hash, 'verdict': verdict}, separators=(',', ':')) + ' -->'
     request(comments_url, headers, json.dumps({'body': body}).encode())

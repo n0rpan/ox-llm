@@ -37,7 +37,7 @@ def finding(**changes):
 
 
 class GoReview(unittest.TestCase):
-    def run_review(self, *, pr=None, files=None, comments=None, answer=None, stale=False):
+    def run_review(self, *, pr=None, files=None, comments=None, answer=None, stale=False, models=None, argon=None):
         pr = copy.deepcopy(PR if pr is None else pr)
         files = FILES if files is None else files
         calls, posted, pulls = [], [], 0
@@ -55,6 +55,13 @@ class GoReview(unittest.TestCase):
                 return files
             if '/comments?' in url:
                 return comments or []
+            if url == review.ARGON_URL:
+                payload = json.loads(body)
+                self.assertEqual(payload['generationConfig']['responseMimeType'], 'application/json')
+                self.assertIn('Project guidelines:', payload['systemInstruction']['parts'][0]['text'])
+                self.assertNotIn('synthetic-access', json.dumps(payload))
+                return argon if argon is not None else {'candidates': [{'finishReason': 'STOP',
+                    'content': {'parts': [{'text': response()['choices'][0]['message']['content']}]}}]}
             if url == review.MODEL_URL:
                 payload = json.loads(body)
                 self.assertEqual(payload['model'], 'deepseek-v4.1-flash')
@@ -74,6 +81,8 @@ class GoReview(unittest.TestCase):
             env = {'HOME': tmp, 'GITHUB_EVENT_PATH': str(event), 'GITHUB_EVENT_NAME': 'pull_request',
                    'GITHUB_REPOSITORY': review.REPO, 'GH_TOKEN': 'synthetic-github',
                    'ACTIONS_ID_TOKEN_REQUEST_TOKEN': 'synthetic-request'}
+            if models is not None:
+                env['GO_REVIEW_MODELS'] = models
             with patch.dict(os.environ, env, clear=True), patch.object(review, 'request', request), \
                     patch.object(review, 'access_token', return_value='synthetic-access') as auth:
                 review.main()
@@ -89,6 +98,38 @@ class GoReview(unittest.TestCase):
         self.assertEqual(len(marker), 1)
         self.assertEqual(json.loads(marker[0]),
                          {'sha': SHA, 'diff_hash': review.own_diff_hash(FILES), 'verdict': 'REVISE'})
+
+    def test_second_model_is_explicitly_enabled_and_scope_limited(self):
+        models = json.dumps([review.MODEL, review.ARGON])
+        for files, labels in ((FILES, [{'name': 'two-review'}]),
+                              ([{**FILES[0], 'filename': 'oxa/oxa-core/src/lib.rs'}], []),
+                              ([{**FILES[0], 'previous_filename': 'engine-perf/probe.rs'}], []),
+                              ([{**FILES[0], 'filename': 'oxa-work-board/src/lib.rs'}], [])):
+            pr = {**copy.deepcopy(PR), 'labels': labels}
+            calls, posted, auth = self.run_review(pr=pr, files=files, models=models)
+            self.assertEqual((calls.count(review.MODEL_URL), calls.count(review.ARGON_URL)), (1, 1))
+            self.assertEqual((len(posted), auth), (1, 1))
+            self.assertEqual(len(review.MARKER.findall(posted[0])), 1)
+            self.assertIn(review.ARGON, posted[0])
+        calls, _, _ = self.run_review(models=models)
+        self.assertNotIn(review.ARGON_URL, calls)
+        pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
+        calls, _, _ = self.run_review(pr=pr)
+        self.assertNotIn(review.ARGON_URL, calls)
+
+    def test_invalid_model_configuration_never_authenticates(self):
+        for models in ('not-json', '[]', '["unknown"]', '["gemini-4-argon"]',
+                       '["deepseek-v4.1-flash","deepseek-v4.1-flash"]'):
+            with self.subTest(models=models), self.assertRaises(review.Refused):
+                self.run_review(models=models)
+
+    def test_failed_second_review_posts_no_clear_receipt_or_fallback(self):
+        pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
+        for candidate in ({'finishReason': 'MAX_TOKENS', 'content': {'parts': [{'text': '{}'}]}},
+                          {'finishReason': 'STOP', 'content': {'parts': [{'functionCall': {}}]}}):
+            with self.subTest(candidate=candidate), self.assertRaises(review.Refused):
+                self.run_review(pr=pr, models=json.dumps([review.MODEL, review.ARGON]),
+                                argon={'candidates': [candidate]})
 
     def test_same_diff_on_a_different_head_spends_nothing(self):
         marker = {'sha': 'b' * 40, 'diff_hash': review.own_diff_hash(FILES), 'verdict': 'CLEAR'}
@@ -185,6 +226,8 @@ class GoReview(unittest.TestCase):
         self.assertIn('ref: ${{ github.event.pull_request.base.sha }}', text)
         self.assertIn('persist-credentials: false', text)
         self.assertIn('id-token: write', text)
+        self.assertIn('GO_REVIEW_MODELS: ${{ vars.GO_REVIEW_MODELS }}', text)
+        self.assertIn("github.event.label.name == 'two-review'", text)
         self.assertIn("vars.GO_REVIEW_ENABLED == 'true'", text)
         self.assertIn('pull-requests: write', text)
         self.assertNotIn('pull_request_target:', text)
