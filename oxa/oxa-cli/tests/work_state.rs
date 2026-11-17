@@ -545,6 +545,74 @@ fn status_works_when_the_kernel_refuses_every_flock_syscall() {
 
 #[test]
 fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
+    // Failure-only facts from this isolated fixture; never print paths, IDs or state text.
+    fn diagnostics(env: &TestEnv, record: &serde_json::Value, requests: usize) -> String {
+        use std::io::Read;
+
+        let mut bytes = Vec::new();
+        let read = fs::File::open(path(env))
+            .and_then(|file| file.take(64 * 1024 + 1).read_to_end(&mut bytes))
+            .is_ok();
+        let truncated = bytes.len() > 64 * 1024;
+        let state = if read && !truncated {
+            serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+        } else {
+            None
+        };
+        let deadline = state.as_ref().and_then(|state| state["deadline_at_ms"].as_u64());
+        let max_time = state
+            .as_ref()
+            .and_then(|state| state["task"]["max_time"].as_u64());
+        let checkpoint = record["checkpoint_at_ms"].as_u64();
+        let before_worker = record["detail"].as_str()
+            == Some("task deadline exhausted before another worker; worktree retained");
+        let step = match record["step"].as_str() {
+            Some("preparing") => "preparing",
+            Some("worker") => "worker",
+            Some("acceptance") => "acceptance",
+            Some("repair") => "repair",
+            Some("recheck") => "recheck",
+            Some("saving") => "saving",
+            Some("finished") => "finished",
+            None => "none",
+            _ => "other",
+        };
+        let kind = match record["checkpoint_kind"].as_str() {
+            Some("task_transition") => "task_transition",
+            Some("worker_finished") => "worker_finished",
+            None => "none",
+            _ => "other",
+        };
+        let marker = |name: &str, expected: &[u8]| {
+            let mut bytes = Vec::new();
+            let read = record["worktree"].as_str().is_some_and(|root| {
+                fs::File::open(Path::new(root).join(name))
+                    .and_then(|file| file.take(16).read_to_end(&mut bytes))
+                    .is_ok()
+            });
+            (read, read && bytes == expected)
+        };
+        let (change_read, change_draft) = marker("change.txt", b"draft");
+        let (tool_read, tool_finished) = marker("tool-finished", b"finished");
+        format!(
+            "state_read={read} state_truncated={truncated} state_parsed={} \
+             deadline_at_ms={deadline:?} saved_max_time={max_time:?} \
+             checkpoint_revision={:?} checkpoint_at_ms={checkpoint:?} \
+             checkpoint_step={step} checkpoint_kind={kind} deadline_expired_at_checkpoint={:?} \
+             deadline_before_worker={before_worker} \
+             worker_present={} session_present={} requests={requests} \
+             change_read={change_read} change_draft={change_draft} \
+             tool_finished_read={tool_read} tool_finished={tool_finished}",
+            state.is_some(),
+            record["checkpoint_revision"].as_u64(),
+            deadline
+                .zip(checkpoint)
+                .map(|(deadline, checkpoint)| checkpoint >= deadline),
+            !record["worker"].is_null(),
+            !record["session_id"].is_null(),
+        )
+    }
+
     let env = TestEnv::new();
     setup(&env, "[]");
     env.write(
@@ -568,17 +636,26 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
         &["work", "../tasks.json"],
         None,
     );
-    assert_eq!(record["outcome"], "interrupted", "{record}");
-    assert_eq!(record["worker"]["outcome"], "interrupted", "{record}");
-    assert_eq!(requests.len(), 2, "one graceful wrap-up turn");
+    let diagnostics = || diagnostics(&env, &record, requests.len());
+    assert_eq!(record["outcome"], "interrupted", "{}", diagnostics());
+    assert_eq!(record["worker"]["outcome"], "interrupted", "{}", diagnostics());
+    assert_eq!(requests.len(), 2, "one graceful wrap-up turn: {}", diagnostics());
     assert_eq!(
-        fs::read_to_string(tree(&record).join("tool-finished")).unwrap(),
-        "finished"
+        fs::read_to_string(tree(&record).join("tool-finished"))
+            .unwrap_or_else(|_| panic!("tool marker unreadable: {}", diagnostics())),
+        "finished",
+        "{}",
+        diagnostics()
     );
-    assert_eq!(git(&env, tree(&record), &["show", "HEAD:change.txt"]), "draft");
-    assert_eq!(load(&env)["task"]["max_time"], 1);
-    assert_eq!(record["step"], "finished");
-    assert_eq!(record["interruption"], "deadline");
+    assert_eq!(
+        git(&env, tree(&record), &["show", "HEAD:change.txt"]),
+        "draft",
+        "{}",
+        diagnostics()
+    );
+    assert_eq!(load(&env)["task"]["max_time"], 1, "{}", diagnostics());
+    assert_eq!(record["step"], "finished", "{}", diagnostics());
+    assert_eq!(record["interruption"], "deadline", "{}", diagnostics());
 }
 
 #[test]
