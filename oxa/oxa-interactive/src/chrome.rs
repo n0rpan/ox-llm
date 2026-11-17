@@ -277,7 +277,11 @@ pub fn render_header(
         Some(policy) => format!("{} · {policy}", info.engine_url),
         None => info.engine_url.clone(),
     };
-    out.push(truncate_to_width(&theme.dim(&format!("{endpoint}{model}")), w, "..."));
+    out.push(truncate_to_width(
+        &theme.dim(&format!("{endpoint}{model}")),
+        w,
+        "...",
+    ));
     // pi `showLoadedResources`: a blank line, then per section `[Name]` (mdHeading) and the
     // compact list (dim, indented), each followed by a blank line.
     let sections: Vec<&(String, Vec<String>)> = info
