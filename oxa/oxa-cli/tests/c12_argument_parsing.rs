@@ -533,10 +533,10 @@ fn mixed_tool_exclusions_remain_disabled_in_either_order() {
         let args = parse(&words);
         let (tools, warnings) = oxa_core::resolve_toolset(&oxa_tools::builtin_tools(), &selection(&args));
         assert!(warnings.is_empty(), "{words:?}: {warnings:?}");
-        let names: Vec<_> = tools.specs().iter().map(|s| s.name.as_str()).collect();
-        assert!(!names.contains(&"bash"), "{words:?} re-enabled bash");
-        assert!(!names.contains(&"read"), "{words:?} re-enabled read");
-        assert!(names.contains(&"edit"), "{words:?} removed an unrelated tool");
+        let names: Vec<_> = tools.specs().into_iter().map(|s| s.name).collect();
+        assert!(!names.iter().any(|name| name == "bash"), "{words:?} re-enabled bash");
+        assert!(!names.iter().any(|name| name == "read"), "{words:?} re-enabled read");
+        assert!(names.iter().any(|name| name == "edit"), "{words:?} removed an unrelated tool");
     }
 }
 
