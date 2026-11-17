@@ -504,7 +504,7 @@ fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 48, 140, 0, 0))
 child = subprocess.Popen([
     sys.argv[1], '--share-model', 'synthetic-model', '--share-bind', '127.0.0.1',
     '--model', 'synthetic-model', '--no-session', '--no-mcp', '--no-extensions',
-    '--no-skills', '--no-context-files',
+    '--no-skills', '--no-context-files', '--tui-mode', 'regular',
 ], stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
 try:
@@ -513,11 +513,12 @@ try:
         global output
         deadline = time.monotonic() + 15
         while not all(needle in output for needle in needles):
-            assert child.poll() is None, 'interactive share exited early'
-            assert time.monotonic() < deadline, 'interactive share status deadline'
+            missing = [needle for needle in needles if needle not in output]
+            assert child.poll() is None, ('interactive share exited early', missing, output[-4000:])
+            assert time.monotonic() < deadline, ('interactive share status deadline', missing, output[-4000:])
             if select.select([master], [], [], .1)[0]:
                 output += os.read(master, 65536)
-    wait_for(b'Guest OpenAI API listening')
+    wait_for(b'READY')
     assert b'Guest usage today' not in output
     os.write(master, b'/engine status\r')
     wait_for(b'LAN sharing', b'0 connections', b'Guest usage today (UTC)',
@@ -536,7 +537,7 @@ finally:
     fs::create_dir_all(&agent).unwrap();
     fs::write(
         agent.join("settings.json"),
-        r#"{"cacheWarming":"off","oxa":{
+        r#"{"cacheWarming":"off","defaultProjectTrust":"always","oxa":{
             "engine":{"inProcessLocal":true},
             "local":{"binary":"/synthetic/oxe-server",
                 "models":{"synthetic-model":{"model":"/synthetic/model.gguf","arguments":["--engine","stub"]}},
@@ -569,6 +570,7 @@ finally:
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", &home.0)
         .env("OXA_TEST_ISOLATION", "1")
+        .env("LANG", "C.UTF-8")
         .env("TERM", "xterm-256color")
         .current_dir(&home.0)
         .output()
