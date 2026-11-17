@@ -12,6 +12,8 @@ use oxc_gateway::{
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
 
+mod routing;
+
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 
 fn invalid() -> OxaError {
@@ -36,6 +38,34 @@ pub(crate) fn select(
     dirs: &Dirs,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
+    if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
+        let aliases = |path| {
+            user.get(path)
+                .and_then(Value::as_object)
+                .map(|models| models.keys().cloned().collect())
+                .unwrap_or_default()
+        };
+        return routing::Routed {
+            local: oxc_local::configured_engine(
+                user.get("oxa.local"),
+                dirs.agent_dir.join("local-engine"),
+                oxa_engine::StreamOpts {
+                    silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
+                        .unwrap_or(365 * 24 * 3600 * 1000),
+                    ..oxa_engine::StreamOpts::default()
+                },
+            ),
+            cloud: if oxa_proto::offline() {
+                Err(oxa_proto::offline_error("the in-process cloud gateway"))
+            } else {
+                open(user, effective, dirs)
+            },
+            local_models: aliases("oxa.local.models"),
+            cloud_models: aliases("oxa.cloud.models"),
+            default: effective.string("defaultModel"),
+        }
+        .into_engine();
+    }
     if user.bool(oxc_local::LOCAL_SETTING, false) {
         return oxc_local::configured_engine(
             user.get("oxa.local"),
@@ -58,15 +88,22 @@ pub(crate) fn select(
 
 fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn Engine>, OxaError> {
     let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
-    let models = cloud["models"]
-        .as_object()
-        .filter(|m| !m.is_empty())
-        .ok_or_else(invalid)?;
+    let go_enabled = cloud.pointer("/opencode/enabled") == Some(&Value::Bool(true));
+    let empty = serde_json::Map::new();
+    let models = match cloud.get("models") {
+        None | Some(Value::Null) if go_enabled => &empty,
+        Some(value) => value.as_object().ok_or_else(invalid)?,
+        None => return Err(invalid()),
+    };
+    if models.is_empty() && !go_enabled {
+        return Err(invalid());
+    }
     let mut routes = Vec::with_capacity(models.len());
     let mut needs_subscription = false;
     for (alias, value) in models {
         let (provider, default_endpoint) = match text(value, "provider")? {
             "anthropic" => (Provider::Anthropic, "https://api.anthropic.com"),
+            "openrouter" => (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
             "openai" => (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
             "chatgpt" => (Provider::ChatGpt, oxc_gateway::openai::client::SUBSCRIPTION_BASE),
             _ => return Err(OxaError::unsupported("this in-process cloud provider")),
@@ -93,12 +130,16 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
         routes.push((model, billing));
     }
     let (subscription, subscription_limits) = subscription_options(cloud, needs_subscription)?;
+    if go_enabled && subscription_limits.is_none() {
+        return Err(invalid());
+    }
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
     };
     // These existing private locations are denied to both file tools and bash.
-    // Discovery prepares the key parent only; it reads no key and opens no ledger.
+    // Configured-route discovery reads no key or ledger. Explicit Go discovery
+    // uses the existing protected key reader and this same gateway HTTP pool.
     let runtime = Runtime::new(
         routes,
         dirs.home.join(".config/oxc/llm/cloud-secrets.json"),
@@ -113,10 +154,22 @@ fn open(user: &Settings, effective: &Settings, dirs: &Dirs) -> Result<Arc<dyn En
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;
     let timeout = crate::dispatch::stream_silence_timeout(effective).map(Duration::from_millis);
-    let gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
+    let mut gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
         let refusal = e.refusal();
         OxaError::new(refusal.code, refusal.message)
     })?;
+    if go_enabled {
+        let base = cloud
+            .pointer("/opencode/base_url")
+            .map_or(Some(oxc_gateway::opencode::GO_BASE), Value::as_str)
+            .ok_or_else(invalid)?;
+        gateway
+            .discover_opencode(base, Duration::from_secs(30))
+            .map_err(|e| {
+                let refusal = e.refusal();
+                OxaError::new(refusal.code, refusal.message)
+            })?;
+    }
     Ok(Arc::new(EmbeddedEngine::from_gateway(gateway)))
 }
 

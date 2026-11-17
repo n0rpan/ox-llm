@@ -15,6 +15,8 @@ pub mod catalog;
 pub mod ledger;
 #[cfg(feature = "upstream-openai")]
 pub mod openai;
+#[cfg(all(feature = "anthropic-client", feature = "ledger"))]
+pub mod opencode;
 #[cfg(feature = "policy")]
 pub mod policy;
 #[cfg(feature = "pricing")]
@@ -43,6 +45,8 @@ pub mod anthropic_stream;
 
 #[cfg(feature = "anthropic-client")]
 pub mod anthropic_client;
+#[cfg(feature = "anthropic-client")]
+mod sse;
 
 #[cfg(all(feature = "anthropic-client", feature = "pricing"))]
 pub mod openrouter;
