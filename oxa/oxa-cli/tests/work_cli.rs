@@ -234,24 +234,232 @@ fn github_issue_input_uses_mock_gh() {
     let env = TestEnv::new();
     setup(&env, "[]");
     let tools = trusted_tools(&env);
+    let lookup_log = env.write("tmp/issue-lookup.log", "");
+    let lookup_packet = env.write(
+        "tmp/issue-packet.json",
+        r#"{"title":"Synthetic task","body":"Fix the test fixture","state":"OPEN","comments":[{"author":{"login":"reviewer"},"body":"Synthetic follow-up finding"}]}"#,
+    );
     let gh = env.write(
         "tmp/trusted-tools/gh",
         r##"#!/bin/sh
-[ "$*" = 'issue view 42 --json title,body' ] || exit 9
-printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
+[ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s\n' "$*" >> "$ISSUE_LOOKUP_LOG"
+exec /bin/cat "$ISSUE_LOOKUP_PACKET"
 "##,
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
-    let record = run_args(
-        &env,
-        vec![ScriptTurn::text("done")],
-        &["work", "--issue", "42", "--model", "fake"],
-        Some(path),
-    );
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let mut invocation = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    invocation
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", &path)
+        .env("ISSUE_LOOKUP_LOG", &lookup_log)
+        .env("ISSUE_LOOKUP_PACKET", &lookup_packet)
+        .stdin(std::process::Stdio::null());
+    let out = invocation.output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "issue task did not run: {stderr}");
+    let record: serde_json::Value = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .unwrap_or_else(|| panic!("no record: {}", String::from_utf8_lossy(&out.stderr)));
     assert_eq!(record["id"], "issue-42");
     assert_eq!(record["branch"], "agent/42-work");
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(&lookup_log).unwrap(),
+        "issue view 42 --json title,body,state,comments\n"
+    );
+    // The packet the child receives is the one lookup: text, state and comments. A worker
+    // that cannot read the issue itself must not receive a title-shaped packet.
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "worker made no request: {record}");
+    let request = &requests[0];
+    let prompt = std::iter::once(request.system.as_str())
+        .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("Fix the test fixture"), "{prompt}");
+    assert!(prompt.contains("Runner-fetched issue state: OPEN."), "{prompt}");
+    assert!(prompt.contains("Synthetic follow-up finding"), "{prompt}");
+    let ownership = prompt
+        .find("The runner owns GitHub access for this task.")
+        .unwrap_or_else(|| panic!("worker did not receive GitHub ownership guidance: {prompt}"));
+    let issue = prompt.find("Implement issue #42: Synthetic task").unwrap();
+    assert!(ownership < issue, "{prompt}");
+    assert!(
+        prompt.contains("Do not invoke gh or authenticated GitHub HTTP"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("NEED-METADATA"), "{prompt}");
+
+    std::fs::write(
+        &lookup_packet,
+        r#"{"title":"Synthetic task","body":"Fix the test fixture","state":"CLOSED","comments":[{"body":"New comment after the task was frozen"}]}"#,
+    )
+    .unwrap();
+    let repeat = invocation.output().unwrap();
+    assert!(
+        repeat.status.success(),
+        "an updated issue prevented checkpoint reuse: {} {}",
+        String::from_utf8_lossy(&repeat.stdout),
+        String::from_utf8_lossy(&repeat.stderr)
+    );
+    let repeated: serde_json::Value = serde_json::from_slice(&repeat.stdout).unwrap();
+    assert_eq!(repeated["checkpoint_revision"], record["checkpoint_revision"]);
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "a settled task started a second worker"
+    );
+
+    let rerun = FakeServer::start(vec![ScriptTurn::text("done again")], FakeOpts::default()).unwrap();
+    let repeated = invocation
+        .envs(env.envs(&rerun.url()))
+        .arg("--rerun")
+        .output()
+        .unwrap();
+    assert!(
+        repeated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeated.stdout)
+    );
+    let requests = rerun.requests();
+    assert_eq!(requests.len(), 1, "rerun never started the worker");
+    let request = &requests[0];
+    let prompt = std::iter::once(request.system.as_str())
+        .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("Synthetic follow-up finding"), "{prompt}");
+    assert!(
+        !prompt.contains("New comment after the task was frozen"),
+        "{prompt}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lookup_log).unwrap(),
+        "issue view 42 --json title,body,state,comments\n"
+    );
+}
+#[test]
+fn issue_packet_workers_keep_local_tools_and_a_separate_network_namespace() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r#"#!/bin/sh
+[ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Record the local fixture","state":"OPEN","comments":[]}'
+"#,
+    );
+    std::fs::set_permissions(gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let host_namespace = std::fs::read_link("/proc/self/ns/net").unwrap();
+    let turns = |file: &str| {
+        vec![
+            ScriptTurn::tool(
+                "local",
+                "bash",
+                &serde_json::json!({"command": format!("readlink /proc/self/ns/net > {file}")}).to_string(),
+            ),
+            ScriptTurn::text("done"),
+        ]
+    };
+    let assert_isolated = |record: &serde_json::Value, file: &str| {
+        assert!(
+            matches!(record["outcome"].as_str(), Some("done" | "nothing_to_do")),
+            "{record}"
+        );
+        let worktree = Path::new(record["worktree"].as_str().unwrap());
+        let worker_namespace = std::fs::read_to_string(worktree.join(file)).unwrap();
+        assert!(worker_namespace.starts_with("net:["));
+        assert_ne!(Path::new(worker_namespace.trim()), host_namespace.as_path());
+    };
+    let first = run_args(
+        &env,
+        turns("worker-namespace"),
+        &["work", "--issue", "42", "--model", "fake"],
+        Some(path),
+    );
+    assert_isolated(&first, "worker-namespace");
+
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(storage(&env).join("issue-42.json")).unwrap()).unwrap();
+    env.write(
+        "work/frozen-issue.json",
+        &serde_json::json!([saved["task"]]).to_string(),
+    );
+    // The file still describes the exact issue packet, so an explicit rerun
+    // keeps the same tool restriction even without an issue flag.
+    let rerun = run_args(
+        &env,
+        turns("rerun-namespace"),
+        &["work", "../frozen-issue.json", "--rerun"],
+        None,
+    );
+    assert_isolated(&rerun, "rerun-namespace");
+}
+
+/// A dogfood issue carried its content in comments, so a packet built from the
+/// title and body alone reached the worker without it. The child's first request
+/// must contain the body and the comment findings, all as data.
+#[test]
+fn github_issue_packet_carries_comment_findings() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r##"#!/bin/sh
+[ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OPEN","comments":[{"author":{"login":"reviewer"},"body":"Review finding: keep the frame when delegating"},{"author":null,"body":"Unknown-author finding"}]}'
+"##,
+    );
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "issue task did not run: {stderr}");
+    let record: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {stderr}"));
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "worker made no request: {record}");
+    let mut prompt = requests[0].system.clone();
+    for message in &requests[0].messages {
+        if let Some(content) = &message.content {
+            prompt.push('\n');
+            prompt.push_str(content);
+        }
+    }
+    assert!(prompt.contains("Fix the test fixture"), "{prompt}");
+    assert!(
+        prompt.contains("Review finding: keep the frame when delegating"),
+        "issue comments were not in the task packet: {prompt}"
+    );
+    assert!(prompt.contains("reviewer"), "{prompt}");
+    assert!(prompt.contains("Runner-fetched issue state: OPEN."), "{prompt}");
+    assert!(
+        prompt.contains("--- comment by unknown ---\nUnknown-author finding"),
+        "{prompt}"
+    );
 }
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
@@ -657,9 +865,9 @@ fn github_lookup_ignores_project_local_executable() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     setup(&env, "[]");
-    let bad = env.write("work/project/bin/gh", "#!/bin/sh\nprintf invoked > \"$HOME/project-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    let bad = env.write("work/project/bin/gh", "#!/bin/sh\nprintf invoked > \"$HOME/project-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\",\"state\":\"OPEN\",\"comments\":[]}'\n");
     trusted_tools(&env);
-    let good = env.write("tmp/trusted-tools/gh", "#!/bin/sh\nprintf invoked > \"$HOME/trusted-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    let good = env.write("tmp/trusted-tools/gh", "#!/bin/sh\nprintf invoked > \"$HOME/trusted-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\",\"state\":\"OPEN\",\"comments\":[]}'\n");
     for path in [&bad, &good] {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
@@ -723,7 +931,7 @@ fn untrusted_issue_input_never_spawns_even_a_trusted_gh() {
             false,
         )
         .unwrap();
-    let gh = env.write("tmp/gh", "#!/bin/sh\nprintf invoked > \"$HOME/issue-lookup-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    let gh = env.write("tmp/gh", "#!/bin/sh\nprintf invoked > \"$HOME/issue-lookup-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\",\"state\":\"OPEN\",\"comments\":[]}'\n");
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["work", "--issue", "42", "--model", "fake"])
