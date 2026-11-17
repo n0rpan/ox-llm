@@ -3,7 +3,7 @@ use crate::board::{review, Board, Entry};
 use crate::Result;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
+use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
@@ -22,6 +22,12 @@ struct Sample<'a> {
     reviews: &'a BTreeMap<u64, review::Plan>,
 }
 
+pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+
+pub(crate) fn regular_file_owned_by(metadata: &Metadata, owner: u32) -> bool {
+    metadata.is_file() && metadata.uid() == owner
+}
+
 /// Refuse links, shared files and concurrent writers before consulting GitHub.
 pub fn open_log(path: &Path) -> Result<File> {
     // SAFETY: geteuid has no preconditions and returns this process's effective owner.
@@ -34,13 +40,12 @@ fn open_log_for_owner(path: &Path, owner: u32) -> Result<File> {
         .append(true)
         .create(true)
         .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .custom_flags(OWNER_FILE_FLAGS)
         .open(path)
         .map_err(|_| "cannot open private shadow log")?;
     let metadata = file.metadata().map_err(|_| "cannot inspect shadow log")?;
-    if !metadata.is_file()
+    if !regular_file_owned_by(&metadata, owner)
         || metadata.nlink() != 1
-        || metadata.uid() != owner
         || metadata.permissions().mode() & 0o077 != 0
     {
         return Err("shadow log must be a private regular file with one link".into());

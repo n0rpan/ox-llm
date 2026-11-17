@@ -421,6 +421,15 @@ pub trait Hooks: Send + Sync {
     fn prompt_sections(&self) -> Vec<(String, String)>;
 
     // ---- optional surface ----
+    /// A host preset owns the supplied resources: keep them on reload and
+    /// rebuild restored prefixes from its current hooks and tool selection.
+    fn owns_resources(&self) -> bool {
+        false
+    }
+    /// Whether this preset supports session-local goal controls.
+    fn allows_goals(&self) -> bool {
+        true
+    }
     /// A stable name for logs and error events.
     fn name(&self) -> &str {
         "hooks"
