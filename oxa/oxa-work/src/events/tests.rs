@@ -1,40 +1,24 @@
 use super::*;
+use crate::test_dir::PrivateDir;
 use oxa_proto::work::*;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-struct Fixture(PathBuf);
+struct Fixture(PrivateDir);
 impl Fixture {
     fn new() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        loop {
-            let root = std::env::temp_dir().join(format!(
-                "oxa-facts-test-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match fs::DirBuilder::new().mode(0o700).create(&root) {
-                Ok(()) => return Self(root),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(error) => panic!("create isolated fixture: {error}"),
-            }
-        }
+        Self(PrivateDir::new("facts-test"))
     }
     fn root(&self) -> PathBuf {
-        self.0.join("facts")
+        self.0.path().join("facts")
     }
     fn facts(&self) -> Facts {
         Facts::initialize(&self.root()).unwrap()
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
+
 fn checkpoint(source: &str, revision: u64) -> Checkpoint {
     Checkpoint {
         source: source.into(),
@@ -74,7 +58,7 @@ fn reserve(facts: &Facts, fact: Fact) -> Event {
 fn lifecycle_facts_do_not_turn_worker_success_into_landed_work() {
     let env = Fixture::new();
     let facts = env.facts();
-    let marker = env.0.join("runner-state.json");
+    let marker = env.0.path().join("runner-state.json");
     fs::write(&marker, b"owned only by runner").unwrap();
     let pr = PullRequest {
         number: 123,
@@ -493,12 +477,12 @@ fn parent_directory_sync_error_blocks_initialization() {
     // SAFETY: geteuid has no arguments, pointers or failure mode.
     if unsafe { libc::geteuid() } == 0 {
         use std::os::unix::process::CommandExt;
-        std::os::unix::fs::chown(&env.0, Some(65534), Some(65534)).unwrap();
+        std::os::unix::fs::chown(env.0.path(), Some(65534), Some(65534)).unwrap();
         child.uid(65534).gid(65534);
     }
-    fs::set_permissions(&env.0, fs::Permissions::from_mode(0o300)).unwrap();
+    fs::set_permissions(env.0.path(), fs::Permissions::from_mode(0o300)).unwrap();
     let output = child.output();
-    fs::set_permissions(&env.0, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(env.0.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let output = output.unwrap();
     assert!(
         output.status.success(),
@@ -588,7 +572,7 @@ fn poisoned_leaves_and_root_symlinks_never_read_or_replace_the_target() {
     for leaf in [STATE, SITUATION, CURRENT, LOCK] {
         let env = Fixture::new();
         let _facts = env.facts();
-        let target = env.0.join("outside");
+        let target = env.0.path().join("outside");
         fs::write(&target, b"keep this target").unwrap();
         fs::remove_file(env.root().join(leaf)).unwrap();
         std::os::unix::fs::symlink(&target, env.root().join(leaf)).unwrap();
@@ -596,7 +580,7 @@ fn poisoned_leaves_and_root_symlinks_never_read_or_replace_the_target() {
         assert_eq!(fs::read(target).unwrap(), b"keep this target");
     }
     let env = Fixture::new();
-    let target = env.0.join("outside");
+    let target = env.0.path().join("outside");
     fs::create_dir(&target).unwrap();
     std::os::unix::fs::symlink(&target, env.root()).unwrap();
     assert!(Facts::initialize(&env.root()).is_err());

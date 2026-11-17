@@ -1,20 +1,16 @@
+#[path = "support/private_dir.rs"]
+mod test_dir;
 use oxa_work::board::*;
-use std::{collections::BTreeMap, fs, os::unix::fs::DirBuilderExt, path::PathBuf, process::Command};
+use std::{collections::BTreeMap, fs, path::PathBuf, process::Command};
+use test_dir::PrivateDir;
 
-struct Fixture(PathBuf);
+struct Fixture(PrivateDir);
 impl Fixture {
     fn new() -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "oxa-board-claims-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
-        Self(path.canonicalize().unwrap())
+        Self(PrivateDir::new("board-claims"))
     }
     fn store(&self) -> Claims {
-        Claims::open(&self.0).unwrap()
+        Claims::open(self.0.path()).unwrap()
     }
     fn claim(&self, now: u64, ttl: u64) -> Option<Lease> {
         self.store()
@@ -22,11 +18,7 @@ impl Fixture {
             .unwrap()
     }
 }
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.0).unwrap();
-    }
-}
+
 struct FakeGitHub;
 impl GitHub for FakeGitHub {
     fn open_pull_requests(&mut self) -> oxa_work::Result<Vec<PullRequest>> {
@@ -74,7 +66,7 @@ fn disabled_and_zero_cap_do_not_create_claim_files() {
             .is_none());
     }
     assert!(store.snapshot().unwrap().is_empty());
-    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 0);
+    assert_eq!(fs::read_dir(fixture.0.path()).unwrap().count(), 0);
 }
 
 #[test]
@@ -111,13 +103,13 @@ fn missing_corrupt_symlinked_or_public_state_never_resets_the_cap() {
     for poison in ["missing", "corrupt", "symlink", "public"] {
         let fixture = Fixture::new();
         fixture.claim(10, 10).unwrap();
-        let path = fixture.0.join("1.board-claim.json");
+        let path = fixture.0.path().join("1.board-claim.json");
         match poison {
             "missing" => fs::remove_file(&path).unwrap(),
             "corrupt" => fs::write(&path, b"not valid state").unwrap(),
             "symlink" => {
-                fs::rename(&path, fixture.0.join("outside")).unwrap();
-                symlink(fixture.0.join("outside"), &path).unwrap();
+                fs::rename(&path, fixture.0.path().join("outside")).unwrap();
+                symlink(fixture.0.path().join("outside"), &path).unwrap();
             }
             _ => fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap(),
         }
@@ -136,7 +128,7 @@ fn lost_marker_keeps_the_cap_but_lost_state_still_fails_closed() {
     let store = fixture.store();
     assert!(fixture.claim(10, 10).is_some());
     // A disposable-looking marker must not decide whether the attempts on disk count.
-    fs::remove_file(fixture.0.join("1.board-claim.lock")).unwrap();
+    fs::remove_file(fixture.0.path().join("1.board-claim.lock")).unwrap();
     assert!(fixture.claim(20, 10).is_some());
     assert_eq!(store.snapshot().unwrap()[&1].attempts, 2);
     // The reverse is corruption: attempts whose state file vanished are never reset.
@@ -171,7 +163,7 @@ fn active_and_capped_claims_repair_the_missing_creation_witness() {
     for now in [11, 21] {
         let fixture = Fixture::new();
         fixture.claim(10, 10).unwrap();
-        fs::remove_file(fixture.0.join("1.board-claim.created")).unwrap();
+        fs::remove_file(fixture.0.path().join("1.board-claim.created")).unwrap();
         let capped = Policy {
             enabled: true,
             max_attempts_per_day: 1,
@@ -181,9 +173,9 @@ fn active_and_capped_claims_repair_the_missing_creation_witness() {
             .claim(&entry(), &capped, "worker", now, 10)
             .unwrap()
             .is_none());
-        assert!(fixture.0.join("1.board-claim.created").exists());
-        fs::remove_file(fixture.0.join("1.board-claim.json")).unwrap();
-        fs::remove_file(fixture.0.join("1.board-claim.lock")).unwrap();
+        assert!(fixture.0.path().join("1.board-claim.created").exists());
+        fs::remove_file(fixture.0.path().join("1.board-claim.json")).unwrap();
+        fs::remove_file(fixture.0.path().join("1.board-claim.lock")).unwrap();
         assert!(fixture.store().snapshot().is_err());
     }
 }
@@ -196,7 +188,7 @@ fn concurrent_processes_reserve_exactly_one_attempt() {
             Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", "claim_child", "--nocapture"])
                 .env_clear()
-                .env("OXA_BOARD_CLAIM_TEST_ROOT", &fixture.0)
+                .env("OXA_BOARD_CLAIM_TEST_ROOT", fixture.0.path())
                 .stdout(std::process::Stdio::piped())
                 .spawn()
                 .unwrap()
