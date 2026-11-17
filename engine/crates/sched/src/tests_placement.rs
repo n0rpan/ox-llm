@@ -122,3 +122,11 @@ fn explicit_list_defines_its_own_size() {
     assert_eq!(p.cpus, vec![0, 1]);
     assert!(p.notes.is_empty());
 }
+
+#[test]
+fn regular_files_named_like_cpus_do_not_invent_online_processors() {
+    let data = read_cpu_tree(&fixture_dir("regular-file")).unwrap();
+    assert_eq!(data.iter().map(|cpu| cpu.id).collect::<Vec<_>>(), vec![1]);
+    assert_eq!(select(&data, None, None, 1).unwrap().cpus, vec![1]);
+    assert_eq!(data[0].capacity, Some(1024));
+}
