@@ -9,6 +9,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub const INTERVAL: Duration = Duration::from_secs(300);
+pub const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Serialize)]
 struct Sample<'a> {
@@ -20,6 +21,11 @@ struct Sample<'a> {
 
 /// Refuse links, shared files and concurrent writers before consulting GitHub.
 pub fn open_log(path: &Path) -> Result<File> {
+    // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+    open_log_for_owner(path, unsafe { libc::geteuid() })
+}
+
+fn open_log_for_owner(path: &Path, _owner: u32) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .append(true)
@@ -34,6 +40,47 @@ pub fn open_log(path: &Path) -> Result<File> {
     }
     file.try_lock().map_err(|_| "shadow log is already in use")?;
     Ok(file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn path(label: &str) -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("shadow-{label}-{}-{nonce}", std::process::id()))
+    }
+
+    #[test]
+    fn owner_mismatch_is_refused_before_logging() {
+        let path = path("owner");
+        drop(open_log(&path).unwrap());
+        let other = std::fs::metadata(&path).unwrap().uid().wrapping_add(1);
+        let refused = open_log_for_owner(&path, other).is_err();
+        std::fs::remove_file(path).unwrap();
+        assert!(refused);
+    }
+
+    #[test]
+    fn a_full_log_is_not_extended() {
+        let path = path("limit");
+        let mut log = open_log(&path).unwrap();
+        log.set_len(MAX_LOG_BYTES).unwrap();
+        let refused = run(
+            &mut log,
+            true,
+            || Ok(Board::default()),
+            |_| panic!("unexpected wait"),
+        )
+        .is_err();
+        let unchanged = log.metadata().unwrap().len() == MAX_LOG_BYTES;
+        drop(log);
+        std::fs::remove_file(path).unwrap();
+        assert!(refused && unchanged);
+    }
 }
 
 /// Sample immediately, then at five-minute intervals. Fail closed on read/log errors.
