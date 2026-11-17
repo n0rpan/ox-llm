@@ -1,14 +1,14 @@
 # Python port ledger
 
-Draft qualification for #951 / O416, inspected at main346cc036. This initial ledger records three provider replacements, the MEMLAT port, two retained feature gaps and the explicit installer retirement; it inventories all366 Python modules. It authorizes no deletion.
+Release qualification for #951, inspected at main fd337a5f and packaging candidate #824 at f38febd3. This initial ledger records three provider replacements, the MEMLAT port, two retained feature gaps and the explicit installer retirement; it inventories all366 Python modules. It authorizes no deletion.
 
 PORTED means the named Rust implementation and its contract tests replace the feature. DROPPED requires an explicit retirement decision and an entry in #946. UNUSED requires caller/shipping evidence. MISSING requires a feature-specific issue before that module can be deleted. Unqualified modules below are deliberately not assigned a guessed status.
 
 | Python module / feature | Status | Rust replacement (crate/module) | Evidence |
 |---|---|---|---|
-| oxc/src/oxc/runtime/cloud_anthropic.py — provider transport/translation; subscription sign-in/refresh where applicable | PORTED | oxa/oxc-gateway/src/anthropic_client.rs; anthropic_request.rs; anthropic_stream.rs | oxa/oxc-gateway/tests/anthropic_client.rs; anthropic_request.rs; anthropic_stream.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
-| oxc/src/oxc/runtime/cloud_openai.py — provider transport/translation; subscription sign-in/refresh where applicable | PORTED | oxa/oxc-gateway/src/openai/client.rs; request.rs; stream.rs | oxa/oxc-gateway/tests/openai_client.rs; oxa/oxa-cli/tests/in_process_cloud.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
-| oxc/src/oxc/runtime/cloud_chatgpt.py — provider transport/translation; subscription sign-in/refresh where applicable | PORTED | oxa/oxc-gateway/src/openai/client.rs; chatgpt_tokens.rs; login.rs; oxa/oxa-cli/src/login_cmd.rs | oxa/oxc-gateway/tests/chatgpt_tokens.rs; openai_client.rs; oxa/oxa-cli/tests/native_chatgpt_login.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
+| oxc/src/oxc/runtime/cloud_anthropic.py — Anthropic transport, translation and native tool loop | PORTED | oxa/oxc-gateway/src/anthropic_client.rs; anthropic_request.rs; anthropic_stream.rs | oxa/oxc-gateway/tests/anthropic_client.rs; anthropic_request.rs; anthropic_stream.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
+| oxc/src/oxc/runtime/cloud_openai.py — Responses API-key transport, translation and native tool loop | PORTED | oxa/oxc-gateway/src/openai/client.rs; request.rs; stream.rs | oxa/oxc-gateway/tests/openai_client.rs; oxa/oxa-cli/tests/in_process_cloud.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
+| oxc/src/oxc/runtime/cloud_chatgpt.py — subscription transport, account-pinned continuation, sign-in and refresh | PORTED | oxa/oxc-gateway/src/openai/client.rs; chatgpt_tokens.rs; login.rs; oxa/oxa-cli/src/login_cmd.rs | oxa/oxc-gateway/tests/chatgpt_tokens.rs; openai_client.rs; oxa/oxa-cli/tests/native_chatgpt_login.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
 | oxc/tools/memlat_boot.py — boot-menu/rollback command | PORTED | oxa/oxc-memlat/src/{main,menu,policy,image}.rs | oxa/oxc-memlat/tests/boot.rs ports all19 Python cases; tests/differential.{rs,py} compares actual command codes/stderr and exact ESP bytes. Deletion BLOCKED until its Python-oracle caller is replaced. |
 | oxc/tests/test_memlat_boot.py — all19 synthetic boot cases | PORTED | oxa/oxc-memlat/tests/boot.rs | Explicit port declaration and matching19-case source inventory. No host boot actions. Keep the stronger actual-command differential coverage. |
 | oxc/src/oxc/runtime/cloud_prices.py — live public OpenRouter pricing metadata | MISSING | Existing native pricing.rs parses configured prices; that is not a refresh consumer. | Retained feature issue [#628](https://github.com/oxstack/ox-llm/issues/628). Preserve bounded replies, durable last-known data and no request-path fetch before deleting this module. |
@@ -24,11 +24,28 @@ PORTED means the named Rust implementation and its contract tests replace the fe
 | oxc/src/oxc/bootstrap_sources.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 | oxc/src/oxc/bootstrap_transfer.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 
-Deletion gates: packaging must stop staging/smoking Python first (Air owns that hunk); qualify each remaining caller, archive archive/python-oxc, then delete only qualified rows in ledger order. A provider mapping alone does not retire its controller, CLI, Studio, metadata refresh, or legacy tests.
+Deletion gates: packaging must stop staging/smoking Python first (#824); qualify each remaining caller, archive archive/python-oxc, then delete only qualified rows in ledger order. A provider mapping alone does not retire its controller, CLI, Studio, metadata refresh, or legacy tests.
 
 Known callers on this base: packaging/release/{stage,smoke}.py; Python lab job in .github/workflows/checks.yml; tools/{oxa-contract,openai-contract}/run.sh; tools/gates/tiny_real.sh; oxa/oxc-memlat/tests/differential.py (imports MEMLAT Python as its reference); related documentation. Synthetic path strings in tools/ci/tests must be distinguished from executable imports before changing them.
 
-Native lab transition: existing Go profiles, ledgers, sessions and caps must remain intact. ChatGPT requires its normal protected token reader; no operator copying/reading tokens, implicit re-login or fresh accounting store. The legacy and native token locations differ; the internal migration contract is pending on #951.
+Native lab transition: existing Go profiles, ledgers, sessions and caps must remain intact. ChatGPT requires its normal protected token reader; no operator copying/reading tokens, implicit re-login or fresh accounting store. Ordinary native use retains the canonical protected token reader. Custom lab HTTP routes remain a separate migration boundary; no credential import or accounting reset is inferred.
+
+## Qualified component receipts and release blockers
+
+[CI run 44093927834](https://github.com/oxstack/ox-llm/actions/runs/44093927834), source 9a1dbaff4e8dd653357bd19e44ab67bb0d3c7167, records passing native Anthropic/OpenRouter tool-loop and settlement controls; both Responses modes with done-only tools; new-process account-pinned ChatGPT continuation; proactive expiry rechecks and refresh rotation; synthetic native PKCE/login/logout; all 19 MEMLAT boot cases and the Python/Rust actual-command differential.
+
+The inspected provider, token, login and MEMLAT implementation blobs in candidate f38febd3 match that tested source. Main fd337a5f additionally changes login_cmd.rs through #889; the older receipt does not qualify that changed input handling. MEMLAT intentionally selects verified STOCK on pending-marker failure, so full failure-path parity with Python is not claimed. These are component receipts, not exact release-artifact or real-provider acceptance. A later documentation-guard queue failure does not waive artifact qualification.
+
+| Remaining release gate | Concrete evidence still required |
+|---|---|
+| Native packaging, #824 | Main fd337a5f still stages Python controller payload/wrappers and declares runtime Python. Published candidate f38febd3 removes those; complete accepted final artifacts and four-boundary receipts. Python used to build a package is not an installed runtime dependency. |
+| Native memory scope, #1010 | Qualify inherited no-swap or attached-scope behavior in the packaged artifact. No obsolete memory-size requirement is inferred. |
+| Provider acceptance, #763 | Complete the named clean-home local, API-key and subscription tasks on the accepted artifact. Synthetic component tests do not substitute for those receipts. |
+| Repository qualification, #1012 | Clear main documentation/CI coverage defects through the existing writer; no competing CI edit or test relaxation. |
+
+Price refresh (#628) and owner LAN controls (#688) remain MISSING but excluded from the current release. Preserve them; exclusion is not deletion approval.
+
+Remaining deletion users differ from release blockers: controller CI and the two contract runners retain Python mocks; tiny_real retains benchmark/conversion tooling; the MEMLAT differential retains its Python oracle. Preserve these until their actual consumers are replaced. Synthetic path fixtures are not imports. The native packaging candidate still consumes four inert MEMLAT templates and a license under oxc/; those non-Python paths do not imply a runtime Python dependency. No module is classified UNUSED from a caller search alone.
 
 ## Complete module inventory awaiting feature-level qualification
 
