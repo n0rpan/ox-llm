@@ -1212,7 +1212,21 @@ fn concurrent_queued_children_do_not_start_after_the_deadline() {
             "local={local}: {}",
             o.out.text
         );
-        assert_eq!(starts(&env), 2, "local={local}: only the initial children start");
+        let mut started: Vec<String> = log(&env)
+            .into_iter()
+            .filter(|l| l.starts_with("start "))
+            .collect();
+        started.sort();
+        // s1 and s2 are the two "hold" children, s3 the queued "last" one. Remote workers
+        // run s1/s2 and skip s3; with the local slot held, s3 runs remotely and the queued
+        // local s2 is the one skipped. Asserting the exact set keeps the test from passing
+        // when a different child than the queued one is the one that did not start.
+        let expected = if local { ["s1", "s3"] } else { ["s1", "s2"] };
+        let expected: Vec<String> = expected.iter().map(|n| format!("start sess.{n}")).collect();
+        assert_eq!(
+            started, expected,
+            "local={local}: the queued child is the one that must not start"
+        );
         assert_eq!(
             host.clears().len(),
             usize::from(local),

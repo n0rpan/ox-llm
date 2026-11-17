@@ -385,8 +385,10 @@ impl SubagentHooks {
     }
 
     /// #508: the parent's `--max-time` deadline. Every child is started with the time that is
-    /// left as its own `--max-time` (it wraps up by itself, so a looping child cannot outlive
-    /// the parent's limit), and no child is started once the deadline has passed.
+    /// left as its own `--max-time`, and no child is started once the deadline has passed.
+    /// `--max-time` is cooperative and counts from the child's own start, so this asks the
+    /// child to wrap up at the parent's limit rather than killing it; a cancel still kills
+    /// its process group.
     pub fn with_deadline(self, deadline: Instant) -> SubagentHooks {
         *lock(&self.inner.deadline) = Some(deadline);
         self
