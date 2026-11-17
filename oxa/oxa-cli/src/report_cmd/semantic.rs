@@ -80,13 +80,14 @@ impl Publication {
         };
         let Some(number) = url
             .trim()
-            .strip_prefix(&format!("https://github.com/{repo}/issues/"))
-            .and_then(|number| number.parse::<u64>().ok())
+            .rsplit_once("/issues/")
+            .filter(|(base, _)| base.eq_ignore_ascii_case(&format!("https://github.com/{repo}")))
+            .and_then(|(_, number)| number.parse::<u64>().ok())
             .filter(|number| *number > 0)
         else {
             return Ok(()); // Reservation still counts when the receipt is ambiguous.
         };
-        ledger["tasks"][task]["issue"] = json!(number);
+        ledger["tasks"][task.as_str()]["issue"] = json!(number);
         persist(path, ledger)
     }
 }
@@ -325,7 +326,7 @@ pub(super) fn plan(
     }
     let used = tasks
         .values()
-        .filter(|row| row["worker"] == worker && row["day"].as_u64() == Some(day))
+        .filter(|row| row["worker"].as_str() == Some(worker.as_str()) && row["day"].as_u64() == Some(day))
         .count();
     if used >= DAILY_LIMIT {
         return Err("this worker has reached the daily cap of three new issues");
