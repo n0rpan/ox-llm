@@ -449,6 +449,16 @@ fn reacquisition_keeps_the_same_aggregate_response_budget() {
 }
 
 #[test]
+fn transient_http_output_uses_the_same_snapshot_byte_budget() {
+    let env = batched_fixture(31, 7, 504);
+    fs::write(env.work().join("response-padding"), "800000").unwrap();
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(!out.status.success());
+    assert_eq!(batch_sizes(&env), [0, 15, 15, 15, 7, 7]);
+    assert!(fs::read(log_for(&env, "example/repo")).unwrap().is_empty());
+}
+
+#[test]
 fn malformed_membership_is_not_a_consistency_retry() {
     let env = batched_fixture(2, 15, 504);
     let mut malformed: serde_json::Value =
