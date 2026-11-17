@@ -144,8 +144,8 @@ mod tests {
                 19,
                 vec![
                     (true, "Merged with evidence".into()),
-                    (false, "Hardware check".into())
-                ]
+                    (false, "Hardware check".into()),
+                ],
             )
         );
     }
@@ -158,9 +158,6 @@ mod tests {
         ] {
             let mut data = response();
             *data.pointer_mut(pointer).unwrap() = json!(999);
-            if pointer.ends_with("pullRequest/number") {
-                *data.pointer_mut(pointer).unwrap() = Value::Null;
-            }
             assert!(parse(&serde_json::to_vec(&data).unwrap(), Some(19)).is_err());
         }
         assert!(parse(br#"{"errors":[{"message":"private synthetic detail"}]}"#, None).is_err());
