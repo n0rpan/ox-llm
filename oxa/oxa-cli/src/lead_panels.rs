@@ -151,13 +151,16 @@ mod tests {
     }
     #[test]
     fn refuses_truncation_errors_wrong_issue_and_missing_fields() {
-        for pointer in [
-            "/data/repository/mergeQueue/entries/totalCount",
-            "/data/repository/issue/number",
-            "/data/repository/mergeQueue/entries/nodes/0/pullRequest/number",
+        for (pointer, replacement) in [
+            ("/data/repository/mergeQueue/entries/totalCount", json!(999)),
+            ("/data/repository/issue/number", json!(999)),
+            (
+                "/data/repository/mergeQueue/entries/nodes/0/pullRequest/number",
+                Value::Null,
+            ),
         ] {
             let mut data = response();
-            *data.pointer_mut(pointer).unwrap() = json!(999);
+            *data.pointer_mut(pointer).unwrap() = replacement;
             assert!(parse(&serde_json::to_vec(&data).unwrap(), Some(19)).is_err());
         }
         assert!(parse(br#"{"errors":[{"message":"private synthetic detail"}]}"#, None).is_err());
