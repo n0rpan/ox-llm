@@ -48,6 +48,9 @@ printf '*\n' > .local-checks/.gitignore
 curl --fail --location --proto '=https' --tlsv1.2 \
   https://strace.io/files/7.3/strace-7.3.tar.xz \
   -o .local-checks/strace-src/strace-7.3.tar.xz
+printf '%s  %s\n' \
+  529634c40910895a9a1f3c5c1e65da2ca9ed72fb158dfc4bcc89efdf05e39b72 \
+  .local-checks/strace-src/strace-7.3.tar.xz | sha256sum --check &&
 tar -xJf .local-checks/strace-src/strace-7.3.tar.xz -C .local-checks/strace-src
 prefix="$PWD/.local-checks/strace"
 (
@@ -65,8 +68,22 @@ The bundled headers avoid incompatibilities with newer system kernel headers; di
 optional multi-personality decoding avoids needing a 32-bit toolchain. Neither changes the
 native `execve` tracing used by this test. Keep this `PATH` prefix for subsequent check commands
 (and set it again in each new shell); all downloaded sources and build/install output remain
-ignored inside `.local-checks/`. No test is skipped or substituted, and no host installation
-is changed. A failure to trace (for example, denied `ptrace`) must still be fixed, not ignored.
+ignored inside `.local-checks/`. An export in a setup shell does not update a separate check
+runner's environment. For a runner that starts a fresh shell, pass the prefix with the check
+command itself (from the repository root, after building above):
+
+```sh
+(cd oxa && env -u TMPDIR PATH="$PWD/../.local-checks/strace/bin:$PATH" \
+  cargo test -p oxa-cli --test in_process_cloud \
+  native_discovery_tool_loop_and_budget_settlement_use_no_python_process)
+```
+
+The native cloud tool-loop and untrusted package-settings tests also discover the
+checkout-local install at `.local-checks/strace/bin/strace` directly, before searching `PATH`.
+Outside check runners therefore do not need to inherit the setup shell's export for these tests. This is the same
+upstream tracer, not a replacement proof; if the local executable exists but cannot trace,
+the test still fails. No test is skipped or substituted, and no host installation is changed.
+A failure to trace (for example, denied `ptrace`) must still be fixed, not ignored.
 Keep the test's temporary directory outside any repository: its synthetic credential fixture
 is subject to the production repository-key refusal. If `TMPDIR` points inside a checkout,
 run the test with `env -u TMPDIR cargo test ...` to use the system temporary directory instead;

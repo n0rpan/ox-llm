@@ -1,7 +1,7 @@
 //! Responses transport only. The caller owns routing, admission and settlement.
 //! No ambient credential discovery, sign-in, continuation cache or transport Done.
 use super::{chatgpt_request, chatgpt_tokens, request, stream};
-use crate::{accounting::Usage, rate_limits, secrets::Key};
+use crate::{accounting::Usage, rate_limits, secrets::Key, sse::Framer};
 use futures_util::StreamExt;
 use reqwest::{
     header::{HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_TYPE},
@@ -353,7 +353,7 @@ impl Client {
         let include_usage = chat.payload.pointer("/stream_options/include_usage") == Some(&Value::Bool(true));
         let mut translator = stream::Stream::new(chat.alias, chat.created, include_usage);
         let mut source = response.bytes_stream();
-        let mut decoder = Decoder::default();
+        let mut decoder = Framer::default();
         let mut received = 0usize;
         let mut redactor = Fields::new(sensitive);
         // Public text/reasoning streams through the existing field redactor.
@@ -370,9 +370,11 @@ impl Client {
                 if received > MAX_BODY {
                     return Err(Error::TooLarge);
                 }
-                let Some(event) = decoder.push(byte)? else {
+                let Some(data) = decoder.push(byte) else {
                     continue;
                 };
+                let event: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
+                drop(data);
                 let terminal = matches!(
                     event["type"].as_str(),
                     Some("response.completed" | "response.incomplete" | "response.failed" | "error")
@@ -603,6 +605,12 @@ impl Client {
         }
     }
 
+    // Only an already-hardened native transport may be reused here.
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn from_messages_transport(messages: &crate::anthropic_client::Client) -> Self {
+        Self(messages.shared_transport())
+    }
+
     async fn refresh(
         &self,
         endpoint: Url,
@@ -715,48 +723,6 @@ fn responses_endpoint(base: &str, subscription: bool) -> Result<Url, Error> {
     };
     url.set_path(&path);
     Ok(url)
-}
-// Same line-oriented SSE framing as the Anthropic transport: CR/LF/CRLF,
-// comments, multi-line data and UTF-8 split at arbitrary byte boundaries.
-#[derive(Default)]
-struct Decoder {
-    line: Vec<u8>,
-    data: Vec<u8>,
-    after_cr: bool,
-}
-impl Decoder {
-    fn push(&mut self, byte: u8) -> Result<Option<Value>, Error> {
-        if byte == b'\n' && self.after_cr {
-            self.after_cr = false;
-            return Ok(None);
-        }
-        self.after_cr = byte == b'\r';
-        if !matches!(byte, b'\r' | b'\n') {
-            self.line.push(byte);
-            return Ok(None);
-        }
-        let line = std::mem::take(&mut self.line);
-        if line.is_empty() {
-            if self.data.is_empty() {
-                return Ok(None);
-            }
-            let data = std::mem::take(&mut self.data);
-            return serde_json::from_slice(&data[..data.len() - 1])
-                .map(Some)
-                .map_err(|_| Error::Protocol);
-        }
-        let data = if line == b"data" {
-            Some(&b""[..])
-        } else {
-            line.strip_prefix(b"data:")
-        };
-        if let Some(data) = data {
-            self.data
-                .extend_from_slice(data.strip_prefix(b" ").unwrap_or(data));
-            self.data.push(b'\n')
-        }
-        Ok(None)
-    }
 }
 // Field-local withholding prevents credentials split across decoded delta chunks
 // from escaping; transport JSON/framing is never fed to the field redactor.
@@ -993,8 +959,12 @@ mod tests {
     #[test]
     fn sse_handles_crlf_multiline_unicode_and_comments() {
         let wire = b": ping\r\nevent: synthetic\r\ndata: {\"type\":\r\ndata: \"ping\",\"text\":\"\xce\xbb\"}\r\n\r\n";
-        let mut decoder = Decoder::default();
-        let events: Vec<_> = wire.iter().filter_map(|b| decoder.push(*b).unwrap()).collect();
+        let mut decoder = Framer::default();
+        let events: Vec<Value> = wire
+            .iter()
+            .filter_map(|b| decoder.push(*b))
+            .map(|data| serde_json::from_slice(&data).unwrap())
+            .collect();
         assert_eq!(events, vec![serde_json::json!({"type":"ping","text":"λ"})]);
     }
     #[test]
