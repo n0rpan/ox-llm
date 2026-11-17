@@ -102,6 +102,8 @@ impl WrapUpReason {
 pub struct Gate {
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
+    /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
+    pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
     /// Sticky headless interruption: abort now, without a final wrap-up turn.
@@ -269,6 +271,27 @@ impl Handle {
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
     }
+    /// Whether these handles control the same ordinary input queues. Reopening creates
+    /// another instance; a fork within the same instance retains its existing queue semantics.
+    pub fn same_instance(&self, other: &Handle) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
+    /// Reserve one worker wake for admitted editor input, even if the active consumer has
+    /// already passed its final queue take. The wake carries this handle across UI rebinds.
+    pub fn request_queued_wake(&self) -> bool {
+        !self.shared.gate.queued_wake_pending.swap(true, Ordering::SeqCst)
+    }
+
+    /// The worker clears the reservation BEFORE checking/taking input, so an admission after
+    /// its empty take can reserve another wake. Clear the originating handle, never a rebind.
+    pub fn clear_queued_wake(&self) {
+        self.shared
+            .gate
+            .queued_wake_pending
+            .store(false, Ordering::SeqCst);
+    }
+
     /// Claim the single pending frontend wake. Queue consumption during a long model
     /// run must not turn every admitted message into another unbounded channel job.
     pub fn request_inbox_wake(&self) -> bool {
