@@ -7,6 +7,7 @@ pub use claims::{Assignment, AssignmentBoard, AssignmentData, Claims, ReleaseRec
 pub mod assignment;
 mod intake;
 pub mod landing;
+pub mod queue;
 pub use intake::{ImportState, Issue, Snapshot};
 pub mod review;
 
