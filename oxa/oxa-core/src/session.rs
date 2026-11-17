@@ -933,7 +933,9 @@ impl Session {
         shared.cancel_retry.reset();
         shared.gate.bg_cancel.reset();
         shared.gate.bg_abort.store(false, Ordering::SeqCst);
-        if shared.gate.abort_next.swap(false, Ordering::SeqCst) {
+        if shared.gate.abort_next.swap(false, Ordering::SeqCst)
+            || shared.gate.interrupted.load(Ordering::SeqCst)
+        {
             // The front end accepted this run and was asked to abort it before it began.
             shared.cancel.cancel();
             shared.gate.bg_cancel.cancel();

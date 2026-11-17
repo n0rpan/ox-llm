@@ -10,11 +10,61 @@ pub enum Stage {
     ChatHttp,
 }
 
+/// Closed local validation categories; never contains upstream data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamCause {
+    ContentType,
+    Transport,
+    Eof,
+    FrameShape,
+    ToolShape,
+    ToolArguments,
+    TerminalUsage,
+}
+impl StreamCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ContentType => "content_type",
+            Self::Transport => "transport",
+            Self::Eof => "eof",
+            Self::FrameShape => "frame_shape",
+            Self::ToolShape => "tool_shape",
+            Self::ToolArguments => "tool_arguments",
+            Self::TerminalUsage => "terminal_usage",
+        }
+    }
+}
+
+/// Which existing terminal-usage rejection fired; never contains provider values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerminalCheck {
+    DoneWithoutFinish,
+    DoneWithoutUsage,
+    FrameAfterUsage,
+    ChoicesAfterFinish,
+    UsageBeforeFinish,
+    UsageRecordInvalid,
+}
+impl TerminalCheck {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DoneWithoutFinish => "done_without_finish",
+            Self::DoneWithoutUsage => "done_without_usage",
+            Self::FrameAfterUsage => "frame_after_usage",
+            Self::ChoicesAfterFinish => "choices_after_finish",
+            Self::UsageBeforeFinish => "usage_before_finish",
+            Self::UsageRecordInvalid => "usage_record_invalid",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub stage: Stage,
     pub status: Option<u16>,
     pub code: Option<&'static str>,
+    pub cause: Option<StreamCause>,
+    pub terminal_check: Option<TerminalCheck>,
     /// Fixed order: Retry-After, limit, remaining, reset. Numeric values only.
     pub rate: [Option<u32>; 4],
 }
@@ -36,6 +86,8 @@ impl Diagnostics {
                 stage: Stage::LocalCredentialRead,
                 status: None,
                 code: None,
+                cause: None,
+                terminal_check: None,
                 rate: [None; 4],
             });
         }
@@ -64,8 +116,26 @@ impl Diagnostics {
                 stage,
                 status: Some(status),
                 code: None,
+                cause: None,
+                terminal_check: None,
                 rate,
             });
+        }
+    }
+    pub(crate) fn stream_cause(&self, cause: StreamCause) {
+        if let Ok(mut slot) = self.0.lock() {
+            if let Some(snapshot) = slot.as_mut() {
+                snapshot.cause = Some(cause);
+                snapshot.terminal_check = None;
+            }
+        }
+    }
+    pub(crate) fn terminal_check(&self, check: TerminalCheck) {
+        if let Ok(mut slot) = self.0.lock() {
+            if let Some(snapshot) = slot.as_mut() {
+                snapshot.cause = Some(StreamCause::TerminalUsage);
+                snapshot.terminal_check = Some(check);
+            }
         }
     }
     pub(crate) fn error_code(&self, body: &Value) {
@@ -82,6 +152,43 @@ impl Diagnostics {
         if let Ok(mut slot) = self.0.lock() {
             if let Some(snapshot) = slot.as_mut() {
                 snapshot.code = code;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_checks_remain_finite_and_do_not_survive_snapshot_replacement() {
+        let diagnostics = Diagnostics::default();
+        for (check, label) in [
+            (TerminalCheck::DoneWithoutFinish, "done_without_finish"),
+            (TerminalCheck::DoneWithoutUsage, "done_without_usage"),
+            (TerminalCheck::FrameAfterUsage, "frame_after_usage"),
+            (TerminalCheck::ChoicesAfterFinish, "choices_after_finish"),
+            (TerminalCheck::UsageBeforeFinish, "usage_before_finish"),
+            (TerminalCheck::UsageRecordInvalid, "usage_record_invalid"),
+        ] {
+            assert_eq!(check.as_str(), label);
+            diagnostics.http(Stage::ChatHttp, 200, &HeaderMap::new());
+            diagnostics.terminal_check(check);
+            let snapshot = diagnostics.take().unwrap();
+            assert_eq!(snapshot.cause, Some(StreamCause::TerminalUsage));
+            assert_eq!(snapshot.terminal_check, Some(check));
+            assert!(diagnostics.take().is_none());
+            for replace in 0..4 {
+                diagnostics.http(Stage::ChatHttp, 200, &HeaderMap::new());
+                diagnostics.terminal_check(check);
+                match replace {
+                    0 => diagnostics.local(),
+                    1 => diagnostics.http(Stage::DiscoveryHttp, 503, &HeaderMap::new()),
+                    2 => diagnostics.stream_cause(StreamCause::Transport),
+                    _ => diagnostics.clear(),
+                }
+                assert!(diagnostics.take().is_none_or(|s| s.terminal_check.is_none()));
             }
         }
     }

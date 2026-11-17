@@ -150,6 +150,30 @@ fn subscription_usage_keeps_token_categories_and_exact_allowance_without_paid_fa
     assert_eq!(Usage::parse(&huge), Err(Error::Usage));
 }
 #[test]
+fn go_plus_usage_keeps_subscription_guards() {
+    let mut plus = usage();
+    plus["opencode"]["billing_source"] = json!("go-plus");
+    assert_eq!(Usage::parse(&plus), Usage::parse(&usage()));
+    for source in [json!("balance"), json!("paid"), json!("unknown"), Value::Null] {
+        let mut invalid = plus.clone();
+        invalid["opencode"]["billing_source"] = source;
+        assert_eq!(Usage::parse(&invalid), Err(Error::Usage));
+    }
+    for (pointer, replacement) in [
+        ("/cost", json!(0.001)),
+        ("/cost", Value::Null),
+        ("/opencode/allowance", json!(-1)),
+        ("/opencode/list_cost", Value::Null),
+        ("/opencode/tokens/reasoning", Value::Null),
+    ] {
+        let mut invalid = plus.clone();
+        *invalid.pointer_mut(pointer).unwrap() = replacement;
+        assert_eq!(Usage::parse(&invalid), Err(Error::Usage));
+    }
+    plus["prompt_tokens_details"] = json!({"cached_tokens":null});
+    assert_eq!(Usage::parse(&plus), Err(Error::Usage));
+}
+#[test]
 fn headers_are_agent_specific_stable_and_carry_only_the_supplied_private_digest() {
     let one = SessionHint::from_hmac([0x12; 32]);
     let two = SessionHint::from_hmac([0x13; 32]);
