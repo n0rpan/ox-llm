@@ -50,6 +50,7 @@ mod wire;
 pub mod control;
 pub mod guard;
 pub mod panic;
+pub mod time;
 pub mod work;
 
 pub use engine::*;
