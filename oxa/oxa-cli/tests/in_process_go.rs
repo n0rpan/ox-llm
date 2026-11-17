@@ -875,7 +875,7 @@ fn dynamic_go_startup_errors_keep_provider_ownership_with_usable_local() {
             settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
                 "models":{"synthetic-local":{"model":"/synthetic/model.gguf"}},
                 "limits":{"synthetic-local":{"context_window":4096,"max_output":64,
-                    "required_available_bytes":1048576}}});
+                    "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}});
             if explicit {
                 settings["defaultModel"] = json!("synthetic-local");
             }
@@ -946,7 +946,7 @@ fn local_go_namespace_alias_with_thinking_suffix_keeps_local_ownership_offline()
     settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
         "models":{"opencode/custom-local":{"model":"/synthetic/model.gguf"}},
         "limits":{"opencode/custom-local":{"context_window":4096,"max_output":64,
-            "required_available_bytes":1048576}}});
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}});
     fs::write(path, settings.to_string()).unwrap();
     for model in ["opencode/custom-local", "opencode/custom-local:high"] {
         let output = run(
