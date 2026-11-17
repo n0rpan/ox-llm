@@ -165,6 +165,25 @@ pub(crate) async fn stream_observed<F>(
 where
     F: FnMut(Event) -> Control + ?Sized,
 {
+    use crate::diagnostics::{StreamCause, TerminalCheck};
+    let protocol = |cause| {
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.stream_cause(cause);
+        }
+        Error::Protocol
+    };
+    let terminal = |check| {
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.terminal_check(check);
+        }
+        Error::Protocol
+    };
+    let transport = || {
+        if let Some(diagnostics) = diagnostics {
+            diagnostics.stream_cause(StreamCause::Transport);
+        }
+        Error::Transport
+    };
     *terminal_usage = None;
     let Chat {
         model,
@@ -189,7 +208,7 @@ where
         .header(CONTENT_TYPE, "application/json")
         .header("accept", "text/event-stream")
         .body(body);
-    let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|Error::Transport)?, };
+    let response = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), response=request.send()=>response.map_err(|_|transport())?, };
     let status = response.status().as_u16();
     let retry_after = crate::rate_limits::retry_after(response.headers())
         .and_then(|delay| u32::try_from(delay.as_secs()).ok());
@@ -218,7 +237,7 @@ where
                 .eq_ignore_ascii_case("text/event-stream")
         })
     {
-        return Err(Error::Protocol);
+        return Err(protocol(StreamCause::ContentType));
     }
     let mut source = response.bytes_stream();
     let mut decoder = Framer::default();
@@ -233,9 +252,9 @@ where
     loop {
         let next = tokio::select! { biased; _=cancel.cancelled()=>return Err(Error::Cancelled), next=source.next()=>next, };
         let Some(bytes) = next else {
-            return Err(Error::Protocol);
+            return Err(protocol(StreamCause::Eof));
         };
-        let bytes = bytes.map_err(|_| Error::Transport)?;
+        let bytes = bytes.map_err(|_| transport())?;
         received = received
             .checked_add(bytes.len())
             .filter(|n| *n <= MAX_BODY)
@@ -243,9 +262,9 @@ where
         for byte in bytes {
             let Some(data) = decoder.push(byte) else { continue };
             if data == b"[DONE]" {
-                let finish_reason = finish.ok_or(Error::Protocol)?;
+                let finish_reason = finish.ok_or_else(|| terminal(TerminalCheck::DoneWithoutFinish))?;
                 if terminal_usage.is_none() {
-                    return Err(Error::Protocol);
+                    return Err(terminal(TerminalCheck::DoneWithoutUsage));
                 }
                 let calls: Vec<Value> = tool_slots.into_values().collect();
                 return Ok(Completed {
@@ -258,25 +277,28 @@ where
             // Final usage must be the last semantic frame before [DONE]. A
             // conflicting/later frame invalidates its authority for settlement.
             if terminal_usage.take().is_some() {
-                return Err(Error::Protocol);
+                return Err(terminal(TerminalCheck::FrameAfterUsage));
             }
-            let mut chunk: Value = serde_json::from_slice(&data).map_err(|_| Error::Protocol)?;
+            let mut chunk: Value =
+                serde_json::from_slice(&data).map_err(|_| protocol(StreamCause::FrameShape))?;
             drop(data);
             if !chunk.is_object() || chunk.get("error").is_some() {
                 if let Some(diagnostics) = diagnostics {
                     diagnostics.error_code(&chunk);
                 }
-                return Err(Error::Protocol);
+                return Err(protocol(StreamCause::FrameShape));
             }
-            let choices = chunk["choices"].as_array().ok_or(Error::Protocol)?;
+            let choices = chunk["choices"]
+                .as_array()
+                .ok_or_else(|| protocol(StreamCause::FrameShape))?;
             if choices.len() > 1 || choices.first().is_some_and(|choice| choice["index"] != 0) {
-                return Err(Error::Protocol);
+                return Err(protocol(StreamCause::FrameShape));
             }
             if choices.is_empty() && chunk.get("usage").is_none_or(Value::is_null) {
-                return Err(Error::Protocol);
+                return Err(protocol(StreamCause::FrameShape));
             }
             if finish.is_some() && !choices.is_empty() {
-                return Err(Error::Protocol);
+                return Err(terminal(TerminalCheck::ChoicesAfterFinish));
             }
             let ending = chunk["choices"][0]["finish_reason"]
                 .as_str()
@@ -285,20 +307,20 @@ where
                     "tool_calls" => Ok("tool_calls"),
                     "length" => Ok("length"),
                     "content_filter" => Ok("content_filter"),
-                    _ => Err(Error::Protocol),
+                    _ => Err(protocol(StreamCause::FrameShape)),
                 })
                 .transpose()?;
             let mut argument_parts = Vec::new();
             if !choices.is_empty() {
                 if !chunk["choices"][0]["delta"].is_object() {
-                    return Err(Error::Protocol);
+                    return Err(protocol(StreamCause::FrameShape));
                 }
                 for (name, field) in [
                     ("content", Field::Content),
                     ("reasoning_content", Field::Thinking),
                 ] {
                     if let Some(value) = chunk["choices"][0]["delta"].get(name).filter(|v| !v.is_null()) {
-                        let value = value.as_str().ok_or(Error::Protocol)?;
+                        let value = value.as_str().ok_or_else(|| protocol(StreamCause::FrameShape))?;
                         let safe = redactor.feed(field, value);
                         seen_fields.insert(field);
                         chunk["choices"][0]["delta"][name] = safe.into();
@@ -308,19 +330,27 @@ where
                     .get_mut("tool_calls")
                     .filter(|calls| !calls.is_null())
                 {
-                    for call in calls.as_array_mut().ok_or(Error::Protocol)? {
+                    for call in calls
+                        .as_array_mut()
+                        .ok_or_else(|| protocol(StreamCause::ToolShape))?
+                    {
                         let index = call["index"]
                             .as_u64()
                             .and_then(|i| usize::try_from(i).ok())
                             .filter(|i| *i < 1024)
-                            .ok_or(Error::Protocol)?;
+                            .ok_or_else(|| protocol(StreamCause::ToolShape))?;
                         if let Some(name) = call["function"].get("name").filter(|v| !v.is_null()) {
                             let bytes = names
                                 .entry(index)
                                 .or_insert_with(|| crate::redaction::Stream::new(key))
-                                .feed(name.as_str().ok_or(Error::Protocol)?.as_bytes());
-                            call["function"]["name"] =
-                                String::from_utf8(bytes).map_err(|_| Error::Protocol)?.into();
+                                .feed(
+                                    name.as_str()
+                                        .ok_or_else(|| protocol(StreamCause::ToolShape))?
+                                        .as_bytes(),
+                                );
+                            call["function"]["name"] = String::from_utf8(bytes)
+                                .map_err(|_| protocol(StreamCause::ToolShape))?
+                                .into();
                         }
                         if let Some(args) = call["function"]
                             .as_object_mut()
@@ -329,7 +359,7 @@ where
                             match args {
                                 Value::String(args) => argument_parts.push((index, args)),
                                 Value::Null => {}
-                                _ => return Err(Error::Protocol),
+                                _ => return Err(protocol(StreamCause::ToolArguments)),
                             }
                         }
                     }
@@ -338,13 +368,16 @@ where
             }
             chunk["model"] = alias.into();
             crate::redaction::value(&mut chunk, key);
-            collect(&chunk, &mut text, &mut reasoning, &mut tool_slots)?;
+            collect(&chunk, &mut text, &mut reasoning, &mut tool_slots)
+                .map_err(|_| protocol(StreamCause::ToolShape))?;
             // Argument strings contain another JSON layer. Retain fragments
             // privately until the complete decoded value can be checked.
             for (index, args) in argument_parts {
-                let call = tool_slots.get_mut(&index).ok_or(Error::Protocol)?;
+                let call = tool_slots
+                    .get_mut(&index)
+                    .ok_or_else(|| protocol(StreamCause::ToolArguments))?;
                 let Value::String(buffer) = &mut call["function"]["arguments"] else {
-                    return Err(Error::Protocol);
+                    return Err(protocol(StreamCause::ToolArguments));
                 };
                 buffer.push_str(&args);
             }
@@ -352,9 +385,10 @@ where
                 // Accept a separate final usage frame or usage on a validated
                 // finish frame, never an interim record during generation.
                 if finish.is_none() && ending.is_none() {
-                    return Err(Error::Protocol);
+                    return Err(terminal(TerminalCheck::UsageBeforeFinish));
                 }
-                *terminal_usage = Some(Usage::parse(value).map_err(|_| Error::Protocol)?);
+                *terminal_usage =
+                    Some(Usage::parse(value).map_err(|_| terminal(TerminalCheck::UsageRecordInvalid))?);
             }
             if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                 return Err(Error::Cancelled);
@@ -374,18 +408,21 @@ where
                     };
                     let chunk =
                         json!({"model":alias,"choices":[{"index":0,"delta":delta,"finish_reason":null}]});
-                    collect(&chunk, &mut text, &mut reasoning, &mut tool_slots)?;
+                    collect(&chunk, &mut text, &mut reasoning, &mut tool_slots)
+                        .map_err(|_| protocol(StreamCause::ToolShape))?;
                     if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                         return Err(Error::Cancelled);
                     }
                 }
                 for (index, state) in &mut names {
-                    let tail = String::from_utf8(state.finish()).map_err(|_| Error::Protocol)?;
+                    let tail =
+                        String::from_utf8(state.finish()).map_err(|_| protocol(StreamCause::ToolShape))?;
                     if tail.is_empty() {
                         continue;
                     }
                     let chunk = json!({"model":alias,"choices":[{"index":0,"delta":{"tool_calls":[{"index":index,"function":{"name":tail}}]},"finish_reason":null}]});
-                    collect(&chunk, &mut text, &mut reasoning, &mut tool_slots)?;
+                    collect(&chunk, &mut text, &mut reasoning, &mut tool_slots)
+                        .map_err(|_| protocol(StreamCause::ToolShape))?;
                     if cancel.is_cancelled() || on(Event::Chunk(chunk)) == Control::Stop {
                         return Err(Error::Cancelled);
                     }
@@ -399,10 +436,13 @@ where
                 }
                 let mut arguments = Vec::new();
                 for (index, call) in &tool_slots {
-                    let raw = call["function"]["arguments"].as_str().ok_or(Error::Protocol)?;
-                    let decoded: Value = serde_json::from_str(raw).map_err(|_| Error::Protocol)?;
+                    let raw = call["function"]["arguments"]
+                        .as_str()
+                        .ok_or_else(|| protocol(StreamCause::ToolArguments))?;
+                    let decoded: Value =
+                        serde_json::from_str(raw).map_err(|_| protocol(StreamCause::ToolArguments))?;
                     if echoes_credential(&decoded, key) {
-                        return Err(Error::Protocol);
+                        return Err(protocol(StreamCause::ToolArguments));
                     }
                     arguments.push(json!({"index":index,"function":{"arguments":raw}}));
                 }
