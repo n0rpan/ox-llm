@@ -288,9 +288,8 @@ fn export_refuses_the_source_and_its_file_aliases_without_changing_bytes() {
             &closed_url(),
             &["--export", input.to_str().unwrap(), dest.to_str().unwrap()],
         );
-        assert_eq!(
-            std::fs::read(&input).unwrap(),
-            source,
+        assert!(
+            std::fs::read(&input).unwrap() == source,
             "export must preserve source bytes: {alias}"
         );
         assert_ne!(result.code, 0, "source aliases must be refused: {alias}");
