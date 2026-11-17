@@ -24,7 +24,9 @@ mod inbox;
 mod lifecycle;
 mod lock;
 
-pub use inbox::{remove_inbox, send_inbox, valid_inbox_id, Inbox, INBOX_MESSAGE_BYTES};
+pub use inbox::{
+    remove_inbox, send_inbox, send_inbox_control, valid_inbox_id, Inbox, InboxItem, INBOX_MESSAGE_BYTES,
+};
 mod meta;
 mod ops;
 mod spill;
