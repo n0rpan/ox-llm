@@ -58,8 +58,21 @@ available as a trusted executable outside the project; status reads do not need 
 IDs and branches must be unique within one file. Existing task branches can be
 continued. For a GitHub issue use `oxa work --issue 123 --model your-model`.
 This explicitly invokes your installed,
-authenticated `gh` CLI to fetch the issue title and body. Issue lookup is refused
-when the environment or user settings enable offline mode.
+authenticated `gh` CLI to fetch the issue title, body, state and comments, and that
+one lookup is the whole task packet the worker receives: the worker stays inside a
+sandbox that cannot read the issue, so the state and the comment thread (oldest
+first, bounded to 16 KiB with an explicit truncation marker) arrive with the text.
+If comments are truncated, the worker asks its runner for the missing data.
+Repeating the same issue task, including with `--rerun`, reuses its saved packet.
+The worker's local tools run in a sandbox with tool networking disabled.
+The worker starts without GitHub authentication, MCP servers, extensions or web
+search. The runner owns GitHub lookup and the configured model connection stays
+available. These restrictions also apply when the saved issue task is rerun
+from a task file.
+The runner refuses GitHub issue responses over 4 MiB before starting a worker.
+A reply body that is not text, or a malformed state, refuses the task instead of
+dropping it. Issue lookup is refused when the environment or user settings enable
+offline mode.
 Issue lookup also requires source-project trust. Git and GitHub CLI host calls use
 validated executables outside the repository. Worker and check-supervisor PATHs
 exclude project directories, relative entries and unsafe aliases; project tools
@@ -77,8 +90,8 @@ sandbox rules apply. Configure project trust before unattended use. The runner
 passes `-na` on every child start, including repair, and removes `OXA_TRUST_PROJECT`.
 Worker project settings, MCP servers and extensions are therefore ignored even
 when a parent directory or the user's default would trust the new worktree.
-User-level resources keep their normal behavior; external acceptance uses the
-approved source project and the batch's frozen command list. The runner
+User-level resources follow normal settings for tasks without a GitHub packet.
+External acceptance uses the approved source project and the batch's frozen command list. The runner
 creates detached Git metadata with callbacks suppressed on the host, then creates
 the task branch and populates the fresh worktree inside the normal sandbox.
 Reference hooks, checkout hooks and smudge filters stay inside it; a reference hook

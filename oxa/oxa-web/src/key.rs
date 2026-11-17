@@ -158,23 +158,7 @@ fn load_key_with_metadata(
     }
 }
 
-/// The home directory of the user running this process, from the password database (not
-/// `HOME`, which a test points at its temporary directory).
-pub fn real_home() -> Option<PathBuf> {
-    // SAFETY: getpwuid_r with a caller-owned buffer and record; the result pointer is either
-    // null or points into `pw`, and `pw_dir` into `buf`, both alive while read here.
-    unsafe {
-        let mut pw: libc::passwd = std::mem::zeroed();
-        let mut buf = vec![0 as libc::c_char; 16 * 1024];
-        let mut out: *mut libc::passwd = std::ptr::null_mut();
-        let rc = libc::getpwuid_r(libc::getuid(), &mut pw, buf.as_mut_ptr(), buf.len(), &mut out);
-        if rc != 0 || out.is_null() || pw.pw_dir.is_null() {
-            return None;
-        }
-        let dir = std::ffi::CStr::from_ptr(pw.pw_dir).to_string_lossy().into_owned();
-        (!dir.is_empty()).then(|| PathBuf::from(dir))
-    }
-}
+pub use oxa_proto::account_home as real_home;
 
 /// Remove `BRAVE_SEARCH_API_KEY` from the process environment, so that no child process
 /// (bash, `!cmd`, exec hooks, MCP stdio servers, editors, subagents) inherits the key. Called
