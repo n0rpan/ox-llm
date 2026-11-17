@@ -111,6 +111,7 @@ Acceptance:
 - [ ] `plan`, `verify-models` and `run` complete on a Mac; fixes sent as a pull request.
 - [ ] Receipts for at least one 35B MoE: decode and prefill separately, ≥3 warm runs, chip and RAM stated, power source stated.
 - [ ] MLX rows labelled as a different quantisation (MLX does not load GGUF).
+- [ ] Optional CPU arm, labelled `unmatched_format` (fixed token ids, not the fixture text): `run --stacks oxe-cpu --oxe-bin PATH` with an `oxe` binary the volunteer builds on the Mac for this repository (Apple Silicon is aarch64). A CI stub build cannot produce a receipt: `model::load::open` refuses non-aarch64 builds and the stub kernels fail.
 
 ## 8. Fuzz the tool-call parser
 

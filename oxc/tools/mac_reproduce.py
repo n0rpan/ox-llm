@@ -12,6 +12,14 @@ WHAT IT DOES
     - mlx:         MLX via mlx-lm. MLX cannot load GGUF, so you convert the model to MLX
                    yourself and pass its directory with --mlx-model. These receipts say
                    "same_quant_file": false.
+    - oxe-cpu:     the repository's own CPU-only engine, using an `oxe` binary you installed
+                   yourself (--oxe-bin PATH). Decode (`oxe bench`) and prefill (`oxe
+                   prefill-bench`) are timed separately. Both read the same verified GGUF file
+                   as the llama.cpp arms, so same_quant_file is true, but they take fixed token
+                   ids, not the fixture text: the receipt says same_prompt_ids false and
+                   unmatched_format true, and no prompt-matched speedup is claimed.
+    - oxe-adapter: the adapter arm from N4. The interface is listed by `plan`, but running it
+                   is refused until that arm exists, so no receipt is ever produced for it.
   This script never builds, clones, downloads or installs anything. You build llama.cpp
   yourself from the pinned commit (the `run` command prints the exact steps if it is missing).
 
@@ -28,6 +36,9 @@ WHAT IT COLLECTS (complete list)
     the MLX weight and config files (file names and sizes too).
   - Speeds and token counts reported by llama-bench, llama-completion and mlx-lm, with
     the exact argv (paths replaced by placeholders).
+  - For oxe-cpu: SHA-256 of the oxe binary, SHA-256 of the fixed synthetic prompt ids the
+    cell used (the ids themselves are a constant in this script; no fixture text is sent
+    to the engine), the engine's reported build commit, and the hash of ids it generated.
   - SHA-256 of each generated text. The generated text itself is NOT stored.
   - Commit, tree state, the UTC time, and this script's own SHA-256.
 
@@ -45,7 +56,13 @@ COMMANDS (run from the directory that holds this script)
          [--models ornith,qwen,flash] [--stacks llama-metal,llama-cpu,mlx] \
          [--mlx-model ornith=MLX_DIR ...]
      DIR is the folder with the GGUF files; --llama-dir is your llama.cpp checkout.
+  4. python3 mac_reproduce.py run --models-dir DIR --oxe-bin PATH --out receipts/ \
+         --stacks oxe-cpu
+     PATH is the `oxe` binary you installed from this repository; nothing is downloaded.
   Please send back only the receipts/*.json files.
+
+  No CPU-vs-GPU/Metal/MLX ratio is a gate. A decode or prefill ratio between arms is only
+  reportable with the phase medians both receipts carry and the conditions they state.
 """
 
 from __future__ import annotations
@@ -72,6 +89,14 @@ PINNED_COMMIT = "5f490d7bfe78844e6390c869454c149fd7e003a8"
 UPSTREAM_URL = "https://github.com/ggml-org/llama.cpp.git"
 LLAMA_BINARIES = ("llama-bench", "llama-completion")
 STACKS = ("llama-metal", "llama-cpu", "mlx")
+LLAMA_CPP_STACKS = ("llama-metal", "llama-cpu")
+OXE_STACKS = ("oxe-cpu", "oxe-adapter")
+ALL_STACKS = STACKS + OXE_STACKS
+# Fixed synthetic prompt ids for the oxe-cpu cells. `oxe bench` and `oxe prefill-bench` accept token ids,
+# not text, so both are given these ids explicitly; engine.input records their SHA-256. The ids themselves
+# are arbitrary (never tokenised fixture text), which is why the cell carries unmatched_format true.
+OXE_PROMPT_TOKENS = 512
+OXE_PROMPT_IDS = tuple((i * 2654435761 % 150000) + 1000 for i in range(OXE_PROMPT_TOKENS))
 DEFAULT_REPS = 3
 MIN_REPS = 3
 CTX = 4096
@@ -83,6 +108,7 @@ CMD_TIMEOUT_S = 30
 BENCH_TIMEOUT_S = 4 * 3600
 COMPLETION_TIMEOUT_S = 2 * 3600
 MLX_TIMEOUT_S = 4 * 3600
+OXE_PREFILL_TIMEOUT_S = 4 * 3600
 FIXTURE_RELPATH = os.path.join("benchmarks", "fixtures", "code-screen-v1.json")
 
 # Source of each manifest entry: dependencies/model-artifacts.json (ids ornith-1.5-35b-a3b-apex-mtp-compact,
@@ -397,6 +423,30 @@ def mlx_argv(python_bin, model_dir, prompt_path, reps):
     return [python_bin, "-c", MLX_DRIVER, model_dir, prompt_path, str(GEN_TOKENS), str(reps + 1)]
 
 
+# ---------------------------------------------------------------- oxe (repo CPU engine) arm
+
+def oxe_prompt_ids():
+    """The fixed synthetic prompt ids both oxe subcommands are given (see OXE_PROMPT_IDS)."""
+    return list(OXE_PROMPT_IDS)
+
+
+def _oxe_ids_arg(ids):
+    return ",".join(str(i) for i in ids)
+
+
+def oxe_decode_argv(oxe_bin, model_path, threads, ids):
+    """`oxe bench`: decode only (its prompt pass is not timed)."""
+    return [oxe_bin, "bench", "--model", model_path, "--threads", str(threads), "--ctx", str(CTX),
+            "--tokens", str(BENCH_DECODE_TOKENS), "--prompt-len", str(len(ids)),
+            "--prompt-ids", _oxe_ids_arg(ids)]
+
+
+def oxe_prefill_argv(oxe_bin, model_path, threads, ids):
+    """`oxe prefill-bench`: batched prefill timing only, one rep, the binary's default prefill arm."""
+    return [oxe_bin, "prefill-bench", "--model", model_path, "--threads", str(threads), "--ctx", str(CTX),
+            "--tokens", _oxe_ids_arg(ids), "--prompt-len", str(len(ids)), "--reps", "1"]
+
+
 _FORBIDDEN_ARG_PREFIXES = ("/home/", "/Users/", "/root/", "/private/", "/var/")
 
 
@@ -466,6 +516,65 @@ def parse_mlx_output(text):
         if line.startswith("{"):
             return json.loads(line)
     raise ValueError("no JSON line from the MLX driver")
+
+
+def _oxe_json(text):
+    """The oxe JSON object printed by `bench` / `prefill-bench` (pretty-printed on stdout)."""
+    start = (text or "").find("{")
+    if start < 0:
+        raise ValueError("no JSON object in oxe output")
+    try:
+        obj, _end = json.JSONDecoder().raw_decode(text[start:])
+    except ValueError as exc:
+        raise ValueError("oxe output is not JSON") from exc
+    if not isinstance(obj, dict):
+        raise ValueError("oxe output is not a JSON object")
+    return obj
+
+
+def _oxe_number(value, name):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ValueError("oxe %s is not a positive number" % name)
+    return float(value)
+
+
+def _oxe_count(value, name):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError("oxe %s is not a non-negative integer" % name)
+    return value
+
+
+def parse_oxe_decode(text):
+    """`oxe bench` JSON -> the decode half of a run. Raises ValueError when anything is missing."""
+    data = _oxe_json(text)
+    return {
+        "decode_tok_s": _oxe_number(data.get("tok_s"), "tok_s"),
+        "prompt_tokens": _oxe_count(data.get("prompt_tokens"), "prompt_tokens"),
+        "generated_tokens": _oxe_count(data.get("tokens"), "tokens"),
+        "generated_ids_hash": data.get("generated_hash") if isinstance(data.get("generated_hash"), str) else None,
+        "engine_commit": data.get("engine_commit") if isinstance(data.get("engine_commit"), str) else None,
+    }
+
+
+def parse_oxe_prefill(text, prompt_len):
+    """`oxe prefill-bench` JSON -> the prefill half of a run. Raises ValueError when it cannot be used."""
+    data = _oxe_json(text)
+    if data.get("prefix_len", 0) != 0:
+        raise ValueError("oxe prefill-bench ran on a prefix")
+    arms = data.get("arms")
+    if not isinstance(arms, list) or len(arms) != 1 or not isinstance(arms[0], dict):
+        raise ValueError("oxe prefill-bench output is not one arm")
+    arm = arms[0]
+    if _oxe_count(arm.get("prompt_tokens"), "prompt_tokens") != prompt_len:
+        raise ValueError("oxe prefill-bench timed %s tokens, expected %d"
+                         % (arm.get("prompt_tokens"), prompt_len))
+    return {
+        "prefill_tok_s": _oxe_number(arm.get("tok_s_median"), "tok_s_median"),
+        "prompt_tokens": prompt_len,
+        "prefill_attention": arm.get("prefill_attention") if isinstance(arm.get("prefill_attention"), dict) else None,
+        "pf_tiles": arm.get("pf_tiles"),
+        "pf_group": arm.get("pf_group"),
+    }
 
 
 def commit_matches(reported):
@@ -547,6 +656,7 @@ def make_run(label, test, prompt_id, prompt_sha, rep, dropped, ctx, threads, gpu
         "rep": rep, "dropped_warmup": dropped, "ctx": ctx, "threads": threads,
         "gpu_layers": gpu_layers, "argv": argv, "prompt_tokens": None, "generated_tokens": None,
         "prefill_tok_s": None, "decode_tok_s": None, "wall_s": None, "output_sha256": None,
+        "generated_ids_hash": None,
         "returncode": returncode,
     }
     for key, value in metrics.items():
@@ -640,7 +750,8 @@ def write_receipt(receipt, out_dir):
 
 def new_cell(model_id, stack, hardware):
     spec = MANIFEST[model_id]
-    is_llama = stack != "mlx"
+    is_mlx = stack == "mlx"
+    is_oxe = stack in OXE_STACKS
     return {
         "schema": RECEIPT_SCHEMA,
         "kind": "mac-reproduce",
@@ -649,9 +760,9 @@ def new_cell(model_id, stack, hardware):
         "script_sha256": script_sha256(),
         "hardware": dict(hardware),
         "engine": {
-            "name": "llama.cpp" if is_llama else "mlx-lm",
+            "name": "mlx-lm" if is_mlx else ("oxe" if is_oxe else "llama.cpp"),
             "stack": stack,
-            "commit": PINNED_COMMIT if is_llama else None,
+            "commit": None if (is_mlx or is_oxe) else PINNED_COMMIT,
             "tree_clean": None,
             "binaries": [],
             "version": None,
@@ -660,7 +771,7 @@ def new_cell(model_id, stack, hardware):
             "id": model_id,
             "name": spec["name"],
             "quant": spec["quant"],
-            "same_quant_file": is_llama,
+            "same_quant_file": not is_mlx,
             "files": [],
         },
         "runs": [],
@@ -815,6 +926,143 @@ def run_mlx(cell, mlx_dir, prompts, reps, tmpdir, path_map):
     return "ok"
 
 
+OXE_NEEDS = (
+    "oxe-cpu needs --oxe-bin PATH: an oxe binary you installed from this repository (it is never "
+    "downloaded, built or installed here)")
+
+
+def check_oxe_bin(path):
+    """(ok, problem) for the owner-supplied oxe binary. Read-only: stat/access only, never executes it."""
+    if not path:
+        return False, OXE_NEEDS
+    if not os.path.exists(path):
+        return False, "--oxe-bin: no such file (%s)" % OXE_NEEDS
+    if not os.path.isfile(path):
+        return False, "--oxe-bin is not a regular file (%s)" % OXE_NEEDS
+    if not os.access(path, os.X_OK):
+        return False, "--oxe-bin is not executable (%s)" % OXE_NEEDS
+    return True, None
+
+
+def _oxe_input_block(ids):
+    payload = b"".join(int(i).to_bytes(4, "little") for i in ids)
+    return {
+        "kind": "synthetic-token-ids",
+        "token_count": len(ids),
+        "sha256": hashlib.sha256(payload).hexdigest(),
+        "fixture_prompts_used": False,
+    }
+
+
+def run_oxe_cell(cell, oxe_bin, model_path, stack, threads, reps, tmpdir, path_map):
+    """oxe-cpu: decode (`oxe bench`) and prefill (`oxe prefill-bench`) timed and recorded separately."""
+    ids = oxe_prompt_ids()
+    prompt_arg = _oxe_ids_arg(ids)
+    id_placeholder = "<synthetic-ids:%d>" % len(ids)
+    exact = {prompt_arg: id_placeholder}
+    path_map = dict(path_map)
+    path_map[oxe_bin] = "<oxe-bin>"
+    path_map[model_path] = "<models-dir>"
+    cell["engine"]["binaries"] = [{"name": "oxe", "sha256": sha256_file(oxe_bin)}]
+    cell["engine"]["input"] = _oxe_input_block(ids)
+    cell["format"] = {
+        "same_quant_file": True,
+        "same_prompt_ids": False,
+        "unmatched_format": True,
+        "note": "the oxe arms read the same verified GGUF bytes as llama-metal/llama-cpu, but they are "
+                "given fixed token ids instead of the fixture text, so prompt-matched ratios with the "
+                "llama.cpp or mlx cells are not claimed.",
+    }
+    cell["notes"].extend([
+        "oxe is this repository's CPU engine; the binary is built and installed by the volunteer and "
+        "identified by SHA-256. No NPU, GPU or device flag is passed.",
+        "decode: oxe bench with %d fixed synthetic prompt ids, then %d timed tokens; its untimed prompt "
+        "pass is one discarded invocation. prefill: oxe prefill-bench on the same ids, the binary's "
+        "default prefill arm, one untimed warm-up then one timed rep per invocation; the arm's kernel, "
+        "pf_tiles and pf_group are recorded in engine.prefill_attention."
+        % (len(ids), BENCH_DECODE_TOKENS),
+        "No fixture prompt text reaches the engine, so prompt_sha256/output_sha256 are null for this arm; "
+        "the input is described by engine.input (id count and SHA-256) and each argv carries a placeholder "
+        "for the id list.",
+    ])
+    if len(MANIFEST[cell["model"]["id"]]["files"]) > 1:
+        cell["notes"].append("The manifest lists several GGUF shards for this model; only the first is passed "
+                             "to oxe, so all shards stay verified as model identity.")
+
+    def decode_once():
+        argv = oxe_decode_argv(oxe_bin, model_path, threads, ids)
+        stored = sanitize_argv(argv, path_map, exact)
+        res = run_cmd(argv, BENCH_TIMEOUT_S)
+        parsed = None
+        if res.returncode == 0:
+            try:
+                parsed = parse_oxe_decode(res.stdout)
+            except ValueError:
+                parsed = None
+        return stored, res, parsed
+
+    ok = True
+    for k in range(reps + 1):
+        warm = (k == 0)
+        label = "oxe-decode:%s" % ("w0" if warm else "r%d" % k)
+        stored, res, parsed = decode_once()
+        if res.returncode != 0:
+            cell["runs"].append(make_run(label, "oxe-decode", "oxe-ids", None, 0 if warm else k, warm, CTX,
+                                         threads, None, stored, res.returncode, wall_s=res.wall_s))
+            _report_failure(cell, "oxe bench", res)
+            ok = False
+            break
+        if parsed is None:
+            cell["runs"].append(make_run(label, "oxe-decode", "oxe-ids", None, 0 if warm else k, warm, CTX,
+                                         threads, None, stored, res.returncode, wall_s=res.wall_s))
+            cell["notes"].append("oxe bench output could not be used (no positive tok_s / token counts)")
+            ok = False
+            break
+        if parsed["engine_commit"]:
+            cell["engine"]["version"] = "oxe " + parsed["engine_commit"]
+        cell["runs"].append(make_run(
+            label, "oxe-decode", "oxe-ids", None, 0 if warm else k, warm, CTX, threads, None, stored,
+            res.returncode, prompt_tokens=parsed["prompt_tokens"],
+            generated_tokens=parsed["generated_tokens"], decode_tok_s=parsed["decode_tok_s"],
+            generated_ids_hash=parsed["generated_ids_hash"], wall_s=res.wall_s))
+    if not ok:
+        return "failed"
+
+    for k in range(reps + 1):
+        warm = (k == 0)
+        label = "oxe-prefill:%s" % ("w0" if warm else "r%d" % k)
+        argv = oxe_prefill_argv(oxe_bin, model_path, threads, ids)
+        stored = sanitize_argv(argv, path_map, exact)
+        res = run_cmd(argv, OXE_PREFILL_TIMEOUT_S)
+        parsed = None
+        note = None
+        if res.returncode == 0:
+            try:
+                parsed = parse_oxe_prefill(res.stdout, len(ids))
+            except ValueError as exc:
+                note = "oxe prefill-bench output could not be used: %s" % exc
+        if res.returncode != 0:
+            cell["runs"].append(make_run(label, "oxe-prefill", "oxe-ids", None, 0 if warm else k, warm, CTX,
+                                         threads, None, stored, res.returncode, wall_s=res.wall_s))
+            _report_failure(cell, "oxe prefill-bench", res)
+            return "failed"
+        if parsed is not None:
+            cell["engine"]["prefill_attention"] = parsed["prefill_attention"]
+            cell["engine"]["pf_tiles"] = parsed["pf_tiles"]
+            cell["engine"]["pf_group"] = parsed["pf_group"]
+        if parsed is None:
+            if note:
+                cell["notes"].append(note)
+            cell["runs"].append(make_run(label, "oxe-prefill", "oxe-ids", None, 0 if warm else k, warm, CTX,
+                                         threads, None, stored, res.returncode, wall_s=res.wall_s))
+            return "failed"
+        cell["runs"].append(make_run(
+            label, "oxe-prefill", "oxe-ids", None, 0 if warm else k, warm, CTX, threads, None, stored,
+            res.returncode, prompt_tokens=parsed["prompt_tokens"], prefill_tok_s=parsed["prefill_tok_s"],
+            wall_s=res.wall_s))
+    return "ok"
+
+
 STATIC_NOTES_LLAMA = [
     "Stock upstream llama.cpp at the pinned commit; binaries built by the volunteer, identified by SHA-256.",
     "bench: llama-bench's own synthetic tokens, not the fixture prompts; one discarded invocation first, "
@@ -873,6 +1121,13 @@ def run_one_cell(cell, model_id, stack, ctx):
                              "same_quant_file is false. Token IDs are not compared with the GGUF runs.")
         return run_mlx(cell, mlx_dir, ctx["prompts"], ctx["reps"], ctx["tmpdir"],
                        {ctx["python_placeholder"]: "<python-dir>"})
+    if stack == "oxe-adapter":
+        cell["notes"].append("oxe-adapter is not available: the adapter arm is N4's deliverable; nothing was run.")
+        return "skipped"
+    if stack == "oxe-cpu":
+        model_path = os.path.join(ctx["models_dir"], MANIFEST[model_id]["files"][0]["name"])
+        return run_oxe_cell(cell, ctx["oxe_bin"], model_path, stack, ctx["threads"], ctx["reps"],
+                            ctx["tmpdir"], {ctx["oxe_bin"]: "<oxe-bin>", model_path: "<models-dir>"})
     cell["engine"]["tree_clean"] = bool(ctx["llama_info"].get("tree_clean"))
     cell["engine"]["binaries"] = [{"name": b["name"], "sha256": b["sha256"]} for b in ctx["llama_info"]["binaries"]]
     return run_llama_cell(cell, model_id, stack, ctx["llama_info"], ctx["models_dir"], ctx["prompts"],
@@ -917,7 +1172,7 @@ def _load_prompts(path):
 
 def cmd_plan(args):
     model_ids = _parse_list(args.models, list(MANIFEST), "--models")
-    stacks = _parse_list(args.stacks, STACKS, "--stacks")
+    stacks = _parse_list(args.stacks, ALL_STACKS, "--stacks")
     try:
         prompt_ids = [pid for pid, _ in _load_prompts(args.fixtures)]
     except UsageError:
@@ -934,6 +1189,23 @@ def cmd_plan(args):
                 print("  python: <python-dir>/python3 -c <mlx-driver> <mlx-model-dir> <tmp>/prompt.txt %d %d"
                       % (GEN_TOKENS, args.reps + 1))
                 continue
+            if stack == "oxe-cpu":
+                model_path = "<models-dir>/" + MANIFEST[mid]["files"][0]["name"]
+                threads = "<performance-cores>"
+                print("  needs: --oxe-bin PATH, an oxe binary you installed from this repository (the "
+                      "script never downloads, builds or installs it; no device is used)")
+                print("  format: same verified GGUF bytes as llama.cpp, but fixed token ids instead of "
+                      "fixture text: same_prompt_ids false, unmatched_format true")
+                print("  decode (%d discarded + %d measured): " % (1, args.reps)
+                      + " ".join(oxe_decode_argv("<oxe-bin>", model_path, threads, oxe_prompt_ids())))
+                print("  prefill (%d discarded + %d measured): " % (1, args.reps)
+                      + " ".join(oxe_prefill_argv("<oxe-bin>", model_path, threads, oxe_prompt_ids())))
+                print("  input: %d fixed synthetic token ids (no fixture text reaches the engine)" % OXE_PROMPT_TOKENS)
+                continue
+            if stack == "oxe-adapter":
+                print("  needs: the adapter arm (N4). Not available here: `run` refuses this stack and "
+                      "writes no receipt.")
+                continue
             print("  needs: llama.cpp checkout at %s, clean tree, build/bin/llama-bench and llama-completion"
                   % PINNED_COMMIT)
             threads = "<performance-cores>"
@@ -945,7 +1217,11 @@ def cmd_plan(args):
             print("  prompt (per fixture id): " + " ".join(comp))
     print("")
     print("Cells: %d. Tests per llama cell: %s." % (cells, "; ".join(tests)))
-    print("Nothing was run. Commands above use placeholders: <models-dir>, <llama-dir>, <tmp>, <mlx-model-dir>.")
+    print("Tests per oxe-cpu cell: oxe bench (1 discarded + %d measured), oxe prefill-bench (1 discarded + "
+          "%d measured)." % (args.reps, args.reps))
+    print("Nothing was run. Commands above use placeholders: <models-dir>, <llama-dir>, <tmp>, <mlx-model-dir>, "
+          "<oxe-bin>.")
+    print("No arm-to-arm ratio is a gate here; report phase medians with the conditions stated in the receipts.")
     return 0
 
 
@@ -985,10 +1261,19 @@ def cmd_selfcheck(args):
 
 def cmd_run(args):
     model_ids = _parse_list(args.models, list(MANIFEST), "--models")
-    stacks = _parse_list(args.stacks, STACKS, "--stacks")
+    stacks = _parse_list(args.stacks, ALL_STACKS, "--stacks")
     if args.reps < MIN_REPS:
         raise UsageError("--reps must be at least %d" % MIN_REPS)
+    if "oxe-adapter" in stacks:
+        print("error: --stacks oxe-adapter is not available: the adapter arm is N4's deliverable. "
+              "Nothing was run and no receipt was written.", file=sys.stderr)
+        return 2
     mlx_map = _parse_mlx_models(args.mlx_model)
+    if "oxe-cpu" in stacks:
+        ok, problem = check_oxe_bin(args.oxe_bin)
+        if not ok:
+            print("error: %s. Nothing was run and no receipt was written." % problem, file=sys.stderr)
+            return 2
     prompts = _load_prompts(args.fixtures)
     hardware = collect_hardware()
     if hardware["performance_cores"] < 1:
@@ -996,7 +1281,7 @@ def cmd_run(args):
               "Run this on the Mac itself; nothing was run.", file=sys.stderr)
         return 2
     llama_info = {"binaries": [], "tree_clean": False}
-    if any(s != "mlx" for s in stacks):
+    if any(s in LLAMA_CPP_STACKS for s in stacks):
         if not args.llama_dir:
             raise UsageError("--llama-dir is required for llama stacks")
         ok, problems, llama_info = check_llama_checkout(args.llama_dir)
@@ -1016,7 +1301,7 @@ def cmd_run(args):
     ctx = {
         "verification": verification, "mlx_map": mlx_map, "prompts": prompts, "reps": args.reps,
         "threads": threads, "tmpdir": tmpdir, "models_dir": args.models_dir, "llama_info": llama_info,
-        "python_placeholder": sys.executable,
+        "python_placeholder": sys.executable, "oxe_bin": args.oxe_bin,
     }
     exit_code = 0
     current = None
@@ -1064,7 +1349,7 @@ def build_parser():
 
     def add_common(p):
         p.add_argument("--models", default=",".join(MANIFEST), help="comma list: ornith,qwen,flash")
-        p.add_argument("--stacks", default=",".join(STACKS), help="comma list: llama-metal,llama-cpu,mlx")
+        p.add_argument("--stacks", default=",".join(STACKS), help="comma list: " + ",".join(ALL_STACKS))
         p.add_argument("--reps", type=int, default=DEFAULT_REPS, help="measured reps per cell (min 3)")
         p.add_argument("--fixtures", default=None, help="path to code-screen-v1.json")
 
@@ -1083,6 +1368,8 @@ def build_parser():
     p_run.add_argument("--llama-dir", default=None)
     p_run.add_argument("--out", default="receipts")
     p_run.add_argument("--mlx-model", action="append", default=[], metavar="ID=DIR")
+    p_run.add_argument("--oxe-bin", default=None, metavar="PATH",
+                       help="installed oxe binary for the oxe-cpu arm (never downloaded or built here)")
     p_run.set_defaults(func=cmd_run)
 
     p_self = sub.add_parser("selfcheck", help="public-safety scan of receipt files")
