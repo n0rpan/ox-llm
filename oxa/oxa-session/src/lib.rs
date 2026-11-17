@@ -40,7 +40,7 @@ pub use meta::{search_sessions, sort_sessions, SessionSort};
 pub use ops::{clone_session, fork_file, fork_session, set_label, set_name};
 pub use spill::{inherited_spill_dirs, remove_session_preserving_spills, remove_spill_dir_unless_forked};
 pub use store::{
-    count_files, decode_entry, decode_header, encode_entry, encode_header, encode_visible_entry,
+    count_files, decode_entry, decode_header, encode_entry, encode_header, encode_visible_entry, iso_from_ms,
     new_entry_id, purge_session_file, remove_all_spill, remove_spill_dir, session_dir_name,
     session_files_under, FsStore, MemStore,
 };

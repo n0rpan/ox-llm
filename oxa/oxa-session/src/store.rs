@@ -1171,7 +1171,7 @@ fn unhex32(s: &str) -> Result<[u8; 32], OxaError> {
 // ---------------------------------------------------------------------------------------------
 
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ`, the form pi writes.
-fn iso_from_ms(ms: u64) -> String {
+pub fn iso_from_ms(ms: u64) -> String {
     let secs = ms / 1000;
     let millis = ms % 1000;
     let days = (secs / 86_400) as i64;

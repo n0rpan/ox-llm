@@ -2,88 +2,188 @@
 use oxa_cli::{submit, ScrubCtx};
 use oxa_config::Settings;
 use oxa_fake::TestEnv;
-use serde_json::json;
-use std::cell::RefCell;
+use serde_json::{json, Value};
+use std::io::Write;
+
+const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+const TITLE: &str = "Task packet requests a forbidden tool";
+
+fn settings() -> Settings {
+    Settings::from_values(
+        json!({"oxa":{"reportIssue":{"repo":"example/project","semanticDedupe":true}}}),
+        json!({}),
+    )
+}
+
+fn file_report(
+    env: &TestEnv,
+    index: usize,
+    title: &str,
+    task: usize,
+    run: &mut Fixture,
+    out: &mut dyn Write,
+) -> i32 {
+    let draft = env.write(
+        &format!("drafts/occurrence-{index}.md"),
+        &format!(
+            "Title: {title}\n\nTask: task-{task}\nWorker: synthetic-worker\nRun: run-{index}\n\n\
+             Observed: command `oxa work` refused the fetch required by its task packet.\n\n\
+             Evidence: oxa/oxa-work/src/worker.rs:2\n"
+        ),
+    );
+    let result = submit(
+        &draft,
+        &settings(),
+        &ScrubCtx::default(),
+        &mut |_| Some(true),
+        &mut |program, args| run.invoke(program, args),
+        out,
+    )
+    .unwrap();
+    assert!(draft.exists());
+    result
+}
+
+#[derive(Default)]
+struct Fixture {
+    creates: usize,
+    comments: usize,
+    open_searches: usize,
+    closed_searches: usize,
+    judged: usize,
+    match_issue: bool,
+    unverified: bool,
+}
+
+impl Fixture {
+    fn issue(number: usize) -> Value {
+        json!({"number":number, "title":TITLE, "body":"Task packet forbids its required fetch.",
+               "labels":[{"name":"bug"}]})
+    }
+
+    fn invoke(&mut self, program: &str, args: &[String]) -> Option<(i32, String)> {
+        let result = if program == "oxa" {
+            self.judged += 1;
+            let payload: Value = serde_json::from_str(&args[0]).unwrap();
+            assert_eq!(payload["current_main"]["sha"], SHA);
+            assert!(payload["current_main"]["source"]
+                .as_str()
+                .unwrap()
+                .contains("disabled"));
+            let matches = self.match_issue && self.creates > 0;
+            let selected = matches.then_some(42);
+            let candidates = payload["candidates"].as_array().unwrap();
+            if matches {
+                let matched = candidates.iter().find(|row| row["number"] == 42).unwrap();
+                assert_eq!(
+                    matched,
+                    &json!({
+                        "number":42, "title":TITLE, "body":"Task packet forbids its required fetch.", "labels":["bug"]
+                    })
+                );
+            }
+            let rejected = candidates
+                .iter()
+                .filter_map(|row| row["number"].as_u64())
+                .filter(|number| Some(*number) != selected)
+                .collect::<Vec<_>>();
+            json!({"verified":!self.unverified,"match":selected,"rejected":rejected}).to_string()
+        } else {
+            assert_eq!(program, "gh");
+            match args[0].as_str() {
+                "api" if args[1].ends_with("git/ref/heads/main") => SHA.to_string(),
+                "api" if args[1] == "repos/example/project" => "public".into(),
+                "api" => {
+                    assert!(args.last().unwrap().ends_with(&format!("worker.rs?ref={SHA}")));
+                    "fn work() {\n    fetch_if_enabled(false); // disabled\n}\n".into()
+                }
+                "search" => {
+                    let closed = args.windows(2).any(|a| a == ["--state", "closed"]);
+                    if closed {
+                        self.closed_searches += 1;
+                        assert!(args
+                            .windows(2)
+                            .any(|a| a[0] == "--closed" && a[1].starts_with(">=")));
+                    } else {
+                        self.open_searches += 1;
+                    }
+                    // The third through fifth reports only find the issue in closed search.
+                    if self.match_issue && self.creates > 0 && self.comments > 0 && closed {
+                        json!([Self::issue(42)]).to_string()
+                    } else {
+                        json!([Self::issue(17)]).to_string()
+                    }
+                }
+                "issue" if args[1] == "view" => Self::issue(args[2].parse().unwrap()).to_string(),
+                "issue" if args[1] == "create" => {
+                    let text = std::fs::read_to_string(args.last().unwrap()).unwrap();
+                    assert!(text.contains("Candidates rejected as different root causes: #17"));
+                    assert!(text.contains(SHA));
+                    self.creates += 1;
+                    format!(
+                        "https://github.com/example/project/issues/{}\n",
+                        41 + self.creates
+                    )
+                }
+                "issue" if args[1] == "comment" => {
+                    assert_eq!(args[2], "42");
+                    let text = std::fs::read_to_string(args.last().unwrap()).unwrap();
+                    assert!(text.contains(&format!("Run: run-{}", self.comments + 1)));
+                    assert!(text.contains("oxa version:"));
+                    assert!(text.contains("Observed:"));
+                    self.comments += 1;
+                    "https://github.com/example/project/issues/42#issuecomment-1".into()
+                }
+                _ => panic!("Unexpected GitHub call {args:?}"),
+            }
+        };
+        Some((0, result))
+    }
+}
 
 #[test]
 fn five_reworded_occurrences_create_once_then_comment_on_the_same_root() {
     let env = TestEnv::new();
-    let settings = Settings::from_values(
-        json!({"oxa":{"reportIssue":{"repo":"example/project","semanticDedupe":true}}}),
-        json!({}),
-    );
-    let calls = RefCell::new(Vec::<Vec<String>>::new());
-    let titles = [
-        "Task packet requests a forbidden tool",
+    let mut run = Fixture {
+        match_issue: true,
+        ..Fixture::default()
+    };
+    for (index, title) in [
+        TITLE,
         "Worker instructions conflict with tool permissions",
         "Issue context missing while fetching is prohibited",
         "Packet cannot be completed without an unavailable fetch",
         "Helper lacks the issue body and cannot retrieve it",
-    ];
-    let mut runner = |program: &str, args: &[String]| {
-        if program == "gh" {
-            calls.borrow_mut().push(args.to_vec());
-            if args.iter().any(|a| a == "create") {
-                return Some((0, "https://github.com/example/project/issues/42\n".into()));
-            }
-            if args.iter().any(|a| a == "comment") {
-                return Some((0, String::new()));
-            }
-            let created = calls.borrow().iter().any(|a| a.iter().any(|s| s == "create"));
-            return Some((
-                0,
-                if created {
-                    json!([{"number":42,"title":titles[0],"body":"Task packet forbids its required fetch.",
-                        "labels":[{"name":"bug"}],"state":"OPEN"}])
-                    .to_string()
-                } else {
-                    "[]".into()
-                },
-            ));
-        }
-        assert_eq!(
-            program, "oxa",
-            "only the existing native model runner is permitted"
-        );
-        let created = calls.borrow().iter().any(|a| a.iter().any(|s| s == "create"));
-        Some((
-            0,
-            json!({"verified":true,"match":if created {Some(42)} else {None},
-                         "rejected":[]})
-            .to_string(),
-        ))
-    };
-    for (index, title) in titles.iter().enumerate() {
-        let draft = env.write(
-            &format!("drafts/occurrence-{index}.md"),
-            &format!(
-                "Title: {title}\n\nTask: task-{index}\nWorker: synthetic-worker\nRun: run-{index}\n\
-             Observed: command `oxa work` refused the fetch required by its task packet.\n\
-             Evidence: oxa/oxa-work/src/worker.rs\n"
-            ),
-        );
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let mut out = Vec::new();
-        let result = submit(
-            &draft,
-            &settings,
-            &ScrubCtx::default(),
-            &mut |_| Some(true),
-            &mut runner,
-            &mut out,
-        )
-        .unwrap();
-        assert_eq!(result, 0, "{}", String::from_utf8_lossy(&out));
+        let code = file_report(&env, index, title, index, &mut run, &mut out);
+        assert_eq!(code, 0, "{}", String::from_utf8_lossy(&out));
     }
-    let calls = calls.borrow();
-    let count = |verb: &str| calls.iter().filter(|a| a.iter().any(|s| s == verb)).count();
-    assert_eq!(
-        count("create"),
-        1,
-        "rewording must not bypass same-root dedupe: {calls:?}"
-    );
-    assert_eq!(
-        count("comment"),
-        4,
-        "each recurrence belongs on the matched issue"
-    );
+    assert_eq!((run.creates, run.comments, run.judged), (1, 4, 5));
+    assert_eq!((run.open_searches, run.closed_searches), (10, 10));
+}
+
+#[test]
+fn new_issues_are_capped_by_task_and_worker_and_unverified_observations_stay_local() {
+    let env = TestEnv::new();
+    let mut run = Fixture {
+        unverified: true,
+        ..Fixture::default()
+    };
+    let report = |index, task, run: &mut Fixture| {
+        let mut out = Vec::new();
+        let result = file_report(&env, index, TITLE, task, run, &mut out);
+        (result, String::from_utf8(out).unwrap())
+    };
+    assert!(report(0, 0, &mut run).1.contains("not verified"));
+    run.unverified = false;
+    assert_eq!(report(1, 0, &mut run).0, 0);
+    assert!(report(2, 0, &mut run).1.contains("already used"));
+    assert_eq!(report(3, 1, &mut run).0, 0);
+    assert_eq!(report(4, 2, &mut run).0, 0);
+    assert!(report(5, 3, &mut run).1.contains("daily cap"));
+    assert_eq!((run.creates, run.comments), (3, 0));
 }
