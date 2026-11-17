@@ -54,7 +54,7 @@ At source `7e6e4b04`, the Python alert rows 5–13 in [the tracked triage](secur
 | File / bounded feature | Recorded alerts | Status | Replacement or retirement evidence; remaining deletion gate |
 |---|---|---|---|
 | `oxc/src/oxc/runtime/ctl_http.py` — legacy default controller HTTP front | 5 | DROPPED | [#681](https://github.com/oxstack/ox-llm/issues/681) / [#763](https://github.com/oxstack/ox-llm/issues/763) retire the Python controller daemon from the native default; [retirement index](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6955874053). This does not claim that in-process providers implement HTTP Host/Origin/CORS parity. `controller.py` and Python cloud/mock tests still import the front; qualify retained contracts before deleting it. The existing `oxc/tests/test_openai_api.py::KeyAndCors::test_cors_never_echoes_a_line_break_into_a_header` covers the earlier #479 fix, not Rust replacement or a fresh alert verdict. |
-| `oxc/src/oxc/runtime/studio` — HTTP/UI/job/image pipeline | 11, 12, 13 | MISSING | The owner chose no Studio web UI in v0.2.x and native image generation in [#1196](https://github.com/oxstack/ox-llm/issues/1196), which supersedes [#1118](https://github.com/oxstack/ox-llm/issues/1118) for product work. The legacy Studio unit, package-data declaration and Python Studio tests still consume the extensionless script. The UI decision still needs a matching #946 retirement entry before it qualifies as DROPPED. |
+| `oxc/src/oxc/runtime/studio` — HTTP/UI/job/image pipeline | 11, 12, 13 | RETIREMENT INDEX PENDING | The [#951 owner decision](https://github.com/oxstack/ox-llm/issues/951#issuecomment-6959811415) retires the web UI for v0.2.x and explicitly removes Studio as a port blocker. [#1196](https://github.com/oxstack/ox-llm/issues/1196) tracks native image generation. A matching #946 retirement entry is still needed for DROPPED. The legacy Studio unit, package-data declaration, `oxc/tools/stage_v020_final.py` and Python Studio tests still consume the script. |
 | `oxc/tools/session_replay.py` — HTTP recording, equal-work replay, comparison and summaries | 8, 9, 10 | DEV TOOL | [Retained contract #1119](https://github.com/oxstack/ox-llm/issues/1119). `test_session_replay.py`, `test_session_replay_output_proof.py` and `oxc/docs/HARNESSES.md` retain this workflow. Preserve the recording and replay contracts if the developer workflow is retired later. |
 | `oxc/tools/interim/recording_proxy.py` — metadata recorder and listener-ownership helpers | 6, 7 | DEV TOOL | [Retained contract #1120](https://github.com/oxstack/ox-llm/issues/1120). `oxc/tools/interim/real_use_session.py`, `test_interim_adapters.py` and `test_explore1_observer.py` import it. These executable callers retain the developer workflow. |
 
@@ -68,9 +68,9 @@ The operator export's per-alert mapping is:
 | 8 | py/http-response-splitting | medium | `oxc/tools/session_replay.py:370` | DEV TOOL #1119 |
 | 9 | py/http-response-splitting | medium | `oxc/tools/session_replay.py:370` | DEV TOOL #1119 |
 | 10 | py/http-response-splitting | medium | `oxc/tools/session_replay.py:374` | DEV TOOL #1119 |
-| 11 | py/path-injection | high | `oxc/src/oxc/runtime/studio:309` | MISSING #1196 |
-| 12 | py/path-injection | high | `oxc/src/oxc/runtime/studio:309` | MISSING #1196 |
-| 13 | py/path-injection | high | `oxc/src/oxc/runtime/studio:311` | MISSING #1196 |
+| 11 | py/path-injection | high | `oxc/src/oxc/runtime/studio:309` | RETIREMENT INDEX PENDING |
+| 12 | py/path-injection | high | `oxc/src/oxc/runtime/studio:309` | RETIREMENT INDEX PENDING |
+| 13 | py/path-injection | high | `oxc/src/oxc/runtime/studio:311` | RETIREMENT INDEX PENDING |
 
 MISSING blocks only the named module's deletion. None of these four files is marked PORTED or UNUSED, and none is deleted. The export does not establish any alert fixed or dismissed; all nine are open in that supplied snapshot.
 
@@ -86,11 +86,21 @@ The same release workflow also creates a full `git archive HEAD` build-source ta
 
 The shipped legacy controller subtree has 94 Python modules and two extensionless
 Python entry points under `oxc/src/oxc`. The tables above have evidence for 17 of
-those paths, including bounded feature rows with outstanding acceptance. The
+those paths, including bounded feature rows and the Studio retirement decision. The
 inventory lists another 78 paths without a disposition. The remaining entry
 point, `oxc/src/oxc/runtime/oxc`, is invoked by the package wrapper and needs
-per-command evidence. The table is still incomplete. Developer tools such as
-the replay and recording tools remain within the repository's developer workflows.
+per-command evidence. The table is still incomplete.
+
+[#681](https://github.com/oxstack/ox-llm/issues/681) retires the Python
+control and diagnostics launchers from the new default. The shipped wrappers
+still invoke `runtime/oxc` and `oxc/__main__.py` respectively. The control
+launcher dispatches Python subscription login and share commands. The native
+sign-in replacement has its own evidence above, and #688 tracks the remaining
+share work. The diagnostics launcher dispatches
+`doctor`, `export-screen` and `install-plugin`. Preserve the existing
+`oxc/tests/test_plugin_install.py` and developer diagnostic callers while
+qualifying those contracts and locating the launcher retirement entries in
+#946.
 
 #### MEMLAT removal preparation and #1198 packaging handoff
 
@@ -126,7 +136,7 @@ Source removal remains waiting on accepted packaging and the exact
 
 ## Complete module inventory awaiting feature-level qualification
 
-Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The provider, MEMLAT, retired installer/bootstrap and alert-file rows already mapped above are omitted here. Partial-feature rows do not qualify a whole module. The extensionless entry point oxc/src/oxc/runtime/oxc still needs an explicit launcher/feature row; Studio is tracked by #1196 above.
+Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The provider, MEMLAT, retired installer/bootstrap and alert-file rows already mapped above are omitted here. Partial-feature rows do not qualify a whole module. The extensionless entry point oxc/src/oxc/runtime/oxc still needs an explicit launcher/feature row; Studio has a retirement decision and outstanding index entry as recorded above.
 
 - `oxc/benchmarks/classic/loopback_bridge.py`
 - `oxc/benchmarks/classic/screen.py`
