@@ -87,6 +87,16 @@ fn run_records(
     extra: &[(&str, &str)],
 ) -> Vec<serde_json::Value> {
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
+    run_server_records(env, &server, args, path, extra, true)
+}
+fn run_server_records(
+    env: &TestEnv,
+    server: &FakeServer,
+    args: &[&str],
+    path: Option<String>,
+    extra: &[(&str, &str)],
+    expect_output: bool,
+) -> Vec<serde_json::Value> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
         .args(args)
@@ -104,7 +114,11 @@ fn run_records(
     let out = rx
         .recv_timeout(std::time::Duration::from_secs(90))
         .expect("runner finished");
-    assert!(!out.stdout.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        !expect_output || !out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(|line| {
@@ -221,13 +235,9 @@ fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
     let name = format!("board-{}.txt", binding.key);
     assert!(queue.join(&name).is_file());
     assert!(claims.snapshot().unwrap()[&44].lease.as_ref() == Some(&binding.lease));
-    let records = run_records(
-        &env,
-        vec![ScriptTurn::text("finished")],
-        &["work", "--native-queue", "--config", config.to_str().unwrap()],
-        Some(path),
-        &[],
-    );
+    let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
+    let args = ["work", "--native-queue", "--config", config.to_str().unwrap()];
+    let records = run_server_records(&env, &server, &args, Some(path.clone()), &[], true);
     assert!(records
         .iter()
         .any(|row| row["event"] == "task" && row["id"] == binding.native_task_id));
@@ -250,7 +260,30 @@ fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
     assert!(completed.state.lease.is_none());
     assert_eq!(completed.state.attempts, 1);
     assert!(completed.data.native_binding.as_ref() == Some(&binding));
-    assert!(queue.join("started").join(name).is_file());
+    let started = queue
+        .join("started")
+        .join(format!("native-board-{}", binding.key))
+        .join(format!("{}.txt", binding.native_task_id));
+    assert_eq!(
+        fs::read_to_string(started).unwrap(),
+        fs::read_to_string(taskfile).unwrap()
+    );
+    assert!(!queue.join(name).exists());
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(std::iter::once(requests[0].system.as_str())
+        .chain(requests[0].messages.iter().filter_map(|m| m.content.as_deref()))
+        .any(|text| text.contains("Synthetic admitted task.")));
+    run_server_records(&env, &server, &args, Some(path), &[], false);
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "a released attempt must not launch again"
+    );
+    let replayed = &claims.assignments().unwrap()[&44];
+    assert_eq!(replayed.state.attempts, 1);
+    assert!(replayed.state.lease.is_none());
+    assert!(replayed.data.native_binding.as_ref() == Some(&binding));
 }
 #[test]
 fn failed_checks_get_exactly_one_retry() {
