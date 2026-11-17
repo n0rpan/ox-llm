@@ -605,14 +605,19 @@ fn native_local_release_pair(binary: &Path, engine: &Path, missing_weights: bool
             "missing weights must refuse before child authentication"
         );
     } else {
-        assert!(executed.contains(engine), "exact oxe-server must execute");
+        assert!(status.success(), "native local proof failed: {stderr}");
+        assert!(
+            executed.contains(engine),
+            "exact oxe-server must execute; reply={} exec_attempt={}",
+            stdout.contains("native-local-proof"),
+            trace.contains(&format!("execve(\"{}\"", engine.display()))
+        );
         assert!(
             trace.contains("connect("),
             "native loopback transport must be traced"
         );
         // LocalEngine startup requires authenticated /health and /props and
         // rejects a mismatched build_info before a chat request can proceed.
-        assert!(status.success(), "native local proof failed: {stderr}");
         assert!(stdout.contains("native-local-proof"));
     }
     assert!(
