@@ -24,9 +24,10 @@ use oxa_proto::{codes, OxaError};
 /// What the diff is taken against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
-    /// Unstaged changes of the work tree against the index (`git diff`). Staged changes are in
-    /// `Selection::Base("HEAD")`; an unborn `HEAD` is still reviewable here.
+    /// Unstaged changes of the work tree against the index (`git diff`).
     Uncommitted,
+    /// Staged changes, including the initial index before the first commit (`git diff --cached`).
+    Staged,
     /// Everything since `reference`, e.g. `origin/main` or `HEAD~3` (`git diff <reference>`).
     Base(String),
     /// One commit as `git show` prints it (`--format=` drops the commit message): its change
@@ -40,22 +41,43 @@ pub const PER_FILE_CAP: usize = 16 * 1024;
 /// The `git` argument list (program excluded) for the diff `selection` names.
 ///
 /// `--no-ext-diff` and `--no-textconv` keep a repository's own configuration from starting a
-/// program instead of printing the diff, and the trailing `--` ends the revisions so nothing
+/// program instead of printing the diff. Colour and submodule-ignore settings cannot hide patch
+/// headers or gitlink changes. The trailing `--` ends the revisions so nothing
 /// after them can be read as a path (or as an option).
 pub fn diff_argv(selection: &Selection) -> Result<Vec<String>, OxaError> {
     let mut argv = match selection {
         Selection::Uncommitted => vec!["diff".to_string()],
+        Selection::Staged => vec!["diff".to_string(), "--cached".to_string()],
         Selection::Base(reference) => vec!["diff".to_string(), checked("base", reference)?],
         Selection::Commit(commit) => {
+            let commit = checked("commit", commit)?;
+            if commit.starts_with('^')
+                || commit.contains("..")
+                || commit.contains("^@")
+                || commit.contains("^!")
+                || commit.contains("^-")
+                || commit.contains(':')
+                || commit.chars().any(char::is_whitespace)
+            {
+                return Err(refused(
+                    "commit",
+                    &commit,
+                    "name one commit, not a revision set or path",
+                ));
+            }
             vec![
                 "show".to_string(),
                 "--format=".to_string(),
-                checked("commit", commit)?,
+                "--root".to_string(),
+                "--diff-merges=first-parent".to_string(),
+                format!("{commit}^{{commit}}"),
             ]
         }
     };
     argv.push("--no-ext-diff".to_string());
     argv.push("--no-textconv".to_string());
+    argv.push("--no-color".to_string());
+    argv.push("--ignore-submodules=none".to_string());
     argv.push("--".to_string());
     Ok(argv)
 }
@@ -316,15 +338,40 @@ mod tests {
     fn uncommitted_is_a_plain_diff() {
         assert_eq!(
             diff_argv(&Selection::Uncommitted).unwrap(),
-            ["diff", "--no-ext-diff", "--no-textconv", "--"]
+            [
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--ignore-submodules=none",
+                "--"
+            ]
         );
+    }
+
+    #[test]
+    fn staged_changes_are_reviewable_before_the_first_commit() {
+        let env = repository();
+        env.write("work/initial.txt", "initial\n");
+        git(&env, &["add", "."]);
+        let diff = selected_diff(&env, Selection::Staged);
+        assert!(diff.contains("diff --git a/initial.txt b/initial.txt"), "{diff}");
+        assert!(diff.contains("+initial"), "{diff}");
     }
 
     #[test]
     fn base_names_the_reference() {
         assert_eq!(
             diff_argv(&Selection::Base("origin/main".to_string())).unwrap(),
-            ["diff", "origin/main", "--no-ext-diff", "--no-textconv", "--"]
+            [
+                "diff",
+                "origin/main",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--ignore-submodules=none",
+                "--"
+            ]
         );
     }
 
@@ -335,9 +382,13 @@ mod tests {
             [
                 "show",
                 "--format=",
-                "3eb8ad14",
+                "--root",
+                "--diff-merges=first-parent",
+                "3eb8ad14^{commit}",
                 "--no-ext-diff",
                 "--no-textconv",
+                "--no-color",
+                "--ignore-submodules=none",
                 "--"
             ]
         );
