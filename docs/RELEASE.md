@@ -2,8 +2,7 @@
 
 ## v0.2.1 Rust-only upgrade boundary
 
-The v0.2.1 release target (#763) installs native `oxa` and `oxe-server`, plus the
-native MEMLAT utility and inert templates, with
+The v0.2.1 release target (#763) installs native `oxa` and `oxe-server`, with
 native cloud/local selection: no Python runtime dependency, Python payload,
 `oxc`/diagnostics wrappers, controller daemon or service on port 8092. Packaging
 must qualify that exact artifact; the historical v0.2.0 recipes below are not

@@ -1,8 +1,7 @@
 # Native v0.2.1 install and upgrade
 
 v0.2.1 is the Rust-only release target tracked by [#763](https://github.com/oxstack/ox-llm/issues/763).
-Its model runtime is `oxa` plus `oxe-server`, with the native
-`local-ai-memlat-boot` utility: no Python runtime, controller
+Its model runtime is `oxa` plus `oxe-server`: no Python runtime, controller
 daemon, `oxc` command wrapper or service on port 8092. Release qualification and
 publication are separate owner steps; this guide does not declare an unpublished
 candidate ready. v0.2.0 remains the legacy install.
@@ -33,10 +32,13 @@ or copy the release's configuration over existing user settings. Keep the
 matching `oxa` and `oxe-server` together. A local load rejects an engine whose
 build version does not match the agent.
 
-Check the selected `oxa --version`, `oxe-server --version` and `oxa --help` before
-starting a model. Use an explicit binary path if the shell still resolves a
-legacy install. No Python/controller command, shell wrapper or new daemon is
-needed to launch native `oxa`.
+Check the selected `oxa --version` and `oxa --help` before starting a model.
+`oxe-server` has no `--version` option: native local loading checks the owned
+engine's authenticated `/props` response for the matching `build_info` identity.
+The release's model-free stub smoke exercises that identity separately; a file
+name alone does not prove a matching build. Use an explicit binary path if the
+shell still resolves a legacy install. No Python/controller command, shell
+wrapper or new daemon is needed to launch native `oxa`.
 
 ## Upgrade from v0.2.0
 
@@ -110,7 +112,8 @@ stale token backup over a refreshed record or delete user data to switch version
 LAN sharing, panel, Studio/images, the lead layer and a controller/HTTP daemon are
 outside v0.2.1. See [release qualification and upgrade boundary](https://github.com/oxstack/ox-llm/blob/main/docs/RELEASE.md#v021-rust-only-upgrade-boundary).
 
-The qualified MEMLAT templates ship as inert data under
-`/usr/share/ox-llm/memlat/`. Installation does not activate hooks, install a
-service, change boot defaults or write to the ESP. Activation is a separate
-owner operation.
+If the selected artifact includes native MEMLAT tooling or templates, those
+templates remain inert data under `/usr/share/ox-llm/memlat/`. This upgrade does
+not activate hooks, install a service, change boot defaults or write to the ESP.
+Activation is a separate owner operation; consult the selected artifact's
+manifest for its exact utility payload.
