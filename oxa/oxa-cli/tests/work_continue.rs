@@ -374,10 +374,11 @@ fn a_concurrent_checkout_during_ancestry_validation_keeps_its_head_and_index() {
     let env = TestEnv::new();
     let (stale, _) = lagging_base(&env);
     let original_path = std::env::var("PATH").unwrap();
+    env.write("bin/original-path", &format!("{original_path}\n"));
     let marker = env.work().join("checkout-race");
     // The trusted Git wrapper performs the real ancestry read, then interleaves an ordinary
     // source checkout before returning that successful read to the native runner.
-    let wrapper = env.write("bin/git", &format!("#!/bin/sh\nPATH={}; export PATH\ngit \"$@\"\nrace_status=$?\ncase \" $* \" in *\" merge-base --is-ancestor \"*) if test \"$race_status\" -eq 0 && mkdir {} 2>/dev/null; then git -C {} checkout main >/dev/null 2>&1 || exit 1; fi;; esac\nexit \"$race_status\"\n", oxa_proto::sh_quote(&original_path), oxa_proto::sh_quote(&marker.to_string_lossy()), oxa_proto::sh_quote(&project(&env).to_string_lossy())));
+    let wrapper = env.write("bin/git", "#!/bin/sh\nfixture_tools=${0%/*}\nIFS= read -r PATH < \"$fixture_tools/original-path\" || exit 1\nexport PATH\ngit \"$@\"\nrace_status=$?\ncase \" $* \" in *\" merge-base --is-ancestor \"*) if test \"$race_status\" -eq 0 && mkdir \"$fixture_tools/../work/checkout-race\" 2>/dev/null; then git -C \"$fixture_tools/../work/project\" checkout main >/dev/null 2>&1 || exit 1; fi;; esac\nexit \"$race_status\"\n");
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{original_path}", wrapper.parent().unwrap().display());
     let (record, _) = run_observed(
