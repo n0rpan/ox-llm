@@ -299,8 +299,14 @@ mod tests {
         assert!(out.starts_with("Rubric.\n\n"));
         assert!(out.contains("cut: kept 0 of "));
         assert!(out.contains("total limit"));
-        let headers = "the first file's header is the marker's text";
-        assert_eq!(out.matches("diff --git").count(), 1, "{headers}");
+        assert!(
+            !out.contains("diff --git"),
+            "no file text is shown at a zero limit: {out}"
+        );
+        assert!(
+            out.contains("a/one.rs b/one.rs"),
+            "the marker names the file it cut: {out}"
+        );
     }
 
     #[test]
@@ -332,9 +338,12 @@ mod tests {
         let diff = "stray text\n\
                     diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+b\n\
                     diff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-c\n+d\n";
-        let first = diff.split("diff --git a/a.rs").next().unwrap();
-        let out = prompt(diff, "", first.len() + 8);
-        assert!(out.contains("diff --git a/a.rs"));
+        // The budget is the stray text plus the first file's header line: the cut lands inside
+        // the first file, so the count names the second file only — the stray text is not a file.
+        let stray = diff.find("diff --git a/a.rs").unwrap();
+        let header = diff[stray..].split('\n').next().unwrap().len() + 1;
+        let out = prompt(diff, "", stray + header);
+        assert!(out.contains("diff --git a/a.rs"), "the first file is shown");
         assert!(out.contains("1 more file not shown"), "{out}");
         assert!(!out.contains("2 more files"), "{out}");
     }
