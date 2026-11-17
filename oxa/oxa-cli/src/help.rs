@@ -168,8 +168,19 @@ const BASE: &[Entry] = &[
             "oxa work --issue N --model MODEL [--rerun]",
             "oxa work --pr N --model MODEL [--rerun]",
             "oxa work status [--json]",
+            "oxa work board --shadow --repo OWNER/REPO --once",
         ],
         example: "oxa work tasks.json",
+    },
+    Entry {
+        // Migrate this command declaration to the shared registry in #1062.
+        path: &["work", "board"],
+        summary: "Sample a private read-only GitHub work board",
+        usage: &[
+            "oxa work board --shadow --repo OWNER/REPO --once",
+            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once]",
+        ],
+        example: "oxa work board --shadow --repo example/project --once",
     },
     Entry {
         path: &["work", "status"],
@@ -239,6 +250,16 @@ fn entries() -> Vec<&'static Entry> {
 /// The help text of exactly this command path, or `None` when no public command has it.
 pub fn text(path: &[&str]) -> Option<String> {
     entries().into_iter().find(|e| e.path == path).map(render)
+}
+
+/// Existing table's early CLI bridge; the shared #1062 registry will generate this route.
+pub(crate) fn from_argv(argv: &[String]) -> Option<Result<String, &'static str>> {
+    let (name, words) = argv.split_first()?;
+    if name == "help" {
+        let path: Vec<_> = words.iter().map(String::as_str).collect();
+        return Some(text(if path.is_empty() { &["help"] } else { &path }).ok_or("unknown help command"));
+    }
+    requested(name, words).map(Ok)
 }
 
 /// The longest public command path that is a prefix of `words`.

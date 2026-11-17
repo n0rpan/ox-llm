@@ -16,7 +16,6 @@ use sha2::{Digest, Sha256};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
 
 const USAGE: &str =
     "usage: oxa report-issue draft --title TITLE [--notes-file FILE | --notes TEXT] | oxa report-issue submit DRAFT";
@@ -422,37 +421,37 @@ fn tty_confirm(env: &Env) -> impl FnMut(&str) -> Option<bool> + '_ {
     }
 }
 
-/// The real runner: the program's stdout, killed after 30 s.
-fn process_runner(program: &str, args: &[String]) -> Option<(i32, String)> {
-    let mut child = std::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-    let stdout = child.stdout.take()?;
-    let reader = std::thread::spawn(move || {
-        let mut s = String::new();
-        let _ = std::io::Read::read_to_string(&mut std::io::BufReader::new(stdout), &mut s);
-        s
-    });
-    let start = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if start.elapsed() < Duration::from_secs(30) => {
-                std::thread::sleep(Duration::from_millis(50))
+pub(crate) use oxa_work::command_runner;
+
+/// The real runner: the program's stdout, killed after 30 s. The program is resolved through
+/// the trusted host-tool lookup (`PATH` from `env`, never inside `cwd` or a group- or
+/// world-writable directory), the same lookup `oxa work` uses for `gh`.
+pub fn process_runner<'a>(
+    env: &'a Env,
+    cwd: &'a Path,
+    home: &'a Path,
+) -> impl FnMut(&str, &[String]) -> Option<(i32, String)> + 'a {
+    move |program: &str, args: &[String]| {
+        let path = env.get("PATH").map(std::ffi::OsStr::new);
+        let Some(exe) = crate::netguard::trusted_executable_for(program, path, Some(cwd), Some(home)) else {
+            if path.is_some_and(|p| std::env::split_paths(p).any(|d| d.join(program).is_file())) {
+                eprintln!("{}", untrusted_tool(program));
             }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
-    let out = reader.join().ok()?;
-    Some((status.code().unwrap_or(1), out))
+            return None;
+        };
+        let mut command = std::process::Command::new(exe);
+        command.args(args);
+        command_runner(command, None)
+    }
+}
+
+/// Why a host tool on `PATH` was not run.
+fn untrusted_tool(program: &str) -> String {
+    format!(
+        "oxa: `{program}` was not run: the `{program}` on PATH is not in a trusted location \
+(it is inside the project or in a group- or world-writable directory). Install `{program}` \
+system-wide or put it in a trusted PATH entry outside the project (for example ~/.local/bin)."
+    )
 }
 
 /// `oxa report-issue draft|submit ..`. Returns the exit code.
@@ -465,7 +464,7 @@ pub fn run_report_issue(
 ) -> Result<i32, OxaError> {
     let usage = |m: &str| OxaError::new(codes::USAGE, m.to_string()).with_hint(USAGE);
     let ctx = ScrubCtx::from_env(env, dirs);
-    let mut runner = process_runner;
+    let mut runner = process_runner(env, cwd, &dirs.home);
     match words.first().map(String::as_str) {
         Some("draft") => {
             let mut title: Option<String> = None;

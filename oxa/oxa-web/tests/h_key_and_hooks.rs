@@ -168,11 +168,22 @@ fn from_env_reads_the_marker_and_only_a_loopback_base_url() {
 #[test]
 fn the_switches() {
     assert!(enabled(false, None, true, None));
-    assert!(enabled(false, Some("1"), true, Some("brave")));
+    // The four shared true words keep the tool on (they are the default).
+    for on in ["1", "true", "TRUE", "yes", "Yes", "on", "ON"] {
+        assert!(
+            enabled(false, Some(on), true, Some("brave")),
+            "OXA_WEB_SEARCH={on}"
+        );
+    }
     assert!(!enabled(true, None, true, None), "--no-web-search");
-    for off in ["0", "false", "NO", "off"] {
+    for off in ["0", "false", "NO", "off", "Off"] {
         assert!(!enabled(false, Some(off), true, None), "OXA_WEB_SEARCH={off}");
     }
+    // Unset, empty and an unknown word keep the default (on).
+    for keep in ["", "  ", "maybe", "2"] {
+        assert!(enabled(false, Some(keep), true, None), "OXA_WEB_SEARCH={keep:?}");
+    }
+    assert!(enabled(false, None, true, None), "unset");
     assert!(!enabled(false, None, false, None), "oxa.webSearch.enabled: false");
     assert!(
         !enabled(false, None, true, Some("none")),

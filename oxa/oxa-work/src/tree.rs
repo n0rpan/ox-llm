@@ -5,6 +5,38 @@ use super::{
 };
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+
+/// Hash-check the captured base before checkout or a resumed worker can consume it.
+pub(crate) fn verify_objects(policy: &RunPolicy, repo: &Path, base: &str) -> Result<()> {
+    let status = git(
+        policy,
+        repo,
+        &[
+            "-c",
+            "core.alternateRefsCommand=:",
+            "-c",
+            "core.commitGraph=false",
+            "-c",
+            "fsck.skipList=/dev/null",
+            "fsck",
+            "--full",
+            "--strict",
+            "--no-reflogs",
+            "--no-dangling",
+            base,
+        ],
+    )
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null())
+    .status()
+    .map_err(|_| "cannot verify captured base objects")?;
+    if !status.success() {
+        return Err("captured base object integrity failed; work retained".into());
+    }
+    Ok(())
+}
 
 pub(crate) struct Prepared {
     pub initial: String,
@@ -89,6 +121,15 @@ pub(crate) fn prepare(
     policy: &RunPolicy,
     lock: &fs::File,
 ) -> Result<Prepared> {
+    verify_objects(policy, repo, base)?;
+    if let Some(reviewed) = task.reviewed_head() {
+        let branch = format!("refs/heads/{}", task.branch);
+        let local = checked(git(policy, repo, &["rev-parse", "--verify", &branch]))
+            .map_err(|_| "local pull request branch is unavailable at the reviewed head")?;
+        if local != reviewed {
+            return Err("local pull request branch is not at the reviewed head".into());
+        }
+    }
     let retained = tree.exists();
     if !retained {
         let branch = format!("refs/heads/{}", task.branch);
@@ -141,6 +182,19 @@ pub(crate) fn prepare(
         }
     }
     let initial = checked(git(policy, tree, &["rev-parse", "HEAD"]))?;
+    if let Some(reviewed) = task.reviewed_head() {
+        if initial != reviewed {
+            return Err("pull request branch moved during worktree preparation".into());
+        }
+        ensure_merged(policy, tree, base, &task.branch)?;
+        if retained && dirty_worktree(binary, tree, repo, policy, lock)? {
+            return Err("retained worktree has uncommitted changes; worker was not restarted".into());
+        }
+        return Ok(Prepared {
+            initial,
+            prompt: task.prompt.clone(),
+        });
+    }
     if merging(policy, tree)? {
         return Ok(Prepared {
             initial,
