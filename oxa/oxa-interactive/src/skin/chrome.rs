@@ -876,6 +876,7 @@ fn budget_segment(b: &BudgetMeter, theme: &Theme) -> String {
         theme.fg(token, &body)
     );
     if let Some(pct) = pct {
+        // Rounding is presentation-only; warning text and colour use the actual percentage.
         let displayed_pct = pct.round().max(0.0) as u64;
         s.push_str(&format!(" {}", theme.fg(token, &format!("{displayed_pct}%"))));
     }

@@ -400,9 +400,11 @@ fn hud_budget_warnings_use_unrounded_usage() {
     let theme = colour();
     for (used, pct, token, warning) in [
         (7.95, 80, "text", ""),
+        (7.99, 80, "text", ""),
         (8.0, 80, "warning", " near cap"),
         (8.01, 80, "warning", " near cap"),
         (9.96, 100, "warning", " near cap"),
+        (9.99, 100, "warning", " near cap"),
         (10.0, 100, "error", " over cap"),
         (10.01, 100, "error", " over cap"),
     ] {
