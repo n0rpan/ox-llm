@@ -126,6 +126,14 @@ fn node_id(value: &Value) -> Option<&str> {
     })
 }
 
+/// Verify a complete lowercase object ID from a GitHub commit field.
+pub fn is_object_id(sha: &str) -> bool {
+    matches!(sha.len(), 40 | 64)
+        && sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<RejectionEvidence>, String> {
     if row["number"].as_u64() != Some(entry.number)
         || row["headRefOid"].as_str() != Some(entry.head.as_str())
@@ -157,13 +165,10 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
         return Ok(None);
     };
     let commit = &event["beforeCommit"];
-    let Some(sha) = commit["oid"].as_str().filter(|sha| {
-        matches!(sha.len(), 40 | 64)
-            && sha
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            && *sha != entry.head
-    }) else {
+    let Some(sha) = commit["oid"]
+        .as_str()
+        .filter(|sha| is_object_id(sha) && *sha != entry.head)
+    else {
         return Ok(None);
     };
     let rollup = &commit["statusCheckRollup"];
