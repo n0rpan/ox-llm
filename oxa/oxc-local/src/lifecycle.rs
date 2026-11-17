@@ -399,13 +399,18 @@ impl Lifecycle {
     }
     fn attach(&mut self, now: Instant) -> io::Result<()> {
         if let (Some(platform), Some(pid)) = (&self.platform, self.status().pid) {
-            match platform.attach(pid).and_then(|attached| {
-                crate::platform::no_swap(attached.sample)?;
-                Ok(attached)
-            }) {
+            let gated = self.supervisor.as_ref().is_some_and(Supervisor::gated);
+            let ready = self.supervisor.as_mut().unwrap().await_gate();
+            match ready
+                .and_then(|()| platform.attach(pid, gated))
+                .and_then(|attached| {
+                    crate::platform::no_swap(attached.sample)?;
+                    Ok(attached)
+                }) {
                 Ok(attached) => {
                     self.guard = Some(Guard::new(attached.sample, now));
                     self.scope = attached.scope;
+                    self.supervisor.as_mut().unwrap().release()?;
                 }
                 Err(error) => {
                     self.supervisor.take(); // owned Drop kills the group and reaps before lease release
@@ -430,12 +435,13 @@ impl Lifecycle {
     fn install(
         &mut self,
         model: Model,
-        supervisor: Supervisor,
+        mut supervisor: Supervisor,
         sample: MemorySample,
         now: Instant,
     ) -> io::Result<()> {
         self.ready.store(false, Ordering::Release);
         self.model = Some(model);
+        supervisor.platform = self.platform.clone();
         self.supervisor = Some(supervisor);
         self.guard = Some(Guard::new(sample, now));
         self.stop_reason = None;

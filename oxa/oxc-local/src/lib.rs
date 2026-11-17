@@ -73,6 +73,7 @@ pub enum Failure {
 pub struct Supervisor {
     config: Config,
     child: Option<Child>,
+    pub(crate) platform: Option<std::sync::Arc<dyn platform::PlatformLauncher>>,
     state: State,
     deadline: Instant,
     next_health: Instant,
@@ -100,6 +101,7 @@ impl Supervisor {
         Ok(Self {
             config,
             child: None,
+            platform: None,
             state: State::Stopped,
             deadline: now,
             next_health: now,
@@ -133,13 +135,26 @@ impl Supervisor {
     }
 
     fn spawn(&mut self, now: Instant) -> io::Result<()> {
-        let result = Command::new(&self.config.executable)
+        let gated = self
+            .platform
+            .as_ref()
+            .map(|p| p.requires_scope())
+            .transpose()?
+            .unwrap_or(false);
+        let mut command = if gated {
+            let mut command = Command::new(std::env::current_exe()?);
+            command.arg(platform::CHILD_GATE).arg(&self.config.executable);
+            command
+        } else {
+            Command::new(&self.config.executable)
+        };
+        let result = command
             .args(&self.config.arguments)
             // Ambient model/provider settings and credentials must not cross this boundary.
             .env_clear()
             .envs(&self.config.environment)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdin(if gated { Stdio::piped() } else { Stdio::null() })
+            .stdout(if gated { Stdio::piped() } else { Stdio::null() })
             .stderr(Stdio::null())
             .process_group(0)
             .spawn();
@@ -159,6 +174,44 @@ impl Supervisor {
                 Err(error)
             }
         }
+    }
+
+    pub(crate) fn gated(&self) -> bool {
+        self.child.as_ref().is_some_and(|c| c.stdin.is_some())
+    }
+    pub(crate) fn await_gate(&mut self) -> io::Result<()> {
+        use nix::fcntl::{fcntl, FcntlArg, OFlag};
+        use std::io::Read;
+        if let Some(mut pipe) = self.child.as_mut().and_then(|child| child.stdout.take()) {
+            let flags = OFlag::from_bits_truncate(fcntl(&pipe, FcntlArg::F_GETFL)?);
+            fcntl(&pipe, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+            let mut ready = [0];
+            loop {
+                match pipe.read(&mut ready) {
+                    Ok(1) if ready == [0x6b] => return Ok(()),
+                    Err(error)
+                        if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < self.deadline =>
+                    {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    _ => {
+                        return Err(platform::refused(
+                            "owned child gate ready before startup deadline",
+                        ))
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn release(&mut self) -> io::Result<()> {
+        use std::io::Write;
+        if let Some(pipe) = self.child.as_mut().and_then(|child| child.stdin.take()) {
+            let mut pipe = pipe;
+            pipe.write_all(&[0xa7])
+                .map_err(|_| platform::refused("owned child scope gate released"))?;
+        }
+        Ok(())
     }
 
     /// Cancels automatic restarts, including during backoff.

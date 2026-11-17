@@ -5,7 +5,10 @@ use std::{fmt, io};
 /// Attach an already owned child and validate its platform memory policy before readiness.
 /// macOS supplies a separate implementation; Linux cgroup rules are not portable.
 pub trait PlatformLauncher: Send + Sync {
-    fn attach(&self, pid: u32) -> io::Result<Attachment>;
+    fn requires_scope(&self) -> io::Result<bool> {
+        Ok(false)
+    }
+    fn attach(&self, pid: u32, gated: bool) -> io::Result<Attachment>;
 }
 #[derive(Debug)]
 pub struct Attachment {
@@ -13,15 +16,19 @@ pub struct Attachment {
     pub scope: Option<String>,
 }
 #[derive(Debug)]
-pub(crate) struct Predicate(pub &'static str);
+pub(crate) struct Predicate(pub &'static str, &'static str);
 impl fmt::Display for Predicate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Local engine requires {} with no swap-enabled fallback; run in a delegated systemd user login session or enable its user bus with `loginctl enable-linger $USER` (otherwise use a no-swap service/container).", self.0)
+        write!(
+            f,
+            "Local engine requires {}; {}; no swap-enabled fallback is allowed.",
+            self.0, self.1
+        )
     }
 }
 impl std::error::Error for Predicate {}
 pub(crate) fn refused(predicate: &'static str) -> io::Error {
-    io::Error::other(Predicate(predicate))
+    io::Error::other(Predicate(predicate, "enable memory/pids delegation with `sudo systemctl set-property user@$(id -u).service Delegate=cpu memory pids` or use a no-swap service"))
 }
 pub(crate) fn no_swap(s: MemorySample) -> io::Result<MemorySample> {
     if !s.swap_limit_zero {
@@ -33,6 +40,34 @@ pub(crate) fn no_swap(s: MemorySample) -> io::Result<MemorySample> {
     Ok(s)
 }
 
+pub const CHILD_GATE: &str = "--oxa-owned-local-child";
+/// Internal same-PID exec gate; the parent writes permission only after child policy checks.
+pub fn child_entry(args: &[std::ffi::OsString]) -> Option<io::Result<()>> {
+    (args.first().is_some_and(|arg| arg == CHILD_GATE)).then(|| {
+        use std::{
+            io::{Read, Write},
+            os::unix::process::CommandExt,
+            process::{Command, Stdio},
+        };
+        let executable = args
+            .get(1)
+            .filter(|p| std::path::Path::new(p).is_absolute())
+            .ok_or_else(|| refused("owned child executable is absolute"))?;
+        std::io::stdout().write_all(&[0x6b])?;
+        std::io::stdout().flush()?;
+        let mut permission = [0];
+        std::io::stdin().read_exact(&mut permission)?;
+        if permission != [0xa7] {
+            return Err(refused("owned child scope permission received"));
+        }
+        Err(Command::new(executable)
+            .args(&args[2..])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .exec())
+    })
+}
+
 #[cfg(target_os = "linux")]
 pub(crate) struct LinuxLauncher(pub MemorySource);
 #[cfg(target_os = "linux")]
@@ -40,9 +75,10 @@ impl LinuxLauncher {
     fn attach_with(
         &self,
         pid: u32,
+        gated: bool,
         start: impl FnOnce(u32, &str) -> io::Result<()>,
     ) -> io::Result<Attachment> {
-        if self.0.sample().is_ok_and(|s| no_swap(s).is_ok()) {
+        if !gated {
             return no_swap(self.0.sample_child(pid)?).map(|sample| Attachment { sample, scope: None });
         }
         use std::{
@@ -73,29 +109,49 @@ impl LinuxLauncher {
 }
 #[cfg(target_os = "linux")]
 impl PlatformLauncher for LinuxLauncher {
-    fn attach(&self, pid: u32) -> io::Result<Attachment> {
-        self.attach_with(pid, |pid, unit| {
+    fn requires_scope(&self) -> io::Result<bool> {
+        self.0
+            .sample()
+            .map(|s| no_swap(s).is_err())
+            .map_err(|_| refused("caller cgroup v2 no-swap policy readable"))
+    }
+    fn attach(&self, pid: u32, gated: bool) -> io::Result<Attachment> {
+        self.attach_with(pid, gated, |pid, unit| {
             use zbus::zvariant::Value;
             let address = format!("unix:path=/run/user/{}/bus", nix::unistd::geteuid());
-            let connect = || -> zbus::Result<()> {
-                let bus = zbus::blocking::connection::Builder::address(address.as_str())?
-                    .auth_mechanism(zbus::connection::AuthMechanism::External)
-                    .method_timeout(std::time::Duration::from_secs(3))
-                    .build()?;
-                let properties = scope_properties(pid);
-                let auxiliary: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
-                bus.call_method(
-                    Some("org.freedesktop.systemd1"),
-                    "/org/freedesktop/systemd1",
-                    Some("org.freedesktop.systemd1.Manager"),
-                    "StartTransientUnit",
-                    &(unit, "fail", properties, auxiliary),
-                )?;
-                Ok(())
-            };
-            connect().map_err(|_| refused("systemd user bus StartTransientUnit(MemorySwapMax=0) available"))
+            let bus = zbus::blocking::connection::Builder::address(address.as_str())
+                .and_then(|b| {
+                    b.auth_mechanism(zbus::connection::AuthMechanism::External)
+                        .method_timeout(std::time::Duration::from_secs(3))
+                        .build()
+                })
+                .map_err(|_| bus_unavailable(std::path::Path::new("/run/systemd/system").is_dir()))?;
+            let properties = scope_properties(pid);
+            let auxiliary: Vec<(&str, Vec<(&str, Value<'_>)>)> = Vec::new();
+            bus.call_method(
+                Some("org.freedesktop.systemd1"),
+                "/org/freedesktop/systemd1",
+                Some("org.freedesktop.systemd1.Manager"),
+                "StartTransientUnit",
+                &(unit, "fail", properties, auxiliary),
+            )
+            .map_err(|_| refused("systemd StartTransientUnit with delegated MemorySwapMax=0"))?;
+            Ok(())
         })
     }
+}
+
+#[cfg(target_os = "linux")]
+fn bus_unavailable(has_manager: bool) -> io::Error {
+    let repair = if has_manager {
+        "enable the user manager with `loginctl enable-linger $USER` and run inside its login session"
+    } else {
+        "use an inherited no-swap service/container, e.g. `docker run --memory=<budget> --memory-swap=<budget> <image> oxa`"
+    };
+    io::Error::other(Predicate(
+        "systemd user bus for StartTransientUnit(MemorySwapMax=0)",
+        repair,
+    ))
 }
 
 #[cfg(target_os = "linux")]
@@ -152,12 +208,13 @@ mod tests {
     #[test]
     fn inherited_policy_runs_direct_but_checks_child_not_parent() {
         let (env, launcher) = fixture(true);
+        assert!(!launcher.requires_scope().unwrap());
         assert!(launcher
-            .attach_with(42, |_, _| panic!("must not need user bus"))
+            .attach_with(42, false, |_, _| panic!("must not need user bus"))
             .is_ok());
         env.write("work/cgroup/child/memory.swap.max", "max");
         let error = launcher
-            .attach_with(42, |_, _| panic!("inherited path"))
+            .attach_with(42, false, |_, _| panic!("inherited path"))
             .unwrap_err();
         assert!(error.to_string().contains("engine child memory.swap.max == 0"));
     }
@@ -165,7 +222,7 @@ mod tests {
     fn scope_attachment_uses_new_child_group_and_new_baseline() {
         let (env, launcher) = fixture(false);
         let sample = launcher
-            .attach_with(42, |pid, unit| {
+            .attach_with(42, true, |pid, unit| {
                 assert_eq!(pid, 42);
                 assert!(unit.starts_with("oxa-local-") && unit.ends_with(".scope"));
                 std::fs::rename(
@@ -182,17 +239,19 @@ mod tests {
     }
     #[test]
     fn unavailable_systemd_is_explicit_and_never_falls_back() {
-        let (_env, launcher) = fixture(false);
-        let error = launcher
-            .attach_with(42, |_, _| {
-                Err(refused(
-                    "systemd user bus StartTransientUnit(MemorySwapMax=0) available",
-                ))
-            })
-            .unwrap_err();
-        let message = error.to_string();
-        assert!(message.contains("StartTransientUnit(MemorySwapMax=0)"));
-        assert!(message.contains("loginctl enable-linger $USER"));
-        assert!(message.contains("no swap-enabled fallback"));
+        for manager in [false, true] {
+            let (_env, launcher) = fixture(false);
+            let error = launcher
+                .attach_with(42, true, |_, _| Err(bus_unavailable(manager)))
+                .unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("StartTransientUnit(MemorySwapMax=0)"));
+            assert!(message.contains("no swap-enabled fallback"));
+            assert_eq!(message.contains("loginctl enable-linger $USER"), manager);
+            assert_eq!(
+                message.contains("docker run --memory=<budget> --memory-swap=<budget>"),
+                !manager
+            );
+        }
     }
 }

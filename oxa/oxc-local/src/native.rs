@@ -780,7 +780,7 @@ mod tests {
             pid: std::sync::atomic::AtomicU32,
         }
         impl crate::platform::PlatformLauncher for Scope {
-            fn attach(&self, pid: u32) -> io::Result<crate::platform::Attachment> {
+            fn attach(&self, pid: u32, _gated: bool) -> io::Result<crate::platform::Attachment> {
                 self.pid.store(pid, Ordering::Release);
                 let mut sample = Memory {
                     fail: AtomicBool::new(false),
