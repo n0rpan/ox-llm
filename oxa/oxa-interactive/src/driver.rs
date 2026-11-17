@@ -701,6 +701,17 @@ impl<'a> Loop<'a> {
         self.vm.status.activity != Activity::Idle
     }
 
+    /// Whether Enter / Alt+Enter queue the text (steering / follow-up) rather than start a run:
+    /// a run is active, the user has not aborted it, and it still takes a tool batch. A run
+    /// that is winding down after an abort (#906) takes no further batch, so a queued message
+    /// would never be delivered; input typed in that window starts a new run instead. The
+    /// abort the user asked for is the same window seen before the worker reports it
+    /// ([`Self::abort_requested`]), so both are checked. Only what Enter does changes: Ctrl+C
+    /// still aborts, and the footer hint still reads "steer" for that moment.
+    fn accepts_steering(&self) -> bool {
+        self.running() && !self.abort_requested && !self.handle.is_aborting()
+    }
+
     pub(crate) fn animating(&self) -> bool {
         self.running()
             || self.dialogs.is_open()
@@ -1428,7 +1439,7 @@ impl<'a> Loop<'a> {
             }
             self.editor.set_text("");
             self.editor.add_history(&text);
-            if self.running() {
+            if self.accepts_steering() {
                 self.handle.follow_up(text);
                 self.wake_queued();
                 self.sync_queue();
@@ -1699,7 +1710,7 @@ impl<'a> Loop<'a> {
         if self.fullscreen {
             self.viewport.scroll_to_bottom();
         }
-        if self.running() && !self.abort_requested {
+        if self.accepts_steering() {
             self.handle.steer(trimmed);
             self.wake_queued();
             self.sync_queue();

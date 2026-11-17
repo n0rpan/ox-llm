@@ -528,6 +528,14 @@ impl Handle {
     pub fn is_busy(&self) -> bool {
         self.shared.busy.load(Ordering::SeqCst)
     }
+    /// Whether the run that holds the session is winding down: an abort ([`Handle::abort`]) or
+    /// the run's own loop guard set `cancel`, so the run takes no further tool batch and leaves
+    /// the queue undrained. A front end must send input typed now as a new prompt, never as a
+    /// steering message ([`Handle::steer`]) that nothing would deliver. `false` while the
+    /// session is idle: the next claim resets the token.
+    pub fn is_aborting(&self) -> bool {
+        self.shared.busy.load(Ordering::SeqCst) && self.shared.cancel.is_cancelled()
+    }
     /// The queues (steering, follow-up) when they changed since the last report, and clear the
     /// change mark. A front end that changed the queue from another thread reports the change
     /// itself this way, at once (pi emits `queue_update` when a message is queued); the session
@@ -702,6 +710,24 @@ mod tests {
         assert!(h.shared.cancel.is_cancelled());
         assert!(!h.shared.cancel_retry.is_cancelled());
         assert_eq!(h.dequeue(), vec!["s1"]);
+    }
+
+    /// `is_aborting` is the run the front end must not steer: a claimed session whose run was
+    /// cancelled. Idle, or busy with a clear token, is a run that still takes input.
+    #[test]
+    fn is_aborting_needs_a_claimed_cancelled_run() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        assert!(!h.is_aborting(), "idle");
+        h.shared.busy.store(true, Ordering::SeqCst);
+        assert!(!h.is_aborting(), "a run that was not cancelled takes input");
+        h.abort();
+        assert!(h.is_aborting());
+        // The run ends and the next claim resets the token (`Session::begin`).
+        h.shared.busy.store(false, Ordering::SeqCst);
+        assert!(!h.is_aborting(), "a stale abort is not the next run");
+        h.shared.busy.store(true, Ordering::SeqCst);
+        h.shared.cancel.reset();
+        assert!(!h.is_aborting());
     }
 
     /// A background cancel never reaches the user's run: `cancel` stays clear, and a run
