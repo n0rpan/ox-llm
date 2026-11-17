@@ -148,9 +148,16 @@ fn old_rows_remain_readable_and_malformed_saved_bindings_fail_closed() {
     let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     for field in ["number", "key", "native_task_id", "branch", "lease"] {
         let mut corrupt = saved.clone();
-        corrupt["data"]["native_binding"][field] = serde_json::json!("invalid");
+        corrupt["data"]["native_binding"][field] = serde_json::json!(if field == "branch" {
+            "bad..branch"
+        } else {
+            "invalid"
+        });
         fs::write(&path, serde_json::to_vec(&corrupt).unwrap()).unwrap();
-        assert!(Claims::open(dir.path()).unwrap().assignments().is_err());
+        assert!(
+            Claims::open(dir.path()).unwrap().assignments().is_err(),
+            "field: {field}"
+        );
     }
     let mut mismatched = saved;
     mismatched["data"]["native_binding"]["lease"]["expires_at"] = serde_json::json!(31);
