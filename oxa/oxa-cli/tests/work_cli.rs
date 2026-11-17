@@ -233,6 +233,14 @@ fn github_issue_input_uses_mock_gh() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     setup(&env, "[]");
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"subagent":{"enabled":true}}}"#,
+    );
+    env.write(
+        "home/.oxa/agent/agents/scout.md",
+        "---\nname: scout\ndescription: Reads local files\ntools: read\n---\nRead local files.\n",
+    );
     let tools = trusted_tools(&env);
     let lookup_log = env.write("tmp/issue-lookup.log", "");
     let lookup_packet = env.write(
@@ -280,6 +288,10 @@ exec /bin/cat "$ISSUE_LOOKUP_PACKET"
     let requests = server.requests();
     assert_eq!(requests.len(), 1, "worker made no request: {record}");
     let request = &requests[0];
+    assert!(
+        !request.tools_json.contains("\"name\":\"subagent\""),
+        "{request:?}"
+    );
     let prompt = std::iter::once(request.system.as_str())
         .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
         .collect::<Vec<_>>()
@@ -332,6 +344,10 @@ exec /bin/cat "$ISSUE_LOOKUP_PACKET"
     let requests = rerun.requests();
     assert_eq!(requests.len(), 1, "rerun never started the worker");
     let request = &requests[0];
+    assert!(
+        !request.tools_json.contains("\"name\":\"subagent\""),
+        "{request:?}"
+    );
     let prompt = std::iter::once(request.system.as_str())
         .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
         .collect::<Vec<_>>()
