@@ -145,7 +145,9 @@ pub fn configured_engine(
                     return Err(OxaError::new(codes::NOT_FOUND,
                         "Local engine binary is missing or not executable; install oxe-server beside oxa or set oxa.local.binary."));
                 }
-                if profile.arguments.windows(2).any(|pair| pair[0] == "--engine" && pair[1] == "flash") {
+                if profile.arguments.windows(2).any(|pair| pair[0] == "--engine" && pair[1] == "flash")
+                    || profile.arguments.iter().any(|word| word == "--engine=flash")
+                {
                     return Err(OxaError::unsupported("Flash streaming-budget admission in the resident local factory"));
                 }
                 Ok(Model { name: alias_owned.clone(), required_available_bytes: required, config: Config {

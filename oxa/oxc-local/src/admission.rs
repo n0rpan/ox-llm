@@ -40,12 +40,12 @@ pub(crate) fn required(value: &Value, context: u32, weights_bytes: u64) -> Resul
 }
 
 /// Bind the allocation calculation to the actual native context, including -c.
-/// No duplicate/last-wins or unsupported equals-form authority is accepted.
+/// No duplicate/last-wins or unsupported attached/equals-form authority is accepted.
 pub(crate) fn bind_context(arguments: &mut Vec<OsString>, context: u32) -> Result<(), OxaError> {
     let mut found = false;
     for (index, word) in arguments.iter().enumerate() {
         let Some(word) = word.to_str() else { continue };
-        if word.starts_with("--ctx-size=") || word.starts_with("-c=") {
+        if word.starts_with("--ctx-size=") || (word.starts_with("-c") && word != "-c") {
             return Err(context_error());
         }
         if matches!(word, "--ctx-size" | "-c") {
