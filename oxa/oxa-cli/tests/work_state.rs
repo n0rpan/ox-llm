@@ -619,6 +619,24 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
         "work/tasks.json",
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","max_time":1}]"#,
     );
+    // Prepare only the synthetic linked tree before the task budget starts.
+    // The runner still validates, inspects and merges it before admitting the child.
+    let ready_tree = env.work().join(".oxa-worktrees/project/test");
+    fs::create_dir_all(ready_tree.parent().unwrap()).unwrap();
+    git(
+        &env,
+        &project(&env),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "worktree",
+            "add",
+            "-b",
+            "agent/test",
+            ready_tree.to_str().unwrap(),
+            "main",
+        ],
+    );
     let (record, requests) = run_observed(
         &env,
         vec![
