@@ -1113,7 +1113,22 @@ fn compact_inner(
         }
     }
     head.extend(tail);
+    // A closed native tool batch is structurally valid, but after a changed-prefix
+    // rebase its replay authority cannot authorize a same-turn continuation. Start a
+    // fresh turn only when this compaction actually invalidates that latest batch.
+    let native_batch = head.last().filter(|m| m.role == Role::Tool).and_then(|_| {
+        head.iter()
+            .rposition(|m| !m.tool_calls.is_empty())
+            .filter(|&at| head[at].provider_history.is_some())
+    });
     st.transcript.prepare_rebase(&mut head);
+    if native_batch.is_some_and(|at| head[at].provider_history.is_none()) {
+        if !details.is_object() {
+            details = json!({ "hook": details });
+        }
+        details["nativeToolContinuation"] = json!(true);
+        head.push(WireMsg::user(oxa_session::Transcript::NATIVE_TOOL_CONTINUATION));
+    }
     let entry = EntryBody::Compaction {
         // The fold replays this text verbatim, so it is the wrapped user message itself.
         summary: prompt::summary_user_message(&summary),

@@ -404,6 +404,9 @@ fn switch_file(st: &mut SessionState, dst: &SessionRef, leaf: &str) -> Result<()
     st.store.commit_lock();
     if destination.wire() != st.transcript.wire() {
         st.transcript.restore_persisted(destination);
+        // The old head's context and cache usage no longer describe the active wire.
+        st.stats.context_tokens = st.transcript.context();
+        st.last_usage = None;
     }
     st.tree = tree;
     st.sref = dst.clone();
