@@ -660,6 +660,42 @@ mod tests {
     }
 
     #[test]
+    fn queue_rejects_an_overfull_directory_before_admission() {
+        let dir = crate::test_dir::PrivateDir::new("queue-directory-limit");
+        for i in 0..257 {
+            fs::write(
+                dir.path().join(format!("{i}.json")),
+                format!(r#"[{{"id":"task-{i}","branch":"agent/task-{i}","model":"fake","prompt":"Synthetic task"}}]"#),
+            )
+            .unwrap();
+        }
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        let result = scan(dir.path(), &mut pending, &mut inputs, &mut |_| Ok(()));
+        assert!(result.unwrap_err().contains("256 task files"));
+        assert!(pending.is_empty());
+        assert!(inputs.tasks.is_empty());
+    }
+
+    #[test]
+    fn queue_rejects_aggregate_input_bytes_before_admission() {
+        let dir = crate::test_dir::PrivateDir::new("queue-input-budget");
+        for i in 0..17 {
+            let mut task = format!(
+                r#"[{{"id":"task-{i}","branch":"agent/task-{i}","model":"fake","prompt":"Synthetic task"}}]"#
+            );
+            task.push_str(&" ".repeat(1024 * 1024 - task.len()));
+            fs::write(dir.path().join(format!("{i}.json")), task).unwrap();
+        }
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        let result = scan(dir.path(), &mut pending, &mut inputs, &mut |_| Ok(()));
+        assert!(result.unwrap_err().contains("16 MiB"));
+        assert!(pending.is_empty());
+        assert!(inputs.tasks.is_empty());
+    }
+
+    #[test]
     fn archiving_an_unadmitted_file_cancels_its_pending_job() {
         let dir = std::env::temp_dir().join(format!(
             "oxa-queue-pending-{}-{}",
