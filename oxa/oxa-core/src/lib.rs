@@ -38,6 +38,7 @@ pub mod envnote;
 mod epoch;
 mod exec;
 mod fire;
+pub mod goal;
 mod host;
 pub mod loopguard;
 mod navigate;
