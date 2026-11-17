@@ -583,7 +583,8 @@ impl Standing {
         let entry = after
             .entries
             .iter_mut()
-            .find(|entry| entry.id == entry_id && entry.state != EntryState::Superseded)
+            // A released or retired rule stays Stored; never claim it was applied.
+            .find(|entry| entry.id == entry_id && entry.is_live())
             .ok_or("standing entry is not live")?;
         let verified = check(entry)?;
         types::text(&verified.evidence, 256)?;

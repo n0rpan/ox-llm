@@ -28,7 +28,8 @@ changed evidence cannot turn a missing unanswered question into a silent close.
 
 Every mutation supplies the document revision it read. A stale revision refuses without
 changing the store. A live collision of kind/scope requires its exact `supersedes` ID.
-IDs are derived from the checked revision, not from model text or time.
+IDs are derived from the checked revision, not from model text or time. Released and retired
+records are not live: only a live entry can be verified as applied, answered or reminded.
 
 ## Authority, values and checked application
 

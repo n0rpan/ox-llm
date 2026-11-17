@@ -250,6 +250,69 @@ fn applied_requires_matching_runtime_value_scope_and_revision() {
 }
 
 #[test]
+fn verify_refuses_released_and_retired_rules() {
+    let fixture = Fixture::new();
+    let facts = fixture.facts();
+    let standing = fixture.standing(facts);
+    let held = standing.rule(0, Authority::Owner, 1, hold(true, None)).unwrap();
+    let released = standing
+        .rule(1, Authority::Owner, 2, hold(false, Some(&held.id)))
+        .unwrap();
+    let note = standing
+        .rule(
+            2,
+            Authority::Owner,
+            3,
+            Rule {
+                kind: Kind::Note,
+                scope: Scope::Repository,
+                value: Value::Text("Keep notes brief".into()),
+                said: "Keep notes brief".into(),
+                source: super::super::Source::Command {
+                    command: "note".into(),
+                },
+                supersedes: None,
+            },
+        )
+        .unwrap();
+    let retired = standing
+        .rule(
+            3,
+            Authority::Owner,
+            4,
+            Rule {
+                kind: Kind::Note,
+                scope: Scope::Repository,
+                value: Value::Retired,
+                said: "Retire the note".into(),
+                source: super::super::Source::Command {
+                    command: "retire".into(),
+                },
+                supersedes: Some(note.id.clone()),
+            },
+        )
+        .unwrap();
+    assert!(!released.is_live() && !retired.is_live());
+    for entry in [&released, &retired] {
+        let result = standing.verify(4, &entry.id, |entry: &Entry| {
+            Ok(Verification {
+                revision: 4,
+                scope: entry.scope.clone(),
+                value: entry.value.clone(),
+                at: 5,
+                evidence: "synthetic-runtime:4".into(),
+            })
+        });
+        assert!(result.is_err(), "verified a non-live rule: {}", entry.id);
+    }
+    let read = standing.read().unwrap();
+    assert_eq!(read.revision, 4);
+    for entry in read.entries.iter().filter(|entry| !entry.is_live()) {
+        assert_eq!(entry.state, EntryState::Stored);
+    }
+}
+
+#[test]
 fn reminders_create_incidents_and_offer_without_changing_advisory_rules() {
     let fixture = Fixture::new();
     let facts = fixture.facts();
