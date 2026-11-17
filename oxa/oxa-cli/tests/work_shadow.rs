@@ -41,6 +41,7 @@ fn fixture() -> (TestEnv, serde_json::Value) {
     let gh = env.write("tmp/gh", r#"#!/bin/sh
 printf 'read\n' >> gh-calls
 if [ -e expect-input ]; then IFS= read -r expected < expect-input; [ "$GH_TOKEN" = "$expected" ] || exit 93; fi
+case " $* " in *' --include '*) printf 'HTTP/2.0 200 OK\r\n\r\n' ;; esac
 if [ -e oversized ]; then
   printf '{"data":{"repository":{"pullRequests":{"totalCount":0,"nodes":[]},"padding":"'
   head -c 4194305 /dev/zero | tr '\000' 'a'
@@ -296,5 +297,100 @@ fn unreported_classic_and_ruleset_requirements_are_pending() {
             sample(&env, &detail)["board"]["entries"][0]["action"],
             "wait_required_ci"
         );
+    }
+}
+
+fn batched_fixture(count: u64, limit: usize, failure: u16) -> TestEnv {
+    let (env, detail) = fixture();
+    let connection = serde_json::json!({"totalCount":count,"nodes":(1..=count)
+        .map(|number| serde_json::json!({"number":number})).collect::<Vec<_>>()});
+    fs::write(env.work().join("list.json"), connection.to_string()).unwrap();
+    fs::create_dir(env.work().join("rows")).unwrap();
+    for number in 1..=count {
+        let mut row = detail["data"]["repository"]["p42"].clone();
+        row["number"] = number.into();
+        fs::write(env.work().join(format!("rows/{number}.json")), row.to_string()).unwrap();
+    }
+    fs::write(env.work().join("limit"), limit.to_string()).unwrap();
+    fs::write(env.work().join("failure"), failure.to_string()).unwrap();
+    let gh = env.write("tmp/gh", r#"#!/bin/sh
+include=false
+case " $* " in *' --include '*) include=true ;; esac
+numbers=$(printf '%s\n' "$*" | grep -oE 'p[0-9]+:pullRequest\(number:[0-9]+\)' | sed -E 's/.*number:([0-9]+)\)/\1/')
+set -- $numbers
+printf '%s\n' "$#" >> batch-sizes
+status=200
+if [ "$#" -gt "$(cat limit)" ]; then status=$(cat failure); fi
+if "$include"; then printf 'HTTP/2.0 %s Synthetic\r\n\r\n' "$status"; fi
+if [ "$status" != 200 ]; then
+  printf '{"message":"synthetic-private-response-marker"}'
+  exit 1
+fi
+printf '{"data":{"repository":{"pullRequests":'
+cat list.json
+printf ',"mergeQueue":null'
+for number in "$@"; do
+  printf ',"p%s":' "$number"
+  cat "rows/$number.json"
+done
+printf '}}}'
+"#);
+    fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
+    env
+}
+
+fn batch_sizes(env: &TestEnv) -> Vec<usize> {
+    fs::read_to_string(env.work().join("batch-sizes"))
+        .unwrap()
+        .lines()
+        .map(|line| line.parse().unwrap())
+        .collect()
+}
+
+#[test]
+fn ninety_pr_details_are_read_in_small_batches_without_losing_rows() {
+    let env = batched_fixture(90, 15, 504);
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let sizes = batch_sizes(&env);
+    assert_eq!(sizes[0], 0);
+    assert!(sizes[1..].iter().all(|size| *size > 0 && *size <= 15));
+    assert_eq!(sizes.iter().sum::<usize>(), 90);
+    let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    let sample: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    let numbers: Vec<_> = sample["board"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, (1..=90).collect::<Vec<_>>());
+}
+
+#[test]
+fn repeated_gateway_failures_retry_then_reduce_the_detail_batch() {
+    for status in [502, 503, 504] {
+        let env = batched_fixture(31, 7, status);
+        let out = invoke(&env, "work board --shadow --repo example/repo --once");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let sizes = batch_sizes(&env);
+        assert_eq!(&sizes[..5], &[0, 15, 15, 15, 7]);
+        assert!(sizes[4..].iter().all(|size| *size > 0 && *size <= 7));
+    }
+}
+
+#[test]
+fn terminal_http_failures_are_bounded_named_and_do_not_publish_a_partial_board() {
+    for (status, attempts) in [(401, 1), (403, 1), (429, 1), (504, 3)] {
+        let env = batched_fixture(1, 0, status);
+        let out = invoke(&env, "work board --shadow --repo example/repo --once");
+        assert!(!out.status.success());
+        let error = String::from_utf8_lossy(&out.stderr);
+        assert!(error.contains(&format!("HTTP {status}")), "{error}");
+        assert!(!error.contains("synthetic"));
+        assert_eq!(batch_sizes(&env), [vec![0], vec![1; attempts]].concat());
+        assert!(fs::read_to_string(log_for(&env, "example/repo"))
+            .unwrap()
+            .is_empty());
     }
 }
