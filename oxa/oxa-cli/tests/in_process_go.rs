@@ -1196,7 +1196,9 @@ fn go_private_stream_cause_content_type() {
 }
 #[test]
 fn go_private_stream_cause_transport() {
-    check_private_stream_cause("transport", cause_reply(b"data: ").truncated_transfer());
+    let mut reply = cause_reply(b"data: ");
+    reply.truncate_transfer = true;
+    check_private_stream_cause("transport", reply);
 }
 #[test]
 fn go_private_stream_cause_eof() {

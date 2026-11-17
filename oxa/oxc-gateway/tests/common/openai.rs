@@ -47,7 +47,7 @@ pub struct Reply {
     headers: Vec<(&'static str, String)>,
     bytes: Vec<u8>,
     fragment: usize,
-    truncate_transfer: bool,
+    pub truncate_transfer: bool,
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
@@ -79,12 +79,6 @@ impl Reply {
             truncate_transfer: false,
             gate: None,
         }
-    }
-
-    /// Synthetic transport failure: close before the chunked transfer terminator.
-    pub fn truncated_transfer(mut self) -> Self {
-        self.truncate_transfer = true;
-        self
     }
 
     /// Script native Responses events, fragmented across HTTP chunks.
