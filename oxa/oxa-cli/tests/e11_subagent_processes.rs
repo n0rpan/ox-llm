@@ -347,7 +347,7 @@ fn parent_deadline_cancels_a_child_still_in_session_initialization() {
     setup(&env);
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"oxa":{"subagent":{"enabled":true}},"hooks":{"session_start":"if [ \"${OXA_SUBAGENT_DEPTH:-0}\" = 1 ]; then printf started > child-startup; sleep 4; printf finished > child-startup-finished; fi"}}"#,
+        r#"{"oxa":{"subagent":{"enabled":true}},"hooks":{"session_start":"if [ -e parent-startup ]; then printf started > child-startup; sleep 4; printf finished > child-startup-finished; else printf started > parent-startup; fi"}}"#,
     );
     let server = FakeServer::start(
         vec![
