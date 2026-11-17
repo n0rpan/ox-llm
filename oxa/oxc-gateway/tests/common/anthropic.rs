@@ -337,22 +337,44 @@ fn write_reply(stream: &mut impl Write, reply: &Reply) -> io::Result<()> {
         .windows(b"event: message_stop\n".len())
         .position(|part| part == b"event: message_stop\n")
         .unwrap_or(reply.bytes.len());
-    write_fragments(stream, &reply.bytes[..split], reply.fragment, false)?;
+    // A reply without a semantic terminal event is read to EOF, so its final
+    // payload and the HTTP tail leave in one write: a client that stops at its
+    // own terminal event (an OpenAI-style `[DONE]`) closes the peer as soon as
+    // it sees that byte, and a later tail write would be a false failure.
+    let tail: &[u8] = if reply.terminal { b"" } else { b"\r\n0\r\n\r\n" };
+    write_fragments(stream, &reply.bytes[..split], reply.fragment, false, tail)?;
     if reply.stop_delay >= DEADLINE {
         return Err(io::ErrorKind::InvalidInput.into());
     }
     thread::sleep(reply.stop_delay);
-    write_fragments(stream, &reply.bytes[split..], reply.fragment, reply.terminal)?;
-    if reply.terminal {
-        Ok(())
-    } else {
-        stream.write_all(b"0\r\n\r\n")
-    }
+    write_fragments(stream, &reply.bytes[split..], reply.fragment, reply.terminal, b"")
 }
-fn write_fragments(stream: &mut impl Write, bytes: &[u8], fragment: usize, terminal: bool) -> io::Result<()> {
+/// `tail` is appended to the final chunk in the same write, so a client that
+/// stops at its own semantic terminal cannot race a later tail write.
+fn write_fragments(
+    stream: &mut impl Write,
+    bytes: &[u8],
+    fragment: usize,
+    terminal: bool,
+    tail: &[u8],
+) -> io::Result<()> {
     let mut chunks = bytes.chunks(fragment).peekable();
+    if chunks.peek().is_none() {
+        return if tail.is_empty() {
+            Ok(())
+        } else {
+            stream.write_all(tail)
+        };
+    }
     while let Some(bytes) = chunks.next() {
         write!(stream, "{:x}\r\n", bytes.len())?;
+        if chunks.peek().is_none() && !tail.is_empty() {
+            let mut complete = Vec::with_capacity(bytes.len() + tail.len());
+            complete.extend_from_slice(bytes);
+            complete.extend_from_slice(tail);
+            stream.write_all(&complete)?;
+            return stream.flush();
+        }
         stream.write_all(bytes)?;
         if terminal && chunks.peek().is_none() {
             // Client::stream legitimately returns at message_stop, without
@@ -583,6 +605,54 @@ mod mock_health {
             !shared.errors.lock().unwrap().is_empty(),
             "shutdown hid a peer read failure"
         );
+    }
+
+    /// A peer that closes after a flush that carried its semantic terminal event,
+    /// before any later HTTP-tail write.
+    #[derive(Default)]
+    struct CloseOnDoneFlush {
+        bytes: Vec<u8>,
+        closed: bool,
+    }
+    impl Write for CloseOnDoneFlush {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.closed {
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.closed = self
+                .bytes
+                .windows(b"data: [DONE]".len())
+                .any(|part| part == b"data: [DONE]");
+            Ok(())
+        }
+    }
+
+    /// An OpenAI-style `[DONE]` reply has no `message_stop`, so the client stops
+    /// at that byte and closes. The HTTP tail must already be on the wire.
+    #[test]
+    fn final_payload_and_http_tail_leave_in_one_write() {
+        let reply = Reply::wire("text/event-stream", b"data: [DONE]\n\n");
+        let mut peer = CloseOnDoneFlush::default();
+        write_reply(&mut peer, &reply).expect("the HTTP message must be complete at the final flush");
+        assert!(
+            peer.closed,
+            "the control must close the peer at the semantic terminal"
+        );
+        assert!(peer.bytes.ends_with(b"\r\n0\r\n\r\n"));
+    }
+
+    /// A close before later payload chunks is still a failure.
+    #[test]
+    fn close_before_later_payload_chunks_is_still_a_failure() {
+        let mut body = b"data: [DONE]\n\n".to_vec();
+        body.extend_from_slice(&[b'x'; 2048]);
+        let reply = Reply::wire("text/event-stream", &body);
+        let error = write_reply(&mut CloseOnDoneFlush::default(), &reply).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 
     #[test]
