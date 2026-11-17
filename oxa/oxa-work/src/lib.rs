@@ -7,6 +7,8 @@ use std::process::{Command, Output, Stdio};
 
 pub mod board;
 mod checkpoint;
+mod committed;
+pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
 pub mod helper_queue;
 pub mod mirrors;
@@ -320,7 +322,9 @@ pub enum SupervisorOperation {
     Merge { base: String },
     Save { task_id: String },
     Checks { commands: Vec<String> },
+    CommittedChecks { commands: Vec<String>, index: PathBuf },
     Inspect,
+    InspectCommitted { index: PathBuf },
 }
 
 fn supervise(
@@ -372,6 +376,10 @@ fn acceptance(
         policy,
         lock,
     )?;
+    acceptance_result(out)
+}
+
+fn acceptance_result(out: Output) -> Result<String> {
     let diagnostic = String::from_utf8_lossy(&out.stderr).into_owned();
     match out.status.code() {
         Some(0) => Ok(String::new()),
