@@ -1418,6 +1418,7 @@ impl<'a> Loop<'a> {
                 return;
             }
             if self.running() {
+                self.abort_requested = true;
                 self.handle.abort();
             }
             if matches!(self.vm.status.activity, Activity::Retrying { .. }) {
@@ -1712,9 +1713,9 @@ impl<'a> Loop<'a> {
         if self.fullscreen {
             self.viewport.scroll_to_bottom();
         }
-        // Explicit input after Ctrl+C is a new prompt, not steering for the canceled run.
-        // The worker channel runs it after that operation releases the session. Ordinary
-        // queued input still uses the existing unsuccessful-outcome guard.
+        // Explicit input after a cancel key (Ctrl+C or Escape) is a new prompt, not steering
+        // for the canceled run. The worker channel runs it after that operation releases the
+        // session. Ordinary queued input still uses the existing unsuccessful-outcome guard.
         if self.running() && !self.abort_requested {
             self.handle.steer(trimmed);
             self.wake_queued();
@@ -2698,6 +2699,7 @@ impl<'a> Loop<'a> {
             version: env!("CARGO_PKG_VERSION").to_string(),
             resources: self.resources.clone(),
             engine_url: self.session.engine_url.clone(),
+            memory_policy: self.session.memory_policy,
             model: self.vm.status.model.clone(),
             model_remote: self.vm.status.model_remote,
             model_provider: self.vm.status.model_provider,
@@ -2929,6 +2931,13 @@ impl<'a> Loop<'a> {
             self.vm.status = saved;
         } else {
             lines.extend(render_footer(&self.vm, width, &self.theme));
+        }
+        // Regular mode commits its splash once; policy changes belong in the live
+        // region so a cold load, switch or idle unload remains observable.
+        if !self.fullscreen {
+            if let Some(policy) = self.session.memory_policy {
+                lines.push(self.theme.dim(&format!("Memory: {policy}")));
+            }
         }
         (lines, cursor)
     }
