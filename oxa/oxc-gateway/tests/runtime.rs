@@ -132,7 +132,7 @@ fn dropped_guards_record_zero_before_forwarding_and_reserve_unknown_paid_work() 
     drop(call);
     assert_eq!(rows(&fixture)[0]["cost_usd"], 0.0);
     let mut paid = rt.begin(&payload, Context::default()).unwrap();
-    paid.mark_forwarded();
+    paid.mark_forwarded().unwrap();
     drop(paid);
     let rows = rows(&fixture);
     assert_eq!(rows.len(), 2);

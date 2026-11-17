@@ -320,7 +320,7 @@ fn go_captured_terminal_usage_settles_even_without_public_delivery() {
             let gateway = Gateway::new(runtime).unwrap();
             let payload = json!({"model":"synthetic-go","max_tokens":100,"messages":[]});
             let mut call = gateway.runtime.begin(&payload, Context::default()).unwrap();
-            call.mark_forwarded();
+            call.mark_forwarded().unwrap();
             // Transport already parsed this terminal record, but cancellation
             // (or protocol rejection) prevented its public Chunk callback.
             let usage = known.then(|| opencode::Usage::parse(&json!({

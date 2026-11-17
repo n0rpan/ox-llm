@@ -242,12 +242,16 @@ impl Gateway {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
         };
+        let mut forwarding_error = None;
         let mut deliver = |event| match event {
             anthropic_client::Event::Sending => {
                 if cancel.is_cancelled() {
                     return Control::Stop;
                 }
-                call.mark_forwarded();
+                if let Err(error) = call.mark_forwarded() {
+                    forwarding_error = Some(error);
+                    return Control::Stop;
+                }
                 Control::Continue
             }
             anthropic_client::Event::Chunk(chunk) => {
@@ -285,6 +289,9 @@ impl Gateway {
                 )
                 .await
         };
+        if let Some(error) = forwarding_error {
+            return self.finish(call, Err(Error::Refused(error)), history, false, on);
+        }
         // This record survives cancellation during final chunk delivery and
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
@@ -396,6 +403,7 @@ impl Gateway {
         let mut payload = payload.clone();
         payload["max_tokens"] = call.max_output().into();
         let mut usage = None;
+        let mut forwarding_error = None;
         let result = client::stream_observed(
             self.client.transport(),
             client::Chat {
@@ -411,7 +419,10 @@ impl Gateway {
                     if cancel.is_cancelled() {
                         return Control::Stop;
                     }
-                    call.mark_forwarded();
+                    if let Err(error) = call.mark_forwarded() {
+                        forwarding_error = Some(error);
+                        return Control::Stop;
+                    }
                     Control::Continue
                 }
                 client::Event::Chunk(chunk) => {
@@ -423,6 +434,9 @@ impl Gateway {
             self.runtime.diagnostics(),
         )
         .await;
+        if let Some(error) = forwarding_error {
+            return self.finish(call, Err(Error::Refused(error)), None, false, on);
+        }
         let result = self.finish_go(call, result, usage, on);
         if result.is_ok() {
             if let Some(diagnostics) = self.runtime.diagnostics() {
