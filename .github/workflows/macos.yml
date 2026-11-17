@@ -30,9 +30,9 @@ jobs:
         shell: bash
         run: |
           test "$(uname -m)" = arm64
-          # Outside the account home, with macOS /tmp symlinks resolved: the unchanged
-          # credential-isolation guards must accept only synthetic fixture paths.
-          root=$(mktemp -d /tmp/oxa-macos.XXXXXX)
+          # Keep toolchains and scratch on checkout storage. Resolve symlinks so
+          # unchanged credential-isolation guards see canonical synthetic paths.
+          root=$(mktemp -d "$GITHUB_WORKSPACE/.oxa-macos.XXXXXX")
           root=$(cd "$root" && pwd -P)
           mkdir -p "$root/home" "$root/cargo" "$root/rustup" "$root/tmp"
           export HOME="$root/home" CARGO_HOME="$root/cargo" RUSTUP_HOME="$root/rustup" TMPDIR="$root/tmp"
