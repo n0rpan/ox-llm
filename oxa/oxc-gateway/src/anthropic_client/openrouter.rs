@@ -276,8 +276,8 @@ impl<'a> Stream<'a> {
                 let tool = self.tools.entry(index).or_insert_with(
                     || json!({"type":"function","id":"","function":{"name":"","arguments":""}}),
                 );
-                // Names/IDs can themselves be fragmented, so hold all tool fields
-                // until completion instead of leaking partial credential matches.
+                // IDs are atomic snapshots; names and arguments may fragment.
+                // Hold all tool fields until completion and decoded-key checks.
                 for path in ["/id", "/function/name", "/function/arguments"] {
                     if let Some(value) = call.pointer(path) {
                         // Normalize argument containers before the existing
@@ -290,10 +290,16 @@ impl<'a> Stream<'a> {
                             _ => value.as_str().ok_or(Error::Protocol)?.to_owned(),
                         };
                         let target = tool.pointer_mut(path).ok_or(Error::Protocol)?;
-                        // A repeated whole identity is idempotent;
+                        // Match ReplyAssembler: the latest nonempty ID replaces.
+                        if path == "/id" {
+                            if !part.is_empty() {
+                                *target = json!(part);
+                            }
+                            continue;
+                        }
+                        // A repeated whole name is idempotent;
                         // a different fragment still appends, with all fields held.
-                        if matches!(path, "/id" | "/function/name") && target.as_str() == Some(part.as_str())
-                        {
+                        if path == "/function/name" && target.as_str() == Some(part.as_str()) {
                             continue;
                         }
                         *target = json!(format!("{}{part}", target.as_str().ok_or(Error::Protocol)?));

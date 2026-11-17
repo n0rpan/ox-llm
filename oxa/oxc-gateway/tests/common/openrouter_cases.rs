@@ -391,8 +391,8 @@ async fn openrouter_held_key_equal_to_redaction_marker_is_still_refused() {
 #[tokio::test]
 async fn openrouter_fragmented_tools_and_usage_on_finish_chunk() {
     let mut events = vec![
-        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"synthetic-","function":{"name":"re","arguments":"{\"path\":"}}]},"finish_reason":null}]}),
-        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"call","function":{"name":"ad","arguments":"\"note.txt\"}"}}]},"finish_reason":null}]}),
+        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"synthetic-call","function":{"name":"re","arguments":"{\"path\":"}}]},"finish_reason":null}]}),
+        json!({"choices":[{"index":0,"delta":{"tool_calls":[{"index":3,"id":"synthetic-call","function":{"name":"ad","arguments":"\"note.txt\"}"}}]},"finish_reason":null}]}),
     ];
     events.push(
         json!({"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}],
