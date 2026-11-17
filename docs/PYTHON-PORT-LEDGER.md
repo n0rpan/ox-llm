@@ -1,6 +1,6 @@
 # Python port ledger
 
-Draft qualification for #951 / O416, inspected at main346cc036. This first slice records the three provider replacements and inventories all366 Python modules. It authorizes no deletion.
+Draft qualification for #951 / O416, inspected at main346cc036. This initial ledger records three provider replacements, the MEMLAT port, two retained feature gaps and the explicit installer retirement; it inventories all366 Python modules. It authorizes no deletion.
 
 PORTED means the named Rust implementation and its contract tests replace the feature. DROPPED requires an explicit retirement decision and an entry in #946. UNUSED requires caller/shipping evidence. MISSING requires a feature-specific issue before that module can be deleted. Unqualified modules below are deliberately not assigned a guessed status.
 
@@ -9,6 +9,11 @@ PORTED means the named Rust implementation and its contract tests replace the fe
 | oxc/src/oxc/runtime/cloud_anthropic.py — provider transport/translation; subscription sign-in/refresh where applicable | PORTED | oxa/oxc-gateway/src/anthropic_client.rs; anthropic_request.rs; anthropic_stream.rs | oxa/oxc-gateway/tests/anthropic_client.rs; anthropic_request.rs; anthropic_stream.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
 | oxc/src/oxc/runtime/cloud_openai.py — provider transport/translation; subscription sign-in/refresh where applicable | PORTED | oxa/oxc-gateway/src/openai/client.rs; request.rs; stream.rs | oxa/oxc-gateway/tests/openai_client.rs; oxa/oxa-cli/tests/in_process_cloud.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
 | oxc/src/oxc/runtime/cloud_chatgpt.py — provider transport/translation; subscription sign-in/refresh where applicable | PORTED | oxa/oxc-gateway/src/openai/client.rs; chatgpt_tokens.rs; login.rs; oxa/oxa-cli/src/login_cmd.rs | oxa/oxc-gateway/tests/chatgpt_tokens.rs; openai_client.rs; oxa/oxa-cli/tests/native_chatgpt_login.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
+| oxc/tools/memlat_boot.py — boot-menu/rollback command | PORTED | oxa/oxc-memlat/src/{main,menu,policy,image}.rs | oxa/oxc-memlat/tests/boot.rs ports all19 Python cases; tests/differential.{rs,py} compares actual command codes/stderr and exact ESP bytes. Deletion BLOCKED until its Python-oracle caller is replaced. |
+| oxc/tests/test_memlat_boot.py — all19 synthetic boot cases | PORTED | oxa/oxc-memlat/tests/boot.rs | Explicit port declaration and matching19-case source inventory. No host boot actions. Keep the stronger actual-command differential coverage. |
+| oxc/src/oxc/runtime/cloud_prices.py — live public OpenRouter pricing metadata | MISSING | Existing native pricing.rs parses configured prices; that is not a refresh consumer. | Retained feature issue [#628](https://github.com/oxstack/ox-llm/issues/628). Preserve bounded replies, durable last-known data and no request-path fetch before deleting this module. |
+| oxc/src/oxc/runtime/lan_share.py — production owner share controls | MISSING | Existing oxc-gateway/src/share components have loopback tests; component existence does not provide the owner CLI/control path. | Retained feature issue [#688](https://github.com/oxstack/ox-llm/issues/688); qualify its actual consumer before deletion. |
+| oxc/src/oxc/cloud_install.py — Python-only installer/venv/controller daemon | DROPPED | Direct native oxa package/default path; no replacement Python installer. | Owner retirement [#681](https://github.com/oxstack/ox-llm/issues/681); [parked feature index](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947705088). Existing lab wrapper callers still block deletion; not UNUSED. |
 
 Deletion gates: packaging must stop staging/smoking Python first (Air owns that hunk); qualify each remaining caller, archive archive/python-oxc, then delete only qualified rows in ledger order. A provider mapping alone does not retire its controller, CLI, Studio, metadata refresh, or legacy tests.
 
@@ -18,7 +23,7 @@ Native lab transition: existing Go profiles, ledgers, sessions and caps must rem
 
 ## Complete module inventory awaiting feature-level qualification
 
-Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The three provider modules already mapped above are omitted here. Extensionless entry points oxc/src/oxc/runtime/oxc and studio also need explicit launcher/feature rows.
+Each path below needs a ledger disposition with its own evidence; presence here is neither UNUSED nor a deletion approval. Move a module into the table only after checking every retained feature and its callers. Keep existing #681 retirement decisions distinct from actual Rust replacement coverage. The three provider modules, two MEMLAT modules and installer already mapped above are omitted here. Partial-feature rows do not qualify a whole module. Extensionless entry points oxc/src/oxc/runtime/oxc and studio also need explicit launcher/feature rows.
 
 - `oxc/benchmarks/classic/loopback_bridge.py`
 - `oxc/benchmarks/classic/screen.py`
@@ -51,7 +56,6 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/src/oxc/bootstrap_jobs.py`
 - `oxc/src/oxc/bootstrap_sources.py`
 - `oxc/src/oxc/bootstrap_transfer.py`
-- `oxc/src/oxc/cloud_install.py`
 - `oxc/src/oxc/devfreq_probe.py`
 - `oxc/src/oxc/doctor.py`
 - `oxc/src/oxc/engine_report.py`
@@ -238,7 +242,6 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/tests/test_loopback_bridge.py`
 - `oxc/tests/test_mac_reproduce.py`
 - `oxc/tests/test_memlat.py`
-- `oxc/tests/test_memlat_boot.py`
 - `oxc/tests/test_memlat_engine_override.py`
 - `oxc/tests/test_memlat_shutdown.py`
 - `oxc/tests/test_memory_policy.py`
@@ -352,7 +355,6 @@ Each path below needs a ledger disposition with its own evidence; presence here 
 - `oxc/tools/long_session.py`
 - `oxc/tools/mac_reproduce.py`
 - `oxc/tools/memlat.py`
-- `oxc/tools/memlat_boot.py`
 - `oxc/tools/memlat_shutdown.py`
 - `oxc/tools/model_inspect.py`
 - `oxc/tools/oem_drills.py`
