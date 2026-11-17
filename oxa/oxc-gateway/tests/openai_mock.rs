@@ -174,3 +174,58 @@ fn openai_mock_errors_and_retry_after() {
     assert_eq!(error["error"]["code"], "insufficient_quota");
     mock.assert_healthy();
 }
+
+/// Real loopback read failures remain unhealthy and reveal only finite facts.
+#[test]
+fn mock_read_failure_diagnostics_are_finite_and_health_remains_strict() {
+    use std::{
+        net::Shutdown,
+        panic::{catch_unwind, AssertUnwindSafe},
+        time::Instant,
+    };
+    for (wire, expected) in [
+        (
+            b"POST /synthetic HTTP/1.1\r\nContent-Length: synthetic-private-header\r\n\r\n".as_slice(),
+            "InvalidData",
+        ),
+        (
+            b"POST /synthetic-private-header HTTP/1.1\r\n".as_slice(),
+            "UnexpectedEof",
+        ),
+    ] {
+        let mock = MockOpenAi::start(Vec::new());
+        let mut peer = TcpStream::connect(mock.address()).unwrap();
+        peer.write_all(wire).unwrap();
+        peer.shutdown(Shutdown::Write).unwrap();
+        let started = Instant::now();
+        let panic = loop {
+            if let Err(panic) = catch_unwind(AssertUnwindSafe(|| mock.assert_healthy())) {
+                break panic;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "mock failure must be observed"
+            );
+            std::thread::yield_now();
+        };
+        let message = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap();
+        assert!(message.contains("mock upstream reported a connection failure"));
+        assert!(
+            message.contains("phase=Some(RequestRead)"),
+            "finite read phase missing"
+        );
+        assert!(
+            message.contains(&format!("kind=Some({expected})")),
+            "finite I/O kind missing"
+        );
+        assert!(!message.contains("synthetic-private-header"));
+        assert!(
+            mock.requests().is_empty(),
+            "invalid input never becomes a request"
+        );
+    }
+}
