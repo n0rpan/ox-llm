@@ -204,11 +204,34 @@ fn bounded(text: &str, max: usize) -> String {
         .to_string()
 }
 
-/// The children a `subagent` call reports, read from the tool's progress block (#871). Only
-/// the first (running) line is read; anything that does not look like a progress line is kept
-/// as the progress text.
+/// The states a child reports once it is over (`Run::render` in `oxa-core`).
+const SUBAGENT_OVER: [&str; 3] = ["done", "failed", "aborted"];
+
+/// Whether a progress line names a child that is still running: `subagent k/n <agent>:
+/// <activity>` with an activity that is not one of the states a finished child reports.
+fn is_running_line(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("subagent ") else {
+        return false;
+    };
+    let (_, rest) = rest.split_once(' ').unwrap_or((rest, ""));
+    match rest.trim().split_once(':') {
+        Some((_, activity)) => !SUBAGENT_OVER.contains(&activity.trim()),
+        None => false,
+    }
+}
+
+/// The children a `subagent` call reports, read from the tool's progress block (#871). The
+/// block keeps finished children in task order (`Run::render`), so the running child is
+/// preferred over the first line; when no child is running the first line is kept. Anything
+/// that does not look like a progress line is kept as the progress text.
 pub fn subagent_progress(partial: &str) -> SubagentProgress {
-    let Some(line) = partial.lines().map(str::trim).find(|l| !l.is_empty()) else {
+    let lines: Vec<&str> = partial.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let Some(line) = lines
+        .iter()
+        .copied()
+        .find(|l| is_running_line(l))
+        .or_else(|| lines.first().copied())
+    else {
         return SubagentProgress::default();
     };
     let Some(rest) = line.strip_prefix("subagent ") else {

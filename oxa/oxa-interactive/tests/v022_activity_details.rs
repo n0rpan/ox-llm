@@ -115,6 +115,54 @@ fn subagent_progress_is_a_distinct_agents_activity() {
     );
 }
 
+/// The progress block keeps finished children in task order, so the activity must follow the
+/// child that is still running, not the first line (#871 review).
+#[test]
+fn the_activity_follows_the_running_child_not_the_first_line() {
+    let mut vm = ViewModel::default();
+    apply_event(&mut vm, &start_call("c1", "subagent"));
+    apply_event(
+        &mut vm,
+        &update_call(
+            "c1",
+            "subagent",
+            "subagent 1/2 scout: done\nsubagent 2/2 mapper: reading src/lib.rs",
+        ),
+    );
+    let line = text_line(&vm.status, 120);
+    assert!(
+        line.contains("mapper: reading src/lib.rs"),
+        "the running child, not the finished one: {line:?}"
+    );
+    assert!(
+        !line.contains("scout"),
+        "the finished child is not shown: {line:?}"
+    );
+
+    // A child that has not started yet is not the running one either.
+    apply_event(
+        &mut vm,
+        &update_call("c1", "subagent", "subagent 1/2 scout: done\nsubagent 2/2, queued"),
+    );
+    let line = text_line(&vm.status, 120);
+    assert!(
+        !line.contains("queued"),
+        "a queued child is not the running one: {line:?}"
+    );
+
+    // Every child is over: the block's own order is kept, and the count still comes from it.
+    apply_event(
+        &mut vm,
+        &update_call(
+            "c1",
+            "subagent",
+            "subagent 1/2 scout: done\nsubagent 2/2 mapper: failed",
+        ),
+    );
+    let line = text_line(&vm.status, 120);
+    assert!(line.contains("scout: done"), "{line:?}");
+}
+
 /// A retry names a bounded reason next to its attempt and delay; a provider's own text never
 /// reaches the screen.
 #[test]
