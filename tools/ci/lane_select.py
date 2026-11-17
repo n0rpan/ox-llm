@@ -122,10 +122,15 @@ def select(current, previous, paths):
             if owners:
                 _, owner = max(owners, key=lambda entry: len(entry[0]))
                 affected.add(owner['name'])
-        if path.startswith('engine/') and PurePosixPath(path).suffix not in ('.md', '.rst') and not any(
-                path.startswith(directory + '/') for directory in (*current, *previous)):
-            affected.update(p['name'] for p in current.values() if p['workspace'] == 'engine')
-            reasons.append(f'shared engine input: {path}')
+        for workspace in ('oxa', 'engine'):
+            document = PurePosixPath(path).suffix in ('.md', '.rst') and (
+                path == f'{workspace}/README.md' or path.startswith(f'{workspace}/docs/'))
+            if path.startswith(f'{workspace}/') and not document and not any(
+                    path.startswith(directory + '/') for directory in (*current, *previous)):
+                # Examples, fixtures and build/test configuration can be consumed
+                # without a Cargo dependency edge, including Markdown fixtures.
+                affected.update(p['name'] for p in current.values() if p['workspace'] == workspace)
+                reasons.append(f'shared {workspace} input: {path}')
     edges = dependency_edges(previous) | dependency_edges(current)
     while True:
         expanded = affected | {consumer for dependency, consumer in edges if dependency in affected}
