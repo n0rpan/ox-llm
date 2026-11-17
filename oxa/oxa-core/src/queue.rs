@@ -102,8 +102,12 @@ impl WrapUpReason {
 pub struct Gate {
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
+    /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
+    pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
+    /// Sticky headless interruption: abort now, without a final wrap-up turn.
+    pub interrupted: std::sync::atomic::AtomicBool,
     /// Sticky soft termination request: zero, or a `WrapUpReason` discriminant.
     pub wrap_up: std::sync::atomic::AtomicU8,
     /// Remaining uncached prompt + completion tokens for an unattended invocation.
@@ -209,7 +213,7 @@ impl Shared {
     /// at any moment either is seen here or cancels the request.
     pub(crate) fn begin_background(&self) -> bool {
         self.gate.bg_cancel.reset();
-        if self.gate.wrap_up.load(Ordering::SeqCst) != 0 {
+        if self.gate.wrap_up.load(Ordering::SeqCst) != 0 || self.gate.interrupted.load(Ordering::SeqCst) {
             self.gate.bg_cancel.cancel();
             return false;
         }
@@ -267,6 +271,27 @@ impl Handle {
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
     }
+    /// Whether these handles control the same ordinary input queues. Reopening creates
+    /// another instance; a fork within the same instance retains its existing queue semantics.
+    pub fn same_instance(&self, other: &Handle) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
+    /// Reserve one worker wake for admitted editor input, even if the active consumer has
+    /// already passed its final queue take. The wake carries this handle across UI rebinds.
+    pub fn request_queued_wake(&self) -> bool {
+        !self.shared.gate.queued_wake_pending.swap(true, Ordering::SeqCst)
+    }
+
+    /// The worker clears the reservation BEFORE checking/taking input, so an admission after
+    /// its empty take can reserve another wake. Clear the originating handle, never a rebind.
+    pub fn clear_queued_wake(&self) {
+        self.shared
+            .gate
+            .queued_wake_pending
+            .store(false, Ordering::SeqCst);
+    }
+
     /// Claim the single pending frontend wake. Queue consumption during a long model
     /// run must not turn every admitted message into another unbounded channel job.
     pub fn request_inbox_wake(&self) -> bool {
@@ -400,6 +425,20 @@ impl Handle {
 
     pub fn wrap_up_requested(&self) -> bool {
         self.wrap_up_reason().is_some()
+    }
+
+    /// End a headless invocation cooperatively. Unlike `abort`, this is sticky across
+    /// claims, so SIGINT just before a prompt starts cannot be lost. Unlike wrap-up,
+    /// it cancels generation and tools immediately and requests no final model turn.
+    pub fn interrupt(&self) {
+        self.shared.gate.interrupted.store(true, Ordering::SeqCst);
+        self.abort();
+        self.abort_retry();
+        self.cancel_background();
+    }
+
+    pub fn interrupted(&self) -> bool {
+        self.shared.gate.interrupted.load(Ordering::SeqCst)
     }
 
     /// Abort the current run. The partial reply is shown, never sent (W2). Queued messages stay

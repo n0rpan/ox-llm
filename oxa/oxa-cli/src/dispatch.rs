@@ -172,6 +172,22 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         let result = match sub {
             #[cfg(feature = "share")]
             Subcommand::Share(words) => {
+                // Env::get treats empty values as unset; owner-command policy
+                // refuses marker presence, including an empty value.
+                if env.pairs().iter().any(|(name, _)| {
+                    matches!(
+                        name.as_str(),
+                        "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
+                    )
+                }) {
+                    return report(
+                        &mut *stderr,
+                        &OxaError::new(
+                            codes::INVALID,
+                            "Guest key commands require the owner outside an agent tool",
+                        ),
+                    );
+                }
                 oxc_gateway::share::command::run(&words, &dirs.home.join(".oxa/share"), &mut *stdout)
                     .map(|()| 0)
                     .map_err(|error| {
@@ -257,7 +273,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let user = Settings::load(&dirs, &cwd, false);
-        let engine = match crate::in_process::select(&user, &user, &dirs, None, || engine_for(&endpoint)) {
+        let engine = match crate::in_process::select(&user, &user, &dirs, || engine_for(&endpoint)) {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
@@ -662,24 +678,10 @@ fn prepare(
     }
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
-    let has_model_scope = a.models.as_ref().map_or_else(
-        || !settings.list("enabledModels").is_empty(),
-        |patterns| !patterns.is_empty(),
-    );
-    let resuming = a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
-    let requested_model = a.model.clone().or_else(|| {
-        // The core chooses a restored/scoped model instead of an unused default.
-        if resuming || has_model_scope {
-            None
-        } else {
-            settings.string("defaultModel")
-        }
-    });
     let engine = child.wrap(crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
-        requested_model.as_deref(),
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         || engine_with_settings(&endpoint, &settings),
     )?);

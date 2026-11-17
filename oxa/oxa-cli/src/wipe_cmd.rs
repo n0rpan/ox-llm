@@ -331,7 +331,7 @@ fn clear_engine(
     }
     // Project settings cannot choose a native binary/provider for a privacy command.
     let user = Settings::load(dirs, cwd, false);
-    let engine: std::sync::Arc<dyn Engine> = match crate::in_process::select(&user, &user, dirs, None, || {
+    let engine: std::sync::Arc<dyn Engine> = match crate::in_process::select(&user, &user, dirs, || {
         let (models, _) = ModelsConfig::load(dirs, env);
         default_endpoint(&models).and_then(|ep| engine_for(&ep))
     }) {
