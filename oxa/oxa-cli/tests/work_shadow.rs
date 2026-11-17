@@ -347,6 +347,9 @@ if [ "$#" -gt "$(cat limit)" ]; then status=$(cat failure); fi
 if [ -e fail-after ] && [ "$(wc -l < batch-sizes)" -gt "$(cat fail-after)" ]; then status=403; fi
 if [ -e fail-page ] && [ "$cursor" = "$(cat fail-page)" ]; then status=403; fi
 if "$include"; then printf 'HTTP/2.0 %s Synthetic\r\n\r\n' "$status"; fi
+if [ -e response-padding ]; then
+  head -c "$(cat response-padding)" /dev/zero | tr '\000' ' '
+fi
 if [ "$status" != 200 ]; then
   printf '{"message":"synthetic-private-response-marker"}'
   exit 1
@@ -362,11 +365,6 @@ else
   cat "pages/${cursor:-first}.json"
 fi
 printf ',"mergeQueue":null'
-if [ -e response-padding ]; then
-  printf ',"padding":"'
-  head -c "$(cat response-padding)" /dev/zero | tr '\000' 'a'
-  printf '"'
-fi
 for number in "$@"; do
   printf ',"p%s":' "$number"
   cat "rows/$number.json"

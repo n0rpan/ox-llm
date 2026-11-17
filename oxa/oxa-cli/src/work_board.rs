@@ -246,10 +246,6 @@ impl<'a> Reader<'a> {
         let (code, text) = oxa_work::command_runner(command, Some(remaining), duration).ok_or(invalid(
             "GitHub read failed: snapshot exceeds byte limit, capture refused or deadline reached",
         ))?;
-        // Charge captured bytes, including headers and non-2xx bodies, before interpreting them.
-        let mut used = self.bytes.get();
-        charge(&mut used, text.len()).map_err(|_| invalid("GitHub snapshot exceeds byte limit"))?;
-        self.bytes.set(used);
         let (headers, body) = text
             .split_once("\r\n\r\n")
             .or_else(|| text.split_once("\n\n"))
@@ -265,6 +261,10 @@ impl<'a> Reader<'a> {
         if !(200..300).contains(&status) {
             return Err(QueryError::Http(status));
         }
+        // Before control: reproduce the original successful-response-only accounting.
+        let mut used = self.bytes.get();
+        charge(&mut used, text.len()).map_err(|_| invalid("GitHub snapshot exceeds byte limit"))?;
+        self.bytes.set(used);
         let result: Value = serde_json::from_str(body).map_err(|_| invalid("invalid GitHub response"))?;
         if result.get("errors").is_some() {
             return Err(invalid(match result["errors"][0]["type"].as_str() {
