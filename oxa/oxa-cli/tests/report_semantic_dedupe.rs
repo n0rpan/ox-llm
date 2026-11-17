@@ -7,6 +7,8 @@ use std::io::Write;
 
 const SHA: &str = "0123456789abcdef0123456789abcdef01234567";
 const TITLE: &str = "Task packet requests a forbidden tool";
+const DESCRIPTION: &str = "Reproduction: retry with the runner-owned issue body missing.";
+const SYSTEM_ONLY: &str = "synthetic-controller-status";
 
 fn settings() -> Settings {
     Settings::from_values(
@@ -23,12 +25,13 @@ fn file_report(
     run: &mut Fixture,
     out: &mut dyn Write,
 ) -> i32 {
+    let evidence = run.evidence.unwrap_or("oxa/oxa-work/src/worker.rs");
     let draft = env.write(
         &format!("drafts/occurrence-{index}.md"),
         &format!(
             "Title: {title}\n\nTask: task-{task}\nWorker: synthetic-worker\nRun: run-{index}\n\n\
              Observed: command `oxa work` refused the fetch required by its task packet.\n\n\
-             Evidence: oxa/oxa-work/src/worker.rs:2\n"
+             Evidence: {evidence}:2\n\n{DESCRIPTION}\n\n## System\n\n{SYSTEM_ONLY}\n"
         ),
     );
     let result = submit(
@@ -53,6 +56,8 @@ struct Fixture {
     judged: usize,
     match_issue: bool,
     unverified: bool,
+    evidence: Option<&'static str>,
+    verify_description: bool,
 }
 
 impl Fixture {
@@ -66,6 +71,11 @@ impl Fixture {
             self.judged += 1;
             let payload: Value = serde_json::from_str(&args[0]).unwrap();
             assert_eq!(payload["current_main"]["sha"], SHA);
+            if self.verify_description {
+                let description = payload["description"].as_str().expect("judge description");
+                assert!(description.contains(DESCRIPTION));
+                assert!(!description.contains(SYSTEM_ONLY));
+            }
             assert!(payload["current_main"]["source"]
                 .as_str()
                 .unwrap()
@@ -94,7 +104,11 @@ impl Fixture {
                 "api" if args[1].ends_with("git/ref/heads/main") => SHA.to_string(),
                 "api" if args[1] == "repos/example/project" => "public".into(),
                 "api" => {
-                    assert!(args.last().unwrap().ends_with(&format!("worker.rs?ref={SHA}")));
+                    let evidence = self.evidence.unwrap_or("oxa/oxa-work/src/worker.rs");
+                    assert!(args
+                        .last()
+                        .unwrap()
+                        .ends_with(&format!("contents/{evidence}?ref={SHA}")));
                     "fn work() {\n    fetch_if_enabled(false); // disabled\n}\n".into()
                 }
                 "search" => {
@@ -186,4 +200,30 @@ fn new_issues_are_capped_by_task_and_worker_and_unverified_observations_stay_loc
     assert_eq!(report(4, 2, &mut run).0, 0);
     assert!(report(5, 3, &mut run).1.contains("daily cap"));
     assert_eq!((run.creates, run.comments), (3, 0));
+}
+
+#[test]
+fn semantic_report_accepts_tracked_dot_directory_evidence() {
+    let env = TestEnv::new();
+    let mut run = Fixture {
+        evidence: Some(".github/workflows/checks.yml"),
+        ..Fixture::default()
+    };
+    let mut out = Vec::new();
+    let code = file_report(&env, 0, TITLE, 0, &mut run, &mut out);
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&out));
+    assert_eq!(run.judged, 1);
+}
+
+#[test]
+fn semantic_report_judge_reads_reproduction_without_controller_status() {
+    let env = TestEnv::new();
+    let mut run = Fixture {
+        verify_description: true,
+        ..Fixture::default()
+    };
+    let mut out = Vec::new();
+    let code = file_report(&env, 0, TITLE, 0, &mut run, &mut out);
+    assert_eq!(code, 0, "{}", String::from_utf8_lossy(&out));
+    assert_eq!(run.judged, 1);
 }

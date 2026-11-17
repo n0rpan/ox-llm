@@ -420,3 +420,34 @@ pub(super) fn judge(input: &str, dirs: &Dirs, settings: &Settings, env: &Env) ->
     let turn = engine.chat(&request, &CancelToken::default(), &mut |_| {}).ok()?;
     (turn.finish == Finish::Stop && turn.msg.tool_calls.is_empty()).then_some(turn.msg.content)?
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxa_fake::{FakeModel, FakeOpts, FakeServer, ScriptTurn, TestEnv};
+
+    #[test]
+    fn verification_requests_configured_model_instead_of_loaded_model() {
+        let fixture = TestEnv::new();
+        let server = FakeServer::start(
+            vec![ScriptTurn::text("{}")],
+            FakeOpts {
+                model: "loaded".into(),
+                models: vec![
+                    FakeModel::moe("loaded", 8192),
+                    FakeModel::moe("report-judge", 8192),
+                ],
+                ..FakeOpts::default()
+            },
+        )
+        .unwrap();
+        let env = Env::from_pairs(&[("OXA_ENGINE_URL", &server.url())]);
+        let settings = Settings::from_values(json!({"defaultModel":"report-judge"}), json!({}));
+
+        judge("synthetic report", &Dirs::under(fixture.root()), &settings, &env).unwrap();
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].model, "report-judge");
+    }
+}
