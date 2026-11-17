@@ -465,7 +465,10 @@ fn enter_steers_alt_enter_follows_up() {
         "Enter steers while a run is active"
     );
     assert_eq!(follow_up, vec!["y".to_string()], "Alt+Enter queues a follow-up");
-    assert!(d.cmds.is_empty(), "nothing is sent as a new prompt while running");
+    assert!(
+        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
+        "steering and follow-up share one bound wake, never a new prompt"
+    );
 }
 
 /// editor refilled
@@ -489,7 +492,10 @@ fn escape_aborts_and_restores_queue() {
         "the queued message is back in the editor and resubmitted"
     );
     assert!(follow_up.is_empty());
-    assert!(d.cmds.is_empty());
+    assert!(
+        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
+        "resubmitting restored input retains one consumer on its original handle"
+    );
 }
 
 /// ! and !!
@@ -994,6 +1000,31 @@ fn quit_with_ctrl_c_twice_on_empty_editor() {
     );
     assert_eq!(d.code, 0);
     assert!(d.cmds.is_empty());
+}
+
+/// Issue #344: Alt+Enter on an idle prompt inserts a newline instead of sending.
+#[test]
+fn alt_enter_idle_inserts_newline() {
+    let env = TestEnv::new();
+    let s = session(&env);
+    let d = drive(
+        &s,
+        &env,
+        vec![
+            vec![ch('a'), key("alt+enter"), ch('b'), key("enter")],
+            vec![key("ctrl+d")],
+        ],
+        vec![],
+    );
+    let prompts: Vec<String> = d
+        .cmds
+        .iter()
+        .filter_map(|c| match c {
+            SessionCmd::Prompt { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(prompts, vec!["a\nb".to_string()]);
 }
 
 /// Deliver worker/UI messages between polls, like a run finishing after focus-out.

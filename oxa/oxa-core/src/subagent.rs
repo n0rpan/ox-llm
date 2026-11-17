@@ -389,12 +389,16 @@ impl SubagentHooks {
         self
     }
 
-    /// O-146: whether the tool is declared for a model with this context window (`None` =
-    /// unknown) on this engine. Explicit `oxa.subagent.enabled` wins (`true` declares it on any
+    /// Whether the tool is declared: at least one agent must be available (#696).
+    /// O-146: for a model with this context window (`None` = unknown) on this engine,
+    /// explicit `oxa.subagent.enabled` wins (`true` declares it on any
     /// model, `false` never); otherwise it is on, except on the Rust Flash engine and below
     /// [`MIN_CONTEXT`] (the served model's `model_limits` cap), where `smallContext: true` still
     /// declares it. An unknown window counts as large.
     pub fn declared_for(&self, window: Option<u32>, flash: bool) -> bool {
+        if self.inner.agents.is_empty() {
+            return false;
+        }
         let c = *lock(&self.inner.config);
         match c.enabled {
             Some(on) => on,

@@ -48,7 +48,8 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
             .file
             .as_deref()
             .is_some_and(|f| has_conversation(opts.store.as_ref(), f, &info.id));
-        if talked {
+        // A vanished terminal cannot receive the resume hint; println! would panic on EIO.
+        if talked && code != 129 {
             for line in exit_lines(info.file.as_deref(), &info.id) {
                 println!("{line}");
             }
@@ -1507,6 +1508,25 @@ fn execute(
     out: &Sender<WorkerMsg>,
 ) -> (Result<(), OxaError>, bool) {
     match cmd {
+        SessionCmd::QueuedInput(handle) => {
+            handle.clear_queued_wake();
+            let (steering, follow_up) = handle.queued();
+            // A failed/blocked/interrupted run retains queued input for explicit recovery.
+            // A wake may bridge successful completion, never override that stop boundary.
+            let can_continue = matches!(
+                s.outcome(),
+                oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo
+            );
+            let result = if handle.same_instance(&s.handle())
+                && can_continue
+                && (!steering.is_empty() || !follow_up.is_empty())
+            {
+                s.run_queued(sink, ui).map(|_| ())
+            } else {
+                Ok(())
+            };
+            (result, false)
+        }
         SessionCmd::Inbox { session_id } => {
             s.handle().clear_inbox_wake();
             // A coalesced wake may carry an older destination. Only run the
@@ -1517,6 +1537,14 @@ fn execute(
                 Ok(())
             };
             (result, false)
+        }
+        SessionCmd::RecoveryPrompt { handle, text, parts } => {
+            if handle.same_instance(&s.handle()) {
+                (run_prompt(s, text, parts, sink, ui), false)
+            } else {
+                let _ = out.send(WorkerMsg::UnsentPrompt { text, parts });
+                (Ok(()), false)
+            }
         }
         SessionCmd::Prompt { text, parts } => (run_prompt(s, text, parts, sink, ui), false),
         SessionCmd::Compact { instructions } => {
@@ -2418,3 +2446,6 @@ mod toolcall_stream_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod steering_tests;

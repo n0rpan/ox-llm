@@ -924,6 +924,10 @@ fn cli_026() {
 fn cli_027() {
     let server = fake(&turns(&["a", "b"]));
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/agents/worker.md",
+        "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+    );
     ok(&run(
         &env,
         &server.url(),
@@ -1065,12 +1069,16 @@ fn cli_031() {
 }
 
 // pi: cli.md default enabled tools are read, bash, edit, write (`defaultTools` changes them)
-// invariant: all eight lead built-ins on by default, plus `subagent` where O-146 offers it
-// (not on the Rust Flash engine, not below a 32K window); an explicit defaultTools replaces them
+// invariant: all eight lead built-ins on by default, plus `subagent` with an available agent
+// where O-146 offers it (not Flash, not below 32K); an explicit defaultTools replaces them
 #[test]
 fn cli_032() {
     let server = fake(&turns(&["a", "b"]));
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/agents/worker.md",
+        "---\nname: worker\ndescription: Test worker\n---\nDo the assigned task.\n",
+    );
     ok(&run(&env, &server.url(), &["-p", "--no-session", "x"]));
     // The fake's default model is large and not Flash: eight lead built-ins and subagent.
     let mut defaults = all_tools();
