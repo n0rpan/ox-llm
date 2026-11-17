@@ -227,17 +227,54 @@ mod tests {
         view = view.set(Row::Turn, "idle");
         view = view.set(Row::Jobs, "0 running");
         let lines = view.lines();
-        let mut headings: Vec<&str> = Vec::new();
-        for heading in ["Session", "Turn", "Queues", "Engine", "Work", "Budget"] {
-            if lines.iter().any(|l| l == heading) {
-                headings.push(heading);
+
+        // The headings occur once each, in this order: reading the sequence in the order the
+        // view prints it, not by asking whether each heading appears anywhere.
+        let mut seen: Vec<&str> = Vec::new();
+        for line in &lines {
+            if !["Session", "Turn", "Queues", "Engine", "Work", "Budget"].contains(&line.as_str()) {
+                continue;
             }
+            let section: &str = line;
+            assert!(
+                !seen.contains(&section),
+                "section {section:?} appears twice: {lines:?}"
+            );
+            seen.push(section);
         }
         assert_eq!(
-            headings,
-            ["Session", "Turn", "Queues", "Engine", "Work", "Budget"]
+            seen,
+            ["Session", "Turn", "Queues", "Engine", "Work", "Budget"],
+            "{lines:?}"
         );
-        assert_eq!(lines.iter().filter(|l| **l == "Session").count(), 1);
+
+        // Each row sits at its own place, right after the heading of its section: a row moved
+        // to another section, a missing row or an extra trailing row fails here.
+        let mut at = 0;
+        let mut section = None;
+        for row in Row::ALL {
+            if section != Some(row.section()) {
+                assert_eq!(
+                    lines.get(at).map(String::as_str),
+                    Some(row.section()),
+                    "{lines:?}"
+                );
+                at += 1;
+                section = Some(row.section());
+            }
+            let expected = format!("  {}: unavailable ({})", row.label(), row.unavailable());
+            let line = lines.get(at).unwrap_or_else(|| panic!("{row:?} missing"));
+            if matches!(row, Row::SessionId | Row::Turn | Row::Jobs) {
+                assert!(
+                    line.starts_with(&format!("  {}: ", row.label())),
+                    "{row:?} at {at}: {lines:?}"
+                );
+            } else {
+                assert_eq!(line, &expected, "{row:?} at {at}: {lines:?}");
+            }
+            at += 1;
+        }
+        assert_eq!(at, lines.len(), "rows after the last one: {lines:?}");
         assert!(lines.contains(&"  Turn: idle".to_string()), "{lines:?}");
         assert!(
             lines.contains(&"  Background jobs: 0 running".to_string()),
