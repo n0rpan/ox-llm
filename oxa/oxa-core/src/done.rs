@@ -2,7 +2,9 @@
 //! A run that edited files (`edit` / `write` succeeded, or a `bash`, sub-agent, MCP or extension
 //! tool call changed the work folder) and is about to stop runs them in the session sandbox; a failure goes back to the model as a user
 //! message, at most [`MAX_ROUNDS`] times. An entry `in <dir>: <command>` runs in `<dir>`, a folder
-//! of the session folder, instead of in the session folder itself.
+//! of the session folder, instead of in the session folder itself. A command the shell cannot
+//! start (exit 127, not found; 126, not executable - a missing binary or toolchain) is reported
+//! as `FAILED (not run)` and is not sent back as a problem to fix: no edit makes it start.
 use crate::exec::CallResult;
 use crate::SessionState;
 use oxa_proto::{shown_why, AgentEvent, EntryBody, EventMessage, EventSink, ExecSpec, Level, OxaError, Ui};
@@ -204,16 +206,18 @@ pub(crate) fn check(
     state.dirty = false;
     let _ = ui;
     let mut failed = String::new();
+    // A command the shell could not start: not a failure of the source, so not repaired.
+    let mut not_run = false;
     for cmd in &cmds {
         // A cancel stops the whole done phase: no further command, no notice, no repair text.
         if st.shared.cancel.is_cancelled() {
             return None;
         }
-        let (ok, line, out) = run_one(st, cmd);
+        let (ok, unstarted, line, out) = run_one(st, cmd);
         if st.shared.cancel.is_cancelled() {
             return None;
         }
-        let mut text = line.clone();
+        let mut text = line;
         if !out.is_empty() {
             text.push('\n');
             text.push_str(&out);
@@ -231,16 +235,25 @@ pub(crate) fn check(
             text: text.clone(),
         });
         if !ok {
-            failed.push_str(&text);
-            failed.push_str("\n\n");
+            // A command that cannot start stays out of the repair text: the model cannot make
+            // a missing binary appear, and repeating it spends its rounds on it.
+            if unstarted {
+                not_run = true;
+            } else {
+                failed.push_str(&text);
+                failed.push_str("\n\n");
+            }
         }
     }
     // A check may rewrite files (formatters, generators): that is not a model edit.
     if state.tree.is_some() {
         state.tree = tree_fingerprint(&st.cwd);
     }
-    // What print mode reads at the end: the last check round failed and nothing fixed it.
-    st.stats.done_failed = !failed.is_empty();
+    // What print mode reads at the end: the last check round failed and nothing fixed it. A
+    // check that could not start counts as failed (nothing was verified) but its own report
+    // names the cause, unless a real failure is there to report instead.
+    st.stats.done_not_run = not_run && failed.is_empty();
+    st.stats.done_failed = !failed.is_empty() || not_run;
     if failed.is_empty() {
         state.rounds = 0;
         return None;
@@ -319,8 +332,8 @@ fn single_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// Run one entry; returns (passed, header line, trimmed output).
-fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
+/// Run one entry; returns (passed, could not start, header line, trimmed output).
+fn run_one(st: &SessionState, entry: &str) -> (bool, bool, String, String) {
     let (dir, cmd) = parse_entry(entry);
     let label = match dir {
         Some(d) => format!("[{d}] {cmd}"),
@@ -336,11 +349,12 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
                 "cd -- {} || exit 111\n",
                 single_quote(&p.to_string_lossy())
             )),
-            Err(why) => return (false, format!("done check: {label} FAILED (not run)"), why),
+            Err(why) => return (false, false, format!("done check: {label} FAILED (not run)"), why),
         },
     };
     if cmd.is_empty() {
         return (
+            false,
             false,
             format!("done check: {label} FAILED (not run)"),
             "no command after `:`".to_string(),
@@ -354,7 +368,7 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
     // shell both start in the child folder.
     let command = match shell.command(cmd) {
         Ok(c) => format!("{}{c}", child.as_deref().unwrap_or("")),
-        Err(e) => return (false, format!("done check: {label} FAILED (not run)"), e),
+        Err(e) => return (false, false, format!("done check: {label} FAILED (not run)"), e),
     };
     let spec = ExecSpec {
         command,
@@ -367,17 +381,26 @@ fn run_one(st: &SessionState, entry: &str) -> (bool, String, String) {
     let res = st.sandbox.run(&spec, &st.shared.cancel, &mut |_| {});
     let out = tail(&strip_ansi(&String::from_utf8_lossy(&res.output)));
     if res.exit == Some(0) && !res.timed_out {
-        return (true, format!("done check: {label} ok"), String::new());
+        return (true, false, format!("done check: {label} ok"), String::new());
     }
-    let why = if res.timed_out {
-        "timed out".to_string()
+    // The shell reports a command it could not start with 127 (not found) or 126 (not
+    // executable): a missing binary or toolchain, which no edit to the project can fix. It is
+    // not a failure of the source and costs no repair round.
+    let (why, unstarted) = if res.timed_out {
+        ("timed out".to_string(), false)
     } else {
         match res.exit {
-            Some(n) => format!("exit {n}"),
-            None => "killed".to_string(),
+            Some(127 | 126) => ("not run".to_string(), true),
+            Some(n) => (format!("exit {n}"), false),
+            None => ("killed".to_string(), false),
         }
     };
-    (false, format!("done check: {label} FAILED ({why})"), out)
+    (
+        false,
+        unstarted,
+        format!("done check: {label} FAILED ({why})"),
+        out,
+    )
 }
 
 fn tail(s: &str) -> String {

@@ -112,6 +112,9 @@ pub struct Stats {
     /// The current prompt/triggered operation exhausted its `done` repair rounds. Reset
     /// when new agent work is claimed; process-wide aggregation lives in the drivers.
     pub done_failed: bool,
+    /// The last `done` check round had an entry the shell could not start (exit 127 or 126): the
+    /// check did not run, so print mode says so instead of reporting a failed check.
+    pub done_not_run: bool,
     /// Whether the current agent operation's last reply stopped at its output token limit.
     pub output_truncated: bool,
     /// Terminal result of the last prompt or extension-triggered run.
@@ -952,6 +955,7 @@ impl Session {
         let guard = self.begin()?;
         crate::progress::notify(&self.st, crate::Progress::RunStart);
         self.st.stats.done_failed = false;
+        self.st.stats.done_not_run = false;
         self.st.stats.output_truncated = false;
         crate::goal::begin(&self.st);
         Ok(guard)
