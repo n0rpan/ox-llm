@@ -2,9 +2,19 @@ use super::View;
 use crate::lead_quota::{model_windows, GitHubIdentity, GitHubResource};
 use std::fmt::Write;
 
+fn meter<N: std::fmt::Display>(html: &mut String, label: &str, max: N, value: N, value_text: &str) {
+    let _ = write!(
+        html,
+        " <meter min=0 max={max} value={value} aria-label=\"{}\" aria-valuetext=\"{}\">{}</meter>",
+        super::escape(label),
+        super::escape(value_text),
+        super::escape(value_text)
+    );
+}
+
 pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section><h2>Plans and quotas</h2>");
-    html.push_str("<dl>");
+    html.push_str("<dl class=quota-windows>");
     for (identity, label) in [(GitHubIdentity::App, "App"), (GitHubIdentity::Owner, "Owner")] {
         for (resource, api) in [
             (GitHubResource::Core, "REST core"),
@@ -17,9 +27,17 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             {
                 let _ = write!(
                     html,
-                    "<dd>{} of {} remaining · resets at {} (Unix seconds)</dd>",
+                    "<dd>{} of {} remaining · resets at {} (Unix seconds)",
                     window.remaining, window.limit, window.resets_at
                 );
+                meter(
+                    html,
+                    &format!("GitHub {label} · {api} remaining"),
+                    window.limit,
+                    window.remaining,
+                    &format!("{} of {} remaining", window.remaining, window.limit),
+                );
+                html.push_str("</dd>");
             } else {
                 html.push_str("<dd>Unknown</dd>");
             }
@@ -44,9 +62,17 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
         if let Some(window) = window {
             let _ = write!(
                 html,
-                "<dd>{}% used · resets at {} (Unix seconds)</dd>",
+                "<dd>{}% used · resets at {} (Unix seconds)",
                 window.used_percent, window.resets_at
             );
+            meter(
+                html,
+                &format!("{label} model window used"),
+                100.0,
+                window.used_percent,
+                &format!("{}% used", window.used_percent),
+            );
+            html.push_str("</dd>");
         } else {
             html.push_str("<dd>Unknown</dd>");
         }
@@ -89,5 +115,113 @@ mod tests {
         assert!(html.contains("Primary model window</dt><dd>12.5% used"));
         assert!(html.contains("Secondary model window</dt><dd>85% used"));
         assert!(!html.contains("fixture-private-field"));
+    }
+
+    fn usage_page(
+        github_quotas: Option<&GitHubQuotas>,
+        model_plan: Option<&oxc_gateway::status::chatgpt_usage::Usage>,
+        now: u64,
+    ) -> String {
+        document_for(
+            Page::Usage,
+            &View {
+                github_quotas,
+                model_plan,
+                ..Default::default()
+            },
+            now,
+        )
+    }
+
+    #[test]
+    fn quota_meters_keep_identity_resource_units_and_measured_zero_explicit() {
+        let mut quotas = GitHubQuotas::default();
+        for (identity, resource, name, limit, remaining) in [
+            (GitHubIdentity::App, GitHubResource::Core, "core", 5000, 0),
+            (GitHubIdentity::App, GitHubResource::Graphql, "graphql", 100, 75),
+            (GitHubIdentity::Owner, GitHubResource::Core, "core", 500, 200),
+        ] {
+            let headers = format!("x-ratelimit-resource: {name}\nx-ratelimit-limit: {limit}\nx-ratelimit-remaining: {remaining}\nx-ratelimit-reset: 180");
+            assert!(quotas.observe(identity, resource, &headers));
+        }
+        let model = oxc_gateway::status::chatgpt_usage::parse(&json!({
+            "plan_type": "fixture-plan", "credits": {"balance": "fixture-private-field"},
+            "rate_limit": {
+                "primary_window": {"used_percent": 0, "reset_at": 180},
+                "secondary_window": {"used_percent": 100, "reset_at": 180}
+            }
+        }));
+        let html = usage_page(Some(&quotas), Some(&model), 100);
+        let meters: Vec<_> = html
+            .split("<meter ")
+            .skip(1)
+            .map(|part| part.split("</meter>").next().unwrap())
+            .collect();
+        assert_eq!(meters.len(), 5);
+        for (label, max, value, description) in [
+            (
+                "GitHub App · REST core remaining",
+                "5000",
+                "0",
+                "0 of 5000 remaining",
+            ),
+            (
+                "GitHub App · GraphQL remaining",
+                "100",
+                "75",
+                "75 of 100 remaining",
+            ),
+            (
+                "GitHub Owner · REST core remaining",
+                "500",
+                "200",
+                "200 of 500 remaining",
+            ),
+            ("Primary model window used", "100", "0", "0% used"),
+            ("Secondary model window used", "100", "100", "100% used"),
+        ] {
+            let meter = meters
+                .iter()
+                .find(|meter| meter.contains(&format!("aria-label=\"{label}\"")))
+                .unwrap();
+            assert!(meter.contains(&format!("min=0 max={max} value={value} ")));
+            assert!(meter.contains(&format!("aria-valuetext=\"{description}\"")));
+        }
+        assert!(html.contains("GitHub Owner · GraphQL</dt><dd>Unknown"));
+        assert!(!html.contains("fixture-private-field"));
+        assert!(!html.contains("<form") && !html.contains("<button"));
+    }
+
+    #[test]
+    fn missing_invalid_and_expired_quota_windows_do_not_become_zero_meters() {
+        let mut quotas = GitHubQuotas::default();
+        for (identity, remaining, resets_at) in
+            [(GitHubIdentity::App, 0, 120), (GitHubIdentity::Owner, 450, 180)]
+        {
+            let headers = format!("x-ratelimit-resource: core\nx-ratelimit-limit: 5000\nx-ratelimit-remaining: {remaining}\nx-ratelimit-reset: {resets_at}");
+            assert!(quotas.observe(identity, GitHubResource::Core, &headers));
+        }
+        let model = oxc_gateway::status::chatgpt_usage::parse(&json!({
+            "rate_limit": {"primary_window": {"used_percent": 0, "reset_at": 120}}
+        }));
+        let boundary = usage_page(Some(&quotas), Some(&model), 120);
+        assert_eq!(boundary.matches("<meter ").count(), 1);
+        assert!(boundary.contains("aria-label=\"GitHub Owner · REST core remaining\""));
+        assert!(boundary.contains("GitHub App · REST core</dt><dd>Unknown"));
+        assert!(boundary.contains("Primary model window</dt><dd>Unknown"));
+        assert!(boundary.contains("Secondary model window</dt><dd>Unknown"));
+        assert!(!usage_page(Some(&quotas), Some(&model), 180).contains("<meter "));
+        let unknown = usage_page(None, None, 100);
+        assert!(unknown.contains("GitHub App · GraphQL</dt><dd>Unknown"));
+        assert!(unknown.contains("GitHub Owner · REST core</dt><dd>Unknown"));
+        assert!(unknown.contains("Primary model window</dt><dd>Unknown"));
+        assert!(!unknown.contains("<meter "));
+        let invalid = oxc_gateway::status::chatgpt_usage::parse(&json!({
+            "rate_limit": {
+                "primary_window": {"used_percent": 101, "reset_at": 180},
+                "secondary_window": {"used_percent": -1, "reset_at": 180}
+            }
+        }));
+        assert!(!usage_page(None, Some(&invalid), 100).contains("<meter "));
     }
 }
