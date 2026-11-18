@@ -6,6 +6,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const COUNTER: &str = ".checkpoint-counter";
@@ -197,29 +198,40 @@ fn has_durable_state(root: &Path) -> Result<bool> {
 }
 
 pub(crate) fn write_atomic(path: &Path, bytes: &[u8], replacing: bool) -> Result<()> {
+    let directory =
+        File::open(path.parent().ok_or("checkpoint has no parent")?).map_err(|e| e.to_string())?;
+    write_atomic_in(&directory, path, bytes, replacing)
+}
+
+pub(crate) fn write_atomic_in(directory: &File, path: &Path, bytes: &[u8], replacing: bool) -> Result<()> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    let temporary = path.with_extension(format!("tmp-{}-{nonce}", std::process::id()));
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    // A pending queue scan must only see the final task name.
+    let temporary = path.with_file_name(format!(
+        ".oxa-atomic-{}-{nonce}-{sequence}.tmp",
+        std::process::id()
+    ));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(|e| e.to_string())?;
     let result = (|| -> Result<()> {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temporary)
-            .map_err(|e| e.to_string())?;
         file.write_all(bytes).map_err(|e| e.to_string())?;
         file.sync_all().map_err(|e| e.to_string())?;
+        drop(file);
         if replacing {
             fs::rename(&temporary, path).map_err(|e| e.to_string())?;
         } else {
             fs::hard_link(&temporary, path).map_err(|e| e.to_string())?;
             fs::remove_file(&temporary).map_err(|e| e.to_string())?;
         }
-        File::open(path.parent().ok_or("checkpoint has no parent")?)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|e| e.to_string())
+        directory.sync_all().map_err(|e| e.to_string())
     })();
     if result.is_err() {
         let _ = fs::remove_file(temporary);

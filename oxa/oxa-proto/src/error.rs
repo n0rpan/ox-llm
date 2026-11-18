@@ -73,6 +73,8 @@ pub mod codes {
     pub const ABORTED: &str = "aborted";
     /// A pi feature omitted from oxa (verdict O).
     pub const UNSUPPORTED_IN_OXA: &str = "unsupported_in_oxa";
+    /// The interactive terminal disappeared (process exit 129).
+    pub const TERMINAL_CLOSED: &str = "terminal_closed";
     pub const IO: &str = "io";
     /// A file, session, model, tool, command or entry was not found.
     pub const NOT_FOUND: &str = "not_found";
@@ -98,6 +100,10 @@ pub mod codes {
     /// The cloud gateway refused with 429 `budget_exceeded` (daily budget spent). Not retried;
     /// `-p` / `--mode json` exit with [`EXIT_BUDGET`](super::EXIT_BUDGET).
     pub const BUDGET_EXHAUSTED: &str = "budget_exhausted";
+    /// A bounded literal turn spent its own local output budget (`prompt_literal_bounded`)
+    /// before a complete reply arrived. This is a local generation bound, not provider
+    /// metering: it is never translated into a metered daily-USD or subscription reason.
+    pub const LITERAL_OUTPUT_EXHAUSTED: &str = "literal_output_exhausted";
     /// A script (extension, codemode) threw, ran out of memory or passed its deadline.
     pub const SCRIPT: &str = "script";
     /// An MCP server failed or answered with a protocol error.

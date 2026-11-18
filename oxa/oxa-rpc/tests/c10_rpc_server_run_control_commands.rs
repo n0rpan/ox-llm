@@ -95,8 +95,12 @@ impl Engine for GatedEngine {
 
 /// A session over `engine`, stored under the test's own agent directory.
 fn open_session(env: &TestEnv, engine: Arc<dyn Engine>) -> Session {
+    Session::open(session_deps(env, engine), Open::New).expect("the session opens over the engine")
+}
+
+fn session_deps(env: &TestEnv, engine: Arc<dyn Engine>) -> Deps {
     let store: Arc<dyn SessionStore> = Arc::new(FsStore::new(env.agent_dir().join("sessions")));
-    let deps = Deps {
+    Deps {
         engine,
         store,
         tools: Vec::new(),
@@ -117,8 +121,102 @@ fn open_session(env: &TestEnv, engine: Arc<dyn Engine>) -> Session {
         mode: None,
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[test]
+fn file_control_receipts_report_revisioned_and_durable_owner_transitions() {
+    use oxa_orchestrator::control::Request;
+    use oxa_proto::{HeadlessUi, NullSink};
+    use oxa_session::{send_inbox_control, Goal, GoalBudget, GoalStatus, SessionRef};
+
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut owner = open_session(&env, engine.clone());
+    let mut sink = NullSink;
+    let goal = Goal::new("Review synthetic work.".into(), GoalBudget::default(), 1000).unwrap();
+    owner.set_goal(Some(goal), &mut sink).unwrap();
+    let bound = owner.inner().sref.clone();
+    let original = owner.goal_revision();
+    let agent = Dirs::under(env.root()).agent_dir;
+    let mut rpc = Rpc::start(owner, &env);
+    let ready = rpc.call("ready", json!({"type":"get_state"}));
+    assert_eq!(ready["data"]["goalRevision"], original);
+    let enqueue = |method: &str, id: &str, revision| {
+        let packet = json!({"method": method, "id": id, "revision": revision});
+        send_inbox_control(&agent, &bound, &packet.to_string()).unwrap();
     };
-    Session::open(deps, Open::New).expect("the session opens over the engine")
+    let receipt = |rpc: &Rpc, id: &str| {
+        rpc.wait_for(id, |record| {
+            record["type"] == "goal_control_receipt" && record["data"]["id"] == id
+        })["data"]
+            .clone()
+    };
+
+    let other = SessionRef {
+        id: bound.id.clone(),
+        path: bound.path.with_file_name("other.jsonl"),
+    };
+    let misdirected = json!({"method":"cancel","id":"other","revision":original});
+    send_inbox_control(&agent, &other, &misdirected.to_string()).unwrap();
+    let malformed = json!({
+        "method":"cancel", "id":"malformed", "revision":original, "session_file":"packet-selected.jsonl"
+    });
+    send_inbox_control(&agent, &bound, &malformed.to_string()).unwrap();
+    let rejection = rpc.wait_for("malformed control receipt", |record| {
+        record["type"] == "goal_control_receipt" && record["data"]["error"] == "invalid_request"
+    });
+    assert_eq!(rejection["data"], json!({"error":"invalid_request"}));
+
+    let steer = Request::Steer {
+        id: "steer".into(),
+        revision: original,
+        text: "Synthetic steering.".into(),
+        lease: None,
+    };
+    send_inbox_control(&agent, &bound, &serde_json::to_string(&steer).unwrap()).unwrap();
+    assert_eq!(
+        receipt(&rpc, "steer"),
+        json!({"id":"steer","error":"goal_steer_stale"})
+    );
+
+    enqueue("pause", "pause", original);
+    let paused = receipt(&rpc, "pause");
+    let paused_revision = paused["revision"].as_u64().unwrap();
+    assert!(paused_revision > original);
+    assert_eq!(
+        paused,
+        json!({"id":"pause","applied":true,"revision":paused_revision})
+    );
+    let state = rpc.call("after_pause", json!({"type":"get_state"}));
+    assert_eq!(state["data"]["goalRevision"], paused_revision);
+    enqueue("cancel", "stale", original);
+    assert_eq!(
+        receipt(&rpc, "stale"),
+        json!({"id":"stale","error":"goal_revision_conflict"})
+    );
+    enqueue("resume", "resume", paused_revision);
+    let resumed_revision = receipt(&rpc, "resume")["revision"].as_u64().unwrap();
+    assert!(resumed_revision > paused_revision);
+    enqueue("cancel", "cancel", resumed_revision);
+    let canceled_revision = receipt(&rpc, "cancel")["revision"].as_u64().unwrap();
+    assert!(canceled_revision > resumed_revision);
+    enqueue("resume", "after_cancel", canceled_revision);
+    assert!(receipt(&rpc, "after_cancel")["error"].is_string());
+
+    let (_, records) = rpc.finish();
+    assert!(!records.iter().any(|record| record["data"]["id"] == "other"));
+    assert_eq!(
+        std::fs::read_dir(agent.join("inbox").join(&bound.id))
+            .unwrap()
+            .count(),
+        1
+    );
+    let mut owner = Session::open(session_deps(&env, engine), Open::Resume(bound)).unwrap();
+    assert_eq!(owner.goal_revision(), canceled_revision);
+    assert_eq!(owner.goal().unwrap().status, GoalStatus::Canceled);
+    owner.shutdown(&mut HeadlessUi::default());
 }
 
 /// A `Write` that appends to a shared buffer: the server's stdout in the tests.
@@ -145,12 +243,22 @@ struct Rpc {
 
 impl Rpc {
     fn start(session: Session, env: &TestEnv) -> Rpc {
+        Self::start_with(session, env, serve_outcome)
+    }
+
+    fn start_with(
+        session: Session,
+        env: &TestEnv,
+        serve: impl FnOnce(Session, Dirs, Box<dyn BufRead + Send>, Out) -> Result<RunOutcome, OxaError>
+            + Send
+            + 'static,
+    ) -> Rpc {
         let (reader, writer) = std::io::pipe().expect("a pipe");
         let stdout = Arc::new(Mutex::new(Vec::new()));
         let out: Out = Arc::new(Mutex::new(Box::new(SharedBuf(stdout.clone()))));
         let dirs = Dirs::under(env.root());
         let input: Box<dyn BufRead + Send> = Box::new(BufReader::new(reader));
-        let thread = thread::spawn(move || serve_outcome(session, dirs, input, out));
+        let thread = thread::spawn(move || serve(session, dirs, input, out));
         Rpc {
             input: Some(writer),
             stdout,
@@ -262,6 +370,431 @@ fn has_settled(records: &[Value], aborted: bool) -> bool {
     records
         .iter()
         .any(|r| r["type"] == "agent_settled" && r["aborted"] == aborted)
+}
+
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+mod live_steering {
+    use super::*;
+    use oxa_core::goal::SteeringLease;
+    use oxa_proto::{Entry, EntryBody, HeadlessUi, NullSink, Role};
+    use oxa_session::{send_inbox_control, Goal, GoalBudget, GoalStatus, SessionRef};
+
+    const TEXT: &str = "Synthetic private steering text";
+
+    #[derive(Default)]
+    struct HeldRun {
+        open: Arc<AtomicBool>,
+        entered: Arc<AtomicBool>,
+    }
+
+    impl HeldRun {
+        fn engine(&self, turns: Vec<ScriptTurn>) -> Arc<dyn Engine> {
+            Arc::new(GatedEngine {
+                inner: Arc::new(ScriptedEngine::new(turns)),
+                open: self.open.clone(),
+                entered: Some(self.entered.clone()),
+                models: Vec::new(),
+            })
+        }
+
+        fn start(&self, rpc: &mut Rpc) {
+            let started = rpc.call("start", json!({"type":"prompt","message":"Start the goal"}));
+            assert_eq!(started["success"], true);
+            self.wait_until_entered();
+        }
+
+        fn wait_until_entered(&self) {
+            let wait = Instant::now();
+            while !self.entered.load(Ordering::SeqCst) {
+                assert!(
+                    wait.elapsed() < Duration::from_secs(20),
+                    "engine must reach the gate"
+                );
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+
+        fn release(&self) {
+            self.open.store(true, Ordering::SeqCst);
+        }
+    }
+
+    impl Drop for HeldRun {
+        fn drop(&mut self) {
+            self.release();
+        }
+    }
+
+    fn owner(env: &TestEnv, engine: Arc<dyn Engine>, root: &str) -> Session {
+        let mut deps = session_deps(env, engine);
+        deps.store = Arc::new(FsStore::new(env.root().join(root)));
+        deps.session_id = Some("fixture-steer".into());
+        let mut session = Session::open(deps, Open::New).unwrap();
+        let goal = Goal::new("Finish the synthetic task".into(), GoalBudget::default(), 10).unwrap();
+        session.set_goal(Some(goal), &mut NullSink).unwrap();
+        session
+    }
+
+    fn entries(env: &TestEnv, session: &SessionRef) -> Vec<Entry> {
+        FsStore::new(env.root().join("first")).load(session).unwrap()
+    }
+
+    fn appended(entries: &[Entry]) -> Option<usize> {
+        entries.iter().position(|entry| {
+            matches!(&entry.body, EntryBody::Msg { wire, .. }
+                if wire.role == Role::User && wire.content.as_deref() == Some(TEXT))
+        })
+    }
+
+    fn send(env: &TestEnv, session: &SessionRef, packet: Value) {
+        send_inbox_control(&Dirs::under(env.root()).agent_dir, session, &packet.to_string()).unwrap();
+    }
+
+    fn receipt(rpc: &Rpc, id: &str, field: &str) -> Value {
+        rpc.wait_for(field, |record| {
+            record["type"] == "goal_control_receipt"
+                && record["data"]["id"] == id
+                && (record["data"].get(field).is_some() || record["data"].get("error").is_some())
+        })["data"]
+            .clone()
+    }
+
+    fn submit(env: &TestEnv, rpc: &Rpc, session: &SessionRef, lease: Value) -> u64 {
+        let revision = Goal::revision(&entries(env, session));
+        send(
+            env,
+            session,
+            json!({
+                "method":"steer","id":"steer","revision":revision,"text":TEXT,"lease":lease
+            }),
+        );
+        assert_eq!(
+            receipt(rpc, "steer", "queued"),
+            json!({"id":"steer","queued":true})
+        );
+        assert!(appended(&entries(env, session)).is_none());
+        revision
+    }
+
+    #[test]
+    fn managed_json_preserves_the_worker_header_and_delivers_only_lease_bound_input() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let session = owner(
+            &env,
+            held.engine(vec![ScriptTurn::text("first"), ScriptTurn::text("second")]),
+            "first",
+        );
+        let binding = session.inner().sref.clone();
+        let expected = binding.clone();
+        let lease = SteeringLease {
+            holder: "fixture/native".into(),
+            generation: (3, 2),
+        };
+        let current = lease.clone();
+        let rpc = Rpc::start_with(session, &env, move |mut session, dirs, _input, out| {
+            oxa_rpc::run_json_outcome_with_steering_authority(
+                &mut session,
+                vec![("Start the goal".into(), vec![])],
+                out,
+                &mut Vec::new(),
+                &dirs.agent_dir,
+                Arc::new(move |requested, operation| {
+                    if requested == &expected {
+                        operation(Some(&current));
+                    }
+                }),
+            )
+        });
+        held.wait_until_entered();
+        assert_eq!(rpc.records()[0]["type"], "session");
+        send(
+            &env,
+            &binding,
+            json!({
+                "method":"steer","id":"unleased","revision":Goal::revision(&entries(&env, &binding)),
+                "text":"Synthetic unleased input"
+            }),
+        );
+        assert_eq!(receipt(&rpc, "unleased", "queued")["error"], "goal_steer_stale");
+        submit(
+            &env,
+            &rpc,
+            &binding,
+            json!({"holder":lease.holder,"generation":lease.generation}),
+        );
+        held.release();
+        assert_eq!(receipt(&rpc, "steer", "appended")["appended"], true);
+        rpc.finish();
+        assert!(appended(&entries(&env, &binding)).is_some());
+    }
+
+    #[test]
+    fn held_steer_appends_after_an_accounting_checkpoint() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let engine = held.engine(vec![
+            ScriptTurn::tool("fixture-tool", "unavailable_tool", "{}"),
+            ScriptTurn::text("first reply"),
+            ScriptTurn::text("second reply"),
+        ]);
+        let session = owner(&env, engine, "first");
+        let binding = session.inner().sref.clone();
+        let mut rpc = Rpc::start(session, &env);
+        held.start(&mut rpc);
+        let submitted = submit(&env, &rpc, &binding, Value::Null);
+        held.release();
+        assert_eq!(
+            receipt(&rpc, "steer", "appended"),
+            json!({"id":"steer","appended":true})
+        );
+        rpc.agent_settled();
+        let stored = entries(&env, &binding);
+        let index = appended(&stored).expect("steer is stored as user input");
+        assert!(
+            Goal::revision(&stored[..index]) > submitted,
+            "the budget checkpoint came first"
+        );
+        assert!(appended(&stored[index + 1..]).is_none());
+        rpc.finish();
+    }
+
+    #[test]
+    fn held_steer_returns_explicit_stale_for_a_replaced_objective() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let engine = held.engine(vec![ScriptTurn::text("first"), ScriptTurn::text("second")]);
+        let mut session = owner(&env, engine, "first");
+        let binding = session.inner().sref.clone();
+        let replaced = session.goal_revision();
+        let goal = Goal::new(
+            "Review the replacement objective".into(),
+            GoalBudget::default(),
+            11,
+        )
+        .unwrap();
+        session.set_goal(Some(goal), &mut NullSink).unwrap();
+        assert!(session.goal_revision() > replaced);
+        let mut rpc = Rpc::start(session, &env);
+        held.start(&mut rpc);
+        send(
+            &env,
+            &binding,
+            json!({
+                "method":"steer","id":"old-goal","revision":replaced,"text":TEXT
+            }),
+        );
+        assert_eq!(
+            receipt(&rpc, "old-goal", "queued"),
+            json!({"id":"old-goal","queued":true})
+        );
+        held.release();
+        assert_eq!(
+            receipt(&rpc, "old-goal", "appended"),
+            json!({"id":"old-goal","error":"goal_steer_stale"}),
+        );
+        rpc.agent_settled();
+        assert!(appended(&entries(&env, &binding)).is_none());
+        rpc.finish();
+    }
+
+    #[test]
+    fn managed_rpc_recovers_a_saved_steer_with_its_live_lease() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let engine = held.engine(vec![ScriptTurn::text("first"), ScriptTurn::text("second")]);
+        let mut session = owner(&env, engine, "first");
+        let binding = session.inner().sref.clone();
+        let lease = SteeringLease {
+            holder: "fixture/first".into(),
+            generation: (1, 1),
+        };
+        session
+            .stage_lead_steer(
+                &binding,
+                session.goal_revision(),
+                TEXT.into(),
+                Some(lease.clone()),
+                &mut NullSink,
+            )
+            .unwrap();
+        let mut rpc = Rpc::start_with(session, &env, move |session, dirs, input, out| {
+            oxa_rpc::serve_outcome_with_steering_authority(
+                session,
+                dirs,
+                input,
+                out,
+                Arc::new(move |_, operation| operation(Some(&lease))),
+            )
+        });
+        held.release();
+        rpc.send(json!({"type":"prompt","id":"resume","message":"Continue."}));
+        rpc.agent_settled();
+        assert!(appended(&entries(&env, &binding)).is_some());
+        rpc.finish();
+    }
+
+    #[test]
+    fn held_steer_rejects_a_changed_assignment() {
+        for change_holder in [false, true] {
+            let env = TestEnv::new();
+            let held = HeldRun::default();
+            let engine = held.engine(vec![ScriptTurn::text("first"), ScriptTurn::text("second")]);
+            let session = owner(&env, engine, "first");
+            let binding = session.inner().sref.clone();
+            let lease = SteeringLease {
+                holder: "fixture/first".into(),
+                generation: (1, 1),
+            };
+            let current = Arc::new(Mutex::new(lease.clone()));
+            let source = current.clone();
+            let mut rpc = Rpc::start_with(session, &env, move |session, dirs, input, out| {
+                oxa_rpc::serve_outcome_with_steering_authority(
+                    session,
+                    dirs,
+                    input,
+                    out,
+                    Arc::new(move |_, operation| operation(Some(&source.lock().unwrap()))),
+                )
+            });
+            held.start(&mut rpc);
+            submit(
+                &env,
+                &rpc,
+                &binding,
+                json!({"holder":lease.holder,"generation":lease.generation}),
+            );
+            if change_holder {
+                current.lock().unwrap().holder = "fixture/next".into();
+            } else {
+                current.lock().unwrap().generation.1 += 1;
+            }
+            held.release();
+            assert_eq!(
+                receipt(&rpc, "steer", "appended"),
+                json!({"id":"steer","error":"goal_steer_stale"})
+            );
+            rpc.agent_settled();
+            assert!(appended(&entries(&env, &binding)).is_none());
+            rpc.finish();
+        }
+    }
+
+    #[test]
+    fn held_steer_stays_with_its_exact_session_file() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let engine = held.engine(vec![
+            ScriptTurn::text("first"),
+            ScriptTurn::text("second"),
+            ScriptTurn::text("third"),
+        ]);
+        let session = owner(&env, engine.clone(), "first");
+        let original = session.inner().sref.clone();
+        let mut other = owner(&env, engine, "second");
+        let replacement = other.inner().sref.clone();
+        assert_eq!(original.id, replacement.id);
+        assert_ne!(original.path, replacement.path);
+        assert_eq!(session.goal_revision(), other.goal_revision());
+        other.shutdown(&mut HeadlessUi::default());
+        drop(other);
+        let mut rpc = Rpc::start(session, &env);
+        let switched = rpc.call(
+            "switch",
+            json!({"type":"switch_session","sessionPath":replacement.path}),
+        );
+        assert_eq!(switched["success"], true, "{switched}");
+        held.start(&mut rpc);
+        send(
+            &env,
+            &original,
+            json!({
+                "method":"steer","id":"old","revision":Goal::revision(&entries(&env, &original)),
+                "text":"Synthetic old session input"
+            }),
+        );
+        submit(&env, &rpc, &replacement, Value::Null);
+        held.release();
+        assert_eq!(
+            receipt(&rpc, "steer", "appended"),
+            json!({"id":"steer","appended":true})
+        );
+        rpc.agent_settled();
+        let (_, records) = rpc.finish();
+        assert!(!records.iter().any(|record| record["data"]["id"] == "old"));
+        assert!(appended(&entries(&env, &replacement)).is_some());
+        assert_eq!(
+            std::fs::read_dir(Dirs::under(env.root()).agent_dir.join("inbox").join(&original.id))
+                .unwrap()
+                .count(),
+            1,
+        );
+    }
+
+    #[test]
+    fn held_steer_gets_stale_when_the_goal_finishes_before_delivery() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let engine = held.engine(vec![ScriptTurn::tool(
+            "fixture-done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Verified fixture"}"#,
+        )]);
+        let session = owner(&env, engine, "first");
+        let binding = session.inner().sref.clone();
+        let mut rpc = Rpc::start(session, &env);
+        held.start(&mut rpc);
+        submit(&env, &rpc, &binding, Value::Null);
+        held.release();
+        assert_eq!(
+            receipt(&rpc, "steer", "appended"),
+            json!({"id":"steer","error":"goal_steer_stale"})
+        );
+        rpc.agent_settled();
+        let stored = entries(&env, &binding);
+        assert_eq!(Goal::latest(&stored).unwrap().unwrap().status, GoalStatus::Done);
+        assert!(appended(&stored).is_none());
+        rpc.finish();
+    }
+
+    #[test]
+    fn aborted_run_cannot_replay_an_admitted_steer_after_terminal_cancel() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let engine = held.engine(vec![ScriptTurn::text("Independent reply")]);
+        let session = owner(&env, engine, "first");
+        let binding = session.inner().sref.clone();
+        let mut rpc = Rpc::start(session, &env);
+        held.start(&mut rpc);
+        submit(&env, &rpc, &binding, Value::Null);
+        let abort = rpc.call("abort", json!({"type":"abort"}));
+        assert_eq!(abort["success"], true);
+        assert_eq!(
+            receipt(&rpc, "steer", "appended"),
+            json!({"id":"steer","error":"goal_steer_stale"})
+        );
+        rpc.agent_settled();
+
+        // Aborting the run only interrupts execution. Persist the distinct native goal cancel.
+        let revision = Goal::revision(&entries(&env, &binding));
+        send(
+            &env,
+            &binding,
+            json!({"method":"cancel","id":"cancel","revision":revision}),
+        );
+        assert_eq!(receipt(&rpc, "cancel", "applied")["applied"], true);
+        held.release();
+        let fresh = rpc.call("fresh", json!({"type":"prompt","message":"Independent prompt"}));
+        assert_eq!(fresh["success"], true);
+        rpc.agent_settled();
+        let stored = entries(&env, &binding);
+        assert_eq!(
+            Goal::latest(&stored).unwrap().unwrap().status,
+            GoalStatus::Canceled
+        );
+        assert!(appended(&stored).is_none());
+        rpc.finish();
+    }
 }
 
 /// docs example request/response/events

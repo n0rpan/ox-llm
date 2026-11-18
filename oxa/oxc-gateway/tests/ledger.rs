@@ -1,7 +1,7 @@
 #![cfg(feature = "ledger")]
 use oxc_gateway::{
     accounting::{Model, Outcome, Usage},
-    ledger::{Context, Ledger, Origin},
+    ledger::{Context, Ledger, LocalGuestOutcome, Origin},
     pricing::Price,
     secrets,
 };
@@ -53,6 +53,45 @@ fn fields() -> Value {
         "cost_usd":0.001,"settled":"usage","prompt_tokens":100,"completion_tokens":10,
         "cached_tokens":80,"cache_write_tokens":10,"finish_reason":"stop"})
 }
+#[test]
+fn chat_completions_records_actual_and_estimated_debits() {
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let daily = ledger.day("20260102").unwrap();
+    let entry = || daily.entry("synthetic-alias", Context::default()).unwrap();
+    let mut fields = json!({"remote":true,"remote_provider":"openai-chat",
+        "remote_model":"synthetic-model","billing":"metered","settled":"usage","cost_usd":0.125});
+
+    let actual = entry().append(&fields, 200, None, None).unwrap();
+    assert_eq!(actual["remote_provider"], "openai-chat");
+    assert_eq!(actual["cost_usd"], 0.125);
+    assert!(actual.get("estimated_cost_usd").is_none());
+
+    fields.as_object_mut().unwrap().remove("cost_usd");
+    fields["settled"] = json!("estimated");
+    fields["estimated_cost_usd"] = json!(0.25);
+    let estimated = entry().append(&fields, 200, None, None).unwrap();
+    assert_eq!(estimated["estimated_cost_usd"], 0.25);
+    assert!(estimated.get("cost_usd").is_none());
+
+    fields["settled"] = json!("reserved");
+    fields["estimated_cost_usd"] = json!(0.5);
+    assert_eq!(
+        entry().append(&fields, 200, None, None).unwrap()["settled"],
+        "reserved"
+    );
+
+    fields["cost_usd"] = json!(0.125);
+    assert!(entry().append(&fields, 200, None, None).is_err());
+    fields.as_object_mut().unwrap().remove("cost_usd");
+    fields["remote_provider"] = json!("synthetic-configured-provider");
+    assert!(entry().append(&fields, 200, None, None).is_err());
+
+    let reopened = Ledger::open(&home.0).unwrap().day("20260102").unwrap();
+    assert_eq!(reopened.budget().spend().unwrap(), 0.875);
+    assert_eq!(home.rows("20260102").len(), 3);
+}
+
 #[test]
 #[cfg(feature = "anthropic-client")]
 fn go_allowance_receipts_accept_only_checked_numeric_fields() {
@@ -431,7 +470,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         ..Context::default()
     };
     let entry = first.entry("synthetic-alias", context()).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
     })
@@ -442,7 +481,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         .reserve(&json!(0.005), true, &model(), 1000)
         .unwrap();
     let entry = second.entry("synthetic-alias", context()).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
     })
@@ -461,7 +500,7 @@ fn append_failure_stops_all_handles_and_is_not_retried() {
     let daily = ledger.day("20260102").unwrap();
     let mut hold = daily.budget().reserve(&json!(1), true, &model(), 1000).unwrap();
     let entry = daily.entry("synthetic-alias", Context::default()).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let path = home.0.join("requests-20260102.jsonl");
     fs::create_dir(&path).unwrap();
     assert!(hold
@@ -501,7 +540,7 @@ fn midnight_does_not_move_an_admitted_charge_or_discard_an_outstanding_hold() {
         .reserve(&json!(0.005), true, &model(), 1000)
         .is_err());
     let entry = before.entry("synthetic-alias", Context::default()).unwrap();
-    held.mark_forwarded();
+    held.mark_forwarded().unwrap();
     held.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
     })
@@ -797,4 +836,52 @@ fn guest_context_refuses_non_api_origin_empty_or_unbounded_names_before_persiste
         assert!(!error.to_string().contains("synthetic-guest"));
     }
     assert!(!home.0.join("requests-20260102.jsonl").exists());
+}
+
+#[test]
+fn local_guest_records_usage_or_reservation_without_cloud_spend() {
+    let home = Home::new();
+    let daily = Ledger::open(&home.0).unwrap().day("20260102").unwrap();
+    let guest = "synthetic-private-device";
+    let entry = || {
+        daily
+            .entry(
+                "synthetic-local",
+                Context {
+                    origin: Origin::Api,
+                    guest_key_name: Some(guest),
+                    ..Context::default()
+                },
+            )
+            .unwrap()
+    };
+    entry()
+        .append_local_guest(LocalGuestOutcome::Completed { tokens: Some((3, 2)) })
+        .unwrap();
+    entry().append_local_guest(LocalGuestOutcome::Cancelled).unwrap();
+    assert!(daily
+        .entry("synthetic-local", Context::default())
+        .unwrap()
+        .append_local_guest(LocalGuestOutcome::Failed)
+        .is_err());
+
+    let rows = home.rows("20260102");
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        assert_eq!(row["origin"], "api");
+        assert_eq!(row["remote"], false);
+        assert_eq!(row["cost_usd"], 0);
+        assert_eq!(row["guest_key"].as_str().unwrap().len(), 32);
+        assert!(!row.to_string().contains(guest));
+    }
+    assert_eq!(rows[0]["guest_key"], rows[1]["guest_key"]);
+    assert_eq!(rows[0]["status"], 200);
+    assert_eq!(rows[0]["settled"], "usage");
+    assert_eq!(rows[0]["prompt_tokens"], 3);
+    assert_eq!(rows[0]["completion_tokens"], 2);
+    assert_eq!(rows[1]["status"], 499);
+    assert_eq!(rows[1]["settled"], "reserved");
+    assert_eq!(rows[1]["usage_missing"], true);
+    assert!(rows[1].get("prompt_tokens").is_none());
+    assert_eq!(daily.budget().spend().unwrap(), 0.0);
 }

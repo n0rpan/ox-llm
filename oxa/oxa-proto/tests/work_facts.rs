@@ -20,6 +20,7 @@ fn running() -> Running {
         branch: "agent/17-work".into(),
         worktree: "~/project/task-17".into(),
         session_id: Some("session-17".into()),
+        step: TaskStep::Worker,
     }
 }
 fn ask() -> Ask {
@@ -354,4 +355,64 @@ fn outcomes_and_evidence_are_explicit_and_head_bound() {
     zero_seq.checkpoint.revision = 1;
     zero_seq.seq = 0;
     assert!(zero_seq.to_json().is_err());
+}
+
+#[test]
+fn every_durable_runner_step_has_its_own_observation_and_replay_identity() {
+    let steps = [
+        TaskStep::Preparing,
+        TaskStep::Worker,
+        TaskStep::Acceptance,
+        TaskStep::Repair,
+        TaskStep::Recheck,
+        TaskStep::Saving,
+        TaskStep::Finished,
+    ];
+    for (index, step) in steps.into_iter().enumerate() {
+        let observation = TaskTransition {
+            task: "task-17".into(),
+            step,
+            session_id: (index > 0).then(|| "session-17".into()),
+            reason: (step == TaskStep::Finished).then_some(StepReason::Saved),
+        };
+        let event = event(index as u64 + 1, Fact::TaskTransition(observation));
+        assert_eq!(event.fact.class(), EventClass::Routine);
+        assert_eq!(Event::from_json(&event.to_json().unwrap()).unwrap(), event);
+        assert_eq!(event.checkpoint.revision, index as u64 + 1);
+        assert!(!matches!(event.fact, Fact::PrMerged(_)));
+    }
+    let mut terminal = TaskTransition {
+        task: "task-17".into(),
+        step: TaskStep::Finished,
+        session_id: None,
+        reason: None,
+    };
+    assert!(event(1, Fact::TaskTransition(terminal.clone()))
+        .to_json()
+        .is_err());
+    for reason in [
+        StepReason::WorkerBlocked,
+        StepReason::WorkerFailed,
+        StepReason::ChecksFailed,
+        StepReason::RepairFailed,
+        StepReason::SaveFailed,
+        StepReason::Interrupted,
+        StepReason::Deadline,
+        StepReason::SessionUnavailable,
+        StepReason::SetupFailed,
+    ] {
+        terminal.reason = Some(reason);
+        let observation = event(1, Fact::TaskTransition(terminal.clone()));
+        assert_eq!(
+            Event::from_json(&observation.to_json().unwrap()).unwrap(),
+            observation
+        );
+    }
+    let mut bad_running = running();
+    bad_running.step = TaskStep::Finished;
+    assert!(event(1, Fact::TaskStarted(bad_running)).to_json().is_err());
+    let mut encoded: Value =
+        serde_json::from_slice(&event(1, Fact::TaskTransition(terminal)).to_json().unwrap()).unwrap();
+    encoded["data"]["fact"]["data"]["reason"] = json!("free-form failure prose");
+    assert!(Event::from_json(&serde_json::to_vec(&encoded).unwrap()).is_err());
 }

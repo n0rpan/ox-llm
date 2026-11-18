@@ -2,7 +2,7 @@
 // ported from pi packages/coding-agent/src/core/tools/bash.ts (execution replaced by the sandbox)
 use crate::descriptions::{self, errors};
 use crate::jobs::{JobRegistry, JobStatus};
-use oxa_proto::{Access, ExecSpec, Mode, Sandbox, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
+use oxa_proto::{sh_quote, Access, ExecSpec, Mode, Sandbox, Tool, ToolCtx, ToolOutput, ToolSpec, Value};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -98,8 +98,8 @@ impl ShellConfig {
                 }
                 Ok(format!(
                     "exec {} -c {}",
-                    single_quote(&shell.to_string_lossy()),
-                    single_quote(&resolved)
+                    sh_quote(&shell.to_string_lossy()),
+                    sh_quote(&resolved)
                 ))
             }
         }
@@ -113,11 +113,6 @@ pub(crate) fn looks_backgrounded(command: &str) -> bool {
         t.ends_with('&') && !t.ends_with("&&")
     });
     backgrounded_line || command.split_whitespace().any(|w| w == "nohup")
-}
-
-/// `s` as one POSIX shell word.
-fn single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 impl Default for BashTool {
@@ -374,6 +369,15 @@ pub(crate) fn gh_comments_note(command: &str, output: &str, exit: Option<i32>) -
     (exit == Some(0) && viewing && comments && !json && silent).then_some("gh prints only the comments when its output is captured, so an issue or pull request without comments gives no output; the issue text is not missing. Use `gh issue view N -R OWNER/REPO --json title,body,comments,state` (or `gh pr view`) to get the body and the comments")
 }
 
+/// #670: a detached tmux server cannot outlive the sandbox command that owns its PID namespace.
+/// Do not diagnose successful commands or quoted errors from unrelated tools.
+fn tmux_server_note(command: &str, output: &str, exit: Option<i32>) -> Option<&'static str> {
+    (exit.is_some_and(|code| code != 0)
+        && command.split_whitespace().any(|word| word == "tmux")
+        && output.lines().any(|line| line.starts_with("no server running")))
+    .then_some(descriptions::BASH_PROCESS_LIFETIME)
+}
+
 /// O-167(b): the network of a bash command. `sandbox_net` is the sandbox's answer
 /// (`oxa.sandbox.net`, default on, and never on while offline). Per mode: plan = never (a
 /// read-only mode does not gain the network silently); workspace = `sandbox_net`; ask =
@@ -542,11 +546,11 @@ impl BashTool {
         }
 
         let mut output = String::from_utf8_lossy(&res.output).into_owned();
-        // #525: only a failing command gets the notice (a success that merely mentions /tmp is noise).
-        let persistence_relevant = res.exit != Some(0)
-            && (raw_command.contains("/tmp")
-                || raw_command.contains("TMPDIR")
-                || [
+        // Successful reads/mentions stay quiet; scratch writes and relevant failures get a notice.
+        let persistence_relevant = scratch_write_likely(raw_command)
+            || (res.exit != Some(0) && (raw_command.contains("/tmp") || raw_command.contains("TMPDIR")))
+            || (res.exit != Some(0)
+                && [
                     "read-only file system",
                     "permission denied",
                     "operation not permitted",
@@ -585,6 +589,7 @@ impl BashTool {
         let note = note.or_else(|| git_config_note(&output, res.exit));
         let note = note.or_else(|| git_exclude_note(&output, res.exit));
         let note = note.or_else(|| gh_comments_note(raw_command, &output, res.exit).map(str::to_string));
+        let note = note.or_else(|| tmux_server_note(raw_command, &output, res.exit).map(str::to_string));
         let shown = if output.is_empty() {
             match note {
                 Some(n) if res.exit == Some(0) => format!("{}\n[{n}]", errors::BASH_NO_OUTPUT),
@@ -631,9 +636,111 @@ impl BashTool {
     }
 }
 
+/// Suppress the successful-command hint only for recognizable reads. Enumerating writers
+/// misses interpreters, build tools, attached output flags and custom scripts. This is a
+/// conservative hint heuristic, NOT a shell parser or a permission check; unknown syntax
+/// keeps the hint. Failed commands mentioning scratch always get it, regardless of syntax.
+fn scratch_write_likely(command: &str) -> bool {
+    if !(command.contains("/tmp") || command.contains("TMPDIR")) {
+        return false;
+    }
+    // Substitutions can write even inside a read's arguments.
+    if command.contains("$(") || command.contains('`') {
+        return true;
+    }
+    // Keep quoted/escaped shell words together so grep '->' is not a redirect and quoted
+    // separators do not invent commands. Recognize output redirects separately, including
+    // fd duplication (2>&1), which does not create a file.
+    static TOKENS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let tokens = TOKENS.get_or_init(|| {
+        regex::Regex::new(
+            r#"(?s)(?:[0-9]*>>?|&>>?)(?:&[0-9-]+)?|[;&|()<\n]|(?:[^\s'"\\;&|()<>]+|'[^']*'|"(?:\\.|[^"\\])*"|\\.)+"#,
+        )
+        .expect("shell hint tokens")
+    });
+    const READERS: &[&str] = &[
+        "echo", "printf", "ls", "cat", "grep", "head", "tail", "wc", "stat", "pwd", "test", "[", "true",
+        "false", "readlink", "basename", "dirname",
+    ];
+    let mut words = tokens.find_iter(command).map(|m| m.as_str());
+    let mut command_start = true;
+    while let Some(word) = words.next() {
+        if matches!(word, ";" | "&" | "|" | "\n") {
+            command_start = true;
+            continue;
+        }
+        let op = word.trim_start_matches(|c: char| c.is_ascii_digit());
+        if op.starts_with(">&") {
+            continue;
+        }
+        if op.starts_with('>') || op.starts_with("&>") {
+            if words.next().map(|w| w.trim_matches(['\'', '"'])) == Some("/dev/null") {
+                continue;
+            }
+            return true;
+        }
+        if matches!(word, "(" | ")" | "<") {
+            return true;
+        }
+        if command_start {
+            let name = word.trim_matches(['\'', '"']).rsplit('/').next().unwrap_or(word);
+            if !READERS.contains(&name) {
+                return true;
+            }
+            command_start = false;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #532: a successful read that merely mentions /tmp gets no persistence notice.
+    #[test]
+    fn scratch_notice_only_for_writes() {
+        for c in [
+            "grep -n '\"/tmp\"' src/lib.rs",
+            "ls /tmp 2>&1",
+            "cat /tmp/x >/dev/null",
+            "echo $TMPDIR",
+            "grep -o x /tmp/f",
+            "grep '->' /tmp/f",
+            "grep 'cp; ->' /tmp/f",
+            "echo 'tee' /tmp",
+            "ls /tmp >'/dev/null' 2>&1",
+            "printf '%s\\n' '->' /tmp/f",
+            "ls src",
+        ] {
+            assert!(!scratch_write_likely(c), "{c}");
+        }
+    }
+
+    #[test]
+    fn scratch_notice_covers_common_writes() {
+        for c in [
+            "echo x > /tmp/f",
+            "echo x >>/tmp/f",
+            "cmd &> /tmp/log",
+            "mktemp -p /tmp",
+            "cp a /tmp/a",
+            "ls | tee /tmp/l",
+            "touch $TMPDIR/x",
+            "cd /tmp && make",
+            "cd $TMPDIR && npm install",
+            "sed -i 's/x/y/' /tmp/f",
+            "python -c \"open('/tmp/x','w').write('x')\"",
+            "gcc -o/tmp/a input.c",
+            "sort -o/tmp/x input.txt",
+            "custom-script /tmp/output",
+            "echo $(touch /tmp/f)",
+            "echo `touch /tmp/f`",
+            "cat /tmp/f\ntouch /tmp/g",
+        ] {
+            assert!(scratch_write_likely(c), "{c}");
+        }
+    }
 
     /// H (SET-055, SET-056): pi's `${prefix}\n${command}`, the custom shell through `exec`, and
     /// pi's error for a missing shell.
@@ -732,6 +839,41 @@ echo '\''a'\'''"#
         let mut streamed = String::new();
         let out = BashTool::new().run(&args, &cx, &mut |t| streamed.push_str(t));
         (out, streamed)
+    }
+
+    /// #670: explain a vanished detached server without relaxing process isolation.
+    #[test]
+    fn tmux_missing_server_explains_sandbox_lifetime() {
+        let sb = Fake::ok(b"no server running on /tmp/live.sock\n", Some(1));
+        let (out, _) = run_with(
+            &sb,
+            json!({"command": "tmux -S /tmp/live.sock capture-pane -p -t live"}),
+            Mode::Workspace,
+            &CancelToken::new(),
+        );
+        assert!(out.is_error);
+        assert!(out.text.contains("no server running on /tmp/live.sock"));
+        assert!(out.text.contains("PID namespace"), "{}", out.text);
+        assert!(out.text.contains("background: true"), "{}", out.text);
+        assert!(out.text.contains("keep the command alive"), "{}", out.text);
+    }
+
+    #[test]
+    fn tmux_lifetime_guidance_is_available_before_starting_a_server() {
+        let guidance = descriptions::BASH.guidelines.join("\n");
+        assert!(guidance.contains("tmux"));
+        assert!(guidance.contains("PID namespace"));
+        assert!(guidance.contains("keep the command alive"));
+    }
+
+    #[test]
+    fn tmux_server_note_does_not_diagnose_unrelated_failures() {
+        let missing = "no server running on /tmp/live.sock\n";
+        assert!(tmux_server_note("tmux capture-pane", missing, Some(0)).is_none());
+        assert!(tmux_server_note("tmux capture-pane", missing, None).is_none());
+        assert!(tmux_server_note("cat log.txt", missing, Some(1)).is_none());
+        assert!(tmux_server_note("tmux bad-command", "unknown command: bad-command", Some(1)).is_none());
+        assert!(tmux_server_note("tmux capture-pane", "old error: no server running", Some(1)).is_none());
     }
 
     /// #526: the note uses the sandbox's home, never the process `$HOME`.

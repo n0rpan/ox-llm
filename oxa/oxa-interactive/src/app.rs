@@ -48,7 +48,8 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
             .file
             .as_deref()
             .is_some_and(|f| has_conversation(opts.store.as_ref(), f, &info.id));
-        if talked {
+        // A vanished terminal cannot receive the resume hint; println! would panic on EIO.
+        if talked && code != 129 {
             for line in exit_lines(info.file.as_deref(), &info.id) {
                 println!("{line}");
             }
@@ -482,6 +483,7 @@ pub fn worker_loop_with(
     let mut ui_proxy = UiProxy::new(ui.clone());
     let mut last = StatusModel::default();
     stop.enter(session.handle());
+    let mut memory_status = session.inner().engine.local_memory_status(&session.state().model);
     let _ = out.send(WorkerMsg::Session(session_info(&session)));
     let mut session = Some(session);
     // Commands are taken through a backlog so a `Shutdown` anywhere behind queued work is
@@ -492,6 +494,13 @@ pub fn worker_loop_with(
         // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
         // before the next command (the commands queued behind it run in the new session).
         if let Some(s) = session.as_mut() {
+            // A prompt/preload may load the child; idle unload may remove it without
+            // a session swap. Publish only changed in-process observations (no I/O).
+            let observed = s.inner().engine.local_memory_status(&s.state().model);
+            if observed != memory_status {
+                memory_status = observed;
+                let _ = out.send(WorkerMsg::Session(session_info(s)));
+            }
             s.enable_swap();
             let asked = match s.take_swap_request() {
                 None => None,
@@ -781,6 +790,11 @@ fn session_info(s: &Session) -> SessionInfo {
         id: state.session_id,
         commands: s.commands(),
         engine_url: info.base_url.clone(),
+        memory_policy: s
+            .inner()
+            .engine
+            .local_memory_status(&state.model)
+            .map(|(_, policy, _)| policy),
         models,
         queue: info.queue,
         shortcuts: s
@@ -1537,6 +1551,14 @@ fn execute(
             };
             (result, false)
         }
+        SessionCmd::RecoveryPrompt { handle, text, parts } => {
+            if handle.same_instance(&s.handle()) {
+                (run_prompt(s, text, parts, sink, ui), false)
+            } else {
+                let _ = out.send(WorkerMsg::UnsentPrompt { text, parts });
+                (Ok(()), false)
+            }
+        }
         SessionCmd::Prompt { text, parts } => (run_prompt(s, text, parts, sink, ui), false),
         SessionCmd::Compact { instructions } => {
             let mut watch = StartWatch {
@@ -1863,7 +1885,7 @@ pub(crate) fn resolve_ui_theme(
     if skin_of(opts).is_oxa() && crate::skin::env_no_color(&opts.env) {
         return Ok(Theme::plain());
     }
-    let dirs = vec![opts.dirs.agent_dir.join("themes")];
+    let dirs = &opts.theme_paths;
     match name.trim() {
         "oxa" => Ok(oxa_theme(&oxa_builtin_palette(), "oxa", caps.color)),
         "oxa-omarchy" => match load_omarchy_palette(&omarchy_candidates(opts)) {
@@ -1873,9 +1895,9 @@ pub(crate) fn resolve_ui_theme(
                 theme.source = Some(path);
                 Ok(theme)
             }
-            None => resolve_theme("system", &dirs, caps.color, colors),
+            None => resolve_theme("system", dirs, caps.color, colors),
         },
-        other => resolve_theme(other, &dirs, caps.color, colors),
+        other => resolve_theme(other, dirs, caps.color, colors),
     }
 }
 
@@ -1924,11 +1946,12 @@ pub(crate) fn terminal_colors_from(
     (colors != TerminalColors::default()).then_some(colors)
 }
 
-pub(crate) fn load_theme(opts: &InteractiveOpts, caps: TermCaps, colors: Option<&TerminalColors>) -> Theme {
-    let name = theme_name(opts);
-    resolve_ui_theme(opts, &name, caps, colors)
-        .or_else(|_| resolve_ui_theme(opts, "dark", caps, colors))
-        .unwrap_or_else(|_| Theme::plain())
+pub(crate) fn load_theme(
+    opts: &InteractiveOpts,
+    caps: TermCaps,
+    colors: Option<&TerminalColors>,
+) -> Result<Theme, OxaError> {
+    resolve_ui_theme(opts, &theme_name(opts), caps, colors)
 }
 
 pub(crate) fn push_notice(vm: &mut ViewModel, level: Level, text: String) {

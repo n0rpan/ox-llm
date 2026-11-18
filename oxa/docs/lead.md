@@ -4,9 +4,37 @@ The lead is an ordinary oxa session with an embedded, lead-only `lead` skill.
 Its instructions are exported as `oxa_resources::LEAD_SKILL` for the preset;
 ordinary sessions neither discover nor install this skill. It does not enable
 runner access by itself.
-`oxa lead`, its restricted session preset, the `work` tool and the commands below
-are pending integration with the runner. Do not use this document as a list of
-commands supported by the current binary.
+Shadow is disabled by default. Enable `"oxa.lead.shadow": true` in the user's
+`settings.json`; project settings cannot enable it. Then `oxa lead --shadow`
+opens an ordinary TUI or print session restricted to
+`read`, `grep`, `find` and `ls`. It embeds the lead instructions in every prefix
+epoch and enforces the proposal schema. For example:
+
+```console
+$ oxa lead --shadow -p "Read the bounded exports in ./state and propose the next action."
+```
+
+It emits proposals only. `oxa lead <message>` is the one-shot owner conversation: it
+drives the exact same bounded, session-bound path as `oxa lead chat <message>` (the
+dedicated Lead Session of `oxa.lead.sessionId`, proposal confirmation, and the same
+reply contract), and the bare `oxa lead` still opens the command menu. The user-only
+`oxa.lead.model` setting selects the conversation's route through the normal exact
+model selector and gateway; a metered model still needs its daily USD cap, so choose
+a subscription route while the cap is absent. A route that does not resolve is
+reported, never silently replaced. The `work` tool, live `/status`, `/asks`,
+`/hold`, `/decide` and event wake-up remain pending. Shadow mode neither executes
+proposals nor establishes that a supplied export is current.
+
+The preset removes mutating tools from the registry, bypasses external hook,
+extension, MCP, subagent and codemode construction, and refuses typed shell
+escapes. It accepts model/session/TUI flags, but owns its schema and resource
+selection; explicit extension/skill/template/schema overrides and mutating tool
+requests are rejected. The same restrictions apply on continuation and reopen.
+Reload retains the preset's resources, and resuming an ordinary session rebuilds
+its prefix with the lead instructions and restricted declarations. Goal mode is
+not supported: `--goal` and saved sessions containing a goal refuse explicitly.
+Project executable resources are not trusted by this preset. Read tools still
+use ordinary path permissions; no sandbox or secret policy is relaxed.
 
 The preset must work with both the TUI and print driver, using the same session
 store, engine selection, turn loop and result contract as ordinary oxa. It adds
@@ -106,6 +134,14 @@ share this renderer; helpers should not add a second card module. On current
 types an ask has only ID, subject and question. Its options, recommendation,
 meanwhile and ask revision are unavailable until the standing API supplies them;
 the card must say so, rather than manufacture runner facts.
+
+## Protected Board observation
+
+`oxa lead run` reads the protected Board observation named by
+`OXA_LEAD_BOARD_LOG`. A missing, unreadable, malformed, oversized or
+unsupported observation keeps the saved asks, falls back to an empty board and
+reports a fixed `cause` with a recovery `hint`; raw paths and file contents
+never appear in output.
 
 ## Event integration after L1
 

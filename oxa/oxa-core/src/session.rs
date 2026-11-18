@@ -90,6 +90,10 @@ pub struct Stats {
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub cached_tokens: u64,
+    /// A remote request was attempted in this session. The engine chat contract does not
+    /// expose authoritative settled costs, so front ends must report cost as unavailable.
+    /// Sticky across model switches, including a switch back to a local model.
+    pub cost_unknown: bool,
     /// Current context size (`Transcript::context`).
     pub context_tokens: u32,
     pub requests: u32,
@@ -118,7 +122,7 @@ pub struct Stats {
 
 /// A running session.
 pub struct Session {
-    st: SessionState,
+    pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
 }
@@ -221,6 +225,12 @@ impl Session {
         // X3: the limits of the model this session will use (the `--model` target when given,
         // loaded or not), so the first request already fits it.
         let info = engine.info(model.as_deref())?;
+        if info.caps.remote && oxa_proto::offline() {
+            return Err(oxa_proto::offline_error(&format!(
+                "the cloud model {}",
+                info.limits_for
+            )));
+        }
         // H: the startup thinking level (pi sdk.ts): the CLI choice, else the setting for this
         // model (`modelThinkingLevels`), else `defaultThinkingLevel` (default `medium`). A
         // resumed session restores its own recorded level (`restore_settings`).
@@ -357,10 +367,53 @@ impl Session {
         result.and(triggered).and(boundary).map(|_| ())
     }
 
+    /// Run one literal user message without expanding application commands or templates.
+    /// Build the prefix from this Session's tool selection before using its normal input queue.
+    pub fn prompt_literal(
+        &mut self,
+        text: String,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<Option<RunEnd>, OxaError> {
+        crate::open_epoch(&mut self.st, "literal_prompt", false, sink)?;
+        self.handle().follow_up(text);
+        self.run_queued(sink, ui)
+    }
+
+    /// Run one literal prompt with request-only evidence and a shared output limit.
+    /// Evidence goes to chat requests for this turn and is never appended to the wire.
+    /// The limit covers generation across the turn, including follow-up provider requests.
+    pub fn prompt_literal_bounded(
+        &mut self,
+        text: String,
+        evidence_context: String,
+        max_output_tokens: std::num::NonZeroU32,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<Option<RunEnd>, OxaError> {
+        let context = (!evidence_context.is_empty()).then(|| WireMsg::user(evidence_context));
+        let _turn = self.st.shared.begin_literal_turn(context, max_output_tokens)?;
+        self.prompt_literal(text, sink, ui)
+    }
+
     pub fn handle(&self) -> Handle {
         Handle {
             shared: self.st.shared.clone(),
         }
+    }
+
+    /// Install the existing assignment guard for recovery of this exact mounted session.
+    pub fn bind_lead_steering_authority(&mut self, authority: Arc<crate::goal::SteeringAuthority>) {
+        *self
+            .st
+            .shared
+            .gate
+            .lead_steering_authority
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(crate::goal::BoundLeadAuthority {
+            session: self.st.sref.clone(),
+            authority,
+        });
     }
 
     /// Install a progress observer for this session and subsequent in-process switches.
@@ -743,11 +796,21 @@ impl Session {
     /// Replace the session goal while idle, persisting before exposing controls.
     pub fn set_goal(
         &mut self,
-        goal: Option<oxa_session::Goal>,
+        mut goal: Option<oxa_session::Goal>,
         sink: &mut dyn EventSink,
     ) -> Result<(), OxaError> {
         if self.st.shared.busy.load(Ordering::SeqCst) {
             return Err(OxaError::new(codes::BUSY, "Cannot change a goal during a run."));
+        }
+        if goal.is_some() && self.st.hooks.iter().any(|hook| !hook.allows_goals()) {
+            return Err(OxaError::new(
+                codes::USAGE,
+                "The active session preset does not support goal mode",
+            ));
+        }
+        if let Some(goal) = &mut goal {
+            goal.validate()?;
+            crate::goal::reanchor_resumed(&self.st, goal);
         }
         let body = goal
             .as_ref()
@@ -1293,7 +1356,12 @@ fn queued_run(
 ) -> Result<Option<RunEnd>, OxaError> {
     let mut taken = st.shared.take_steering();
     taken.extend(st.shared.take_follow_up());
-    if taken.is_empty() {
+    if taken.is_empty()
+        && !st
+            .goal
+            .as_ref()
+            .is_some_and(|goal| goal.pursuing() && goal.has_pending_steer())
+    {
         return Ok(None);
     }
     let can_run = !turn_start || compact_before_run(st, sink, ui)?;
@@ -1439,6 +1507,12 @@ fn restore_locked(
     }
     let tree = Tree::new(st.store.load(&sref)?);
     let goal = oxa_session::Goal::latest(tree.entries())?.map(|g| Arc::new(crate::goal::GoalRuntime::new(g)));
+    if goal.is_some() && st.hooks.iter().any(|hook| !hook.allows_goals()) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "The active session preset does not support goal mode",
+        ));
+    }
     let branch: Vec<Entry> = tree.branch(tree.leaf()).into_iter().cloned().collect();
     let replayed = {
         let refs: Vec<&Entry> = branch.iter().collect();
@@ -1490,6 +1564,9 @@ fn restore_locked(
     crate::resume::close_interrupted(st, sink)?; // R1
                                                  // pi fires `session_start` (and `resources_discover`) for a resumed session too.
     crate::fire::session_start(st, start, sink, ui);
+    if st.hooks.iter().any(|hook| hook.owns_resources()) {
+        crate::open_epoch(st, "preset_resume", false, sink)?;
+    }
     Ok(())
 }
 

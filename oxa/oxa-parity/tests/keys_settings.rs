@@ -445,24 +445,38 @@ mod tui {
         }
     }
 
-    /// The first row whose text (without the fullscreen scrollbar column) is exactly `needle`.
-    /// The numbered reply is completely drawn at the bottom and the turn is over: the closing
-    /// code fence row sits right after the `last` line and the "Working..." loader (blank line
-    /// plus spinner above the editor) is gone. Both arrive/leave after the last line while the
-    /// turn ends, and each shifts every transcript row above by one or two.
+    /// The text of a transcript row: without the fullscreen scrollbar column and, for a closed
+    /// code frame line, without its side borders and padding (`│  R10      │` -> `R10`).
+    pub fn row_text(r: &str) -> &str {
+        let end = r.trim_end();
+        let closed = end.ends_with('│') || end.ends_with('█');
+        let t = end.trim_end_matches(['│', '█']).trim();
+        if closed {
+            t.strip_prefix('│').map_or(t, |inner| inner.trim())
+        } else {
+            t
+        }
+    }
+
+    /// The first row whose text (without the fullscreen scrollbar column and a code frame's
+    /// side border) is exactly `needle`.
+    ///
+    /// The numbered reply is completely drawn at the bottom and the turn is over: the code
+    /// frame's bottom border sits right after the `last` line and the "Working..." loader
+    /// (blank line plus spinner above the editor) is gone. Both arrive/leave after the last
+    /// line while the turn ends, and each shifts every transcript row above by one or two.
     pub fn reply_closed(s: &Screen, last: &str) -> bool {
         !s.contains("Working")
             && row_index(s, last).is_some_and(|r| {
-                s.rows()
-                    .get(r + 1)
-                    .is_some_and(|f| f.trim_end().trim_end_matches(['│', '█']).trim() == "```")
+                s.rows().get(r + 1).is_some_and(|f| {
+                    let t = f.trim_end().trim_end_matches(['│', '█']).trim();
+                    t.starts_with('└') && t.ends_with('┘') && t.chars().all(|c| matches!(c, '└' | '┘' | '─'))
+                })
             })
     }
 
     pub fn row_index(s: &Screen, needle: &str) -> Option<usize> {
-        s.rows()
-            .iter()
-            .position(|r| r.trim_end().trim_end_matches(['│', '█']).trim() == needle)
+        s.rows().iter().position(|r| row_text(r) == needle)
     }
 
     /// Every session file (`*.jsonl`) below the agent directory.
@@ -669,6 +683,20 @@ mod tui {
             // The reply text is on screen before the turn ends; the next input must not be
             // sent into the still-working turn (it would be queued or swallowed under load).
             self.wait("the turn finished", |s| !s.contains("Working"));
+        }
+        /// The read-only export is executed by the worker after the current run settles.
+        /// Reply text and a quiet frame alone do not acknowledge that boundary.
+        pub fn wait_worker_reply_end(&self, marker: &str) {
+            let chats = self.chats().len();
+            self.slash(&format!("/export {marker}"));
+            self.wait("worker completed the read-only export", |s| {
+                s.contains("Exported the session to") && s.contains(marker)
+            });
+            assert_eq!(
+                self.chats().len(),
+                chats,
+                "the witness must not make a model request"
+            );
         }
         /// The user prompts the engine got (chat requests only), in order.
         pub fn prompts(&self) -> Vec<String> {
@@ -1838,8 +1866,15 @@ fn set_034() {
     // scrollbar behavior". pi scroll-view.ts: `auto` is transient (only when the transcript is
     // taller than the view, while scrolling and for a second after: scrollbarHideDelayMs 1000);
     // `always` stays, also when the transcript fits (the thumb fills the track); `hidden` never.
-    // The scrollbar is the last column of the transcript rows.
-    let bar = |s: &Screen| (0..10u16).any(|r| s.row(r).ends_with('│') || s.row(r).ends_with('█'));
+    // The scrollbar is the last column of the transcript rows. Its track (`│`) shares its glyph
+    // with a code frame's side border, so read the last column rather than a row's last glyph.
+    let bar = |s: &Screen| {
+        let (_, cols) = s.size();
+        (0..10u16).any(|r| {
+            s.cell(r, cols.saturating_sub(1))
+                .is_some_and(|c| c.text == "│" || c.text == "█")
+        })
+    };
     let start = |settings: Value, long: bool| {
         let reply = if long {
             numbered_reply("R", 80)
@@ -1920,9 +1955,9 @@ fn set_036() {
     // unit-tested in oxa-interactive d2); Alt+wheel moves five times as far. Measured on the
     // numbered line shown in screen row 10 before and after one wheel-up event.
     let number_at = |s: &Screen, row: u16| -> Option<i64> {
-        let r = s.row(row);
-        let t = r.trim_end().trim_end_matches(['│', '█']).trim();
-        t.strip_prefix('R')?.parse().ok()
+        // `row_text` drops the scrollbar column and a code frame's side border and padding.
+        let line = s.row(row);
+        row_text(&line).strip_prefix('R')?.parse().ok()
     };
     let moved = |settings: Value, button: u32, want: i64| {
         let t = Setup::new()
@@ -2114,7 +2149,8 @@ fn set_046() {
 #[test]
 fn set_047() {
     // pi docs: settings.md `markdown.codeBlockIndent` (default two spaces) "Prefix used to
-    // indent rendered code blocks".
+    // indent rendered code blocks". The prefix sits inside the labelled frame: output pad,
+    // the frame's side border, then the configured indent.
     let line = |settings: Value| {
         let t = Setup::new()
             .settings(settings)
@@ -2122,12 +2158,19 @@ fn set_047() {
             .start();
         t.prompt("q", "let code = 1;");
         let s = t.screen();
+        assert!(
+            s.rows().iter().any(|r| r.starts_with(" ┌") && r.ends_with('┐')),
+            "the code frame: {s:?}"
+        );
         let row = s.find_row("let code = 1;").unwrap();
         s.row(row)
     };
-    assert!(line(json!({})).starts_with("   let code"), "pad 1 + two spaces");
-    assert!(line(json!({ "markdown": { "codeBlockIndent": "│ " } })).starts_with(" │ let code"));
-    assert!(line(json!({ "markdown": { "codeBlockIndent": "" } })).starts_with(" let code"));
+    assert!(
+        line(json!({})).starts_with(" │  let code"),
+        "pad 1 + side + two spaces"
+    );
+    assert!(line(json!({ "markdown": { "codeBlockIndent": "│ " } })).starts_with(" ││ let code"));
+    assert!(line(json!({ "markdown": { "codeBlockIndent": "" } })).starts_with(" │let code"));
 }
 
 /// SET-048: `markdown.mermaid` `off|final|streaming`.
@@ -2147,9 +2190,14 @@ fn set_048() {
         t.prompt("q", "graph TD; A-->B;");
         let s = t.settle();
         assert!(
-            s.contains("```mermaid"),
-            "{value:?}: the code block border\n{s:?}"
+            s.rows().iter().any(|r| r.contains("┌─ mermaid ")),
+            "{value:?}: the labelled code frame\n{s:?}"
         );
+        assert!(
+            s.contains("│  graph TD; A-->B;"),
+            "{value:?}: the diagram source inside the frame\n{s:?}"
+        );
+        assert!(!s.contains("```"), "{value:?}: fences are consumed\n{s:?}");
         assert!(!s.contains("markdown.mermaid"), "{value:?}: no diagnostic");
     }
 }
@@ -2694,6 +2742,10 @@ fn key_005() {
     // terminal sends a plain CR for it); ctrl+j works everywhere.
     let mut t = Setup::new()
         .profile(TermProfile::kitty())
+        .fake(tui::FakeOpts {
+            done_gap_ms: 2500,
+            ..tui::FakeOpts::default()
+        })
         .replies("got it", 2)
         .start();
     t.type_text("first line");
@@ -2705,6 +2757,7 @@ fn key_005() {
     t.key("enter");
     t.wait_text("got it");
     assert_eq!(t.prompts(), vec!["first line\nsecond line\nthird".to_string()]);
+    t.wait_worker_reply_end("key005-after-reply.html");
     // tab completes a slash command.
     t.type_text("/hotk");
     t.key("tab");
@@ -2815,8 +2868,18 @@ fn key_007() {
         reply_closed(s, "R80") && row_of(s, "R70").is_some()
     });
     let r70 = row_of(&at_bottom, "R70").unwrap();
+    // Numbered rows give a content origin independent of frame borders/editor height.
+    let origin = |screen: &Screen| {
+        screen.rows().iter().enumerate().find_map(|(row, line)| {
+            let number = row_text(line).strip_prefix('R')?.parse::<i64>().ok()?;
+            Some(number - row as i64)
+        })
+    };
+    let bottom_origin = origin(&at_bottom).unwrap();
     t.key("pageUp");
-    let s = t.wait("a page up", |s| row_of(s, "R80").is_none());
+    let s = t.wait_steady("a page up", |s| row_of(s, "R80").is_none() && origin(s).is_some());
+    let page_shift = bottom_origin - origin(&s).unwrap();
+    assert!(page_shift > 0, "page up must move the transcript");
     assert!(
         row_of(&s, "R70").is_none_or(|r| r > r70),
         "the view moved up\n{s:?}"
@@ -2836,10 +2899,20 @@ fn key_007() {
     t.wait("one line down", |s| row_of(s, "R70") == Some(r70));
     // halfPageUp: R80 leaves the view but less far than a page; halfPageDown comes back.
     t.key("f7");
-    let s = t.wait("half a page up", |s| row_of(s, "R80").is_none());
+    let s = t.wait_steady("half a page up", |s| {
+        row_of(s, "R80").is_none() && origin(s).is_some()
+    });
+    let half_shift = bottom_origin - origin(&s).unwrap();
     assert!(
-        row_of(&s, "R70").is_some(),
-        "half a page keeps R70 in view\n{s:?}"
+        half_shift > 0 && half_shift < page_shift,
+        "half-page movement must be positive and smaller than a page: {half_shift}/{page_shift}\n{s:?}"
+    );
+    // Page Up keeps four overlapping rows; Half Page Up is half the full viewport,
+    // rounded down, rather than half the Page Up distance.
+    assert_eq!(
+        half_shift,
+        (page_shift + 4) / 2,
+        "half-page movement must be half the viewport: {half_shift}/{page_shift}\n{s:?}"
     );
     t.key("f8");
     t.wait("half a page down", |s| row_of(s, "R70") == Some(r70));
@@ -3137,6 +3210,7 @@ fn key_010() {
     t.wait_chats(1);
     t.key("escape");
     t.wait_text("late answer");
+    t.wait_worker_reply_end("key010-after-reply.html");
     t.type_text("slow two");
     t.key("enter");
     t.wait_text("after f9");
@@ -3574,16 +3648,28 @@ fn key_016() {
     });
     t.wait_text("follow answer");
     assert_eq!(t.prompts(), vec!["one".to_string(), "later".to_string()]);
-    // Idle, alt+enter sends like enter.
+    // Idle, alt+enter adds a newline (issue #344); enter then sends both lines.
     drop(t);
     let t = Setup::new().replies("idle answer", 1).start();
     t.type_text("now");
     t.key("alt+enter");
+    // Witness: the newline was applied (the cursor moved to a second line) before typing on.
+    t.wait("a newline in the editor", |s| {
+        editor_rows(s).is_some_and(|r| r.len() >= 2)
+    });
+    t.type_text("more");
+    t.wait("both lines in the editor", |s| editor_text(s) == "now\nmore");
+    t.key("enter");
     t.wait_text("idle answer");
-    assert_eq!(t.prompts(), vec!["now".to_string()]);
+    t.wait_chats(1);
+    assert_eq!(t.prompts(), vec!["now\nmore".to_string()]);
     drop(t);
     // alt+up brings the queued messages back into the editor; they are not sent.
     let t = Setup::new()
+        .fake(tui::FakeOpts {
+            done_gap_ms: 2500,
+            ..tui::FakeOpts::default()
+        })
         .script(&[held("answer A", 2500), text("unused")])
         .start();
     t.type_text("one");
@@ -3597,15 +3683,18 @@ fn key_016() {
     t.key("alt+up");
     t.wait_editor("steer me");
     t.wait_text("answer A");
-    t.settle();
+    // The answer is visible before the turn ends. Ctrl+C would abort an active turn,
+    // so clear the single restored line with an editor key and wait for the worker's
+    // read-only acknowledgement before submitting the next prompt.
+    t.key("ctrl+u");
+    t.wait_editor("");
+    t.wait_worker_reply_end("key016-after-dequeue.html");
     assert_eq!(
         t.prompts(),
         vec!["one".to_string()],
         "the dequeued message was not sent"
     );
     // Witness: the next prompt is the second request.
-    t.key("ctrl+c");
-    t.wait_editor("");
     t.prompt("two", "unused");
     assert_eq!(t.prompts(), vec!["one".to_string(), "two".to_string()]);
     drop(t);

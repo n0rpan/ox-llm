@@ -27,7 +27,7 @@ Settings that older files may contain but oxa does not implement are not listed 
 
 Where the user file alone counts, the table says so:
 
-- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
+- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
 - project settings are trust-gated. In an untrusted project they are not read. Project files that run or load code (`hooks`, `shellPath`, `shellCommandPrefix`, `packages`, `extensions`, `skills`, `prompts`) also need the content approval described in [security.md](security.md#project-trust).
 
 Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file.
@@ -40,13 +40,14 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
+| `oxa.lead.serve` | object | `{}` | User-only, default-off [lead web access](lead-web.md); local mode unless selected otherwise. |
 | `$schema` | string | `null` | editor schema hint; ignored |
 | `theme` | string | `"system"` | `system`, `dark`, `light` or a name from a theme file; also `oxa` (OXA's own dark palette) and `oxa-omarchy` (follows the current Omarchy desktop theme, read-only; `system` when there is none). With the `oxa` skin the default is `oxa-omarchy` |
-| `ui.animation` | `arcade` / `minimal` / `off` | `arcade` | what moves on the activity line of the `oxa` skin while a run is in progress: `arcade` is a one-row animated scene with a short `CLEAR` when the run is done; `minimal` is the small six-cell sprite; `off` is the static text badge. Never any sound. `ui.reducedMotion`, `NO_COLOR` and `TERM=dumb` give `off` |
+| `ui.animation` | `arcade` / `minimal` / `off` | `arcade` | what moves on the activity line of the `oxa` skin while a run is in progress: `arcade` is a one-row animated scene with a short `CLEAR` when the run is done; `minimal` is the small six-cell sprite; `off` is the static text badge. Never any sound. `ui.reducedMotion`, `NO_COLOR` and `TERM=dumb` give `off`. `--animation <mode>` overrides this key for one run |
 | `ui.animationGraphics` | `auto` / `off` | `auto` | `auto` draws the scene as pixel art when the terminal answers the kitty graphics query at start and is kitty or Ghostty (every frame is sent once and deleted again on exit); `off` keeps the scene in text everywhere |
 | `ui.animationScene` | `graphics` / `stack` / `stars` / `charge` | `null` | the scene of `ui.animation = "arcade"`. Unset: the pixel-art scene where the terminal can draw it, else `stack` (stacking columns). `stack`, `stars` (a ship in a starfield) and `charge` (the ox, in block characters) are the text scenes; `graphics` asks for the pixel-art scene on any terminal that answers the graphics query |
 | `ui.notify` | `off` / `unfocused` / `always` | `unfocused` | terminal notification when a run settles (including errors/aborts) or a permission dialog opens. `unfocused` requires a terminal focus-out report; terminals without focus reporting stay quiet. Uses OSC 9 and a BEL fallback from oxa itself, with generic text (no prompt or file details); any sound is controlled by the terminal. `off` disables both |
-| `ui.reducedMotion` | bool | `false` | no animation in the `oxa` skin: the working sprite and the YOLO flames are replaced by the static text badge. The environment variable `OXA_REDUCED_MOTION=1` does the same for one run; `NO_COLOR` and `TERM=dumb` imply it |
+| `ui.reducedMotion` | bool | `false` | no animation in the `oxa` skin: the working sprite and the YOLO flames are replaced by the static text badge. The environment variable `OXA_REDUCED_MOTION=1` (also `true`, `yes` or `on`) does the same for one run, and `OXA_REDUCED_MOTION=0` (also `false`, `no` or `off`) turns it off for one run; `NO_COLOR` and `TERM=dumb` imply it |
 | `ui.skin` | `auto` / `pi` / `oxa` / `ascii` | `auto` | the look of the interactive UI: `oxa` is OXA's own (frames, a status line with meters, a key hint bar), `pi` is the plain look, `ascii` is `oxa` with ASCII glyphs only, and `auto` is `oxa` (ASCII when the locale is not UTF-8 or `TERM` is `linux`/`dumb`). With the `oxa` skin, `NO_COLOR` turns all colour off |
 | `themes` | list | `[]` | extra theme files or directories |
 | `tuiMode` | `fullscreen` / `regular` | `fullscreen` | start-up layout |
@@ -150,11 +151,11 @@ The compaction rules are in [compaction.md](compaction.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `retry.enabled` | bool | `true` | retry a failed request in the agent loop |
+| `retry.enabled` | bool | `true` | retry a failed request; off sends each request once, with no provider retry |
 | `retry.maxRetries` | number | `3` | retries of an agent request |
 | `retry.baseDelayMs` | number | `2000` | first delay, doubled each retry |
 | `retry.maxAgentDelayMs` | number | `60000` | longest delay the agent loop waits |
-| `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply |
+| `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply; `retry.enabled` false disables them |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | longest wait of one HTTP retry |
 | `retry.provider.timeoutMs` | number | `null` | silence limit of the engine stream; unset uses `httpIdleTimeoutMs` |
 
@@ -169,8 +170,12 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.engine.allowRemote` | bool | `false` | allow an engine on another host; user settings only |
 | `oxa.engine.inProcessLocal` | bool | `false` | select the in-process owned local engine, including offline; user settings only |
 | `oxa.local` | object | `{}` | literal native binary/model/arguments/environment and model limits; user settings only; see [native local configuration](../../oxc-local/CONFIGURATION.md) |
+| `oxa.lead.shadow` | bool | `false` | enable the read-only `oxa lead --shadow` proposal preset; user settings only; no live runner actions |
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
+| `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; user settings only. See [lead-web.md](lead-web.md) |
+| `oxa.lead.sessionId` | string | unset | exact ID of the dedicated Lead Session created by the native owner operation, from owner-private user settings. Free text is disabled when unset. |
+| `oxa.lead.model` | string | unset | exact model id the Lead conversation resolves through the normal `--model` selector and gateway; user settings only, read from the owner-private settings file. Unset keeps the ordinary startup model; a route that does not resolve is reported, never silently replaced. A metered model still needs its daily USD cap, so choose a subscription route while the cap is absent. |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
@@ -186,6 +191,31 @@ Set `oxa.engine.inProcessCloud` in the user settings file to select the Rust
 gateway for sessions and `--list-models`. The default is `false`. Offline mode
 refuses before opening the gateway; configuration or gateway failures are returned
 directly. Project settings cannot enable this transport or change its cloud policy.
+
+Set `oxa.cloud.discover_models` to `true` to discover models at startup for the
+configured OpenRouter, OpenAI and Anthropic API keys. It also enables the
+OpenCode model cache when that provider is configured. A fresh cached catalog
+avoids a discovery request. A stale OpenRouter catalog is refreshed at startup
+before its prices can be used to reserve spend. Other stale catalogs can be
+shown while a bounded refresh updates the cache for later starts. A failed live
+lookup uses the configured catalog and reports the failure. Discovery stays
+off in offline mode.
+
+OpenRouter supplies model limits and token prices. For a discovered model with
+no known rates, the owner can opt in by adding its exact public alias to
+`oxa.cloud.unpriced_discovered_pricing` in user settings. Each entry needs
+positive `input_per_million` and `output_per_million` USD rates. Choose rates
+that bound the expected provider charge. The gateway uses them for the normal
+budget reservation and records the settlement as `estimated_cost_usd`. Missing
+final usage retains the reservation. Estimates count against the daily cap and
+are recorded separately from actual costs. The setting is empty by default and
+is only read when discovery is enabled. The model still needs known token limits.
+Known provider or configured prices take precedence over this setting.
+When the same provider has several configured base URLs, select the discovery
+endpoint with `oxa.cloud.discovery.<provider>.base_url`.
+
+The merged catalog is available through the model picker and `--list-models`.
+The LAN guest catalog lists only guest-allowlisted models.
 
 Configure `anthropic`, `openai` (Responses API) or `chatgpt` (subscription) routes
 under `oxa.cloud.models`, keyed by the model name used
@@ -257,7 +287,9 @@ to a paid API balance. Missing metered pricing still refuses metered requests.
 |---|---|---|---|
 | `externalEditor` | string | `null` | editor for Ctrl+G; wins over `VISUAL` and `EDITOR` |
 | `oxa.reportIssue.repo` | string | `null` | repository for `oxa report-issue submit`, as `OWNER/NAME` |
+| `oxa.reportIssue.semanticDedupe` | bool | `false` | verify dogfood reports against current main and search open and recently closed issues before posting. Matching reports become comments. New issues are limited to one per task and three per worker per UTC day |
 | `oxa.builtinSkills` | bool | `true` | include the skills built into oxa |
+| `oxa.share.remoteModels` | string list | `[]` | user-only allowlist of metered cloud aliases eligible for explicit LAN sharing; personal subscriptions are excluded |
 | `oxa.skills.includeSynced` | bool | `false` | also list the skills another product synced into `~/.agents/skills` (a `synced/` folder, or a folder whose `manifest.json` lists `skillId`s); they are written for that product's tools, so oxa skips them by default |
 
 ## Example

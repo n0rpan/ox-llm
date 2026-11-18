@@ -11,9 +11,35 @@ pub enum ModeArg {
     Rpc,
 }
 
+/// The `--no-<tool>` aliases (UX/DX review item 5): each is sugar for `--exclude-tools <tool>`,
+/// so one exclusion precedence (`resolve_toolset`) covers both spellings and the effective tool
+/// selection is identical. A denylist has no replacement meaning: every spelling appends to
+/// `Args::exclude_tools`, in the order given. `--no-web-search` and `--no-mcp` are not here:
+/// they also skip building the web-search hook set and the MCP manager.
+pub const NO_TOOL_ALIASES: [(&str, &str); 8] = [
+    ("--no-read", "read"),
+    ("--no-bash", "bash"),
+    ("--no-edit", "edit"),
+    ("--no-write", "write"),
+    ("--no-grep", "grep"),
+    ("--no-find", "find"),
+    ("--no-ls", "ls"),
+    ("--no-subagent", "subagent"),
+];
+
+/// The tool a `--no-<tool>` alias excludes, when `flag` is one of [`NO_TOOL_ALIASES`].
+pub fn no_tool_alias(flag: &str) -> Option<&'static str> {
+    NO_TOOL_ALIASES
+        .iter()
+        .find(|(name, _)| *name == flag)
+        .map(|(_, tool)| *tool)
+}
+
 /// A subcommand (first positional word).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Subcommand {
+    /// Typed commands admitted by the shared registry; arguments never enter Debug output.
+    Registered(oxa_interactive::command_registry::CommandId, RegistryArgs),
     #[cfg(feature = "share")]
     Share(Vec<String>),
     /// Read the live snapshot of a saved session.
@@ -36,6 +62,19 @@ pub enum Subcommand {
     Wipe(Vec<String>),
     /// Publish a follow-up to a session's file inbox.
     Send(Vec<String>),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RegistryArgs(pub Vec<String>);
+impl std::fmt::Debug for RegistryArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RegistryArgs([redacted])")
+    }
+}
+
+pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
+    use oxa_interactive::command_registry::CommandId;
+    !matches!(id, CommandId::Help | CommandId::WorkStatus | CommandId::WorkBoard)
 }
 
 /// Login words can contain a mistakenly pasted callback. Never expose them
@@ -61,6 +100,9 @@ impl std::fmt::Debug for ApiKey {
 /// Every flag of cli.md that oxa keeps. Field comments give the spellings.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Args {
+    /// Explicit lead shadow preset; ordinary sessions retain their existing tools.
+    pub lead: bool,
+    pub shadow: bool,
     pub subcommand: Option<Subcommand>,
     /// Positional prompt words (each is one prompt in print/json mode, as pi).
     pub messages: Vec<String>,
@@ -119,7 +161,8 @@ pub struct Args {
     pub name: Option<String>,
     /// `--tools <list>` / `-t`.
     pub tools: Option<Vec<String>>,
-    /// `--exclude-tools <list>` / `-xt`.
+    /// `--exclude-tools <list>` / `-xt`, plus every `--no-<tool>` alias (see
+    /// [`NO_TOOL_ALIASES`]).
     pub exclude_tools: Vec<String>,
     /// `-nbt`, `--no-builtin-tools`.
     pub no_builtin_tools: bool,
@@ -129,6 +172,8 @@ pub struct Args {
     pub no_mcp: bool,
     /// `--no-web-search` (oxa, O-170): the `web_search` tool is off for this run.
     pub no_web_search: bool,
+    /// `--animation <mode>`: `ui.animation` for this run (over the setting, in memory only).
+    pub animation: Option<String>,
     /// `-e`, `--extension <path>` (repeatable).
     pub extensions: Vec<String>,
     /// `-ne`, `--no-extensions`.
@@ -171,6 +216,12 @@ pub struct Args {
     pub version: bool,
     /// The hard offline switch (see the help text).
     pub offline: bool,
+    /// Explicitly expose only these native local aliases for the current owner session.
+    #[cfg(feature = "share")]
+    pub share_models: Vec<String>,
+    /// Override the Tailscale bind for this owner session.
+    #[cfg(feature = "share")]
+    pub share_bind: Option<std::net::IpAddr>,
     /// Flags registered by extensions (`registerFlag`): name -> value.
     pub extension_flags: Vec<(String, Value)>,
     /// Unknown `--long` flags seen before the extension flags are known (resolved by the
@@ -190,6 +241,11 @@ const COMMANDS: &[(&str, &str)] = &[
     (
         "oxa share key <add|list|revoke>",
         "Manage private guest keys and daily limits",
+    ),
+    #[cfg(feature = "share")]
+    (
+        "oxa share serve --model ALIAS",
+        "Serve selected native local models to authenticated guest devices",
     ),
     (
         "oxa status <session-id|session-file>",
@@ -231,7 +287,7 @@ const COMMANDS: &[(&str, &str)] = &[
         "Draft a scrubbed ox-llm issue; submit posts it only after you type yes",
     ),
     (
-        "oxa work <taskfile> | --issue N --model MODEL",
+        "oxa work <taskfile> [--rerun] [--publish] [--report-problems] | --issue N --model MODEL | --pr N --model MODEL | --status | board --shadow --repo OWNER/REPO --once",
         "Run tasks in isolated worktrees with external acceptance checks",
     ),
     (
@@ -318,10 +374,19 @@ const OPTIONS: &[(&str, &str)] = &[
         "Comma-separated denylist of tool names or patterns (*)",
     ),
     (
+        "--no-<tool>",
+        "Disable one tool: read, bash, edit, write, grep, find, ls or subagent (same as --exclude-tools <tool>)",
+    ),
+    (
+        "--animation <mode>",
+        "Animation of the oxa skin for this run: arcade, minimal or off (over ui.animation)",
+    ),
+    (
         "--no-builtin-tools, -nbt",
         "Disable built-in tools by default, keep extension and custom tools",
     ),
     ("--no-tools, -nt", "Disable all tools by default"),
+    ("--shadow", "Lead preset only: return proposals without executing actions"),
     (
         "--no-mcp",
         "Disable MCP support: no servers connect and no MCP tools",
@@ -395,6 +460,10 @@ const OPTIONS: &[(&str, &str)] = &[
         "Permission mode: standard, auto, yolo, plan (or workspace, ask); default: permissions.defaultMode, else auto",
     ),
     ("--verbose", "Show verbose startup information"),
+    #[cfg(feature = "share")]
+    ("--share-model <alias>", "Share one native local model during the interactive owner session (repeatable)"),
+    #[cfg(feature = "share")]
+    ("--share-bind <address>", "Explicitly bind interactive guest sharing to this address"),
     (
         "--offline",
         "Hard offline switch: non-local connections refused, bash has no network, web_search off",
@@ -413,6 +482,26 @@ fn usage(message: impl Into<String>) -> OxaError {
 
 /// The first word of a subcommand. `None` when the word is an ordinary prompt.
 fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaError> {
+    use oxa_interactive::command_registry::{parse_cli, COMMANDS};
+    let words: Vec<_> = std::iter::once(word.to_owned())
+        .chain(rest.iter().cloned())
+        .collect();
+    // `oxa lead <text>` is the one-shot owner conversation: the registry's
+    // longest match keeps every named `lead <child>` form on its own command,
+    // and the bare `lead` menu is answered before parsing. The tail reaches the
+    // same bounded owner chat handler as `lead chat`.
+    if let Some(invocation) = parse_cli(&words).filter(|i| registry_owned(i.command.id)) {
+        return Ok(Some(Subcommand::Registered(
+            invocation.command.id,
+            RegistryArgs(invocation.args.to_vec()),
+        )));
+    }
+    if COMMANDS
+        .iter()
+        .any(|entry| registry_owned(entry.id) && entry.path.first() == Some(&word))
+    {
+        return Err(usage("registered command is unavailable on this surface"));
+    }
     Ok(Some(match word {
         "login" => Subcommand::Login(false, LoginArgs(rest.to_vec())),
         "logout" => Subcommand::Login(true, LoginArgs(rest.to_vec())),
@@ -541,11 +630,31 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
     while i < argv.len() {
         let arg = argv[i].as_str();
         i += 1;
-        // Inbox delivery, like work, accepts leading offline switches. Once a prompt,
-        // another option or `--` appears, later words retain their positional meaning.
+        if !stop && i == 1 && arg == "lead" {
+            let reserved_child = oxa_interactive::command_registry::COMMANDS.iter().any(|entry| {
+                entry.path.first() == Some(&arg)
+                    && entry
+                        .path
+                        .get(1)
+                        .is_some_and(|part| argv.get(i).map(String::as_str) == Some(*part))
+            });
+            if !reserved_child
+                && argv[i..]
+                    .iter()
+                    .any(|word| word.split('=').next() == Some("--shadow"))
+            {
+                a.lead = true;
+                continue;
+            }
+        }
+        // These commands accept leading offline switches so their own guards
+        // can report the refusal. A prompt, another option or `--` ends that prefix.
         if !stop
             && (i == 1
-                || (matches!(arg, "send" | "work") && argv[..i - 1].iter().all(|word| word == "--offline")))
+                || ((matches!(arg, "send" | "work" | "share")
+                    || oxa_interactive::command_registry::parse_cli(&argv[i - 1..])
+                        .is_some_and(|invocation| registry_owned(invocation.command.id)))
+                    && argv[..i - 1].iter().all(|word| word == "--offline")))
         {
             if let Some(sub) = subcommand(arg, &argv[i..])? {
                 a.subcommand = Some(sub);
@@ -570,6 +679,7 @@ pub fn parse_args(argv: &[String], ext_flags: &[FlagSpec]) -> Result<Args, OxaEr
         parse_flag(&mut a, argv, &mut i, flag, inline, ext_flags)?;
     }
     if !a.help && !a.version {
+        crate::lead_preset::apply(&mut a)?;
         check_conflicts(&a)?;
     }
     Ok(a)
@@ -584,6 +694,10 @@ fn parse_flag(
     ext: &[FlagSpec],
 ) -> Result<(), OxaError> {
     match flag {
+        "--shadow" => {
+            no_value(inline, flag)?;
+            a.shadow = true;
+        }
         "-h" | "--help" => {
             no_value(inline, flag)?;
             a.help = true;
@@ -699,8 +813,17 @@ fn parse_flag(
             check_tool_list(flag, &entries)?;
             a.tools = Some(entries);
         }
+        // Repeated `-xt` / `--exclude-tools` lists accumulate, so a later exclusion never
+        // undoes an earlier explicit one (a denylist has no replacement meaning, unlike the
+        // `--tools` allowlist). `--no-<tool>` appends to the same list, in the order given.
         "-xt" | "--exclude-tools" => {
-            a.exclude_tools = list(&value(argv, i, inline, flag, "a comma-separated list")?)
+            a.exclude_tools
+                .extend(list(&value(argv, i, inline, flag, "a comma-separated list")?))
+        }
+        _ if no_tool_alias(flag).is_some() => {
+            no_value(inline, flag)?;
+            a.exclude_tools
+                .push(no_tool_alias(flag).unwrap_or_default().to_string());
         }
         "--thinking" => {
             let v = value(argv, i, inline, flag, "a thinking level")?;
@@ -760,6 +883,16 @@ fn parse_flag(
             }
             a.tui_mode = Some(v);
         }
+        "--animation" => {
+            let v = value(argv, i, inline, flag, "arcade, minimal, or off")?;
+            if !oxa_interactive::skin::Animation::ALL.contains(&v.as_str()) {
+                return Err(usage(format!(
+                    "Invalid animation \"{v}\". Valid values: {}",
+                    oxa_interactive::skin::Animation::ALL.join(", ")
+                )));
+            }
+            a.animation = Some(v);
+        }
         "--permission-mode" => {
             let v = value(
                 argv,
@@ -795,6 +928,25 @@ fn parse_flag(
         "-na" | "--no-approve" => {
             no_value(inline, flag)?;
             a.approve = Some(false);
+        }
+        #[cfg(feature = "share")]
+        "--share-model" => {
+            let alias = value(argv, i, inline, flag, "a native local alias")?;
+            if alias.is_empty() || a.share_models.len() >= 64 || a.share_models.contains(&alias) {
+                return Err(usage(
+                    "specify between one and 64 distinct native local sharing aliases",
+                ));
+            }
+            a.share_models.push(alias);
+        }
+        #[cfg(feature = "share")]
+        "--share-bind" => {
+            let address = value(argv, i, inline, flag, "an IP address")?;
+            a.share_bind = Some(
+                address
+                    .parse()
+                    .map_err(|_| usage("invalid --share-bind address"))?,
+            );
         }
         "--offline" => {
             no_value(inline, flag)?;
@@ -926,10 +1078,15 @@ fn present_flags<'a>(flags: &[(bool, &'a str)]) -> Vec<&'a str> {
 pub fn usage_text(ext_flags: &[FlagSpec]) -> String {
     let mut out = String::new();
     out.push_str("oxa - coding agent with read, bash, edit and write tools\n\n");
-    out.push_str("Usage:\n  oxa [options] [--] [@files...] [messages...]\n\n");
+    out.push_str("Usage:\n  oxa [options] [--] [@files...] [messages...]\n  oxa lead --shadow [options] [messages...]\n\n");
     out.push_str("Commands:\n");
     for (left, desc) in COMMANDS {
         out.push_str(&format!("  {left:<36}{desc}\n"));
+    }
+    for entry in oxa_interactive::command_registry::entries(oxa_interactive::command_registry::Surface::Cli)
+        .filter(|entry| registry_owned(entry.id))
+    {
+        out.push_str(&format!("  oxa {:<32}{}\n", entry.path.join(" "), entry.summary));
     }
     out.push_str("\nOptions:\n");
     for (left, desc) in OPTIONS {

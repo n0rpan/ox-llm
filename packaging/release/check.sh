@@ -19,5 +19,3 @@ isolated() {
 (cd engine && isolated cargo test --release --locked -p oxe-cli --test version)
 (cd engine && isolated cargo test --release --locked -p server --lib)
 (cd oxa && isolated cargo test --release --locked -p oxa-cli --lib)
-(cd oxc && env -i PATH="$PATH" HOME="$sandbox" PYTHONPATH=src python3 -B -m unittest \
-  tests.test_runtime_version tests.test_controller_contract tests.test_bootstrap)

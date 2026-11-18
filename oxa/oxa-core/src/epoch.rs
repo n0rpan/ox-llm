@@ -44,7 +44,7 @@ fn gather(st: &SessionState) -> Inputs {
     }
     if let Some(goal) = st.goal.as_ref().filter(|goal| goal.pursuing()) {
         all.retain(|t| !matches!(t.spec().name.as_str(), "goal_done" | "wait"));
-        all.extend(goal.tools(st.shared.cancel_retry.clone()));
+        all.extend(goal.tools(&st.shared));
         extra.push((
             "goal".into(),
             crate::prompt::goal_start(&goal.snapshot().objective),
@@ -259,7 +259,11 @@ pub fn reload(st: &mut SessionState, sink: &mut dyn EventSink, ui: &mut dyn Ui) 
         ..DiscoverOpts::default()
     };
     // Packages, extension and theme paths included (E10).
-    let resources = discover(&st.dirs, &st.cwd, &settings, &opts);
+    let resources = if st.hooks.iter().any(|hook| hook.owns_resources()) {
+        st.resources.clone()
+    } else {
+        discover(&st.dirs, &st.cwd, &settings, &opts)
+    };
     for d in &resources.diagnostics {
         sink.emit(&AgentEvent::Notice {
             level: d.level,

@@ -33,6 +33,7 @@ pub fn backoff_ms(attempt: u32, p: &RetryPolicy) -> u64 {
 /// `request` with pi's retry behaviour, adapted (plan sec. 1 "Queue, retry"):
 /// * Retryable: `engine_down`, `engine_busy` (after its `retry after <n> s` when given, capped
 ///   at `max_delay_ms`), `cloud_rate_limited`, `engine_http` 5xx / 429, `stream_broken` **before any data byte**.
+///   A cloud rate limit with a wait beyond the configured cap is returned to the caller.
 ///   The same idempotency key is reused. Emits `AutoRetryStart` / `AutoRetryEnd`; the wait is
 ///   interruptible by `Shared::cancel_retry` and `cancel`.
 /// * `stream_broken` after output: not replayed here; returned as the error. The agent loop
@@ -169,7 +170,9 @@ pub(crate) fn chat_with_retry_keyed(
             return Err(err);
         }
 
-        if provider_retries < provider.max_retries && retryable(&err, got_data) {
+        // #514: the provider layer is a retry too: `set_auto_retry(false)` (the user switch) and
+        // `retry.enabled false` stop it as well.
+        if policy.enabled && provider_retries < provider.max_retries && retryable(&err, got_data) {
             // A server-requested wait above `maxRetryDelayMs` (0 = no limit) is not waited for
             // here; the agent-level retry decides.
             let delay_ms = match retry_after_ms(&err.message) {
@@ -205,6 +208,10 @@ pub(crate) fn chat_with_retry_keyed(
             return Err(err);
         }
 
+        let Some(delay_ms) = agent_retry_delay(&err, retries + 1, &policy) else {
+            finish_failed(sink, retries, &err);
+            return Err(err);
+        };
         retries += 1;
         provider_retries = 0;
         crate::reload::loading_notice(&err, &mut loading_noticed, sink);
@@ -212,12 +219,6 @@ pub(crate) fn chat_with_retry_keyed(
             err.code,
             codes::ENGINE_BUSY | codes::ENGINE_DOWN | codes::ENGINE_HTTP
         );
-        // F3 / S2: an engine that names its wait (`Retry-After`, carried as `retry after <n> s`
-        // in the `engine_busy` message) is honoured, capped by the policy's longest delay.
-        let delay_ms = match retry_after_ms(&err.message) {
-            Some(ms) => ms.min(policy.max_delay_ms),
-            None => backoff_ms(retries, &policy),
-        };
         sink.emit(&AgentEvent::AutoRetryStart {
             attempt: retries,
             max_attempts: policy.max_retries,
@@ -293,11 +294,13 @@ pub(crate) fn summary_with_retry(
             }
             return Err(err);
         }
-        retries += 1;
-        let delay_ms = match retry_after_ms(&err.message) {
-            Some(ms) => ms.min(policy.max_delay_ms),
-            None => backoff_ms(retries, &policy),
+        let Some(delay_ms) = agent_retry_delay(&err, retries + 1, &policy) else {
+            if retries > 0 {
+                sink.emit(&AgentEvent::SummarizationRetryFinished);
+            }
+            return Err(err);
         };
+        retries += 1;
         sink.emit(&AgentEvent::SummarizationRetryScheduled {
             attempt: retries,
             max_attempts: policy.max_retries,
@@ -385,6 +388,14 @@ fn retry_after_ms(msg: &str) -> Option<u64> {
         return None;
     }
     digits.parse::<u64>().ok().map(|s| s.saturating_mul(1000))
+}
+
+fn agent_retry_delay(error: &OxaError, attempt: u32, policy: &RetryPolicy) -> Option<u64> {
+    match retry_after_ms(&error.message) {
+        Some(ms) if error.code == "cloud_rate_limited" && ms > policy.max_delay_ms => None,
+        Some(ms) => Some(ms.min(policy.max_delay_ms)),
+        None => Some(backoff_ms(attempt, policy)),
+    }
 }
 
 fn retry_policy(st: &SessionState) -> RetryPolicy {

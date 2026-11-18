@@ -266,6 +266,17 @@ pub fn session_header_record(h: &SessionHeader) -> Value {
     serde_json::from_slice(&buf).unwrap_or(Value::Null)
 }
 
+pub(crate) fn session_state(session: &oxa_core::Session) -> Value {
+    let state = state_to_json(&session.state());
+    #[cfg(all(target_os = "linux", feature = "a2a-control"))]
+    let state = {
+        let mut state = state;
+        state["goalRevision"] = Value::from(session.goal_revision());
+        state
+    };
+    state
+}
+
 /// The RPC `get_state` data object (pi's field names; oxa adds `mode`, `prefixSha256`).
 pub fn state_to_json(s: &State) -> Value {
     let mut o = Map::new();
