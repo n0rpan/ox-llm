@@ -102,23 +102,43 @@ fn refill_startup_retains_pause_and_refuses_worker_writable_authority() {
 #[test]
 fn private_token_and_exact_task_ref_precede_one_durable_publication() {
     for pull_request in [false, true] {
-        durable_publication(pull_request, false, false);
+        durable_publication(pull_request, None);
     }
 }
 
 #[test]
 fn live_fix_packet_uses_current_app_context_and_the_original_durable_binding() {
-    durable_publication(true, true, false);
+    durable_publication(true, Some(Leading::Fork));
 }
 
 #[test]
 fn live_known_work_is_not_starved_by_twenty_unknown_candidates() {
-    durable_publication(true, true, true);
+    durable_publication(true, Some(Leading::Unknown));
 }
 
-fn durable_publication(pull_request: bool, live: bool, leading_unknowns: bool) {
-    use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState};
+#[test]
+fn live_known_work_is_not_starved_by_twenty_retained_expired_leases() {
+    durable_publication(true, Some(Leading::RetainedLeases));
+}
+
+#[test]
+fn live_invalid_native_branch_is_skipped_before_reservation() {
+    durable_publication(true, Some(Leading::InvalidBranch));
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Leading {
+    Fork,
+    Unknown,
+    RetainedLeases,
+    InvalidBranch,
+}
+
+fn durable_publication(pull_request: bool, leading: Option<Leading>) {
+    use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState, Lease};
     use std::collections::BTreeMap;
+    let live = leading.is_some();
+    let twenty = matches!(leading, Some(Leading::Unknown | Leading::RetainedLeases));
     let (env, controls) = fixture();
     let queue = controls.join("queue");
     let root = controls.join("claims");
@@ -181,7 +201,7 @@ fn durable_publication(pull_request: bool, live: bool, leading_unknowns: bool) {
         )
         .unwrap();
     }
-    if leading_unknowns {
+    if twenty {
         settings["partition"]["residues"] = json!((0..12).collect::<Vec<_>>());
     }
     fs::write(&config, settings.to_string()).unwrap();
@@ -191,6 +211,7 @@ fn durable_publication(pull_request: bool, live: bool, leading_unknowns: bool) {
         r#"#!/bin/sh
 [ "$GH_TOKEN" = synthetic ] || exit 93
 printf 'read\n' >> "$0.calls"
+printf '%s\n' "$*" >> "$0.queries"
 printf 'HTTP/2.0 200 OK\r\n\r\n'
 for context in "$0.context-"*; do
   number="${context##*-}"
@@ -277,7 +298,7 @@ cat "$0.reply"
             ("headRefOid", json!("b".repeat(40))),
             ("isCrossRepository", json!(true)),
         ] {
-            if leading_unknowns && field == "isCrossRepository" {
+            if twenty && field == "isCrossRepository" {
                 continue;
             }
             let mut response: serde_json::Value = serde_json::from_slice(&original).unwrap();
@@ -325,34 +346,63 @@ cat "$0.reply"
         }
         fs::write(&reply, original).unwrap();
     }
+    let mut preserved = BTreeMap::new();
     if live {
-        let leading: Vec<u64> = if leading_unknowns {
+        let numbers: Vec<u64> = if twenty {
             (1..=11).chain(22..=30).collect()
         } else {
-            claims
-                .import_snapshot(
-                    Some(ManualAuthority::Owner),
-                    &BTreeMap::from([(
-                        22,
-                        ImportState {
-                            state: AttemptState::default(),
-                            excluded: false,
-                        },
-                    )]),
-                    now,
-                )
-                .unwrap();
             vec![22]
         };
+        if leading != Some(Leading::Unknown) {
+            let incoming = numbers
+                .iter()
+                .map(|number| {
+                    let state = if leading == Some(Leading::RetainedLeases) {
+                        AttemptState {
+                            utc_day: now / 86_400,
+                            attempts: 1,
+                            lease: Some(Lease {
+                                holder: "oxa:peer/helper".into(),
+                                generation: (now / 86_400, 1),
+                                claimed_at: Some(now - 60),
+                                expires_at: now - 30,
+                            }),
+                        }
+                    } else {
+                        AttemptState::default()
+                    };
+                    (
+                        *number,
+                        ImportState {
+                            state,
+                            excluded: false,
+                        },
+                    )
+                })
+                .collect();
+            claims
+                .import_snapshot(Some(ManualAuthority::Owner), &incoming, now)
+                .unwrap();
+            let rows = claims.assignments().unwrap();
+            for number in &numbers {
+                assert!(!rows[number].data.import_hold);
+                assert!(rows[number].data.item_owner.is_none());
+                preserved.insert(*number, serde_json::to_value(&rows[number]).unwrap());
+            }
+        }
         let reply = env.tmp().join("gh.reply");
         let mut response: serde_json::Value = serde_json::from_slice(&fs::read(&reply).unwrap()).unwrap();
         let repository = &mut response["data"]["repository"];
         let row_template = repository["pullRequests"]["nodes"][0].clone();
         let pr_template = repository["p44"].clone();
-        for number in &leading {
+        for number in &numbers {
             let mut row = row_template.clone();
             row["number"] = json!(number);
-            row["headRefName"] = json!(format!("agent/{number}"));
+            row["headRefName"] = if leading == Some(Leading::InvalidBranch) {
+                json!("-blocked")
+            } else {
+                json!(format!("agent/{number}"))
+            };
             repository["pullRequests"]["nodes"]
                 .as_array_mut()
                 .unwrap()
@@ -361,12 +411,18 @@ cat "$0.reply"
             pr["number"] = json!(number);
             repository[format!("p{number}")] = pr;
         }
-        repository["pullRequests"]["totalCount"] = json!(leading.len() + 1);
+        repository["pullRequests"]["totalCount"] = json!(numbers.len() + 1);
         fs::write(&reply, response.to_string()).unwrap();
-        for number in leading {
+        for number in numbers {
             let mut context = response.clone();
-            context["data"]["repository"]["pullRequest"]["headRefName"] = json!(format!("agent/{number}"));
-            context["data"]["repository"]["pullRequest"]["isCrossRepository"] = json!(!leading_unknowns);
+            context["data"]["repository"]["pullRequest"]["headRefName"] =
+                if leading == Some(Leading::InvalidBranch) {
+                    json!("-blocked")
+                } else {
+                    json!(format!("agent/{number}"))
+                };
+            context["data"]["repository"]["pullRequest"]["isCrossRepository"] =
+                json!(leading == Some(Leading::Fork));
             fs::write(
                 env.tmp().join(format!("gh.context-{number}")),
                 context.to_string(),
@@ -404,10 +460,20 @@ cat "$0.reply"
         format!("board-{}.txt", binding.key)
     );
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
-    if live && !leading_unknowns {
-        let fork = &claims.snapshot().unwrap()[&22];
-        assert_eq!(fork.attempts, 0);
-        assert!(fork.lease.is_none());
+    let rows = claims.assignments().unwrap();
+    for (number, before) in preserved {
+        assert_eq!(
+            serde_json::to_value(&rows[&number]).unwrap(),
+            before,
+            "skipped candidates retain their original lease, attempts and assignment"
+        );
+        if leading == Some(Leading::RetainedLeases) {
+            let queries = fs::read_to_string(env.tmp().join("gh.queries")).unwrap();
+            assert!(
+                !queries.contains(&format!("pullRequest(number:{number}) {{")),
+                "retained leases are excluded before context acquisition and the packet cap"
+            );
+        }
     }
     assert!(invoke(&env, &config, "synthetic\n", false).status.success());
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
