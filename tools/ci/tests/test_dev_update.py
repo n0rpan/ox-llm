@@ -136,17 +136,30 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
 
     def test_unmarked_stable_prefix_is_refused_without_creating_a_lock(self):
         self.build()
+        self.stable.parent.parent.chmod(0o700)
         result = self.run_update(self.stable.parent.parent)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(sorted(p.relative_to(self.stable.parent.parent).as_posix()
                                 for p in self.stable.parent.parent.rglob('*')), ['bin', 'bin/oxa'])
         self.assertEqual(self.stable.read_bytes(), b'stable sentinel')
 
+    def test_shared_prefix_is_refused_before_writing_state(self):
+        self.build()
+        for mode in [0o770, 0o707]:
+            with self.subTest(mode=oct(mode)):
+                prefix = self.root / f'dev-{mode:o}'
+                prefix.mkdir()
+                prefix.chmod(mode)
+                result = self.run_update(prefix)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(list(prefix.iterdir()), [])
+                self.assertFalse((self.remote / 'verified').exists())
+
     def test_aliased_or_nonregular_lock_cannot_touch_another_install(self):
         self.build()
         for kind in ['symlink', 'hardlink', 'fifo']:
             prefix = self.root / kind
-            prefix.mkdir()
+            prefix.mkdir(mode=0o700)
             (prefix / '.dev-channel').write_text('ox-llm dev v1\n')
             lock = prefix / '.update.lock'
             if kind == 'symlink':
