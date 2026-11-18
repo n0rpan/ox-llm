@@ -14,6 +14,8 @@ pub(crate) struct Runner<'a> {
     pub observer: &'a dyn CheckpointObserver,
     pub scrub_note: &'a (dyn Fn(&crate::ProblemNote) -> Option<crate::ProblemNote> + Sync),
     pub base_alias: Option<&'a tree::BaseAlias>,
+    #[cfg(target_os = "linux")]
+    pub managed_steering: Option<&'a crate::managed_steering::Launch>,
 }
 impl Runner<'_> {
     fn advance(&mut self, state: &mut State, step: Step) -> std::result::Result<(), RunError> {
@@ -90,6 +92,8 @@ impl Runner<'_> {
                         self.lock,
                         session.as_deref(),
                         remaining,
+                        #[cfg(target_os = "linux")]
+                        self.managed_steering,
                         &mut |id| {
                             state.record.session_id = Some(id.to_owned());
                             self.writer.save(state, step, self.observer)
