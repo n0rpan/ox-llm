@@ -95,10 +95,12 @@ maintainer, who says in the PR when a hardware check is needed.
 
 ## Build and test capacity (owner rule)
 
-All builds and tests run in GitHub CI. Local compiler work is limited to `cargo check -p <edited-crate>`
-and `cargo clippy -p <edited-crate> -- -D warnings`, niced, with `CARGO_BUILD_JOBS=3`. Never run local
-`cargo build`, `cargo test`, Python/unit/end-to-end tests, or whole-workspace compiler sweeps.
-Formatting and read-only source inspection do not build or run tests.
+GitHub-hosted CI is the judge for builds and tests. Run it with `OXCI=off`.
+Local compiler work is limited to `cargo check -p <edited-crate>`, niced with
+`CARGO_BUILD_JOBS=3`. Formatting and read-only source inspection are allowed locally.
+Do not run `cargo build`, `cargo test`, Python or end-to-end tests, or whole-workspace
+compiler sweeps on n0rpan, Air, or the maintainer's laptop. On n0rpan, run Lead and
+its worker from the dev-release binary. Do not compile binaries for deployment.
 
 Keep target directories and large scratch under your own clone or `~/.cache`; never put them under
 `/tmp` (it is RAM on the owner's machines). Use isolated HOME/XDG. Remove your finished temporary
