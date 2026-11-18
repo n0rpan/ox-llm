@@ -9,6 +9,7 @@ use crate::{
     accounting::{Outcome, Usage},
     anthropic_client::{self, Cancellation, Chat, Client, Control},
     catalog::Provider,
+    catalog_discovery::{Source, Status},
     ledger::Context,
     policy::Refusal,
     runtime::{Call, HistorySeal, Runtime},
@@ -126,7 +127,12 @@ impl Gateway {
     }
     /// Startup-only bounded live discovery. Reuses this gateway's HTTP pool;
     /// the temporary current-thread driver creates no second queue or daemon.
-    pub fn discover_opencode(&mut self, base: &str, timeout: Duration) -> Result<(), Error> {
+    /// A bounded stale-aware cache entry is consumed before any network call.
+    pub fn discover_opencode(
+        &mut self,
+        base: &str,
+        timeout: Duration,
+    ) -> Result<crate::opencode::cache::State, Error> {
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(Error::OpenCode(crate::opencode::client::Error::Request));
         }
@@ -142,6 +148,80 @@ impl Gateway {
             }
         }
         result.map_err(Error::OpenCode)
+    }
+    /// One bounded background refresh of the Go catalog cache, sharing this
+    /// gateway's existing HTTP pool. It never mutates the live catalog, so a
+    /// failure cannot make any other local or configured route fatal.
+    pub fn refresh_opencode(&self, base: &str, timeout: Duration) -> Result<(), Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(Error::OpenCode(crate::opencode::client::Error::Request));
+        }
+        let driver = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| Error::OpenCode(crate::opencode::client::Error::Transport))?;
+        let result = driver.block_on(self.runtime.refresh_go(self.client.transport(), base, timeout));
+        driver.shutdown_timeout(Duration::from_secs(1));
+        result.map_err(Error::OpenCode)
+    }
+    /// Owner-requested catalog discovery, using the established provider pool.
+    /// Missing credentials leave the configured fallback catalog in place.
+    pub fn discover_cloud(&mut self, source: &Source, timeout: Duration) -> Result<Option<Status>, Error> {
+        let Some(key) = self
+            .runtime
+            .catalog_key(source.provider())
+            .map_err(Error::Refused)?
+        else {
+            return Ok(None);
+        };
+        let directory = self.runtime.catalog_cache_dir();
+        use crate::catalog_cache::State;
+        let (state, offers) = match source.load(directory, &key) {
+            // OpenRouter discovery can supply the rates used to reserve spend.
+            Some((State::Stale, _)) if source.provider() == Provider::OpenRouter => {
+                (State::Fresh, self.fetch_catalog(source, &key, timeout)?)
+            }
+            Some(cached) => cached,
+            None => (State::Fresh, self.fetch_catalog(source, &key, timeout)?),
+        };
+        let (missing_price, missing_limits) = self
+            .runtime
+            .apply_provider_catalog(source, offers)
+            .map_err(Error::Refused)?;
+        Ok(Some(Status {
+            state,
+            missing_price,
+            missing_limits,
+        }))
+    }
+    /// Replace only the private cache on a stale refresh.
+    pub fn refresh_cloud(&self, source: &Source, timeout: Duration) -> Result<(), Error> {
+        if let Some(key) = self
+            .runtime
+            .catalog_key(source.provider())
+            .map_err(Error::Refused)?
+        {
+            self.fetch_catalog(source, &key, timeout)?;
+        }
+        Ok(())
+    }
+    fn fetch_catalog(
+        &self,
+        source: &Source,
+        key: &crate::secrets::Key,
+        timeout: Duration,
+    ) -> Result<Vec<crate::catalog_discovery::Offer>, Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(Error::Upstream(anthropic_client::Error::Request("discovery")));
+        }
+        let driver = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| Error::Upstream(anthropic_client::Error::Setup))?;
+        let result =
+            driver.block_on(source.fetch(&self.client, key, timeout, self.runtime.catalog_cache_dir()));
+        driver.shutdown_timeout(Duration::from_secs(1));
+        result.map_err(Error::Upstream)
     }
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
         self.runtime.discovery()
