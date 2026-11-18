@@ -384,7 +384,7 @@ esac
         let publisher = LandingPublisher::new(temp.path(), &policy, &gh, &log);
         let receipt = publisher.notice(&test_intent(), &["synthetic::test"]).unwrap();
         assert_eq!(receipt.comment_id, "IC_comment");
-        let intent = super::rerun::test_intent();
+        let intent = crate::publish::rerun::test_intent();
         let target = publisher.rerun_target(&intent, "U_publisher").unwrap();
         assert_eq!(
             publisher.rerun_reserved(target, intent.clone()).unwrap().intent,

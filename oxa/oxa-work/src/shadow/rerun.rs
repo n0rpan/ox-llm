@@ -126,7 +126,7 @@ mod tests {
             runner_owns_github: false,
             storage: temp.path().to_owned(),
         };
-        let launch = |policy| {
+        let launch = |policy: &Policy| {
             run_once(
                 policy,
                 &path,
