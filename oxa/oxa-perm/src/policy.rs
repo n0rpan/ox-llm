@@ -706,21 +706,24 @@ impl Policy for ModePolicy {
             .join("; ");
         let refuse = self.unattended.resolve(self.os_sandbox) == UnattendedMode::Refuse;
         let status = if refuse { "refused" } else { "pending" };
-        let id = match desk.record(&self.session_id, cwd, command, &hits, status) {
-            Ok(id) => id,
-            // The request could not be filed: the command is still refused.
-            Err(_) => return Some(tool_errors::DANGEROUS_REFUSED.replace("{why}", &why)),
-        };
-        if refuse {
-            Some(tool_errors::DANGEROUS_REFUSED.replace("{why}", &why))
+        // The OS-sandbox text only where the OS sandbox is the reason; a `refuse` setting
+        // without it, or a request that could not be filed, says so truthfully.
+        // A refusal is refused whether or not its record could be written.
+        let recorded = desk.record(&self.session_id, cwd, command, &hits, status);
+        let text = if refuse && self.os_sandbox {
+            tool_errors::DANGEROUS_REFUSED.replace("{why}", &why)
+        } else if refuse {
+            tool_errors::DANGEROUS_REFUSED_SETTING.replace("{why}", &why)
         } else {
-            Some(
-                tool_errors::DANGEROUS_REQUESTED
+            match recorded {
+                Ok(id) => tool_errors::DANGEROUS_REQUESTED
                     .replace("{id}", &id)
                     .replace("{session}", &self.session_id)
                     .replace("{why}", &why),
-            )
-        }
+                Err(_) => tool_errors::DANGEROUS_REFUSED_NO_REQUEST.replace("{why}", &why),
+            }
+        };
+        Some(text)
     }
 
     fn set_spill_dir(&mut self, dir: &Path) {

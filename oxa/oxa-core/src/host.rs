@@ -996,6 +996,13 @@ fn gate_pinned(
             // #1512 S2: a dangerous command asks first; its answer covers only its rule keys.
             let danger = st.policy.danger_ask(a, &st.cwd);
             if !danger.is_empty() {
+                // #1512 S5: an extension's exec takes the same unattended answer as the bash
+                // tool: refused, or filed at the approval desk for the owner, never paused for.
+                if !ui.interactive() {
+                    if let Some(text) = st.policy.danger_unattended(a, &st.cwd) {
+                        return Err(OxaError::new(codes::DENIED, text));
+                    }
+                }
                 let (keys, reasons): (Vec<String>, Vec<String>) = danger.into_iter().unzip();
                 return match ui.ask_dangerous(a, &reasons, &keys) {
                     DangerAnswer::Once => Ok(pin),
@@ -1494,6 +1501,38 @@ mod tests {
             net: false,
         };
         assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
+    }
+
+    /// #1512 S5: an extension's dangerous exec in a run with no one to ask files an approval
+    /// request at the desk (request mode), like the bash tool, instead of the S2 dead-end refusal.
+    #[test]
+    fn extension_exec_gate_unattended_files_an_approval_request() {
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(
+                    desk.clone(),
+                    "s1".into(),
+                    oxa_perm::UnattendedMode::Request,
+                    false,
+                ),
+        );
+        let dangerous = Access::Exec {
+            command: "git push --force origin main".into(),
+            net: false,
+        };
+        let mut headless = HeadlessUi::default();
+        let err = gate_pinned(&mut f.st, &dangerous, &mut headless).expect_err("not run");
+        assert_eq!(err.code, codes::DENIED);
+        assert!(
+            err.message.starts_with("Needs owner approval (request "),
+            "{}",
+            err.message
+        );
+        assert_eq!(desk.pending().expect("pending").len(), 1);
     }
 
     /// #1512 S5: a dangerous exec in a run with no one to ask is not paused for. The tool error

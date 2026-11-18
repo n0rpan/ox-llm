@@ -273,14 +273,21 @@ impl ApprovalDesk {
     /// One record by id; a symlink, a non-file or an unreadable record is `None`.
     fn load(&self, id: &str) -> io::Result<Option<Record>> {
         let path = self.dir.join(format!("{id}.json"));
-        match fs::symlink_metadata(&path) {
-            Ok(meta) if meta.is_file() => {}
+        let before = match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_file() => meta,
             Ok(_) => return Ok(None),
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
+        };
+        // No `O_NOFOLLOW` without libc: the opened file must be the very inode checked above, so
+        // a symlink swapped in between the check and the open is never followed.
+        let mut file = File::open(&path)?;
+        let opened = file.metadata()?;
+        if opened.dev() != before.dev() || opened.ino() != before.ino() || !opened.is_file() {
+            return Ok(None);
         }
         let mut text = String::new();
-        File::open(&path)?.read_to_string(&mut text)?;
+        file.read_to_string(&mut text)?;
         Ok(serde_json::from_str::<Value>(&text)
             .ok()
             .as_ref()

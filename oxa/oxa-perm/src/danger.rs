@@ -410,7 +410,10 @@ impl DangerRules {
             }
             "pkill" | "killall" => self.push(hits, "kill-foreign", seg),
             "oxa" => {
-                if matches!(argv.get(1).map(String::as_str), Some("send") | Some("approve")) {
+                // The CLI takes leading switches before a subcommand (`oxa --offline send ..`):
+                // the first word that is not an option is the subcommand.
+                let sub = args.iter().map(String::as_str).find(|a| !a.starts_with('-'));
+                if matches!(sub, Some("send") | Some("approve")) {
                     self.push(hits, "oxa-self-approve", seg);
                 }
             }
