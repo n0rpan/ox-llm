@@ -1175,6 +1175,7 @@ dependencies = [
 name = "oxa-cli"
 version = "0.2.0"
 dependencies = [
+ "oxa-cli",
  "oxa-codemode",
  "oxa-compact",
  "oxa-config",

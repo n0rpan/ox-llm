@@ -19,6 +19,7 @@ path = "src/main.rs"
 [features]
 default = []
 share = ["oxc-gateway/share"]
+managed-steering = ["oxa-rpc/managed-steering"]
 
 [dependencies]
 oxa-work.workspace = true
@@ -54,6 +55,7 @@ oxa-fake.workspace = true
 zip = { version = "9.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+oxa-cli = { path = ".", features = ["managed-steering"] }
 oxa-orchestrator = { path = "../oxa-orchestrator", features = ["a2a"] }
 
 [lints]
