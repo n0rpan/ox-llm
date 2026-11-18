@@ -27,8 +27,28 @@ pub enum RunEnd {
 pub fn append_entry(st: &mut SessionState, body: EntryBody) -> Result<Entry, OxaError> {
     let id = {
         let tree = &st.tree;
-        new_entry_id(&|candidate: &str| tree.get(candidate).is_some())
+        new_entry_id(&|candidate: &str| {
+            tree.get(candidate).is_some()
+                || st
+                    .goal
+                    .as_ref()
+                    .is_some_and(|goal| goal.reserves_entry_id(candidate))
+        })
     };
+    append_entry_with_id(st, id, body)
+}
+
+pub(crate) fn append_entry_with_id(
+    st: &mut SessionState,
+    id: String,
+    body: EntryBody,
+) -> Result<Entry, OxaError> {
+    if st.tree.get(&id).is_some() {
+        return Err(OxaError::new(
+            oxa_proto::codes::INVALID,
+            "Session entry identity already exists.",
+        ));
+    }
     let leaf = st.tree.leaf();
     let parent = if leaf.is_empty() {
         None

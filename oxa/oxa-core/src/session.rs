@@ -122,9 +122,10 @@ pub struct Stats {
 
 /// A running session.
 pub struct Session {
-    st: SessionState,
+    pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
+    lead_steering_authority: Option<(SessionRef, Arc<crate::goal::SteeringAuthority>)>,
 }
 
 /// The CLI-level choices of [`Session::open`]. `None` in [`enter`] means a switch inside a
@@ -303,7 +304,11 @@ impl Session {
         let mut sink = VecSink::default();
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
-        Ok(Session { st, preloaded: false })
+        Ok(Session {
+            st,
+            preloaded: false,
+            lead_steering_authority: None,
+        })
     }
 
     /// Run one user prompt to settlement (blocks). A line naming an extension command runs it
@@ -371,6 +376,11 @@ impl Session {
         Handle {
             shared: self.st.shared.clone(),
         }
+    }
+
+    /// Install the existing assignment guard for recovery of this exact mounted session.
+    pub fn bind_lead_steering_authority(&mut self, authority: Arc<crate::goal::SteeringAuthority>) {
+        self.lead_steering_authority = Some((self.st.sref.clone(), authority));
     }
 
     /// Install a progress observer for this session and subsequent in-process switches.
@@ -765,6 +775,9 @@ impl Session {
                 "The active session preset does not support goal mode",
             ));
         }
+        if let Some(goal) = &goal {
+            goal.validate()?;
+        }
         let body = goal
             .as_ref()
             .map_or_else(oxa_session::Goal::clear_body, oxa_session::Goal::body);
@@ -1033,6 +1046,12 @@ impl Session {
                 sink,
             )?;
         }
+        let authority = self
+            .lead_steering_authority
+            .as_ref()
+            .filter(|(session, _)| session == &st.sref)
+            .map(|(_, authority)| authority.as_ref());
+        crate::goal::deliver_saved(st, authority, sink)?;
         let images = crate::fire::images_json(&parts);
         let (wire, note) = crate::envnote::add_note(st, user_message(&text, &parts));
         // The note's provenance is stored with the entry (refill and display strip exactly it).

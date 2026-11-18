@@ -229,3 +229,84 @@ fn malformed_or_unknown_goal_metadata_is_an_error_not_a_fresh_budget() {
     .is_err());
     assert!(Goal::new(" ".into(), GoalBudget::default(), 0).is_err());
 }
+
+#[test]
+fn lead_state_survives_compaction_and_stays_private_to_its_session() {
+    use oxa_proto::Value;
+    use oxa_session::{HeldGoalLease, LeadGoalState, OpenGoalAsk, SteeringLease};
+
+    let env = TestEnv::new();
+    let root = env.root().join("sessions");
+    let store = FsStore::new(root.clone());
+    let session = store.create(&env.work(), None, None).unwrap();
+    let mut goal = objective();
+    goal.lead = Some(LeadGoalState {
+        open_asks: vec![OpenGoalAsk {
+            id: "ask-1".into(),
+            revision: 2,
+            question: "Which synthetic result should be used?".into(),
+        }],
+        standing_refs: vec!["rule-1".into()],
+        held_leases: vec![HeldGoalLease {
+            task: "task-1".into(),
+            lease: SteeringLease {
+                holder: "fixture".into(),
+                generation: (0, 1),
+            },
+            expires_at: 60,
+        }],
+        pending_steer: None,
+    });
+    let checkpoint = entry("00000001", None, goal.body());
+    let mut public = Vec::new();
+    oxa_session::encode_visible_entry(&checkpoint, &mut public);
+    let public: Value = serde_json::from_slice(&public).unwrap();
+    assert!(public["data"].get("lead").is_none());
+
+    let kept = ["First synthetic turn.", "Second synthetic turn."];
+    let mut entries = vec![checkpoint];
+    for (index, message) in kept.iter().enumerate() {
+        let id = format!("{:08x}", index + 2);
+        let parent = entries.last().unwrap().id.clone();
+        entries.push(entry(
+            &id,
+            Some(&parent),
+            EntryBody::Msg {
+                wire: WireMsg::user(*message),
+                parts: vec![],
+                tool: None,
+            },
+        ));
+    }
+    store.append_many(&session, &entries).unwrap();
+    store
+        .append(
+            &session,
+            &entry(
+                "00000004",
+                Some("00000003"),
+                EntryBody::Compaction {
+                    summary: "Synthetic summary.".into(),
+                    first_kept: "00000003".into(),
+                    tokens_before: 500,
+                    details: Value::Null,
+                    from_hook: false,
+                },
+            ),
+        )
+        .unwrap();
+    store.sync(&session).unwrap();
+    drop(store);
+
+    let reopened = FsStore::new(root);
+    let entries = reopened.load(&session).unwrap();
+    assert_eq!(Goal::latest(&entries).unwrap(), Some(goal.clone()));
+    assert_eq!(Goal::revision(&entries), 1);
+    assert_eq!(
+        Transcript::project(&entries).wire(),
+        &[WireMsg::user("Synthetic summary."), WireMsg::user(kept[1])]
+    );
+    let fork = oxa_session::fork_file(&reopened, &session, &env.work(), None).unwrap();
+    goal.lead = None;
+    assert_eq!(Goal::latest(&reopened.load(&fork).unwrap()).unwrap(), Some(goal));
+}

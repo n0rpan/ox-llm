@@ -420,7 +420,13 @@ fn explicit_continue_resumes_a_paused_goal_without_resetting_its_budget_or_objec
 
 #[test]
 fn lead_goal_resumes_after_a_killed_turn_without_redelivering_a_saved_steer() {
-    use oxa_proto::{Entry, EntryBody};
+    for append_was_saved in [false, true] {
+        lead_resume_after_kill(append_was_saved);
+    }
+}
+
+fn lead_resume_after_kill(append_was_saved: bool) {
+    use oxa_proto::{Entry, EntryBody, Part, WireMsg};
     use oxa_session::{FsStore, Goal, SessionStore, GOAL_ENTRY};
     use serde_json::json;
     use std::time::{Duration, Instant};
@@ -460,6 +466,24 @@ fn lead_goal_resumes_after_a_killed_turn_without_redelivering_a_saved_steer() {
             },
         )
         .unwrap();
+    if append_was_saved {
+        // Model the interruption after the user append and before its pending slot was cleared.
+        store
+            .append(
+                &session,
+                &Entry {
+                    id: steering_id.into(),
+                    parent: Some("abcdef01".into()),
+                    ts_ms: 2,
+                    body: EntryBody::Msg {
+                        wire: WireMsg::user(steering),
+                        parts: vec![Part::Text(steering.into())],
+                        tool: None,
+                    },
+                },
+            )
+            .unwrap();
+    }
     store.sync(&session).unwrap();
 
     let held = FakeServer::start(

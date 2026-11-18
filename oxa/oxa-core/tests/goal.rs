@@ -552,3 +552,79 @@ fn goal_completion_obeys_the_existing_final_answer_schema_repair() {
         );
     }
 }
+
+#[test]
+fn a_durable_pending_steer_requires_the_live_lease_after_reopening() {
+    use oxa_session::{LeadGoalState, OpenGoalAsk, SteeringLease};
+
+    let env = TestEnv::new();
+    let root = env.root().join("sessions");
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let store = Arc::new(FsStore::new(root.clone()));
+    let mut owner = Session::open(deps(&env, store, engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let session = owner.inner().sref.clone();
+    owner
+        .set_goal(Some(objective(GoalBudget::default())), &mut sink)
+        .unwrap();
+    let revision = owner.goal_revision();
+    let lease = SteeringLease {
+        holder: "fixture".into(),
+        generation: (0, 1),
+    };
+    let staged = owner
+        .stage_lead_steer(
+            &session,
+            revision,
+            "Synthetic confirmed steer.".into(),
+            Some(lease),
+            &mut sink,
+        )
+        .unwrap();
+    let lead = LeadGoalState {
+        open_asks: vec![OpenGoalAsk {
+            id: "ask-1".into(),
+            revision: 2,
+            question: "Which synthetic result should be used?".into(),
+        }],
+        ..LeadGoalState::default()
+    };
+    assert_eq!(
+        owner
+            .update_lead_goal(&session, revision, lead.clone(), &mut sink)
+            .unwrap_err()
+            .code,
+        "goal_revision_conflict"
+    );
+    owner
+        .update_lead_goal(&session, staged, lead.clone(), &mut sink)
+        .unwrap();
+    drop(owner);
+
+    let mut owner = Session::open(
+        deps(&env, Arc::new(FsStore::new(root)), engine.clone()),
+        Open::Resume(session),
+    )
+    .unwrap();
+    assert!(owner.goal().unwrap().lead.unwrap().pending_steer.is_some());
+    // No authority is available yet, so preserve the pending steer and refuse to run.
+    let mut ui = HeadlessUi::default();
+    let error = owner
+        .prompt("continue".into(), vec![], &mut sink, &mut ui)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_steer_stale");
+    assert!(owner.goal().unwrap().lead.unwrap().pending_steer.is_some());
+
+    owner.bind_lead_steering_authority(Arc::new(|_, operation| {
+        operation(Some(&SteeringLease {
+            holder: "fixture".into(),
+            generation: (0, 2),
+        }));
+    }));
+    let error = owner
+        .prompt("continue".into(), vec![], &mut sink, &mut ui)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_steer_stale");
+    assert_eq!(owner.goal().unwrap().lead, Some(lead));
+    assert!(engine.requests().is_empty());
+}
