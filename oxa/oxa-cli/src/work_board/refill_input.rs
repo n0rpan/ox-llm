@@ -83,7 +83,11 @@ impl<'a> Input<'a> {
         let board = partition.assignment_board(claims, self, policy, worker, now)?;
         let mut prepared = vec![];
         for number in board.candidates(&worker.id)? {
-            if !board.assignments.contains_key(&number) {
+            if board
+                .assignments
+                .get(&number)
+                .is_none_or(|row| row.state.lease.is_some())
+            {
                 continue;
             }
             let entry = board
@@ -105,6 +109,9 @@ impl<'a> Input<'a> {
             }
             let context =
                 oxa_work::prepare_pull_request_context(number, &entry.head, &snapshot["pullRequest"])?;
+            if !NativeBinding::is_valid_branch(&context.branch) {
+                continue;
+            }
             let mut prompt = String::with_capacity(context.prompt.len());
             for line in context.prompt.split_inclusive('\n') {
                 if line.trim() == "---" {
