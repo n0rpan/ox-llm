@@ -418,7 +418,7 @@ fn queue(html: &mut String, view: &View<'_>) {
 fn release(html: &mut String, view: &View<'_>) {
     html.push_str("<section id=release><h2>Release checklist</h2>");
     if let Some((number, items)) = view.release {
-        let _ = write!(html, "<p class=muted>Issue #{number} · {} / {} reported complete; validation requires merge evidence.</p><ul>", items.iter().filter(|i| i.0).count(), items.len());
+        let _ = write!(html, "<p class=muted>Issue #{number} · {} / {} checkboxes reported checked.</p><p class=muted>Owner outcome verification unavailable. This checklist does not include release or installability evidence.</p><ul>", items.iter().filter(|i| i.0).count(), items.len());
         for (checked, text) in items {
             let _ = write!(
                 html,
@@ -1437,7 +1437,7 @@ return true;
         ] {
             assert!(page.contains(unknown));
         }
-        assert!(page.contains("0 / 1 reported complete"));
+        assert!(page.contains("0 / 1 checkboxes reported checked"));
     }
 
     fn usage_page(observation: Option<&oxa_work::Result<Option<oxa_work::TaskUsage>>>) -> String {
