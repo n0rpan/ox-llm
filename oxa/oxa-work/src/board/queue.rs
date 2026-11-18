@@ -13,6 +13,7 @@ const QUEUE: &str = r#"mergeQueue(branch:"main"){id}"#;
 pub struct RejectionEvidence {
     number: u64,
     removal_event: String,
+    removed_at: String,
     merge_group_head: String,
     failed_required_check_runs: Vec<u64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -126,6 +127,14 @@ fn node_id(value: &Value) -> Option<&str> {
     })
 }
 
+/// Verify a complete lowercase object ID from a GitHub commit field.
+pub fn is_object_id(sha: &str) -> bool {
+    matches!(sha.len(), 40 | 64)
+        && sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<RejectionEvidence>, String> {
     if row["number"].as_u64() != Some(entry.number)
         || row["headRefOid"].as_str() != Some(entry.head.as_str())
@@ -157,13 +166,10 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
         return Ok(None);
     };
     let commit = &event["beforeCommit"];
-    let Some(sha) = commit["oid"].as_str().filter(|sha| {
-        matches!(sha.len(), 40 | 64)
-            && sha
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            && *sha != entry.head
-    }) else {
+    let Some(sha) = commit["oid"]
+        .as_str()
+        .filter(|sha| is_object_id(sha) && *sha != entry.head)
+    else {
         return Ok(None);
     };
     let rollup = &commit["statusCheckRollup"];
@@ -199,6 +205,7 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
     Ok((!failed.is_empty()).then(|| RejectionEvidence {
         number: entry.number,
         removal_event: removal_event.to_owned(),
+        removed_at: removed_at.to_owned(),
         merge_group_head: sha.to_owned(),
         failed_required_check_runs: failed.keys().copied().collect(),
         failed_required_workflows: failed

@@ -23,6 +23,42 @@ pub struct GoalObservation<'a> {
     pub status: Option<GoalStatus>,
 }
 
+/// The existing lease identity supplied by the trusted assignment owner.
+/// Renewing a lease does not change its holder or generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteeringLease {
+    pub holder: String,
+    pub generation: (u64, u32),
+}
+
+/// Identity captured for a steering request at submission.
+pub struct SteeringBinding {
+    pub session: SessionRef,
+    pub revision: u64,
+    pub lease: Option<SteeringLease>,
+}
+
+impl SteeringBinding {
+    /// Revalidate just before appending at the native steering boundary. The
+    /// frontend supplies current lease evidence from its existing authority.
+    pub fn validate(
+        &self,
+        owner: &crate::SessionState,
+        current_lease: Option<&SteeringLease>,
+    ) -> Result<(), oxa_proto::OxaError> {
+        if self.session != owner.sref
+            || self.lease.as_ref() != current_lease
+            || !Goal::allows_steering(owner.tree.entries(), self.revision)
+        {
+            return Err(oxa_proto::OxaError::new(
+                "goal_steer_stale",
+                "The goal or its assignment changed. Read the current binding before resending.",
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl crate::Session {
     /// The saved goal revision, scoped to the owner's current session reference.
     pub fn goal_revision(&self) -> u64 {
@@ -385,8 +421,17 @@ pub(crate) fn checkpoint(
 ) -> Result<(), oxa_proto::OxaError> {
     account(st, turn)?;
     if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
-        crate::agent_loop::persist(st, goal.snapshot().body(), sink)?;
+        save_checkpoint(st, &goal.snapshot(), sink)?;
     }
+    Ok(())
+}
+pub(crate) fn save_checkpoint(
+    st: &mut crate::SessionState,
+    goal: &Goal,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    let body = goal.checkpoint_body(st.tree.entries());
+    crate::agent_loop::persist(st, body, sink)?;
     Ok(())
 }
 pub(crate) fn terminal(st: &crate::SessionState) -> bool {

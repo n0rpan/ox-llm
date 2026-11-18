@@ -6,6 +6,7 @@ use serde_json::json;
 pub const GOAL_ENTRY: &str = "oxa.goal.v1";
 const MAX_OBJECTIVE: usize = 64 * 1024;
 const MAX_EVIDENCE: usize = 8 * 1024;
+const CONTROL_FIELDS: [&str; 5] = ["objective", "status", "started_ms", "budget", "evidence"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalStatus {
@@ -175,9 +176,23 @@ impl Goal {
             "evidence":self.evidence,"idle_stops":self.idle_stops,"unknown_requests":self.unknown_requests})
     }
     pub fn body(&self) -> EntryBody {
+        Self::record(self.value(), "control")
+    }
+    /// Charge and settlement checkpoints can also change goal control state.
+    pub fn checkpoint_body(&self, entries: &[Entry]) -> EntryBody {
+        let data = self.value();
+        let accounting = last_record(entries).is_some_and(|(_, previous)| {
+            CONTROL_FIELDS
+                .iter()
+                .all(|&key| previous.get(key) == data.get(key))
+        });
+        Self::record(data, if accounting { "accounting" } else { "control" })
+    }
+    fn record(mut data: Value, change: &str) -> EntryBody {
+        data["change"] = change.into();
         EntryBody::Custom {
             custom_type: GOAL_ENTRY.into(),
-            data: self.value(),
+            data,
         }
     }
     pub fn clear_body() -> EntryBody {
@@ -187,7 +202,13 @@ impl Goal {
         }
     }
     pub fn decode(v: &Value) -> Result<Self, OxaError> {
-        if v.as_object().ok_or_else(invalid)?.len() != 11 || v["version"] != 1 {
+        let fields = v.as_object().ok_or_else(invalid)?;
+        let field_count = match fields.get("change").map(Value::as_str) {
+            None => 11,
+            Some(Some("control" | "accounting")) => 12,
+            _ => return Err(invalid()),
+        };
+        if fields.len() != field_count || v["version"] != 1 {
             return Err(invalid());
         }
         let number = |key| v[key].as_u64().ok_or_else(invalid);
@@ -247,6 +268,33 @@ impl Goal {
     pub fn revision(entries: &[Entry]) -> u64 {
         last_record(entries).map_or(0, |(index, _)| index as u64 + 1)
     }
+
+    /// The requested revision must name a saved, nonterminal goal. Later goal
+    /// records must be explicitly tagged as accounting-only. Legacy records
+    /// remain readable and can anchor new requests.
+    pub fn allows_steering(entries: &[Entry], revision: u64) -> bool {
+        let Some(index) = revision.checked_sub(1).and_then(|i| usize::try_from(i).ok()) else {
+            return false;
+        };
+        let Some(anchor) = entries.get(index).and_then(record_data) else {
+            return false;
+        };
+        let steerable =
+            |data: &Value| matches!(data["status"].as_str(), Some("pursuing" | "paused" | "blocked"));
+        steerable(anchor)
+            && entries[index + 1..].iter().filter_map(record_data).all(|data| {
+                steerable(data)
+                    && data["change"] == "accounting"
+                    && CONTROL_FIELDS.iter().all(|&key| data.get(key) == anchor.get(key))
+            })
+    }
+}
+
+fn record_data(entry: &Entry) -> Option<&Value> {
+    match &entry.body {
+        EntryBody::Custom { custom_type, data } if custom_type == GOAL_ENTRY => Some(data),
+        _ => None,
+    }
 }
 
 fn last_record(entries: &[Entry]) -> Option<(usize, &Value)> {
@@ -254,8 +302,5 @@ fn last_record(entries: &[Entry]) -> Option<(usize, &Value)> {
         .iter()
         .enumerate()
         .rev()
-        .find_map(|(index, entry)| match &entry.body {
-            EntryBody::Custom { custom_type, data } if custom_type == GOAL_ENTRY => Some((index, data)),
-            _ => None,
-        })
+        .find_map(|(index, entry)| record_data(entry).map(|data| (index, data)))
 }

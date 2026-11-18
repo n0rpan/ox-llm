@@ -69,8 +69,11 @@ pub struct Facts<'a> {
     pub head: &'a str,
     /// Stable patch ID of the complete own diff. Missing evidence fails closed.
     pub patch_id: Option<&'a str>,
-    /// Heads proven to reach this head through pure main merges only.
+    /// Reviewed heads linked to this head by verified pure main merges.
     pub main_merge_predecessors: &'a [&'a str],
+    /// Owner-approved heads with only verified pure main merges and ordinary
+    /// documentation and test changes since approval.
+    pub owner_approval_predecessors: &'a [&'a str],
     pub requested: &'a [RequestReceipt<'a>],
     pub approvals: &'a [Approval<'a>],
 }
@@ -187,6 +190,15 @@ pub struct PathRule<'a> {
     pub tier: Tier,
 }
 
+impl PathRule<'_> {
+    fn matches(&self, path: &str) -> bool {
+        path == self.path
+            || path
+                .strip_prefix(self.path)
+                .is_some_and(|rest| rest.starts_with('/'))
+    }
+}
+
 /// Construct this policy from owner-controlled rules, never from the PR.
 #[derive(Default)]
 pub struct Policy<'a> {
@@ -195,6 +207,15 @@ pub struct Policy<'a> {
 }
 
 impl Policy<'_> {
+    pub fn allows_approval_carry(&self, path: &str, kind: ChangeKind) -> bool {
+        matches!(kind, ChangeKind::Documentation | ChangeKind::Test)
+            && !agent_instruction_path(path)
+            && !self
+                .paths
+                .iter()
+                .any(|rule| rule.tier == Tier::Protected && rule.matches(path))
+    }
+
     pub fn decide(&self, facts: &Facts<'_>) -> Decision {
         if !self.enabled {
             return Decision::Disabled;
@@ -231,14 +252,7 @@ impl Policy<'_> {
                 let path_tier = self
                     .paths
                     .iter()
-                    .filter(|rule| {
-                        paths.into_iter().flatten().any(|path| {
-                            path == rule.path
-                                || path
-                                    .strip_prefix(rule.path)
-                                    .is_some_and(|rest| rest.starts_with('/'))
-                        })
-                    })
+                    .filter(|rule| paths.into_iter().flatten().any(|path| rule.matches(path)))
                     .map(|rule| rule.tier)
                     .max()
                     .unwrap_or(Tier::DocsAndTests);
@@ -272,7 +286,9 @@ impl Policy<'_> {
                     approval.reviewer == *reviewer
                         && approval.patch_id == patch_id
                         && (approval.head == facts.head
-                            || facts.main_merge_predecessors.contains(&approval.head))
+                            || facts.main_merge_predecessors.contains(&approval.head)
+                            || (*reviewer == Reviewer::Owner
+                                && facts.owner_approval_predecessors.contains(&approval.head)))
                 })
             })
             .collect();

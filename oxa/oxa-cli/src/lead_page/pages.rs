@@ -2,6 +2,12 @@ use super::Query;
 use std::fmt::Write;
 
 pub(super) const BOARD_ROWS: usize = 50;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Prompt {
+    Status,
+    Workers,
+    Attention,
+}
 
 /// Read-only destinations; request text never becomes a renderer instruction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -12,6 +18,7 @@ pub enum Page {
     BoardQuery(Query),
     Workers,
     Usage,
+    Chat(Prompt),
 }
 
 impl Page {
@@ -24,6 +31,7 @@ impl Page {
             Self::Board | Self::BoardQuery(_) => "Board",
             Self::Workers => "Workers",
             Self::Usage => "Usage",
+            Self::Chat(_) => "Chat with lead",
         }
     }
 
@@ -34,6 +42,7 @@ impl Page {
             Self::Board | Self::BoardQuery(_) => "/board",
             Self::Workers => "/workers",
             Self::Usage => "/usage",
+            Self::Chat(_) => "/chat",
         }
     }
 
@@ -44,6 +53,15 @@ impl Page {
             .map_or((path, false), |path| (path, true));
         if let Some(query) = path.strip_prefix("/board?") {
             return Some((Self::BoardQuery(Query::parse(query)?), fragment));
+        }
+        let prompt = match path {
+            "/chat" | "/chat?prompt=status" => Some(Prompt::Status),
+            "/chat?prompt=workers" => Some(Prompt::Workers),
+            "/chat?prompt=attention" => Some(Prompt::Attention),
+            _ => None,
+        };
+        if let Some(prompt) = prompt {
+            return Some((Self::Chat(prompt), fragment));
         }
         Self::ALL
             .into_iter()
@@ -71,7 +89,15 @@ impl Page {
                 if page == Self::Home { "Home" } else { page.title() }
             );
         }
-        html.push_str("</nav>");
+        let _ = write!(
+            html,
+            "<a class=compose href=/chat aria-label=\"Chat with lead\"{}>✎ Chat</a></nav>",
+            if matches!(self, Self::Chat(_)) {
+                " aria-current=page"
+            } else {
+                ""
+            }
+        );
         html
     }
 }

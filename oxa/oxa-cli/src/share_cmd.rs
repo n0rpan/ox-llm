@@ -137,7 +137,7 @@ fn usage() -> OxaError {
 
 fn service_error(error: Failure) -> OxaError {
     let message = match error {
-        Failure::Forbidden => "No eligible guest model or usable tailnet address.",
+        Failure::Forbidden => "Use loopback or an assigned Tailscale address for LAN sharing.",
         Failure::BadRequest => "Invalid guest listener configuration.",
         Failure::Busy => "Guest listener could not bind or tailscaled is unavailable.",
         _ => "Guest listener stopped unexpectedly.",

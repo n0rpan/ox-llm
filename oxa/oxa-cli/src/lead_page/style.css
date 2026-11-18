@@ -42,6 +42,8 @@ nav.tabs{position:fixed;left:0;right:0;bottom:0;z-index:10;display:flex;backgrou
 nav.tabs a{display:flex;flex:1;align-items:center;justify-content:center;min-width:0;min-height:var(--nav-height);
   padding:8px 4px;font-size:12px;font-weight:600;text-align:center;color:var(--muted)}
 nav.tabs a[aria-current=page],nav.tabs a:hover,nav.tabs a:focus-visible{color:var(--accent);background:var(--accent-soft)}
+nav.tabs a.compose{position:fixed;right:16px;bottom:calc(var(--nav-height) + env(safe-area-inset-bottom) + 16px);
+  flex:none;width:58px;min-height:58px;border-radius:50%;color:var(--surface);background:var(--accent)}
 footer{padding:18px 0;font-size:13px;overflow-wrap:anywhere}
 @media(min-width:900px){
   body{padding-left:184px;padding-bottom:24px}main{max-width:1080px;padding:24px}
@@ -49,5 +51,7 @@ footer{padding:18px 0;font-size:13px;overflow-wrap:anywhere}
   nav.tabs{right:auto;top:0;bottom:0;width:184px;flex-direction:column;justify-content:center;
     padding:16px 12px;border-top:0;border-right:1px solid var(--line);gap:8px}
   nav.tabs a{flex:none;justify-content:flex-start;min-height:48px;padding:12px;border-radius:12px;font-size:14px;text-align:left}
+  nav.tabs a.compose{position:static;width:auto;min-height:48px;border-radius:12px;color:var(--muted);background:transparent}
+  nav.tabs a.compose[aria-current=page]{color:var(--accent);background:var(--accent-soft)}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto;transition:none!important}}
