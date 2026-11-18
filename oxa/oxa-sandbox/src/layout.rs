@@ -150,6 +150,19 @@ pub fn is_secret_name(name: &str) -> bool {
     .any(|w| up.contains(w))
 }
 
+/// The variables of `env` that may reach a command: toolchain locations ([`TOOLCHAIN_ENV`],
+/// `MISE_*`), never a name that looks like a secret ([`is_secret_name`]). Everything else of the
+/// process environment stays out (bwrap `--clearenv`, the same off Linux).
+pub fn toolchain_env(env: &[(String, String)]) -> Vec<(String, String)> {
+    env.iter()
+        .filter(|(k, _)| {
+            (TOOLCHAIN_ENV.contains(&k.as_str()) || TOOLCHAIN_ENV_PREFIXES.iter().any(|p| k.starts_with(p)))
+                && !is_secret_name(k)
+        })
+        .cloned()
+        .collect()
+}
+
 /// What the sandbox shows of the machine. `Layout::default()` = the minimal layout: base
 /// `PATH`, nothing bound beyond the cwd, the deny-list of `$HOME` only.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -325,16 +338,7 @@ impl Layout {
             .filter(|(_, rw)| *rw)
             .map(|(p, _)| p.clone())
             .collect();
-        let mut env: Vec<(String, String)> = i
-            .env
-            .iter()
-            .filter(|(k, _)| {
-                (TOOLCHAIN_ENV.contains(&k.as_str())
-                    || TOOLCHAIN_ENV_PREFIXES.iter().any(|p| k.starts_with(p)))
-                    && !is_secret_name(k)
-            })
-            .cloned()
-            .collect();
+        let mut env = toolchain_env(&i.env);
         // Version-manager shims (mise) write state under the read-only home and warn on
         // every call; point it at the sandbox /tmp unless the caller set it.
         if !env.iter().any(|(n, _)| n == "MISE_STATE_DIR") {

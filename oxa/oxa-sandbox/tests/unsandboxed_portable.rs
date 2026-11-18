@@ -27,7 +27,7 @@ fn unsandboxed_run_sets_the_flag_and_runs_the_command() {
     let marker = env.root().join("ran");
     let s = spec(&env, format!("echo hi && touch '{}'", marker.display()));
     use oxa_proto::Sandbox;
-    let sb = oxa_sandbox::Unsandboxed;
+    let sb = oxa_sandbox::Unsandboxed::default();
     assert!(sb.check().is_ok());
     let cancel = CancelToken::new();
     let r = sb.run(&s, &cancel, &mut |_| {});
@@ -46,7 +46,7 @@ fn unsandboxed_run_sets_the_flag_and_runs_the_command() {
 #[cfg(not(target_os = "linux"))]
 fn unsandboxed_notice_never_claims_a_sandbox() {
     use oxa_proto::Sandbox;
-    let notice = oxa_sandbox::Unsandboxed
+    let notice = oxa_sandbox::Unsandboxed::default()
         .persistence_notice()
         .unwrap()
         .to_lowercase();
@@ -80,4 +80,61 @@ fn die_with_parent_is_a_noop_off_linux() {
     let mut command = std::process::Command::new("true");
     oxa_sandbox::die_with_parent(&mut command);
     assert!(command.status().unwrap().success());
+}
+
+/// The model's bash gets bwrap's cleared base environment, not the process's: a credential
+/// variable of the process is unreadable, and the variables are the ones bwrap sets.
+#[test]
+fn unsandboxed_env_matches_bwrap_base_env_and_hides_credentials() {
+    use oxa_proto::Sandbox;
+    use oxa_sandbox::{bwrap_args_with, Layout, Unsandboxed};
+    std::env::set_var("OXA_TEST_UNSANDBOXED_API_KEY", "sk-must-not-leak");
+    let env = oxa_fake::TestEnv::new();
+    let layout = Layout {
+        env: vec![("CARGO_HOME".into(), "/opt/cargo".into())],
+        ..Layout::default()
+    };
+    let home = env.home();
+    let sb = Unsandboxed {
+        layout: layout.clone(),
+        home: home.clone(),
+    };
+    let mut s = spec(&env, "env".into());
+    s.env = vec![("OXA_TEST_SPEC_VAR".into(), "kept".into())];
+    let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
+    let out = String::from_utf8_lossy(&r.output).into_owned();
+    assert_eq!(r.exit, Some(0), "{out}");
+    assert!(
+        !out.contains("sk-must-not-leak") && !out.contains("OXA_TEST_UNSANDBOXED_API_KEY"),
+        "{out}"
+    );
+    let mut got: Vec<(String, String)> = out
+        .lines()
+        .filter_map(|l| l.split_once('='))
+        .filter(|(k, _)| !matches!(*k, "PWD" | "SHLVL" | "_" | "OLDPWD"))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    got.sort();
+    let argv = bwrap_args_with(&s, &home, &layout);
+    let mut want: Vec<(String, String)> = argv
+        .windows(3)
+        .filter(|w| w[0] == "--setenv")
+        .map(|w| (w[1].clone(), w[2].clone()))
+        .collect();
+    want.sort();
+    assert_eq!(got, want);
+}
+
+/// Off Linux a refused bash network cannot be enforced: the sandbox says so, so the model's
+/// environment note and the start notice do not claim "off".
+#[test]
+fn unsandboxed_does_not_enforce_the_network() {
+    use oxa_proto::Sandbox;
+    assert!(!oxa_sandbox::Unsandboxed::default().network_enforced());
+    let ns = oxa_sandbox::NetSandbox::new(
+        std::sync::Arc::new(oxa_sandbox::Unsandboxed::default()),
+        false,
+        true,
+    );
+    assert!(!ns.network() && !ns.network_enforced());
 }

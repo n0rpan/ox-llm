@@ -224,6 +224,9 @@ impl Sandbox for NetSandbox {
     fn network(&self) -> bool {
         self.net
     }
+    fn network_enforced(&self) -> bool {
+        self.inner.network_enforced()
+    }
     fn bwrap_args(&self, s: &ExecSpec) -> Vec<String> {
         self.inner.bwrap_args(&self.clamp(s))
     }

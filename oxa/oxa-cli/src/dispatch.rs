@@ -978,7 +978,20 @@ fn prepare(
                     oxa_sandbox::NO_OS_SANDBOX_NOTICE
                 ),
             ));
-            Arc::new(oxa_sandbox::Unsandboxed)
+            // The same cleared base environment bwrap gives: credential variables stay out.
+            let mut layout = oxa_sandbox::Layout::build(&oxa_sandbox::LayoutInputs {
+                home: dirs.home.clone(),
+                agent_dir: Some(dirs.agent_dir.clone()),
+                path_var: env.get("PATH").unwrap_or("").to_string(),
+                env: env.pairs().to_vec(),
+                ..Default::default()
+            });
+            // Toolchain locations only: the sandbox's /tmp redirections do not apply here.
+            layout.env = oxa_sandbox::toolchain_env(env.pairs());
+            Arc::new(oxa_sandbox::Unsandboxed {
+                layout,
+                home: dirs.home.clone(),
+            })
         }
         #[cfg(target_os = "linux")]
         Err(e) => {
@@ -990,6 +1003,11 @@ fn prepare(
         }
     };
     let sandbox = crate::netguard::with_net(sandbox, &settings);
+    // Off Linux a refused bash network (`oxa.sandbox.net: off`, offline) cannot be enforced:
+    // say so at start. oxa's own provider calls still obey offline.
+    if !sandbox.network() && !sandbox.network_enforced() {
+        notices.push((Level::Warning, oxa_proto::NET_NOT_RESTRICTED_NOTICE.to_string()));
+    }
 
     // `--model` resolves against the engine's models; its `:level` suffix sets thinking unless
     // `--thinking` is given.

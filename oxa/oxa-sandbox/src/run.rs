@@ -113,11 +113,32 @@ pub fn run_unsandboxed_capture(
     live: &mut dyn FnMut(&[u8]),
     capture: bool,
 ) -> ExecResult {
+    run_unsandboxed_env(s, None, cancel, live, capture)
+}
+
+/// The command for `s`: the process environment plus `s.env`, or, with `base`, exactly `base`
+/// (what bwrap gives the model's bash: [`crate::bwrap::base_env`]).
+fn unsandboxed_command(s: &ExecSpec, base: Option<&[(String, String)]>) -> Command {
     let mut cmd = Command::new("bash");
-    cmd.arg("-c")
-        .arg(&s.command)
-        .current_dir(&s.cwd)
-        .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    cmd.arg("-c").arg(&s.command).current_dir(&s.cwd);
+    match base {
+        Some(env) => cmd
+            .env_clear()
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
+        None => cmd.envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str()))),
+    };
+    cmd
+}
+
+/// [`run_unsandboxed_capture`] with an optional exact environment (`None` = inherit).
+pub(crate) fn run_unsandboxed_env(
+    s: &ExecSpec,
+    base: Option<&[(String, String)]>,
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+    capture: bool,
+) -> ExecResult {
+    let cmd = unsandboxed_command(s, base);
     let mut r = execute(cmd, "bash", None, s.timeout_s, cancel, live, capture);
     // Linux keeps `false`: only a platform without bwrap reports a command as unsandboxed.
     r.unsandboxed = !cfg!(target_os = "linux");
@@ -125,18 +146,14 @@ pub fn run_unsandboxed_capture(
 }
 
 /// [`run_unsandboxed`] with `stdin` fed to the command and then closed (exec hooks).
-#[cfg(not(target_os = "linux"))]
 pub(crate) fn run_unsandboxed_stdin(
     s: &ExecSpec,
     stdin: &[u8],
     cancel: &CancelToken,
     live: &mut dyn FnMut(&[u8]),
+    base: &[(String, String)],
 ) -> ExecResult {
-    let mut cmd = Command::new("bash");
-    cmd.arg("-c")
-        .arg(&s.command)
-        .current_dir(&s.cwd)
-        .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    let cmd = unsandboxed_command(s, Some(base));
     let mut r = execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true);
     r.unsandboxed = true;
     r

@@ -60,7 +60,9 @@ $ alias yoxa='oxa --yolo'
 
 ## The bash sandbox
 
-On Linux, bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled and oxa says so at start-up. oxa does not fall back to running commands unsandboxed; only the `yolo` mode runs bash without it.
+On Linux, bash runs in a `bubblewrap` (`bwrap`) sandbox. Without a usable `bwrap`, the bash tool is disabled and oxa says so at start-up. On Linux oxa does not fall back to running commands unsandboxed; only the `yolo` mode runs bash without it.
+
+Off Linux (macOS) there is no OS sandbox. Bash and exec hooks run as `bash -c` with your full user rights, every result is flagged as unsandboxed, and oxa says so at start-up and to the model. The guards that live inside oxa stay: the file tools' denials and protected paths, credential masking, permissions and trust, and `--offline` for oxa's own provider and network calls. Bash gets the same cleared base environment as the Linux sandbox (a fixed `PATH`, `HOME`, `LANG`, `TERM`, toolchain variables), so credential variables of the oxa process are not inherited. The bash network is not restricted there: `oxa.sandbox.net: "off"` and `--offline` cannot stop a command from reaching the network without an OS sandbox. oxa warns at start-up and the model's environment note says "bash network is NOT restricted on this platform (no OS sandbox)" instead of claiming the network is off.
 
 What a command sees:
 
@@ -169,7 +171,7 @@ The harness connects to one place by default: the engine, on loopback (`127.0.0.
 
 ### Bash network
 
-Bash has network access by default in `workspace` and `ask` modes. `oxa.sandbox.net: "off"` in user settings removes it from bash in every mode.
+Bash has network access by default in `workspace` and `ask` modes. `oxa.sandbox.net: "off"` in user settings removes it from bash in every mode. Off Linux there is no OS sandbox to enforce this: bash network is not restricted, and oxa says so (see [The bash sandbox](#the-bash-sandbox)).
 
 This matters because the model can be steered by text it reads. A steered model can run a command that sends what bash can read to any host. Bash can read the project, the system files, and the parts of your home directory that the deny-list does not mask. In `ask` mode you approve each command, but the approval does not show where the command sends its output. When the project holds secrets, set `oxa.sandbox.net: "off"`, use `ask` mode, or run with `--offline`.
 

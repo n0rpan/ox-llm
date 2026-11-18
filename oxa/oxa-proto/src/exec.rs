@@ -69,6 +69,11 @@ pub struct ExecResult {
     pub unsandboxed: bool,
 }
 
+/// What the model and the user are told when the bash network is set off (`oxa.sandbox.net`,
+/// offline mode) but the platform has no OS sandbox to enforce it ([`Sandbox::network_enforced`]).
+/// oxa's own provider and network calls still obey offline; only bash cannot be held.
+pub const NET_NOT_RESTRICTED_NOTICE: &str = "bash network is NOT restricted on this platform (no OS sandbox)";
+
 /// The process sandbox (bwrap). Implemented by `oxa-sandbox`; tools reach it through
 /// [`ToolCtx`](crate::ToolCtx).
 ///
@@ -83,6 +88,12 @@ pub trait Sandbox: Send + Sync {
     /// `oxa_sandbox::NetSandbox` answers from `oxa.sandbox.net` and the offline switch.
     fn network(&self) -> bool {
         false
+    }
+    /// Whether a refused network ([`Sandbox::network`] = false) is enforced on the commands
+    /// themselves. A platform without an OS sandbox cannot: there it is `false`, and the
+    /// model and the user are told the bash network is not restricted. Default `true`.
+    fn network_enforced(&self) -> bool {
+        true
     }
     /// Persistence limits to include in human/model-facing tool results, not process bytes.
     fn persistence_notice(&self) -> Option<&str> {

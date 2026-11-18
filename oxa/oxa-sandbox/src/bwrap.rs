@@ -23,6 +23,23 @@ const MISSING_HINT: &str =
 const UNUSABLE_HINT: &str = "check that unprivileged user namespaces are allowed: `sysctl kernel.unprivileged_userns_clone` must be 1, \
 and on Ubuntu-based systems `sysctl kernel.apparmor_restrict_unprivileged_userns` must be 0; the `bubblewrap` package must be installed";
 
+/// The whole environment a command sees: nothing is inherited (bwrap `--clearenv`, or
+/// `env_clear` off Linux, [`crate::Unsandboxed`]), so credential variables of the process never
+/// reach the model's bash. The fixed base, the layout's passed-through variables, then the
+/// spec's own, in that order (a later one wins).
+pub(crate) fn base_env(s: &ExecSpec, home: &str, layout: &Layout) -> Vec<(String, String)> {
+    let mut e = vec![
+        ("PATH".to_string(), layout.path_value()),
+        ("HOME".to_string(), home.to_string()),
+        ("LANG".to_string(), BASE_LANG.to_string()),
+        ("TERM".to_string(), BASE_TERM.to_string()),
+        ("AI_AGENT".to_string(), oxa_proto::names::AI_AGENT.to_string()),
+    ];
+    e.extend(layout.env.iter().cloned());
+    e.extend(s.env.iter().cloned());
+    e
+}
+
 /// The exact bwrap argv (without `bwrap` itself) for `s` with the minimal layout (base `PATH`,
 /// no toolchain binds, the deny-list of `home`): [`bwrap_args_with`].
 pub fn bwrap_args(s: &ExecSpec, home: &Path) -> Vec<String> {
@@ -409,16 +426,8 @@ pub(crate) fn bwrap_args_homes(
         }
     }
     push(&mut a, &["--chdir", &cwd, "--clearenv"]);
-    push(&mut a, &["--setenv", "PATH", &layout.path_value()]);
-    push(&mut a, &["--setenv", "HOME", &home_s]);
-    push(&mut a, &["--setenv", "LANG", BASE_LANG]);
-    push(&mut a, &["--setenv", "TERM", BASE_TERM]);
-    push(&mut a, &["--setenv", "AI_AGENT", oxa_proto::names::AI_AGENT]);
-    for (k, v) in &layout.env {
-        push(&mut a, &["--setenv", k, v]);
-    }
-    for (k, v) in &s.env {
-        push(&mut a, &["--setenv", k, v]);
+    for (k, v) in base_env(s, &home_s, layout) {
+        push(&mut a, &["--setenv", &k, &v]);
     }
     push(&mut a, &["--", "bash", "-c", &s.command]);
     a

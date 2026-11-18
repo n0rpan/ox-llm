@@ -21,7 +21,6 @@ mod net;
 mod offline;
 mod run;
 mod scratch;
-#[cfg(not(target_os = "linux"))]
 mod unsandboxed;
 
 pub use bwrap::{account_home, bwrap_args, bwrap_args_with, without_account_home};
@@ -29,7 +28,8 @@ pub use full::FullAccess;
 pub use gitdirs::{resolve as resolve_git_binds, GitBinds, MAX_ALTERNATES_DEPTH};
 pub use layout::{
     expand_home, home_protected_paths, is_home_itself, is_home_or_above, is_secret_name, protected_paths,
-    sensitive_paths, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS, SETTING_WRITE_PATHS,
+    sensitive_paths, toolchain_env, Layout, LayoutInputs, SETTING_ALLOW_HOME_WRITE, SETTING_READ_PATHS,
+    SETTING_WRITE_PATHS,
 };
 pub use net::{sandbox_net_setting, NetSandbox, SETTING_SANDBOX_NET};
 pub use offline::{no_network_argv, offline_argv};
@@ -38,7 +38,6 @@ pub use run::{
     die_with_parent, run_argv, run_argv_capture, run_argv_stdin, run_unsandboxed, run_unsandboxed_capture,
 };
 pub use scratch::{scratch_root, user_cache_home, Scratch};
-#[cfg(not(target_os = "linux"))]
 pub use unsandboxed::Unsandboxed;
 
 /// The plain statement shown wherever commands run without an OS sandbox (platforms without

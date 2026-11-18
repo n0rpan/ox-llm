@@ -3,13 +3,29 @@
 //! of any. Every result is flagged `unsandboxed` so a front end can warn, and the notice
 //! below goes to the model. Protections that live inside oxa (the file tools' denials, credential
 //! masking, the network setting in [`crate::NetSandbox`]) are unaffected.
-use crate::run::{run_unsandboxed_capture, run_unsandboxed_stdin};
+use crate::bwrap::base_env;
+use crate::layout::Layout;
+use crate::run::{run_unsandboxed_env, run_unsandboxed_stdin};
 use crate::NO_OS_SANDBOX_NOTICE;
 use oxa_proto::{CancelToken, ExecResult, ExecSpec, OxaError, Sandbox};
+use std::path::PathBuf;
 
-/// The bash tool's executor where no OS sandbox exists.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Unsandboxed;
+/// The bash tool's executor where no OS sandbox exists. It cannot enforce the network setting
+/// ([`Sandbox::network_enforced`] is false), but it gives commands the same cleared base
+/// environment as bwrap: credential variables of the process are not inherited.
+#[derive(Debug, Clone, Default)]
+pub struct Unsandboxed {
+    /// `PATH` and the passed-through variables, as the bwrap layout has them.
+    pub layout: Layout,
+    /// `$HOME` for the command (the real one: there is no sandbox home).
+    pub home: PathBuf,
+}
+
+impl Unsandboxed {
+    fn env(&self, s: &ExecSpec) -> Vec<(String, String)> {
+        base_env(s, &self.home.to_string_lossy(), &self.layout)
+    }
+}
 
 impl Sandbox for Unsandboxed {
     /// Always usable: there is nothing to probe. It does not claim isolation.
@@ -19,6 +35,9 @@ impl Sandbox for Unsandboxed {
     fn network(&self) -> bool {
         true
     }
+    fn network_enforced(&self) -> bool {
+        false
+    }
     fn persistence_notice(&self) -> Option<&str> {
         Some(NO_OS_SANDBOX_NOTICE)
     }
@@ -26,10 +45,10 @@ impl Sandbox for Unsandboxed {
         Vec::new()
     }
     fn run(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        run_unsandboxed_capture(s, c, live, true)
+        run_unsandboxed_env(s, Some(&self.env(s)), c, live, true)
     }
     fn run_streaming(&self, s: &ExecSpec, c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
-        run_unsandboxed_capture(s, c, live, false)
+        run_unsandboxed_env(s, Some(&self.env(s)), c, live, false)
     }
     fn run_with_stdin(
         &self,
@@ -38,6 +57,6 @@ impl Sandbox for Unsandboxed {
         c: &CancelToken,
         live: &mut dyn FnMut(&[u8]),
     ) -> ExecResult {
-        run_unsandboxed_stdin(s, stdin, c, live)
+        run_unsandboxed_stdin(s, stdin, c, live, &self.env(s))
     }
 }
