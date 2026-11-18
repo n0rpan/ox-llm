@@ -85,7 +85,12 @@ fn rows(env: &TestEnv) -> Vec<Value> {
 #[test]
 fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
     let env = TestEnv::new();
-    let patterns = [MODEL, "synthetic-flash", "oxe/opencode/synthetic-flash"];
+    let patterns = [
+        ("--model", MODEL),
+        ("--model", "synthetic-flash"),
+        ("--model", "oxe/opencode/synthetic-flash"),
+        ("--models", MODEL),
+    ];
     let mock = MockOpenAi::start_with(|base| {
         let mut replies = vec![Reply::json(discovery(base))];
         for _ in patterns {
@@ -113,8 +118,8 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
     assert!(status.contains("oxa.cloud.opencode.enabled"), "{status}");
     assert!(!status.contains(CREDENTIAL));
 
-    for pattern in patterns {
-        let output = run(&env, &["--model", pattern, "--no-tools", "-p", "Synthetic task"]);
+    for (flag, pattern) in patterns {
+        let output = run(&env, &[flag, pattern, "--no-tools", "-p", "Synthetic task"]);
         assert!(
             output.status.success(),
             "{pattern}: {}",
@@ -130,6 +135,36 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
         assert_eq!(row["settled"], "usage");
     }
     assert_eq!(mock.requests().len(), 1 + 2 * patterns.len());
+    mock.assert_healthy();
+}
+
+#[test]
+fn supervised_child_arguments_do_not_authorize_keyed_go() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .env("OXA_SUBAGENT_DEPTH", "1")
+        .args(["--model", MODEL, "--no-tools", "-p", "Synthetic child task"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
     mock.assert_healthy();
 }
 
