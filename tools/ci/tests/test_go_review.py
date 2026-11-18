@@ -80,8 +80,8 @@ class GoReview(unittest.TestCase):
             if url == review.MODEL_URL:
                 self.assertIn('"verdict":"RESERVED"', posted[0])
                 payload = json.loads(body)
-                self.assertEqual(payload['model'], 'deepseek-v4.1-flash')
-                self.assertEqual(payload['max_tokens'], 4096)
+                self.assertIn(payload['model'], (review.MODEL, review.GLM))
+                self.assertEqual(payload['max_tokens'], review.MAX_MODEL_OUTPUT[payload['model']])
                 self.assertFalse(payload['stream'])
                 self.assertIn('Project guidelines:', payload['messages'][0]['content'])
                 self.assertIn('# Review rubric', payload['messages'][0]['content'])
@@ -191,10 +191,41 @@ class GoReview(unittest.TestCase):
         self.assertNotIn(review.ARGON_URL, calls)
 
     def test_invalid_model_configuration_never_authenticates(self):
-        for models in ('not-json', '[]', '["unknown"]', '["gemini-4-argon"]',
+        for models in ('not-json', '[]', '["unknown"]', '["gemini-4-argon","glm-5.3","deepseek-v4.1-flash"]',
                        '["deepseek-v4.1-flash","deepseek-v4.1-flash"]'):
             with self.subTest(models=models), self.assertRaises(review.Refused):
                 self.run_review(models=models)
+
+    def test_glm_first_model_is_accepted(self):
+        calls, posted, auth = self.run_review(models=json.dumps([review.GLM]))
+        self.assertEqual((calls.count(review.MODEL_URL), calls.count(review.ARGON_URL), auth), (1, 0, 1))
+        marker = json.loads(review.MARKER.findall(posted[0])[0])
+        self.assertEqual(marker['model'], 'glm-5.3')
+
+    def test_unknown_model_is_refused(self):
+        for models in ('["gpt-5"]', '["glm-5.3","gpt-5"]', '["glm-5.3","glm-5.3"]', '[1]'):
+            with self.subTest(models=models), self.assertRaises(review.Refused):
+                self.run_review(models=models)
+
+    def test_two_models_any_order_accepted(self):
+        pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
+        for order in ([review.ARGON, review.GLM], [review.GLM, review.MODEL],
+                      [review.GLM, review.ARGON], [review.ARGON, review.MODEL]):
+            with self.subTest(order=order):
+                calls, posted, auth = self.run_review(pr=pr, models=json.dumps(order))
+                self.assertEqual(auth, 1)
+                self.assertEqual(len(posted), 1)
+                marker = json.loads(review.MARKER.findall(posted[0])[0])
+                self.assertEqual(marker['model'], ','.join(order))
+                self.assertEqual(calls.count(review.ARGON_URL), order.count(review.ARGON))
+                self.assertEqual(calls.count(review.MODEL_URL), len(order) - order.count(review.ARGON))
+
+    def test_default_is_deepseek(self):
+        self.assertEqual(review.review_models(PR, FILES), [review.MODEL])
+        pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
+        calls, posted, _ = self.run_review(pr=pr)
+        self.assertEqual((calls.count(review.MODEL_URL), calls.count(review.ARGON_URL)), (1, 0))
+        self.assertEqual(json.loads(review.MARKER.findall(posted[0])[0])['model'], review.MODEL)
 
     def test_two_review_label_does_not_consume_a_second_slot_for_the_same_diff(self):
         _, first, _ = self.run_review()
