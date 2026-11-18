@@ -644,10 +644,31 @@ mod live_steering {
             assert!(result["error"].is_string());
         }
         rpc.finish();
-        let entries = entries(&env, &binding);
+        let before_resume = entries(&env, &binding);
         assert!(!store.armed.load(Ordering::SeqCst));
-        assert_eq!(appended(&entries).is_some(), !rejected);
+        assert_eq!(appended(&before_resume).is_some(), !rejected);
+        if fail_sync {
+            let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("continued")]));
+            let mut deps = session_deps(&env, engine.clone());
+            deps.store = Arc::new(FsStore::new(env.root().join("first")));
+            let (outcome, _) = continue_managed_json(&env, deps, &binding, lease);
+            assert_eq!(outcome.exit_code(), 0);
+            let requests = engine.requests();
+            assert!(
+                !requests.is_empty(),
+                "the reopened session must reach the mock model"
+            );
+            assert!(
+                requests
+                    .iter()
+                    .flat_map(|request| &request.messages)
+                    .all(|message| { message.content.as_deref() != Some(TEXT) }),
+                "a steer reported as not admitted reached the mock model after reopen"
+            );
+        }
+        let entries = entries(&env, &binding);
         if rejected {
+            assert!(appended(&entries).is_none());
             assert!(Goal::latest(&entries)
                 .unwrap()
                 .unwrap()
@@ -783,27 +804,12 @@ mod live_steering {
             assert_eq!(pending.lease, Some(lease.clone()));
 
             let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("continued")]));
-            let mut session =
-                Session::open(session_deps(&env, engine.clone()), Open::Resume(binding.clone())).unwrap();
             let mut current = lease.clone();
             if stale {
                 current.generation.1 += 1;
             }
-            let expected = binding.clone();
-            let mut diagnostics = Vec::new();
-            let outcome = oxa_rpc::run_json_outcome_with_steering_authority(
-                &mut session,
-                vec![("Continue the goal".into(), vec![])],
-                Arc::new(Mutex::new(Box::new(std::io::sink()))),
-                &mut diagnostics,
-                &env.agent_dir(),
-                Arc::new(move |requested, operation| {
-                    if requested == &expected {
-                        operation(Some(&current));
-                    }
-                }),
-            )
-            .unwrap();
+            let (outcome, diagnostics) =
+                continue_managed_json(&env, session_deps(&env, engine.clone()), &binding, current);
             let entries = store.load(&binding).unwrap();
             assert_eq!(
                 entries
@@ -830,6 +836,31 @@ mod live_steering {
                     .any(|message| message.content.as_deref() == Some(TEXT)));
             }
         }
+    }
+
+    fn continue_managed_json(
+        env: &TestEnv,
+        deps: Deps,
+        binding: &SessionRef,
+        current: SteeringLease,
+    ) -> (RunOutcome, Vec<u8>) {
+        let mut session = Session::open(deps, Open::Resume(binding.clone())).unwrap();
+        let expected = binding.clone();
+        let mut diagnostics = Vec::new();
+        let outcome = oxa_rpc::run_json_outcome_with_steering_authority(
+            &mut session,
+            vec![("Continue the goal".into(), vec![])],
+            Arc::new(Mutex::new(Box::new(std::io::sink()))),
+            &mut diagnostics,
+            &env.agent_dir(),
+            Arc::new(move |requested, operation| {
+                if requested == &expected {
+                    operation(Some(&current));
+                }
+            }),
+        )
+        .unwrap();
+        (outcome, diagnostics)
     }
 
     #[test]
