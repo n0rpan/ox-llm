@@ -405,7 +405,7 @@ pub fn report_notes(
     task: &Task,
     policy: &RunPolicy,
     observer: &dyn CheckpointObserver,
-    reporter: &mut dyn FnMut(&super::ProblemNote, &File, bool) -> Result<super::ReportRecord>,
+    reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
 ) -> Result<Record> {
     LockedTask::open(task, policy, false)?.report_notes(observer, reporter)
 }
@@ -413,7 +413,7 @@ pub fn report_notes(
 fn report_locked(
     locked: &LockedTask<'_>,
     observer: &dyn CheckpointObserver,
-    reporter: &mut dyn FnMut(&super::ProblemNote, &File, bool) -> Result<super::ReportRecord>,
+    reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
 ) -> Result<Record> {
     let (mut writer, mut value) = action_context(locked, observer)?;
     let (policy, lock) = (locked.policy, &locked.lock);
@@ -434,15 +434,18 @@ fn report_locked(
             continue;
         }
         writer.save(&mut value, reporting_step, observer)?;
-        let report =
-            reporter(&value.record.problem_notes[index], lock, policy.offline).unwrap_or_else(|detail| {
-                super::ReportRecord {
-                    disposition: "failed".into(),
-                    draft: PathBuf::new(),
-                    url: None,
-                    detail,
-                }
-            });
+        let report = reporter(
+            &value.record.problem_notes[index],
+            &value.record,
+            lock,
+            policy.offline || value.offline,
+        )
+        .unwrap_or_else(|detail| super::ReportRecord {
+            disposition: "failed".into(),
+            draft: PathBuf::new(),
+            url: None,
+            detail,
+        });
         if index < value.record.reports.len() {
             value.record.reports[index] = report;
         } else {
@@ -477,7 +480,7 @@ impl LockedTask<'_> {
     pub fn report_notes(
         &mut self,
         observer: &dyn CheckpointObserver,
-        reporter: &mut dyn FnMut(&super::ProblemNote, &File, bool) -> Result<super::ReportRecord>,
+        reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
     ) -> Result<Record> {
         report_locked(self, observer, reporter)
     }

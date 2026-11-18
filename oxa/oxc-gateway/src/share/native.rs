@@ -9,6 +9,8 @@ use std::sync::Arc;
 pub struct Native<C> {
     models: Vec<Model>,
     chat: Arc<C>,
+    #[cfg(feature = "ledger")]
+    ledger: Option<crate::ledger::Ledger>,
     #[cfg(feature = "anthropic-gateway")]
     metered: Option<Arc<crate::gateway::Gateway>>,
 }
@@ -21,6 +23,8 @@ impl<C> Native<C> {
         Ok(Self {
             models,
             chat: Arc::new(chat),
+            #[cfg(feature = "ledger")]
+            ledger: None,
             #[cfg(feature = "anthropic-gateway")]
             metered: None,
         })
@@ -54,8 +58,16 @@ impl<C> Native<C> {
         Ok(Self {
             models,
             chat: Arc::new(chat),
+            #[cfg(feature = "ledger")]
+            ledger: None,
             metered: Some(gateway),
         })
+    }
+
+    #[cfg(feature = "ledger")]
+    pub fn with_ledger(mut self, ledger: crate::ledger::Ledger) -> Self {
+        self.ledger = Some(ledger);
+        self
     }
 }
 
@@ -88,42 +100,82 @@ where
             let gateway = self.metered.as_deref().ok_or(Failure::Forbidden)?;
             return metered_chat(gateway, request, guest, output, cancel, &runtime).await;
         }
-        let _ = guest;
         if model.access != Access::Local {
             return Err(Failure::Forbidden);
         }
+        #[cfg(feature = "ledger")]
+        let mut audit = self
+            .ledger
+            .as_ref()
+            .map(|ledger| {
+                ledger.today()?.entry(
+                    &request.model,
+                    crate::ledger::Context {
+                        origin: crate::ledger::Origin::Api,
+                        guest_key_name: Some(guest.key_name()),
+                        ..crate::ledger::Context::default()
+                    },
+                )
+            })
+            .transpose()
+            .map_err(|_| Failure::Failed)?;
+        #[cfg(not(feature = "ledger"))]
+        let _ = guest;
         let chat = self.chat.clone();
         // The listener joins this future even after disconnect or shutdown. The
         // synchronous engine keeps its lease until cancellation has finished.
         tokio::task::spawn_blocking(move || {
-            let prepared = GuestChat::prepare(request)?;
-            let request = prepared.chat();
-            let reply = chat(&request, &cancel, &mut |event| match event {
-                StreamEvent::Text(text) => {
-                    if runtime.block_on(output.text(&text)).is_err() {
-                        cancel.cancel();
-                    }
-                }
-                StreamEvent::ToolArgs { .. } => cancel.cancel(),
-                _ => {}
-            })
-            .map_err(|_| Failure::Failed)?;
-            if cancel.is_cancelled() || !reply.msg.tool_calls.is_empty() {
-                return Err(Failure::Failed);
+            #[cfg(feature = "ledger")]
+            if let Some(entry) = &mut audit {
+                entry.admitted();
             }
-            let finish = match reply.finish {
-                oxa_proto::Finish::Stop => Finish::Stop,
-                oxa_proto::Finish::Length => Finish::Length,
-                oxa_proto::Finish::ContentFilter => Finish::Refusal,
-                oxa_proto::Finish::ToolCalls => return Err(Failure::Failed),
-            };
-            Ok(Completed {
-                finish,
-                usage: (reply.usage.prompt > 0).then_some(Usage {
-                    input: u64::from(reply.usage.prompt),
-                    output: u64::from(reply.usage.completion),
-                }),
-            })
+            let result = (|| {
+                let prepared = GuestChat::prepare(request)?;
+                let request = prepared.chat();
+                let reply = chat(&request, &cancel, &mut |event| match event {
+                    StreamEvent::Text(text) => {
+                        #[cfg(feature = "ledger")]
+                        if let Some(entry) = &mut audit {
+                            entry.observe();
+                        }
+                        if runtime.block_on(output.text(&text)).is_err() {
+                            cancel.cancel();
+                        }
+                    }
+                    StreamEvent::ToolArgs { .. } => cancel.cancel(),
+                    _ => {}
+                })
+                .map_err(|_| Failure::Failed)?;
+                if cancel.is_cancelled() || !reply.msg.tool_calls.is_empty() {
+                    return Err(Failure::Failed);
+                }
+                let finish = match reply.finish {
+                    oxa_proto::Finish::Stop => Finish::Stop,
+                    oxa_proto::Finish::Length => Finish::Length,
+                    oxa_proto::Finish::ContentFilter => Finish::Refusal,
+                    oxa_proto::Finish::ToolCalls => return Err(Failure::Failed),
+                };
+                Ok(Completed {
+                    finish,
+                    usage: (reply.usage.prompt > 0).then_some(Usage {
+                        input: u64::from(reply.usage.prompt),
+                        output: u64::from(reply.usage.completion),
+                    }),
+                })
+            })();
+            #[cfg(feature = "ledger")]
+            if let Some(entry) = audit {
+                use crate::ledger::LocalGuestOutcome;
+                let outcome = match &result {
+                    Ok(completed) => LocalGuestOutcome::Completed {
+                        tokens: completed.usage.map(|usage| (usage.input, usage.output)),
+                    },
+                    Err(_) if cancel.is_cancelled() => LocalGuestOutcome::Cancelled,
+                    Err(_) => LocalGuestOutcome::Failed,
+                };
+                entry.append_local_guest(outcome).map_err(|_| Failure::Failed)?;
+            }
+            result
         })
         .await
         .map_err(|_| Failure::Failed)?

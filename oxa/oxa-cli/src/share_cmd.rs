@@ -30,6 +30,7 @@ pub(crate) fn is_agent(env: &Env) -> bool {
 pub(crate) struct Prepared {
     pub engines: crate::in_process::SharedEngines,
     keys: Arc<Store>,
+    ledger: oxc_gateway::ledger::Ledger,
     models: Vec<Model>,
     tailnet: Arc<LocalApi>,
     config: Config,
@@ -155,9 +156,12 @@ fn prepare(
         LocalApi::new(socket, Duration::from_secs(5))
             .map_err(|error| OxaError::new(codes::INVALID, error.to_string()))?,
     );
+    let ledger = oxc_gateway::ledger::Ledger::open(&dirs.agent_dir.join("cloud-ledger"))
+        .map_err(|_| OxaError::new(codes::INVALID, "The private request ledger is unavailable."))?;
     Ok(Prepared {
         engines: crate::in_process::SharedEngines { local, cloud },
         keys,
+        ledger,
         models,
         tailnet,
         config,
@@ -196,6 +200,7 @@ impl Prepared {
         let Self {
             engines,
             keys,
+            ledger,
             models,
             tailnet,
             config,
@@ -211,7 +216,8 @@ impl Prepared {
             Some(gateway) => native::Native::new_metered(models, chat, gateway),
             None => native::Native::new(models, chat),
         }
-        .map_err(service_error)?;
+        .map_err(service_error)?
+        .with_ledger(ledger);
         native::serve(keys, Arc::new(answer), tailnet, config, stop, ready).map_err(service_error)
     }
 
@@ -357,6 +363,7 @@ mod tests {
             None,
         )
         .unwrap();
+        assert!(dirs.agent_dir.join("cloud-ledger/.salt").is_file());
         let local: Arc<LocalEngine> = prepared.engines.local.clone().unwrap();
         let owner = crate::in_process::select_observed(
             &settings,

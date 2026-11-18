@@ -247,6 +247,41 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
             "{query}"
         );
     }
+    let record = serde_json::json!({"schema_version":1,"observed_at":10,"board":{
+        "observed_at":10,"entries":[{"number":17,"head":"private-head-marker",
+        "release_pinned":true,"action":"fix_findings","lease":null,
+        "attempts_today":2,"eligible":false}]}});
+    std::fs::write(&sample, format!("{record}\n")).unwrap();
+    assert!(get(port, "/board", &authority, "").contains("href=/items/17"));
+    for path in ["/items/17", "/items/17?fragment=1"] {
+        let response = get(port, path, &authority, "");
+        assert_eq!(response.lines().next(), Some("HTTP/1.1 200 OK"), "{path}");
+        for text in [
+            "Item #17",
+            "Fix findings",
+            "Release",
+            "Unleased",
+            "2",
+            "aria-current=page>Board",
+        ] {
+            assert!(response.contains(text), "{text}");
+        }
+        assert!(!response.contains("private-head-marker"));
+        assert!(get(port, path, "attacker.invalid", "").starts_with("HTTP/1.1 403"));
+    }
+    assert!(get(port, "/items/18", &authority, "").contains("Item unavailable"));
+    for path in [
+        "/items/0",
+        "/items/01",
+        "/items/-1",
+        "/items/18446744073709551616",
+        "/items/17/x",
+    ] {
+        assert!(
+            get(port, path, &authority, "").starts_with("HTTP/1.1 404"),
+            "{path}"
+        );
+    }
     assert!(get(port, "/", "attacker.invalid", "").starts_with("HTTP/1.1 403"));
     assert!(get(
         port,

@@ -775,6 +775,10 @@ async fn authenticated_native_bridge_streams_only_guest_text_and_settles_usage()
         },
     )
     .unwrap();
+    #[cfg(feature = "ledger")]
+    let ledger_path = directory.0.join("request-ledger");
+    #[cfg(feature = "ledger")]
+    let answer = answer.with_ledger(oxc_gateway::ledger::Ledger::open(&ledger_path).unwrap());
     let server = Server::bind(
         keys.clone(),
         Arc::new(answer),
@@ -806,6 +810,32 @@ async fn authenticated_native_bridge_streams_only_guest_text_and_settles_usage()
     assert!(response.contains("\"completion_tokens\":2"));
     assert!(!response.contains("Synthetic private reasoning"));
     assert!(!response.contains(key.bearer.expose()));
+    #[cfg(feature = "ledger")]
+    {
+        let paths: Vec<_> = std::fs::read_dir(ledger_path)
+            .unwrap()
+            .map(|item| item.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+            .collect();
+        assert_eq!(paths.len(), 1);
+        let row = std::fs::read_to_string(&paths[0]).unwrap();
+        for private in [
+            key.bearer.expose(),
+            "Device",
+            "Synthetic request",
+            "Synthetic native reply",
+            "Synthetic private reasoning",
+        ] {
+            assert!(!row.contains(private));
+        }
+        let row: Value = serde_json::from_str(&row).unwrap();
+        assert_eq!(row["model"], "local-model");
+        assert_eq!(row["origin"], "api");
+        assert_eq!(row["remote"], false);
+        assert_eq!(row["guest_key"].as_str().unwrap().len(), 32);
+        assert_eq!(row["prompt_tokens"], 3);
+        assert_eq!(row["completion_tokens"], 2);
+    }
 
     stop.cancel();
     tokio::time::timeout(Duration::from_secs(3), task)
