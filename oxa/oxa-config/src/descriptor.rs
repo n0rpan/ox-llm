@@ -1,14 +1,17 @@
 //! Setting descriptors: what the TUI `/settings` menu and the lead web settings page show for a key
 //! (issue #1489, design section 4.1).
 //!
-//! This module holds the types, the `const fn` builder and the lookups. The entries live in
-//! `descriptor/*.rs` (one `ENTRIES` slice per file); `table()` joins them. `KeyDef` and `SCHEMA`
+//! This module holds the types, the `const fn` builder and the lookups. The entries themselves go
+//! in `descriptor/*.rs` (one `ENTRIES` slice per file); `table()` joins them. `KeyDef` and `SCHEMA`
 //! are untouched: validation and merge do not read descriptors.
 
-use std::sync::OnceLock;
-
+mod advanced;
 mod compaction;
+mod lead;
 mod models;
+mod safety;
+
+use std::sync::OnceLock;
 
 /// A settings menu group, in display order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -239,6 +242,8 @@ pub struct Descriptor {
 
 /// Starts a descriptor. Every other field has a safe default: a raw editor, `Apply::Restart`
 /// unchecked, read-only on the web, not secret, not advanced. The builder methods change them.
+// Unused outside tests until the per-group data tables (A2a-d, #1489) fill the table.
+#[allow(dead_code)]
 pub const fn d(
     key: &'static str,
     group: Group,
@@ -349,11 +354,20 @@ impl Descriptor {
     }
 }
 
-/// The data table, in display order: the models, then the compaction and codemode entries.
+/// The data table, in display order: the Lead and web, the Safety, then the Advanced entries.
 fn table() -> &'static [Descriptor] {
     static TABLE: OnceLock<Vec<Descriptor>> = OnceLock::new();
     TABLE
-        .get_or_init(|| [models::ENTRIES, compaction::ENTRIES].concat())
+        .get_or_init(|| {
+            [
+                models::ENTRIES,
+                compaction::ENTRIES,
+                lead::ENTRIES,
+                safety::ENTRIES,
+                advanced::ENTRIES,
+            ]
+            .concat()
+        })
         .as_slice()
 }
 
@@ -497,12 +511,14 @@ mod tests {
     }
 
     #[test]
-    fn unloaded_groups_have_no_entries() {
-        // Models, compaction and codemode are loaded here; the other groups arrive in A2a, A2c, A2d.
-        assert!(descriptor("defaultModel").is_some());
-        assert!(descriptor("oxa.bash.defaultTimeout").is_none());
-        assert_eq!(in_group(Group::Tools).count(), 0);
-        assert_eq!(fields_of("oxa.lead.serve").count(), 0);
+    fn unwired_groups_stay_empty() {
+        // Lead, Safety and Advanced (A2d) plus Models and the compaction/codemode entries (A2b)
+        // have data; Display and the remaining groups arrive in later slices.
+        assert!(in_group(Group::Models).next().is_some());
+        assert!(descriptor("compaction.keepRecentTokens").is_some());
+        assert_eq!(in_group(Group::Display).count(), 0);
+        assert_eq!(fields_of("oxa.lead.serve").count(), 9);
+        assert_eq!(descriptors().len(), 78);
     }
 
     #[test]
