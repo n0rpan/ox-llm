@@ -439,6 +439,12 @@ fn native_refill_completion(source: NativeSource) {
             requested.is_empty(),
             "stale model attempted these aliases: {requested:?}"
         );
+        let checkpoint: serde_json::Value = serde_json::from_slice(
+            &fs::read(storage(&env).join(format!("{}.json", binding.native_task_id))).unwrap(),
+        )
+        .unwrap();
+        let detail = checkpoint["record"]["detail"].as_str().unwrap();
+        assert!(detail.contains("absent from the current catalog"), "{detail}");
         let ordinary = run_server(
             &env,
             &server,
