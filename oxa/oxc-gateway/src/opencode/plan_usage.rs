@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::time::SystemTime;
 
 /// The three independent windows reported by the Go account. Missing or
 /// changed fields stay unknown and grant no admission.
@@ -7,6 +8,13 @@ pub struct PlanUsage {
     pub rolling: Option<PlanWindow>,
     pub weekly: Option<PlanWindow>,
     pub monthly: Option<PlanWindow>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanUsageObservation {
+    pub usage: PlanUsage,
+    /// Wall time at acquisition. Reusing the observation keeps its age visible.
+    pub observed_at: SystemTime,
 }
 
 #[derive(Clone, Debug, PartialEq)]
