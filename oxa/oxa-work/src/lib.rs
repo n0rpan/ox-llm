@@ -696,7 +696,10 @@ fn github_json(mut command: Command, subject: &str) -> Result<serde_json::Value>
 /// Append a bounded UTF-8 prefix. Returns true when any part was omitted.
 fn append_capped(output: &mut String, parts: &[&str], limit: usize) -> bool {
     for part in parts {
-        let end = part.floor_char_boundary(limit.saturating_sub(output.len()));
+        let mut end = part.len().min(limit.saturating_sub(output.len()));
+        while !part.is_char_boundary(end) {
+            end -= 1;
+        }
         output.push_str(&part[..end]);
         if end < part.len() {
             return true;
@@ -828,6 +831,9 @@ pub enum SupervisorOperation {
         commands: Vec<String>,
         index: PathBuf,
     },
+    ChangedPaths {
+        base: String,
+    },
     Inspect,
     InspectCommitted {
         index: PathBuf,
@@ -883,6 +889,9 @@ pub(crate) struct Acceptance {
     pub unrunnable: String,
 }
 
+const NO_ACCEPTANCE_CHECKS: &str =
+    "no acceptance checks were available; configure project done checks or declare an acceptance crate";
+
 fn acceptance(
     binary: &Path,
     root: &Path,
@@ -893,7 +902,10 @@ fn acceptance(
     lock: &fs::File,
 ) -> Result<Acceptance> {
     if commands.is_empty() {
-        return Ok(Acceptance::default());
+        return Ok(Acceptance {
+            unrunnable: NO_ACCEPTANCE_CHECKS.into(),
+            ..Acceptance::default()
+        });
     }
     let out = supervise(
         binary,
@@ -1320,6 +1332,16 @@ fn run_locked(
         }
         if completed_execution(old.record.step) {
             if !rerun && matches!(old.record.outcome, Outcome::Done | Outcome::NothingToDo) {
+                if old.record.checks.is_empty() {
+                    let mut old = old;
+                    old.record.outcome = Outcome::Unverified;
+                    old.record.detail =
+                        "saved run has no acceptance evidence; use --rerun to verify it".into();
+                    writer
+                        .save(&mut old, Step::Finished, observer)
+                        .map_err(RunError::Checkpoint)?;
+                    return Ok(old.record);
+                }
                 return Ok(old.record);
             }
             let mut new = fresh(old.record.checkpoint_revision);
@@ -1387,7 +1409,7 @@ fn run_locked(
         .save(&mut state, Step::Saving, observer)
         .map_err(RunError::Checkpoint)?;
     if let Err(error) = execute::save_work(&root, binary, task, &policy, lock_file, &mut state.record) {
-        if state.record.outcome != Outcome::Interrupted {
+        if !matches!(state.record.outcome, Outcome::Interrupted | Outcome::Unverified) {
             state.record.outcome = Outcome::Blocked;
         }
         if !state.record.detail.is_empty() {
@@ -1427,7 +1449,12 @@ fn run_locked(
                 state.record.detail.clear();
             }
             Err(error) => {
-                state.record.outcome = Outcome::Blocked;
+                state.record.outcome =
+                    if error == NO_ACCEPTANCE_CHECKS || error.contains("source project is not trusted") {
+                        Outcome::Unverified
+                    } else {
+                        Outcome::Blocked
+                    };
                 state.record.detail = format!("save recovery: {error}");
             }
         }

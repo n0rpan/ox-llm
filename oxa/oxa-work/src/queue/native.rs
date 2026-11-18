@@ -137,13 +137,9 @@ fn finished(record: &Record) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../../tests/support/private_dir.rs"]
-mod test_dir;
-
-#[cfg(test)]
 mod tests {
-    use super::test_dir::PrivateDir;
     use super::*;
+    use crate::test_dir::PrivateDir;
     use crate::{blocked_record, state, QueueEvent, QueueOptions, QueueRun};
     use board::assignment::{ManualAuthority, Role, Worker, WorkerKind};
     use board::{Action, AttemptState, Claims, Entry, ImportState, Policy};
@@ -299,7 +295,7 @@ mod tests {
             .success());
         fs::write(
             queue.join("task.json"),
-            serde_json::to_vec(&[task.clone()]).unwrap(),
+            serde_json::to_vec(std::slice::from_ref(&task)).unwrap(),
         )
         .unwrap();
 

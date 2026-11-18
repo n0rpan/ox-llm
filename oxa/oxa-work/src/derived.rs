@@ -2,14 +2,19 @@
 //! of every Cargo crate the worker touched, next to the project's static list, plus crates
 //! the worker declared as the task's acceptance tests.
 //!
-//! Selection is host-side metadata only: `git diff --name-only`/`git ls-files` never read
-//! file contents, run filters or repository helpers. Every derived entry is a fixed shell
+//! Working-tree inventory uses the existing sandbox because Git can run clean filters.
+//! Committed inventory compares immutable objects. Every derived entry is a fixed shell
 //! shape over validated crate names, so worker text can never become a check command. A
 //! check that could not run (toolchain missing, timeout) is `not_run`, and a task with any
 //! such check ends `unverified`, never `done`.
-use crate::{checked, git, RunPolicy};
+use crate::{git, output, RunPolicy};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::CString;
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 /// One check the runner ran, with the evidence its verdict rests on (#1442). The command is
@@ -85,58 +90,50 @@ pub(crate) fn derive(
     policy: &RunPolicy,
     root: &Path,
     base: &str,
-    head: Option<&str>,
+    head: &str,
 ) -> Result<DerivedChecks, String> {
-    let paths = changed_paths(policy, root, base, head)?;
-    let selected = select(root, &paths)?;
-    Ok(commands(&selected))
+    let diff = output(git(
+        policy,
+        root,
+        &[
+            "diff",
+            "--name-only",
+            "--no-relative",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+            "-z",
+            base,
+            head,
+            "--",
+        ],
+    ))?;
+    if !diff.status.success() {
+        return Err("committed change inventory failed".into());
+    }
+    from_changed_paths(root, &diff.stdout)
 }
 
-/// Paths that differ from `base`: tracked changes against the working tree (or `head` for a
-/// clean export) plus the untracked files the worker created.
-fn changed_paths(
-    policy: &RunPolicy,
-    root: &Path,
-    base: &str,
-    head: Option<&str>,
-) -> Result<Vec<String>, String> {
-    let mut diff = vec![
-        "diff",
-        "--name-only",
-        "--no-ext-diff",
-        "--no-textconv",
-        "-z",
-        base,
-    ];
-    if let Some(head) = head {
-        diff.push(head);
-    }
-    diff.push("--");
-    let tracked = checked(git(policy, root, &diff))?;
-    let mut paths: Vec<String> = tracked
-        .split('\0')
-        .filter(|path| !path.is_empty())
-        .map(str::to_owned)
-        .collect();
-    if head.is_none() {
-        let untracked = checked(git(
-            policy,
-            root,
-            &["ls-files", "--others", "--exclude-standard", "-z"],
-        ))?;
-        paths.extend(
-            untracked
-                .split('\0')
-                .filter(|path| !path.is_empty())
-                .map(str::to_owned),
-        );
-    }
-    if paths.len() > MAX_CHANGED_PATHS {
-        return Err(format!(
-            "the change lists more than {MAX_CHANGED_PATHS} paths, so its crates cannot be selected"
-        ));
-    }
-    Ok(paths)
+pub(crate) fn from_changed_paths(root: &Path, paths: &[u8]) -> Result<DerivedChecks, String> {
+    let paths = std::str::from_utf8(paths).map_err(|_| "change inventory is not UTF-8")?;
+    let paths = if paths.is_empty() {
+        Vec::new()
+    } else {
+        let paths = paths.strip_suffix('\0').ok_or("incomplete change inventory")?;
+        let paths: BTreeSet<_> = paths.split('\0').collect();
+        if paths.len() > MAX_CHANGED_PATHS {
+            return Err(format!("more than {MAX_CHANGED_PATHS} changed paths"));
+        }
+        if paths.iter().any(|path| {
+            path.split('/')
+                .any(|component| component.is_empty() || matches!(component, "." | ".."))
+        }) {
+            return Err("invalid path in change inventory".into());
+        }
+        paths.into_iter().map(str::to_owned).collect()
+    };
+    Ok(commands(&select(root, &paths)?))
 }
 
 /// One parsed `Cargo.toml`: the package name, whether it roots a workspace, and that
@@ -148,16 +145,68 @@ struct Manifest {
     members: Vec<String>,
 }
 
-/// Read the manifest of `dir` (relative to `root`; "" is the tree root). `None`: absent,
-/// too large, or not readable. A broken manifest selects nothing, like a project without
-/// Cargo; the derived set then still contains whatever else the change touched.
-fn read_manifest(root: &Path, dir: &str) -> Option<Manifest> {
-    let path = root.join(join_dir(dir, "Cargo.toml"));
-    let bytes = std::fs::read(&path).ok()?;
-    if bytes.len() as u64 > MANIFEST_BYTES {
-        return None;
+/// Read a bounded regular manifest beneath the checkout. Walk by descriptor so
+/// project-controlled symlinks cannot redirect host-side reads.
+fn read_manifest(root: &Path, dir: &str) -> Result<Option<Manifest>, String> {
+    fn open_child(parent: &File, name: &str, flags: libc::c_int) -> io::Result<File> {
+        let name = CString::new(name)?;
+        // SAFETY: the parent descriptor and C string remain valid across openat.
+        let fd = unsafe {
+            libc::openat(
+                parent.as_raw_fd(),
+                name.as_ptr(),
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: openat returned a new descriptor owned by this function.
+        Ok(unsafe { File::from_raw_fd(fd) })
     }
-    Some(parse_manifest(&String::from_utf8_lossy(&bytes)))
+
+    let read = || -> io::Result<Vec<u8>> {
+        let mut folder = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(root)?;
+        if !dir.is_empty() {
+            if !valid_member_path(dir) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invalid checkout path",
+                ));
+            }
+            for part in dir.split('/') {
+                folder = open_child(&folder, part, libc::O_RDONLY | libc::O_DIRECTORY)?;
+            }
+        }
+        let file = open_child(&folder, "Cargo.toml", libc::O_RDONLY | libc::O_NONBLOCK)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() || metadata.len() > MANIFEST_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "expected a bounded regular file",
+            ));
+        }
+        let mut bytes = Vec::new();
+        file.take(MANIFEST_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MANIFEST_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "manifest exceeds the read limit",
+            ));
+        }
+        Ok(bytes)
+    };
+
+    match read() {
+        Ok(bytes) => std::str::from_utf8(&bytes)
+            .map(|text| Some(parse_manifest(text)))
+            .map_err(|_| format!("{} is not UTF-8", join_dir(dir, "Cargo.toml"))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("cannot read {}: {error}", join_dir(dir, "Cargo.toml"))),
+    }
 }
 
 /// A line-oriented subset of TOML: section headers, `[package] name`, a `[workspace]` flag
@@ -167,6 +216,7 @@ fn parse_manifest(text: &str) -> Manifest {
     let mut section = String::new();
     let mut members = None::<String>;
     for line in text.lines() {
+        let line = manifest_line(line);
         if let Some(buffer) = &mut members {
             buffer.push(' ');
             buffer.push_str(line);
@@ -205,18 +255,32 @@ fn parse_manifest(text: &str) -> Manifest {
     out
 }
 
+/// Remove a TOML comment before folding a line into a multiline members list.
+fn manifest_line(line: &str) -> &str {
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if quote == Some('"') && ch == '\\' {
+            escaped = true;
+        } else if quote == Some(ch) {
+            quote = None;
+        } else if quote.is_none() {
+            match ch {
+                '#' => return &line[..index],
+                '"' | '\'' => quote = Some(ch),
+                _ => {}
+            }
+        }
+    }
+    line
+}
+
 /// The quoted strings of a `members` value, without comments, in order.
 fn quoted_items(value: &str) -> Vec<String> {
-    let without_comments: String = value
-        .lines()
-        .map(|line| match line.find('#') {
-            Some(at) => &line[..at],
-            None => line,
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
     let mut items = Vec::new();
-    let mut rest = without_comments.as_str();
+    let mut rest = value;
     while let Some(open) = rest.find(['"', '\'']) {
         let quote = rest[open..].chars().next().expect("non-empty");
         let Some(end) = rest[open + 1..].find(quote) else {
@@ -236,7 +300,11 @@ fn valid_member_path(path: &str) -> bool {
     !path.is_empty()
         && path.len() <= 256
         && !path.starts_with('/')
-        && path.split('/').all(|part| !part.is_empty() && part != "..")
+        && !path.contains(':')
+        && !path.chars().any(char::is_control)
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != ".." && part != "." && part.trim() == part)
 }
 
 fn unquote(value: &str) -> Option<String> {
@@ -272,24 +340,24 @@ fn join_dir(dir: &str, name: &str) -> String {
     }
 }
 
-/// Manifests read so far, keyed by relative directory ("" is the tree root). An unreadable
-/// or absent manifest is an empty one: it selects nothing and roots no workspace.
+/// Manifests read so far, keyed by relative directory ("" is the tree root).
+/// Only absent manifests select nothing.
 #[derive(Default)]
 struct Manifests {
     root: BTreeMap<String, Manifest>,
 }
 
 impl Manifests {
-    fn at(&mut self, root: &Path, dir: &str) -> &Manifest {
+    fn at(&mut self, root: &Path, dir: &str) -> Result<&Manifest, String> {
         if !self.root.contains_key(dir) {
-            let manifest = read_manifest(root, dir).unwrap_or_default();
+            let manifest = read_manifest(root, dir)?.unwrap_or_default();
             self.root.insert(dir.to_owned(), manifest);
         }
-        &self.root[dir]
+        Ok(&self.root[dir])
     }
     /// The directories at and above `dir` with a package or workspace manifest, deepest
     /// first, reading manifests on the way.
-    fn ancestors(&mut self, root: &Path, dir: &str) -> Vec<String> {
+    fn ancestors(&mut self, root: &Path, dir: &str) -> Result<Vec<String>, String> {
         let mut chain = vec![dir.to_owned()];
         let mut current = dir;
         while let Some(at) = current.rfind('/') {
@@ -300,21 +368,24 @@ impl Manifests {
             chain.clear();
         }
         chain.push(String::new());
-        chain.retain(|dir| {
-            let manifest = self.at(root, dir);
-            manifest.package.is_some() || manifest.workspace
-        });
-        chain
+        let mut found = Vec::new();
+        for dir in chain {
+            let manifest = self.at(root, &dir)?;
+            if manifest.package.is_some() || manifest.workspace {
+                found.push(dir);
+            }
+        }
+        Ok(found)
     }
     /// The directory a cargo command for the crate at `dir` runs in: the nearest workspace
     /// root at or above it, or the crate directory itself for a standalone crate.
-    fn in_dir(&mut self, root: &Path, dir: &str) -> String {
-        for ancestor in self.ancestors(root, dir) {
+    fn in_dir(&mut self, root: &Path, dir: &str) -> Result<String, String> {
+        for ancestor in self.ancestors(root, dir)? {
             if self.root[&ancestor].workspace {
-                return ancestor;
+                return Ok(ancestor);
             }
         }
-        dir.to_owned()
+        Ok(dir.to_owned())
     }
 }
 
@@ -328,13 +399,13 @@ fn select(root: &Path, paths: &[String]) -> Result<BTreeMap<String, String>, Str
         let name = path.rsplit('/').next().unwrap_or(path.as_str());
         let dir = parent_dir(path);
         if name == "Cargo.toml" || name == "Cargo.lock" {
-            let manifest = manifests.at(root, dir);
+            let manifest = manifests.at(root, dir)?;
             if manifest.workspace {
                 let package = manifest.package.clone();
                 let members = manifest.members.clone();
                 for member in members {
                     for member_dir in member_dirs(root, dir, &member) {
-                        if let Some(package) = manifests.at(root, &member_dir).package.clone() {
+                        if let Some(package) = manifests.at(root, &member_dir)?.package.clone() {
                             selected.insert(package, dir.to_owned());
                         }
                     }
@@ -342,16 +413,14 @@ fn select(root: &Path, paths: &[String]) -> Result<BTreeMap<String, String>, Str
                 if let Some(package) = package {
                     selected.insert(package, dir.to_owned());
                 }
-            } else if name == "Cargo.toml" {
-                if let Some(package) = manifest.package.clone() {
-                    selected.insert(package, dir.to_owned());
-                }
+            } else if let Some(package) = manifest.package.clone() {
+                selected.insert(package, manifests.in_dir(root, dir)?);
             }
             continue;
         }
-        for ancestor in manifests.ancestors(root, dir) {
+        for ancestor in manifests.ancestors(root, dir)? {
             if let Some(package) = manifests.root[&ancestor].package.clone() {
-                let in_dir = manifests.in_dir(root, &ancestor);
+                let in_dir = manifests.in_dir(root, &ancestor)?;
                 selected.insert(package, in_dir);
                 break;
             }
@@ -499,7 +568,7 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeMap<String, String>> {
                 }
             } else if file == "Cargo.toml" {
                 let manifest_dir = full.strip_suffix("/Cargo.toml").unwrap_or("").to_owned();
-                let manifest = read_manifest(root, &manifest_dir).unwrap_or_default();
+                let manifest = read_manifest(root, &manifest_dir).ok()??;
                 manifests.root.insert(manifest_dir, manifest);
             }
         }
@@ -508,7 +577,7 @@ pub(crate) fn discover(root: &Path) -> Option<BTreeMap<String, String>> {
     let dirs: Vec<String> = manifests.root.keys().cloned().collect();
     for dir in dirs {
         if let Some(name) = manifests.root[&dir].package.clone() {
-            let in_dir = manifests.in_dir(root, &dir);
+            let in_dir = manifests.in_dir(root, &dir).ok()?;
             packages.insert(name, in_dir);
         }
     }
@@ -551,7 +620,7 @@ pub(crate) fn parse_declaration(output: &str) -> Declaration {
         return Declaration::Absent;
     };
     let Some((json, _)) = rest.split_once("</oxa-acceptance>") else {
-        return Declaration::Absent;
+        return Declaration::Unreadable;
     };
     if json.len() > 4096 {
         return Declaration::Unreadable;
@@ -610,7 +679,7 @@ pub(crate) fn parse_evidence(stdout: &str, expected: usize) -> Option<Vec<CheckR
         return None;
     }
     let checks = value["checks"].as_array()?;
-    if checks.len() != expected {
+    if expected == 0 || checks.len() != expected {
         return None;
     }
     let mut runs = Vec::with_capacity(checks.len());
@@ -653,9 +722,7 @@ mod tests {
 
     fn manifest(dir: &PrivateDir, path: &str, text: &str) {
         let full = dir.path().join(path);
-        std::fs::DirBuilder::new()
-            .create(full.parent().expect("manifest parent"))
-            .expect("create manifest folder");
+        std::fs::create_dir_all(full.parent().expect("manifest parent")).expect("create manifest folder");
         std::fs::write(full, text).expect("write manifest");
     }
 
@@ -735,6 +802,25 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
+    fn a_standalone_lockfile_change_selects_its_package() {
+        let dir = PrivateDir::new("derived-standalone-lock");
+        manifest(&dir, "solo/Cargo.toml", "[package]\nname = \"solo\"\n");
+        let selected = select(dir.path(), &["solo/Cargo.lock".to_owned()]).unwrap();
+        assert_eq!(selected, BTreeMap::from([("solo".to_owned(), "solo".to_owned())]));
+    }
+
+    #[test]
+    fn an_oversized_manifest_cannot_supply_crate_evidence() {
+        let dir = PrivateDir::new("derived-bounded-manifest");
+        let mut text = "[package]\nname = \"one\"\n#".to_owned();
+        text.push_str(&"x".repeat(MANIFEST_BYTES as usize));
+        manifest(&dir, "Cargo.toml", &text);
+        let err = select(dir.path(), &["src/lib.rs".to_owned()]).unwrap_err();
+        assert!(err.contains("bounded regular file"), "{err}");
+        assert!(discover(dir.path()).is_none());
+    }
+
+    #[test]
     fn files_outside_any_crate_select_nothing() {
         let dir = PrivateDir::new("derived-none");
         manifest(&dir, "Cargo.toml", workspace());
@@ -794,6 +880,7 @@ members = ["crates/*", "tools/pinned"]
         );
         for bad in [
             "<oxa-acceptance>[not json]</oxa-acceptance>",
+            "<oxa-acceptance>[\"one\"]",
             "<oxa-acceptance>{\"one\":true}</oxa-acceptance>",
             "<oxa-acceptance>[\"bad name\"]</oxa-acceptance>",
             &format!("<oxa-acceptance>[{}]</oxa-acceptance>", "\"x\",".repeat(20)),

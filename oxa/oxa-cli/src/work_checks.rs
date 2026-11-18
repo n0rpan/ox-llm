@@ -4,7 +4,7 @@ use oxa_proto::{sh_quote, CancelToken, ExecSpec, Sandbox};
 use oxa_sandbox::Bwrap;
 use oxa_work::{SupervisorOperation, SupervisorRequest};
 use std::io::Write;
-use std::os::unix::fs::DirBuilderExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -43,22 +43,9 @@ pub(crate) fn run(
                 .parent()
                 .ok_or("worktree has no parent for check outputs")?
                 .join(".work-output");
-            if !std::fs::symlink_metadata(&scratch).is_ok_and(|metadata| metadata.is_dir()) {
-                std::fs::DirBuilder::new()
-                    .mode(0o700)
-                    .create(&scratch)
-                    .map_err(|e| e.to_string())?;
-            }
+            ensure_private_check_directory(&scratch)?;
             let outputs = scratch.join(task);
-            if !std::fs::symlink_metadata(&outputs).is_ok_and(|metadata| metadata.is_dir()) {
-                std::fs::DirBuilder::new()
-                    .mode(0o700)
-                    .create(&outputs)
-                    .map_err(|e| e.to_string())?;
-                if !std::fs::symlink_metadata(&outputs).is_ok_and(|metadata| metadata.is_dir()) {
-                    return Err("invalid check output directory".into());
-                }
-            }
+            ensure_private_check_directory(&outputs)?;
             Some(outputs)
         }
         SupervisorOperation::CommittedChecks { .. } => {
@@ -98,6 +85,7 @@ pub(crate) fn run(
     b.check().map_err(|e| e.to_string())?;
     let settings = Settings::load(dirs, &source, true);
     let commands = match request.operation {
+        SupervisorOperation::ChangedPaths { base } => return changed_paths(&b, &root, &base, out),
         SupervisorOperation::Inspect => return inspect(&b, &root),
         SupervisorOperation::InspectCommitted { index } => return inspect_committed(&b, &root, &index),
         SupervisorOperation::Checkout {
@@ -302,6 +290,39 @@ git --no-replace-objects commit -m {message}
 // Exit codes remain the gate: repository callbacks cannot forge a clean verdict by printing
 // JSON or diagnostics. The evidence record restates what the runner itself sent plus each
 // bare exit, and the runner pairs it with its own commands before deciding anything.
+fn changed_paths(sandbox: &Bwrap, root: &Path, base: &str, out: &mut dyn Write) -> Result<i32, String> {
+    if !oxa_work::board::queue::is_object_id(base) {
+        return Err("invalid base for worktree change inventory".into());
+    }
+    let git = "git --no-replace-objects --no-optional-locks -c core.fsmonitor=false";
+    let spec = ExecSpec {
+        command: format!(
+            "{git} diff --name-only --no-relative --no-renames --no-ext-diff --no-textconv --ignore-submodules=none -z {} -- 2>/dev/null && \n             {git} ls-files --others --exclude-standard -z 2>/dev/null",
+            sh_quote(base)
+        ),
+        cwd: root.into(),
+        writable: false,
+        net: false,
+        timeout_s: Some(600),
+        env: git_environment(),
+    };
+    const MAX_BYTES: usize = 512 * 1024;
+    let mut paths = Vec::new();
+    let mut overflow = false;
+    let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+        if !overflow && paths.len() + bytes.len() <= MAX_BYTES {
+            paths.extend_from_slice(bytes);
+        } else {
+            overflow = true;
+        }
+    });
+    if result.exit != Some(0) || result.timed_out || overflow {
+        return Err("sandboxed Git change inventory did not complete within its limits".into());
+    }
+    out.write_all(&paths).map_err(|error| error.to_string())?;
+    Ok(0)
+}
+
 fn inspect(sandbox: &Bwrap, root: &Path) -> Result<i32, String> {
     let spec = ExecSpec {
         command: r#"git --no-replace-objects --no-optional-locks -c core.fsmonitor=false status --porcelain=v1 -z | {
@@ -368,6 +389,23 @@ fn inspect_committed(sandbox: &Bwrap, root: &Path, index: &Path) -> Result<i32, 
     match (result.exit, result.timed_out) {
         (Some(code @ (0 | 1)), false) => Ok(code),
         _ => Err("committed source inspection failed".into()),
+    }
+}
+
+fn ensure_private_check_directory(path: &Path) -> Result<(), String> {
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+    let uid = std::fs::metadata("/proc/self")
+        .map_err(|error| error.to_string())?
+        .uid();
+    if metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o077 == 0 {
+        Ok(())
+    } else {
+        Err("invalid private check output directory".into())
     }
 }
 

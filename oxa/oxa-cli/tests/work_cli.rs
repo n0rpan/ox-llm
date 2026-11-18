@@ -184,7 +184,7 @@ fn external_checks_run_without_edits_and_retain_worktree() {
 #[test]
 fn clean_task_is_nothing_to_do() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     assert_eq!(
         run(&env, vec![ScriptTurn::text("nothing")])["outcome"],
         "nothing_to_do"
@@ -403,7 +403,7 @@ fn retry_can_make_acceptance_green() {
 #[test]
 fn agent_edits_stay_in_worktree() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write(
         "home/.oxa/agent/settings.json",
         r#"{"defaultProjectTrust":"always"}"#,
@@ -446,7 +446,7 @@ fn invalid_task_file_is_rejected_before_creating_worktree() {
 fn github_issue_input_uses_mock_gh() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     enable_test_subagent(&env);
     let tools = trusted_tools(&env);
     let lookup_log = env.write("tmp/issue-lookup.log", "");
@@ -574,7 +574,7 @@ fn issue_packet_workers_keep_local_tools_and_a_separate_network_namespace() {
     use std::os::unix::fs::PermissionsExt;
 
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let tools = trusted_tools(&env);
     let gh = env.write(
         "tmp/trusted-tools/gh",
@@ -638,7 +638,7 @@ printf '%s' '{"title":"Synthetic task","body":"Record the local fixture","state"
 fn github_issue_packet_carries_comment_findings() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let tools = trusted_tools(&env);
     let gh = env.write(
         "tmp/trusted-tools/gh",
@@ -908,7 +908,7 @@ fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
 #[test]
 fn child_can_create_a_commit_with_the_real_sandbox() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write(
         "home/.oxa/agent/settings.json",
         r#"{"defaultProjectTrust":"always"}"#,
@@ -1036,7 +1036,7 @@ fn command_line_offline_policy_reaches_child_agent() {
 #[test]
 fn batch_reports_one_task_error_and_runs_later_tasks() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     std::fs::create_dir_all(storage(&env)).unwrap();
     std::fs::write(storage(&env).join("test.json"), "{}").unwrap();
     env.write("work/tasks.json", r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"go"},{"id":"next","branch":"agent/next","model":"fake","prompt":"go"}]"#);
@@ -1069,7 +1069,7 @@ fn batch_reports_one_task_error_and_runs_later_tasks() {
 #[test]
 fn abandoned_lock_file_does_not_block_a_task() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     std::fs::create_dir_all(storage(&env)).unwrap();
     std::fs::write(storage(&env).join("test.lock"), "").unwrap();
     let record = run(&env, vec![ScriptTurn::text("done")]);
@@ -1246,7 +1246,7 @@ fn acceptance_has_no_unsandboxed_fallback() {
 fn runner_state_is_private_and_outside_the_workers_git_bind() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let record = run(&env, vec![ScriptTurn::text("finished")]);
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
     assert_eq!(
@@ -1295,7 +1295,7 @@ fn acceptance_preserves_the_normal_read_only_git_configuration() {
 fn github_lookup_ignores_project_local_executable() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let bad = env.write("work/project/bin/gh", "#!/bin/sh\nprintf invoked > \"$HOME/project-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\",\"state\":\"OPEN\",\"comments\":[]}'\n");
     trusted_tools(&env);
     let good = env.write("tmp/trusted-tools/gh", "#!/bin/sh\nprintf invoked > \"$HOME/trusted-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\",\"state\":\"OPEN\",\"comments\":[]}'\n");
@@ -1329,7 +1329,7 @@ fn github_lookup_ignores_project_local_executable() {
 fn runner_git_queries_ignore_project_local_executable() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let bad = env.write("work/project/bin/git", "#!/bin/sh\nprintf invoked > \"$HOME/project-git-ran\" 2>/dev/null || true\nexec /usr/bin/git \"$@\"\n");
     std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!(
@@ -1416,7 +1416,7 @@ fn invalid_nested_git_metadata_cannot_hide_an_outer_project_executable() {
 #[test]
 fn final_inspection_never_executes_a_worker_edited_fsmonitor_on_the_host() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let project = env.work().join("project");
     env.write("work/project/monitor.sh", "printf '\\0'\n");
     git(&env, &project, &["add", "monitor.sh"]);
@@ -1440,7 +1440,7 @@ fn final_inspection_never_executes_a_worker_edited_fsmonitor_on_the_host() {
 #[test]
 fn final_inspection_keeps_worker_edited_clean_filters_in_the_sandbox() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let project = env.work().join("project");
     env.write("work/project/.gitattributes", "tracked.txt filter=probe\n");
     env.write("work/project/filter.sh", "cat\n");
@@ -1548,7 +1548,7 @@ fn worktree_checkout_never_runs_tracked_hooks_on_the_host() {
 fn checkout_keeps_git_hooks_active_inside_the_sandbox() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let hook = env.write(
         "work/project/.git/hooks/post-checkout",
         "#!/bin/sh\nprintf escaped > \"$HOME/worktree-checkout-escape\" 2>/dev/null || true\nprintf ran > checkout-hook-ran\n",
@@ -1594,7 +1594,7 @@ fn unavailable_sandbox_blocks_checkout_before_any_hook() {
 #[test]
 fn worktree_checkout_keeps_smudge_filters_in_the_sandbox() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     env.write("work/project/.gitattributes", "*.data filter=probe\n");
     env.write("work/project/fixture.data", "synthetic data\n");
     let project = env.work().join("project");
@@ -1657,7 +1657,7 @@ fn checkout_callbacks_cannot_replace_the_frozen_acceptance_commands() {
 fn worktree_reference_hooks_run_only_inside_the_sandbox() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let hook = env.write(
         "work/project/.git/hooks/reference-transaction",
         "#!/bin/sh\nprintf escaped > \"$HOME/worktree-reference-escape\" 2>/dev/null || true\nprintf ran > reference-hook-ran\ncat >/dev/null\n",
@@ -1711,7 +1711,7 @@ fn malicious_mcp() -> String {
 
 fn child_trust_case(mode: &str) {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let project = env.work().join("project");
     git(&env, &project, &["checkout", "-b", "hostile-base"]);
     env.write("work/project/.oxa/mcp.json", &malicious_mcp());
@@ -1909,7 +1909,7 @@ fn security_host_metadata_never_lazy_fetches_from_a_promisor() {
 #[test]
 fn security_git_environment_cannot_redirect_the_runner() {
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let redirect = env.work().join("remote.git");
     let rows = run_records(
         &env,

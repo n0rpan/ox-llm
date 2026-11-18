@@ -7,6 +7,7 @@ mod work;
 
 use oxa_fake::{ScriptTurn, TestEnv};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     os::unix::fs::{DirBuilderExt, PermissionsExt},
@@ -44,13 +45,17 @@ fn write_turn(path: &str) -> ScriptTurn {
 /// A private tools directory holding a `cargo` that runs `script`. It lives under the
 /// test home: PATH entries under `$HOME` are bound read-only into the check sandbox
 /// (a fresh tmpfs masks the host `/tmp` there), so the sandboxed round resolves the fake.
-fn tools_with_cargo(env: &TestEnv, script: &str) -> PathBuf {
-    let tools = env.home().join("trusted-tools");
+fn tools_with_cargo_in(env: &TestEnv, name: &str, script: &str) -> PathBuf {
+    let tools = env.home().join(name);
     fs::DirBuilder::new().mode(0o700).create(&tools).unwrap();
     let cargo = tools.join("cargo");
     fs::write(&cargo, script).unwrap();
     fs::set_permissions(&cargo, fs::Permissions::from_mode(0o700)).unwrap();
     tools
+}
+
+fn tools_with_cargo(env: &TestEnv, script: &str) -> PathBuf {
+    tools_with_cargo_in(env, "trusted-tools", script)
 }
 
 /// The recording, always-passing cargo: every invocation and its target directory.
@@ -75,6 +80,19 @@ fn path_with(tools: &Path) -> String {
         tools.display(),
         std::env::var("PATH").unwrap_or_default()
     )
+}
+
+fn verify(env: &TestEnv, path: Option<&str>) -> Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    command
+        .args(["work", "verify", "test"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"));
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    command.output().unwrap()
 }
 
 /// The per-check calls the fake cargo recorded beside the task's worktree.
@@ -123,6 +141,7 @@ fn the_touched_crate_tests_and_clippy_join_the_static_list_in_the_done_evidence(
         calls.lines().collect::<Vec<_>>(),
         vec![
             format!("test --frozen -p one|target={}", target.display()),
+            format!("clippy --version|target={}", target.display()),
             format!(
                 "clippy --frozen -p one -- -D warnings|target={}",
                 target.display()
@@ -199,6 +218,7 @@ fn a_declared_acceptance_crate_runs_beside_the_derived_checks() {
             .collect::<Vec<_>>(),
         [
             "test --frozen -p one",
+            "clippy --version",
             "clippy --frozen -p one -- -D warnings",
             "test --frozen -p two"
         ]
@@ -268,8 +288,10 @@ fn a_failing_derived_check_gets_one_repair_round_over_the_same_session() {
         calls.lines().collect::<Vec<_>>(),
         [
             "test --frozen -p one",
+            "clippy --version",
             "clippy --frozen -p one -- -D warnings",
             "test --frozen -p one",
+            "clippy --version",
             "clippy --frozen -p one -- -D warnings",
         ]
     );
@@ -292,22 +314,12 @@ fn verification_reruns_the_derived_checks_of_the_saved_commit() {
     );
     assert_eq!(record["outcome"], "done", "{record}");
 
-    let verify = |path: &str| {
-        Command::new(env!("CARGO_BIN_EXE_oxa"))
-            .args(["work", "verify", "test"])
-            .current_dir(env.work().join("project"))
-            .env_clear()
-            .envs(env.envs("http://127.0.0.1:1"))
-            .env("PATH", path)
-            .output()
-            .unwrap()
-    };
-    // The static list is empty: only the derived checks can decide this verification.
-    let failing = tools_with_cargo(
+    let failing = tools_with_cargo_in(
         &env,
-        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$OXA_WORK_OUTPUT_DIR/calls\"\nexit 1\n",
+        "failing-tools",
+        "#!/bin/sh\nif [ \"$*\" = \"clippy --version\" ]; then exit 0; fi\nprintf '%s\\n' \"$*\" >> \"$OXA_WORK_OUTPUT_DIR/calls\"\nexit 1\n",
     );
-    let rejected = verify(&path_with(&failing));
+    let rejected = verify(&env, Some(&path_with(&failing)));
     assert!(
         !rejected.status.success(),
         "a committed change whose crate tests fail still verifies: {}",
@@ -318,10 +330,119 @@ fn verification_reruns_the_derived_checks_of_the_saved_commit() {
         "{}",
         String::from_utf8_lossy(&rejected.stderr)
     );
-    let accepted: Output = verify(&path_with(&tools));
+    let accepted: Output = verify(&env, Some(&path_with(&tools)));
     assert!(
         accepted.status.success(),
         "{}",
         String::from_utf8_lossy(&accepted.stderr)
+    );
+}
+
+#[test]
+fn a_changed_task_with_no_checks_is_unverified_and_cannot_get_a_verify_receipt() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let (records, _, code) = run_with_exit(
+        &env,
+        vec![write_turn("notes.txt"), ScriptTurn::text("finished")],
+        &["work", "../tasks.json"],
+        None,
+    );
+    assert_eq!(code, 1, "{records:?}");
+    assert_eq!(records[0]["outcome"], "unverified");
+    assert!(records[0]["detail"]
+        .as_str()
+        .unwrap()
+        .contains("no acceptance checks"));
+    assert_eq!(
+        git(&env, tree_of(&records[0]), &["show", "HEAD:notes.txt"]),
+        "changed"
+    );
+
+    let common = env.work().join("project/.git").canonicalize().unwrap();
+    let key = format!("{:x}", Sha256::digest(common.as_os_str().as_encoded_bytes()));
+    let saved = env.agent_dir().join("work").join(key).join("test.json");
+    let mut state: serde_json::Value = serde_json::from_slice(&fs::read(&saved).unwrap()).unwrap();
+    assert_ne!(state["execution"]["initial"], records[0]["head_sha"]);
+    state["record"]["outcome"] = json!("done");
+    fs::write(saved, serde_json::to_vec(&state).unwrap()).unwrap();
+
+    let output = verify(&env, None);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty(), "zero checks must not produce a receipt");
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("no acceptance checks"), "{error}");
+
+    let (replayed, requests, code) = run_with_exit(&env, vec![], &["work", "../tasks.json"], None);
+    assert_eq!(code, 1, "{replayed:?}");
+    assert_eq!(replayed[0]["outcome"], "unverified");
+    assert!(
+        requests.is_empty(),
+        "replaying a legacy record must not start a worker"
+    );
+}
+
+#[test]
+fn a_clean_task_without_checks_is_also_unverified() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let (records, _, code) = run_with_exit(
+        &env,
+        vec![ScriptTurn::text("finished")],
+        &["work", "../tasks.json"],
+        None,
+    );
+    assert_eq!(code, 1, "{records:?}");
+    assert_eq!(records[0]["outcome"], "unverified");
+    let output = verify(&env, None);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn a_trust_skipped_round_remains_unverified_even_when_save_cannot_run() {
+    use oxa_fake::{FakeOpts, FakeServer, Fault};
+    use std::{
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+
+    let env = TestEnv::new();
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
+    let project = env.work().join("project");
+    let mut response = ScriptTurn::text("finished");
+    response.fault = Some(Fault::Stall { bytes: 16, ms: 2000 });
+    let server = FakeServer::start(vec![response], FakeOpts::default()).unwrap();
+    let child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "../tasks.json"])
+        .current_dir(&project)
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while server.requests().is_empty() {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "worker reached the loopback engine"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    oxa_perm::TrustStore::default()
+        .save(&env.agent_dir().join("trust.json"), &project, false)
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let record: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(record["outcome"], "unverified", "{record}");
+    assert!(record["detail"]
+        .as_str()
+        .unwrap()
+        .contains("source project is not trusted"));
+    assert!(
+        record.get("checks").is_none(),
+        "skipped checks cannot produce evidence"
     );
 }

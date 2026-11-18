@@ -279,7 +279,29 @@ impl Runner<'_> {
                         .map(|command| (CheckOrigin::Settings, command.clone()))
                         .collect();
                     let mut could_not_run = Vec::new();
-                    match derived::derive(self.policy, &tree, &point.base, None) {
+                    let plan = supervise(
+                        self.binary,
+                        &tree,
+                        SupervisorRequest {
+                            source: self.repo.to_path_buf(),
+                            operation: SupervisorOperation::ChangedPaths {
+                                base: point.base.clone(),
+                            },
+                        },
+                        self.policy,
+                        self.lock,
+                    )
+                    .and_then(|out| {
+                        if out.status.success() {
+                            derived::from_changed_paths(&tree, &out.stdout)
+                        } else {
+                            Err(format!(
+                                "change inventory could not run: {}",
+                                String::from_utf8_lossy(&out.stderr)
+                            ))
+                        }
+                    });
+                    match plan {
                         Ok(derived) => {
                             commands.extend(
                                 derived

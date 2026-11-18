@@ -113,34 +113,6 @@ pub(crate) fn verify_commit(
     if crate::done_commands(policy, &export.store, base)? != execution.commands {
         return Err("saved checks disagree with their captured base".into());
     }
-    // #1442: a saved verdict is bound to the change's own crates and the declared
-    // acceptance crates, recomputed from this exact commit; the static list alone is not
-    // the evidence a `done` rested on.
-    let mut commands: Vec<(CheckOrigin, String)> = execution
-        .commands
-        .iter()
-        .map(|command| (CheckOrigin::Settings, command.clone()))
-        .collect();
-    let derived = derived::derive(policy, &export.tree, base, Some(head))
-        .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
-    commands.extend(
-        derived
-            .commands
-            .into_iter()
-            .map(|command| (CheckOrigin::Derived, command)),
-    );
-    let declared = execution.declared.clone().unwrap_or_default();
-    if !declared.is_empty() {
-        let discovered = derived::discover(&export.tree)
-            .ok_or("clean committed acceptance could not run: the repository's crates cannot be listed")?;
-        let entries = derived::declared_entries(&declared, &discovered, &derived.tested)
-            .map_err(|missing| format!("clean committed acceptance could not run: {}", missing.join("; ")))?;
-        commands.extend(
-            entries
-                .into_iter()
-                .map(|command| (CheckOrigin::Declared, command)),
-        );
-    }
     let checkout = supervise(
         binary,
         &export.tree,
@@ -162,6 +134,43 @@ pub(crate) fn verify_commit(
     same_saved_commit(policy, &export.tree, head, tree_id)?;
     if dirty_worktree(binary, &export.tree, repo, policy, lock)? {
         return Err("clean acceptance checkout is dirty".into());
+    }
+    // #1442: a saved verdict is bound to the change's own crates and the declared
+    // acceptance crates, recomputed from this exact commit; the static list alone is not
+    // the evidence a `done` rested on.
+    let mut commands: Vec<(CheckOrigin, String)> = execution
+        .commands
+        .iter()
+        .map(|command| (CheckOrigin::Settings, command.clone()))
+        .collect();
+    let derived = derived::derive(policy, &export.tree, base, head)
+        .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
+    commands.extend(
+        derived
+            .commands
+            .into_iter()
+            .map(|command| (CheckOrigin::Derived, command)),
+    );
+    let declared = execution.declared.clone().unwrap_or_default();
+    if !declared.is_empty() {
+        let discovered = derived::discover(&export.tree)
+            .ok_or("clean committed acceptance could not run: the repository's crates cannot be listed")?;
+        let entries = derived::declared_entries(&declared, &discovered, &derived.tested)
+            .map_err(|missing| format!("clean committed acceptance could not run: {}", missing.join("; ")))?;
+        commands.extend(
+            entries
+                .into_iter()
+                .map(|command| (CheckOrigin::Declared, command)),
+        );
+    }
+    if commands.is_empty() {
+        return Err(crate::NO_ACCEPTANCE_CHECKS.into());
+    }
+    if commands.len() > derived::MAX_CHECKS {
+        return Err(format!(
+            "clean committed acceptance could not run: more than {} checks",
+            derived::MAX_CHECKS
+        ));
     }
     // This fresh index comes from the verified commit and lives outside both
     // writable sandbox binds (checkout and Git metadata). Checks cannot hide

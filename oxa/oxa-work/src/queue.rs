@@ -54,7 +54,7 @@ pub enum QueueEvent {
     },
     Task {
         #[serde(flatten)]
-        record: Record,
+        record: Box<Record>,
     },
     Error {
         file: PathBuf,
@@ -674,7 +674,7 @@ fn run_queue_inner(
         let mut waiting = vec![];
         for job in external.drain(..) {
             let job: Job = job;
-            if busy(&storage, &job.task.id)? {
+            if busy(storage, &job.task.id)? {
                 waiting.push(job);
             } else {
                 pending.push(job);
@@ -683,7 +683,7 @@ fn run_queue_inner(
         external = waiting;
         let mut ready = vec![];
         for job in pending.drain(..) {
-            if busy(&storage, &job.task.id)? {
+            if busy(storage, &job.task.id)? {
                 external.push(job);
             } else {
                 ready.push(job);
@@ -743,7 +743,7 @@ fn run_queue_inner(
                     finished += 1;
                     failed += 1;
                     emit(QueueEvent::Task {
-                        record: blocked_record(&job.task, error.to_string()),
+                        record: Box::new(blocked_record(&job.task, error.to_string())),
                     })?;
                 }
             }
@@ -831,7 +831,9 @@ fn run_queue_inner(
                 if record.failed() {
                     failed += 1;
                 }
-                emit(QueueEvent::Task { record })?;
+                emit(QueueEvent::Task {
+                    record: Box::new(record),
+                })?;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => return Err(error.to_string()),
