@@ -80,9 +80,36 @@ fn basename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase()
 }
 
+/// Whether `path` lies in a credential location of the sandbox's private-path inventory
+/// (`.docker/config.json`, `.aws`, `.kube`, ..), as a project-local copy of it. Registry
+/// files stay with the content check, which tells their credentials from plain settings.
+fn inventory_store(path: &str) -> bool {
+    let parts: Vec<String> = path.split('/').map(|part| part.to_ascii_lowercase()).collect();
+    oxa_proto::guard::SENSITIVE_HOME.iter().any(|entry| {
+        let entry: Vec<String> = entry.split('/').map(|part| part.to_ascii_lowercase()).collect();
+        let registry = entry.len() == 1 && REGISTRY_FILES.contains(&entry[0].as_str());
+        !registry
+            && parts
+                .windows(entry.len())
+                .any(|window| window == entry.as_slice())
+    })
+}
+
+/// A JSON auth field of a container registry login (`"auth": "<base64 user:password>"`).
+fn registry_auth(text: &str) -> bool {
+    static AUTH: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    AUTH.get_or_init(|| {
+        regex::Regex::new(r#"(?i)"(?:auth|identitytoken|registrytoken)"\s*:\s*"([A-Za-z0-9+/=_.-]+)""#)
+            .expect("registry auth pattern")
+    })
+    .captures_iter(text)
+    .any(|found| opaque_value(&found[1]))
+}
+
 fn secret_store(path: &str) -> bool {
     let name = basename(path);
-    name == ".env"
+    inventory_store(path)
+        || name == ".env"
         || name.ends_with(".env")
         || name.starts_with(".env.")
         || name.contains("credentials")
@@ -148,6 +175,9 @@ impl PushScan {
         if secret_store(item.path) {
             return Some(found("content to a file name used for secrets"));
         }
+        if registry_auth(item.text) {
+            return Some(found("a registry login auth field"));
+        }
         let registry = REGISTRY_FILES.contains(&basename(item.path).as_str());
         let line = item.text.to_ascii_lowercase();
         if registry
@@ -203,6 +233,13 @@ mod tests {
             text,
         }
     }
+    fn added<'a>(path: &'a str, text: &'a str) -> PushedContent<'a> {
+        PushedContent {
+            path,
+            line: Some(1),
+            text,
+        }
+    }
     fn file(path: &str) -> PushedContent<'_> {
         PushedContent {
             path,
@@ -235,6 +272,25 @@ mod tests {
         for name in ["src/env.rs", "id_ed25519.pub", "keyboard.rs", "README.md"] {
             assert!(scan.check(&file(name)).is_none(), "{name}");
         }
+    }
+
+    #[test]
+    fn project_local_docker_login_is_refused() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        // base64 of a synthetic `user:password`, built at run time.
+        let auth = format!("{}{}", "dXNlcjpwYXNz", "d29yZA==");
+        let entry = format!("{{\"auths\":{{\"registry.example.invalid\":{{\"auth\":\"{auth}\"}}}}}}");
+        assert!(scan.check(&file(".docker/config.json")).is_some());
+        assert!(scan.check(&file("deploy/.docker/config.json")).is_some());
+        assert!(scan.check(&file(".kube/config")).is_some());
+        assert!(scan.check(&added(".docker/config.json", &entry)).is_some());
+        // The field is recognised in any file, but a plain word or a package file is not.
+        assert!(scan
+            .check(&added("notes.json", &format!("\"auth\": \"{auth}\"")))
+            .is_some());
+        assert!(scan.check(&line("notes.json", "\"auth\": \"basic\"")).is_none());
+        assert!(scan.check(&file("docker/config.json")).is_none());
+        assert!(scan.check(&file(".npmrc")).is_none());
     }
 
     #[test]
