@@ -1,6 +1,6 @@
 //! Deterministic check/inspection supervisor; no engine or model is constructed here.
 use oxa_config::{Dirs, Env, Settings};
-use oxa_proto::{CancelToken, ExecSpec, Sandbox};
+use oxa_proto::{sh_quote, CancelToken, ExecSpec, Sandbox};
 use oxa_sandbox::Bwrap;
 use oxa_work::{SupervisorOperation, SupervisorRequest};
 use std::io::Write;
@@ -62,17 +62,39 @@ pub(crate) fn run(
     let commands = match request.operation {
         SupervisorOperation::Inspect => return inspect(&b, &root),
         SupervisorOperation::InspectCommitted { index } => return inspect_committed(&b, &root, &index),
-        SupervisorOperation::Checkout { branch, create } => {
-            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+        SupervisorOperation::Checkout {
+            branch,
+            create,
+            adopted,
+            normalize,
+        } => {
+            // Adopted content is materialized without ambient GitHub authority.
+            // The ordinary checkout path retains its existing hook policy.
+            let sandbox: Arc<dyn Sandbox> = if adopted {
+                Arc::new(b)
+            } else {
+                crate::netguard::with_net(Arc::new(b), &settings)
+            };
+            let git = if adopted {
+                "git --no-replace-objects -c core.hooksPath=/dev/null -c credential.helper="
+            } else {
+                "git --no-replace-objects"
+            };
+            let mut command = if let Some(update) = normalize {
+                // Materialize filters first, then advance under the caller's Git
+                // worktree hold, with the selected checkout callback policy.
+                format!("{git} read-tree --reset -u HEAD && test $({git} symbolic-ref --quiet {}; echo $?) = 1 && {git} update-ref --no-deref {} {} {} && checkout_head=$({git} rev-parse HEAD) && {git} hook run --ignore-missing post-checkout -- \"$checkout_head\" \"$checkout_head\" 0", sh_quote(&update.reference), sh_quote(&update.reference), sh_quote(&update.new), sh_quote(&update.old))
+            } else {
+                format!("{git} checkout HEAD -- .")
+            };
+            if create {
+                command.push_str(&format!(" && {git} checkout -b {} HEAD", sh_quote(&branch)));
+            }
             let spec = ExecSpec {
-                command: if create {
-                    format!("git --no-replace-objects checkout HEAD -- . && git --no-replace-objects checkout -b '{}' HEAD", branch.replace('\'', "'\\''"))
-                } else {
-                    "git --no-replace-objects checkout HEAD -- .".into()
-                },
+                command,
                 cwd: root,
                 writable: true,
-                net: sandbox.network(),
+                net: !adopted && sandbox.network(),
                 timeout_s: Some(600),
                 env: git_environment(),
             };
@@ -91,20 +113,17 @@ pub(crate) fn run(
             return Ok(0);
         }
         SupervisorOperation::Merge { base } => {
-            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            // Local Git callbacks do not need repository network authority.
             let spec = ExecSpec {
-                command: format!(
-                    "git --no-replace-objects merge --no-edit -- '{}'",
-                    base.replace('\'', "'\\''")
-                ),
+                command: format!("git --no-replace-objects merge --no-edit -- {}", sh_quote(&base)),
                 cwd: root,
                 writable: true,
-                net: sandbox.network(),
+                net: false,
                 timeout_s: Some(600),
                 env: git_environment(),
             };
             let mut tail = Vec::new();
-            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+            let result = b.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
                 keep_tail(&mut tail, bytes, 8192);
             });
             err.write_all(&tail).map_err(|e| e.to_string())?;
@@ -114,8 +133,8 @@ pub(crate) fn run(
             return Ok(i32::from(result.exit != Some(0)));
         }
         SupervisorOperation::Save { task_id } => {
-            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
-            let message = format!("oxa work: save task {task_id}").replace('\'', "'\\''");
+            // Keep save callbacks local, including content from an adopted head.
+            let message = sh_quote(&format!("oxa work: save task {task_id}"));
             let spec = ExecSpec {
                 command: format!(
                     r#"git --no-replace-objects diff --cached --quiet --no-ext-diff --no-textconv --diff-filter=U
@@ -129,17 +148,17 @@ git --no-replace-objects diff --cached --quiet --no-ext-diff --no-textconv
 work_changes=$?
 if test "$work_changes" -eq 0; then exit 0; fi
 if test "$work_changes" -ne 1; then exit 2; fi
-git --no-replace-objects commit -m '{message}'
+git --no-replace-objects commit -m {message}
 "#
                 ),
                 cwd: root,
                 writable: true,
-                net: sandbox.network(),
+                net: false,
                 timeout_s: Some(600),
                 env: git_environment(),
             };
             let mut tail = Vec::new();
-            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+            let result = b.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
                 keep_tail(&mut tail, bytes, 8192);
             });
             if result.exit != Some(0) || result.timed_out {
@@ -160,7 +179,7 @@ git --no-replace-objects commit -m '{message}'
         shell_path: settings.shell_path(&dirs.home),
         command_prefix: settings.shell_command_prefix(),
     };
-    let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+    let sandbox = crate::netguard::without_github(Arc::new(b), &settings);
     let mut failed = false;
     let mut diagnostics = Vec::new();
     for entry in commands {
@@ -185,8 +204,8 @@ git --no-replace-objects commit -m '{message}'
                 relative
             };
             format!(
-                "cd -- '{}' || exit 111\n{command}",
-                dir.to_string_lossy().replace('\'', "'\\''")
+                "cd -- {} || exit 111\n{command}",
+                sh_quote(&dir.to_string_lossy())
             )
         } else {
             command
@@ -225,7 +244,9 @@ git --no-replace-objects commit -m '{message}'
         }
     }
     if failed {
-        err.write_all(&diagnostics).map_err(|e| e.to_string())?;
+        let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+        let safe = crate::report_cmd::scrub(&String::from_utf8_lossy(&diagnostics), &ctx);
+        err.write_all(safe.as_bytes()).map_err(|e| e.to_string())?;
     }
     Ok(i32::from(failed))
 }

@@ -123,6 +123,13 @@ pub struct Context<'a> {
     /// never raw text or a session/provider identity. None preserves owner calls.
     pub guest_key_name: Option<&'a str>,
 }
+/// Completion of a local guest request. Missing usage retains its quota reservation.
+pub enum LocalGuestOutcome {
+    Completed { tokens: Option<(u64, u64)> },
+    Cancelled,
+    Failed,
+}
+
 pub struct Entry {
     daily: Daily,
     row: Value,
@@ -414,6 +421,48 @@ impl Entry {
         }) {
             self.row["finish_reason"] = json!(finish);
         }
+        self.write_row(status, error, |row| {
+            redact(row);
+            #[cfg(feature = "anthropic-client")]
+            if let Some(plan) = row["opencode"].get("billing_source") {
+                let plan = crate::opencode::PlanName::from_value(plan);
+                row["opencode"]["billing_source"] = plan.as_str().into();
+            }
+        })
+    }
+
+    /// Append one typed terminal row for an authenticated local guest. Local
+    /// usage enters the same private file without entering cloud budget totals.
+    pub fn append_local_guest(mut self, outcome: LocalGuestOutcome) -> io::Result<Value> {
+        if self.row["origin"] != "api"
+            || !self.row["guest_key"].is_string()
+            || !self.row["session"].is_null()
+            || self.row.get("idempotency").is_some()
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let (status, error, tokens) = match outcome {
+            LocalGuestOutcome::Completed { tokens } => (200, None, tokens),
+            LocalGuestOutcome::Cancelled => (499, Some("local_guest_cancelled"), None),
+            LocalGuestOutcome::Failed => (502, Some("local_guest_failed"), None),
+        };
+        self.row["remote"] = json!(false);
+        self.row["cost_usd"] = json!(0);
+        self.row["usage_missing"] = json!(tokens.is_none());
+        self.row["settled"] = json!(if tokens.is_some() { "usage" } else { "reserved" });
+        if let Some((input, output)) = tokens {
+            self.row["prompt_tokens"] = json!(input);
+            self.row["completion_tokens"] = json!(output);
+        }
+        self.write_row(status, error, |_| {})
+    }
+
+    fn write_row(
+        mut self,
+        status: u16,
+        error: Option<&'static str>,
+        redact: impl FnOnce(&mut Value),
+    ) -> io::Result<Value> {
         let now = Instant::now();
         self.row["status"] = json!(status);
         self.row["error"] = json!(error);
@@ -429,11 +478,6 @@ impl Entry {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         redact(&mut self.row);
-        #[cfg(feature = "anthropic-client")]
-        if let Some(plan) = self.row["opencode"].get("billing_source") {
-            let plan = crate::opencode::PlanName::from_value(plan);
-            self.row["opencode"]["billing_source"] = plan.as_str().into();
-        }
         append_private(&self.daily.path, &self.row)?;
         Ok(self.row)
     }

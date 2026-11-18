@@ -5,6 +5,7 @@ use oxa_proto::{codes, Engine, OxaError};
 use oxc_gateway::{
     billing::SubscriptionLimits,
     catalog::{Access, Model, Provider},
+    catalog_discovery::{Source, State},
     gateway::Gateway,
     pricing::Price,
     runtime::{Billing, Options, Runtime, Subscription},
@@ -15,6 +16,7 @@ use std::{sync::Arc, time::Duration};
 mod routing;
 
 pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
+type Selected = (Arc<dyn Engine>, Vec<String>);
 
 pub(crate) fn credential_path(dirs: &Dirs) -> std::path::PathBuf {
     dirs.home.join(".config/oxc/llm/cloud-secrets.json")
@@ -93,7 +95,50 @@ pub(crate) fn select(
     requested: Option<&str>,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Arc<dyn Engine>, OxaError> {
-    select_observed(user, effective, dirs, requested, None, http)
+    select_observed(
+        user,
+        effective,
+        dirs,
+        requested,
+        None,
+        SharedEngines::default(),
+        http,
+    )
+    .map(|(engine, _)| engine)
+}
+
+/// Native launch configuration is user-only. Stream policy follows the effective session.
+pub(crate) fn local_engine_settings<'a>(
+    user: &'a Settings,
+    effective: &Settings,
+) -> (Option<&'a Value>, oxa_engine::StreamOpts) {
+    let stream = oxa_engine::StreamOpts {
+        silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
+            .unwrap_or(365 * 24 * 3600 * 1000),
+        ..oxa_engine::StreamOpts::default()
+    };
+    (user.get("oxa.local"), stream)
+}
+
+#[test]
+fn shared_local_engine_uses_effective_stream_timeout() {
+    let user_values = serde_json::json!({"httpIdleTimeoutMs": 1700});
+    let user = Settings::from_values(user_values.clone(), serde_json::json!({}));
+    let effective = Settings::from_values(user_values, serde_json::json!({"httpIdleTimeoutMs": 2400}));
+    let (_, stream) = local_engine_settings(&user, &effective);
+    assert_eq!(stream.silence_limit_ms, 2400);
+}
+
+#[derive(Clone)]
+pub(crate) struct OpenedGateway {
+    pub gateway: Arc<Gateway>,
+    notices: Vec<String>,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct SharedEngines {
+    pub local: Option<Arc<oxc_local::native::LocalEngine>>,
+    pub cloud: Option<OpenedGateway>,
 }
 
 pub(crate) fn select_observed(
@@ -102,8 +147,29 @@ pub(crate) fn select_observed(
     dirs: &Dirs,
     requested: Option<&str>,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
+    shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
-) -> Result<Arc<dyn Engine>, OxaError> {
+) -> Result<Selected, OxaError> {
+    let local_engine = || match shared.local {
+        Some(engine) => Ok(engine as Arc<dyn Engine>),
+        None => {
+            let (launch, stream) = local_engine_settings(user, effective);
+            oxc_local::configured_engine(launch, dirs.agent_dir.join("local-engine"), stream)
+        }
+    };
+    let cloud_engine = || {
+        if oxa_proto::offline() {
+            return Err(oxa_proto::offline_error("the in-process cloud gateway"));
+        }
+        let OpenedGateway { gateway, notices } = match shared.cloud {
+            Some(opened) => opened,
+            None => open_gateway(user, effective, dirs, diagnostics, Ok)?,
+        };
+        Ok((
+            Arc::new(EmbeddedEngine::from_shared_gateway(gateway)) as Arc<dyn Engine>,
+            notices,
+        ))
+    };
     if user.bool(oxc_local::LOCAL_SETTING, false) && user.bool(SETTING, false) {
         let aliases = |path| {
             user.get(path)
@@ -111,63 +177,47 @@ pub(crate) fn select_observed(
                 .map(|models| models.keys().cloned().collect())
                 .unwrap_or_default()
         };
+        let (cloud, catalog_notices) = match cloud_engine() {
+            Ok((engine, notices)) => (Ok(engine), notices),
+            Err(error) => (Err(error), Vec::new()),
+        };
         return routing::Routed {
-            local: oxc_local::configured_engine(
-                user.get("oxa.local"),
-                dirs.agent_dir.join("local-engine"),
-                oxa_engine::StreamOpts {
-                    silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
-                        .unwrap_or(365 * 24 * 3600 * 1000),
-                    ..oxa_engine::StreamOpts::default()
-                },
-            ),
-            cloud: if oxa_proto::offline() {
-                Err(oxa_proto::offline_error("the in-process cloud gateway"))
-            } else {
-                open(user, effective, dirs, diagnostics)
-            },
+            local: local_engine(),
+            cloud,
             local_models: aliases("oxa.local.models"),
             cloud_models: aliases("oxa.cloud.models"),
             dynamic_go: user.get("oxa.cloud.opencode.enabled") == Some(&Value::Bool(true)),
             default: effective.string("defaultModel"),
         }
-        .into_engine(requested);
+        .into_engine(requested)
+        .map(|engine| (engine, catalog_notices));
     }
     if user.bool(oxc_local::LOCAL_SETTING, false) {
-        return oxc_local::configured_engine(
-            user.get("oxa.local"),
-            dirs.agent_dir.join("local-engine"),
-            oxa_engine::StreamOpts {
-                silence_limit_ms: crate::dispatch::stream_silence_timeout(effective)
-                    .unwrap_or(365 * 24 * 3600 * 1000),
-                ..oxa_engine::StreamOpts::default()
-            },
-        );
+        return local_engine().map(|engine| (engine, Vec::new()));
     }
     if !user.bool(SETTING, false) {
-        return http();
+        return http().map(|engine| (engine, Vec::new()));
     }
-    if oxa_proto::offline() {
-        return Err(oxa_proto::offline_error("the in-process cloud gateway"));
-    }
-    open(user, effective, dirs, diagnostics)
+    cloud_engine()
 }
 
-fn open(
+pub(crate) fn open_gateway(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
-) -> Result<Arc<dyn Engine>, OxaError> {
+    configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
+) -> Result<OpenedGateway, OxaError> {
     let cloud = user.get("oxa.cloud").ok_or_else(invalid)?;
     let go_enabled = cloud.pointer("/opencode/enabled") == Some(&Value::Bool(true));
+    let discover = cloud.get("discover_models") == Some(&Value::Bool(true));
     let empty = serde_json::Map::new();
     let models = match cloud.get("models") {
-        None | Some(Value::Null) if go_enabled => &empty,
+        None | Some(Value::Null) if go_enabled || discover => &empty,
         Some(value) => value.as_object().ok_or_else(invalid)?,
         None => return Err(invalid()),
     };
-    if models.is_empty() && !go_enabled {
+    if models.is_empty() && !go_enabled && !discover {
         return Err(invalid());
     }
     let mut routes = Vec::with_capacity(models.len());
@@ -209,6 +259,29 @@ fn open(
         None | Some(Value::Null) => None,
         Some(value) => Some(value.as_f64().ok_or_else(invalid)?),
     };
+    let mut sources = Vec::new();
+    if discover {
+        for (provider, default) in [
+            (Provider::OpenRouter, "https://openrouter.ai/api/v1"),
+            (Provider::OpenAi, oxc_gateway::openai::client::API_BASE),
+            (Provider::Anthropic, "https://api.anthropic.com"),
+        ] {
+            let mut configured = routes.iter().filter_map(|(model, _)| {
+                (model.info().provider == provider).then_some(model.endpoint().as_str())
+            });
+            let base = match cloud.pointer(&format!("/discovery/{}/base_url", provider.as_str())) {
+                Some(base) => base.as_str().ok_or_else(invalid)?,
+                None => {
+                    let first = configured.next().unwrap_or(default);
+                    if configured.any(|other| other != first) {
+                        continue;
+                    }
+                    first
+                }
+            };
+            sources.extend(Source::new(provider, base));
+        }
+    }
     // These existing private locations are denied to both file tools and bash.
     // Configured-route discovery reads no key or ledger. Explicit Go discovery
     // uses the existing protected key reader and this same gateway HTTP pool.
@@ -225,27 +298,73 @@ fn open(
         },
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;
+    if discover {
+        runtime = runtime.with_catalog_cache();
+    }
     if let Some(diagnostics) = diagnostics {
         runtime = runtime.with_diagnostics(diagnostics);
     }
     let timeout = crate::dispatch::stream_silence_timeout(effective).map(Duration::from_millis);
-    let mut gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
+    let gateway = Gateway::with_read_timeout(runtime, timeout).map_err(|e| {
         let refusal = e.refusal();
         OxaError::new(refusal.code, e.to_string())
     })?;
+    // Validate guest selection before discovery can read provider credentials.
+    let mut gateway = configure(gateway)?;
+    let mut refresh_go = None;
+    let mut refresh_cloud = Vec::new();
+    let mut notices = Vec::new();
+    let discovery_timeout = Duration::from_secs(15);
+    for source in sources {
+        let provider = source.provider().as_str();
+        match gateway.discover_cloud(&source, discovery_timeout) {
+            Ok(Some(status)) => {
+                if status.state == State::Stale {
+                    notices.push(format!("Using a stale {provider} model catalog."));
+                    refresh_cloud.push(source);
+                }
+                if status.missing_price + status.missing_limits > 0 {
+                    notices.push(format!(
+                        "{provider} catalog omitted {} offers with unknown pricing and {} with unknown limits.",
+                        status.missing_price, status.missing_limits,
+                    ));
+                }
+            }
+            Ok(None) => {}
+            Err(_) => notices.push(format!(
+                "{provider} catalog refresh failed. Using configured models."
+            )),
+        }
+    }
     if go_enabled {
         let base = cloud
             .pointer("/opencode/base_url")
             .map_or(Some(oxc_gateway::opencode::GO_BASE), Value::as_str)
             .ok_or_else(invalid)?;
-        gateway
+        let state = gateway
             .discover_opencode(base, Duration::from_secs(30))
             .map_err(|e| {
                 let refusal = e.refusal();
                 OxaError::new(refusal.code, e.to_string())
             })?;
+        if state == State::Stale {
+            refresh_go = Some(base.to_owned());
+            notices.push("Using a stale OpenCode model catalog.".into());
+        }
     }
-    Ok(Arc::new(EmbeddedEngine::from_gateway(gateway)))
+    let gateway = Arc::new(gateway);
+    if refresh_go.is_some() || !refresh_cloud.is_empty() {
+        let refresh = gateway.clone();
+        let _ = std::thread::Builder::new().spawn(move || {
+            if let Some(base) = refresh_go {
+                let _ = refresh.refresh_opencode(&base, Duration::from_secs(30));
+            }
+            for source in refresh_cloud {
+                let _ = refresh.refresh_cloud(&source, discovery_timeout);
+            }
+        });
+    }
+    Ok(OpenedGateway { gateway, notices })
 }
 
 // One canonical cap object shared with the other subscription routes. Refresh

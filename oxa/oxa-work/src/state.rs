@@ -1,13 +1,28 @@
 //! Private durable task checkpoints. Observers never receive or mutate State.
 use crate::{checkpoint, Outcome, Record, Result, Task};
+pub(crate) use oxa_proto::time::now_ms;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const VERSION: u64 = 1;
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
+
+pub(crate) fn lock(path: &Path) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    file.try_lock()
+        .map_err(|error| format!("queue is already running: {error}"))?;
+    Ok(file)
+}
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -20,6 +35,8 @@ pub enum Step {
     Saving,
     #[default]
     Finished,
+    Publishing,
+    Reporting,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -80,15 +97,6 @@ impl State {
     }
 }
 
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
-}
-
 #[cfg(test)]
 pub(crate) fn read(path: &Path) -> Result<State> {
     load(path)
@@ -143,7 +151,20 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         .get("record")
         .and_then(serde_json::Value::as_object)
         .ok_or("task checkpoint record is missing")?;
-    if record.len() != keys.len() || keys.iter().any(|key| !record.contains_key(*key)) {
+    let optional = [
+        "pull_request",
+        "draft",
+        "problem_notes",
+        "reports",
+        "acceptance_outcome",
+        "task_tokens",
+        "worker_launch_revision",
+    ];
+    if keys.iter().any(|key| !record.contains_key(*key))
+        || record
+            .keys()
+            .any(|key| !keys.contains(&key.as_str()) && !optional.contains(&key.as_str()))
+    {
         return Err("incomplete or unknown task checkpoint record fields".into());
     }
     let state: State = serde_json::from_value(value).map_err(|e| format!("task checkpoint: {e}"))?;
@@ -152,6 +173,19 @@ pub(crate) fn load(path: &Path) -> Result<State> {
     }
     if state.record.id != state.task.id || state.record.branch != state.task.branch {
         return Err("task checkpoint identity disagrees with its task".into());
+    }
+    if state
+        .record
+        .task_tokens
+        .as_ref()
+        .is_some_and(|usage| !usage.valid())
+    {
+        return Err("invalid task usage evidence in checkpoint".into());
+    }
+    if state.record.worker_launch_revision.is_some_and(|revision| {
+        revision == 0 || revision >= state.record.checkpoint_revision || state.record.worker.is_none()
+    }) {
+        return Err("invalid native worker launch revision in checkpoint".into());
     }
     Ok(state)
 }
@@ -247,33 +281,24 @@ impl Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_dir::PrivateDir;
     use std::fs::{self, OpenOptions};
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
     };
 
-    struct Fixture(PathBuf);
+    struct Fixture(PrivateDir);
     impl Fixture {
         fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "oxa-checkpoint-{}-{}",
-                std::process::id(),
-                SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-            ));
-            fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
-            Self(path)
+            Self(PrivateDir::new("checkpoint"))
         }
         fn path(&self) -> PathBuf {
-            self.0.join("test.json")
+            self.0.path().join("test.json")
         }
     }
-    impl Drop for Fixture {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+
     fn state() -> State {
         let task = Task {
             id: "test".into(),
@@ -282,6 +307,7 @@ mod tests {
             model: "fake".into(),
             prompt: "Synthetic task".into(),
             max_time: crate::default_max_time(),
+            reviewed_pull_request: None,
         };
         let record = crate::blocked_record(&task, String::new());
         State::new(task, record, false)
@@ -313,14 +339,15 @@ mod tests {
                 .unwrap();
             let before = fs::read(fixture.path()).unwrap();
             let policy = crate::RunPolicy {
-                git_binary: fixture.0.join("unavailable-git"),
+                git_binary: fixture.0.path().join("unavailable-git"),
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,
                 offline: true,
-                storage: fixture.0.clone(),
+                runner_owns_github: false,
+                storage: fixture.0.path().to_path_buf(),
             };
             for rerun in [false, true] {
-                let planned = crate::plan_task_for_run(&fixture.0, state.task.clone(), &policy, rerun);
+                let planned = crate::plan_task_for_run(fixture.0.path(), state.task.clone(), &policy, rerun);
                 if step == Step::Finished && rerun {
                     assert!(planned.is_err(), "explicit new attempts require a fresh plan");
                 } else {
@@ -386,6 +413,49 @@ mod tests {
     }
 
     #[test]
+    fn native_worker_receipt_replays_the_original_launch_revision() {
+        let fixture = Fixture::new();
+        let mut writer = Writer::new(fixture.path(), false);
+        let mut state = state();
+        writer
+            .save(&mut state, Step::Worker, &|_: &Record| Ok(()))
+            .unwrap();
+        let launch = state.record.checkpoint_revision;
+        state.record.worker = Some(crate::WorkerResult {
+            outcome: crate::WorkerOutcome::Done,
+            exit_code: 0,
+            error_class: None,
+            interruption: None,
+            tokens: None,
+        });
+        state.record.worker_launch_revision = Some(launch);
+        assert!(writer
+            .save_kind(
+                &mut state,
+                Step::Acceptance,
+                CheckpointKind::WorkerFinished,
+                &|_: &Record| { Err("synthetic activity append failure".into()) }
+            )
+            .is_err());
+
+        let recovered = read(&fixture.path()).unwrap();
+        let observed = AtomicU64::new(0);
+        Writer::new(fixture.path(), true)
+            .replay(&recovered, &|record: &Record| {
+                assert_eq!(record.worker_launch_revision, Some(launch));
+                assert_eq!(record.checkpoint_kind, CheckpointKind::WorkerFinished);
+                observed.store(record.checkpoint_revision, Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            observed.load(Ordering::Relaxed),
+            recovered.record.checkpoint_revision
+        );
+        assert!(recovered.record.checkpoint_revision > launch);
+    }
+
+    #[test]
     fn failed_append_refuses_another_checkpoint_until_restart_and_replay() {
         let fixture = Fixture::new();
         let mut writer = Writer::new(fixture.path(), false);
@@ -431,7 +501,7 @@ mod tests {
         let bytes = serde_json::to_vec(&state).unwrap();
         fs::write(fixture.path(), &bytes).unwrap();
         fs::write(
-            fixture.0.join(".checkpoint-counter"),
+            fixture.0.path().join(".checkpoint-counter"),
             serde_json::to_vec(&serde_json::json!({"version":1,"revision":u64::MAX,"pending":null})).unwrap(),
         )
         .unwrap();
@@ -495,7 +565,7 @@ mod tests {
         second.record.id = "second".into();
         second.task.branch = "agent/second".into();
         second.record.branch = "agent/second".into();
-        let second_path = fixture.0.join("second.json");
+        let second_path = fixture.0.path().join("second.json");
         let mut still_blocked = Writer::new(second_path.clone(), false);
         assert!(still_blocked
             .save(&mut second, Step::Preparing, &|_: &Record| Err(
@@ -529,7 +599,8 @@ mod tests {
         let fixture = Fixture::new();
         let state = state();
         {
-            let mut repository = checkpoint::Repository::open(&fixture.0, &|_: &Record| Ok(())).unwrap();
+            let mut repository =
+                checkpoint::Repository::open(fixture.0.path(), &|_: &Record| Ok(())).unwrap();
             assert_eq!(repository.reserve(&state.record).unwrap(), 1);
         }
         assert!(!fixture.path().exists());
@@ -553,7 +624,7 @@ mod tests {
             .save(&mut state, Step::Preparing, &|_: &Record| Ok(()))
             .unwrap();
         let durable = fs::read(fixture.path()).unwrap();
-        fs::remove_file(fixture.0.join(".checkpoint-counter")).unwrap();
+        fs::remove_file(fixture.0.path().join(".checkpoint-counter")).unwrap();
         let mut writer = Writer::new(fixture.path(), true);
         assert!(writer
             .save(&mut state, Step::Worker, &|_: &Record| -> Result<()> {
@@ -561,7 +632,7 @@ mod tests {
             })
             .is_err());
         assert_eq!(fs::read(fixture.path()).unwrap(), durable);
-        fs::write(fixture.0.join(".checkpoint-counter"), b"{").unwrap();
+        fs::write(fixture.0.path().join(".checkpoint-counter"), b"{").unwrap();
         let mut writer = Writer::new(fixture.path(), true);
         assert!(writer
             .save(&mut state, Step::Worker, &|_: &Record| -> Result<()> {
@@ -570,7 +641,7 @@ mod tests {
             .is_err());
         assert_eq!(fs::read(fixture.path()).unwrap(), durable);
         fs::write(
-            fixture.0.join(".checkpoint-counter"),
+            fixture.0.path().join(".checkpoint-counter"),
             br#"{"version":1,"revision":1}"#,
         )
         .unwrap();
@@ -595,12 +666,17 @@ mod tests {
             state.record.id = id.clone();
             state.task.branch = format!("agent/{id}");
             state.record.branch = state.task.branch.clone();
-            Writer::new(fixture.0.join(format!("{id}.json")), false)
+            Writer::new(fixture.0.path().join(format!("{id}.json")), false)
                 .save(&mut state, Step::Preparing, &|_: &Record| Ok(()))
                 .unwrap();
             assert!(state.record.checkpoint_revision > last);
             last = state.record.checkpoint_revision;
-            assert!(fs::metadata(fixture.0.join(".checkpoint-counter")).unwrap().len() < 256);
+            assert!(
+                fs::metadata(fixture.0.path().join(".checkpoint-counter"))
+                    .unwrap()
+                    .len()
+                    < 256
+            );
         }
         assert_eq!(last, 140);
     }

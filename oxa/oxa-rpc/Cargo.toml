@@ -8,6 +8,11 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+a2a-control = ["dep:oxa-orchestrator"]
+managed-steering = ["dep:oxa-orchestrator"]
+
 [dependencies]
 oxa-proto.workspace = true
 oxa-core.workspace = true
@@ -16,8 +21,14 @@ oxa-config.workspace = true
 oxa-export.workspace = true
 serde_json.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+oxa-orchestrator = { path = "../oxa-orchestrator", optional = true, features = ["a2a"] }
+
 [dev-dependencies]
 oxa-fake.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+oxa-rpc = { path = ".", features = ["a2a-control"] }
 
 [lints]
 workspace = true

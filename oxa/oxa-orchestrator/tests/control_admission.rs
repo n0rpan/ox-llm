@@ -49,7 +49,8 @@ fn lifecycle_and_steering_keep_request_identity_and_owner_revision() {
         Request::Steer {
             id: "four".into(),
             revision: 0,
-            text: "Keep the original budget".into()
+            text: "Keep the original budget".into(),
+            lease: None,
         }
     );
 }

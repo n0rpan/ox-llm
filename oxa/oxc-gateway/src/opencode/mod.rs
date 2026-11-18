@@ -9,6 +9,7 @@ use reqwest::{
 use serde_json::Value;
 use std::{collections::BTreeMap, str::FromStr};
 
+pub mod cache;
 pub mod client;
 
 pub const GO_BASE: &str = "https://opencode.ai/inference/go";

@@ -6,6 +6,12 @@ use std::fmt;
 
 const MAX_HOLDS: usize = 128;
 
+pub struct KeyUsage {
+    pub key: KeyInfo,
+    pub requests: u64,
+    pub tokens: u64,
+}
+
 /// Retain until trusted terminal usage. Dropping this guard never refunds work.
 #[must_use = "settle trusted usage; dropping retains the conservative charge"]
 pub struct Admission {
@@ -111,6 +117,28 @@ impl Store {
             .map(counts)
             .transpose()
             .map(|v| v.unwrap_or((0, 0)))
+    }
+
+    /// Read owner metadata and durable quota charges under a single bounded lock.
+    pub fn guest_usage_snapshot(&self, day: u64) -> Result<Vec<KeyUsage>, Error> {
+        let _lock = self.try_lock()?;
+        let state = State::read(self, day)?;
+        self.list_locked()?
+            .into_iter()
+            .map(|key| {
+                let (requests, tokens) = state
+                    .usage
+                    .get(&key.id)
+                    .map(counts)
+                    .transpose()?
+                    .unwrap_or_default();
+                Ok(KeyUsage {
+                    key,
+                    requests,
+                    tokens,
+                })
+            })
+            .collect()
     }
 }
 

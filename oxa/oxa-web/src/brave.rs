@@ -244,12 +244,16 @@ impl Brave {
                     text::SERVER_ERROR.replace("{status}", &reply.status.to_string())
                 });
             }
-            let backoff = self.opts.backoff_base.saturating_mul(1 << (attempt - 1));
+            let backoff = retry_backoff(self.opts.backoff_base, attempt);
             let wait = reply.wait.unwrap_or(backoff).min(self.opts.max_wait);
             sleep_cancellable(wait, cancel)?;
         }
         Err(text::UNREACHABLE.to_string())
     }
+}
+
+fn retry_backoff(base: Duration, attempt: u32) -> Duration {
+    base.saturating_mul(1_u32.checked_shl(attempt - 1).unwrap_or(u32::MAX))
 }
 
 /// The first whole number of seconds in a header value (`Retry-After: 2`,
@@ -434,5 +438,22 @@ impl Brave {
             .notice_pending
             .swap(false, Ordering::SeqCst)
             .then(|| FALLBACK_NOTICE.to_string())
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+
+    #[test]
+    fn retry_backoff_saturates_at_large_attempt_counts() {
+        let base = Duration::from_nanos(1);
+        assert_eq!(retry_backoff(base, 1), base);
+        assert_eq!(retry_backoff(base, 32), Duration::from_nanos(1 << 31));
+        assert_eq!(retry_backoff(base, 33), Duration::from_nanos(u32::MAX.into()));
+        assert_eq!(
+            retry_backoff(base, u32::MAX),
+            Duration::from_nanos(u32::MAX.into())
+        );
     }
 }

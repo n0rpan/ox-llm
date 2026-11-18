@@ -9,6 +9,7 @@ use super::{
 pub use oxa_proto::CancelToken;
 use serde_json::{json, Value};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     future::Future,
     net::{IpAddr, SocketAddr},
@@ -109,13 +110,20 @@ impl Output {
         }
     }
 }
-/// Borrowed authenticated metadata from durable quota admission, never a bearer.
+/// Authenticated metadata from durable quota admission, never a bearer.
 /// Kept separate from model history; use only for owner accounting/policy.
 /// Fields are private so callers cannot manufacture an authenticated guest.
 pub struct Guest<'a> {
-    key: &'a KeyInfo,
+    key: Cow<'a, KeyInfo>,
 }
 impl Guest<'_> {
+    #[cfg(feature = "anthropic-gateway")]
+    pub(super) fn into_owned(self) -> Guest<'static> {
+        Guest {
+            key: Cow::Owned(self.key.into_owned()),
+        }
+    }
+
     pub fn key_id(&self) -> &str {
         &self.key.id
     }
@@ -606,7 +614,9 @@ async fn connection<A: Answer, T: Tailnet>(
     let backend = async {
         let future = answer.chat(
             request,
-            Guest { key: admission.key() },
+            Guest {
+                key: Cow::Borrowed(admission.key()),
+            },
             Output {
                 send: tx,
                 cancel: cancel.clone(),

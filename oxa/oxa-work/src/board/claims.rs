@@ -1,6 +1,6 @@
 //! Durable reservations only; execution and GitHub writes are outside this API.
 use super::{valid_worker_id, Action, AttemptState, Entry, Lease, Policy};
-use crate::Result;
+use crate::{facts_io, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
@@ -8,9 +8,18 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+mod activity;
 mod controls;
+mod dependencies;
+pub use activity::{LeaseActivity, LeaseSignal, VerifiedMilestone};
 pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
+pub use dependencies::{Dependency, DependencyWait};
 mod imports;
+mod native;
+pub use native::NativeBinding;
+mod ownership;
+mod reviews;
+pub use ownership::{ExistingWork, ItemLease, ItemOwner};
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +29,8 @@ struct Saved {
     state: AttemptState,
     #[serde(default)]
     data: AssignmentData,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    review_requests: Vec<super::review::RequestKey>,
 }
 
 fn io<T>(value: std::io::Result<T>) -> Result<T> {
@@ -36,8 +47,14 @@ pub struct Claims {
 
 impl Claims {
     pub fn open(root: &Path) -> Result<Self> {
+        Self::open_for_owner(root, facts_io::effective_uid())
+    }
+
+    fn open_for_owner(root: &Path, expected_owner: u32) -> Result<Self> {
         let metadata = io(fs::symlink_metadata(root))?;
-        if !metadata.is_dir() || metadata.mode() & 0o077 != 0 || io(root.canonicalize())? != root {
+        if facts_io::private_for_owner(&metadata, true, expected_owner).is_err()
+            || io(root.canonicalize())? != root
+        {
             return Err("board claims require a canonical private directory".into());
         }
         Ok(Self {
@@ -100,6 +117,7 @@ impl Claims {
                         number,
                         state: AttemptState::default(),
                         data: AssignmentData::default(),
+                        review_requests: vec![],
                     }),
                     Ok(_) => Err("board claim state is missing; recovery is required".into()),
                     Err(e) => io(Err(e)),
@@ -116,6 +134,40 @@ impl Claims {
         let saved: Saved = serde_json::from_slice(&bytes).map_err(|_| "invalid board claim state")?;
         if saved.version != 1
             || saved.number != number
+            || saved.data.native_binding.as_ref().is_some_and(|binding| {
+                !binding.valid()
+                    || binding.number != number
+                    || binding.lease.generation != (saved.state.utc_day, saved.state.attempts)
+                    || saved
+                        .state
+                        .lease
+                        .as_ref()
+                        .is_some_and(|lease| lease != &binding.lease)
+            })
+            || saved.review_requests.iter().any(|key| !key.valid())
+            || saved.data.dependency.as_ref().is_some_and(|wait| {
+                !wait.valid(number)
+                    || saved.data.item_owner.is_none()
+                    || saved
+                        .data
+                        .native_binding
+                        .as_ref()
+                        .is_none_or(|binding| binding.lease.claimed_at.is_none_or(|at| wait.deadline <= at))
+            })
+            || saved
+                .data
+                .lease_activity
+                .as_ref()
+                .is_some_and(|activity| saved.data.item_owner.is_none() || !activity.valid(&saved.state))
+            || saved.data.item_owner.as_ref().is_some_and(|owner| {
+                !valid_worker_id(&owner.host_id)
+                    || owner.expires_at == 0
+                    || saved
+                        .state
+                        .lease
+                        .as_ref()
+                        .is_some_and(|lease| owner.expires_at < lease.expires_at)
+            })
             || saved.state.lease.as_ref().is_some_and(|l| {
                 saved.state.attempts == 0
                     || !valid_worker_id(&l.holder)
@@ -160,6 +212,11 @@ impl Claims {
         Self::open(&self.root)?;
         let lock = io(File::open(&self.root))?;
         io(lock.lock())?;
+        self.rows_locked()
+    }
+
+    /// Caller holds the directory lock used by every reservation and control update.
+    fn rows_locked(&self) -> Result<BTreeMap<u64, Saved>> {
         let mut states = BTreeMap::new();
         for entry in io(fs::read_dir(&self.root))? {
             let name = io(entry)?.file_name();
@@ -197,7 +254,7 @@ impl Claims {
         now: u64,
         ttl: u64,
     ) -> Result<Option<Lease>> {
-        self.claim_checked(entry, policy, holder, (now, ttl), |row| {
+        self.claim_checked(entry, policy, holder, (now, ttl), None, |row| {
             Ok(entry.action != Action::BuildIssue && row.data.policy.is_none())
         })
     }
@@ -208,6 +265,7 @@ impl Claims {
         policy: &Policy,
         holder: &str,
         timing: (u64, u64),
+        host_id: Option<&str>,
         authorize: impl FnOnce(&mut Saved) -> Result<bool>,
     ) -> Result<Option<Lease>> {
         let (now, ttl) = timing;
@@ -230,6 +288,17 @@ impl Claims {
         }
         let _lock = self.lock(entry.number)?;
         let mut row = self.load(entry.number)?;
+        if let Some(lease) = row
+            .state
+            .lease
+            .as_ref()
+            .filter(|_| host_id.is_some() || row.data.item_owner.is_some())
+        {
+            return Err(format!("item {} is owned by {}", entry.number, lease.holder));
+        }
+        if row.data.item_owner.is_some() && host_id.is_none() {
+            return Err("host-bound item requires item admission".into());
+        }
         if self.established(entry.number)? {
             self.mark(entry.number)?;
         }
@@ -265,6 +334,13 @@ impl Claims {
             generation: (day, state.attempts),
         };
         state.lease = Some(lease.clone());
+        row.data.item_owner = host_id.map(|host_id| ItemOwner {
+            host_id: host_id.into(),
+            expires_at,
+        });
+        row.data.native_binding = None;
+        row.data.lease_activity = None;
+        row.data.dependency = None;
         let replacing = self.established(entry.number)?;
         self.save(entry.number, row, replacing)?;
         self.mark(entry.number)?;
@@ -309,5 +385,32 @@ impl Claims {
         row.state.lease = None;
         self.save(number, row, true)?;
         Ok(true)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::DirBuilderExt;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn claim_store_requires_the_expected_owner() {
+        struct Fixture(PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir(&self.0);
+            }
+        }
+        let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
+            "oxa-claim-owner-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        let fixture = Fixture(path);
+        let metadata = fs::metadata(&fixture.0).unwrap();
+        assert!(Claims::open(&fixture.0).is_ok());
+        assert!(Claims::open_for_owner(&fixture.0, metadata.uid().wrapping_add(1)).is_err());
     }
 }

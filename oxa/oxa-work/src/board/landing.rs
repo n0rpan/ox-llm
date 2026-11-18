@@ -1,6 +1,11 @@
 //! Landing decisions derived from a board snapshot and trusted queue observations.
-use super::{Action, Board, Entry};
+use super::{
+    queue::{is_node_id, is_object_id},
+    Action, Board, Entry,
+};
 use std::collections::BTreeMap;
+
+const MIN_RETRY_SPACING_SECS: u64 = 30 * 60;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Policy {
@@ -23,15 +28,52 @@ pub enum RejectionCause<'a> {
     FailedTests(&'a [&'a str]),
 }
 
+impl RejectionCause<'_> {
+    fn known(self) -> bool {
+        !matches!(self, Self::Unknown | Self::FailedTests([]))
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Retry<'a> {
+    /// The caller has no authoritative receipt history for this PR head.
+    Unknown,
+    /// The owner has reconciled the retry ledger and verified the last
+    /// admission of this PR head. Sample time alone is insufficient.
+    Unused { last_admission_at: u64 },
+    /// Durable retry receipt for this PR head. Group identities come from the
+    /// queue observations before and after retry admission.
+    Consumed {
+        first_rejected_group: &'a str,
+        admitted_group: Option<&'a str>,
+    },
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Rejection<'a> {
     pub head: &'a str,
     pub main: &'a str,
+    pub merge_group_head: &'a str,
+    pub removal_event: &'a str,
     /// Failed test names must come from the rejected merge-group run.
     pub cause: RejectionCause<'a>,
-    pub notified: bool,
-    /// The caller retains the retry receipt across subsequent rejections.
-    pub retry_used: bool,
+    /// The removal event named by a verified author-delivery receipt.
+    pub notified_event: Option<&'a str>,
+    pub retry: Retry<'a>,
+}
+
+impl Rejection<'_> {
+    fn matches_entry(&self, entry: &Entry) -> bool {
+        self.head == entry.head
+            && is_object_id(self.head)
+            && self.merge_group_head != self.head
+            && is_object_id(self.merge_group_head)
+            && is_node_id(self.removal_event)
+    }
+
+    fn notified(&self) -> bool {
+        self.notified_event == Some(self.removal_event)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -51,7 +93,8 @@ pub struct Observation<'a> {
     pub queue: Queue<'a>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Next {
     Disabled,
     HoldFindings,
@@ -62,6 +105,7 @@ pub enum Next {
     WaitNotification,
     WaitMain,
     WaitReconciliation,
+    WaitRetrySpacing,
     RetryExhausted,
     Enqueue,
     Retry,
@@ -70,6 +114,8 @@ pub enum Next {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Notice<'a> {
     pub head: &'a str,
+    pub merge_group_head: &'a str,
+    pub removal_event: &'a str,
     pub cause: RejectionCause<'a>,
 }
 
@@ -78,6 +124,7 @@ pub struct Plan<'a> {
     pub next: Next,
     pub notify_rejection: Option<Notice<'a>>,
     pub queue_alarm: bool,
+    pub repeat_rejection_alarm: bool,
 }
 
 impl Board {
@@ -127,14 +174,32 @@ impl Policy {
                 next: Next::Disabled,
                 notify_rejection: None,
                 queue_alarm: false,
+                repeat_rejection_alarm: false,
             };
         }
         let notify_rejection = match queue {
-            Queue::Rejected(r) if !r.notified && !r.head.is_empty() => match r.cause {
-                RejectionCause::Unknown | RejectionCause::FailedTests([]) => None,
-                cause => Some(Notice { head: r.head, cause }),
-            },
+            Queue::Rejected(r) if r.matches_entry(entry) && !r.notified() && r.cause.known() => {
+                Some(Notice {
+                    head: r.head,
+                    merge_group_head: r.merge_group_head,
+                    removal_event: r.removal_event,
+                    cause: r.cause,
+                })
+            }
             _ => None,
+        };
+        let repeat_rejection_alarm = match queue {
+            Queue::Rejected(r) if r.matches_entry(entry) => matches!(
+                r.retry,
+                Retry::Consumed {
+                    first_rejected_group,
+                    admitted_group: Some(retry_group),
+                } if is_object_id(first_rejected_group)
+                    && first_rejected_group != r.head
+                    && retry_group != first_rejected_group
+                    && retry_group == r.merge_group_head
+            ),
+            _ => false,
         };
         let next = match (reviews, queue) {
             (LatestReviews::Unresolved, _) => Next::HoldFindings,
@@ -143,27 +208,32 @@ impl Policy {
             (_, Queue::Queued { .. }) => Next::AlreadyQueued,
             _ if entry.action != Action::Ready || !entry.eligible => Next::WaitBoard,
             (_, Queue::Unknown) => Next::WaitQueue,
-            (_, Queue::Absent) if !main.is_empty() => Next::Enqueue,
+            (_, Queue::Absent) if is_object_id(main) => Next::Enqueue,
             (_, Queue::Absent) => Next::WaitReconciliation,
             (_, Queue::Rejected(r))
-                if r.head != entry.head || r.head.is_empty() || r.main.is_empty() || main.is_empty() =>
+                if !r.matches_entry(entry) || !is_object_id(r.main) || !is_object_id(main) =>
             {
                 Next::WaitReconciliation
             }
-            (_, Queue::Rejected(r))
-                if !r.notified
-                    || matches!(r.cause, RejectionCause::Unknown | RejectionCause::FailedTests([])) =>
-            {
-                Next::WaitNotification
-            }
-            (_, Queue::Rejected(r)) if r.retry_used => Next::RetryExhausted,
-            (_, Queue::Rejected(r)) if r.main == main => Next::WaitMain,
-            (_, Queue::Rejected(_)) => Next::Retry,
+            (_, Queue::Rejected(r)) if !r.notified() || !r.cause.known() => Next::WaitNotification,
+            (_, Queue::Rejected(r)) => match r.retry {
+                Retry::Unknown => Next::WaitReconciliation,
+                Retry::Consumed { .. } => Next::RetryExhausted,
+                Retry::Unused { last_admission_at } if last_admission_at == 0 || last_admission_at > now => {
+                    Next::WaitReconciliation
+                }
+                Retry::Unused { .. } if r.main == main => Next::WaitMain,
+                Retry::Unused { last_admission_at } if now - last_admission_at < MIN_RETRY_SPACING_SECS => {
+                    Next::WaitRetrySpacing
+                }
+                Retry::Unused { .. } => Next::Retry,
+            },
         };
         Plan {
             next,
             notify_rejection,
             queue_alarm: matches!(queue, Queue::Queued { since } if now.saturating_sub(since) > 45 * 60),
+            repeat_rejection_alarm,
         }
     }
 }
