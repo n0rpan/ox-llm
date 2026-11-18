@@ -185,7 +185,7 @@ fn local_compile_commands_come_only_from_owner_settings() {
     let project = env.work().join("project");
     env.write(
         "work/project/.oxa/settings.json",
-        r#"{"done":[],"oxa.work.localChecks":["cargo check --offline"]}"#,
+        r#"{"done":[],"oxa":{"work":{"localChecks":["cargo check --offline"]}}}"#,
     );
     git(&env, &project, &["add", ".oxa/settings.json"]);
     git(
@@ -196,7 +196,7 @@ fn local_compile_commands_come_only_from_owner_settings() {
     git(&env, &project, &["push", "origin", "main"]);
     env.write(
         "home/.oxa/agent/settings.json",
-        r#"{"oxa.work.localChecks":["cargo check --locked"]}"#,
+        r#"{"oxa":{"work":{"localChecks":["cargo check --locked"]}}}"#,
     );
     let tools = tools_with_cargo(&env, RECORDING_CARGO);
     let record = run_args(
@@ -376,7 +376,10 @@ fn a_compile_precheck_cannot_produce_a_saved_verification_receipt() {
 fn disabling_local_checks_leaves_a_changed_crate_unverified_without_receipts() {
     let env = TestEnv::new();
     setup_with_files(&env, "[]", &crate_files());
-    env.write("home/.oxa/agent/settings.json", r#"{"oxa.work.localChecks":[]}"#);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"work":{"localChecks":[]}}}"#,
+    );
     let tools = tools_with_cargo(&env, RECORDING_CARGO);
     let record = run_args(
         &env,

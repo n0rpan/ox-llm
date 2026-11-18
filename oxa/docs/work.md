@@ -155,9 +155,10 @@ names, or a crate that is not part of the repository, keeps the task unverified.
 The source project must pass the existing
 trust and executable-content approval before a task starts. Invoking `work` does
 not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
-missing or unusable bwrap blocks the task. Checkout and each check have a ten-minute
-ceiling within the remaining task deadline. `in subdirectory: command` selects a folder inside
-that sandbox; escaping the worktree is rejected. Each working-tree check round also
+missing or unusable bwrap blocks the task. Checkout has a ten-minute limit. Each
+check has a ten-minute ceiling within the remaining task deadline.
+`in subdirectory: command` selects a folder inside that sandbox. The runner rejects
+paths that escape the worktree. Each working-tree check round also
 gets a private writable output directory beside the worktree (exposed as
 `OXA_WORK_OUTPUT_DIR`, `CARGO_TARGET_DIR` and `TMPDIR`), so generated build outputs
 never dirty the work the round judges; committed rounds keep their export-local one.
