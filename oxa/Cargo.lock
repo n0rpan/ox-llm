@@ -1510,6 +1510,7 @@ dependencies = [
  "hmac",
  "nix 0.30.1",
  "num-traits",
+ "oxa-config",
  "oxa-engine",
  "oxa-proto",
  "reqwest",

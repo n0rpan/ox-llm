@@ -19,10 +19,11 @@ ledger = ["accounting", "secrets", "dep:chrono", "dep:getrandom", "dep:hmac", "d
 policy = ["dep:serde_json"]
 secrets = ["dep:serde_json", "dep:nix"]
 anthropic-client = ["transport", "secrets", "upstream-anthropic-request", "upstream-anthropic-stream", "dep:oxa-proto"]
-anthropic-gateway = ["cloud-only", "ledger", "anthropic-client"]
+anthropic-gateway = ["cloud-only", "ledger", "anthropic-client", "dep:oxa-config"]
 transport = ["dep:reqwest", "dep:tokio", "dep:futures-util", "dep:url"]
 
 [dependencies]
+oxa-config = { workspace = true, optional = true }
 oxa-proto = { workspace = true, optional = true }
 bigdecimal = { version = "0.4", optional = true }
 num-traits = { version = "0.2", optional = true }
