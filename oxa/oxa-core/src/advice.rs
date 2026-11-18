@@ -1,6 +1,6 @@
 //! Hosted advisor call boundary on the worker's original Session.
 use crate::{agent_loop::persist, SessionState, Shared};
-use oxa_proto::{CancelToken, EventSink, OxaError, ToolCall};
+use oxa_proto::{CancelToken, EventSink, OxaError, Role, ToolCall};
 use oxa_session::{
     advice::{
         AdviceAdmission, AdviceGrant, AdviceHistory, AdvicePhase, AdvicePolicy, AdviceTier, AdviceTrigger,
@@ -157,7 +157,14 @@ fn build_context(st: &SessionState, advisor: &BoundAdvisor, evidence: &str) -> A
     let wire = st.transcript.wire();
     let mut delta = String::new();
     for message in wire.iter().skip(wire.len().saturating_sub(RECENT_MESSAGES)) {
+        if message.role == Role::System {
+            continue;
+        }
         if let Some(content) = message.content.as_deref().filter(|text| !text.is_empty()) {
+            // Repeat notices contain the original arguments for the worker.
+            if message.role == Role::Tool && content.starts_with(crate::prompt::REPEAT_NOTICE_HEAD) {
+                continue;
+            }
             let content = scrub_field(advisor, content, FIELD_BYTES);
             let _ = writeln!(delta, "{}: {content}", message.role.as_str());
         }
