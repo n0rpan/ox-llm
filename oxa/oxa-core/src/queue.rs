@@ -1018,7 +1018,7 @@ mod tests {
         };
         assert!(h.wake_job(&job));
         assert!(
-            !h.has_input(),
+            !h.shared.has_input(),
             "the new session must not see the old job's output"
         );
         assert!(h.shared.take_follow_up().is_empty());
