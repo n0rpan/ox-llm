@@ -102,11 +102,21 @@ fn refill_startup_retains_pause_and_refuses_worker_writable_authority() {
 #[test]
 fn private_token_and_exact_task_ref_precede_one_durable_publication() {
     for pull_request in [false, true] {
-        durable_publication(pull_request);
+        durable_publication(pull_request, false, false);
     }
 }
 
-fn durable_publication(pull_request: bool) {
+#[test]
+fn live_fix_packet_uses_current_app_context_and_the_original_durable_binding() {
+    durable_publication(true, true, false);
+}
+
+#[test]
+fn live_known_work_is_not_starved_by_twenty_unknown_candidates() {
+    durable_publication(true, true, true);
+}
+
+fn durable_publication(pull_request: bool, live: bool, leading_unknowns: bool) {
     use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState};
     use std::collections::BTreeMap;
     let (env, controls) = fixture();
@@ -140,7 +150,13 @@ fn durable_publication(pull_request: bool) {
     } else {
         "revision".into()
     };
-    let valid = if pull_request {
+    let live_task = format!(
+        "c44 local/fake agent/44 agent/44\n{}Address pull request #44 at {revision}: Synthetic live PR\n\nCurrent protected source\n\\---\nNext section\n\nReview and conversation data\n\nConversation comment by fixture:\nFeedback\r\n\\ \t--- \t\r\nMore feedback\n\n",
+        oxa_work::github_runner_guidance("pull request")
+    );
+    let valid = if live {
+        live_task.as_str()
+    } else if pull_request {
         "c44 local/fake agent/44 agent/44\nSynthetic prepared packet.\n"
     } else {
         "i44 local/fake agent/44 main\nSynthetic prepared packet.\n"
@@ -148,12 +164,27 @@ fn durable_publication(pull_request: bool) {
     fs::write(&task, valid).unwrap();
     fs::set_permissions(&task, fs::Permissions::from_mode(0o600)).unwrap();
     let config = controls.join("refill.json");
-    fs::write(&config, json!({"enabled":true,"host_id":"host-a","intake":true,"queue":queue,"claims":root,
+    let mut settings = json!({"enabled":true,"host_id":"host-a","intake":true,"queue":queue,"claims":root,
         "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
         "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
         "partition":{"modulus":22,"residues":[0]},
         "packets":[{"number":44,"revision":revision,"action":if pull_request {"resolve_conflict"} else {"build_issue"},"branch":"agent/44","taskfile":task}]
-    }).to_string()).unwrap();
+    });
+    if live {
+        settings.as_object_mut().unwrap().remove("packets");
+        settings["live"] = json!(true);
+        settings["intake"] = json!(false);
+        settings["model"] = json!("local/fake");
+        fs::write(
+            &task,
+            b"Unused manual packet; live mode must fetch current context.",
+        )
+        .unwrap();
+    }
+    if leading_unknowns {
+        settings["partition"]["residues"] = json!((0..12).collect::<Vec<_>>());
+    }
+    fs::write(&config, settings.to_string()).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
     let gh = env.write(
         "tmp/gh",
@@ -161,6 +192,10 @@ fn durable_publication(pull_request: bool) {
 [ "$GH_TOKEN" = synthetic ] || exit 93
 printf 'read\n' >> "$0.calls"
 printf 'HTTP/2.0 200 OK\r\n\r\n'
+for context in "$0.context-"*; do
+  number="${context##*-}"
+  case "$*" in *"pullRequest(number:$number) {"*) cat "$context"; exit 0 ;; esac
+done
 cat "$0.reply"
 "#,
     );
@@ -174,6 +209,11 @@ cat "$0.reply"
     fs::write(env.tmp().join("gh.reply"), json!({"data":{"repository":{
         "mergeQueue":null,"pullRequests":{"totalCount":rows.len(),"nodes":rows,"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
         "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null,
+        "pullRequest":{"title":"Synthetic live PR","body":"Current protected source\n---\nNext section",
+            "headRefOid":revision,"headRefName":"agent/44","isCrossRepository":false,
+            "comments":{"totalCount":1,"nodes":[{"author":{"login":"fixture"},"body":"Feedback\r\n \t--- \t\r\nMore feedback"}]},"reviews":{"totalCount":0,"nodes":[]},
+            "reviewThreads":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},
+            "commits":{"nodes":[{"commit":{"oid":revision,"statusCheckRollup":null}}]}},
         "p44":{"number":44,"headRefOid":revision,"baseRefName":"main","state":"OPEN","body":"",
             "isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY",
             "baseRef":{"refUpdateRule":null,"rules":{"totalCount":0,"nodes":[]}},
@@ -183,18 +223,22 @@ cat "$0.reply"
     }}}).to_string()).unwrap();
     let missing = invoke(&env, &config, "", false);
     assert_eq!(missing.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("App token"));
+    if !live {
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("App token"));
+    }
     assert!(!env.tmp().join("gh.calls").exists());
-    fs::write(
-        &task,
-        b"i46 local/fake agent/44 main\nSynthetic prepared packet.\n",
-    )
-    .unwrap();
-    let mismatch = invoke(&env, &config, "synthetic\n", false);
-    assert_eq!(mismatch.status.code(), Some(2));
-    assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
-    assert_eq!(fs::read_dir(&queue).unwrap().count(), 0);
-    fs::write(&task, valid).unwrap();
+    if !live {
+        fs::write(
+            &task,
+            b"i46 local/fake agent/44 main\nSynthetic prepared packet.\n",
+        )
+        .unwrap();
+        let mismatch = invoke(&env, &config, "synthetic\n", false);
+        assert_eq!(mismatch.status.code(), Some(2));
+        assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
+        assert_eq!(fs::read_dir(&queue).unwrap().count(), 0);
+        fs::write(&task, valid).unwrap();
+    }
     let original_config = fs::read(&config).unwrap();
     let mut hostless: serde_json::Value = serde_json::from_slice(&original_config).unwrap();
     hostless.as_object_mut().unwrap().remove("host_id");
@@ -203,6 +247,54 @@ cat "$0.reply"
     assert_eq!(refused.status.code(), Some(2), "native refill requires a host");
     assert!(!env.tmp().join("gh.calls").exists());
     fs::write(&config, original_config).unwrap();
+    if live {
+        let reply = env.tmp().join("gh.reply");
+        let original = fs::read(&reply).unwrap();
+        // Item 66 is inside the same partition but has no imported attempt row.
+        let mut unknown: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        let repository = &mut unknown["data"]["repository"];
+        repository["pullRequests"]["nodes"][0]["number"] = json!(66);
+        repository["p66"] = repository["p44"].take();
+        repository["p66"]["number"] = json!(66);
+        fs::write(&reply, unknown.to_string()).unwrap();
+        let refused = invoke(&env, &config, "synthetic\n", false);
+        assert!(
+            refused.status.success(),
+            "{}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+        let rows = claims.assignments().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            !rows.contains_key(&66),
+            "unknown attempts must not become a zero-count claim"
+        );
+        assert_eq!(rows[&44].state.attempts, 0);
+        assert!(fs::read_dir(&queue)
+            .unwrap()
+            .all(|entry| entry.unwrap().path().is_dir()));
+        for (field, value) in [
+            ("headRefOid", json!("b".repeat(40))),
+            ("isCrossRepository", json!(true)),
+        ] {
+            if leading_unknowns && field == "isCrossRepository" {
+                continue;
+            }
+            let mut response: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            response["data"]["repository"]["pullRequest"][field] = value;
+            fs::write(&reply, response.to_string()).unwrap();
+            let expected = if field == "isCrossRepository" { 0 } else { 2 };
+            assert_eq!(
+                invoke(&env, &config, "synthetic\n", false).status.code(),
+                Some(expected)
+            );
+            assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
+            assert!(fs::read_dir(&queue)
+                .unwrap()
+                .all(|entry| entry.unwrap().path().is_dir()));
+        }
+        fs::write(&reply, original).unwrap();
+    }
     if !pull_request {
         let reply = env.tmp().join("gh.reply");
         let original = fs::read(&reply).unwrap();
@@ -232,6 +324,55 @@ cat "$0.reply"
             assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
         }
         fs::write(&reply, original).unwrap();
+    }
+    if live {
+        let leading: Vec<u64> = if leading_unknowns {
+            (1..=11).chain(22..=30).collect()
+        } else {
+            claims
+                .import_snapshot(
+                    Some(ManualAuthority::Owner),
+                    &BTreeMap::from([(
+                        22,
+                        ImportState {
+                            state: AttemptState::default(),
+                            excluded: false,
+                        },
+                    )]),
+                    now,
+                )
+                .unwrap();
+            vec![22]
+        };
+        let reply = env.tmp().join("gh.reply");
+        let mut response: serde_json::Value = serde_json::from_slice(&fs::read(&reply).unwrap()).unwrap();
+        let repository = &mut response["data"]["repository"];
+        let row_template = repository["pullRequests"]["nodes"][0].clone();
+        let pr_template = repository["p44"].clone();
+        for number in &leading {
+            let mut row = row_template.clone();
+            row["number"] = json!(number);
+            row["headRefName"] = json!(format!("agent/{number}"));
+            repository["pullRequests"]["nodes"]
+                .as_array_mut()
+                .unwrap()
+                .push(row);
+            let mut pr = pr_template.clone();
+            pr["number"] = json!(number);
+            repository[format!("p{number}")] = pr;
+        }
+        repository["pullRequests"]["totalCount"] = json!(leading.len() + 1);
+        fs::write(&reply, response.to_string()).unwrap();
+        for number in leading {
+            let mut context = response.clone();
+            context["data"]["repository"]["pullRequest"]["headRefName"] = json!(format!("agent/{number}"));
+            context["data"]["repository"]["pullRequest"]["isCrossRepository"] = json!(!leading_unknowns);
+            fs::write(
+                env.tmp().join(format!("gh.context-{number}")),
+                context.to_string(),
+            )
+            .unwrap();
+        }
     }
     let result = invoke(&env, &config, "synthetic\n", false);
     assert!(
@@ -263,6 +404,11 @@ cat "$0.reply"
         format!("board-{}.txt", binding.key)
     );
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
+    if live && !leading_unknowns {
+        let fork = &claims.snapshot().unwrap()[&22];
+        assert_eq!(fork.attempts, 0);
+        assert!(fork.lease.is_none());
+    }
     assert!(invoke(&env, &config, "synthetic\n", false).status.success());
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
     if !pull_request {

@@ -329,3 +329,11 @@ A saved worker result keeps its launch identity across checkpoint replay.
 
 Problem-report workflows hold a per-user kernel lease across drafting, duplicate
 search, match reads and writing, so concurrent workers share one reporting lane.
+
+Board refill can generate current PR fix packets with `live: true` and an explicit
+`model` in its protected owner config. Omit `packets` and keep issue `intake` off.
+The same config supplies the registered worker, host, Claims path, queue, pause
+marker and item partition. Each round reads current assignment candidates and PR
+context through the explicit App credential, then uses the existing admission and
+publication path. A changed head or action cannot publish the prepared packet.
+This mode does not execute a worker or select a default host, model or Claims store.

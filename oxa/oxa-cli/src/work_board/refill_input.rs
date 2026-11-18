@@ -1,7 +1,9 @@
 //! Read-only prepared-input normalization through the existing board Reader.
 use super::*;
-use crate::work_refill::Source;
-use oxa_work::board::{Action, Entry, ExistingWork, Issue, NativeBinding, Snapshot};
+use crate::work_refill::{Partition, Source};
+use oxa_work::board::{
+    assignment::Worker, Action, Claims, Entry, ExistingWork, Issue, NativeBinding, Snapshot,
+};
 pub(super) fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value[key]
         .as_str()
@@ -65,6 +67,64 @@ impl<'a> Input<'a> {
     pub fn with_host(mut self, host: &'a str) -> Self {
         self.host = Some(host);
         self
+    }
+
+    /// Generate only current fix packets; Consumer still owns all admission and publication.
+    pub(super) fn prepare_live(
+        &mut self,
+        claims: &Claims,
+        policy: &Policy,
+        worker: &Worker,
+        partition: &Partition,
+        now: u64,
+        model: &str,
+    ) -> Result<Vec<Prepared>, String> {
+        self.host_id()?;
+        let board = partition.assignment_board(claims, self, policy, worker, now)?;
+        let mut prepared = vec![];
+        for number in board.candidates(&worker.id)? {
+            if !board.assignments.contains_key(&number) {
+                continue;
+            }
+            let entry = board
+                .board
+                .entries
+                .iter()
+                .find(|entry| entry.number == number)
+                .unwrap();
+            if !matches!(
+                entry.action,
+                Action::FixFindings | Action::FixRequiredCi | Action::ResolveConflict | Action::AddRemoves
+            ) {
+                continue;
+            }
+            let fields = oxa_work::pull_request_fields(number)?;
+            let (snapshot, _) = self.reader.repository_read(&fields)?;
+            if snapshot["pullRequest"]["isCrossRepository"] == true {
+                continue;
+            }
+            let context =
+                oxa_work::prepare_pull_request_context(number, &entry.head, &snapshot["pullRequest"])?;
+            let mut prompt = String::with_capacity(context.prompt.len());
+            for line in context.prompt.split_inclusive('\n') {
+                if line.trim() == "---" {
+                    prompt.push('\\');
+                }
+                prompt.push_str(line);
+            }
+            let branch = context.branch;
+            prepared.push(Prepared {
+                number,
+                revision: entry.head.clone(),
+                action: entry.action,
+                task: format!("c{number} {model} {branch} {branch}\n{prompt}"),
+                branch,
+            });
+            if prepared.len() == 20 {
+                break;
+            }
+        }
+        Ok(prepared)
     }
 }
 impl GitHub for Input<'_> {

@@ -30,6 +30,29 @@ impl Partition {
     fn contains(&self, number: u64) -> bool {
         self.residues.contains(&(number % self.modulus))
     }
+
+    pub(crate) fn assignment_board(
+        &self,
+        claims: &Claims,
+        source: &mut impl GitHub,
+        policy: &Policy,
+        worker: &Worker,
+        now: u64,
+    ) -> Result<AssignmentBoard> {
+        if self.modulus == 0
+            || self.residues.is_empty()
+            || self.residues.iter().any(|r| *r >= self.modulus)
+            || policy.max_attempts_per_day > 3
+        {
+            return Err("invalid board partition or attempt cap".into());
+        }
+        claims.assignment_board(
+            &mut Partitioned(source, self),
+            policy,
+            std::slice::from_ref(worker),
+            now,
+        )
+    }
 }
 struct Partitioned<'a, S>(&'a mut S, &'a Partition);
 impl<S: GitHub> GitHub for Partitioned<'_, S> {
@@ -89,23 +112,9 @@ impl Consumer<'_> {
             return Ok(vec![]);
         }
         let host = source.host_id()?.map(str::to_owned);
-        if self.partition.modulus == 0
-            || self.partition.residues.is_empty()
-            || self
-                .partition
-                .residues
-                .iter()
-                .any(|r| *r >= self.partition.modulus)
-            || self.policy.max_attempts_per_day > 3
-        {
-            return Err("invalid board partition or attempt cap".into());
-        }
-        let board = self.claims.assignment_board(
-            &mut Partitioned(source, self.partition),
-            self.policy,
-            std::slice::from_ref(self.worker),
-            now,
-        )?;
+        let board = self
+            .partition
+            .assignment_board(self.claims, source, self.policy, self.worker, now)?;
         audit(&board)?;
         for number in board.candidates(&self.worker.id)? {
             let entry = board.board.entries.iter().find(|e| e.number == number).unwrap();
