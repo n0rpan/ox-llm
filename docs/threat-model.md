@@ -21,7 +21,7 @@ Used by automated security review (Codex) and by human/agent reviewers. Keep it 
 4. **Offline mode** makes no network calls at all.
 5. **Network guard:** the engine endpoint is loopback unless the user enables remote in user settings; no credential is sent across a redirect or to a host it was not issued for.
 6. **Budgets and ledgers:** every metered request is reserved before sending and settled from validated provider usage; unknown usage stays reserved; caps refuse the next request; ledger rows are append-only and validated.
-7. **Guests and outside PRs:** LAN-share guests never reach cloud providers or owner credentials; fork PRs never get secrets, tokens or token-spending reviews (`pull_request_target` is forbidden).
+7. **Guests and outside PRs:** LAN sharing is off by default. Cloud access requires an authenticated guest, the enabled in-process gateway, and an explicitly selected metered model on the owner's guest allowlist. The route accepts text chat only and applies per-key limits, gateway reservation and settlement, and ledger attribution. Guests cannot access owner credentials, personal subscriptions, owner history, tools, files, or sessions. Fork PRs never get secrets, tokens or token-spending reviews (`pull_request_target` is forbidden).
 8. **Native engine (oxe):** the HTTP server listens on loopback only; `unsafe`, FFI (kernels, NPU), process spawning and file permission changes need explicit review.
 9. **No Python in the product path** (v0.2.1+).
 
