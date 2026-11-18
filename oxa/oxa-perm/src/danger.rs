@@ -276,11 +276,23 @@ impl DangerRules {
             let name_raw = argv[0].as_str();
             let name = base_name(name_raw);
             // The command name itself is computed at run time: `$x -rf /`, `$(which rm)`.
-            if has_dynamic(name_raw) {
+            // A brace expansion builds the words at run time too: `{rm,-rf,/}` runs `rm -rf /`.
+            if has_dynamic(name_raw) || brace_expansion_at(name_raw).is_some() {
                 self.push(hits, "eval-dynamic", &seg);
             }
+            // A process substitution read as a script or as stdin: `bash <(curl ..)`,
+            // `sh < <(curl ..)`, `source <(curl ..)`.
+            let fed = |t: &str| t.starts_with("<(");
+            let fed_arg = argv[1..].iter().any(|a| fed(a.as_str()));
+            let fed_stdin = redirects
+                .iter()
+                .any(|(op, t)| op.as_str() == "<" && fed(t.as_str()));
+            let fed_download = argv[1..]
+                .iter()
+                .chain(redirects.iter().map(|(_, t)| t))
+                .any(|t| fed(t.as_str()) && (t.contains("curl") || t.contains("wget")));
             if SHELLS.contains(&name) {
-                if pipe_in || heredoc {
+                if pipe_in || heredoc || fed_arg || fed_stdin {
                     self.push(hits, "pipe-to-shell", &seg);
                 }
                 if let Some(script) = shell_script(argv) {
@@ -292,7 +304,9 @@ impl DangerRules {
                     }
                 }
             }
-            if INTERPRETERS.contains(&name) && pipe_in && prior.iter().any(|p| p == "curl" || p == "wget") {
+            if INTERPRETERS.contains(&name)
+                && ((pipe_in && prior.iter().any(|p| p == "curl" || p == "wget")) || fed_download)
+            {
                 self.push(hits, "pipe-to-shell", &seg);
             }
             let args = &argv[1..];
@@ -307,6 +321,9 @@ impl DangerRules {
                 "source" | "." => {
                     if args.iter().any(|a| has_dynamic(a)) {
                         self.push(hits, "eval-dynamic", &seg);
+                    }
+                    if fed_arg || fed_stdin {
+                        self.push(hits, "pipe-to-shell", &seg);
                     }
                 }
                 _ => {}
@@ -371,7 +388,7 @@ impl DangerRules {
                     self.write_hit(t, seg, ctx, hits);
                 }
             }
-            "tee" | "touch" | "truncate" | "mv" => {
+            "tee" | "touch" | "truncate" | "mv" | "unlink" | "rmdir" => {
                 for t in &ops {
                     self.write_hit(t, seg, ctx, hits);
                 }
@@ -558,7 +575,9 @@ impl Ctx<'_> {
     /// symlinked directory before the `..`, as in `link/../victim`).
     fn resolve(&self, raw: &str) -> Option<PathBuf> {
         let expanded = expand_home(raw, &self.guard.home);
-        if has_dynamic(&expanded) {
+        // `~user` is another user's home, which this classifier cannot know; a brace expansion
+        // names paths the shell builds.
+        if has_dynamic(&expanded) || expanded.starts_with('~') || brace_expansion_at(&expanded).is_some() {
             return None;
         }
         let absolute = normalize(Path::new(&expanded), self.cwd);
@@ -717,6 +736,13 @@ fn parse_depth(src: &str, depth: usize) -> Option<Vec<Stage>> {
                     p += 1;
                 }
             }
+            // `<(cmd)`: a process substitution is one word (a file name); `cmd` runs too.
+            '<' if next == Some('(') => {
+                let (inner, np) = scan_paren(&chars, p + 2)?;
+                out.extend(parse_depth(&inner, depth + 1)?);
+                cur.words.push(format!("<({inner})"));
+                p = np;
+            }
             '<' | '>' => {
                 let (op, len) = redirect_op(&chars, p);
                 p = redirect(&chars, p + len, op, depth, &mut cur, &mut heredocs, &mut out)?;
@@ -792,7 +818,14 @@ fn redirect(
         p += 1;
     }
     let raw_start = p;
-    let (target, np) = read_word(chars, p, depth, out)?;
+    // `sh < <(curl ..)`: the target is a process substitution, whose command runs too.
+    let (target, np) = if op == "<" && chars.get(p) == Some(&'<') && chars.get(p + 1) == Some(&'(') {
+        let (inner, np) = scan_paren(chars, p + 2)?;
+        out.extend(parse_depth(&inner, depth + 1)?);
+        (format!("<({inner})"), np)
+    } else {
+        read_word(chars, p, depth, out)?
+    };
     if op == "<<" || op == "<<-" {
         // A quoted or escaped delimiter (`<<'EOF'`, `<<"EOF"`, `<<\EOF`) turns expansion off.
         let quoted = chars[raw_start..np]
@@ -1043,6 +1076,16 @@ fn peel(words: &[String], unknown_in: bool) -> Peeled {
             break;
         }
         match base_name(&words[i]) {
+            // `function f { rm -rf /; }`: the name, then the body (`{` is reserved).
+            "function" => i += 2,
+            // `coproc cmd ...` or `coproc NAME { ...; }`.
+            "coproc" => {
+                i += 1;
+                if words.get(i + 1).map(String::as_str) == Some("{") {
+                    i += 1;
+                }
+            }
+            "busybox" | "toybox" => i += 1,
             "sudo" | "doas" | "pkexec" | "run0" => {
                 out.privileged = true;
                 i = skip_flags(words, i + 1, SUDO_WITH_ARG);
@@ -1066,7 +1109,16 @@ fn peel(words: &[String], unknown_in: bool) -> Peeled {
             "ionice" => i = skip_flags(words, i + 1, &["-c", "-n", "-p", "-P", "-u"]),
             "timeout" => i = skip_positional(words, i + 1, &["-s", "-k"]),
             "chrt" | "taskset" => i = skip_positional(words, i + 1, &[]),
-            "watch" => i = skip_flags(words, i + 1, &["-n", "--interval"]),
+            // `watch` hands its words, joined, to `sh -c` unless `-x`/`--exec` is given.
+            "watch" => {
+                let from = i + 1;
+                i = skip_flags(words, from, &["-n", "--interval"]);
+                let exec = words[from..i].iter().any(|w| w == "--exec" || short_has(w, 'x'));
+                if !exec && i < words.len() {
+                    out.inline.push(words[i..].join(" "));
+                    i = words.len();
+                }
+            }
             "flock" => match script_after(words, i + 1, &["-c", "--command"]) {
                 Some(script) => {
                     out.inline.push(script);
@@ -1142,7 +1194,7 @@ fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>) -> usize {
             });
             return words.len();
         }
-        if w == "-u" || w == "-C" {
+        if matches!(w, "-u" | "-C" | "--unset" | "--chdir") {
             i += 2;
         } else if w.starts_with('-') || is_assignment(w) {
             i += 1;
@@ -1347,6 +1399,23 @@ fn has_dynamic(text: &str) -> bool {
     text.contains('$') || text.contains('`')
 }
 
+/// Where a brace expansion (`{a,b}`, `{1..3}`) starts in `w`, if it has one. `{}` (the
+/// `find -exec` placeholder) and `${x}` are not brace expansions.
+fn brace_expansion_at(w: &str) -> Option<usize> {
+    let bytes = w.as_bytes();
+    for (i, b) in bytes.iter().enumerate() {
+        if *b != b'{' || (i > 0 && bytes[i - 1] == b'$') {
+            continue;
+        }
+        let Some(len) = w[i + 1..].find('}') else { continue };
+        let inner = &w[i + 1..i + 1 + len];
+        if inner.contains(',') || inner.contains("..") {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// `true` for `NAME=value` (a valid name before the first `=`).
 fn is_assignment(w: &str) -> bool {
     match w.find('=') {
@@ -1367,10 +1436,14 @@ fn base_name(w: &str) -> &str {
 /// `~`, `~/` and `$HOME` at the start of `raw` become the home directory.
 fn expand_home(raw: &str, home: &Path) -> String {
     let h = home.to_string_lossy();
-    if raw == "~" || raw == "$HOME" {
+    if raw == "~" || raw == "$HOME" || raw == "${HOME}" {
         return h.into_owned();
     }
-    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("$HOME/")) {
+    if let Some(rest) = raw
+        .strip_prefix("~/")
+        .or_else(|| raw.strip_prefix("$HOME/"))
+        .or_else(|| raw.strip_prefix("${HOME}/"))
+    {
         return format!("{h}/{rest}");
     }
     raw.to_string()
@@ -1391,9 +1464,14 @@ fn segment(words: &[String], redirects: &[(String, String)]) -> String {
 fn target_outside(raw: &str, ctx: &Ctx<'_>) -> bool {
     let home = normalize(&ctx.guard.home, ctx.root);
     let is_dynamic = |c: char| matches!(c, '$' | '`' | '*' | '?' | '[');
-    if raw.chars().any(is_dynamic) {
-        // A glob or a variable: safe only under a literal sub-directory of the workspace.
-        let idx = raw.find(is_dynamic).unwrap_or(raw.len());
+    let first = raw
+        .find(is_dynamic)
+        .into_iter()
+        .chain(brace_expansion_at(raw))
+        .min();
+    if let Some(idx) = first {
+        // A glob, a brace expansion or a variable: safe only under a literal sub-directory of
+        // the workspace.
         let literal = &raw[..idx];
         let cut = match literal.rfind('/') {
             Some(k) => &literal[..k],
