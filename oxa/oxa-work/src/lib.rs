@@ -97,6 +97,9 @@ pub struct Record {
     pub outcome: Outcome,
     pub detail: String,
     pub worker: Option<WorkerResult>,
+    /// Durable runner revision immediately before the native invocation that produced this result.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_launch_revision: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_tokens: Option<TaskTokens>,
     pub session_id: Option<String>,
@@ -148,6 +151,7 @@ pub struct PlannedTask {
     commands: Vec<String>,
     checkpoint_revision: Option<u64>,
     base_alias: Option<tree::BaseAlias>,
+    native: bool,
 }
 impl PlannedTask {
     pub fn task(&self) -> &Task {
@@ -191,6 +195,7 @@ fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> R
         commands,
         checkpoint_revision: None,
         base_alias,
+        native,
     })
 }
 
@@ -244,6 +249,7 @@ fn plan_task_mode(
             commands: execution.commands,
             checkpoint_revision: Some(saved.record.checkpoint_revision),
             base_alias: None,
+            native,
         });
     }
     plan_new_task(repo, task, policy, native)
@@ -936,6 +942,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         outcome: Outcome::Blocked,
         detail,
         worker: None,
+        worker_launch_revision: None,
         task_tokens: None,
         session_id: None,
         base_sha: None,
@@ -1242,6 +1249,7 @@ fn run_locked(
         observer,
         scrub_note,
         base_alias: planned.base_alias.as_ref(),
+        native: planned.native,
         #[cfg(target_os = "linux")]
         managed_steering: locked.managed_steering.as_ref(),
     })
