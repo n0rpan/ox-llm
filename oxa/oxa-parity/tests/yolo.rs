@@ -238,7 +238,7 @@ fn help_lists_the_modes_and_there_is_no_separate_sandbox_off_switch() {
         assert!(help.contains(flag), "{flag}");
     }
     assert!(help.contains("the bash sandbox and the deny-list stay on"));
-    assert!(help.contains("bash runs without the sandbox"));
+    assert!(help.contains("the launch sandbox setting stays in force"));
     assert!(!help.contains("--no-sandbox"));
     let out = run_oxa(
         &env,

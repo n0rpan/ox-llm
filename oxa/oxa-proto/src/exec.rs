@@ -147,8 +147,8 @@ pub trait Sandbox: Send + Sync {
 /// How much the policy decides on its own (#202, #1512 S4). `Standard` asks the user what the
 /// mode table asks; `Auto` answers those questions with "allow" while the sandbox, the deny-list
 /// and the protected paths stay on; `Yolo` drops the prompts (the dangerous-command prompt and
-/// the protected-configuration question) and runs bash without the OS sandbox in the user's own
-/// environment. The in-process guards stay under `Yolo`: the deny-list, git's files, the
+/// the protected-configuration question). The launch policy controls the OS sandbox at every
+/// level. The in-process guards stay under `Yolo`: the deny-list, git's files, the
 /// credential masking, user-only settings and offline mode. Plan mode stays read-only under
 /// every level.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -259,8 +259,8 @@ impl PermissionMode {
                 "no prompts; dangerous commands still ask; the deny-list and protected paths stay on"
             }
             PermissionMode::Yolo => {
-                "no prompts: dangerous commands run without asking and bash has no OS sandbox; \
-                 the deny-list and protected paths stay on"
+                "no approval prompts: dangerous commands and protected-configuration changes need no \
+                 confirmation; private-path denials still apply to file tools"
             }
             PermissionMode::Plan => "read-only: plans, writes nothing",
         }
@@ -270,7 +270,7 @@ impl PermissionMode {
 /// The autonomy switch of a process (O-182, #202): [`Autonomy`] as one shared value. `Auto`
 /// answers the mode table's questions with "allow" and counts them; floor prompts still ask.
 /// At `Yolo` outside plan mode the file tools answer floor prompts with "allow" (denials stand,
-/// #1512 S4), and bash runs without the OS sandbox. Only answered prompts count. Cloning shares
+/// #1512 S4). Only answered prompts count. Cloning shares
 /// the switch (the policy of every session, the bash tool and the UI hold the same one).
 #[derive(Debug, Clone, Default)]
 pub struct YoloSwitch {

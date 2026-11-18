@@ -7,6 +7,7 @@ use oxa_parity::pty::Screen;
 pub fn is_status_row(text: &str) -> bool {
     let t = text.trim();
     t == "sandbox"
+        || t.starts_with("sandbox ·")
         || t.starts_with("no sandbox")
         || t.starts_with("YOLO full access")
         || t.ends_with("YOLO full access")

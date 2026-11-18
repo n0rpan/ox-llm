@@ -54,17 +54,14 @@ pub(crate) fn run_kind(a: &Args, env: &Env, child: &ChildIdentity, mode: RunMode
 /// | unattended, default, bwrap present         | bwrap      | refused (S4)              |
 /// | unattended, default, bwrap missing         | bash disabled (fail closed) | n/a      |
 /// | unattended, `oxa.sandbox.unattended=false` | no         | approval request (S5)     |
-/// | any run, yolo                              | no         | no prompts                |
+/// | yolo                                      | launch policy | no approval prompts    |
 /// | plan, bwrap present                        | bwrap (read-only policy) | n/a         |
 /// | plan, bwrap missing                        | no (read-only spec runs unsandboxed) | n/a |
 ///
 /// `user` is the user layer only (`Settings::load(dirs, cwd, false)`): a project file never
 /// sets either key. Plan mode is not a parameter: plan keeps bwrap whenever it is present, and
 /// `oxa_sandbox::FullAccess` runs a read-only spec unsandboxed only when bwrap is missing.
-pub(crate) fn os_sandbox_wanted(kind: RunKind, a: &Args, user: &Settings, yolo: bool) -> bool {
-    if yolo {
-        return false;
-    }
+pub(crate) fn os_sandbox_wanted(kind: RunKind, a: &Args, user: &Settings) -> bool {
     match kind {
         RunKind::Attended => a.sandbox || user.bool(SETTING_INTERACTIVE, false),
         RunKind::Unattended => user.bool(SETTING_UNATTENDED, true),
@@ -214,12 +211,7 @@ mod tests {
 
     #[test]
     fn os_sandbox_wanted_attended_default_is_off() {
-        assert!(!os_sandbox_wanted(
-            RunKind::Attended,
-            &args(),
-            &user(json!({})),
-            false
-        ));
+        assert!(!os_sandbox_wanted(RunKind::Attended, &args(), &user(json!({}))));
     }
 
     #[test]
@@ -228,45 +220,42 @@ mod tests {
             sandbox: true,
             ..Args::default()
         };
-        assert!(os_sandbox_wanted(RunKind::Attended, &a, &user(json!({})), false));
+        assert!(os_sandbox_wanted(RunKind::Attended, &a, &user(json!({}))));
         let setting = user(json!({"oxa": {"sandbox": {"interactive": true}}}));
-        assert!(os_sandbox_wanted(RunKind::Attended, &args(), &setting, false));
+        assert!(os_sandbox_wanted(RunKind::Attended, &args(), &setting));
     }
 
     #[test]
     fn os_sandbox_wanted_unattended_default_is_on() {
-        assert!(os_sandbox_wanted(
-            RunKind::Unattended,
-            &args(),
-            &user(json!({})),
-            false
-        ));
+        assert!(os_sandbox_wanted(RunKind::Unattended, &args(), &user(json!({}))));
     }
 
     #[test]
     fn os_sandbox_wanted_unattended_setting_off_is_off() {
         let off = user(json!({"oxa": {"sandbox": {"unattended": false}}}));
-        assert!(!os_sandbox_wanted(RunKind::Unattended, &args(), &off, false));
+        assert!(!os_sandbox_wanted(RunKind::Unattended, &args(), &off));
     }
 
     #[test]
     fn yolo_keeps_attended_opt_in_and_unattended_sandbox() {
-        let a = Args {
-            sandbox: true,
+        use oxa_proto::PermissionMode;
+        let unattended = Args {
+            level: Some(PermissionMode::Yolo),
             ..Args::default()
         };
-        assert!(os_sandbox_wanted(RunKind::Attended, &a, &user(json!({})), true));
-        assert!(os_sandbox_wanted(
-            RunKind::Unattended,
-            &args(),
-            &user(json!({})),
-            true
-        ));
+        let attended = Args {
+            sandbox: true,
+            level: Some(PermissionMode::Yolo),
+            ..Args::default()
+        };
+        let settings = user(json!({}));
+        assert!(os_sandbox_wanted(RunKind::Attended, &attended, &settings));
+        assert!(os_sandbox_wanted(RunKind::Unattended, &unattended, &settings));
     }
 
     #[test]
     fn os_sandbox_wanted_unattended_no_bwrap_disables_bash() {
-        let wanted = os_sandbox_wanted(RunKind::Unattended, &args(), &user(json!({})), false);
+        let wanted = os_sandbox_wanted(RunKind::Unattended, &args(), &user(json!({})));
         assert!(wanted);
         let text = bwrap_missing_notice(wanted, "no bwrap on PATH").expect("warning");
         assert!(text.contains("bash is disabled"), "{text}");
@@ -274,13 +263,13 @@ mod tests {
 
     #[test]
     fn bwrap_missing_attended_no_warning_bash_works() {
-        let wanted = os_sandbox_wanted(RunKind::Attended, &args(), &user(json!({})), false);
+        let wanted = os_sandbox_wanted(RunKind::Attended, &args(), &user(json!({})));
         assert_eq!(bwrap_missing_notice(wanted, "no bwrap on PATH"), None);
     }
 
     #[test]
     fn bwrap_missing_unattended_bash_disabled() {
-        let wanted = os_sandbox_wanted(RunKind::Unattended, &args(), &user(json!({})), false);
+        let wanted = os_sandbox_wanted(RunKind::Unattended, &args(), &user(json!({})));
         let text = bwrap_missing_notice(wanted, "x").expect("warning");
         assert_eq!(text, "bwrap is missing or unusable (x); bash is disabled");
     }
@@ -327,7 +316,7 @@ mod tests {
         .unwrap();
         // Untrusted project: the user layer alone decides.
         let settings = Settings::load(&dirs, &cwd, false);
-        assert!(!os_sandbox_wanted(RunKind::Attended, &args(), &settings, false));
-        assert!(os_sandbox_wanted(RunKind::Unattended, &args(), &settings, false));
+        assert!(!os_sandbox_wanted(RunKind::Attended, &args(), &settings));
+        assert!(os_sandbox_wanted(RunKind::Unattended, &args(), &settings));
     }
 }

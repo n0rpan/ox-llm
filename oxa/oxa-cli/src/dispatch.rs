@@ -983,11 +983,11 @@ fn prepare(
         .unwrap_or_else(|| settings.default_permission_mode());
     let yolo = oxa_proto::YoloSwitch::new(level.autonomy());
     // #1512 S3: who is at the keyboard decides the OS sandbox (`run_kind.rs`): attended runs
-    // have none by default, unattended runs keep bwrap, yolo has none. bwrap is detected either
-    // way: plan mode and offline/net-off commands need it.
+    // have none by default and unattended runs keep bwrap. Permission mode controls prompts.
+    // Plan mode and offline/net-off commands can still need bwrap.
     let kind = crate::run_kind::run_kind(a, env, &child, mode);
     let yolo_level = matches!(level, oxa_proto::PermissionMode::Yolo);
-    let os_sandbox = crate::run_kind::os_sandbox_wanted(kind, a, &user_settings, yolo_level);
+    let os_sandbox = crate::run_kind::os_sandbox_wanted(kind, a, &user_settings);
     if let Some(text) = crate::run_kind::no_sandbox_notice(kind, os_sandbox, yolo_level) {
         notices.push((Level::Info, text.to_string()));
     }
