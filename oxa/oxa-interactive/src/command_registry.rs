@@ -135,8 +135,8 @@ commands! {
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
     Lead {
-        path: &["lead"], aliases: &[], summary: "Open the lead command menu, or send one owner chat message",
-        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        path: &["lead"], aliases: &[], summary: "Chat with the dedicated Lead session",
+        arguments: &[Argument { name: "prompt", kind: ArgumentKind::Tail, required: false }],
         surfaces: Surfaces {
             cli: Availability::Supported,
             slash: Availability::Exception("The slash menu is not available yet"),
@@ -181,6 +181,19 @@ commands! {
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
         surfaces: Surfaces { cli: Availability::Supported, ..LEAD_PENDING },
         requirements: Requirements { owner_only: true, ..NO_REQUIREMENTS },
+    },
+    Goal {
+        path: &["goal"],
+        aliases: &[],
+        summary: "Set, show or clear the session goal",
+        arguments: &[Argument { name: "text|clear|pause|resume", kind: ArgumentKind::Tail, required: false }],
+        surfaces: Surfaces {
+            cli: Availability::Exception("The goal belongs to a running session"),
+            slash: Availability::Supported,
+            menu: Availability::Exception("Slash handler is the only goal surface for now"),
+            web: Availability::Exception("No web frontend is shipped"),
+        },
+        requirements: NO_REQUIREMENTS,
     },
 }
 
@@ -349,6 +362,17 @@ mod tests {
                 assert_eq!(help(surface).contains(declaration.summary), shown);
             }
         }
+    }
+
+    #[test]
+    fn goal_is_declared_for_the_slash_surface_only() {
+        let input = words("goal pause");
+        let parsed = dispatch_slash(&input).expect("goal resolves as a slash command");
+        assert_eq!(parsed.command.id, CommandId::Goal);
+        assert_eq!(parsed.args, &input[1..]);
+        assert!(parse_cli(&input).is_none());
+        assert!(entries(Surface::Slash).any(|entry| entry.id == CommandId::Goal));
+        assert!(!entries(Surface::Cli).any(|entry| entry.id == CommandId::Goal));
     }
 
     #[test]

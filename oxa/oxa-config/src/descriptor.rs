@@ -7,6 +7,7 @@
 
 mod advanced;
 mod compaction;
+mod display;
 mod lead;
 mod models;
 mod safety;
@@ -354,12 +355,14 @@ impl Descriptor {
     }
 }
 
-/// The data table, in display order: the Lead and web, the Safety, then the Advanced entries.
+/// The data table, in display order: the Display rows, then the Lead and web, the Safety and the
+/// Advanced entries.
 fn table() -> &'static [Descriptor] {
     static TABLE: OnceLock<Vec<Descriptor>> = OnceLock::new();
     TABLE
         .get_or_init(|| {
             [
+                display::ENTRIES,
                 models::ENTRIES,
                 compaction::ENTRIES,
                 lead::ENTRIES,
@@ -512,13 +515,14 @@ mod tests {
 
     #[test]
     fn unwired_groups_stay_empty() {
-        // Lead, Safety and Advanced (A2d) plus Models and the compaction/codemode entries (A2b)
-        // have data; Display and the remaining groups arrive in later slices.
+        // Display (A2a) and Models with the compaction/codemode entries (A2b) and Lead, Safety and
+        // Advanced (A2d) have data; Budgets and Tools arrive in A2c.
         assert!(in_group(Group::Models).next().is_some());
         assert!(descriptor("compaction.keepRecentTokens").is_some());
-        assert_eq!(in_group(Group::Display).count(), 0);
+        assert_eq!(in_group(Group::Tools).count(), 0);
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
-        assert_eq!(descriptors().len(), 78);
+        assert_eq!(in_group(Group::Display).count(), 30);
+        assert_eq!(descriptors().len(), 108);
     }
 
     #[test]
