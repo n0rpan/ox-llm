@@ -263,6 +263,43 @@ cat "$0.reply"
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
     assert!(invoke(&env, &config, "synthetic\n", false).status.success());
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
+    if !pull_request {
+        let original_config = fs::read(&config).unwrap();
+        let original_reply = fs::read(env.tmp().join("gh.reply")).unwrap();
+        assert!(claims
+            .release_for(
+                44,
+                &binding.lease.holder,
+                &binding.lease,
+                now,
+                "verified completion"
+            )
+            .unwrap());
+        let mut next: serde_json::Value = serde_json::from_slice(&original_config).unwrap();
+        next["packets"][0]["branch"] = "agent/replacement".into();
+        next["packets"][0]["revision"] = "revision-two".into();
+        fs::write(&config, next.to_string()).unwrap();
+        fs::write(
+            &task,
+            "i44 local/fake agent/replacement main\nSynthetic prepared packet.\n",
+        )
+        .unwrap();
+        let mut response: serde_json::Value = serde_json::from_slice(&original_reply).unwrap();
+        response["data"]["repository"]["i44"]["updatedAt"] = "revision-two".into();
+        response["data"]["repository"]["r44"] = json!({"name":"agent/44"});
+        fs::write(env.tmp().join("gh.reply"), response.to_string()).unwrap();
+        let refused = invoke(&env, &config, "synthetic\n", false);
+        assert_eq!(
+            refused.status.code(),
+            Some(2),
+            "retained branch must block a replacement"
+        );
+        assert!(String::from_utf8_lossy(&refused.stderr).contains(&binding.lease.holder));
+        assert_eq!(claims.snapshot().unwrap()[&44].attempts, 1);
+        fs::write(&config, original_config).unwrap();
+        fs::write(env.tmp().join("gh.reply"), original_reply).unwrap();
+        fs::write(&task, valid).unwrap();
+    }
     let peer = env
         .work()
         .parent()
