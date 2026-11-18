@@ -109,6 +109,22 @@ fn print_uses_native_gateway_without_python_or_controller() {
     )
     .expect("select proof binary");
     let env = TestEnv::new();
+    if release.is_some() || cfg!(feature = "share") {
+        let output = Command::new(&binary)
+            .args(["share", "serve", "--model", "synthetic"])
+            .current_dir(env.work())
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:9"))
+            .output()
+            .expect("probe LAN sharing on the proof binary");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("Enable the native local engine in user settings before serving models."),
+            "the packaged LAN command must be present and refuse without owner settings: {error}"
+        );
+    }
     let mock = MockAnthropic::start(vec![Reply::text("native-gateway-proof", 11, 7, 3, 5)]);
     let controller = TcpListener::bind("127.0.0.1:0").expect("owned controller trap");
     controller.set_nonblocking(true).unwrap();
