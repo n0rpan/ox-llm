@@ -847,9 +847,10 @@ fn prepare(
             pattern: requested_model.as_deref(),
             scope: owner_scope,
             endpoint: &endpoint.name,
-            // Subagent argv is selected by the parent tool, so it cannot opt
-            // into a provider that the owner has not explicitly enabled.
+            // Model arguments delegated by a launcher cannot opt into a
+            // provider without explicit user settings.
             owner_selected: !child.nested()
+                && env.get(oxa_work::PlannedTask::DELEGATED_MODEL_ENV).is_none()
                 && (a.model.is_some()
                     || continued_go.is_some()
                     || !owner_scope.is_empty()

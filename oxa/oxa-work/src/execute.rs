@@ -102,6 +102,7 @@ pub(crate) struct Runner<'a> {
     pub scrub_note: &'a (dyn Fn(&crate::ProblemNote) -> Option<crate::ProblemNote> + Sync),
     pub base_alias: Option<&'a tree::BaseAlias>,
     pub native: bool,
+    pub owner_selected_model: bool,
     #[cfg(target_os = "linux")]
     pub managed_steering: Option<&'a crate::managed_steering::Launch>,
 }
@@ -176,6 +177,7 @@ impl Runner<'_> {
                         &tree,
                         &task,
                         &prompt,
+                        self.owner_selected_model,
                         self.policy,
                         self.lock,
                         session.as_deref(),

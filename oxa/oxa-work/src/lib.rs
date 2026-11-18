@@ -163,8 +163,18 @@ pub struct PlannedTask {
     checkpoint_revision: Option<u64>,
     base_alias: Option<tree::BaseAlias>,
     native: bool,
+    owner_selected_model: bool,
 }
 impl PlannedTask {
+    /// A launcher can deny argument-based provider opt-in, never grant it through this variable.
+    pub const DELEGATED_MODEL_ENV: &str = "OXA_WORK_MODEL_DELEGATED";
+
+    /// Only the trusted frontend can attach provenance for an explicit owner model argument.
+    pub fn with_owner_model_selection(mut self) -> Self {
+        self.owner_selected_model = true;
+        self
+    }
+
     pub fn task(&self) -> &Task {
         &self.task
     }
@@ -207,6 +217,7 @@ fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> R
         checkpoint_revision: None,
         base_alias,
         native,
+        owner_selected_model: false,
     })
 }
 
@@ -261,6 +272,7 @@ fn plan_task_mode(
             checkpoint_revision: Some(saved.record.checkpoint_revision),
             base_alias: None,
             native,
+            owner_selected_model: false,
         });
     }
     plan_new_task(repo, task, policy, native)
@@ -1269,6 +1281,7 @@ fn run_locked(
         scrub_note,
         base_alias: planned.base_alias.as_ref(),
         native: planned.native,
+        owner_selected_model: planned.owner_selected_model,
         #[cfg(target_os = "linux")]
         managed_steering: locked.managed_steering.as_ref(),
     })
