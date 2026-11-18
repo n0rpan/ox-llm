@@ -49,6 +49,21 @@ impl NativeBinding {
             .ok_or_else(|| "invalid native attempt binding".into())
     }
 
+    /// Check a candidate branch before reservation, without constructing a lease.
+    pub fn is_valid_branch(branch: &str) -> bool {
+        !branch.is_empty()
+            && branch.len() <= 256
+            && !branch.starts_with(['-', '/'])
+            && !branch.ends_with(['/', '.'])
+            && !branch.contains([' ', '~', '^', ':', '?', '*', '[', '\\'])
+            && !branch.contains("..")
+            && !branch.contains("@{")
+            && !branch.chars().any(char::is_control)
+            && branch
+                .split('/')
+                .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
+    }
+
     pub(super) fn valid(&self) -> bool {
         self.number > 0
             && self.key.len() == 64
@@ -65,18 +80,7 @@ impl NativeBinding {
                     self.key, self.lease.generation.0, self.lease.generation.1
                 )
             && crate::valid_task_id(&self.native_task_id)
-            && !self.branch.is_empty()
-            && self.branch.len() <= 256
-            && !self.branch.starts_with(['-', '/'])
-            && !self.branch.ends_with(['/', '.'])
-            && !self.branch.contains([' ', '~', '^', ':', '?', '*', '[', '\\'])
-            && !self.branch.contains("..")
-            && !self.branch.contains("@{")
-            && !self.branch.chars().any(char::is_control)
-            && self
-                .branch
-                .split('/')
-                .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
+            && Self::is_valid_branch(&self.branch)
             && self
                 .reviewed_head
                 .as_deref()
