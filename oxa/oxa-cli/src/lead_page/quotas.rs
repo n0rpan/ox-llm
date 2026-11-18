@@ -2,13 +2,23 @@ use super::View;
 use crate::lead_quota::{model_windows, GitHubIdentity, GitHubResource};
 use std::fmt::Write;
 
+fn meter<N: std::fmt::Display>(html: &mut String, label: &str, max: N, value: N, value_text: &str) {
+    let _ = write!(
+        html,
+        " <meter min=0 max={max} value={value} aria-label=\"{}\" aria-valuetext=\"{}\">{}</meter>",
+        super::escape(label),
+        super::escape(value_text),
+        super::escape(value_text)
+    );
+}
+
 pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section><h2>Plans and quotas</h2>");
     if view.github_quotas.is_none() && view.model_plan.is_none() {
         html.push_str("<p>Usage observations unavailable.</p></section>");
         return;
     }
-    html.push_str("<dl>");
+    html.push_str("<dl class=quota-windows>");
     for (identity, label) in [(GitHubIdentity::App, "App"), (GitHubIdentity::Owner, "Owner")] {
         for (resource, api) in [
             (GitHubResource::Core, "REST core"),
@@ -21,9 +31,17 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             {
                 let _ = write!(
                     html,
-                    "<dd>{} of {} remaining · resets at {} (Unix seconds)</dd>",
+                    "<dd>{} of {} remaining · resets at {} (Unix seconds)",
                     window.remaining, window.limit, window.resets_at
                 );
+                meter(
+                    html,
+                    &format!("GitHub {label} · {api} remaining"),
+                    window.limit,
+                    window.remaining,
+                    &format!("{} of {} remaining", window.remaining, window.limit),
+                );
+                html.push_str("</dd>");
             } else {
                 html.push_str("<dd>Unavailable</dd>");
             }
@@ -52,9 +70,17 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
         if let Some(window) = window {
             let _ = write!(
                 html,
-                "<dd>{}% used · resets at {} (Unix seconds)</dd>",
+                "<dd>{}% used · resets at {} (Unix seconds)",
                 window.used_percent, window.resets_at
             );
+            meter(
+                html,
+                &format!("{label} model window used"),
+                100.0,
+                window.used_percent,
+                &format!("{}% used", window.used_percent),
+            );
+            html.push_str("</dd>");
         } else {
             html.push_str("<dd>Unavailable</dd>");
         }

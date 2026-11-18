@@ -452,6 +452,8 @@ nav.tabs .badge.quiet { color:var(--muted); background:var(--raised); }
   .asks-layout .ask-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
   nav.tabs a { min-height:4.5rem; padding:.625rem .25rem; justify-content:center; font-size:.78125rem; }
 }
+.quota-windows dd { margin:0 0 16px; overflow-wrap:anywhere; }
+.quota-windows meter { display:block; width:100%; max-width:24rem; margin-top:6px; }
 "#
 );
 
