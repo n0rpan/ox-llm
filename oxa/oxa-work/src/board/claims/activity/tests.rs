@@ -67,19 +67,24 @@ fn heartbeat_never_masks_silence_and_recovery_cannot_refresh_action_time() {
     assert!(observe(11, LeaseSignal::Heartbeat).unwrap());
     assert!(!observe(11, LeaseSignal::Heartbeat).unwrap());
     let mut record = milestone(&binding);
-    assert!(observe(13, LeaseSignal::Milestone(&record)).unwrap());
+    assert!(observe(13, LeaseSignal::Milestone(&record, 0)).is_err());
+    assert!(observe(13, LeaseSignal::Milestone(&record, 7)).is_err());
+    assert!(observe(13, LeaseSignal::Milestone(&record, 5)).unwrap());
     assert!(observe(30, LeaseSignal::Heartbeat).unwrap());
     assert!(observe(29, LeaseSignal::Heartbeat).is_err());
-    assert!(!observe(35, LeaseSignal::Milestone(&record)).unwrap());
+    assert!(!observe(35, LeaseSignal::Milestone(&record, 5)).unwrap());
     record.checkpoint_revision = 8;
+    record.checkpoint_at_ms = 35_000;
+    assert!(!observe(35, LeaseSignal::Milestone(&record, 5)).unwrap());
+    record.checkpoint_revision = 10;
     record.checkpoint_at_ms = 36_000;
-    assert!(observe(35, LeaseSignal::Milestone(&record)).is_err());
+    assert!(observe(35, LeaseSignal::Milestone(&record, 9)).is_err());
     record.checkpoint_at_ms = 35_000;
     record.checkpoint_kind = CheckpointKind::TaskTransition;
-    assert!(!observe(35, LeaseSignal::Milestone(&record)).unwrap());
+    assert!(!observe(35, LeaseSignal::Milestone(&record, 9)).unwrap());
     record.checkpoint_kind = CheckpointKind::WorkerFinished;
     record.id = "foreign-attempt".into();
-    assert!(!observe(35, LeaseSignal::Milestone(&record)).unwrap());
+    assert!(!observe(35, LeaseSignal::Milestone(&record, 9)).unwrap());
     let rows = Claims::open(dir.path()).unwrap().assignments().unwrap();
     let row = &rows[&1];
     let activity = row.data.lease_activity.as_ref().unwrap();
@@ -87,6 +92,7 @@ fn heartbeat_never_masks_silence_and_recovery_cannot_refresh_action_time() {
     assert_eq!(
         activity.last_action,
         Some(VerifiedMilestone {
+            launch_revision: 5,
             revision: 7,
             at_ms: 12_999
         })
@@ -100,6 +106,11 @@ fn heartbeat_never_masks_silence_and_recovery_cannot_refresh_action_time() {
     assert!(!serde_json::to_string(activity)
         .unwrap()
         .contains("synthetic private detail"));
+    record.id.clone_from(&binding.native_task_id);
+    record.checkpoint_revision = 12;
+    record.checkpoint_at_ms = 40_000;
+    assert!(observe(40, LeaseSignal::Milestone(&record, 11)).unwrap());
+    assert!(!claims.assignments().unwrap()[&1].stalled(49, Some(10)).unwrap());
     assert!(
         claims
             .native_binding(&binding.native_task_id, &binding.branch)

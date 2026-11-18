@@ -5,13 +5,14 @@ use crate::{CheckpointKind, Record, Step};
 pub enum LeaseSignal<'a> {
     /// A trusted frontend observed its exact managed child, not worker-provided output.
     Heartbeat,
-    /// The existing observer supplies a synced record without reacquiring task/checkpoint locks.
-    Milestone(&'a Record),
+    /// Synced result and its runner-owned original launch revision, never a child-provided ID.
+    Milestone(&'a Record, u64),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct VerifiedMilestone {
+    pub launch_revision: u64,
     pub revision: u64,
     pub at_ms: u64,
 }
@@ -28,10 +29,9 @@ impl LeaseActivity {
     pub(super) fn valid(&self, state: &AttemptState) -> bool {
         self.generation == (state.utc_day, state.attempts)
             && self.generation.1 > 0
-            && self
-                .last_action
-                .as_ref()
-                .is_none_or(|action| action.revision > 0 && action.at_ms > 0)
+            && self.last_action.as_ref().is_none_or(|action| {
+                action.launch_revision > 0 && action.launch_revision < action.revision && action.at_ms > 0
+            })
             && state.lease.as_ref().is_none_or(|lease| {
                 lease.claimed_at.is_some_and(|start| {
                     self.heartbeat_at.is_none_or(|at| at >= start)
@@ -126,7 +126,7 @@ impl Claims {
                 }
                 activity.heartbeat_at = Some(now);
             }
-            LeaseSignal::Milestone(record) => {
+            LeaseSignal::Milestone(record, launch_revision) => {
                 if record.id != binding.native_task_id
                     || record.branch != binding.branch
                     || record.checkpoint_kind != CheckpointKind::WorkerFinished
@@ -136,11 +136,12 @@ impl Claims {
                 {
                     return Ok(false);
                 }
-                if activity
-                    .last_action
-                    .as_ref()
-                    .is_some_and(|last| record.checkpoint_revision <= last.revision)
-                {
+                if launch_revision == 0 || launch_revision >= record.checkpoint_revision {
+                    return Err("invalid original process launch revision".into());
+                }
+                if activity.last_action.as_ref().is_some_and(|last| {
+                    record.checkpoint_revision <= last.revision || launch_revision <= last.revision
+                }) {
                     return Ok(false);
                 }
                 if record.checkpoint_at_ms == 0
@@ -154,6 +155,7 @@ impl Claims {
                     return Err("invalid durable action clock".into());
                 }
                 activity.last_action = Some(VerifiedMilestone {
+                    launch_revision,
                     revision: record.checkpoint_revision,
                     at_ms: record.checkpoint_at_ms,
                 });
