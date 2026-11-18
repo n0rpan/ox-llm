@@ -55,7 +55,10 @@ impl GitHubQuotas {
         let Some(reserve) = reserve else {
             return Admission::Proceed;
         };
-        let Some(window) = self.window(identity, resource, now).filter(|_| reserve > 0) else {
+        let Some(window) = self
+            .window(identity, resource, now)
+            .filter(|_| reserve > 0 && cost > 0)
+        else {
             return Admission::AwaitObservation;
         };
         if window
@@ -148,7 +151,12 @@ pub fn admit_model(usage: &Usage, now: u64, stop_at_percent: Option<u8>) -> Admi
         .max()
     {
         Admission::WaitUntil(until)
-    } else if windows.iter().any(Option::is_some) {
+    } else if windows.iter().any(Option::is_some)
+        && [usage.primary.is_some(), usage.secondary.is_some()]
+            .into_iter()
+            .zip(windows)
+            .all(|(reported, live)| !reported || live.is_some())
+    {
         Admission::Proceed
     } else {
         Admission::AwaitObservation
@@ -216,5 +224,6 @@ mod tests {
         assert_eq!(admit_model(&usage, 100, Some(98)), Admission::Proceed);
         assert_eq!(admit_model(&usage, 130, Some(90)), Admission::AwaitObservation);
         assert_eq!(admit_model(&usage, 130, None), Admission::Proceed);
+        assert_eq!(admit_model(&usage, 120, Some(98)), Admission::AwaitObservation);
     }
 }
