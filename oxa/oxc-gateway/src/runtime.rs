@@ -315,7 +315,7 @@ impl Runtime {
                 .collect();
             let generated;
             let ids: Vec<&str> = if explicit.is_empty() {
-                generated = format!("{}/{}", source.provider().as_str(), &offer.id);
+                generated = format!("{}/{}", source.provider().as_str(), offer.id);
                 vec![generated.as_str()]
             } else {
                 explicit.iter().map(|model| model.info().id).collect()
