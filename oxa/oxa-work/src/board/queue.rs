@@ -166,7 +166,9 @@ pub fn read(
                 r#"p{n}:pullRequest(number:{n}){{
                     id number headRefOid state baseRefName
                     mergeQueueEntry{{id}}
-                    admissions:timelineItems(first:1,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT]){{totalCount}}
+                    admissions:timelineItems(last:3,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT]){{
+                        pageInfo{{hasPreviousPage hasNextPage}} nodes{{__typename ... on AddedToMergeQueueEvent{{id}}}}
+                    }}
                     author{{__typename login ... on User{{id}} ... on Bot{{id}}}}
                     timelineItems(last:1,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){{
                         nodes{{__typename ... on RemovedFromMergeQueueEvent{{
@@ -350,9 +352,7 @@ fn rejection(
             absent: row.get("mergeQueueEntry") == Some(&Value::Null),
             // Earlier heads can only increase the count. An ambiguous or
             // exhausted upper bound cannot authorize a native retry.
-            admission_upper_bound: row["admissions"]["totalCount"]
-                .as_u64()
-                .and_then(|total| u8::try_from(total).ok()),
+            admission_upper_bound: admission_upper_bound(&row["admissions"]),
         }),
         merge_group_head: sha.to_owned(),
         failed_required_check_runs: failed.keys().copied().collect(),
@@ -362,6 +362,21 @@ fn rejection(
             .collect(),
         verified_test_reports: Vec::new(),
     }))
+}
+
+fn admission_upper_bound(page: &Value) -> Option<u8> {
+    let nodes = page["nodes"].as_array().filter(|nodes| nodes.len() <= 3)?;
+    if page["pageInfo"]["hasPreviousPage"] != false || page["pageInfo"]["hasNextPage"] != false {
+        return None;
+    }
+    let mut ids = BTreeSet::new();
+    nodes
+        .iter()
+        .all(|row| {
+            row["__typename"] == "AddedToMergeQueueEvent"
+                && node_id(&row["id"]).is_some_and(|id| ids.insert(id))
+        })
+        .then_some(nodes.len() as u8)
 }
 
 /// Validate a canonical UTC second before comparing GitHub event times.
@@ -375,6 +390,15 @@ fn github_utc(value: &Value) -> Option<&str> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn admission_cap_counts_filtered_events_and_refuses_incomplete_pages() {
+        let mut page = json!({"totalCount":42,"pageInfo":{"hasPreviousPage":false,"hasNextPage":false},
+            "nodes":[{"__typename":"AddedToMergeQueueEvent","id":"E_admitted"}]});
+        assert_eq!(admission_upper_bound(&page), Some(1));
+        page["pageInfo"]["hasPreviousPage"] = json!(true);
+        assert_eq!(admission_upper_bound(&page), None);
+    }
 
     #[test]
     fn notification_target_requires_the_pr_and_a_supported_author_identity() {
