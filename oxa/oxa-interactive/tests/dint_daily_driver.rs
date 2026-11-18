@@ -282,6 +282,7 @@ impl World {
             initial_parts: Vec::new(),
             initial_follow_ups: Vec::new(),
             theme: None,
+            theme_paths: Vec::new(),
             notices: Vec::new(),
             // These tests exercise behaviour (streams, errors, keys), not the skin: pin the
             // plain skin so the assertions on the header stay stable (OXA is the default).
@@ -418,6 +419,51 @@ const TREE_OPEN_WAIT: &[&str] = &["second question", "BETA answer.", "Session Tr
 
 /// open -> prompt -> tool call -> `/model` selector -> `/tree` navigate -> `/new` ->
 /// `/resume` picker -> fullscreen scroll + search -> exit, against the fake over HTTP.
+#[test]
+fn explicit_custom_theme_is_selected_and_listed() {
+    let world = World::new(Vec::new());
+    let path = world.env.write(
+        "custom.json",
+        &oxa_tui::THEME_DARK_JSON.replacen("\"name\": \"dark\"", "\"name\": \"synthetic-theme\"", 1),
+    );
+    let mut opts = world.opts(true);
+    opts.theme = Some("synthetic-theme".into());
+    opts.theme_paths = vec![path];
+    let session = Session::open(world.deps(), Open::New).unwrap();
+    let (_, _, term, _) = run_with(
+        &world,
+        session,
+        opts,
+        (100, 30),
+        vec![
+            step("start", &["fake-model"], typed("/theme", &["enter"])),
+            step("picker", &["synthetic-theme"], vec![key("escape")]),
+            step("close", &[], vec![key("ctrl+d")]),
+        ],
+    );
+    assert!(term.seen("picker").contains("synthetic-theme  (current)"));
+    assert!(!term.all_text().contains("theme not found"));
+}
+
+#[test]
+fn unknown_initial_theme_reports_the_fallback() {
+    let world = World::new(Vec::new());
+    let mut opts = world.opts(true);
+    opts.theme = Some("missing-theme".into());
+    let session = Session::open(world.deps(), Open::New).unwrap();
+    run_with(
+        &world,
+        session,
+        opts,
+        (100, 30),
+        vec![step(
+            "warning",
+            &["theme not found: missing-theme", "dark"],
+            vec![key("ctrl+d")],
+        )],
+    );
+}
+
 #[test]
 fn fullscreen_daily_driver_flow() {
     let world = World::with(
