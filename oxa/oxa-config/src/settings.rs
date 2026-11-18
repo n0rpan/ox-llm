@@ -480,14 +480,14 @@ fn remove_nested(root: &mut Map<String, Value>, key: &str) -> bool {
 fn remove_path(obj: &mut Map<String, Value>, parts: &[&str]) -> bool {
     match parts {
         [] => false,
-        [last] => obj.remove(*last).is_some(),
+        [last] => obj.shift_remove(*last).is_some(),
         [first, rest @ ..] => {
             let Some(Value::Object(child)) = obj.get_mut(*first) else {
                 return false;
             };
             let removed = remove_path(child, rest);
             if removed && child.is_empty() {
-                obj.remove(*first);
+                obj.shift_remove(*first);
             }
             removed
         }
@@ -525,6 +525,28 @@ mod tests {
         assert!(!remove_nested(map, "a.b.c"), "absent key changes nothing");
         assert!(remove_nested(map, "e.f"));
         assert_eq!(root, json!({"a": {"d": 2}}));
+    }
+
+    #[test]
+    fn remove_keeps_sibling_key_order() {
+        let mut root = json!({"theme": 1, "retry": 2, "compaction": 3, "p": {"x": {"y": 1}, "z": 2}});
+        let map = root.as_object_mut().expect("object");
+        assert!(remove_nested(map, "theme"));
+        assert!(remove_nested(map, "p.x.y"));
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["retry", "compaction", "p"]);
+        let inner: Vec<&str> = map["p"]
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(inner, ["z"]);
+        let mut root = json!({"p": {"a": {"y": 1}}, "q": 1, "r": 2});
+        let map = root.as_object_mut().expect("object");
+        assert!(remove_nested(map, "p.a.y"));
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["q", "r"], "pruned empty parent keeps order");
     }
 }
 
