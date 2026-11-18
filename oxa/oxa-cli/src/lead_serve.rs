@@ -80,6 +80,13 @@ fn conversation_refusal(error: &OxaError) -> RefusalFact {
             "metered_budget_exhausted",
             "wait for the next spend day or raise the daily USD budget",
         ),
+        // The bounded literal turn's own local output bound is not metering: a
+        // partial answer that ran out of its shared budget keeps its own reason.
+        codes::LITERAL_OUTPUT_EXHAUSTED => fact(
+            Stage::Reply,
+            "literal_output_exhausted",
+            "ask for a shorter answer; the bounded Lead reply stopped at its output limit",
+        ),
         "subscription_limit_exceeded" => fact(
             Stage::Limits,
             "subscription_limits_exhausted",
@@ -103,6 +110,13 @@ fn conversation_refusal(error: &OxaError) -> RefusalFact {
             Stage::Reply,
             "invalid",
             "retry the chat turn; the reply did not meet the contract",
+        ),
+        // A citation the bounded input never offered is the reply's own failure:
+        // it stays a fixed reason, without any reply or input bytes.
+        "lead_evidence_invalid" => fact(
+            Stage::Reply,
+            "evidence_invalid",
+            "cite only the observations offered in the bounded input, each at most once",
         ),
         "lead_reply_incomplete" => fact(
             Stage::Reply,
@@ -143,6 +157,17 @@ fn conversation_refusal(error: &OxaError) -> RefusalFact {
             Stage::Provider,
             "rate_limited",
             "wait for the provider rate limit to reset",
+        ),
+        // Gateway admission refusals that are safe to name: fixed text only.
+        "cloud_provider_forbidden" => fact(
+            Stage::Provider,
+            "provider_forbidden",
+            "this subscription provider serves only the owner agent",
+        ),
+        "cloud_not_shared" => fact(
+            Stage::Provider,
+            "not_shared",
+            "cloud models are never served to shared guests",
         ),
         _ => fact(
             Stage::Provider,
@@ -651,7 +676,15 @@ mod tests {
                 "subscription_limits_exhausted",
             ),
             ("lead_reply_invalid", Stage::Reply, "invalid"),
+            ("lead_evidence_invalid", Stage::Reply, "evidence_invalid"),
             ("lead_reply_incomplete", Stage::Reply, "incomplete"),
+            ("cloud_provider_forbidden", Stage::Provider, "provider_forbidden"),
+            ("cloud_not_shared", Stage::Provider, "not_shared"),
+            (
+                codes::LITERAL_OUTPUT_EXHAUSTED,
+                Stage::Reply,
+                "literal_output_exhausted",
+            ),
             (codes::USAGE, Stage::Body, "message"),
             ("lead_owner_unavailable", Stage::Recheck, "binding"),
             (codes::BUSY, Stage::Busy, "session"),

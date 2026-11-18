@@ -1,14 +1,12 @@
 //! Worker registry: one JSON file per parent session under `<agent_dir>/workers/`, listing the
 //! background workers that session started. Writes are atomic (temp file + rename, mode 0600).
 //! A corrupt file is reported as an error and is never overwritten.
+use crate::status::atomic;
 use oxa_proto::OxaError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const CORRUPT: &str = "worker_registry_corrupt";
 const IO: &str = "worker_registry_io";
@@ -76,53 +74,31 @@ pub fn load(agent_dir: &Path, parent_id: &str) -> Result<Vec<WorkerRecord>, OxaE
     })
 }
 
-/// Replaces the workers recorded for `parent_id` atomically, with mode 0600.
+/// Replaces the workers recorded for `parent_id` atomically, with mode 0600. A registry that is
+/// already corrupt is refused, never replaced: its bytes are the only record of those workers.
 pub fn save(agent_dir: &Path, parent_id: &str, records: &[WorkerRecord]) -> Result<(), OxaError> {
     let path = file_path(agent_dir, parent_id)?;
+    load(agent_dir, parent_id)?;
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| io_err("cannot create worker registry directory", e))?;
     }
     let bytes = serde_json::to_vec_pretty(records)
         .map_err(|e| OxaError::new(IO, format!("cannot encode worker registry: {e}")))?;
-    write_atomic(&path, &bytes).map_err(|e| io_err("cannot write worker registry", e))
+    atomic(&path, &bytes).map_err(|e| io_err("cannot write worker registry", e))
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("registry file has no directory"))?;
-    for _ in 0..8 {
-        let tmp = parent.join(format!(
-            ".workers-{}-{}.tmp",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-        {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(e) => return Err(e),
-        };
-        let result = file
-            .write_all(bytes)
-            .and_then(|_| file.sync_data())
-            .and_then(|_| fs::rename(&tmp, path));
-        if result.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        return result;
-    }
-    Err(std::io::Error::other("cannot reserve a registry temporary file"))
+/// Whether a status snapshot was written by this worker: the same session and the same process.
+/// The status writer emits both fields; a snapshot without them, or with others, is not ours.
+fn names_worker(rec: &WorkerRecord, status: &Value) -> bool {
+    status.get("session_id").and_then(Value::as_str) == Some(rec.session_id.as_str())
+        && status.get("pid").and_then(Value::as_u64) == Some(u64::from(rec.pid))
 }
 
 /// The worker's state from its status.json (if any) and whether its process is alive.
-/// A finished outcome wins; then a stop request; then liveness; then the reported phase.
+/// A snapshot that does not name this worker is ignored. A finished outcome wins; then a stop
+/// request; then liveness; then the reported phase.
 pub fn state(rec: &WorkerRecord, status_json: Option<&Value>, alive: bool) -> WorkerState {
+    let status_json = status_json.filter(|s| names_worker(rec, s));
     let phase = status_json.and_then(|s| s.get("phase")).and_then(Value::as_str);
     let outcome = status_json
         .and_then(|s| s.get("outcome"))
@@ -142,7 +118,8 @@ pub fn state(rec: &WorkerRecord, status_json: Option<&Value>, alive: bool) -> Wo
     }
     match phase {
         Some("idle") => WorkerState::Idle,
-        Some("working" | "tool" | "closing") => WorkerState::Working,
+        // "model", "prefill" and "compaction" are the phases of an in-flight model request.
+        Some("working" | "tool" | "closing" | "model" | "prefill" | "compaction") => WorkerState::Working,
         // No status yet, or a phase this build does not know: the worker is still starting up.
         _ => WorkerState::Starting,
     }
@@ -171,6 +148,14 @@ mod tests {
             started_ms: 1_700_000_000_000,
             stopped: false,
         }
+    }
+
+    /// A status body as the status writer emits it for `rec`'s own worker (session and process).
+    fn own(rec: &WorkerRecord, body: Value) -> Option<Value> {
+        let mut status = body;
+        status["session_id"] = json!(rec.session_id);
+        status["pid"] = json!(rec.pid);
+        Some(status)
     }
 
     fn scratch(tag: &str) -> PathBuf {
@@ -216,21 +201,31 @@ mod tests {
         let cases: Vec<(&WorkerRecord, Option<Value>, bool, WorkerState)> = vec![
             (&live, None, true, Starting),
             (&live, None, false, Dead),
-            (&live, Some(json!({"phase":"idle","outcome":null})), true, Idle),
-            (&live, Some(working.clone()), true, Working),
-            (&live, Some(json!({"phase":"tool","outcome":null})), true, Working),
             (
                 &live,
-                Some(json!({"phase":"closing","outcome":null})),
+                own(&live, json!({"phase":"idle","outcome":null})),
+                true,
+                Idle,
+            ),
+            (&live, own(&live, working.clone()), true, Working),
+            (
+                &live,
+                own(&live, json!({"phase":"tool","outcome":null})),
                 true,
                 Working,
             ),
-            (&live, Some(working.clone()), false, Dead),
-            (&live, Some(done.clone()), false, Finished("done".into())),
-            (&live, Some(failed), true, Finished("failed".into())),
-            (&stopped, Some(working), true, Stopped),
+            (
+                &live,
+                own(&live, json!({"phase":"closing","outcome":null})),
+                true,
+                Working,
+            ),
+            (&live, own(&live, working.clone()), false, Dead),
+            (&live, own(&live, done.clone()), false, Finished("done".into())),
+            (&live, own(&live, failed), true, Finished("failed".into())),
+            (&stopped, own(&stopped, working), true, Stopped),
             (&stopped, None, false, Stopped),
-            (&stopped, Some(done), false, Finished("done".into())),
+            (&stopped, own(&stopped, done), false, Finished("done".into())),
         ];
         for (rec, status, alive, want) in cases {
             assert_eq!(
@@ -243,15 +238,51 @@ mod tests {
     }
 
     #[test]
+    fn state_ignores_status_from_another_worker() {
+        let live = rec("live");
+        let done = json!({"phase":"finished","outcome":{"type":"oxa_result","outcome":"done","error_class":null,"exit_code":0}});
+        let mine = own(&live, done.clone());
+        let mut other_session = own(&live, done.clone()).unwrap();
+        other_session["session_id"] = json!("someone-else-sid");
+        let mut other_pid = own(&live, done.clone()).unwrap();
+        other_pid["pid"] = json!(7);
+        let unnamed = Some(done);
+        // The worker's own terminal snapshot is its outcome.
+        assert_eq!(state(&live, mine.as_ref(), false), Finished("done".into()));
+        // A stale or reused status path names another session or process: it says nothing here.
+        assert_eq!(state(&live, Some(&other_session), false), Dead);
+        assert_eq!(state(&live, Some(&other_session), true), Starting);
+        assert_eq!(state(&live, Some(&other_pid), false), Dead);
+        assert_eq!(state(&live, unnamed.as_ref(), false), Dead);
+    }
+
+    #[test]
+    fn active_request_phases_are_working() {
+        let live = rec("live");
+        for phase in ["model", "prefill", "compaction"] {
+            let status = own(&live, json!({"phase":phase,"outcome":null}));
+            assert_eq!(state(&live, status.as_ref(), true), Working, "phase={phase}");
+        }
+    }
+
+    #[test]
     fn corrupt_registry_is_reported_not_overwritten() {
         let dir = scratch("corrupt");
         fs::create_dir_all(dir.join("workers")).unwrap();
         let path = dir.join("workers").join("parent-2.json");
-        fs::write(&path, b"{\"not\": a registry").unwrap();
+        let original: &[u8] = b"{\"not\": a registry";
+        fs::write(&path, original).unwrap();
         let err = load(&dir, "parent-2").unwrap_err();
         assert_eq!(err.code, CORRUPT);
-        // Nothing rewrites the bad file: its bytes are still the original.
-        assert_eq!(fs::read(&path).unwrap(), b"{\"not\": a registry");
+        // A save over the corrupt registry is refused too, with the bytes and directory untouched.
+        let err = save(&dir, "parent-2", &[rec("a")]).unwrap_err();
+        assert_eq!(err.code, CORRUPT);
+        assert_eq!(fs::read(&path).unwrap(), original);
+        let names: Vec<String> = fs::read_dir(dir.join("workers"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(names, vec!["parent-2.json".to_string()]);
         let _ = fs::remove_dir_all(&dir);
     }
 }
