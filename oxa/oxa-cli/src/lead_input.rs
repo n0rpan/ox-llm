@@ -135,6 +135,63 @@ mod tests {
     }
 
     #[test]
+    fn publication_rows_do_not_refresh_or_hide_reader_samples() {
+        let env = TestEnv::new();
+        let reader = br#"{"schema_version":1,"observed_at":20,"board":{"observed_at":20,"entries":[]},"app_quota":{"core":{"limit":5000,"remaining":123,"resets_at":600}}}
+"#;
+        let publications = br#"{"schema_version":1,"observed_at":30,"board":{"observed_at":30,"entries":[]},"landing_publication":{"step":"delivered"}}
+"#;
+        let (path, uid) = fixture(&env, &[reader.as_slice(), publications.as_slice()].concat());
+        let (board, quota) = board_and_app_quota(&path, uid).unwrap();
+        assert_eq!(board.observed_at, 20);
+        assert_eq!(quota.unwrap().core.unwrap().remaining, 123);
+
+        let without_quota = br#"{"schema_version":1,"observed_at":25,"board":{"observed_at":25,"entries":[]}}
+"#;
+        fs::write(
+            &path,
+            &[
+                reader.as_slice(),
+                without_quota.as_slice(),
+                publications.as_slice(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let (board, quota) = board_and_app_quota(&path, uid).unwrap();
+        assert_eq!(board.observed_at, 25);
+        assert!(quota.is_none());
+
+        fs::write(&path, publications).unwrap();
+        assert_eq!(
+            board_and_app_quota(&path, uid).err(),
+            Some("no Reader board sample")
+        );
+
+        let padded_publication = format!(
+            "{}\n",
+            serde_json::json!({
+                "schema_version": 1,
+                "observed_at": 40,
+                "board": {"observed_at": 40, "entries": []},
+                "landing_publication": {"step": "delivered"},
+                "padding": "x".repeat(MAX_LEAD_SAMPLE_BYTES as usize * 3 / 5),
+            })
+        );
+        fs::write(
+            &path,
+            &[
+                reader.as_slice(),
+                padded_publication.as_bytes(),
+                padded_publication.as_bytes(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert!(board_and_app_quota(&path, uid).is_err());
+    }
+
+    #[test]
     fn reads_a_full_paginated_shadow_board() {
         use oxa_work::board::Entry;
 
