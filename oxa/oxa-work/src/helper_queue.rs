@@ -134,11 +134,7 @@ pub fn publish_reserved(
 /// Take the admitted packet into the existing started directory. The native name
 /// keeps retries distinguishable from packets already started by another consumer.
 pub fn take_native_packet(queue: &Path, binding: &crate::board::NativeBinding) -> Result<String> {
-    if crate::board::NativeBinding::new(binding.number, &binding.key, &binding.lease, &binding.branch)?
-        != *binding
-    {
-        return Err("invalid native queue binding".into());
-    }
+    binding.validate()?;
     directory(queue)?;
     let started = queue.join("started");
     directory(&started)?;

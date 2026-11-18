@@ -645,6 +645,7 @@ mod tests {
             model: "fake".into(),
             prompt: "Synthetic task".into(),
             max_time: 2700,
+            reviewed_pull_request: None,
         };
         assert!(tree::prepare(
             &fixture.source,

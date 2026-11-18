@@ -292,6 +292,7 @@ mod tests {
             model: "fake".into(),
             prompt: "Synthetic task".into(),
             max_time: crate::default_max_time(),
+            reviewed_pull_request: None,
         };
         let record = crate::blocked_record(&task, String::new());
         State::new(task, record, false)

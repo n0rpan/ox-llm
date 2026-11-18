@@ -34,21 +34,47 @@ query($owner: String!, $repo: String!, $number: Int!) {
 }"#;
 
 fn oid(value: &str) -> bool {
-    value.len() == 40
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    value.len() == 40 && crate::board::queue::is_object_id(value)
+}
+
+/// The pull request reviewed before an attempt was admitted.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewedPullRequest {
+    pub number: u64,
+    pub head: String,
 }
 
 impl Task {
-    pub(crate) fn reviewed_head(&self) -> Option<&str> {
+    pub(crate) fn reviewed_source(&self) -> Option<(u64, &str)> {
         if !self.prompt.starts_with(GITHUB_RUNNER_LEAD) {
             return None;
         }
-        let (number, head) = self.id.strip_prefix("pr-")?.split_once('-')?;
-        number.parse::<u64>().ok().filter(|n| *n > 0)?;
-        oid(head).then_some(head)
+        let legacy = self.id.strip_prefix("pr-").and_then(|id| {
+            let (number, head) = id.split_once('-')?;
+            let number = number.parse::<u64>().ok()?;
+            (number != 0 && oid(head)).then_some((number, head))
+        });
+        if let Some(source) = &self.reviewed_pull_request {
+            let reviewed = (source.number, source.head.as_str());
+            if source.number == 0
+                || !crate::board::queue::is_object_id(&source.head)
+                || (self.id.starts_with("pr-") && legacy != Some(reviewed))
+            {
+                return None;
+            }
+            return Some(reviewed);
+        }
+        legacy
     }
+
+    pub(crate) fn reviewed_head(&self) -> Option<&str> {
+        self.reviewed_source().map(|(_, head)| head)
+    }
+}
+
+pub(crate) fn reviewed_base(repo: &Path, policy: &RunPolicy, head: &str) -> Result<String> {
+    checked(git(policy, repo, &["merge-base", "refs/heads/main", head]))
 }
 
 pub fn pull_request_task(
@@ -101,7 +127,7 @@ pub fn pull_request_task(
     }
     // Capture acceptance from the trusted local main lineage. The branch can
     // be behind main without changing the reviewed tree before the worker runs.
-    let base = checked(git(policy, repo, &["merge-base", "refs/heads/main", head]))?;
+    let base = reviewed_base(repo, policy, head)?;
     let mut prompt = github_runner_guidance("pull request");
     prompt.push_str(&pull_request_prompt(number, head, pr)?);
     Ok(Task {
@@ -111,6 +137,7 @@ pub fn pull_request_task(
         base,
         prompt,
         max_time: default_max_time(),
+        reviewed_pull_request: None,
     })
 }
 
@@ -253,6 +280,29 @@ mod tests {
     use serde_json::json;
 
     const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[test]
+    fn explicit_reviewed_source_accepts_full_sha256_without_extending_legacy_ids() {
+        let head = "a".repeat(64);
+        let mut task = Task {
+            id: "board-fixture-1-1".into(),
+            model: "fixture".into(),
+            branch: "agent/fixture".into(),
+            base: "main".into(),
+            prompt: github_runner_guidance("pull request"),
+            max_time: default_max_time(),
+            reviewed_pull_request: Some(ReviewedPullRequest {
+                number: 1,
+                head: head.clone(),
+            }),
+        };
+        assert_eq!(task.reviewed_source(), Some((1, head.as_str())));
+        task.id = format!("pr-1-{head}");
+        assert_eq!(task.reviewed_source(), None);
+        task.id = format!("pr-1-{HEAD}");
+        task.reviewed_pull_request = None;
+        assert_eq!(task.reviewed_source(), Some((1, HEAD)));
+    }
 
     fn packet() -> Value {
         json!({

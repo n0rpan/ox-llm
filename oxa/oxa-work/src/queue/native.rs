@@ -1,5 +1,7 @@
 //! The native queue consumes the original claim receipt and settles after joining the worker.
-use super::super::{board, load_task_checkpoint, validate, CheckpointKind, LockedTask, Outcome, Step};
+use super::super::{
+    board, load_task_checkpoint, validate, CheckpointKind, LockedTask, Outcome, ReviewedPullRequest, Step,
+};
 use super::{Record, Result, RunPolicy, Task};
 
 /// Supplied by the trusted queue caller after authenticating its worker.
@@ -10,11 +12,15 @@ pub struct NativeQueueOwner<'a> {
 
 /// Materialize a prepared task with the canonical attempt identity and existing branch.
 pub fn native_task(binding: &board::NativeBinding, mut task: Task) -> Result<Task> {
-    let canonical = board::NativeBinding::new(binding.number, &binding.key, &binding.lease, &binding.branch)?;
-    if binding != &canonical || task.branch != binding.branch {
+    binding.validate()?;
+    if task.branch != binding.branch {
         return Err("prepared task does not own the bound native attempt".into());
     }
     task.id.clone_from(&binding.native_task_id);
+    task.reviewed_pull_request = binding.reviewed_head.as_ref().map(|head| ReviewedPullRequest {
+        number: binding.number,
+        head: head.clone(),
+    });
     if !task.runner_owns_github() {
         let kind = if task.base == task.branch {
             "pull request"
@@ -46,6 +52,9 @@ pub(super) fn from_packet(binding: &board::NativeBinding, packet: &str) -> Resul
     {
         return Err("native task packet disagrees with its bound source".into());
     }
+    if change != binding.reviewed_head.is_some() {
+        return Err("native packet kind disagrees with its retained reviewed head".into());
+    }
     native_task(
         binding,
         Task {
@@ -55,6 +64,7 @@ pub(super) fn from_packet(binding: &board::NativeBinding, packet: &str) -> Resul
             base: base.into(),
             prompt: body.into(),
             max_time: crate::default_max_time(),
+            reviewed_pull_request: None,
         },
     )
 }
@@ -67,6 +77,13 @@ impl NativeQueueOwner<'_> {
             .ok_or("native task has no retained admission binding")?;
         if self.worker_id != binding.lease.holder || !task.runner_owns_github() {
             return Err("native task lacks the authenticated worker or runner-owned GitHub policy".into());
+        }
+        let reviewed = binding
+            .reviewed_head
+            .as_deref()
+            .map(|head| (binding.number, head));
+        if task.reviewed_source() != reviewed {
+            return Err("native task reviewed source disagrees with the original admission".into());
         }
         let assignment = self.claims.assignments()?;
         if !assignment.get(&binding.number).is_some_and(|row| {
@@ -155,7 +172,7 @@ mod tests {
         Arc,
     };
 
-    fn setup() -> (PrivateDir, Claims, board::NativeBinding, Task, RunPolicy) {
+    fn setup(reviewed: Option<&str>) -> (PrivateDir, Claims, board::NativeBinding, Task, RunPolicy) {
         let directory = PrivateDir::new("native-completion");
         let claims = Claims::open(directory.path()).unwrap();
         claims
@@ -199,7 +216,13 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        let binding = board::NativeBinding::new(1, &"a".repeat(64), &lease, "agent/fixture").unwrap();
+        let key = "a".repeat(64);
+        let branch = "agent/fixture";
+        let binding = match reviewed {
+            Some(head) => board::NativeBinding::new_reviewed(1, &key, &lease, branch, head),
+            None => board::NativeBinding::new(1, &key, &lease, branch),
+        }
+        .unwrap();
         assert!(claims.bind_native(&worker.id, &binding).unwrap());
         let prepared = Task {
             id: "c1".into(),
@@ -208,6 +231,7 @@ mod tests {
             base: "main".into(),
             prompt: "Synthetic task".into(),
             max_time: 30,
+            reviewed_pull_request: None,
         };
         let policy = RunPolicy {
             git_binary: "/usr/bin/git".into(),
@@ -221,8 +245,46 @@ mod tests {
     }
 
     #[test]
+    fn change_packet_without_a_reviewed_head_is_refused() {
+        let (_directory, _claims, binding, prepared, _policy) = setup(None);
+        let packet = format!(
+            "c{} {} {} {}\nSynthetic change packet.\n",
+            binding.number, prepared.model, binding.branch, binding.branch,
+        );
+        let error = match from_packet(&binding, &packet) {
+            Err(error) => error,
+            Ok(_) => panic!("change packet was admitted without an authoritative reviewed head"),
+        };
+        assert!(error.contains("reviewed head"), "{error}");
+    }
+
+    #[test]
+    fn retained_reviewed_binding_fences_common_admission() {
+        let head = "b".repeat(40);
+        let (_directory, claims, binding, prepared, _policy) = setup(Some(&head));
+        let packet = format!(
+            "c{} {} {} {}\nSynthetic change packet.\n",
+            binding.number, prepared.model, binding.branch, binding.branch,
+        );
+        let task = from_packet(&binding, &packet).unwrap();
+        assert_eq!(task.id, binding.native_task_id);
+        assert_eq!(task.reviewed_source(), Some((binding.number, head.as_str())));
+        let owner = NativeQueueOwner {
+            claims: &claims,
+            worker_id: &binding.lease.holder,
+        };
+        assert!(owner.admit(&task).unwrap() == binding);
+
+        let mut different = task.clone();
+        different.reviewed_pull_request.as_mut().unwrap().head = "c".repeat(40);
+        assert!(owner.admit(&different).is_err());
+        different.reviewed_pull_request = None;
+        assert!(owner.admit(&different).is_err());
+    }
+
+    #[test]
     fn only_the_exact_durable_whole_task_after_lock_release_settles_the_original_claim() {
-        let (_directory, claims, binding, prepared, policy) = setup();
+        let (_directory, claims, binding, prepared, policy) = setup(None);
         let owner = NativeQueueOwner {
             claims: &claims,
             worker_id: &binding.lease.holder,
@@ -271,7 +333,7 @@ mod tests {
 
     #[test]
     fn native_queue_dispatches_one_canonical_attempt_and_settles_before_the_event() {
-        let (directory, claims, binding, prepared, policy) = setup();
+        let (directory, claims, binding, prepared, policy) = setup(None);
         let owner = NativeQueueOwner {
             claims: &claims,
             worker_id: &binding.lease.holder,

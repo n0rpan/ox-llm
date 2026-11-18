@@ -44,7 +44,7 @@ pub mod events;
 mod facts_io;
 pub use facts_io::require_private_directory;
 mod github;
-pub use github::pull_request_task;
+pub use github::{pull_request_task, ReviewedPullRequest};
 pub mod incidents;
 pub mod situation;
 pub mod standing;
@@ -60,6 +60,9 @@ pub struct Task {
     pub prompt: String,
     #[serde(default = "default_max_time")]
     pub max_time: u64,
+    /// Reviewed source for attempts whose execution IDs use a different namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_pull_request: Option<ReviewedPullRequest>,
 }
 fn default_max_time() -> u64 {
     45 * 60
@@ -156,23 +159,28 @@ fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> R
     if branch != task.branch {
         return Err("branch aliases are not allowed; provide a literal branch name".into());
     }
-    let base_sha = checked(git(
-        policy,
-        repo,
-        &["rev-parse", "--verify", &format!("{}^{{commit}}", task.base)],
-    ))?;
+    let (base_sha, base_alias) = if let Some(head) = task.reviewed_head().filter(|_| native) {
+        (github::reviewed_base(repo, policy, head)?, None)
+    } else {
+        let base_sha = checked(git(
+            policy,
+            repo,
+            &["rev-parse", "--verify", &format!("{}^{{commit}}", task.base)],
+        ))?;
+        let base_ref = checked(git(
+            policy,
+            repo,
+            &["rev-parse", "--symbolic-full-name", &task.base],
+        ))?;
+        if base_ref == format!("refs/heads/{}", task.branch)
+            || base_ref == format!("refs/remotes/origin/{}", task.branch)
+        {
+            return Err("task branch must differ from its base branch".into());
+        }
+        let alias = tree::base_alias(policy, repo, &task.base, &base_sha)?;
+        (base_sha, alias)
+    };
     let commands = done_commands(policy, repo, &base_sha)?;
-    let base_ref = checked(git(
-        policy,
-        repo,
-        &["rev-parse", "--symbolic-full-name", &task.base],
-    ))?;
-    let local_branch = base_ref == format!("refs/heads/{}", task.branch);
-    let remote_branch = base_ref == format!("refs/remotes/origin/{}", task.branch);
-    if (local_branch && !native) || remote_branch {
-        return Err("task branch must differ from its base branch".into());
-    }
-    let base_alias = tree::base_alias(policy, repo, &task.base, &base_sha)?;
     Ok(PlannedTask {
         task,
         base_sha,
@@ -573,6 +581,9 @@ fn valid_task_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
 }
 fn validate(task: &Task) -> Result<()> {
+    if task.reviewed_pull_request.is_some() && task.reviewed_source().is_none() {
+        return Err("invalid reviewed pull request source".into());
+    }
     if !valid_task_id(&task.id) {
         return Err("task id must contain 1..128 letters, digits, - or _".into());
     }
@@ -631,6 +642,7 @@ pub fn issue_task(
         base: default_base(),
         prompt: issue_prompt(number, &issue)?,
         max_time: default_max_time(),
+        reviewed_pull_request: None,
     })
 }
 
