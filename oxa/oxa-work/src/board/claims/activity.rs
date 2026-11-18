@@ -71,14 +71,15 @@ impl Assignment {
         if now < last / 1000 {
             return Err("item action clock moved backwards".into());
         }
-        if let Some(wait) = &self.data.dependency {
-            return Ok(now >= wait.deadline);
-        }
         let deadline = silence
             .checked_mul(1000)
             .and_then(|timeout| last.checked_add(timeout))
             .ok_or("silence deadline overflow")?;
-        Ok(now.checked_mul(1000).ok_or("item action clock overflow")? >= deadline)
+        let now_ms = now.checked_mul(1000).ok_or("item action clock overflow")?;
+        if let Some(wait) = &self.data.dependency {
+            return Ok(now >= wait.deadline);
+        }
+        Ok(now_ms >= deadline)
     }
 }
 
