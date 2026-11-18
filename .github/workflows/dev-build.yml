@@ -6,7 +6,7 @@ permissions:
   contents: read
 concurrency:
   group: dev-build
-  cancel-in-progress: true
+  cancel-in-progress: false
 defaults:
   run:
     shell: bash
