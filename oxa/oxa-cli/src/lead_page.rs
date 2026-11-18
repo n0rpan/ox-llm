@@ -515,6 +515,93 @@ mod tests {
     }
 
     #[test]
+    fn missing_sections_explain_the_observation_gap_without_inventing_a_cause() {
+        for (page, explanations) in [
+            (
+                Page::Home,
+                vec![
+                    "No board observation reached this page",
+                    "No runner observation reached this page",
+                    "No queue observation reached this page",
+                    "No release issue and checklist were supplied",
+                ],
+            ),
+            (Page::Board, vec!["No board observation reached this page"]),
+            (Page::Workers, vec!["No runner observation reached this page"]),
+            (Page::Asks, vec!["No runner observation reached this page"]),
+            (Page::Item(17), vec!["No board observation reached this page"]),
+            (
+                Page::Usage,
+                vec![
+                    "No selected-task usage observation reached this page",
+                    "No GitHub quota observation reached this page",
+                    "No model plan observation reached this page",
+                ],
+            ),
+            (
+                Page::Chat(Prompt::Status),
+                vec!["This question needs a board observation"],
+            ),
+            (
+                Page::Chat(Prompt::Workers),
+                vec!["This question needs a runner observation"],
+            ),
+            (
+                Page::Chat(Prompt::Attention),
+                vec!["This question needs a runner observation"],
+            ),
+        ] {
+            let html = document_for(page, &View::default(), 100);
+            for explanation in explanations {
+                assert!(html.contains(explanation), "{page:?}: {explanation}");
+            }
+            for invented in ["Sign in again", "not configured", "Permission denied"] {
+                assert!(!html.contains(invented), "{page:?}");
+            }
+        }
+        let failed = Err("private-error-marker".into());
+        let failed_page = usage_page(Some(&failed));
+        assert!(failed_page.contains("The selected task usage could not be read"));
+        assert!(!failed_page.contains("private-error-marker"));
+        assert!(!failed_page.contains("No selected-task usage observation reached this page"));
+        let absent = usage_page(Some(&Ok(None)));
+        assert!(absent.contains("No saved checkpoint for the selected task"));
+        assert!(!absent.contains("could not be read"));
+
+        let board = Board::default();
+        let situation = observed_asks();
+        let queue = [];
+        let empty = View {
+            board: Some(&board),
+            situation: Some(&situation),
+            queue: Some(&queue),
+            ..Default::default()
+        };
+        let home = document_for(Page::Home, &empty, 100);
+        assert!(home.contains("No open PRs in this snapshot"));
+        assert!(home.contains("Queue empty at observation"));
+        assert!(!home.contains("No board observation reached this page"));
+        assert!(!home.contains("No runner observation reached this page"));
+        let missing_item = document_for(Page::Item(17), &empty, 100);
+        assert!(missing_item.contains("The board observation does not include this item"));
+        let quotas = crate::lead_quota::GitHubQuotas::default();
+        let model = oxc_gateway::status::chatgpt_usage::parse(&serde_json::json!({}));
+        let usage = document_for(
+            Page::Usage,
+            &View {
+                github_quotas: Some(&quotas),
+                model_plan: Some(&model),
+                ..Default::default()
+            },
+            100,
+        );
+        assert!(usage.contains("No valid current quota window was reported"));
+        assert!(usage.contains("No valid model plan was reported"));
+        assert!(usage.contains("No valid current model window was reported"));
+        assert!(!usage.contains("<meter "));
+    }
+
+    #[test]
     fn navigation_has_real_urls_one_current_destination_and_observed_ask_counts() {
         let mut snapshot = observed_asks();
         for (page, selected) in [
