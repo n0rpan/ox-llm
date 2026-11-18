@@ -389,7 +389,7 @@ fn gate_refuses_a_reentrant_request() {
 
 /// L1: with `oxa.liveSettings` on, a settings edit made after the session opened is applied by
 /// a queued run (`run_queued`), which does not pass through `run_from_wire`; with the setting
-/// off (the default) the edit waits for `/reload`.
+/// off (opt-out, `false`) the edit waits for `/reload`.
 #[test]
 fn queued_run_applies_changed_settings_only_when_live_settings_is_on() {
     for (live, expect) in [(true, "light-theme"), (false, "dark")] {

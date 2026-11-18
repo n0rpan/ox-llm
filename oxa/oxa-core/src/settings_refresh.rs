@@ -1,8 +1,8 @@
 //! L1: a changed settings file reaches the session at the start of its next run, without
 //! `/reload`.
 //!
-//! Off until `oxa.liveSettings` is set (read from the settings the session holds). The check
-//! is one `stat` per file (user, project) compared with the values seen last
+//! On by default; `oxa.liveSettings: false` turns it off (read from the session settings).
+//! The check is one `stat` per file (user, project) compared with the values seen last
 //! (mtime, size, inode). While they match, nothing is read or parsed. On a change the files
 //! are parsed once and the result replaces `st.settings` (the path `/reload` uses for
 //! settings, without resources, hook reload or hook events). A file that no longer parses
@@ -157,9 +157,9 @@ fn changed_keys(old: &Settings, new: &Settings) -> Vec<String> {
     keys
 }
 
-/// `oxa.liveSettings`: off by default.
+/// `oxa.liveSettings`: on by default (owner decision); `false` opts out.
 pub(crate) fn enabled(s: &Settings) -> bool {
-    s.bool("oxa.liveSettings", false)
+    s.bool("oxa.liveSettings", true)
 }
 
 /// Whether a changed key moves the budget policy (`refresh_budget`): the `compaction.*` keys
@@ -316,10 +316,10 @@ mod tests {
     }
 
     #[test]
-    fn live_settings_are_off_by_default() {
-        assert!(!enabled(&Settings::from_values(Value::Null, Value::Null)));
-        let on = Settings::from_values(serde_json::json!({"oxa": {"liveSettings": true}}), Value::Null);
-        assert!(enabled(&on));
+    fn live_settings_are_on_by_default_and_can_opt_out() {
+        assert!(enabled(&Settings::from_values(Value::Null, Value::Null)));
+        let off = Settings::from_values(serde_json::json!({"oxa": {"liveSettings": false}}), Value::Null);
+        assert!(!enabled(&off));
     }
 
     #[test]
