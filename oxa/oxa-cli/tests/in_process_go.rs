@@ -3,6 +3,8 @@
 #[allow(dead_code, unexpected_cfgs)] // Shared gateway mock; CLI exercises JSON, not feature-gated form auth.
 #[path = "../../oxc-gateway/tests/common/openai.rs"]
 mod upstream;
+#[path = "common/work_repo.rs"]
+mod work_repo;
 use oxa_fake::TestEnv;
 use serde_json::{json, Value};
 use std::{
@@ -136,6 +138,44 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
         assert_eq!(row["settled"], "usage");
     }
     assert_eq!(mock.requests().len(), 1 + 2 * patterns.len());
+    mock.assert_healthy();
+}
+
+#[test]
+fn taskfile_model_does_not_authorize_keyed_go() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    work_repo::setup(&env, "[]");
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+    env.write(
+        "work/tasks.json",
+        &json!([{"id":"test","branch":"agent/test","model":MODEL,"prompt":"Synthetic work task"}])
+            .to_string(),
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .args(["work", "../tasks.json"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let record: Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|_| panic!("missing work record: {}", String::from_utf8_lossy(&output.stderr)));
+    assert!(record["worker"].is_object(), "{record}");
+    assert!(!output.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
     mock.assert_healthy();
 }
 
