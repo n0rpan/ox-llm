@@ -25,6 +25,36 @@ pub(crate) fn directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn valid_key(key: &str) -> bool {
+    key.len() == 64
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+fn queue_lock(queue: &Path) -> Result<File> {
+    directory(queue)?;
+    let lock = io(File::open(queue))?;
+    io(lock.lock())?;
+    Ok(lock)
+}
+
+/// Check whether this key already has a pending or started packet without
+/// creating any entries. Publication rechecks under its own spool lock.
+pub fn is_published(queue: &Path, key: &str) -> Result<bool> {
+    if !valid_key(key) {
+        return Err("invalid board queue identity".into());
+    }
+    let _lock = queue_lock(queue)?;
+    let started = queue.join("started");
+    match fs::symlink_metadata(&started) {
+        Ok(_) => directory(&started)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return io(Err(error)),
+    }
+    is_published_locked(queue, &started, key)
+}
+
 /// `key` is the lowercase SHA-256 identity of repository, PR, head and action.
 /// The consumer atomically moves ready files into `started` and retains them there.
 /// No GitHub client, worker execution or parallel lease storage exists in this publisher.
@@ -50,10 +80,7 @@ pub fn publish_reserved(
         .split_once('\n')
         .ok_or("queue task needs a header and packet")?;
     let fields: Vec<_> = header.split_ascii_whitespace().collect();
-    if key.len() != 64
-        || !key
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    if !valid_key(key)
         || task.len() > MAX_TASK_BYTES
         || task.contains('\0')
         || body.trim().is_empty()
@@ -63,9 +90,7 @@ pub fn publish_reserved(
     {
         return Err("invalid board queue identity or bounded task packet".into());
     }
-    directory(queue)?;
-    let lock = io(File::open(queue))?;
-    io(lock.lock())?;
+    let lock = queue_lock(queue)?;
     let started = queue.join("started");
     match fs::DirBuilder::new().mode(0o700).create(&started) {
         Ok(()) => (),
@@ -73,32 +98,7 @@ pub fn publish_reserved(
         Err(e) => return io(Err(e)),
     }
     directory(&started)?;
-    for prefix in ["board-", "p1-board-"] {
-        let name = format!("{prefix}{key}.txt");
-        // Check pending before started: the consumer's one-way rename cannot hide both.
-        for path in [queue.join(&name), started.join(&name)] {
-            match fs::symlink_metadata(path) {
-                Ok(metadata) => {
-                    if !metadata.is_file() || metadata.mode() & 0o077 != 0 {
-                        return Err("unsafe existing board queue item".into());
-                    }
-                    return Ok(false);
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                Err(e) => return io(Err(e)),
-            }
-        }
-        let native = started.join(format!("native-{prefix}{key}"));
-        match fs::symlink_metadata(&native) {
-            Ok(_) => {
-                directory(&native)?;
-                return Ok(false);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return io(Err(error)),
-        }
-    }
-    if !reserve()? {
+    if is_published_locked(queue, &started, key)? || !reserve()? {
         return Ok(false);
     }
     let prefix = if pinned { "p1-board-" } else { "board-" };
@@ -110,6 +110,35 @@ pub fn publish_reserved(
     )
     .map_err(|error| format!("board queue storage: {error}"))?;
     Ok(true)
+}
+
+fn is_published_locked(queue: &Path, started: &Path, key: &str) -> Result<bool> {
+    for prefix in ["board-", "p1-board-"] {
+        let name = format!("{prefix}{key}.txt");
+        // Check pending before started: the consumer's one-way rename cannot hide both.
+        for path in [queue.join(&name), started.join(&name)] {
+            match fs::symlink_metadata(path) {
+                Ok(metadata) => {
+                    if !metadata.is_file() || metadata.mode() & 0o077 != 0 {
+                        return Err("unsafe existing board queue item".into());
+                    }
+                    return Ok(true);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                Err(e) => return io(Err(e)),
+            }
+        }
+        let native = started.join(format!("native-{prefix}{key}"));
+        match fs::symlink_metadata(&native) {
+            Ok(_) => {
+                directory(&native)?;
+                return Ok(true);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return io(Err(error)),
+        }
+    }
+    Ok(false)
 }
 
 /// Take the admitted packet into the existing started directory. The native name
