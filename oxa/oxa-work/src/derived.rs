@@ -327,7 +327,8 @@ fn parse_manifest(text: &str) -> Manifest {
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix('[') {
-            section = rest.split(']').next().unwrap_or(rest).trim().to_owned();
+            let table = rest.split(']').next().unwrap_or(rest).trim();
+            section = unquote(table).unwrap_or(table).to_owned();
             if section == "workspace" || section.starts_with("workspace.") {
                 out.workspace = true;
             }
@@ -335,8 +336,11 @@ fn parse_manifest(text: &str) -> Manifest {
         }
         if let Some((key, value)) = trimmed.split_once('=') {
             let (key, value) = (key.trim(), value.trim());
+            let key = unquote(key).unwrap_or(key);
             if section == "package" && out.package.is_none() && key == "name" {
-                out.package = unquote(value).filter(|name| valid_package_name(name));
+                out.package = unquote(value)
+                    .filter(|name| valid_package_name(name))
+                    .map(str::to_owned);
             }
             if section == "workspace" && matches!(key, "members" | "exclude") {
                 let exclude = key == "exclude";
@@ -424,11 +428,11 @@ fn valid_member_path(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != ".." && part != "." && part.trim() == part)
 }
 
-fn unquote(value: &str) -> Option<String> {
+fn unquote(value: &str) -> Option<&str> {
     let bytes = value.as_bytes();
     let quote = *bytes.first()?;
     if (quote == b'"' || quote == b'\'') && bytes.last() == Some(&quote) && bytes.len() >= 2 {
-        return Some(value[1..value.len() - 1].to_owned());
+        return Some(&value[1..value.len() - 1]);
     }
     None
 }
@@ -525,6 +529,8 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
     for path in paths {
         let name = path.rsplit('/').next().unwrap_or(path.as_str());
         let dir = parent_dir(path);
+        // A missing or unsupported package declaration cannot make a Rust edit verified.
+        selected.requires_hosted |= name.ends_with(".rs");
         if name == "Cargo.toml" || name == "Cargo.lock" {
             selected.requires_hosted = true;
             let manifest = manifests.at(root, dir)?;
@@ -640,7 +646,7 @@ fn entry_dir(in_dir: &str) -> &str {
 
 fn check_entry(in_dir: &str, command: &str, name: &str) -> String {
     format!(
-        "in {}: command -v cargo >/dev/null 2>&1 || exit 127\n{command} -p {name}",
+        "in {}: cargo --version >/dev/null || exit 127\n{command} -p {name}",
         entry_dir(in_dir)
     )
 }
@@ -1093,8 +1099,8 @@ members = ["crates/*", "tools/pinned"]
         assert_eq!(
             checks,
             [
-                "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo check -p one",
-                "in solo: command -v cargo >/dev/null 2>&1 || exit 127\ncargo check -p solo",
+                "in .: cargo --version >/dev/null || exit 127\ncargo check -p one",
+                "in solo: cargo --version >/dev/null || exit 127\ncargo check -p solo",
             ]
         );
     }

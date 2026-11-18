@@ -16,7 +16,7 @@ use std::{
 };
 use work::{git, run_args, run_observed, run_with_exit, setup, setup_with_files};
 
-const CHECK_ENTRY: &str = "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo check -p one";
+const CHECK_ENTRY: &str = "in .: cargo --version >/dev/null || exit 127\ncargo check -p one";
 
 /// The base fixture: a Cargo workspace with two committed member crates.
 fn crate_files() -> Vec<(&'static str, &'static str)> {
@@ -52,14 +52,16 @@ fn tools_with_cargo(env: &TestEnv, script: &str) -> PathBuf {
     tools
 }
 
-/// The recording, always-passing cargo: every invocation and its target directory.
+/// The recording, always-passing cargo: every compile check and its target directory.
 const RECORDING_CARGO: &str = "#!/bin/sh
+if [ \"$1\" = --version ]; then exit 0; fi
 printf '%s|target=%s\\n' \"$*\" \"$CARGO_TARGET_DIR\" >> \"$OXA_WORK_OUTPUT_DIR/calls\"
 exit 0
 ";
 
-/// A cargo that fails its very first invocation and passes afterwards.
+/// A cargo that passes discovery but fails its first compile check.
 const ONCE_FAILING_CARGO: &str = "#!/bin/sh
+if [ \"$1\" = --version ]; then exit 0; fi
 printf '%s\\n' \"$*\" >> \"$OXA_WORK_OUTPUT_DIR/calls\"
 if [ ! -f \"$OXA_WORK_OUTPUT_DIR/first\" ]; then
   touch \"$OXA_WORK_OUTPUT_DIR/first\"
