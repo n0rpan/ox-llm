@@ -131,7 +131,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     let mut source = Source::new(env, uid)?;
     if config.fixed_prompts() {
         source.form = Some(crate::lead_http::FixedForm {
-            csrf: oxa_mcp::oauth::pkce_pair(&oxa_mcp::oauth::random_bytes()?).0,
+            csrf: oxa_mcp::pkce_pair(&oxa_mcp::random_bytes()?).0,
             scheme: if config.mode() == Mode::Local {
                 "http"
             } else {
