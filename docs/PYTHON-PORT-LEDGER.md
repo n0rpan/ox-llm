@@ -12,7 +12,7 @@ PORTED means the named Rust implementation and its contract tests replace the fe
 | oxc/tools/memlat_boot.py — boot-menu/rollback command | PORTED | oxa/oxc-memlat/src/{main,menu,policy,image}.rs | oxa/oxc-memlat/tests/boot.rs ports all 19 Python cases. The actual Rust command replays 28 scenarios and 52 steps against tests/boot-oracle.json, captured with the same synthetic filesystem on both hosted architectures in [run 44196495976](https://github.com/oxstack/ox-llm/actions/runs/44196495976). Replay checks exit, stderr, selected stdout and pre/post ESP file names and bytes by digest. The old command remains subject to packaging, archive and caller gates. |
 | oxc/tests/test_memlat_boot.py — all19 synthetic boot cases | PORTED | oxa/oxc-memlat/tests/boot.rs | Explicit port declaration and matching19-case source inventory. No host boot actions. Keep the stronger actual-command differential coverage. |
 | oxc/src/oxc/runtime/cloud_prices.py — live public OpenRouter pricing metadata | MISSING | Existing native pricing.rs parses configured prices; that is not a refresh consumer. | Retained feature issue [#628](https://github.com/oxstack/ox-llm/issues/628). Preserve bounded replies, durable last-known data and no request-path fetch before deleting this module. |
-| oxc/src/oxc/runtime/lan_share.py — production owner share controls | MISSING | Native owner CLI and local serving in `oxa/oxa-cli/src/share_cmd.rs` and `oxa/oxc-gateway/src/share/native.rs` | [#1216](https://github.com/oxstack/ox-llm/pull/1216) and [#1235](https://github.com/oxstack/ox-llm/pull/1235) cover foreground serving of selected local aliases and bind restrictions in `oxa/oxa-cli/tests/share_keys.rs`. `oxa/oxc-gateway/tests/share_listener.rs` covers guest streaming, usage settlement and revocation. [#1237](https://github.com/oxstack/ox-llm/pull/1237) adds sharing the interactive owner’s native engine. `share_cmd.rs::owner_router_and_listener_use_the_same_local_engine` verifies shared engine ownership, and `share_keys.rs::owner_session_sharing_flags_refuse_noninteractive_and_agent_invocations` verifies owner entry gating. Full [#688](https://github.com/oxstack/ox-llm/issues/688) qualification still needs the owner-enabled cloud route and the remaining end-to-end tailnet and owner controls. |
+| oxc/src/oxc/runtime/lan_share.py — production owner share controls | MISSING | Native owner CLI and local serving in `oxa/oxa-cli/src/share_cmd.rs` and `oxa/oxc-gateway/src/share/native.rs` | [#1216](https://github.com/oxstack/ox-llm/pull/1216) and [#1235](https://github.com/oxstack/ox-llm/pull/1235) cover foreground serving of selected local aliases and bind restrictions in `oxa/oxa-cli/tests/share_keys.rs`. `oxa/oxc-gateway/tests/share_listener.rs` covers guest streaming, usage settlement and revocation. [#1237](https://github.com/oxstack/ox-llm/pull/1237) adds sharing the interactive owner’s native engine. `share_cmd.rs::owner_router_and_listener_use_the_same_local_engine` verifies shared engine ownership, and `share_keys.rs::owner_session_sharing_flags_refuse_noninteractive_and_agent_invocations` verifies owner entry gating. [#1255](https://github.com/oxstack/ox-llm/pull/1255) adds local guest accounting in the shared native adapter. `oxa/oxc-gateway/tests/ledger.rs::local_guest_records_usage_or_reservation_without_cloud_spend` covers measured and reserved outcomes, zero cloud spend and salted attribution. `tests/share_listener.rs::authenticated_native_bridge_streams_only_guest_text_and_settles_usage` checks the actual listener-to-ledger path. Full [#688](https://github.com/oxstack/ox-llm/issues/688) qualification still needs the owner-enabled cloud route and the remaining end-to-end tailnet and owner controls. |
 | oxc/src/oxc/cloud_install.py — Python-only installer/venv/controller daemon | DROPPED | Direct native oxa package/default path; no replacement Python installer. | Owner retirement [#681](https://github.com/oxstack/ox-llm/issues/681); [parked feature index](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947705088). Existing lab wrapper callers still block deletion; not UNUSED. |
 | oxc/src/oxc/bootstrap.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 | oxc/src/oxc/bootstrap_build.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
@@ -24,7 +24,7 @@ PORTED means the named Rust implementation and its contract tests replace the fe
 | oxc/src/oxc/bootstrap_sources.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 | oxc/src/oxc/bootstrap_transfer.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 
-Deletion gates: packaging must stop staging/smoking Python first (#824); qualify each remaining caller, archive archive/python-oxc, then delete only qualified rows in ledger order. A provider mapping alone does not retire its controller, CLI, Studio, metadata refresh, or legacy tests.
+Source retirement follows the v0.2.1 release cut in [#763](https://github.com/oxstack/ox-llm/issues/763). [#1198](https://github.com/oxstack/ox-llm/pull/1198) landed native packaging. Qualify remaining callers, preserve the exact pre-removal commit as `archive/python-oxc` and record it in #946 before deleting qualified source slices in ledger order. Keep each controller, CLI, Studio, metadata-refresh and test contract tied to its own disposition.
 
 Known callers on the inspected base included packaging/release/{stage,smoke}.py, the Python lab job in .github/workflows/checks.yml, tools/{oxa-contract,openai-contract}/run.sh, tools/gates/tiny_real.sh and related documentation. The MEMLAT differential now uses the captured reference described above. Synthetic path strings in tools/ci/tests must be distinguished from executable imports before changing them.
 
@@ -38,7 +38,7 @@ The inspected provider, token, login and MEMLAT implementation blobs in candidat
 
 | Remaining release gate | Concrete evidence still required |
 |---|---|
-| Native packaging, #824 | Main fd337a5f still stages Python controller payload/wrappers and declares runtime Python. Published candidate f38febd3 removes those; complete accepted final artifacts and four-boundary receipts. Python used to build a package is not an installed runtime dependency. |
+| Native packaging, #1198 | The four package boundaries passed on the corrected candidate below, and the packaging controls landed in #1198. #763 still requires exact-release artifact and clean-home receipts. Python remains in build and test tooling. |
 | Native memory scope, #1010 | Qualify inherited no-swap or attached-scope behavior in the packaged artifact. No obsolete memory-size requirement is inferred. |
 | Provider acceptance, #763 | Complete the named clean-home local, API-key and subscription tasks on the accepted artifact. Synthetic component tests do not substitute for those receipts. |
 | Repository qualification, #1012 | Clear main documentation/CI coverage defects through the existing writer; no competing CI edit or test relaxation. |
@@ -154,7 +154,7 @@ job queues.
 | `oxc/src/oxc/runtime/studio_plan_generate.py` — Studio generation, upscale and refine planning | MISSING | Existing product replacement [#1196](https://github.com/oxstack/ox-llm/issues/1196). `studio` imports the planner; `test_studio_upscale.py` exercises the legacy upscale path. Scope the native image behavior and index any retired planning modes. |
 | `oxc/src/oxc/runtime/studio_oxi.py` — Studio native image adapter and legacy fallback | MISSING | Existing product replacement [#1196](https://github.com/oxstack/ox-llm/issues/1196). `studio` imports the adapter, and `test_studio_oxi.py` covers route and fallback behavior. Native acceptance explicitly excludes silent fallback. Preserve the legacy test while its caller remains. |
 | `oxc/src/oxc/runtime/studio_worker.py` — legacy Studio job and image-worker lifecycle | MISSING | Existing product replacement [#1196](https://github.com/oxstack/ox-llm/issues/1196). `studio` invokes the worker, and `test_studio_handoff.py` exercises the worker boundary. Track any carried image-worker admission and cleanup behavior and any retired web-job orchestration. |
-| `oxc/packaging/flash-qos/oxc-flash-qos` — Flash idle-QoS helper | UNQUALIFIED | Main stages this extensionless Python script via the broad controller copy. The legacy unit and Flash stage use it, and `test_flash_qos_helper.py` and `test_flash_qos_install_user.py` retain its contract. [#1198](https://github.com/oxstack/ox-llm/pull/1198) excludes the helper from the installed candidate. Source retirement still needs an explicit feature decision and index entry. |
+| `oxc/packaging/flash-qos/oxc-flash-qos` — Flash idle-QoS helper | UNQUALIFIED | [#1198](https://github.com/oxstack/ox-llm/pull/1198) excludes this extensionless script from the installed package and release source archive. The legacy unit and Flash stage use it, and `test_flash_qos_helper.py` and `test_flash_qos_install_user.py` retain its contract. Source retirement still needs an explicit feature decision and index entry. |
 
 ### Published packaging artifacts at `67b999ec`
 
@@ -178,9 +178,8 @@ failed after installing the binary package. Its smoke probe at
 expects `oxe --help` to exit zero. The existing CLI prints its usage and
 exits 2. The package already tests `oxe --version` and the next step tests
 `oxe gen --check-args`. Keep the ELF assertion for every binary and use the
-existing success probes for `oxe` in the Arch smoke. Arch acceptance and the
-exact pre-removal archive are still pending. The CPU artifact inventories
-qualify only those two uploaded artifact boundaries.
+existing success probes for `oxe` in the Arch smoke. The corrected run and
+its Arch package receipts are recorded below.
 
 ### Local engine ownership at `5cbccf25`
 
@@ -241,7 +240,7 @@ caller gates.
 | `oxc/src/oxc/runtime/image_slot.py` — legacy controller image reservation | MISSING | [#1196](https://github.com/oxstack/ox-llm/issues/1196) requires native image resource admission. `ctl_manager.py` and Studio use inherited image leases. Preserve `test_image_slot.py` and `test_controller_image_slot.py` until treatment of this legacy lease is recorded. |
 | `oxc/src/oxc/runtime/image_size_gate.py` — Studio per-size qualification receipts | UNQUALIFIED | The Studio router consumes the legacy per-size gate tested by `test_v013_image_size_gate.py`. [#1196](https://github.com/oxstack/ox-llm/issues/1196) specifies native size validation and deterministic fixture coverage. Record the old routing and qualification fixture disposition separately. |
 
-### Corrected CPU packaging receipts at `b8111ecd`
+### Corrected packaging receipts at `b8111ecd`
 
 [Release run 44211078636](https://github.com/oxstack/ox-llm/actions/runs/44211078636)
 produced both CPU artifacts from `174b10136c08186fff165951029431338231ea8f`, the
@@ -252,14 +251,30 @@ receipts passed. The filtered source archives were byte-identical at SHA-256
 Each native payload contains an executable ELF MEMLAT command and four regular
 0644 hook templates whose bytes match the archived sources. Both payloads
 exclude active hook paths, MEMLAT policy, Python files and legacy wrappers.
-The exact Arch acceptance and pre-removal archive remain separate gates.
+[Arch job 134497318931](https://github.com/oxstack/ox-llm/actions/runs/44211078636/job/134497318931)
+passed source and binary builds, namcap, installation, smoke, integrity and
+removal. The uploaded package checksum manifest passed. Both archives list
+`glibc`, `gcc-libs` and `bubblewrap` as runtime dependencies. Each ships the
+same four native commands and four inert templates as the CPU payloads,
+with no Python files, controller wrappers, active hooks or MEMLAT policy.
+
+| Arch package | SHA-256 |
+|---|---|
+| Source-built | `53a7299b500de91d989f4b7651f04159176989bb1b097f078004c6c2179360a7` |
+| Prebuilt binary | `68aec81c865d088236b5b166d53dcef1580c3c97d84443678147d1ee8b3e4096` |
+
+#1198 merged at `0ddf790ada7708966957da50e916d505ed0b7f22`. The tracked
+workflow, release/Arch scripts and MEMLAT templates in that commit match
+the tested packaging head. The cited artifacts come from the candidate test
+merge. #763 tracks exact-release acceptance. Source deletion still depends
+on the v0.2.1 tag and the indexed pre-removal archive.
 
 ### Remaining controller-path evidence at `7f7bfb6a`
 
 These entries account for the remaining paths in the packaged legacy subtree.
-Development tools can remain Python. Main's legacy copy still ships those
-paths. Their shipping status changes with accepted packaging. Source removal
-still needs the applicable index, caller and native acceptance evidence.
+Development tools can remain Python. Native packaging excludes the old
+controller subtree. Source removal still needs the applicable index, caller
+and native acceptance evidence.
 
 | Python module / feature | Status | Evidence and remaining caller gate |
 |---|---|---|
