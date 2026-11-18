@@ -642,29 +642,31 @@ fn run_queue_inner(
     let (tx, rx) = mpsc::channel();
     let mut active = Workers::default();
     let read_directory = prepared.is_none();
-    let mut pending = Vec::new();
-    let mut bytes = 0;
-    for (index, binding) in prepared.unwrap_or_default().iter().enumerate() {
-        let packet = crate::helper_queue::take_native_packet(&directory, binding)?;
-        let task = native::from_packet(binding, &packet)?;
-        if let Some(selected) = selection {
-            selected
-                .get(&binding.native_task_id)
-                .ok_or("native task was not selected")?
-                .verify_task(&task)?;
-        }
-        bytes += task_bytes(&task);
-        if bytes > MAX_QUEUE_BYTES {
-            return Err("native queue exceeds the task input capacity".into());
-        }
-        pending.push(Job {
-            task,
-            modified: SystemTime::UNIX_EPOCH,
-            file: directory.clone(),
-            index,
-            binding: None,
-        });
-    }
+    let mut pending = if let Some(bindings) = prepared {
+        let mut bytes = 0;
+        crate::helper_queue::take_native_packets(&directory, bindings, |index, binding, packet| {
+            let task = native::from_packet(binding, &packet)?;
+            if let Some(selected) = selection {
+                selected
+                    .get(&binding.native_task_id)
+                    .ok_or("native task was not selected")?
+                    .verify_task(&task)?;
+            }
+            bytes += task_bytes(&task);
+            if bytes > MAX_QUEUE_BYTES {
+                return Err("native queue exceeds the task input capacity".into());
+            }
+            Ok(Job {
+                task,
+                modified: SystemTime::UNIX_EPOCH,
+                file: directory.clone(),
+                index,
+                binding: None,
+            })
+        })?
+    } else {
+        vec![]
+    };
     let (mut external, mut inputs) = (vec![], Inputs::default());
     let (mut finished, mut failed, mut last) = (0, 0, None);
     loop {
