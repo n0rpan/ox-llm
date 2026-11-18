@@ -135,7 +135,7 @@ commands! {
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
     Lead {
-        path: &["lead"], aliases: &[], summary: "Open the lead command menu",
+        path: &["lead"], aliases: &[], summary: "Open the lead command menu, or send one owner chat message",
         arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
         surfaces: Surfaces {
             cli: Availability::Supported,

@@ -979,6 +979,7 @@ fn advisor_returns_to_the_same_worker_and_does_not_repeat_the_call() {
             lease_identity: [1; 32],
             objective: "Review the synthetic file.".into(),
             worker: AdviceTier::Bulk,
+            done_checks_after: NonZeroU32::MIN,
             policy: AdvicePolicy {
                 triggers: vec![AdviceTrigger::RepeatGuard],
                 max_calls: NonZeroU16::new(2).unwrap(),

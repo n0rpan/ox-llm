@@ -26,7 +26,7 @@ impl EmbeddedEngine {
     }
 }
 fn normalize(error: Error) -> OxaError {
-    let mut refusal = error.refusal();
+    let refusal = error.refusal();
     if refusal.status == 499 && refusal.code == "request_cancelled" {
         return OxaError::new(codes::ABORTED, "request cancelled");
     }
@@ -80,7 +80,14 @@ fn normalize(error: Error) -> OxaError {
         return OxaError::new(refusal.code, refusal.message);
     }
     if refusal.code == "budget_not_configured" {
-        refusal.message = "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.";
+        // The refusal keeps its own stable code so the owner-facing diagnostic and
+        // the lead service journal can name the absent cap instead of a generic
+        // HTTP error. The budget rule itself is unchanged: metered without a
+        // positive cap stays refused.
+        return OxaError::new(
+            "budget_not_configured",
+            "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings.",
+        );
     }
     let normalized =
         crate::info::http_error_with(refusal.status, refusal.body().to_string().as_bytes(), None);

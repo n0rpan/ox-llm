@@ -194,11 +194,17 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     if let Some(sub) = a.subcommand.clone() {
-        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::LeadChat, words) = &sub {
-            return finish(
-                crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
-                &mut *stderr,
-            );
+        if let Subcommand::Registered(id, words) = &sub {
+            use oxa_interactive::command_registry::CommandId;
+            // The one-shot `oxa lead <text>` and every `lead chat` form share the
+            // one bounded owner conversation path; the bare `lead` menu was
+            // answered before parsing.
+            if id == &CommandId::LeadChat || (id == &CommandId::Lead && !words.0.is_empty()) {
+                return finish(
+                    crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
+                    &mut *stderr,
+                );
+            }
         }
         let dirs = match dirs_from_env(env, None) {
             Ok(d) => d,
@@ -599,6 +605,7 @@ struct Built {
     dirs: Dirs,
     cwd: PathBuf,
     resources: Resources,
+    theme_paths: Vec<PathBuf>,
     selection: ToolSelection,
     model: Option<String>,
     thinking: Option<ThinkingLevel>,
@@ -894,7 +901,7 @@ fn prepare(
         .iter()
         .map(|p| resolve_path(&dirs.home, cwd, p))
         .collect();
-    notices.extend(crate::themes::theme_diagnostics(&crate::themes::ThemeSources {
+    let theme_sources = crate::themes::ThemeSources {
         dirs,
         cwd,
         settings: &settings,
@@ -902,7 +909,9 @@ fn prepare(
         package_paths: &resources.theme_paths,
         cli_paths: &cli_themes,
         no_themes: a.no_themes,
-    }));
+    };
+    notices.extend(crate::themes::theme_diagnostics(&theme_sources));
+    let theme_paths = crate::themes::theme_paths(&theme_sources);
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
             b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
@@ -1065,6 +1074,7 @@ fn prepare(
         dirs: dirs.clone(),
         cwd: cwd.to_path_buf(),
         resources,
+        theme_paths,
         selection,
         model,
         thinking,
@@ -1736,7 +1746,13 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         initial_prompt,
         initial_parts,
         initial_follow_ups,
-        theme: a.use_theme.clone().or_else(|| a.themes.first().cloned()),
+        theme: a.use_theme.clone().or_else(|| {
+            a.themes.first().and_then(|p| {
+                let path = resolve_path(&dirs.home, cwd, p);
+                path.is_file().then(|| path.to_string_lossy().into_owned())
+            })
+        }),
+        theme_paths: built.theme_paths.clone(),
         notices,
         env: env.pairs().to_vec(),
         caps: None,
@@ -2639,6 +2655,7 @@ mod session_scratch_tests {
             dirs: Dirs::under(env.root()),
             cwd: env.work(),
             resources: Resources::default(),
+            theme_paths: Vec::new(),
             selection: ToolSelection::default(),
             model: None,
             thinking: None,

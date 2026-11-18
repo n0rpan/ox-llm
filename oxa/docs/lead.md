@@ -14,8 +14,14 @@ epoch and enforces the proposal schema. For example:
 $ oxa lead --shadow -p "Read the bounded exports in ./state and propose the next action."
 ```
 
-It emits proposals only. `oxa lead` without `--shadow` refuses explicitly until
-live runner coordination is available. The `work` tool, live `/status`, `/asks`,
+It emits proposals only. `oxa lead <message>` is the one-shot owner conversation: it
+drives the exact same bounded, session-bound path as `oxa lead chat <message>` (the
+dedicated Lead Session of `oxa.lead.sessionId`, proposal confirmation, and the same
+reply contract), and the bare `oxa lead` still opens the command menu. The user-only
+`oxa.lead.model` setting selects the conversation's route through the normal exact
+model selector and gateway; a metered model still needs its daily USD cap, so choose
+a subscription route while the cap is absent. A route that does not resolve is
+reported, never silently replaced. The `work` tool, live `/status`, `/asks`,
 `/hold`, `/decide` and event wake-up remain pending. Shadow mode neither executes
 proposals nor establishes that a supplied export is current.
 
