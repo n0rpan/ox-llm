@@ -186,7 +186,7 @@ async fn openrouter_provider_routing_preferences_are_passed_through_exactly() {
     let routing = ProviderRouting::parse(&json!({
         "zdr": true,
         "data_collection": "deny",
-        "sort": ":nitro",
+        "sort": ":floor",
         "order": ["synthetic-a", "synthetic-b"],
         "ignore": ["synthetic-c"],
         "allow_fallbacks": false
@@ -204,9 +204,10 @@ async fn openrouter_provider_routing_preferences_are_passed_through_exactly() {
         .await
         .unwrap();
     let request = mock.requests().pop().unwrap();
+    assert_eq!(request.body["model"], "synthetic-router:floor");
     assert_eq!(
         request.body["provider"],
-        json!({"zdr":true,"data_collection":"deny","sort":"throughput",
+        json!({"zdr":true,"data_collection":"deny",
             "order":["synthetic-a","synthetic-b"],"ignore":["synthetic-c"],
             "allow_fallbacks":false})
     );
