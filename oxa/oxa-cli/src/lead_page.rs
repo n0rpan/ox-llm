@@ -252,7 +252,7 @@ fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
         return;
     };
     let _ = write!(html,
-        "<section><h2>Next action</h2><p>{}</p></section><section><h2>State</h2><p>{}</p><p>{}</p><p>Attempts today: {}</p><p class=muted>Observed at {} (Unix seconds)</p></section>",
+        "<section><article><h2>Next action</h2><p>{}</p></article></section><section><article><h2>State</h2><dl><dt>Priority</dt><dd>{}</dd><dt>Lease</dt><dd>{}</dd><dt>Attempts today</dt><dd>{}</dd><dt>Observed at</dt><dd>{} (Unix seconds)</dd></dl></article></section>",
         action(row.action), if row.release_pinned { "Release" } else { "Normal priority" },
         lease(row, now), row.attempts_today, board.observed_at);
     html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable.</p></section>");
@@ -600,5 +600,77 @@ mod tests {
             assert!(page.contains(unknown));
         }
         assert!(page.contains("0 / 1 reported complete"));
+    }
+
+    #[test]
+    fn item_state_pairs_native_labels_with_observed_values_and_keeps_unknowns_explicit() {
+        let mut board = Board {
+            observed_at: 100,
+            entries: vec![Entry {
+                number: 17,
+                head: "private-head-marker".into(),
+                release_pinned: true,
+                action: Action::FixFindings,
+                lease: Some(oxa_work::board::Lease {
+                    holder: "worker-example".into(),
+                    expires_at: 200,
+                    claimed_at: Some(90),
+                    generation: (0, 1),
+                }),
+                attempts_today: 2,
+                eligible: true,
+            }],
+        };
+        let render = |board: Option<&Board>| {
+            content_for(
+                Page::Item(17),
+                &View {
+                    board,
+                    ..View::default()
+                },
+                201,
+            )
+        };
+        let page = render(Some(&board));
+        for expected in [
+            "<h1 id=main tabindex=-1>Item #17</h1>",
+            "href=/board>Back to Board</a>",
+            "aria-current=page>Board",
+            "<h2>Next action</h2><p>Fix findings</p>",
+            "<h2>State</h2><dl>",
+            "<dt>Priority</dt><dd>Release</dd>",
+            "<dt>Lease</dt><dd>worker-example · expires 200 (expired)</dd>",
+            "<dt>Attempts today</dt><dd>2</dd>",
+            "<dt>Observed at</dt><dd>100 (Unix seconds)</dd>",
+            "Title, checks, findings and diff observations unavailable.",
+        ] {
+            assert!(page.contains(expected), "{expected}");
+        }
+        assert_eq!(page.matches("<dt>").count(), 4);
+        assert!(!page.contains("private-head-marker"));
+        assert!(!page.contains("<form") && !page.contains("<button"));
+        board.entries[0].release_pinned = false;
+        board.entries[0].lease = None;
+        let unleased = render(Some(&board));
+        assert!(unleased.contains("<dt>Priority</dt><dd>Normal priority</dd>"));
+        assert!(unleased.contains("<dt>Lease</dt><dd>Unleased</dd>"));
+        board.entries[0].lease = Some(oxa_work::board::Lease {
+            holder: "<worker>&example".into(),
+            expires_at: 300,
+            claimed_at: Some(90),
+            generation: (0, 1),
+        });
+        let leased = render(Some(&board));
+        assert!(leased.contains("&lt;worker&gt;&amp;example · expires 300</dd>"));
+        assert!(!leased.contains("(expired)") && !leased.contains("<worker>"));
+        board.entries.clear();
+        for (source, expected) in [
+            (None, "Board unavailable."),
+            (Some(&board), "Item unavailable in this snapshot."),
+        ] {
+            let missing = render(source);
+            assert!(missing.contains(expected));
+            assert!(!missing.contains("<dl>") && !missing.contains("<dt>"));
+        }
     }
 }
