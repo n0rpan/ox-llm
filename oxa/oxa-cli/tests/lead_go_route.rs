@@ -201,10 +201,13 @@ fn lead_chat_keeps_the_metered_guard_and_routes_the_go_subscription_choice() {
     assert_eq!(go_chat_requests(&go).len(), 2);
     assert!(metered.requests().is_empty());
 
-    // Both settled rows are subscription spends; the refusal row stays refused.
+    // Both settled rows are subscription spends. The first, metered turn ran with no
+    // budget configured: it was admitted (no cap = no check) and recorded, and it failed
+    // upstream because the metered fixture endpoint is unreachable.
     let ledger = rows(&env);
     assert_eq!(ledger.len(), 3, "{ledger:?}");
-    assert_eq!(ledger[0]["status"], 403);
+    assert_eq!(ledger[0]["status"], 502, "{ledger:?}");
+    assert_ne!(ledger[0]["error"], "budget_not_configured", "{ledger:?}");
     for row in &ledger[1..] {
         assert_eq!(row["billing"], "subscription", "{row:?}");
         assert_eq!(row["remote_provider"], "opencode", "{row:?}");
