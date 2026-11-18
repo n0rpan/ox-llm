@@ -7,6 +7,7 @@ mod chat;
 mod filters;
 mod goal;
 mod pages;
+mod proposals;
 mod quotas;
 pub use filters::{Filter, Query};
 pub use pages::{Page, Prompt};
