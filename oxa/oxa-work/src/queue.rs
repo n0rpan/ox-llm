@@ -980,10 +980,34 @@ mod tests {
             assert!(queue.join(format!("board-{}.txt", binding.key)).is_file());
         }
         targets[1].host_id = "host-a";
+        let ready: Vec<_> = bindings
+            .iter()
+            .map(|binding| queue.join(format!("board-{}.txt", binding.key)))
+            .collect();
+        let saved: Vec<_> = ready.iter().map(|path| fs::read(path).unwrap()).collect();
+        let held = directory.path().join("withheld-packet");
+        fs::rename(&ready[1], &held).unwrap();
+        assert!(run()
+            .run_native_batch(&claims, &targets, execute.clone(), &mut |_| Ok(()))
+            .unwrap_err()
+            .contains("packet unavailable"));
+        assert_eq!(
+            fs::read(&ready[0]).expect("missing second packet must leave the first ready"),
+            saved[0]
+        );
+        fs::rename(&held, &ready[1]).unwrap();
+
         targets[1].model = models[0];
         assert!(run()
             .run_native_batch(&claims, &targets, execute.clone(), &mut |_| Ok(()))
             .is_err());
+        for (path, bytes) in ready.iter().zip(&saved) {
+            assert_eq!(
+                &fs::read(path).expect("rejected batch must leave both packets ready"),
+                bytes
+            );
+        }
+        assert_eq!(fs::read_dir(queue.join("started")).unwrap().count(), 0);
         assert!(bindings.iter().all(
             |binding| claims.snapshot().unwrap()[&binding.number].lease.as_ref() == Some(&binding.lease)
         ));
