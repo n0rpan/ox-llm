@@ -96,6 +96,10 @@ impl Dirs {
     pub fn trust_file(&self) -> PathBuf {
         self.agent_dir.join("trust.json")
     }
+    /// `<agent_dir>/memory`: the memory store (one Markdown file per entry, plus `MEMORY.md`).
+    pub fn memory_dir(&self) -> PathBuf {
+        self.agent_dir.join("memory")
+    }
     /// `<cwd>/.oxa`.
     pub fn project_dir(&self, cwd: &Path) -> PathBuf {
         cwd.join(oxa_proto::names::PROJECT_DIR)
