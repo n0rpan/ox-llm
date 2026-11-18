@@ -185,6 +185,32 @@ fn native_go_continue_restores_a_keyed_session_without_explicit_cloud_enablement
         2
     );
     assert_eq!(rows(&env).len(), 2);
+
+    // A project may choose where it keeps sessions, but a session from there
+    // cannot turn on an owner-only cloud route.
+    let protected = env.agent_dir().join("sessions");
+    let files = session_files(&protected);
+    assert_eq!(files.len(), 1);
+    let project_session = env
+        .work()
+        .join("project-sessions")
+        .join(files[0].strip_prefix(&protected).unwrap());
+    fs::create_dir_all(project_session.parent().unwrap()).unwrap();
+    fs::copy(&files[0], project_session).unwrap();
+    env.write("work/.oxa/settings.json", r#"{"sessionDir":"project-sessions"}"#);
+    let project = run(
+        &env,
+        &["--continue", "--no-tools", "-p", "Synthetic project task"],
+    );
+    assert!(!project.status.success());
+    assert_eq!(
+        mock.requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count(),
+        2
+    );
+    assert_eq!(rows(&env).len(), 2);
     mock.assert_healthy();
 }
 

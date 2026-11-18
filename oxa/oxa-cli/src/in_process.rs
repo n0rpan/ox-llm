@@ -251,6 +251,17 @@ pub(crate) fn select_observed(
     )
 }
 
+pub(crate) fn restores_go_model(user: &Settings, model: &str) -> bool {
+    routing::is_go_model(model, "")
+        && !(user.bool(oxc_local::LOCAL_SETTING, false)
+            && user
+                .get("oxa.local.models")
+                .and_then(Value::as_object)
+                .is_some_and(|models| {
+                    routing::resolve_in_catalog(model, "", models.keys().cloned()).is_some()
+                }))
+}
+
 fn select_for(
     user: &Settings,
     effective: &Settings,

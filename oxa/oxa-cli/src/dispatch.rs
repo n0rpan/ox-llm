@@ -22,11 +22,11 @@ use oxa_interactive::{
 use oxa_perm::{
     gated_resources, resolve_trust, DefaultTrust, ModePolicy, TrustInputs, TrustOutcome, TrustStore,
 };
-use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
+use oxa_proto::{codes, Engine, EntryBody, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
 use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
 use oxa_sandbox::{Bwrap, NoSandbox};
-use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
+use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore, Tree};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -785,6 +785,20 @@ fn prepare(
     if let Some(resolved) = resolve_continue_word(a, dirs) {
         *a = resolved;
     }
+    let store: Arc<dyn SessionStore> = match &owner_open {
+        Some((_, store)) => store.clone(),
+        None if a.no_session => Arc::new(MemStore::new()),
+        None => Arc::new(FsStore::new(dirs.sessions_dir.clone())),
+    };
+    let (mut open, session_id) = match owner_open {
+        Some((bound, _)) => (Open::Resume(bound.clone()), None),
+        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
+    };
+    let continued_go = if a.model.is_none() && a.continue_ && !owner_chat {
+        continued_go_model(dirs, cwd, &user_settings, store.as_ref(), &mut open)?
+    } else {
+        None
+    };
     // The engine client with the settings' silence limit (`httpIdleTimeoutMs`,
     // `retry.provider.timeoutMs`; SET-051, SET-054).
     let has_model_scope = a.models.as_ref().map_or_else(
@@ -792,7 +806,7 @@ fn prepare(
         |patterns| !patterns.is_empty(),
     );
     let resuming = owner_chat || a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
-    let requested_model = a.model.clone().or_else(|| {
+    let requested_model = a.model.clone().or_else(|| continued_go.clone()).or_else(|| {
         // The core chooses a restored/scoped model instead of an unused default.
         if resuming || has_model_scope {
             None
@@ -828,6 +842,7 @@ fn prepare(
             pattern: requested_model.as_deref(),
             endpoint: &endpoint.name,
             owner_selected: a.model.is_some()
+                || continued_go.is_some()
                 || requested_model
                     .as_ref()
                     .is_some_and(|model| user_settings.string("defaultModel").as_ref() == Some(model)),
@@ -917,7 +932,7 @@ fn prepare(
 
     // `--model` resolves against the engine's models; its `:level` suffix sets thinking unless
     // `--thinking` is given.
-    let mut model = None;
+    let mut model = continued_go;
     let mut thinking = a.thinking;
     // `defaultModel` (SET-004) is applied by the core when no model was chosen here
     // (`Session::open`), so a resumed session keeps its own model and `--models` scopes it.
@@ -1003,15 +1018,6 @@ fn prepare(
         });
     }
 
-    let store: Arc<dyn SessionStore> = match &owner_open {
-        Some((_, store)) => store.clone(),
-        None if a.no_session => Arc::new(MemStore::new()),
-        None => Arc::new(FsStore::new(dirs.sessions_dir.clone())),
-    };
-    let (open, session_id) = match owner_open {
-        Some((bound, _)) => (Open::Resume(bound.clone()), None),
-        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
-    };
     let name = match a.name.as_deref().map(str::trim) {
         Some("") => {
             return Err(OxaError::new(codes::INVALID, "--name requires a non-empty value"));
@@ -1297,6 +1303,57 @@ fn resolve_continue_word(a: &Args, dirs: &Dirs) -> Option<Args> {
         out.messages.insert((*at).min(out.messages.len()), word.clone());
     }
     Some(out)
+}
+
+/// Use the active branch of the same protected session that startup will open.
+/// A project-configured session directory cannot authorize a new cloud route.
+fn continued_go_model(
+    dirs: &Dirs,
+    cwd: &Path,
+    user: &Settings,
+    store: &dyn SessionStore,
+    open: &mut Open,
+) -> Result<Option<String>, OxaError> {
+    let owner_sessions = dirs.agent_dir.join("sessions");
+    if dirs.sessions_dir != owner_sessions {
+        return Ok(None);
+    }
+    let session = match open {
+        Open::Continue => store
+            .list(Some(cwd))
+            .into_iter()
+            .max_by_key(|meta| meta.modified_ms)
+            .map(|meta| meta.sref),
+        Open::Resume(session) => Some(session.clone()),
+        _ => None,
+    };
+    let Some(session) = session.filter(|session| {
+        store.lists_path(&session.path)
+            && session
+                .path
+                .canonicalize()
+                .as_ref()
+                .is_ok_and(|path| path == &session.path)
+    }) else {
+        return Ok(None);
+    };
+    // Keep the route and restored model bound to the same writer and session.
+    store.acquire(&session)?;
+    let tree = Tree::new(store.load(&session)?);
+    let model = tree.branch(tree.leaf()).into_iter().rev().find_map(|entry| {
+        if let EntryBody::ModelChange(model) = &entry.body {
+            Some(model.clone())
+        } else {
+            None
+        }
+    });
+    let go = model.filter(|model| crate::in_process::restores_go_model(user, model));
+    if go.is_some() {
+        *open = Open::Resume(session);
+    } else {
+        store.abort_lock();
+    }
+    Ok(go)
 }
 
 /// The open mode of the flags: `--no-session`, `--fork`, `--session`, `--session-id`,
