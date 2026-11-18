@@ -59,6 +59,8 @@ pub enum QueueEvent {
     Error {
         file: PathBuf,
         detail: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        native_task_id: Option<String>,
     },
 }
 #[derive(Clone)]
@@ -410,6 +412,7 @@ fn scan(
                     emit(QueueEvent::Error {
                         file: file.clone(),
                         detail: detail.clone(),
+                        native_task_id: None,
                     })?;
                 }
             }
@@ -812,6 +815,7 @@ fn run_queue_inner(
                             emit(QueueEvent::Error {
                                 file: job.file,
                                 detail,
+                                native_task_id: job.binding.map(|binding| binding.native_task_id),
                             })?;
                             continue;
                         }
