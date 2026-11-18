@@ -155,17 +155,40 @@ fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
     let charged = claims.snapshot().unwrap()[&number].clone();
     assert_eq!(charged.attempts, 4);
     assert!(charged.lease.is_none());
-    // A new revision has a different publication key, so refusal proves the cap,
-    // rather than the already published packet or the released original lease.
+    // A new revision has a different publication key, so a claim here is a fresh
+    // eligible attempt that neither the published packet nor the released lease
+    // can explain away.
     owner["packets"][0]["revision"] = json!("fixture-revision-2");
     reply["data"]["repository"]["i44"]["updatedAt"] = json!("fixture-revision-2");
     env.write("home/.local/bin/gh.reply", &reply.to_string());
+    // #1448: the daily attempt threshold is advisory, not a refusal. The second
+    // revision is the eligible attempt that only the cap could have refused, so
+    // it must be claimed and carry exactly one operator warning on stderr.
+    owner["budget_pools"]["limits"]["max_attempts_per_day"] = json!(4);
+    write_config(&owner);
+    let output = refill();
+    assert!(output.status.success(), "{output:?}");
+    let fifth = claims.snapshot().unwrap()[&number].clone();
+    assert_eq!(
+        fifth.attempts, 5,
+        "the eligible above-threshold attempt was not claimed: {output:?}"
+    );
+    assert!(
+        fifth.lease.is_some(),
+        "the claimed fifth attempt holds no lease: {output:?}"
+    );
+    let warning = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        warning.matches("attempt 5 of 4").count(),
+        1,
+        "expected one operator warning for the above-threshold claim: {warning:?}"
+    );
     for cap in [json!(4), json!(2), json!(0)] {
         owner["budget_pools"]["limits"]["max_attempts_per_day"] = cap.clone();
         write_config(&owner);
         let output = refill();
         assert!(output.status.success(), "{output:?}");
-        assert_eq!(claims.snapshot().unwrap()[&number], charged);
+        assert_eq!(claims.snapshot().unwrap()[&number], fifth);
         let output = readback();
         assert!(output.status.success(), "{output:?}");
         let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
@@ -186,7 +209,7 @@ fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
         write_config(&owner);
         assert_eq!(readback().status.code(), Some(2));
         assert_eq!(refill().status.code(), Some(2));
-        assert_eq!(claims.snapshot().unwrap()[&number], charged);
+        assert_eq!(claims.snapshot().unwrap()[&number], fifth);
     }
     owner["budget_pools"]["limits"]["max_attempts_per_day"] = json!(4);
     let project_config = env.work().join("project/owner-policy.json");
