@@ -7,6 +7,7 @@
 
 mod advanced;
 mod budgets;
+mod display;
 mod lead;
 mod safety;
 mod tools;
@@ -371,12 +372,14 @@ impl Descriptor {
     }
 }
 
-/// The data table, in display order: the Lead and web, the Safety, then the Advanced entries.
+/// The data table, in display order: the Display rows, then the Lead and web, the Safety and the
+/// Advanced entries.
 fn table() -> &'static [Descriptor] {
     static TABLE: OnceLock<Vec<Descriptor>> = OnceLock::new();
     TABLE
         .get_or_init(|| {
             [
+                display::ENTRIES,
                 budgets::ENTRIES,
                 tools::ENTRIES,
                 lead::ENTRIES,
@@ -513,15 +516,16 @@ mod tests {
 
     #[test]
     fn unwired_groups_stay_empty() {
-        // Lead, Safety and Advanced (A2d) plus Budgets and Tools (A2c) have data; Models, Display
-        // and the remaining groups arrive in later slices.
+        // Display (A2a), Budgets and Tools (A2c), Lead, Safety and Advanced (A2d) have data; the
+        // Models and compaction entries arrive in A2b.
         assert!(descriptor("oxa.bash.defaultTimeout").is_some());
         assert!(descriptor("oxa.maxTurns").is_some());
         assert!(in_group(Group::Tools).next().is_some());
         assert!(in_group(Group::Budgets).next().is_some());
         assert_eq!(in_group(Group::Models).count(), 0);
         assert_eq!(fields_of("oxa.lead.serve").count(), 9);
-        assert_eq!(descriptors().len(), 76);
+        assert_eq!(in_group(Group::Display).count(), 30);
+        assert_eq!(descriptors().len(), 106);
     }
 
     #[test]
