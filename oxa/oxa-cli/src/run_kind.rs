@@ -71,6 +71,16 @@ pub(crate) fn os_sandbox_wanted(kind: RunKind, a: &Args, user: &Settings, yolo: 
     }
 }
 
+/// `oxa.sandbox.net = off` for commands without the OS sandbox: off in the user layer or in the
+/// merged settings. A project file may turn the network off, never back on over the user's
+/// `off` (without the OS sandbox this setting is the only network gate of bash).
+pub(crate) fn sandbox_net_off(merged: &Settings, user: &Settings) -> bool {
+    let on = |s: &Settings| {
+        oxa_sandbox::sandbox_net_setting(s.string(oxa_sandbox::SETTING_SANDBOX_NET).as_deref())
+    };
+    !on(merged) || !on(user)
+}
+
 /// The warning for a missing bwrap: only when the run needs the OS sandbox (fail closed for
 /// unattended runs). An attended run without it works without the warning.
 pub(crate) fn bwrap_missing_notice(os_sandbox: bool, reason: &str) -> Option<String> {
@@ -281,6 +291,25 @@ mod tests {
         assert!(no_sandbox_notice(RunKind::Attended, true, false).is_none());
         assert!(no_sandbox_notice(RunKind::Attended, false, true).is_none());
         assert!(no_sandbox_notice(RunKind::Unattended, false, false).is_none());
+    }
+
+    #[test]
+    fn project_settings_cannot_turn_sandbox_net_back_on() {
+        let user_off = json!({"oxa": {"sandbox": {"net": "off"}}});
+        let merged = Settings::from_values(user_off.clone(), json!({"oxa": {"sandbox": {"net": "on"}}}));
+        assert!(
+            sandbox_net_off(&merged, &user(user_off)),
+            "a project cannot relax net = off"
+        );
+        let merged = Settings::from_values(json!({}), json!({"oxa": {"sandbox": {"net": "off"}}}));
+        assert!(
+            sandbox_net_off(&merged, &user(json!({}))),
+            "a project may turn it off"
+        );
+        assert!(
+            !sandbox_net_off(&user(json!({})), &user(json!({}))),
+            "default is on"
+        );
     }
 
     #[test]

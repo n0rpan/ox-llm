@@ -1598,3 +1598,39 @@ fn tui_027() {
         ],
     );
 }
+
+/// #1512 S3: the real TUI over a PTY tells the truth about the OS sandbox. A default
+/// (attended) start shows "no sandbox · dangerous commands ask"; `--sandbox` shows "sandbox"
+/// and never the "no sandbox" text.
+#[test]
+fn sandbox_guard_is_shown_in_the_real_tui() {
+    let rig = Rig::start(replies(1), RigOpts::default());
+    rig.pty
+        .wait_for_named(
+            "no-sandbox guard",
+            |s| {
+                s.rows()
+                    .iter()
+                    .any(|r| r.contains("no sandbox · dangerous commands ask"))
+            },
+            WAIT,
+        )
+        .unwrap();
+    drop(rig);
+    let rig = Rig::start(
+        replies(1),
+        RigOpts {
+            args: vec!["--sandbox".into()],
+            ..RigOpts::default()
+        },
+    );
+    let s = rig
+        .pty
+        .wait_for_named(
+            "sandbox guard",
+            |s| s.rows().iter().any(|r| r.trim() == "sandbox"),
+            WAIT,
+        )
+        .unwrap();
+    assert!(!s.rows().iter().any(|r| r.contains("no sandbox")), "{s:?}");
+}
