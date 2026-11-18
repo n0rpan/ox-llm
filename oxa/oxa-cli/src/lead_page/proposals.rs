@@ -1,4 +1,122 @@
 //! Presentation of the existing typed native chat proposal; no action or policy writer.
+use super::escape;
+use crate::lead_chat::conversation::{ActionDraft, BoardChange};
+use oxa_work::standing::{Condition, GateEvidence, Kind, ReservedClass, ReviewTier, Scope, Value};
+use std::fmt::Write;
+
+pub(super) fn render(html: &mut String, draft: &ActionDraft) {
+    html.push_str("<h3>Proposed action</h3>");
+    match draft {
+        ActionDraft::Rule { rule, scope, value } => {
+            let _ = write!(html, "<h4>Proposed standing rule · {}</h4><dl><dt>Applies to</dt><dd>{}</dd><dt>Change</dt><dd>{}</dd></dl>", kind(*rule), scope_label(scope), value_label(value));
+        }
+        ActionDraft::FollowUp { task, text } => {
+            let _ = write!(
+                html,
+                "<h4>Proposed follow-up</h4><p>Task {}</p><p>{}</p>",
+                escape(task),
+                escape(text)
+            );
+        }
+        ActionDraft::Board { item: number, change } => {
+            let label = match change {
+                BoardChange::ReleaseLease => "Release lease",
+                BoardChange::Reprioritize => "Change priority",
+                BoardChange::Park => "Park item",
+            };
+            let _ = write!(
+                html,
+                "<h4>Proposed board change</h4><p>{label} · {}</p>",
+                item(*number)
+            );
+        }
+    }
+}
+
+fn item(number: u64) -> String {
+    format!("<a href=/items/{number}>#{number}</a>")
+}
+
+fn kind(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Goal => "Goal",
+        Kind::Priority => "Priority",
+        Kind::Freeze => "Freeze",
+        Kind::Hold => "Hold",
+        Kind::Budget => "Budget",
+        Kind::Model => "Model",
+        Kind::Placement => "Placement",
+        Kind::Gate => "Review gate",
+        Kind::Eligible => "Eligibility",
+        Kind::Decided => "Decision",
+        Kind::Reserve => "Owner approval",
+        Kind::Note => "Note",
+    }
+}
+
+fn scope_label(scope: &Scope) -> String {
+    match scope {
+        Scope::Repository => "This repository".into(),
+        Scope::PullRequest(number) => format!("PR {}", item(*number)),
+        Scope::Task(value) => format!("Task {}", escape(value)),
+        Scope::Branch(value) => format!("Branch {}", escape(value)),
+        Scope::Host(value) => format!("Host {}", escape(value)),
+        Scope::Path(value) => format!("Path {}", escape(value)),
+    }
+}
+
+fn list(labels: impl Iterator<Item = &'static str>) -> String {
+    let text = labels.collect::<Vec<_>>().join(", ");
+    if text.is_empty() {
+        "None listed".into()
+    } else {
+        text
+    }
+}
+
+fn value_label(value: &Value) -> String {
+    match value {
+        Value::Text(text) => escape(text),
+        Value::Constraint { active: false, .. } => "Release constraint".into(),
+        Value::Constraint {
+            active: true,
+            until: None,
+        } => "Active".into(),
+        Value::Constraint {
+            active: true,
+            until: Some(Condition::PrMerged(number)),
+        } => format!("Active until {} merges", item(*number)),
+        Value::Retired => "Retire rule".into(),
+        Value::Budget {
+            daily_usd_micros: amount,
+        } => format!("USD {}.{:06} per day", amount / 1_000_000, amount % 1_000_000),
+        Value::Gate { tier, evidence } => {
+            let tier = match tier {
+                ReviewTier::T1 => "T1",
+                ReviewTier::T2 => "T2",
+                ReviewTier::T3 => "T3",
+            };
+            let evidence = list(evidence.iter().map(|evidence| match evidence {
+                GateEvidence::LocalChecks => "Local checks",
+                GateEvidence::PrBuild => "PR build",
+                GateEvidence::Review => "Review",
+                GateEvidence::Queue => "Merge queue",
+                GateEvidence::HardwareMeasurement => "Hardware measurement",
+            }));
+            format!("{tier} · Required evidence: {evidence}")
+        }
+        Value::Reserve { classes } => {
+            let classes = list(classes.iter().map(|class| match class {
+                ReservedClass::Public => "Public actions",
+                ReservedClass::Paid => "Paid actions",
+                ReservedClass::Credentials => "Credentials",
+                ReservedClass::Destructive => "Destructive changes",
+                ReservedClass::Desktop => "Desktop",
+            }));
+            format!("Owner approval for: {classes}")
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -136,7 +254,7 @@ mod tests {
                 evidence: vec![GateEvidence::PrBuild, GateEvidence::Review, GateEvidence::Queue],
             },
         );
-        for label in ["T3", "PR checks", "Review", "Merge queue"] {
+        for label in ["T3", "PR build", "Review", "Merge queue"] {
             assert!(gate.contains(label));
         }
         let reserve = rule(
@@ -147,7 +265,7 @@ mod tests {
             },
         );
         assert!(
-            reserve.contains("Paid calls")
+            reserve.contains("Paid actions")
                 && reserve.contains("Credentials")
                 && reserve.contains("Host worker-example")
         );

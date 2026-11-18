@@ -45,12 +45,8 @@ pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt, now: u6
                     super::human_time(fact.observed_at, now)
                 );
             }
-            if let Some((id, proposal)) = owner.proposal {
-                let _ = write!(
-                    html,
-                    "<h3>Proposed action</h3><pre>{}</pre>",
-                    super::escape(&proposal["draft"].to_string())
-                );
+            if let Some(((id, _), action)) = owner.proposal.zip(reply.action.as_ref()) {
+                super::proposals::render(html, &action.draft);
                 if owner.confirmed {
                     html.push_str("<p>Confirmation recorded. Application is pending.</p>");
                 } else {
