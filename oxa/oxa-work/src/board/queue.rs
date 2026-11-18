@@ -350,8 +350,6 @@ fn rejection(
             queue_id: queue_id.to_owned(),
             pr_head: entry.head.clone(),
             absent: row.get("mergeQueueEntry") == Some(&Value::Null),
-            // Earlier heads can only increase the count. An ambiguous or
-            // exhausted upper bound cannot authorize a native retry.
             admission_upper_bound: admission_upper_bound(&row["admissions"]),
         }),
         merge_group_head: sha.to_owned(),

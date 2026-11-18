@@ -414,6 +414,7 @@ mod tests {
             host_path: Default::default(),
             terminate_binary: None,
             offline: false,
+            runner_owns_github: false,
             storage: temp.path().to_owned(),
         };
         run_once(

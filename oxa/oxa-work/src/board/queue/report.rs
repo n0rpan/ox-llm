@@ -220,6 +220,7 @@ mod tests {
             removal_event: "removal".into(),
             removed_at: "2026-01-01T00:09:00Z".into(),
             notification_target: None,
+            publication: None,
             merge_group_head: HEAD.into(),
             failed_required_check_runs: vec![42],
             failed_required_workflows: [(

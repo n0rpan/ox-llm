@@ -382,6 +382,7 @@ esac
             host_path: Default::default(),
             terminate_binary: None,
             offline: false,
+            runner_owns_github: false,
             storage: temp.path().to_owned(),
         };
         let log = crate::shadow::open_log(&temp.path().join("owner.jsonl")).unwrap();
