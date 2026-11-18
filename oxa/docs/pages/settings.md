@@ -280,6 +280,19 @@ token usage and settle zero USD. Unknown paid work retains its full token bound;
 the cap includes concurrent and crashed-process reservations. It never falls back
 to a paid API balance. Missing metered pricing still refuses metered requests.
 
+For OpenCode Go, `oxa.cloud.opencode.max_request_usd` sets the local reservation
+per request when a USD cap applies. The default is USD 0.25. Set
+`oxa.cloud.opencode.daily_budget_usd` to give Go its own host-local daily USD
+pool. Without that setting, a configured `oxa.cloud.daily_budget_usd` remains the
+combined ceiling. Active bounded Go holds are charged to the Go pool when it has
+its own cap. Existing unscoped holds keep their authority until they settle.
+
+The request bound is oxa's reservation, and OpenCode controls whether a call
+falls back to its paid balance. Set the bound conservatively when Extra Usage is
+enabled. If OpenCode reports a higher charge, the ledger records the full amount
+and further Go admission pauses through the end of the spend day. A missing or
+estimated final cost keeps a conservative estimate in the private ledger.
+
 ### Other
 
 | Key | Type | Default | Meaning |

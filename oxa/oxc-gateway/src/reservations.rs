@@ -39,6 +39,7 @@ fn options() -> OpenOptions {
 pub(crate) enum Reserved {
     Metered(f64),
     Subscription(u64, f64),
+    Go(u64, f64),
 }
 impl Reserved {
     fn from_value(value: &Value) -> io::Result<Self> {
@@ -47,20 +48,29 @@ impl Reserved {
         }
         let object = value
             .as_object()
-            .filter(|o| o.len() == 1 || o.len() == 2 && o.contains_key("reserved_usd"))
+            .filter(|o| {
+                o.len() == 1 || o.len() == 2 && (o.contains_key("reserved_usd") || o.contains_key("go_usd"))
+            })
             .ok_or(io::ErrorKind::InvalidData)?;
         let tokens = object
             .get("subscription_tokens")
             .and_then(Value::as_u64)
             .filter(|n| *n > 0)
             .ok_or(io::ErrorKind::InvalidData)?;
-        let usd = match object.get("reserved_usd") {
-            Some(value) => value
+        let positive_usd = |value: &Value| {
+            value
                 .as_f64()
                 .filter(|cost| cost.is_finite() && *cost > 0.0)
-                .ok_or(io::ErrorKind::InvalidData)?,
-            None => 0.0,
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
         };
+        if let Some(usd) = object.get("go_usd") {
+            return Ok(Self::Go(tokens, positive_usd(usd)?));
+        }
+        let usd = object
+            .get("reserved_usd")
+            .map(positive_usd)
+            .transpose()?
+            .unwrap_or(0.0);
         Ok(Self::Subscription(tokens, usd))
     }
     fn to_value(&self) -> Value {
@@ -70,11 +80,12 @@ impl Reserved {
                 json!({"subscription_tokens":tokens,"reserved_usd":usd})
             }
             Self::Subscription(tokens, _) => json!({"subscription_tokens":tokens}),
+            Self::Go(tokens, usd) => json!({"subscription_tokens":tokens,"go_usd":usd}),
         }
     }
     fn usd(&self) -> f64 {
         match self {
-            Self::Metered(cost) | Self::Subscription(_, cost) => *cost,
+            Self::Metered(cost) | Self::Subscription(_, cost) | Self::Go(_, cost) => *cost,
         }
     }
 }
@@ -160,8 +171,26 @@ impl Shared {
     pub fn reserved(&self) -> f64 {
         self.holds.values().map(Reserved::usd).sum()
     }
-    /// An unpriced call owns the remaining USD headroom until settlement.
-    /// Do not let floating-point summation or a changed cap admit another call.
+    pub fn metered_reserved(&self) -> f64 {
+        self.holds
+            .values()
+            .filter_map(|amount| match amount {
+                Reserved::Metered(cost) => Some(*cost),
+                _ => None,
+            })
+            .sum()
+    }
+    pub fn go_reserved(&self) -> f64 {
+        self.holds
+            .values()
+            .filter_map(|amount| match amount {
+                Reserved::Go(_, cost) => Some(*cost),
+                _ => None,
+            })
+            .sum()
+    }
+    /// Older Go holds own unscoped headroom. Retain their protection until their
+    /// owning process settles them, even if the owner has changed the policy.
     pub fn has_conservative_hold(&self) -> bool {
         self.holds
             .values()
@@ -172,7 +201,7 @@ impl Shared {
             .values()
             .try_fold(Counts::default(), |counts, amount| match amount {
                 Reserved::Metered(_) => Ok(counts),
-                Reserved::Subscription(tokens, _) => counts
+                Reserved::Subscription(tokens, _) | Reserved::Go(tokens, _) => counts
                     .add(Counts {
                         requests: 1,
                         tokens: *tokens,
@@ -188,6 +217,12 @@ impl Shared {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         self.insert_amount(Reserved::Subscription(tokens, usd))
+    }
+    pub fn insert_go(&mut self, tokens: u64, usd: f64) -> io::Result<String> {
+        if tokens == 0 || !usd.is_finite() || usd <= 0.0 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.insert_amount(Reserved::Go(tokens, usd))
     }
     fn insert_amount(&mut self, amount: Reserved) -> io::Result<String> {
         if self.holds.len() >= MAX_HOLDS {
@@ -238,12 +273,15 @@ mod tests {
             json!(0.01),
             json!({"subscription_tokens":120}),
             json!({"subscription_tokens":120,"reserved_usd":0.01}),
+            json!({"subscription_tokens":120,"go_usd":0.25}),
         ] {
             let hold = Reserved::from_value(&valid).unwrap();
             assert_eq!(hold.to_value(), valid);
         }
         for invalid in [
             json!({"subscription_tokens":120,"reserved_usd":null}),
+            json!({"subscription_tokens":120,"go_usd":0}),
+            json!({"subscription_tokens":120,"go_usd":0.25,"reserved_usd":0.25}),
             json!({"subscription_tokens":120,"reserved_usd":"0.01"}),
             json!({"subscription_tokens":120,"reserved_usd":-0.01}),
             json!({"subscription_tokens":120,"reserved_usd":0}),

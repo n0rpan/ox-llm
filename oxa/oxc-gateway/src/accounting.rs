@@ -51,6 +51,7 @@ pub struct Usage {
     pub cache_write: Option<u64>,
     pub invalid_cache: bool,
     pub reported_cost: Option<f64>,
+    pub go_estimated_cost: Option<f64>,
     pub finish: Option<String>,
 }
 #[derive(Clone, Copy)]
@@ -119,6 +120,45 @@ fn exhausted() -> Refusal {
         param: "model",
     }
 }
+pub(crate) struct GoBudget<'a> {
+    pub cap: &'a Value,
+    pub max_request_usd: f64,
+    pub separate_pool: bool,
+}
+
+fn reserved(message: &'static str) -> Refusal {
+    Refusal {
+        status: 429,
+        message,
+        code: "cloud_budget_reserved",
+        param: "model",
+    }
+}
+
+fn check_available(cap: &Value, spent: f64, held: f64, required: f64) -> Result<(), Refusal> {
+    let result = policy::daily_budget(cap, true, Some(spent), held, required);
+    if result
+        .as_ref()
+        .is_err_and(|error| error.code == "budget_exceeded")
+        && held > 0.0
+        && policy::daily_budget(cap, true, Some(spent), 0.0, required).is_ok()
+    {
+        return Err(reserved(
+            "Another in-flight request holds the required cloud budget headroom.",
+        ));
+    }
+    result
+}
+
+fn protect_old_go_hold(shared: &Shared) -> Result<(), Refusal> {
+    if shared.has_conservative_hold() {
+        return Err(reserved(
+            "An in-flight OpenCode Go request holds the previous unscoped daily reservation.",
+        ));
+    }
+    Ok(())
+}
+
 impl Budget {
     /// Record an unpaid refusal under the same admission lock. A failed audit
     /// closes later spending across processes without replacing its original error.
@@ -161,6 +201,17 @@ impl Budget {
         model: &Model,
         output: u64,
     ) -> Result<Hold, Refusal> {
+        self.reserve_metered(cap, ledger_enabled, model, output, false)
+    }
+
+    pub(crate) fn reserve_metered(
+        &self,
+        cap: &Value,
+        ledger_enabled: bool,
+        model: &Model,
+        output: u64,
+        separate_go_pool: bool,
+    ) -> Result<Hold, Refusal> {
         // The gateway has resolved the request's output-limit field and alias.
         // A zero limit must never become an under-reserved forwarded request.
         if output == 0 {
@@ -187,11 +238,21 @@ impl Budget {
         if shared.failed {
             return Err(Refusal::ledger());
         }
-        let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
-        if shared.has_conservative_hold() {
-            return Err(exhausted());
+        let combined_spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
+        protect_old_go_hold(&shared)?;
+        let (spent, held) = if separate_go_pool {
+            (
+                state.reader.metered_spend().map_err(|_| Refusal::ledger())?,
+                shared.metered_reserved(),
+            )
+        } else {
+            (combined_spent, shared.reserved())
+        };
+        if !separate_go_pool && shared.go_reserved() > 0.0 {
+            check_available(cap, spent, held, required)?;
+        } else {
+            policy::daily_budget(cap, true, Some(spent), held, required)?;
         }
-        policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
         let id = shared.insert(required).map_err(|_| Refusal::ledger())?;
         shared.save().map_err(|_| Refusal::ledger())?;
         Ok(Hold {
@@ -220,7 +281,7 @@ impl Budget {
         ledger_enabled: bool,
         model: &Model,
         output: u64,
-        cap: Option<&Value>,
+        budget: Option<GoBudget<'_>>,
     ) -> Result<Hold, Refusal> {
         let limits = limits.ok_or_else(SubscriptionLimits::missing)?;
         if !ledger_enabled {
@@ -250,28 +311,50 @@ impl Budget {
         if shared.failed {
             return Err(Refusal::ledger());
         }
-        let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
-        let reserved = if let Some(cap) = cap {
-            if shared.has_conservative_hold() {
-                return Err(exhausted());
-            }
-            policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), 0.0)?;
-            // Go has no trusted pre-request price/plan bound. Reserve all remaining
-            // configured USD headroom before sending, alongside its token allowance.
-            let required = cap.as_f64().ok_or_else(Refusal::ledger)? - (spent + shared.reserved());
+        let combined_spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
+        if model.provider == "opencode" && state.reader.go_bound_exceeded() {
+            return Err(Refusal {
+                status: 403,
+                message: "OpenCode Go reported an amount above its reservation. Check Extra Usage and the configured request bound before the next spend day.",
+                code: "go_budget_bound_exceeded",
+                param: "model",
+            });
+        }
+        let reserved = if let Some(budget) = budget {
+            protect_old_go_hold(&shared)?;
+            let (spent, held) = if budget.separate_pool {
+                (
+                    state.reader.go_spend().map_err(|_| Refusal::ledger())?,
+                    shared.go_reserved(),
+                )
+            } else {
+                (combined_spent, shared.reserved())
+            };
+            check_available(budget.cap, spent, held, 0.0)?;
+            let cap = budget.cap.as_f64().ok_or_else(Refusal::ledger)?;
+            let required = if budget.separate_pool {
+                budget.max_request_usd
+            } else {
+                // A previously configured aggregate cap remains a hard local
+                // admission ceiling, including when the last cents are held.
+                budget.max_request_usd.min(cap - spent - held)
+            };
             if !required.is_finite() || required <= 0.0 {
                 return Err(exhausted());
             }
-            policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
+            check_available(budget.cap, spent, held, required)?;
             required
         } else {
             0.0
         };
         let held = shared.subscription_reserved().map_err(|_| Refusal::ledger())?;
         limits.check(state.reader.subscription(), held, required)?;
-        let id = shared
-            .insert_subscription_with_usd(tokens, reserved)
-            .map_err(|_| Refusal::ledger())?;
+        let id = if reserved > 0.0 {
+            shared.insert_go(tokens, reserved)
+        } else {
+            shared.insert_subscription_with_usd(tokens, 0.0)
+        }
+        .map_err(|_| Refusal::ledger())?;
         shared.save().map_err(|_| Refusal::ledger())?;
         Ok(Hold {
             budget: self.clone(),
@@ -497,11 +580,21 @@ impl Hold {
         let settled_cost = if complete.is_some() {
             cost.unwrap_or(0.0)
         } else {
-            self.reserved.max(cost.unwrap_or(0.0))
+            self.reserved
+                .max(cost.unwrap_or(0.0))
+                .max(usage.go_estimated_cost.unwrap_or(0.0))
         };
+        if paid && self.reserved > 0.0 {
+            row["go_reserved_usd"] = json!(self.reserved);
+        }
         if settled_cost > 0.0 {
             row["billing"] = json!("metered");
-            row["cost_usd"] = json!(settled_cost);
+            if complete.is_some() {
+                row["cost_usd"] = json!(settled_cost);
+            } else {
+                row.as_object_mut().unwrap().remove("cost_usd");
+                row["estimated_cost_usd"] = json!(settled_cost);
+            }
             if let Some(cost) = cost {
                 row["reported_cost_usd"] = json!(cost);
             }

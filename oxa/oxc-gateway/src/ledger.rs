@@ -353,6 +353,7 @@ impl Entry {
             "catalog_cost_usd",
             "reported_cost_usd",
             "estimated_cost_usd",
+            "go_reserved_usd",
         ] {
             if let Some(value) = fields.get(name) {
                 if value
@@ -371,6 +372,14 @@ impl Entry {
             .as_str()
             .filter(|value| ["usage", "reserved", "estimated", "not_forwarded", "refused"].contains(value))
             .ok_or(io::ErrorKind::InvalidData)?;
+        if let Some(bound) = fields.get("go_reserved_usd") {
+            if fields["remote_provider"] != "opencode"
+                || !matches!(settled, "usage" | "reserved")
+                || bound.as_f64().is_none_or(|amount| amount <= 0.0)
+            {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+        }
         if settled == "refused" && (fields["cost_usd"].as_f64() != Some(0.0) || !(400..500).contains(&status))
         {
             return Err(io::ErrorKind::InvalidData.into());
@@ -382,7 +391,7 @@ impl Entry {
             {
                 if !matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
                     || (value == "subscription" && fields["cost_usd"].as_f64() != Some(0.0))
-                    || (value == "metered" && fields["cost_usd"].as_f64().is_none_or(|n| n <= 0.0))
+                    || (value == "metered" && crate::spend::budget_cost(fields).is_none_or(|n| n <= 0.0))
                 {
                     return Err(io::ErrorKind::InvalidData.into());
                 }

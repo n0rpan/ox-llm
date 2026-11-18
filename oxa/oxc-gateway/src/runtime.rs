@@ -56,6 +56,8 @@ pub struct Runtime {
     ledger_dir: PathBuf,
     ledger: OnceLock<Result<Ledger, Refusal>>,
     cap: Value,
+    go_daily_cap: Option<Value>,
+    go_max_request_usd: f64,
     ledger_enabled: bool,
     subscription_limits: Option<crate::billing::SubscriptionLimits>,
     #[cfg(feature = "upstream-openai")]
@@ -201,6 +203,8 @@ impl Runtime {
             ledger_dir,
             ledger: OnceLock::new(),
             cap: json!(options.daily_budget_usd),
+            go_daily_cap: None,
+            go_max_request_usd: 0.25,
             ledger_enabled: options.ledger_enabled,
             subscription_limits: options.subscription_limits,
             #[cfg(feature = "upstream-openai")]
@@ -209,6 +213,28 @@ impl Runtime {
             token_path,
         })
     }
+    /// Set owner-provided Go money limits. An explicit Go day cap separates
+    /// Go from metered spend. An absent cap retains the older aggregate ceiling.
+    pub fn with_opencode_budget(mut self, raw: &Value) -> Result<Self, Refusal> {
+        if let Some(value) = raw.get("daily_budget_usd") {
+            value
+                .as_f64()
+                .filter(|amount| amount.is_finite() && *amount >= 0.0)
+                .ok_or_else(|| invalid("opencode.daily_budget_usd"))?;
+            self.go_daily_cap = Some(value.clone());
+        }
+        if let Some(value) = raw.get("max_request_usd") {
+            self.go_max_request_usd = value
+                .as_f64()
+                .filter(|amount| amount.is_finite() && *amount > 0.0)
+                .ok_or_else(|| invalid("opencode.max_request_usd"))?;
+            if self.go_daily_cap.is_none() && self.cap.is_null() {
+                return Err(invalid("opencode.daily_budget_usd"));
+            }
+        }
+        Ok(self)
+    }
+
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
         self.catalog.models().filter(|model| supported(model.provider))
     }
@@ -625,17 +651,28 @@ impl Runtime {
                 max_output: u64::from(model.info().max_output),
                 billing: billing.clone(),
             };
+            let separate_pool = self.go_daily_cap.is_some();
             let hold = match &billing.billing {
-                Billing::Metered(_) => daily.budget().reserve(&self.cap, true, &billing, output)?,
+                Billing::Metered(_) => {
+                    daily
+                        .budget()
+                        .reserve_metered(&self.cap, true, &billing, output, separate_pool)?
+                }
                 Billing::Subscription => {
-                    let cap = (model.info().provider == Provider::OpenCode && !self.cap.is_null())
-                        .then_some(&self.cap);
+                    let cap = self.go_daily_cap.as_ref().unwrap_or(&self.cap);
+                    let budget = (model.info().provider == Provider::OpenCode && !cap.is_null()).then_some(
+                        accounting::GoBudget {
+                            cap,
+                            max_request_usd: self.go_max_request_usd,
+                            separate_pool,
+                        },
+                    );
                     daily.budget().reserve_subscription_with_budget(
                         self.subscription_limits,
                         true,
                         &billing,
                         output,
-                        cap,
+                        budget,
                     )?
                 }
             };
@@ -787,12 +824,14 @@ impl<'a> Call<'a> {
             if let Ok(usage) = crate::opencode::Usage::parse(&chunk["usage"]) {
                 self.metered_go(Some(&usage));
             }
+        } else {
+            self.usage.observe(chunk);
         }
-        self.usage.observe(chunk);
         self.entry.as_mut().expect("unsettled call").observe();
     }
     pub(crate) fn metered_go(&mut self, usage: Option<&crate::opencode::Usage>) {
-        self.usage.reported_cost = usage.map(|usage| usage.cost);
+        self.usage.reported_cost = usage.filter(|usage| !usage.estimated).map(|usage| usage.cost);
+        self.usage.go_estimated_cost = usage.filter(|usage| usage.estimated).map(|usage| usage.cost);
         self.go_usage = usage.map(|usage| {
             self.usage.prompt = Some(usage.prompt);
             self.usage.output = Some(usage.completion);

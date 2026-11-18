@@ -76,6 +76,8 @@ fn normalize(error: Error) -> OxaError {
             | "subscription_limit_exceeded"
             | "subscription_limits_not_configured"
             | "subscription_private"
+            | "cloud_budget_reserved"
+            | "go_budget_bound_exceeded"
     ) {
         return OxaError::new(refusal.code, refusal.message);
     }

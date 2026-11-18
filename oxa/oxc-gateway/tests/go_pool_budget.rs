@@ -21,7 +21,17 @@ use std::fs;
 const GO: &str = "opencode/synthetic-go";
 const API: &str = "synthetic-metered";
 
-fn runtime(fixture: &skeleton::Fixture) -> Runtime {
+fn fixture() -> skeleton::Fixture {
+    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
+    fs::write(
+        &fixture.key_path,
+        json!({"opencode":"synthetic-plan-key","anthropic":"synthetic-api-key"}).to_string(),
+    )
+    .unwrap();
+    fixture
+}
+
+fn runtime(fixture: &skeleton::Fixture, cap: f64) -> Runtime {
     let go = Model::new(
         GO,
         Provider::OpenCode,
@@ -53,7 +63,7 @@ fn runtime(fixture: &skeleton::Fixture) -> Runtime {
         fixture.ledger_dir.clone(),
         Options {
             access: Access::Enabled,
-            daily_budget_usd: Some(400.0),
+            daily_budget_usd: Some(cap),
             ledger_enabled: true,
             subscription_limits: Some(SubscriptionLimits::new(20, 2_000_000).unwrap()),
             ..Options::default()
@@ -74,15 +84,10 @@ fn settle(mut call: Call<'_>, prompt: u64, output: u64, cost: Option<f64>) -> Va
 
 #[test]
 fn two_go_calls_and_a_metered_call_hold_and_settle_together() {
-    let fixture = skeleton::Fixture::for_endpoint("https://example.invalid");
-    fs::write(
-        &fixture.key_path,
-        json!({"opencode":"synthetic-plan-key","anthropic":"synthetic-api-key"}).to_string(),
-    )
-    .unwrap();
-    let first = runtime(&fixture);
-    let second = runtime(&fixture);
-    let metered = runtime(&fixture);
+    let fixture = fixture();
+    let first = runtime(&fixture, 400.0);
+    let second = runtime(&fixture, 400.0);
+    let metered = runtime(&fixture, 400.0);
     let begin = |alias| json!({"model":alias,"max_tokens":32});
 
     let mut previous = metered.begin(&begin(API), Context::default()).unwrap();
@@ -117,4 +122,62 @@ fn two_go_calls_and_a_metered_call_hold_and_settle_together() {
 
     let day = Ledger::open(&fixture.ledger_dir).unwrap().today().unwrap();
     assert_eq!(day.budget().spend().unwrap(), 0.16);
+}
+
+#[test]
+fn configured_go_pool_and_metered_pool_do_not_consume_each_others_headroom() {
+    let fixture = fixture();
+    let first = runtime(&fixture, 2.2)
+        .with_opencode_budget(&json!({"daily_budget_usd":0.25,"max_request_usd":0.25}))
+        .unwrap();
+    let second = runtime(&fixture, 2.2)
+        .with_opencode_budget(&json!({"daily_budget_usd":0.25,"max_request_usd":0.25}))
+        .unwrap();
+    let begin = |alias| json!({"model":alias,"max_tokens":32});
+
+    let mut go = first.begin(&begin(GO), Context::default()).unwrap();
+    let mut api = second.begin(&begin(API), Context::default()).unwrap();
+    let blocked_go = first.begin(&begin(GO), Context::default()).err().unwrap();
+    assert_eq!(blocked_go.code, "cloud_budget_reserved");
+    assert!(!blocked_go.message.contains("exhausted"));
+    assert_eq!(
+        second.begin(&begin(API), Context::default()).err().unwrap().code,
+        "budget_exceeded"
+    );
+
+    api.mark_forwarded().unwrap();
+    assert_eq!(settle(api, 20, 10, None)["cost_usd"].as_f64(), Some(0.06));
+    go.mark_forwarded().unwrap();
+    assert_eq!(settle(go, 16, 10, Some(0.25))["cost_usd"].as_f64(), Some(0.25));
+
+    assert_eq!(
+        first.begin(&begin(GO), Context::default()).err().unwrap().code,
+        "budget_exceeded"
+    );
+    // A settled Go charge plus the metered debit would leave too little
+    // aggregate headroom for a full metered reservation.
+    assert!(second.begin(&begin(API), Context::default()).is_ok());
+}
+
+#[test]
+fn a_charge_above_the_declared_bound_is_recorded_and_closes_go_admission() {
+    let fixture = fixture();
+    let policy = json!({"daily_budget_usd":1.0,"max_request_usd":0.25});
+    let first = runtime(&fixture, 400.0).with_opencode_budget(&policy).unwrap();
+    let mut call = first.begin(&json!({"model":GO}), Context::default()).unwrap();
+    call.mark_forwarded().unwrap();
+    let row = settle(call, 16, 10, Some(0.3));
+    assert_eq!(row["cost_usd"].as_f64(), Some(0.3));
+    assert_eq!(row["go_reserved_usd"].as_f64(), Some(0.25));
+
+    let restarted = runtime(&fixture, 400.0).with_opencode_budget(&policy).unwrap();
+    assert_eq!(
+        restarted
+            .begin(&json!({"model":GO}), Context::default())
+            .err()
+            .unwrap()
+            .code,
+        "go_budget_bound_exceeded"
+    );
+    assert!(restarted.begin(&json!({"model":API}), Context::default()).is_ok());
 }

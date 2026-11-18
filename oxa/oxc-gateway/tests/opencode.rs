@@ -147,9 +147,14 @@ fn subscription_usage_keeps_token_categories_and_exact_allowance_without_paid_fa
     assert_eq!(parsed.tokens["reasoning"], 5);
     assert_eq!(parsed.allowance, json!(0.00012));
     assert_eq!(parsed.list_cost, json!(0.00015));
+    assert!(!parsed.estimated);
+    let mut estimated = usage();
+    estimated["opencode"]["estimated"] = json!(true);
+    assert!(Usage::parse(&estimated).unwrap().estimated);
     for (pointer, replacement) in [
         ("/cost", json!(-0.001)),
         ("/opencode/allowance", json!(-1)),
+        ("/opencode/estimated", json!("true")),
         ("/opencode/list_cost", Value::Null),
         ("/opencode/tokens/reasoning", json!(-1)),
     ] {

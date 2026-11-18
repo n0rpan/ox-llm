@@ -272,7 +272,9 @@ fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
-    assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
+    assert_eq!(terminal(&second)["error_class"], "cloud_budget_reserved");
+    assert!(String::from_utf8_lossy(&second.stderr).contains("Another in-flight request holds"));
+    assert!(!String::from_utf8_lossy(&second.stderr).contains("daily cloud budget is exhausted"));
     assert_eq!(
         mock.requests().len(),
         3,
@@ -313,7 +315,8 @@ fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
     assert_eq!(mock.requests().len(), 3);
     let ledger = rows(&env);
     let unknown = ledger.iter().find(|row| row["settled"] == "reserved").unwrap();
-    assert_eq!(unknown["cost_usd"], 0.01);
+    assert!(unknown.get("cost_usd").is_none());
+    assert_eq!(unknown["estimated_cost_usd"], 0.01);
     assert_eq!(unknown["billing"], "metered");
     assert_eq!(unknown["usage_missing"], true);
     mock.assert_healthy();
