@@ -39,7 +39,8 @@ pub fn fork_file(
     id: Option<&str>,
 ) -> Result<SessionRef, OxaError> {
     let _lifecycle = store.spill_lifecycle_lock(src)?;
-    let entries = store.load(src)?;
+    let mut entries = store.load(src)?;
+    strip_lead_state(&mut entries);
     if entries.is_empty() {
         return Err(OxaError::new(
             codes::INVALID,
@@ -115,6 +116,7 @@ fn write_branch(
     branch: &[Entry],
 ) -> Result<(), OxaError> {
     let mut out: Vec<Entry> = branch.to_vec();
+    strip_lead_state(&mut out);
     let mut taken: HashSet<String> = branch.iter().map(|e| e.id.clone()).collect();
     let mut parent = branch.last().map(|e| e.id.clone());
     for e in branch {
@@ -136,6 +138,19 @@ fn write_branch(
         parent = Some(id);
     }
     store.append_many(dst, &out)
+}
+
+// A new session must not inherit the source session's admitted input or assignment.
+fn strip_lead_state(entries: &mut [Entry]) {
+    for entry in entries {
+        if let EntryBody::Custom { custom_type, data } = &mut entry.body {
+            if custom_type == crate::GOAL_ENTRY {
+                if let Some(data) = data.as_object_mut() {
+                    data.remove("lead");
+                }
+            }
+        }
+    }
 }
 
 /// Append `body` as a child of `leaf`. `need` is an entry id that must also exist in the session.

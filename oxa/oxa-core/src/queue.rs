@@ -106,6 +106,7 @@ impl WrapUpReason {
 #[derive(Debug, Default)]
 pub struct Gate {
     goal_steering_enabled: std::sync::atomic::AtomicBool,
+    pub(crate) lead_steering_authority: Mutex<Option<crate::goal::BoundLeadAuthority>>,
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
