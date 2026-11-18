@@ -139,6 +139,7 @@ fn task_usage_retains_the_initial_worker_and_repair_after_reopening() {
     assert_eq!(task_tokens["attempts"], 2, "{record}");
     assert_eq!(task_tokens["complete_attempts"], 2, "{record}");
     assert_eq!(task_tokens["completion"], 12, "{record}");
+    assert_eq!(task_tokens["complete"], true, "{record}");
     assert_eq!(&load(&env)["record"]["task_tokens"], task_tokens);
 
     let reopened = status(&env);
@@ -429,6 +430,7 @@ fn a_parent_crash_retains_session_and_child_lock_then_resumes_the_same_session()
     assert_eq!(task_tokens["attempts"], 2, "{resumed}");
     assert_eq!(task_tokens["complete_attempts"], 1, "{resumed}");
     assert_eq!(task_tokens["completion"], 6, "{resumed}");
+    assert_eq!(task_tokens["complete"], false, "{resumed}");
     assert_eq!(&status(&env)[0]["task_tokens"], task_tokens);
 }
 
@@ -766,6 +768,7 @@ fn a_crash_between_worker_finished_and_acceptance_entry_does_not_restart_the_wor
     assert_eq!(task_tokens["attempts"], 1, "{first}");
     assert_eq!(task_tokens["complete_attempts"], 1, "{first}");
     assert_eq!(task_tokens["completion"], 5, "{first}");
+    assert_eq!(task_tokens["complete"], true, "{first}");
     let mut state = load(&env);
     state["record"]["step"] = "acceptance".into();
     state["record"]["outcome"] = "running".into();

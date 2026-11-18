@@ -15,6 +15,7 @@ mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
 mod execute;
+pub use execute::TaskTokens;
 pub mod helper_queue;
 mod notes;
 mod publish;
@@ -87,6 +88,8 @@ pub struct Record {
     pub outcome: Outcome,
     pub detail: String,
     pub worker: Option<WorkerResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_tokens: Option<TaskTokens>,
     pub session_id: Option<String>,
     pub base_sha: Option<String>,
     pub checkpoint_revision: u64,
@@ -918,6 +921,7 @@ pub fn blocked_record(task: &Task, detail: String) -> Record {
         outcome: Outcome::Blocked,
         detail,
         worker: None,
+        task_tokens: None,
         session_id: None,
         base_sha: None,
         checkpoint_revision: 0,
@@ -1144,6 +1148,7 @@ fn run_locked(
         record.worktree = tree.clone();
         record.base_sha = Some(planned.base_sha.clone());
         record.checkpoint_revision = revision;
+        record.task_tokens = Some(TaskTokens::default());
         let mut state = state::State::new(task.clone(), record, policy.offline);
         state.execution = Some(state::Execution {
             initial: None,
