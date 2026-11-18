@@ -17,6 +17,7 @@
 //! * **Layout.** `<sessions_dir>/--<cwd with '/' -> '-'>--/<timestamp>_<id>.jsonl` (pi's scheme),
 //!   first line = the session header.
 
+pub mod advice;
 mod clock;
 mod durable;
 mod goal;
