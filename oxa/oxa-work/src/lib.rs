@@ -18,8 +18,10 @@ mod execute;
 pub mod helper_queue;
 mod notes;
 mod publish;
+mod queue;
 pub use notes::{ProblemNote, ReportRecord};
-pub use publish::{publish, report_notes};
+pub use publish::{inherit_report_lease, publish, report_notes};
+pub use queue::{native_task, run_queue, NativeQueueOwner, QueueEvent, QueueOptions, QueueRun, QueueStatus};
 pub mod mirrors;
 pub mod shadow;
 mod state;
@@ -105,6 +107,27 @@ pub struct Record {
     #[serde(default)]
     pub acceptance_outcome: Option<Outcome>,
 }
+impl Record {
+    pub fn failed(&self) -> bool {
+        matches!(
+            self.outcome,
+            Outcome::Red | Outcome::Blocked | Outcome::Interrupted
+        ) || self.reports.iter().any(|report| report.disposition == "failed")
+    }
+}
+
+pub(crate) fn worktree_root(common: &Path) -> Result<PathBuf> {
+    let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().ok_or("git directory has no parent")?
+    } else {
+        common
+    };
+    let parent = repo_dir
+        .parent()
+        .ok_or("repository has no parent for worktrees")?;
+    let name = repo_dir.file_name().ok_or("repository has no directory name")?;
+    Ok(parent.join(".oxa-worktrees").join(name))
+}
 
 /// An immutable task/base/check snapshot, built before any task in its batch runs.
 pub struct PlannedTask {
@@ -124,6 +147,10 @@ impl PlannedTask {
 }
 
 pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedTask> {
+    plan_new_task(repo, task, policy, false)
+}
+
+fn plan_new_task(repo: &Path, task: Task, policy: &RunPolicy, native: bool) -> Result<PlannedTask> {
     validate(&task)?;
     let branch = checked(git(policy, repo, &["check-ref-format", "--branch", &task.branch]))?;
     if branch != task.branch {
@@ -140,9 +167,9 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
         repo,
         &["rev-parse", "--symbolic-full-name", &task.base],
     ))?;
-    if base_ref == format!("refs/heads/{}", task.branch)
-        || base_ref == format!("refs/remotes/origin/{}", task.branch)
-    {
+    let local_branch = base_ref == format!("refs/heads/{}", task.branch);
+    let remote_branch = base_ref == format!("refs/remotes/origin/{}", task.branch);
+    if (local_branch && !native) || remote_branch {
         return Err("task branch must differ from its base branch".into());
     }
     let base_alias = tree::base_alias(policy, repo, &task.base, &base_sha)?;
@@ -158,7 +185,7 @@ pub fn plan_task(repo: &Path, task: Task, policy: &RunPolicy) -> Result<PlannedT
 /// Recover immutable inputs before consulting today's mutable base/settings.
 /// New attempts still freeze a fresh plan before any worker in the batch runs.
 pub fn plan_task_for_run(repo: &Path, task: Task, policy: &RunPolicy, rerun: bool) -> Result<PlannedTask> {
-    plan_task_mode(repo, task, policy, rerun, false)
+    plan_task_mode(repo, task, policy, rerun, false, false)
 }
 
 /// Explicit actions reuse completed execution inputs, including red results,
@@ -169,7 +196,7 @@ pub fn plan_task_for_actions(
     policy: &RunPolicy,
     rerun: bool,
 ) -> Result<PlannedTask> {
-    plan_task_mode(repo, task, policy, rerun, true)
+    plan_task_mode(repo, task, policy, rerun, true, false)
 }
 
 fn completed_execution(step: Step) -> bool {
@@ -182,10 +209,11 @@ fn plan_task_mode(
     policy: &RunPolicy,
     rerun: bool,
     actions: bool,
+    native: bool,
 ) -> Result<PlannedTask> {
     validate(&task)?;
     let Some(saved) = load_task_checkpoint(policy, &task.id)? else {
-        return plan_task(repo, task, policy);
+        return plan_new_task(repo, task, policy, native);
     };
     if saved.task != task {
         return Err("task specification changed; use a new task id".into());
@@ -206,7 +234,7 @@ fn plan_task_mode(
             base_alias: None,
         });
     }
-    plan_task(repo, task, policy)
+    plan_new_task(repo, task, policy, native)
 }
 
 /// Freeze a batch before callbacks, reconciling a literal local base with its
@@ -238,7 +266,7 @@ fn plan_tasks(
 ) -> Vec<Result<PlannedTask>> {
     let mut plans: Vec<_> = tasks
         .iter()
-        .map(|task| plan_task_mode(repo, task.clone(), policy, rerun, actions))
+        .map(|task| plan_task_mode(repo, task.clone(), policy, rerun, actions, false))
         .collect();
     let mut targets =
         std::collections::BTreeMap::<String, std::collections::BTreeMap<String, Vec<String>>>::new();
@@ -518,8 +546,12 @@ pub fn metadata_git(binary: &Path, path: &std::ffi::OsStr, repo: &Path, args: &[
 }
 
 pub fn read_tasks(path: &Path) -> Result<Vec<Task>> {
-    let tasks: Vec<Task> = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("task file: {e}"))?;
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    let tasks = serde_json::from_slice(&bytes).map_err(|e| format!("task file: {e}"))?;
+    validate_tasks(tasks)
+}
+
+fn validate_tasks(tasks: Vec<Task>) -> Result<Vec<Task>> {
     if tasks.is_empty() {
         return Err("task file is empty".into());
     }
@@ -1011,37 +1043,101 @@ pub fn run_task_with_notes(
     observer: &dyn CheckpointObserver,
     scrub_note: &(dyn Fn(&ProblemNote) -> Option<ProblemNote> + Sync),
 ) -> std::result::Result<Record, RunError> {
-    let task = &planned.task;
-    validate(task)?;
+    LockedTask::acquire(planned.task(), policy)?
+        .run_with_notes(repo, binary, planned, rerun, observer, scrub_note)
+}
+
+/// Own the existing task lock across execution and its explicit terminal actions.
+pub struct LockedTask<'a> {
+    task: &'a Task,
+    policy: &'a RunPolicy,
+    lock: fs::File,
+}
+
+impl<'a> LockedTask<'a> {
+    pub fn acquire(task: &'a Task, policy: &'a RunPolicy) -> Result<Self> {
+        Self::open(task, policy, true)
+    }
+
+    fn open(task: &'a Task, policy: &'a RunPolicy, create: bool) -> Result<Self> {
+        validate(task)?;
+        if create {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&policy.storage)
+                .map_err(|error| format!("task storage: {error}"))?;
+        }
+        verify_task_storage(&policy.storage).map_err(|error| format!("task storage: {error}"))?;
+        let lock_path = policy.storage.join(format!("{}.lock", task.id));
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(shadow::OWNER_FILE_FLAGS)
+            .create(create)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
+        let lock_metadata = lock
+            .metadata()
+            .map_err(|e| format!("cannot inspect task lock: {e}"))?;
+        // SAFETY: geteuid has no preconditions and returns this process's effective owner.
+        if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
+            return Err("cannot lock task: lock must be an owner-controlled regular file".into());
+        }
+        lock.try_lock()
+            .map_err(|e| format!("task {} is already running: {e}", task.id))?;
+        Ok(Self { task, policy, lock })
+    }
+
+    /// Plan the task admitted by the native queue while retaining its lock.
+    pub fn plan_native(&self, repo: &Path, actions: bool) -> Result<PlannedTask> {
+        if !self.task.id.starts_with("board-") || !self.task.runner_owns_github() {
+            return Err("native planning requires an admitted board task".into());
+        }
+        plan_task_mode(repo, self.task.clone(), self.policy, false, actions, true)
+    }
+
+    pub fn run_with_notes(
+        &mut self,
+        repo: &Path,
+        binary: &Path,
+        planned: &PlannedTask,
+        rerun: bool,
+        observer: &dyn CheckpointObserver,
+        scrub_note: &(dyn Fn(&ProblemNote) -> Option<ProblemNote> + Sync),
+    ) -> std::result::Result<Record, RunError> {
+        run_locked(repo, binary, planned, self, rerun, observer, scrub_note)
+    }
+}
+
+fn run_locked(
+    repo: &Path,
+    binary: &Path,
+    planned: &PlannedTask,
+    locked: &LockedTask<'_>,
+    rerun: bool,
+    observer: &dyn CheckpointObserver,
+    scrub_note: &(dyn Fn(&ProblemNote) -> Option<ProblemNote> + Sync),
+) -> std::result::Result<Record, RunError> {
+    let (task, policy, lock_file) = (locked.task, locked.policy, &locked.lock);
+    if task != &planned.task {
+        return Err("task specification changed".into());
+    }
     let root = PathBuf::from(checked(git(policy, repo, &["rev-parse", "--show-toplevel"]))?);
     let common = PathBuf::from(checked(git(
         policy,
         &root,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     ))?);
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&policy.storage)
-        .and_then(|()| verify_task_storage(&policy.storage))
-        .map_err(|error| format!("task storage: {error}"))?;
-    let lock_file = lock_task(policy, &task.id)?;
     // The inherited lock retains its inode; status never tries to acquire it.
     let receipt = policy.storage.join(format!("{}.json", task.id));
     let replacing = receipt.exists();
     if planned.checkpoint_revision.is_some() && !replacing {
         return Err("task checkpoint disappeared after planning; retry the task file".into());
     }
-    let repo_dir = if common.file_name().is_some_and(|name| name == ".git") {
-        common.parent().ok_or("git directory has no parent")?
-    } else {
-        &common
-    };
-    let parent = repo_dir
-        .parent()
-        .ok_or("repository has no parent for worktrees")?;
-    let name = repo_dir.file_name().ok_or("repository has no directory name")?;
-    let trees = parent.join(".oxa-worktrees").join(name);
+    let trees = worktree_root(&common)?;
     let tree = trees.join(&task.id);
     let fresh = |revision| {
         let mut record = blocked_record(task, String::new());
@@ -1111,7 +1207,7 @@ pub fn run_task_with_notes(
         repo: &root,
         binary,
         policy: &policy,
-        lock: &lock_file,
+        lock: lock_file,
         writer: &mut writer,
         observer,
         scrub_note,
@@ -1143,7 +1239,7 @@ pub fn run_task_with_notes(
     writer
         .save(&mut state, Step::Saving, observer)
         .map_err(RunError::Checkpoint)?;
-    if let Err(error) = execute::save_work(&root, binary, task, &policy, &lock_file, &mut state.record) {
+    if let Err(error) = execute::save_work(&root, binary, task, &policy, lock_file, &mut state.record) {
         if state.record.outcome != Outcome::Interrupted {
             state.record.outcome = Outcome::Blocked;
         }
@@ -1173,7 +1269,7 @@ pub fn run_task_with_notes(
     if recover_accepted_save {
         // A failed or interrupted save can leave a worktree that changed since
         // acceptance. Qualify the exact recovered commit before restoring success.
-        match committed::verify_commit(&root, binary, &policy, &state, &lock_file) {
+        match committed::verify_commit(&root, binary, &policy, &state, lock_file) {
             Ok(_) => {
                 let initial = state.execution.as_ref().and_then(|point| point.initial.as_ref());
                 state.record.outcome = if state.record.head_sha.as_ref() == initial {

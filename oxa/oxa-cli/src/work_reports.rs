@@ -10,9 +10,16 @@ use std::{
     process::{Command, Stdio},
 };
 
-pub(crate) fn process(program: &str, args: &[String], cwd: &Path, lock: &File) -> Option<(i32, String)> {
+pub(crate) fn process(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    lock: &File,
+    gate: &File,
+) -> Option<(i32, String)> {
     let mut command = Command::new(program);
     command.args(args).current_dir(cwd);
+    oxa_work::inherit_report_lease(&mut command, gate).ok()?;
     oxa_work::command_runner_with_stdin(
         command,
         Some(1_048_576),
@@ -83,8 +90,21 @@ pub(crate) fn report(
     ctx: &ScrubCtx,
     offline: bool,
     confirm: Confirm<'_>,
-    runner: Runner<'_>,
+    mut run: impl FnMut(&str, &[String], &File) -> Option<(i32, String)>,
 ) -> Result<ReportRecord, String> {
+    // Retain the queue's per-user reporting lease across every effect.
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::create_dir_all(&dirs.agent_dir).map_err(|e| e.to_string())?;
+    let gate = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dirs.agent_dir.join("work-report.lock"))
+        .map_err(|e| e.to_string())?;
+    gate.lock().map_err(|e| e.to_string())?;
+    let runner: Runner<'_> = &mut |program, args| run(program, args, &gate);
     let note = &ProblemNote {
         title: visible(&note.title),
         notes: visible(&note.notes),
@@ -285,7 +305,7 @@ mod tests {
         let env = TestEnv::new();
         let lock = File::open("/dev/null").unwrap();
         let args = words(&["-c", "1048577", "/dev/zero"]);
-        assert!(process("/usr/bin/head", &args, &env.work(), &lock).is_none());
+        assert!(process("/usr/bin/head", &args, &env.work(), &lock, &lock).is_none());
     }
 
     fn note() -> ProblemNote {
@@ -321,7 +341,7 @@ mod tests {
                 approved = true;
                 Some(false)
             },
-            &mut |program, _| {
+            |program, _, _| {
                 if program == "gh" {
                     calls += 1;
                 }
@@ -350,7 +370,7 @@ mod tests {
                 prompts.push(prompt.to_owned());
                 Some(true)
             },
-            &mut |program, args| {
+            |program, args: &[String], _: &File| {
                 if program != "gh" {
                     return Some((0, "{}".into()));
                 }
@@ -379,7 +399,7 @@ mod tests {
         let env = TestEnv::new();
         let dirs = Dirs::under(env.root());
         let mut log = vec![];
-        let mut runner = |program: &str, args: &[String]| {
+        let runner = |program: &str, args: &[String], _: &File| {
             if program != "gh" {
                 return Some((0, "{}".into()));
             }
@@ -399,7 +419,7 @@ mod tests {
             &ScrubCtx::default(),
             false,
             &mut |_| Some(true),
-            &mut runner,
+            runner,
         )
         .unwrap();
         assert_eq!(result.disposition, "existing_issue");
@@ -412,7 +432,7 @@ mod tests {
             let env = TestEnv::new();
             let dirs = Dirs::under(env.root());
             let mut gh_calls = 0;
-            let mut runner = |program: &str, _: &[String]| {
+            let runner = |program: &str, _: &[String], _: &File| {
                 if program == "gh" {
                     gh_calls += 1;
                     None
@@ -427,7 +447,7 @@ mod tests {
                 &ScrubCtx::default(),
                 offline,
                 &mut |_| Some(true),
-                &mut runner,
+                runner,
             )
             .unwrap();
             assert_eq!(result.disposition, "local");
@@ -440,7 +460,7 @@ mod tests {
     fn an_open_fixing_pr_prevents_issue_or_comment_writes() {
         let env = TestEnv::new();
         let dirs = Dirs::under(env.root());
-        let mut runner = |program: &str, args: &[String]| {
+        let runner = |program: &str, args: &[String], _: &File| {
             if program != "gh" {
                 return Some((0, "{}".into()));
             }
@@ -465,7 +485,7 @@ mod tests {
             &ScrubCtx::default(),
             false,
             &mut |_| Some(true),
-            &mut runner,
+            runner,
         )
         .unwrap();
         assert_eq!(result.disposition, "existing_pr");
@@ -477,7 +497,7 @@ mod tests {
         let mut n = note();
         n.notes = "Synthetic reproduction token=example at /home/synthetic/project with user@example.invalid"
             .into();
-        let mut runner = |program: &str, args: &[String]| {
+        let runner = |program: &str, args: &[String], _: &File| {
             if program != "gh" {
                 return Some((0, "{}".into()));
             }
@@ -495,7 +515,7 @@ mod tests {
             &ScrubCtx::default(),
             false,
             &mut |_| Some(true),
-            &mut runner,
+            runner,
         )
         .unwrap();
         assert_eq!(result.disposition, "filed");

@@ -255,3 +255,50 @@ A later explicit `--report-problems` retries local reports without replaying the
 agent. A draft-write failure records a failed report and finishes the task checkpoint;
 `--report-problems` can retry it. Reports contain only scrubbed structured symptom
 summaries, without raw assistant output or acceptance logs.
+
+
+Queue mode watches a directory of regular, non-hidden `*.json` task files.
+Each file may contain up to 128 tasks and occupy up to 1 MiB. A queue accepts
+up to 256 task files and 16 MiB of input per scan. The controller retains at
+most 4,096 task identities and 16 MiB of task text across scans. Archive
+completed inputs and restart the controller if it reaches the retention limit.
+After adding task files, run
+`oxa work --queue ./tasks --max 2 --min-free-mib 1024`.
+
+Files are admitted oldest modification time first (filename breaks ties), with
+array order preserved inside a file. At most `--max` tasks run; surviving workers
+from an interrupted controller still occupy slots until their locks release.
+Task IDs must be unique across the queue. Completed task state prevents agent
+replay on restart. Files remain available for inspection and manual archiving.
+Write new files with an atomic rename so the runner reads a complete task file.
+
+The default free-space floor is 512 MiB. The runner checks the repository, common
+git directory, worktree storage and queue filesystems before each admission. A low
+or unreadable free-space value pauses new work while active jobs finish. Invalid
+JSON files report an error and do not skip other work. `--once` drains available
+work and exits; when disk space blocks pending tasks it exits 1 with their files
+retained. Without `--once`, the directory stays under watch for new files.
+Appending tasks to an existing file queues only new IDs. Discovered task definitions
+are immutable; changing one requires a new ID. Correcting or archiving an invalid
+input clears its current queue errors. Archiving inputs does not interrupt admitted
+work. A controller or monitor error stops admission and drains active workers
+before returning an error.
+
+Queue mode supports `--publish`, `--report-problems` and `--rerun` with the same
+explicit policy as single-file mode. Its worker threads preserve the parent's
+offline policy. Standard output emits JSON lines tagged `state`, `task` or `error`.
+The latest state line is also replaced atomically at
+`<queue>/.oxa-queue-status.json` for a monitor. It contains a heartbeat timestamp,
+active task IDs, pending/finished/failed counts, free bytes and disk-pause details.
+A controller lock prevents two queue controllers from exceeding the worker cap.
+
+The native board adapter runs one previously admitted packet from that board's
+existing spool. Use `oxa work --native-queue --config PATH` from the source
+repository with the same private config used by refill and `nativeExecution`
+explicitly enabled. This execution path uses the offline policy. It moves the
+matching packet into `started` and resumes from the task checkpoint after
+interruption. The original claim releases after the whole task finishes and
+its worker process exits.
+
+Problem-report workflows hold a per-user kernel lease across drafting, duplicate
+search, match reads and writing, so concurrent workers share one reporting lane.
