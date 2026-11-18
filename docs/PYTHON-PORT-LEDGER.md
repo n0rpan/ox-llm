@@ -24,7 +24,7 @@ PORTED means the named Rust implementation and its contract tests replace the fe
 | oxc/src/oxc/bootstrap_sources.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 | oxc/src/oxc/bootstrap_transfer.py — legacy default bootstrap | DROPPED | No native-default Python planning/fetch/build/install pipeline. | Explicit owner [#681](https://github.com/oxstack/ox-llm/issues/681) default-installer retirement; [reusable archive plan](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947917766). Not UNUSED: keep until all callers/fixtures are retired or ported. |
 
-Source retirement follows the v0.2.1 release cut in [#763](https://github.com/oxstack/ox-llm/issues/763). [#1198](https://github.com/oxstack/ox-llm/pull/1198) landed native packaging. Qualify remaining callers, preserve the exact pre-removal commit as `archive/python-oxc` and record it in #946 before deleting qualified source slices in ledger order. Keep each controller, CLI, Studio, metadata-refresh and test contract tied to its own disposition.
+Qualified source retirement is Feature F, ahead of release publication (Feature H) in [#1214](https://github.com/oxstack/ox-llm/issues/1214). [#1198](https://github.com/oxstack/ox-llm/pull/1198) landed native packaging. Qualify remaining callers, preserve the exact pre-removal commit as `archive/python-oxc` and record it in #946 before deleting qualified source slices in ledger order. Keep each controller, CLI, Studio, metadata-refresh and test contract tied to its own disposition.
 
 Known callers on the inspected base included packaging/release/{stage,smoke}.py, the Python lab job in .github/workflows/checks.yml, tools/{oxa-contract,openai-contract}/run.sh, tools/gates/tiny_real.sh and related documentation. The MEMLAT differential now uses the captured reference described above. Synthetic path strings in tools/ci/tests must be distinguished from executable imports before changing them.
 
@@ -291,8 +291,8 @@ merge. This clears the packaging SHIP condition for #951 rows 021
 
 The [#763](https://github.com/oxstack/ox-llm/issues/763) packaging requirement
 remains open. The tested packages contain standalone `oxe`, which still needs
-an explicit release allowlist decision. Source deletion requires the v0.2.1
-tag and the indexed pre-removal archive.
+an explicit release allowlist decision. Each source slice still requires
+its caller and evidence gates and the indexed pre-removal archive.
 
 ### Remaining controller-path evidence at `7f7bfb6a`
 
@@ -326,12 +326,30 @@ and native acceptance evidence.
 | `oxc/src/oxc/runtime/engine_ledger.py` — legacy inherited-FD engine diagnostics | UNQUALIFIED | `ctl_lifecycle.py` passes a descriptor and starts capture. `ctl_status.py` exposes metadata. `test_engine_ledger.py` checks failure cleanup. Preserve the diagnostic FD and lifecycle tests until their caller disposition. The native controller-status fixture carries a compatibility field. |
 | `oxc/src/oxc/runtime/health_digest.py` — legacy request and engine health digest | UNQUALIFIED | The control launcher reads ledger rows and death events to build a digest. `test_health_digest.py` exercises output filtering. Keep the read-side reporting and privacy behavior until a retained-feature decision is recorded. |
 | `oxc/src/oxc/runtime/model_catalog.py` — native local listing without launch | PORTED | `ctl_models.py`, `ctl_cache.py`, `storage_view.py` and the legacy chooser use the metadata. `oxa/oxa-cli/tests/in_process_local.rs::native_local_discovery_is_user_only_non_launching_and_allowed_offline` covers native enumeration. Keep `test_flash_qualification.py` and `test_ui_data.py` for the legacy chooser facts. |
-| `oxc/src/oxc/runtime/release_update.py` — legacy local staged update and rollback | UNQUALIFIED | The legacy CLI updates from local staged releases and rolls back failed restarts. `test_release_update.py` exercises rollback. Native package-source `oxa update` has a different contract. Keep staged rollback until indexed. |
+| `oxc/src/oxc/runtime/release_update.py` — legacy two-service staged update and rollback | RETIREMENT INDEX PENDING | The #951 owner decision at 04:32 UTC retires controller and Studio staging and updates from the v0.2.x product path. Preserve the old implementation for developer and historical use with the rollback tests, exact pre-removal archive and #946 entry. v0.2.x upgrades use native packages. The legacy CLI, stage generator and `oxc/tools/oem_drills.py` still consume this code. |
 | `oxc/src/oxc/runtime/slim_request.py` — opt-in Flash candidate request shaping | UNQUALIFIED | Optional candidate-specific shaping. `bigmoe_runtime.py` binds its source digest and enables it explicitly. Preserve with the candidate evidence and tests until disposition. |
 | `oxc/src/oxc/runtime/storage_view.py` — legacy owner storage inventory and deletion | RETIREMENT INDEX PENDING | `ctl_routes.py` serves inventory; `ctl_cache.py` calls deletion. `test_controller_n6.py` and `test_state_cache.py` cover consumers. #681 excludes the default legacy storage view. Record the index entry and carry any retained native storage-control contract separately from #222. |
 | `oxc/src/oxc/runtime/uninstall.py` — legacy staged-install ownership and model retention | UNQUALIFIED | The legacy CLI loads this module and `test_uninstall.py` exercises guarded ownership and model retention. Compare #1198 Arch package removal with the old staged uninstall contract once the release is accepted. |
 | `oxc/src/oxc/source_archive.py` — legacy developer source exporter | DEV TOOL | Documented developer exporter and `test_source_archive.py`. Its old required paths name the controller, Studio and bootstrap. Retain the exporter until the developer archive callers are migrated. Release archives use the packaging workflow directly. |
 | `oxc/src/oxc/system_counters.py` — benchmark runner counters | DEV TOOL | `tools/system_counters.py`, `batch_runner.py` and `test_system_counters.py` use prompt-free counters. Retain the developer workflow while packaging excludes it. |
+
+### Legacy two-service staging and updates
+
+The #951 owner decision at 04:32 UTC retires the Python controller and Studio
+staging and updater from the v0.2.x product path. Follow the [native install and upgrade
+guide](NATIVE-INSTALL.md) for that release line. The legacy generator, shared
+helpers, updater, rollback guard and tests remain developer and historical
+material. The [preservation inventory](https://github.com/oxstack/ox-llm/issues/951#issuecomment-6969167764)
+lists the exact source and retained callers. Preserve the full pre-removal
+source in the archive and record it in #946 before actual source removal.
+
+The [compatibility trace](https://github.com/oxstack/ox-llm/issues/947#issuecomment-6969013425)
+shows why the historical contracts stay together. The installed updater
+records both services, and rollback requires that recorded set to match the
+sealed binding. A controller-only stage would make rollback refuse. Preserve
+the seal, preimage, service identity and rollback checks, plus all four real
+MEMLAT templates. The Studio caller, native image and archive gates remain
+separate.
 
 ## Tests and developer module inventory
 
