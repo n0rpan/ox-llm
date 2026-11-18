@@ -189,20 +189,23 @@ pub(crate) fn chat_post(
     peer: IpAddr,
     request: &crate::lead_http::Request<'_>,
     identity: &impl IdentityProvider,
-) -> bool {
-    config.enabled
-        && (config.fixed_prompts || config.owner_chat)
-        && request.method == "POST"
-        && request.path == "/chat"
-        && observe(
-            config,
-            peer,
-            request.authority,
-            request.forwarded_login,
-            identity,
-            || (),
-        )
-        .is_ok()
+) -> Result<(), Refusal> {
+    if !config.enabled {
+        return Err(Refusal::Disabled);
+    }
+    if !(config.fixed_prompts() || config.owner_chat()) || request.method != "POST" || request.path != "/chat"
+    {
+        return Err(Refusal::ReadOnly);
+    }
+    observe(
+        config,
+        peer,
+        request.authority,
+        request.forwarded_login,
+        identity,
+        || (),
+    )
+    .map(|_| ())
 }
 
 fn observe<T>(

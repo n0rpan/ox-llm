@@ -63,3 +63,9 @@ Choose a dedicated tailnet port whose ACL excludes shared or guest devices. This
 is an operator step, not an action performed by oxa. Never assume the header is
 trusted simply because Serve exists. Do not expose the backend directly or bypass
 the verified proxy adapter. No account, tailnet, service or ACL is hard-coded.
+
+The service writes chat refusals (4xx/503) to standard error. A user systemd
+deployment can read them with `journalctl --user -u oxa-lead.service`. Each
+line contains the response status, a fixed stage and reason, and a suggested
+remedy. It omits the owner identity, message, token counts, URLs, headers,
+credentials and CSRF values.

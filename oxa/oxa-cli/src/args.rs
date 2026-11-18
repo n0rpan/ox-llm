@@ -486,12 +486,11 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
     let words: Vec<_> = std::iter::once(word.to_owned())
         .chain(rest.iter().cloned())
         .collect();
+    // `oxa lead <text>` is the one-shot owner conversation: the registry's
+    // longest match keeps every named `lead <child>` form on its own command,
+    // and the bare `lead` menu is answered before parsing. The tail reaches the
+    // same bounded owner chat handler as `lead chat`.
     if let Some(invocation) = parse_cli(&words).filter(|i| registry_owned(i.command.id)) {
-        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
-            && !invocation.args.is_empty()
-        {
-            return Err(usage("registered command arguments are unavailable"));
-        }
         return Ok(Some(Subcommand::Registered(
             invocation.command.id,
             RegistryArgs(invocation.args.to_vec()),
