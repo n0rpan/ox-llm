@@ -8,7 +8,7 @@
 //! Names are checked with [`validate_skill_name`]. Bodies are capped at [`MAX_MEMORY_BODY`].
 //! Files that do not parse are skipped when the index is built, never fail the call.
 
-use crate::frontmatter::parse_frontmatter;
+use crate::frontmatter::{frontmatter_get, parse_frontmatter};
 use crate::skills::validate_skill_name;
 use oxa_proto::{codes, OxaError};
 use std::fs::{File, OpenOptions};
@@ -201,17 +201,13 @@ fn scan(dir: &Path) -> Result<Vec<MemoryEntry>, OxaError> {
 
 fn parse_entry(name: &str, src: &str) -> Option<MemoryEntry> {
     let (pairs, body) = parse_frontmatter(src);
-    let value = |key: &str| {
-        pairs
-            .iter()
-            .find(|(k, _)| k.as_str() == key)
-            .map(|(_, v)| v.clone())
-    };
-    let kind = MemoryKind::parse(&value("kind")?)?;
+    let kind = MemoryKind::parse(frontmatter_get(&pairs, "kind")?)?;
     Some(MemoryEntry {
         name: name.to_string(),
         kind,
-        description: value("description").unwrap_or_default(),
+        description: frontmatter_get(&pairs, "description")
+            .unwrap_or_default()
+            .to_string(),
         text: body.to_string(),
     })
 }
