@@ -971,6 +971,22 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
+    fn changed_path_planning_honors_the_existing_manifest_count_limit() {
+        let dir = PrivateDir::new("derived-manifest-count");
+        let mut paths = Vec::new();
+        for index in 0..=MAX_MANIFESTS {
+            let path = format!("member-{index}/Cargo.toml");
+            manifest(&dir, &path, "[workspace]\nmembers = []\n");
+            paths.extend_from_slice(path.as_bytes());
+            paths.push(0);
+        }
+        let Err(error) = from_changed_paths(dir.path(), &paths) else {
+            panic!("accepted more than the existing manifest limit");
+        };
+        assert!(error.contains("aggregate manifest count"), "{error}");
+    }
+
+    #[test]
     fn shared_cargo_settings_require_hosted_evidence_without_a_local_sweep() {
         let dir = PrivateDir::new("derived-shared-cargo-settings");
         manifest(&dir, "Cargo.toml", "[workspace]\nmembers = [\"app\"]\n");
