@@ -9,7 +9,7 @@ use oxa_session::{
     Goal, SessionRef,
 };
 use sha2::{Digest, Sha256};
-use std::{fmt, fmt::Write as _, sync::Arc};
+use std::{fmt, fmt::Write as _, num::NonZeroU32, sync::Arc};
 
 const FIELD_BYTES: usize = 1024;
 const RECENT_MESSAGES: usize = 8;
@@ -44,6 +44,7 @@ pub struct BoundAdvisor {
     pub objective: String,
     pub worker: AdviceTier,
     pub policy: AdvicePolicy,
+    pub done_checks_after: NonZeroU32,
     pub route: AdvisorRoute,
     pub dispatcher: Arc<dyn AdviceDispatcher>,
     pub scrub: AdviceScrubber,
@@ -79,31 +80,93 @@ pub(crate) fn on_repeat(
     evidence: &str,
     sink: &mut dyn EventSink,
 ) -> Result<AdviceResult, OxaError> {
-    let Some(advisor) = st
+    let Some((advisor, revision)) = active(st) else {
+        return Ok(AdviceResult::Refused);
+    };
+    let mut args: oxa_proto::Value = serde_json::from_str(&call.args_raw)
+        .map_err(|_| OxaError::new(oxa_proto::codes::INVALID, "Invalid advice trigger arguments."))?;
+    args.sort_all_objects();
+    let args_hash = format!("{:x}", Sha256::digest(args.to_string()));
+    let identity = serde_json::json!(["repeat_guard", call.name, args_hash]);
+    let point = StuckPoint::for_lease(&advisor.lease_identity, identity.to_string().as_bytes())?;
+    request(
+        st,
+        &advisor,
+        revision,
+        point,
+        AdviceTrigger::RepeatGuard,
+        evidence,
+        sink,
+    )
+}
+
+fn active(st: &SessionState) -> Option<(Arc<BoundAdvisor>, u64)> {
+    let advisor = st
         .shared
         .gate
         .advisor
         .lock()
         .unwrap_or_else(|error| error.into_inner())
-        .clone()
-    else {
-        return Ok(AdviceResult::Refused);
-    };
+        .clone()?;
     let revision = Goal::revision(st.tree.entries());
     if advisor.session != st.sref
         || st.shared.cancel.is_cancelled()
         || oxa_proto::offline()
         || !advisor.dispatcher.authorized(&st.sref, revision)
     {
-        return Ok(AdviceResult::Refused);
+        return None;
     }
-    let mut args: oxa_proto::Value = serde_json::from_str(&call.args_raw)
-        .map_err(|_| OxaError::new(oxa_proto::codes::INVALID, "Invalid advice trigger arguments."))?;
-    args.sort_all_objects();
-    let args_hash = format!("{:x}", Sha256::digest(args.to_string()));
-    let identity = serde_json::json!([advisor.lease_identity, call.name, args_hash]);
-    let point = StuckPoint::from_evidence(identity.to_string().as_bytes())?;
-    let trigger = AdviceTrigger::RepeatGuard;
+    Some((advisor, revision))
+}
+
+pub(crate) fn observe_done(
+    st: &mut SessionState,
+    observation: Option<crate::done::CheckObservation>,
+    evidence: Option<&str>,
+    sink: &mut dyn EventSink,
+) -> Result<AdviceResult, OxaError> {
+    use crate::done::CheckObservation;
+    let (Some(observation), Some((advisor, revision))) = (observation, active(st)) else {
+        return Ok(AdviceResult::Refused);
+    };
+    let history = AdviceHistory::load(st.tree.entries())?;
+    if let Some(receipt) = history.pending_delivery(&advisor.lease_identity) {
+        let phase = match observation {
+            CheckObservation::Passed => AdvicePhase::Resolved,
+            CheckObservation::Failed { .. } => AdvicePhase::Failed,
+        };
+        persist(st, receipt.advance(phase)?.body(), sink)?;
+        st.store.sync(&st.sref)?;
+    }
+    match (observation, evidence) {
+        (CheckObservation::Failed { identity, rounds }, Some(evidence))
+            if rounds >= advisor.done_checks_after.get() =>
+        {
+            let key = format!("done_checks:{:x}", Sha256::digest(identity.as_bytes()));
+            let point = StuckPoint::for_lease(&advisor.lease_identity, key.as_bytes())?;
+            request(
+                st,
+                &advisor,
+                revision,
+                point,
+                AdviceTrigger::DoneChecks,
+                evidence,
+                sink,
+            )
+        }
+        _ => Ok(AdviceResult::Refused),
+    }
+}
+
+fn request(
+    st: &mut SessionState,
+    advisor: &BoundAdvisor,
+    revision: u64,
+    point: StuckPoint,
+    trigger: AdviceTrigger,
+    evidence: &str,
+    sink: &mut dyn EventSink,
+) -> Result<AdviceResult, OxaError> {
     let mut history = AdviceHistory::load(st.tree.entries())?;
     if let Some(receipt) = history
         .receipt(&point)

@@ -16,11 +16,17 @@ const TIMEOUT_S: u32 = 600;
 /// Bytes of output kept per command (the tail).
 const OUT_CAP: usize = 4096;
 
+pub(crate) enum CheckObservation {
+    Passed,
+    Failed { identity: String, rounds: u32 },
+}
+
 #[derive(Default)]
 pub(crate) struct DoneState {
     /// A file tool succeeded since the last check.
     dirty: bool,
     rounds: u32,
+    pub(crate) observation: Option<CheckObservation>,
     /// Fingerprint of the work folder at the last look (`None`: too big to look at).
     tree: Option<u64>,
 }
@@ -197,6 +203,7 @@ pub(crate) fn check(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Option<String> {
+    state.observation = None;
     let cmds = st.settings.done_commands();
     if cmds.is_empty() || !state.dirty || st.shared.cancel.is_cancelled() {
         return None;
@@ -204,6 +211,7 @@ pub(crate) fn check(
     state.dirty = false;
     let _ = ui;
     let mut failed = String::new();
+    let mut identity = String::new();
     for cmd in &cmds {
         // A cancel stops the whole done phase: no further command, no notice, no repair text.
         if st.shared.cancel.is_cancelled() {
@@ -231,6 +239,8 @@ pub(crate) fn check(
             text: text.clone(),
         });
         if !ok {
+            identity.push_str(&line);
+            identity.push('\n');
             failed.push_str(&text);
             failed.push_str("\n\n");
         }
@@ -242,9 +252,14 @@ pub(crate) fn check(
     // What print mode reads at the end: the last check round failed and nothing fixed it.
     st.stats.done_failed = !failed.is_empty();
     if failed.is_empty() {
+        state.observation = Some(CheckObservation::Passed);
         state.rounds = 0;
         return None;
     }
+    state.observation = Some(CheckObservation::Failed {
+        identity,
+        rounds: state.rounds + 1,
+    });
     if state.rounds >= MAX_ROUNDS {
         return None;
     }

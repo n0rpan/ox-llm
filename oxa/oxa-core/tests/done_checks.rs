@@ -93,6 +93,21 @@ fn run_tools(
     sandbox: Arc<dyn Sandbox>,
     extra: Vec<Arc<dyn Tool>>,
 ) -> (Rec, Arc<ScriptedEngine>, bool) {
+    let (mut s, engine) = test_session(env, settings, turns, sandbox, extra);
+    let mut rec = Rec::default();
+    s.prompt("go".into(), Vec::new(), &mut rec, &mut HeadlessUi::default())
+        .expect("prompt");
+    let failed = s.inner().stats.done_failed;
+    (rec, engine, failed)
+}
+
+fn test_session(
+    env: &TestEnv,
+    settings: Settings,
+    turns: Vec<ScriptTurn>,
+    sandbox: Arc<dyn Sandbox>,
+    extra: Vec<Arc<dyn Tool>>,
+) -> (Session, Arc<ScriptedEngine>) {
     let engine = Arc::new(ScriptedEngine::new(turns));
     let tools = oxa_tools::builtin_tools();
     let hooks: Vec<Arc<dyn Hooks>> = if extra.is_empty() {
@@ -118,12 +133,7 @@ fn run_tools(
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     };
-    let mut s = Session::open(deps, Open::New).expect("open");
-    let mut rec = Rec::default();
-    s.prompt("go".into(), Vec::new(), &mut rec, &mut HeadlessUi::default())
-        .expect("prompt");
-    let failed = s.inner().stats.done_failed;
-    (rec, engine, failed)
+    (Session::open(deps, Open::New).expect("open"), engine)
 }
 
 fn write(id: &str, path: &str) -> ScriptTurn {
@@ -901,4 +911,90 @@ fn bash_made_change_outside_git_triggers_checks() {
         ],
     );
     assert_eq!(rec.checks(), vec!["done check: true ok".to_string()]);
+}
+
+#[test]
+fn advice_waits_for_the_done_threshold_and_records_only_a_real_passing_check() {
+    use oxa_core::advice::{AdviceContext, AdviceDispatcher, BoundAdvisor};
+    use oxa_session::{
+        advice::{AdviceGrant, AdvicePolicy, AdviceTier, AdviceTrigger, AdvisorRoute},
+        SessionRef,
+    };
+    use std::{
+        num::{NonZeroU16, NonZeroU32},
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Advisor(AtomicUsize);
+    impl AdviceDispatcher for Advisor {
+        fn authorized(&self, _: &SessionRef, _: u64) -> bool {
+            true
+        }
+
+        fn call(
+            &self,
+            grant: &AdviceGrant,
+            context: &AdviceContext,
+            _: &CancelToken,
+        ) -> Result<String, OxaError> {
+            assert_eq!(grant.trigger, AdviceTrigger::DoneChecks);
+            assert!(context.failing_evidence.contains("test -f ready.txt"));
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok("Create the readiness marker.".into())
+        }
+    }
+
+    let env = TestEnv::new();
+    let turns = vec![
+        write("one", "draft.txt"),
+        ScriptTurn::text("done"),
+        write("two", "other.txt"),
+        ScriptTurn::text("done"),
+        write("three", "ready.txt"),
+        ScriptTurn::text("done"),
+    ];
+    let settings = Settings::from_values(json!({"done":["test -f ready.txt"]}), json!({}));
+    let (mut session, worker) = test_session(&env, settings, turns, Arc::new(Direct), Vec::new());
+    let advisor = Arc::new(Advisor(AtomicUsize::new(0)));
+    session.inner().shared.bind_advisor(BoundAdvisor {
+        session: session.inner().sref.clone(),
+        lease_identity: [4; 32],
+        objective: "Qualify the synthetic work.".into(),
+        worker: AdviceTier::Bulk,
+        done_checks_after: NonZeroU32::new(2).unwrap(),
+        policy: AdvicePolicy {
+            triggers: vec![AdviceTrigger::DoneChecks],
+            max_calls: NonZeroU16::MIN,
+            failures_before_escalation: NonZeroU16::MIN,
+            max_output: NonZeroU32::new(64).unwrap(),
+        },
+        route: AdvisorRoute {
+            tier: AdviceTier::Main,
+            model: "fixture-main".into(),
+            pool: "fixture-pool".into(),
+        },
+        dispatcher: advisor.clone(),
+    });
+    session
+        .prompt(
+            "go".into(),
+            Vec::new(),
+            &mut Rec::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    assert_eq!(advisor.0.load(Ordering::SeqCst), 1);
+    assert!(!session.inner().stats.done_failed);
+    assert!(!worker.requests()[2].messages.iter().any(|message| message
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("readiness marker"))));
+    assert!(worker.requests()[4].messages.iter().any(|message| message
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("readiness marker"))));
+    assert!(session.inner().tree.entries().iter().any(|entry| matches!(
+        &entry.body, oxa_proto::EntryBody::Custom { custom_type, data }
+            if custom_type == "oxa.advice.v1" && data["phase"] == "resolved"
+    )));
 }
