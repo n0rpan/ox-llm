@@ -299,6 +299,7 @@ impl World {
             open_picker: false,
             save_trust: None,
             gated: Vec::new(),
+            engine_status: None,
             yolo: None,
         }
     }

@@ -166,6 +166,7 @@ fn gated_prompt_with_cancel(
         open_picker: false,
         save_trust: None,
         gated: Vec::new(),
+        engine_status: None,
         yolo: None,
     };
     let mut terminal = TestTerminal::new(100, 30);
