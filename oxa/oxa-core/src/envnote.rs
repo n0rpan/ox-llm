@@ -73,7 +73,7 @@ pub fn full_block(t: &LocalTime, f: &EnvFacts) -> String {
     ));
     if f.no_os_sandbox {
         lines.push(
-            "Sandbox: none. Commands you run execute with the user's own rights; there is no OS sandbox on this platform."
+            "Sandbox: none. There is no OS sandbox on this platform, so bash is disabled unless the run is yolo."
                 .to_string(),
         );
     }
@@ -319,9 +319,9 @@ mod tests {
                 ..f()
             },
         );
-        assert!(none.contains("Sandbox: none. Commands you run execute with the user's own rights"));
+        assert!(none.contains("Sandbox: none. There is no OS sandbox on this platform, so bash is disabled"));
         assert_eq!(none.replace(
-            "Sandbox: none. Commands you run execute with the user's own rights; there is no OS sandbox on this platform.\n", ""), with);
+            "Sandbox: none. There is no OS sandbox on this platform, so bash is disabled unless the run is yolo.\n", ""), with);
     }
 
     #[test]

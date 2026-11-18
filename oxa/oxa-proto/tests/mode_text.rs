@@ -37,6 +37,6 @@ fn start_notice_exists_exactly_when_there_is_no_os_sandbox() {
     #[cfg(target_os = "macos")]
     assert_eq!(
         oxa_proto::no_os_sandbox_notice(),
-        Some("macOS: no OS sandbox; commands run with your user rights")
+        Some("macOS: no OS sandbox; bash is disabled unless yolo")
     );
 }
