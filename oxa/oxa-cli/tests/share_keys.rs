@@ -913,3 +913,56 @@ finally:
         measure("enabled");
     }
 }
+
+#[cfg(feature = "share")]
+#[allow(dead_code, unexpected_cfgs)]
+#[path = "../../oxc-gateway/tests/common/openai.rs"]
+mod go_catalog_peer;
+
+#[cfg(feature = "share")]
+#[test]
+fn shared_gateway_discovers_keyed_go_after_validating_guest_models() {
+    use go_catalog_peer::{MockOpenAi, Reply};
+    use serde_json::json;
+
+    let go = MockOpenAi::start_with(|base| {
+        vec![Reply::json(json!({"data":[{
+            "id":"synthetic-go","canonical_id":"opencode/synthetic-go",
+            "limit":{"context":4096,"output":64},
+            "api":{"chat-completions":{"base_url":format!("{base}/inference/go/openai/v1")}}
+        }]}))]
+    });
+    let home = Home::new();
+    let agent = home.0.join(".oxa/agent");
+    fs::create_dir_all(&agent).unwrap();
+    let path = agent.join("settings.json");
+    let mut settings = json!({"oxa":{
+        "engine":{"inProcessCloud":true},
+        "cloud":{"daily_budget_usd":1.0,
+            "opencode":{"base_url":format!("http://{}/inference/go", go.address())},
+            "models":{"synthetic-metered":{
+                "provider":"anthropic","upstream_model":"synthetic-metered",
+                "context_window":4096,"max_output":64
+            }}},
+        "share":{"remoteModels":["synthetic-metered"]}
+    }});
+    write_mock_provider_key(&home, "opencode", "synthetic-go-credential");
+    let bearer = add_test_guest(&home);
+
+    fs::write(&path, settings.to_string()).unwrap();
+    let (mut rejected, announcement) = ForegroundShare::spawn(&home, &["synthetic-metered"]);
+    assert!(announcement.is_empty());
+    assert!(!rejected.0.wait().unwrap().success());
+    assert!(go.requests().is_empty());
+
+    settings["oxa"]["cloud"]["models"]["synthetic-metered"]["pricing"] =
+        json!({"input_per_million":2,"output_per_million":3});
+    fs::write(path, settings.to_string()).unwrap();
+    let (_serving, address) = ForegroundShare::start(&home, &["synthetic-metered"]);
+    let inventory = guest_request(address, "GET", "/v1/models", &bearer, "");
+    assert!(inventory.starts_with("HTTP/1.1 200"));
+    assert!(inventory.contains("synthetic-metered"));
+    assert!(!inventory.contains("synthetic-go"));
+    assert_eq!(go.requests().len(), 1);
+    go.assert_healthy();
+}
