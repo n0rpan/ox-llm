@@ -26,6 +26,21 @@ pub fn serve(
     authorize: impl Fn(&TcpStream, &Request<'_>) -> bool + Send + Sync + 'static,
     render: impl Fn(Page, bool) -> String + Send + Sync + 'static,
 ) -> std::io::Result<()> {
+    serve_fixed(listener, authorize, render, None)
+}
+
+#[derive(Clone)]
+pub(crate) struct FixedForm {
+    pub csrf: String,
+    pub scheme: &'static str,
+}
+
+pub(crate) fn serve_fixed(
+    listener: TcpListener,
+    authorize: impl Fn(&TcpStream, &Request<'_>) -> bool + Send + Sync + 'static,
+    render: impl Fn(Page, bool) -> String + Send + Sync + 'static,
+    form: Option<FixedForm>,
+) -> std::io::Result<()> {
     if !listener.local_addr()?.ip().is_loopback() {
         return Err(std::io::ErrorKind::PermissionDenied.into());
     }
@@ -38,12 +53,14 @@ pub fn serve(
             continue;
         }
         let (authorize, render, slot) = (authorize.clone(), render.clone(), Slot(active.clone()));
+        let form = form.clone();
         std::thread::spawn(move || {
             let _slot = slot;
-            let _ = connection(
+            let _ = connection_fixed(
                 stream,
                 |s, r| authorize(s, r),
                 |page, fragment| render(page, fragment),
+                form.as_ref(),
             );
         });
     }
@@ -63,9 +80,18 @@ pub struct Request<'a> {
 /// The callback receives the actual stream so the identity provider can bind OS/proxy
 /// provenance to this request. Neither an address nor a header is a proof by itself.
 pub fn connection(
+    stream: TcpStream,
+    authorize: impl FnOnce(&TcpStream, &Request<'_>) -> bool,
+    render: impl FnOnce(Page, bool) -> String,
+) -> std::io::Result<()> {
+    connection_fixed(stream, authorize, render, None)
+}
+
+fn connection_fixed(
     mut stream: TcpStream,
     authorize: impl FnOnce(&TcpStream, &Request<'_>) -> bool,
     render: impl FnOnce(Page, bool) -> String,
+    form: Option<&FixedForm>,
 ) -> std::io::Result<()> {
     let start = Instant::now();
     let mut bytes = Vec::new();
@@ -81,17 +107,43 @@ pub fn connection(
         }
         bytes.push(byte[0]);
     }
-    let allowed = request(&bytes).and_then(|r| {
-        if r.method != "GET" {
+    let allowed = request(&bytes, form.is_some()).and_then(|(r, fields)| {
+        let post = r.method == "POST" && r.path == "/chat" && form.is_some();
+        if r.method != "GET" && !post {
             return Err("405 Method Not Allowed");
         }
         if !authorize(&stream, &r) {
             return Err("403 Forbidden");
         }
-        Ok(r.path)
+        let page = if post {
+            let form = form.unwrap();
+            if fields.origin != Some(format!("{}://{}", form.scheme, r.authority).as_str())
+                || fields.kind != Some("application/x-www-form-urlencoded")
+            {
+                return Err("403 Forbidden");
+            }
+            let mut body = vec![0; fields.length];
+            for byte in &mut body {
+                let left = Duration::from_secs(5)
+                    .checked_sub(start.elapsed())
+                    .filter(|d| !d.is_zero())
+                    .ok_or("400 Bad Request")?;
+                stream
+                    .set_read_timeout(Some(left))
+                    .map_err(|_| "400 Bad Request")?;
+                stream
+                    .read_exact(std::slice::from_mut(byte))
+                    .map_err(|_| "400 Bad Request")?;
+            }
+            Some(fixed_page(&body, &form.csrf).ok_or("403 Forbidden")?)
+        } else {
+            None
+        };
+        Ok((r.path, page))
     });
     let (status, kind, body) = match allowed {
-        Ok("/events") => (
+        Ok((_, Some(page))) => ("200 OK", "text/html", render(page, false)),
+        Ok(("/events", None)) => (
             "200 OK",
             "text/event-stream",
             format!(
@@ -99,15 +151,16 @@ pub fn connection(
                 render(Page::Home, true)
             ),
         ),
-        Ok("/style.css") => ("200 OK", "text/css", crate::lead_page::STYLE.into()),
-        Ok("/live.js") => ("200 OK", "text/javascript", crate::lead_page::SCRIPT.into()),
-        Ok(path) => match Page::request(path) {
+        Ok(("/style.css", None)) => ("200 OK", "text/css", crate::lead_page::STYLE.into()),
+        Ok(("/live.js", None)) => ("200 OK", "text/javascript", crate::lead_page::SCRIPT.into()),
+        Ok((path, None)) => match Page::request(path) {
             Some((page, fragment)) => ("200 OK", "text/html", render(page, fragment)),
             None => ("404 Not Found", "text/plain", "Not found".into()),
         },
         Err(status) => (status, "text/plain", "Request refused".into()),
     };
-    let headers = format!("HTTP/1.1 {status}\r\nContent-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\nReferrer-Policy: no-referrer\r\n\r\n", body.len());
+    let form_action = if form.is_some() { "'self'" } else { "'none'" };
+    let headers = format!("HTTP/1.1 {status}\r\nContent-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}\r\nReferrer-Policy: no-referrer\r\n\r\n", body.len());
     write_response(
         &mut stream,
         &[headers.as_bytes(), body.as_bytes()],
@@ -142,7 +195,33 @@ fn write_response(stream: &mut TcpStream, parts: &[&[u8]], budget: Duration) -> 
     Ok(())
 }
 
-fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
+#[derive(Default)]
+struct Fields<'a> {
+    origin: Option<&'a str>,
+    kind: Option<&'a str>,
+    length: usize,
+}
+
+fn fixed_page(bytes: &[u8], expected: &str) -> Option<Page> {
+    let (mut csrf, mut prompt) = (None, None);
+    for field in std::str::from_utf8(bytes).ok()?.split('&') {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "csrf" if csrf.replace(value).is_none() => {}
+            "prompt" if prompt.replace(value).is_none() => {}
+            _ => return None,
+        }
+    }
+    if csrf != Some(expected) {
+        return None;
+    }
+    let (page, false) = Page::request(&format!("/chat?prompt={}", prompt?))? else {
+        return None;
+    };
+    Some(page)
+}
+
+fn request(bytes: &[u8], fixed: bool) -> Result<(Request<'_>, Fields<'_>), &'static str> {
     let text = std::str::from_utf8(bytes).map_err(|_| "400 Bad Request")?;
     if !text.ends_with("\r\n\r\n") {
         return Err("431 Request Header Fields Too Large");
@@ -154,6 +233,7 @@ fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
     }
     let mut login = None;
     let mut authority = None;
+    let (mut fields, mut length) = (Fields::default(), None);
     for line in lines {
         let (name, value) = line.split_once(':').ok_or("400 Bad Request")?;
         if name.is_empty()
@@ -168,18 +248,32 @@ fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
         if name.eq_ignore_ascii_case("host") && authority.replace(value.trim()).is_some() {
             return Err("400 Bad Request");
         }
-        if name.eq_ignore_ascii_case("transfer-encoding")
-            || (name.eq_ignore_ascii_case("content-length") && value.trim() != "0")
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("400 Bad Request");
+        }
+        if name.eq_ignore_ascii_case("content-length") && length.replace(value.trim()).is_some()
+            || name.eq_ignore_ascii_case("origin") && fields.origin.replace(value.trim()).is_some()
+            || name.eq_ignore_ascii_case("content-type") && fields.kind.replace(value.trim()).is_some()
         {
             return Err("400 Bad Request");
         }
     }
-    Ok(Request {
-        method: first[0],
-        path: first[1],
-        authority: authority.filter(|s| !s.is_empty()).ok_or("400 Bad Request")?,
-        forwarded_login: login,
-    })
+    fields.length = length.unwrap_or("0").parse().map_err(|_| "400 Bad Request")?;
+    if length.is_some_and(|text| text != fields.length.to_string())
+        || fields.length > 256
+        || fields.length != 0 && !(fixed && first[0] == "POST" && first[1] == "/chat")
+    {
+        return Err("400 Bad Request");
+    }
+    Ok((
+        Request {
+            method: first[0],
+            path: first[1],
+            authority: authority.filter(|s| !s.is_empty()).ok_or("400 Bad Request")?,
+            forwarded_login: login,
+        },
+        fields,
+    ))
 }
 
 #[cfg(test)]

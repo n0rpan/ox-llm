@@ -43,6 +43,9 @@ fn authorized(
             Err(_) => return false,
         },
     };
+    if request.method == "POST" {
+        return lead_access::fixed_prompt(config, peer.ip(), request, &proof);
+    }
     lead_access::read_only(
         config,
         request.method,
@@ -58,14 +61,26 @@ fn authorized(
 struct Source {
     uid: u32,
     board: Option<PathBuf>,
+    situation: Option<PathBuf>,
+    form: Option<crate::lead_http::FixedForm>,
 }
 impl Source {
     fn new(env: &Env, uid: u32) -> Result<Self, OxaError> {
         let board = env.get("OXA_LEAD_BOARD_LOG").map(PathBuf::from);
-        if board.as_ref().is_some_and(|path| !path.is_absolute()) {
+        let situation = env.get("OXA_LEAD_SITUATION").map(PathBuf::from);
+        if board
+            .iter()
+            .chain(situation.iter())
+            .any(|path| !path.is_absolute())
+        {
             return Err(invalid("lead board sample path must be absolute"));
         }
-        Ok(Self { uid, board })
+        Ok(Self {
+            uid,
+            board,
+            situation,
+            form: None,
+        })
     }
 
     fn render(&self, page: crate::lead_page::Page, fragment: bool) -> String {
@@ -81,9 +96,15 @@ impl Source {
         let github_quotas = sample.as_ref().and_then(|(board, app_quota)| {
             crate::lead_quota::GitHubQuotas::from_app_sample((*app_quota)?, board.observed_at, now)
         });
+        let situation = self
+            .situation
+            .as_deref()
+            .and_then(|path| crate::lead_input::situation(path, self.uid).ok());
         let view = crate::lead_page::View {
             board: sample.as_ref().map(|(board, _)| board),
             github_quotas: github_quotas.as_ref(),
+            situation: situation.as_ref(),
+            fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
             ..Default::default()
         };
         if fragment {
@@ -107,15 +128,27 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
     let uid = std::fs::metadata("/proc/self")
         .map_err(|_| invalid("OS owner identity unavailable"))?
         .uid();
-    let source = Source::new(env, uid)?;
+    let mut source = Source::new(env, uid)?;
+    if config.fixed_prompts() {
+        source.form = Some(crate::lead_http::FixedForm {
+            csrf: oxa_mcp::oauth::pkce_pair(&oxa_mcp::oauth::random_bytes()?).0,
+            scheme: if config.mode() == Mode::Local {
+                "http"
+            } else {
+                "https"
+            },
+        });
+    }
+    let form = source.form.clone();
     let listener = TcpListener::bind(config.endpoint()).map_err(|_| invalid("cannot bind lead endpoint"))?;
     writeln!(out, "lead board: listening on configured loopback endpoint")
         .and_then(|()| out.flush())
         .map_err(|_| invalid("cannot report lead startup"))?;
-    crate::lead_http::serve(
+    crate::lead_http::serve_fixed(
         listener,
         move |stream, request| authorized(&config, uid, stream, request),
         move |page, fragment| source.render(page, fragment),
+        form,
     )
     .map_err(|_| invalid("lead listener failed"))?;
     Ok(0)

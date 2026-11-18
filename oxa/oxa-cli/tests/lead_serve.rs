@@ -116,8 +116,21 @@ fn fixed_chat_form_posts_without_js_and_reuses_protected_observations() {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
         stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         write!(stream, "POST {path} HTTP/1.1\r\nHost: {host}\r\nOrigin: {origin}\r\nContent-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n{extra}\r\n{body}", body.len()).unwrap();
+        // Refusals may close with the rejected request body still unread.
+        let mut input = BufReader::new(stream);
         let mut response = String::new();
-        stream.read_to_string(&mut response).unwrap();
+        while !response.ends_with("\r\n\r\n") {
+            assert!(input.read_line(&mut response).unwrap() > 0);
+        }
+        let length: usize = response
+            .lines()
+            .find_map(|line| line.strip_prefix("Content-Length: "))
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut body = vec![0; length];
+        input.read_exact(&mut body).unwrap();
+        response.push_str(std::str::from_utf8(&body).unwrap());
         response
     };
     let origin = format!("http://{authority}");
@@ -288,6 +301,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     let page = get(port, "/", &authority, "");
     assert!(page.starts_with("HTTP/1.1 200"));
     assert!(page.contains("No open PRs in this snapshot"));
+    assert!(!page.contains("method=post"));
     for (path, title) in [
         ("/", "Status"),
         ("/asks", "Asks"),

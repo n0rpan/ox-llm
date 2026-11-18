@@ -3,6 +3,9 @@ use super::{Prompt, View};
 use std::fmt::Write;
 
 pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt) {
+    if let Some(csrf) = view.fixed_prompt_csrf {
+        let _ = write!(html, "<form class=fixed-prompts method=post action=/chat><input type=hidden name=csrf value=\"{}\"><fieldset><legend>Ask about this observation</legend><button name=prompt value=status>Status</button><button name=prompt value=workers>Are workers on goal?</button><button name=prompt value=attention>What needs me?</button></fieldset></form>", super::escape(csrf));
+    }
     html.push_str("<section><h2>Snapshot prompts</h2><p><a href=/chat?prompt=status>Status</a> · <a href=/chat?prompt=workers>Are workers on goal?</a> · <a href=/chat?prompt=attention>What needs me?</a></p><div role=log aria-label=\"Lead replies\"><article>");
     let fact = match prompt {
         Prompt::Status => view.board.map(|board| {
