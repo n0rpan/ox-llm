@@ -51,7 +51,7 @@ pub mod events;
 mod facts_io;
 pub use facts_io::require_private_directory;
 mod github;
-pub use github::pull_request_task;
+pub use github::{pull_request_task, ReviewedPullRequest};
 pub mod incidents;
 pub mod situation;
 pub mod standing;
@@ -67,6 +67,9 @@ pub struct Task {
     pub prompt: String,
     #[serde(default = "default_max_time")]
     pub max_time: u64,
+    /// Reviewed source for attempts whose execution IDs use a different namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_pull_request: Option<ReviewedPullRequest>,
 }
 fn default_max_time() -> u64 {
     45 * 60
@@ -582,6 +585,9 @@ fn valid_task_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte))
 }
 fn validate(task: &Task) -> Result<()> {
+    if task.reviewed_pull_request.is_some() && task.reviewed_source().is_none() {
+        return Err("invalid reviewed pull request source".into());
+    }
     if !valid_task_id(&task.id) {
         return Err("task id must contain 1..128 letters, digits, - or _".into());
     }
@@ -640,6 +646,7 @@ pub fn issue_task(
         base: default_base(),
         prompt: issue_prompt(number, &issue)?,
         max_time: default_max_time(),
+        reviewed_pull_request: None,
     })
 }
 

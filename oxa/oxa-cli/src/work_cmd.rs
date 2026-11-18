@@ -36,48 +36,6 @@ pub(crate) fn registered_native_worker(
     Ok((worker, host))
 }
 
-#[cfg(test)]
-mod registration_tests {
-    use super::registered_native_worker;
-    use serde_json::json;
-
-    #[test]
-    fn protected_registration_preserves_the_explicit_worker_and_adjacent_host() {
-        let value = json!({
-            "worker":{"id":"worker-a","kind":"oxa","roles":["builder"],"skills":["rust"]},
-            "host_id":"host-b"
-        });
-        let (worker, host) = registered_native_worker(&value).unwrap();
-        assert_eq!(worker.id, "worker-a");
-        assert_eq!(host, "host-b");
-        assert!(worker.roles.contains(&oxa_work::board::assignment::Role::Builder));
-        assert!(worker.skills.contains("rust"));
-    }
-
-    #[test]
-    fn protected_registration_refuses_missing_or_invalid_identities_without_fallback() {
-        let value = json!({
-            "worker":{"id":"worker-a","kind":"oxa","roles":["builder"],"skills":[]},
-            "host_id":"host-b"
-        });
-        for field in ["worker", "host_id"] {
-            let mut missing = value.clone();
-            missing.as_object_mut().unwrap().remove(field);
-            assert!(registered_native_worker(&missing).is_err(), "missing {field}");
-        }
-        for host in [json!(null), json!(42), json!(""), json!("invalid host")] {
-            let mut invalid = value.clone();
-            invalid["host_id"] = host;
-            assert!(registered_native_worker(&invalid).is_err());
-        }
-        for id in [json!(null), json!(42), json!(""), json!("invalid worker")] {
-            let mut invalid = value.clone();
-            invalid["worker"]["id"] = id;
-            assert!(registered_native_worker(&invalid).is_err());
-        }
-    }
-}
-
 // Keep owner state outside every worker Git bind.
 pub(crate) fn protected_storage(storage: &Path, repo: &Path, common: &Path) -> Result<(), String> {
     if !storage.is_absolute()
@@ -605,4 +563,46 @@ fn queue_options(args: &[String], cwd: &Path) -> Result<(PathBuf, oxa_work::Queu
         return Err("--max must be positive".into());
     }
     Ok((directory, options))
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::registered_native_worker;
+    use serde_json::json;
+
+    #[test]
+    fn protected_registration_preserves_the_explicit_worker_and_adjacent_host() {
+        let value = json!({
+            "worker":{"id":"worker-a","kind":"oxa","roles":["builder"],"skills":["rust"]},
+            "host_id":"host-b"
+        });
+        let (worker, host) = registered_native_worker(&value).unwrap();
+        assert_eq!(worker.id, "worker-a");
+        assert_eq!(host, "host-b");
+        assert!(worker.roles.contains(&oxa_work::board::assignment::Role::Builder));
+        assert!(worker.skills.contains("rust"));
+    }
+
+    #[test]
+    fn protected_registration_refuses_missing_or_invalid_identities_without_fallback() {
+        let value = json!({
+            "worker":{"id":"worker-a","kind":"oxa","roles":["builder"],"skills":[]},
+            "host_id":"host-b"
+        });
+        for field in ["worker", "host_id"] {
+            let mut missing = value.clone();
+            missing.as_object_mut().unwrap().remove(field);
+            assert!(registered_native_worker(&missing).is_err(), "missing {field}");
+        }
+        for host in [json!(null), json!(42), json!(""), json!("invalid host")] {
+            let mut invalid = value.clone();
+            invalid["host_id"] = host;
+            assert!(registered_native_worker(&invalid).is_err());
+        }
+        for id in [json!(null), json!(42), json!(""), json!("invalid worker")] {
+            let mut invalid = value.clone();
+            invalid["worker"]["id"] = id;
+            assert!(registered_native_worker(&invalid).is_err());
+        }
+    }
 }
