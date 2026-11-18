@@ -316,6 +316,15 @@ remains open. The tested packages contain standalone `oxe`, which still needs
 an explicit release allowlist decision. Each source slice still requires
 its caller and evidence gates and the indexed pre-removal archive.
 
+The [tag publisher](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L68-L104)
+combines the tested CPU archive type with standalone `dist-*` outputs. Its
+checks require ARM archives for `oxe-server`, `oxe-server-flash`, `oxi`, and
+`oxa`, and it [publishes the assembled archive set](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L146-L147).
+The [generated notes](https://github.com/oxstack/ox-llm/blob/6341445c49c39b7a5d6cb2b486df58c2cd4b5e0b/.github/workflows/release.yml#L128-L132) still describe Python controller
+wrappers and link the legacy cloud-only quickstart. For #763, reconcile the
+published asset list and native install notes, then verify checksums, membership,
+and no-Python install behavior on the approved release bytes.
+
 ### Remaining controller-path evidence at `7f7bfb6a`
 
 These entries account for the remaining paths in the packaged legacy subtree.
