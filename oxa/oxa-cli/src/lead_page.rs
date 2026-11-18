@@ -594,7 +594,7 @@ mod tests {
     fn live_refresh_keeps_the_readers_latest_work_disclosure_choice() {
         let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
         runtime.eval_script("dom-fixture", r#"
-let current, supplied, closeDuringFetch, focused='', inside=false, fetches=0;
+let current, supplied, closeDuringFetch, focusDuringFetch=false, focused='', inside=false, fetches=0;
 function makeMain(open) {
   const work={open};
   return {work, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:null,
@@ -609,6 +609,7 @@ const location={href:'http://example.invalid/'};
 class DOMParser { parseFromString(){return {querySelector:()=>supplied};} }
 async function fetch(){
   fetches++;
+  if(focusDuringFetch){inside=true; focused='[tabindex]';}
   if(closeDuringFetch)current.work.open=false;
   return {ok:true, text:async()=>''};
 }
@@ -633,6 +634,9 @@ for(focused of ['summary','[tabindex]']) {
 inside=false;
 await refresh();
 if(current!==supplied)throw new Error('refresh did not resume after leaving main');
+current=makeMain(true); supplied=makeMain(false); focusDuringFetch=true;
+await refresh();
+if(current===supplied)throw new Error('focus acquired during fetch was lost');
 return true;
 "#,
             )
