@@ -131,12 +131,13 @@ impl NativeQueueOwner<'_> {
 }
 
 fn finished(record: &Record) -> bool {
+    // Releasing the worker's claim does not certify its acceptance result.
     record.step == Step::Finished
         && record.checkpoint_kind == CheckpointKind::TaskTransition
         && record.checkpoint_revision > 0
         && matches!(
             record.outcome,
-            Outcome::Done | Outcome::NothingToDo | Outcome::Red
+            Outcome::Done | Outcome::NothingToDo | Outcome::Red | Outcome::Unverified
         )
 }
 
