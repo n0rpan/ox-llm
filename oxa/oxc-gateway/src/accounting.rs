@@ -205,7 +205,7 @@ impl Budget {
         }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
         // Earlier unbudgeted rows with unknown cost make a later cap unverifiable.
-        if !unbudgeted && (shared.has_conservative_hold() || state.reader.cost_unknown()) {
+        if !unbudgeted && (shared.has_unknown_metered_hold() || state.reader.cost_unknown()) {
             return Err(exhausted());
         }
         policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
@@ -237,16 +237,6 @@ impl Budget {
         model: &Model,
         output: u64,
     ) -> Result<Hold, Refusal> {
-        self.reserve_subscription_with_budget(limits, ledger_enabled, model, output, None)
-    }
-    pub(crate) fn reserve_subscription_with_budget(
-        &self,
-        limits: Option<SubscriptionLimits>,
-        ledger_enabled: bool,
-        model: &Model,
-        output: u64,
-        cap: Option<&Value>,
-    ) -> Result<Hold, Refusal> {
         let limits = limits.ok_or_else(SubscriptionLimits::missing)?;
         if !ledger_enabled {
             return Err(Refusal::ledger());
@@ -275,33 +265,20 @@ impl Budget {
         if shared.failed {
             return Err(Refusal::ledger());
         }
-        let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
-        let reserved = if let Some(cap) = cap {
-            if shared.has_conservative_hold() || state.reader.cost_unknown() {
-                return Err(exhausted());
-            }
-            policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), 0.0)?;
-            // Go has no trusted pre-request price/plan bound. Reserve all remaining
-            // configured USD headroom before sending, alongside its token allowance.
-            let required = cap.as_f64().ok_or_else(Refusal::ledger)? - (spent + shared.reserved());
-            if !required.is_finite() || required <= 0.0 {
-                return Err(exhausted());
-            }
-            policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
-            required
-        } else {
-            0.0
-        };
+        // The ledger must stay readable (settled subscription counters and
+        // integrity), but no USD cap, bound or overrun state is consulted
+        // here: subscription and Go admission never stop on local budget.
+        state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
         let held = shared.subscription_reserved().map_err(|_| Refusal::ledger())?;
         limits.check(state.reader.subscription(), held, required)?;
         let id = shared
-            .insert_subscription_with_usd(tokens, reserved)
+            .insert_subscription(tokens)
             .map_err(|_| Refusal::ledger())?;
         shared.save().map_err(|_| Refusal::ledger())?;
         Ok(Hold {
             budget: self.clone(),
             model: model.clone(),
-            reserved,
+            reserved: 0.0,
             reserved_tokens: tokens,
             output,
             forwarded: false,
@@ -532,8 +509,7 @@ impl Hold {
                 row[field] = json!(value);
             }
         }
-        let paid = self.model.provider == "opencode";
-        let cost = if paid { usage.reported_cost } else { Some(0.0) }.filter(|n| n.is_finite() && *n >= 0.0);
+        let go = self.model.provider == "opencode";
         let actual = usage.total_tokens();
         let final_usage = matches!(
             outcome,
@@ -543,20 +519,23 @@ impl Hold {
                     ..
                 }
         );
-        let complete = actual.filter(|_| final_usage && cost.is_some());
-        let settled_cost = if complete.is_some() {
-            cost.unwrap_or(0.0)
-        } else {
-            self.reserved.max(cost.unwrap_or(0.0))
-        };
-        if settled_cost > 0.0 {
-            row["billing"] = json!("metered");
-            row["cost_usd"] = json!(settled_cost);
-            if let Some(cost) = cost {
-                row["reported_cost_usd"] = json!(cost);
+        let cost = usage
+            .reported_cost
+            .filter(|n| final_usage && n.is_finite() && *n >= 0.0);
+        if go {
+            match cost {
+                Some(cost) if cost > 0.0 => {
+                    row["billing"] = json!("metered");
+                    row["cost_usd"] = json!(cost);
+                    row["reported_cost_usd"] = json!(cost);
+                }
+                Some(_) => {}
+                None => {
+                    row.as_object_mut().unwrap().remove("cost_usd");
+                }
             }
         }
-        if let Some(actual) = complete {
+        if let Some(actual) = actual.filter(|_| final_usage && (!go || cost.is_some())) {
             row["subscription_tokens"] = json!(actual);
             row["settled"] = json!("usage");
         } else {

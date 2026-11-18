@@ -256,6 +256,103 @@ fn subscription_audit_failure_closes_both_classes_across_independent_instances()
 }
 
 #[test]
+fn legacy_unscoped_subscription_usd_reserves_nothing_but_its_tokens_still_count() {
+    const LEGACY: &str = "00000000000000000000000000000000";
+    // A missing hold, a token-only hold, and holds whose recorded USD is far
+    // over the entire daily cap in both legacy shapes: the pre-pool
+    // `reserved_usd` form and the bounded-pool `go_usd` form.
+    for legacy in [
+        None,
+        Some(json!({"subscription_tokens":120})),
+        Some(json!({"subscription_tokens":120,"reserved_usd":400.0})),
+        Some(json!({"subscription_tokens":120,"go_usd":400.0})),
+    ] {
+        let home = Home::new();
+        let path = home.ledger();
+        let snapshot = home.0.join("requests-synthetic.jsonl.holds");
+        if let Some(legacy) = &legacy {
+            let mut seeded = json!({"failed":false,"holds":{}});
+            seeded["holds"][LEGACY] = legacy.clone();
+            fs::write(&snapshot, seeded.to_string()).unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&snapshot, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let budget = Budget::new(path.clone());
+        let cap = json!(0.01);
+        // The stored reservation USD contributes zero to the held total:
+        // metered admission proceeds even though 400 exceeds the whole cap.
+        let metered = model();
+        let Billing::Metered(price) = &metered.billing else {
+            unreachable!()
+        };
+        let expected = price
+            .reservation("openrouter", "synthetic/upstream", metered.context, 100)
+            .unwrap();
+        let mut hold = budget.reserve(&cap, true, &metered, 100).unwrap();
+        assert_eq!(hold.reserved(), expected);
+        // Subscription admission also proceeds; no USD is held for it either.
+        let subscription_hold = budget
+            .reserve_subscription(
+                Some(SubscriptionLimits::new(10, 1000).unwrap()),
+                true,
+                &subscription(),
+                20,
+            )
+            .unwrap();
+        let current: Value = serde_json::from_slice(&fs::read(&snapshot).unwrap()).unwrap();
+        let holds = current["holds"].as_object().unwrap();
+        assert_eq!(holds.len(), 2 + usize::from(legacy.is_some()));
+        if let Some(legacy) = &legacy {
+            assert_eq!(holds.get(LEGACY), Some(legacy));
+        }
+        // The new subscription hold is token-only: it records no USD at all.
+        assert!(holds
+            .values()
+            .any(|value| *value == json!({"subscription_tokens":120})));
+        subscription_hold
+            .finish(&Usage::default(), Outcome::Complete, |row| append(&path, row))
+            .unwrap();
+        // The legacy hold's tokens still count toward the subscription caps.
+        let tight = SubscriptionLimits::new(10, 130).unwrap();
+        let admission = budget.reserve_subscription(Some(tight), true, &subscription(), 20);
+        match &legacy {
+            None => drop(admission.unwrap()),
+            Some(_) => {
+                let error = admission.err().unwrap();
+                assert_eq!((error.status, error.code), (429, "subscription_limit_exceeded"));
+            }
+        }
+        // Actual paid usage settles normally and the legacy USD never lands in
+        // the daily total.
+        hold.mark_forwarded().unwrap();
+        let row = hold
+            .finish(
+                &Usage {
+                    prompt: Some(20),
+                    output: Some(10),
+                    ..Usage::default()
+                },
+                Outcome::Complete,
+                |row| append(&path, row),
+            )
+            .unwrap();
+        assert_eq!(row["settled"], "usage");
+        assert_eq!(row["cost_usd"].as_f64(), Some(0.00004));
+        assert_eq!(budget.spend().unwrap(), 0.00004);
+        // The stored record itself stays readable and untouched, and a fresh
+        // instance keeps admitting while it is in flight.
+        let stored: Value = serde_json::from_slice(&fs::read(&snapshot).unwrap()).unwrap();
+        assert_eq!(stored["failed"], false);
+        let holds = stored["holds"].as_object().unwrap();
+        assert_eq!(holds.len(), usize::from(legacy.is_some()));
+        if let Some(legacy) = &legacy {
+            assert_eq!(holds.get(LEGACY), Some(legacy));
+        }
+        assert!(Budget::new(path).reserve(&cap, true, &metered, 100).is_ok());
+    }
+}
+
+#[test]
 fn unfinished_tail_is_not_a_corrupt_row_and_unchanged_reads_are_constant_work() {
     let home = Home::new();
     let path = home.ledger();

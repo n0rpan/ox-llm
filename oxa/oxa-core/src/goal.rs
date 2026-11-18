@@ -494,9 +494,15 @@ impl Control {
     fn wait_until(&self, until: &Value, duration: Duration, cx: &ToolCtx) -> ToolOutput {
         let deadline = Instant::now() + duration;
         loop {
-            // The first hook set that answers `Some` decides this poll.
+            // The first hook set that answers `Some` decides this poll. A probe is told what
+            // the wait has left so its own work cannot outlive the wait.
+            let remaining = deadline.saturating_duration_since(Instant::now());
             let kind = until["kind"].as_str().unwrap_or("");
-            match self.hooks.iter().find_map(|h| h.poll_event(kind, until)) {
+            match self
+                .hooks
+                .iter()
+                .find_map(|h| h.poll_event(kind, until, remaining))
+            {
                 None => return ToolOutput::error(format!("Unknown wait condition: {kind}.")),
                 Some(Err(e)) => return ToolOutput::error(e),
                 Some(Ok(Some(evidence))) => return ToolOutput::ok(evidence),

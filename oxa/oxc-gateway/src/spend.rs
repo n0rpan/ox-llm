@@ -25,7 +25,8 @@ pub struct SpendReader {
     bytes_read: u64,
 }
 /// Budget accounting accepts an estimate only when it is explicitly classified
-/// and no actual cost field is present. Older settled rows keep their format.
+/// and no actual cost field is present. Older settled rows keep their format,
+/// including estimate-only OpenCode rows that earlier binaries recorded.
 pub(crate) fn budget_cost(row: &Value) -> Option<f64> {
     let value = match (row.get("cost_usd"), row.get("estimated_cost_usd")) {
         (Some(cost), None) => cost,
@@ -34,7 +35,7 @@ pub(crate) fn budget_cost(row: &Value) -> Option<f64> {
                 && row["billing"] == "metered"
                 && matches!(
                     row["remote_provider"].as_str(),
-                    Some("anthropic" | "openai" | "openai-chat" | "openrouter")
+                    Some("anthropic" | "openai" | "openai-chat" | "openrouter" | "opencode")
                 ) =>
         {
             estimate
@@ -42,6 +43,25 @@ pub(crate) fn budget_cost(row: &Value) -> Option<f64> {
         _ => return None,
     };
     value.as_f64().filter(|cost| cost.is_finite() && *cost >= 0.0)
+}
+
+/// The only remote row allowed to have no monetary amount is a forwarded Go
+/// subscription with unverified usage. A known zero uses the regular field.
+pub(crate) fn unknown_go_cost(row: &Value) -> bool {
+    row["remote_provider"] == "opencode"
+        && row["billing"] == "subscription"
+        && row["settled"] == "reserved"
+        && row["usage_missing"] == true
+        && row["subscription_requests"].as_u64() == Some(1)
+        && [
+            "cost_usd",
+            "estimated_cost_usd",
+            "reported_cost_usd",
+            "catalog_cost_usd",
+            "go_reserved_usd",
+        ]
+        .iter()
+        .all(|field| row.get(field).is_none())
 }
 
 impl SpendReader {
@@ -134,8 +154,10 @@ impl SpendReader {
             if row["remote"] != true {
                 continue;
             }
-            let cost = budget_cost(&row).ok_or(io::ErrorKind::InvalidData)?;
-            unknown |= row.get("cost_unknown") == Some(&Value::Bool(true));
+            let cost = budget_cost(&row);
+            if cost.is_none() && !unknown_go_cost(&row) {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
             match row.get("billing") {
                 None => {
                     if matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
@@ -152,13 +174,14 @@ impl SpendReader {
                     {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
+                    unknown |= row.get("cost_unknown") == Some(&Value::Bool(true));
                 }
                 Some(value)
                     if value == "subscription"
                         || value == "metered" && row["remote_provider"] == "opencode" =>
                 {
-                    if (value == "subscription" && cost != 0.0)
-                        || (value == "metered" && cost <= 0.0)
+                    if (value == "subscription" && cost.is_some_and(|n| n != 0.0))
+                        || (value == "metered" && cost.is_none_or(|n| n <= 0.0))
                         || !matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
                     {
                         return Err(io::ErrorKind::InvalidData.into());
@@ -186,19 +209,29 @@ impl SpendReader {
                 }
                 _ => return Err(io::ErrorKind::InvalidData.into()),
             }
-            // Sum the validated finite ledger amounts as decimals, as pricing
-            // does. Fixed currency rounding loses small paid charges, while
-            // repeated binary addition can invent spend above an exact cap.
-            total += BigDecimal::from_str(&cost.to_string())
-                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-            if total.to_f64().is_none_or(|value| !value.is_finite()) {
-                return Err(io::ErrorKind::InvalidData.into());
+            if let Some(bound) = row.get("go_reserved_usd") {
+                // Historical bounded-pool rows stay readable: validate the
+                // recorded bound without ever acting on it.
+                if row["remote_provider"] != "opencode"
+                    || !matches!(row["settled"].as_str(), Some("usage" | "reserved"))
+                    || !bound.as_f64().is_some_and(|n| n.is_finite() && n > 0.0)
+                {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+            }
+            // Historical Go estimates still carry subscription counters, but
+            // never count as USD spend. Keep exact decimal sums for real charges.
+            if let Some(debit) = cost
+                .filter(|_| row["remote_provider"] != "opencode" || row.get("estimated_cost_usd").is_none())
+            {
+                total += BigDecimal::from_str(&debit.to_string())
+                    .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+                if total.to_f64().is_none_or(|value| !value.is_finite()) {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
             }
         }
-        let spend = total
-            .to_f64()
-            .filter(|value| value.is_finite())
-            .ok_or(io::ErrorKind::InvalidData)?;
+        let spend = finite_usd(&total)?;
         // Commit the cursor/total together only after every complete row passed.
         self.offset = offset;
         self.total = total;
@@ -209,6 +242,13 @@ impl SpendReader {
         // never erase a valid positive charge before comparing it with a cap.
         Ok(spend)
     }
+}
+
+fn finite_usd(amount: &BigDecimal) -> io::Result<f64> {
+    amount
+        .to_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .ok_or_else(|| io::ErrorKind::InvalidData.into())
 }
 
 /// Serialize complete private rows across processes. Durable append must precede

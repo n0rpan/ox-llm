@@ -478,7 +478,14 @@ pub trait Hooks: Send + Sync {
     /// Answer one wait condition: the `wait` tool's `until` object (W2). `None` = not this
     /// set's kind; `Ok(None)` = still pending; `Ok(Some(text))` = done, `text` is the probe
     /// evidence; `Err` = the probe failed. The first set that answers `Some` decides.
-    fn poll_event(&self, _kind: &str, _args: &Value) -> Option<Result<Option<String>, String>> {
+    /// `budget` is what the wait has left: a probe must not run past it, and may return
+    /// `Ok(None)` without work when it is zero.
+    fn poll_event(
+        &self,
+        _kind: &str,
+        _args: &Value,
+        _budget: std::time::Duration,
+    ) -> Option<Result<Option<String>, String>> {
         None
     }
 }
