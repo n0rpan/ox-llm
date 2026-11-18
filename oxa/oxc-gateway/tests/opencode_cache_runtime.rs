@@ -1,6 +1,10 @@
 #![cfg(feature = "anthropic-gateway")]
 //! The Go catalog cache through the real gateway: fresh, stale, refresh, refusal.
-#![allow(dead_code, unexpected_cfgs)] // Shared loopback mock; this file uses JSON replies only.
+#![allow(dead_code, unexpected_cfgs)] // Shared gateway fixtures; this file uses JSON replies only.
+#[path = "common/anthropic.rs"]
+mod anthropic;
+#[path = "common/skeleton.rs"]
+mod skeleton;
 #[path = "common/openai.rs"]
 mod upstream;
 use oxc_gateway::{
@@ -15,12 +19,11 @@ use oxc_gateway::{
     secrets,
 };
 use serde_json::{json, Value};
+use skeleton::Fixture;
 use std::{
-    fs::{self, DirBuilder, OpenOptions},
-    io::Write,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
+    fs,
     path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime},
 };
 use upstream::{MockOpenAi, Reply};
 
@@ -32,48 +35,22 @@ fn discovery(base: &str) -> Value {
         "api":{"chat-completions":{"base_url":format!("{base}/inference/go/openai/v1")}}}]})
 }
 
-/// A private directory of this test only; never the real home.
-struct Fixture {
-    root: PathBuf,
-    key_path: PathBuf,
-    ledger_dir: PathBuf,
+fn go_fixture() -> Fixture {
+    let fixture = Fixture::for_endpoint("https://example.invalid/v1");
+    fs::write(&fixture.key_path, json!({"opencode": CREDENTIAL}).to_string()).unwrap();
+    fixture
 }
+
 impl Fixture {
-    fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "oxc-go-runtime-{}-{}",
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&root)
-            .unwrap();
-        let key_path = root.join("credentials.json");
-        let mut key = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&key_path)
-            .unwrap();
-        write!(key, "{}", json!({"opencode": CREDENTIAL})).unwrap();
-        let ledger_dir = root.join("ledger");
-        DirBuilder::new().mode(0o700).create(&ledger_dir).unwrap();
-        Self {
-            root,
-            key_path,
-            ledger_dir,
-        }
-    }
     /// The cache sits beside the ledger, in the same private agent directory.
     fn cache(&self) -> PathBuf {
-        self.root.join("go-catalog-cache.json")
+        self.ledger_dir.parent().unwrap().join("go-catalog-cache.json")
     }
+
     fn age(&self, origin: &str, base: &str, seconds: u64) {
         let key = secrets::read(&self.key_path, "opencode").unwrap();
         let known = models(&discovery(origin), base).unwrap();
-        Cache::new(&self.root)
+        Cache::new(self.ledger_dir.parent().unwrap())
             .store(
                 base,
                 &key,
@@ -81,11 +58,6 @@ impl Fixture {
                 SystemTime::now() - Duration::from_secs(seconds),
             )
             .unwrap();
-    }
-}
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -106,7 +78,7 @@ fn go_gateway(fixture: &Fixture, access: Access) -> Gateway {
 
 #[test]
 fn a_fresh_entry_serves_startup_and_a_stale_one_is_used_then_refreshed() {
-    let fixture = Fixture::new();
+    let fixture = go_fixture();
     let mock = MockOpenAi::start_with(|base| {
         vec![
             Reply::json(discovery(base)),
@@ -166,7 +138,7 @@ fn a_fresh_entry_serves_startup_and_a_stale_one_is_used_then_refreshed() {
 
 #[test]
 fn offline_and_cloud_off_refuse_before_the_cache_or_any_network_call() {
-    let fixture = Fixture::new();
+    let fixture = go_fixture();
     let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
     let origin = format!("http://{}", mock.address());
     let base = format!("{origin}/inference/go");

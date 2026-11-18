@@ -850,6 +850,15 @@ mod discovery_budget_tests {
 
     #[test]
     fn discovery_preserves_configured_price_floors_and_long_context_tiers() {
+        assert_discovered_price_floor(0);
+    }
+
+    #[test]
+    fn discovery_cannot_lower_a_configured_price_with_a_positive_live_rate() {
+        assert_discovered_price_floor(1);
+    }
+
+    fn assert_discovered_price_floor(live_input: u32) {
         let base = "https://example.invalid/api/v1";
         let provider = Provider::OpenRouter;
         let alias = "synthetic-alias";
@@ -861,7 +870,7 @@ mod discovery_budget_tests {
         ]}}))
         .unwrap();
         let live = Price::from_model(&json!({"pricing": {
-            "input_per_million": 0, "output_per_million": 4, "cache_write_per_million": 8
+            "input_per_million": live_input, "output_per_million": 4, "cache_write_per_million": 8
         }}))
         .unwrap();
         let mut runtime = Runtime::new(
