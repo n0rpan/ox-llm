@@ -380,6 +380,10 @@ impl Settings {
         }
         let mut root = read_object_for_write(&path)?;
         if !remove_nested(&mut root, key) {
+            // Nothing on disk to remove, so nothing is written. The file just read is still the
+            // truth for this layer: adopt it, so an instance that still holds a value another
+            // instance (or an editor) already removed stops reporting it.
+            self.adopt(&path, root, project);
             return Ok(());
         }
         self.persist(&path, root, project)
@@ -392,14 +396,18 @@ impl Settings {
         text.push('\n');
         // The user file is private to the user; a project file keeps the umask default.
         write_atomic(path, &text, if project { 0o666 } else { 0o600 })?;
-        let (checked, _) = check_root(&value, &path.display().to_string());
+        self.adopt(path, root, project);
+        Ok(())
+    }
+    /// Make `root` the layer for `project` in memory and recompose the merged settings.
+    fn adopt(&mut self, path: &Path, root: Map<String, Value>, project: bool) {
+        let (checked, _) = check_root(&Value::Object(root), &path.display().to_string());
         if project {
             self.project = checked;
         } else {
             self.user = checked;
         }
         self.merged = compose(&self.user, &self.project);
-        Ok(())
     }
 }
 

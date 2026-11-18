@@ -146,3 +146,26 @@ fn user_file_mode_stays_0600() {
         .mode();
     assert_eq!(mode & 0o777, 0o600);
 }
+
+#[test]
+fn unset_refreshes_a_stale_instance_from_disk() {
+    let env = TestEnv::new();
+    let dirs = Dirs::under(env.root());
+    let cwd = env.work();
+    let key = "compaction.reserveTokens";
+    let mut first = Settings::load(&dirs, &cwd, false);
+    first.set(&dirs, &cwd, key, json!(5000), false).expect("set");
+
+    let mut second = Settings::load(&dirs, &cwd, false);
+    assert_eq!(second.user_value(key), Some(&json!(5000)));
+
+    // The first instance removes the key; the second still holds it in memory.
+    first.unset(&dirs, &cwd, key, false).expect("unset first");
+    second.unset(&dirs, &cwd, key, false).expect("unset second");
+
+    // Removing a key the file no longer holds writes nothing, but the layer follows the file.
+    assert_eq!(read_json(&dirs.settings_file()), json!({}));
+    assert_eq!(second.user_value(key), None);
+    assert_eq!(second.source(key), Source::Default);
+    assert_eq!(second.get(key), None);
+}
