@@ -41,6 +41,9 @@ pub struct Hold {
     output: u64,
     forwarded: bool,
     settled: bool,
+    /// Metered admission without a configured cap and without a computable
+    /// price bound: usage is recorded, its USD cost is unknown.
+    cost_unknown: bool,
     id: String,
 }
 #[derive(Clone, Default, Debug)]
@@ -176,9 +179,22 @@ impl Budget {
             return Err(invalid_billing());
         };
         let output = output.min(model.max_output);
-        let required = price
-            .reservation(&model.provider, &model.upstream, model.context, output)
-            .ok_or_else(exhausted)?;
+        let unbudgeted = cap.is_null();
+        let bound = price.reservation(&model.provider, &model.upstream, model.context, output);
+        let cost_unknown = unbudgeted && bound.is_none();
+        let required = if cost_unknown {
+            // No cap means no budget check: admit, and record the cost as unknown.
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                eprintln!(
+                    "oxc-gateway: no daily budget is set and a cloud model has no known price bound; \
+                     its usage is recorded with unknown cost"
+                );
+            });
+            0.0
+        } else {
+            bound.ok_or_else(exhausted)?
+        };
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.failed {
             return Err(Refusal::ledger());
@@ -188,7 +204,7 @@ impl Budget {
             return Err(Refusal::ledger());
         }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
-        if shared.has_conservative_hold() {
+        if !unbudgeted && shared.has_conservative_hold() {
             return Err(exhausted());
         }
         policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
@@ -202,6 +218,7 @@ impl Budget {
             output,
             forwarded: false,
             settled: false,
+            cost_unknown,
             id,
         })
     }
@@ -281,6 +298,7 @@ impl Budget {
             output,
             forwarded: false,
             settled: false,
+            cost_unknown: false,
             id,
         })
     }
@@ -326,6 +344,9 @@ impl Hold {
         };
         let mut row = json!({"remote":true,"remote_provider":model.provider,"remote_model":model.upstream});
         row["billing"] = json!("metered");
+        if self.cost_unknown {
+            row["cost_unknown"] = json!(true);
+        }
         if matches!(outcome, Outcome::Refused) {
             row["cost_usd"] = json!(0.0);
             row["settled"] = json!("refused");

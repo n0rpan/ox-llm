@@ -748,3 +748,88 @@ fn forwarding_persistence_failure_is_returned_before_paid_bytes_can_be_sent() {
     drop(hold);
     assert!(Budget::new(path).reserve(&json!(1), true, &model(), 32).is_ok());
 }
+
+#[test]
+fn metered_request_without_budget_is_admitted_and_recorded() {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &model(), 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    let usage = Usage {
+        prompt: Some(1000),
+        output: Some(4),
+        cache_read: Some(950),
+        cache_write: Some(40),
+        finish: Some("stop".into()),
+        ..Usage::default()
+    };
+    let row = hold
+        .finish(&usage, Outcome::Complete, |row| append(&path, row))
+        .unwrap();
+    assert_eq!(row["settled"], "usage");
+    assert_eq!(row["cost_usd"], 0.000163);
+    assert!(row.get("cost_unknown").is_none());
+    assert_eq!(budget.spend().unwrap(), 0.000163);
+    // Spend never turns an unset cap into a limit.
+    assert!(budget.reserve(&json!(null), true, &model(), 32).is_ok());
+}
+
+#[test]
+fn configured_budget_still_refuses_overage() {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(0.002), true, &model(), 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    hold.finish(
+        &Usage {
+            prompt: Some(1000),
+            output: Some(100),
+            ..Usage::default()
+        },
+        Outcome::Complete,
+        |row| append(&path, row),
+    )
+    .unwrap();
+    assert_eq!(
+        budget
+            .reserve(&json!(0.002), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+    assert_eq!(
+        budget
+            .reserve(&json!(0), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((403, "budget_not_configured"))
+    );
+}
+
+#[test]
+fn unknown_price_without_budget_is_admitted() {
+    let home = Home::new();
+    let path = home.ledger();
+    let budget = Budget::new(path.clone());
+    // A context beyond the reservation bound has no computable price ceiling.
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    assert_eq!(
+        budget
+            .reserve(&json!(1), true, &unknown, 32)
+            .err()
+            .map(|error| error.code),
+        Some("budget_exceeded")
+    );
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    assert_eq!(hold.reserved(), 0.0);
+    hold.mark_forwarded().unwrap();
+    let row = hold
+        .finish(&Usage::default(), Outcome::Complete, |row| append(&path, row))
+        .unwrap();
+    assert_eq!(row["cost_unknown"], true);
+    assert_eq!(row["usage_missing"], true);
+    assert_eq!(row["cost_usd"], 0.0);
+}
