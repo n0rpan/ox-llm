@@ -970,24 +970,22 @@ fn prepare(
         dirs.home.clone(),
         oxa_proto::offline(),
     ));
+    let hook_inputs = HookInputs {
+        args: a,
+        dirs,
+        cwd,
+        settings: &settings,
+        resources: &resources,
+        sandbox: &sandbox,
+        trusted,
+        nested: child.nested(),
+        env,
+        yolo: yolo.clone(),
+    };
     let hook_sets = if owner_chat {
         HookSets::default()
     } else {
-        build_hooks(
-            &HookInputs {
-                args: a,
-                dirs,
-                cwd,
-                settings: &settings,
-                resources: &resources,
-                sandbox: &sandbox,
-                trusted,
-                nested: child.nested(),
-                env,
-                yolo: yolo.clone(),
-            },
-            &mut notices,
-        )?
+        build_hooks(&hook_inputs, &mut notices)?
     };
     // `ctx.mode` of the extensions (pi's names).
     if let Some(ext) = &hook_sets.extensions {
@@ -999,17 +997,14 @@ fn prepare(
         });
     }
 
-    let (store, open, session_id) = match owner_open {
-        Some((bound, store)) => (store, Open::Resume(bound.clone()), None),
-        None => {
-            let store: Arc<dyn SessionStore> = if a.no_session {
-                Arc::new(MemStore::new())
-            } else {
-                Arc::new(FsStore::new(dirs.sessions_dir.clone()))
-            };
-            let (open, id) = choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?;
-            (store, open, id)
-        }
+    let store: Arc<dyn SessionStore> = match &owner_open {
+        Some((_, store)) => store.clone(),
+        None if a.no_session => Arc::new(MemStore::new()),
+        None => Arc::new(FsStore::new(dirs.sessions_dir.clone())),
+    };
+    let (open, session_id) = match owner_open {
+        Some((bound, _)) => (Open::Resume(bound.clone()), None),
+        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
     };
     let name = match a.name.as_deref().map(str::trim) {
         Some("") => {

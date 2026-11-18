@@ -1,19 +1,22 @@
 //! Protected selection of the native Session shared by the owner chat callers.
 use super::{open_named, prepare, Args, RunMode};
-use oxa_config::{Dirs, Env};
+use oxa_config::{Dirs, Env, Settings};
 use oxa_core::Session;
-use oxa_proto::{codes, OxaError, Value};
-use oxa_session::{decode_header, session_dir_name, FsStore, SessionHeader, SessionRef, SessionStore};
+use oxa_proto::{codes, Entry, EntryBody, OxaError, Value};
+use oxa_session::{
+    decode_entry, decode_header, new_entry_id, session_dir_name, FsStore, SessionRef, SessionStore,
+};
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Read},
-    os::unix::fs::MetadataExt,
+    os::unix::fs::{DirBuilderExt, MetadataExt},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 const MAX_SETTINGS: u64 = 1_048_576;
-const MAX_HEADER: u64 = 65_536;
+const MAX_LINE: u64 = 65_536;
+const ORIGIN: &str = "oxa.lead.owner";
 
 /// One explicitly selected Session. Command and HTTP input cannot change its identity.
 pub struct LeadOwnerBinding {
@@ -78,22 +81,85 @@ fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
     Ok(Some(id.to_owned()))
 }
 
-fn header(path: &Path, uid: u32) -> Result<(SessionHeader, (u64, u64)), OxaError> {
-    let file = private_file(path, uid)?;
-    let metadata = file.metadata().map_err(|_| unavailable())?;
+fn read_line(reader: &mut impl BufRead) -> Result<Vec<u8>, OxaError> {
     let mut line = Vec::new();
-    BufReader::new(file)
-        .take(MAX_HEADER + 1)
+    reader
+        .take(MAX_LINE + 1)
         .read_until(b'\n', &mut line)
         .map_err(|_| unavailable())?;
-    if line.len() as u64 > MAX_HEADER || line.last() != Some(&b'\n') {
+    if line.len() as u64 > MAX_LINE || line.last() != Some(&b'\n') {
         return Err(unavailable());
     }
-    let header = decode_header(&line).map_err(|_| unavailable())?;
-    Ok((header, (metadata.dev(), metadata.ino())))
+    Ok(line)
+}
+
+fn dedicated_file(path: &Path, uid: u32, id: &str, project: &Path) -> Result<Option<(u64, u64)>, OxaError> {
+    let file = private_file(path, uid)?;
+    let metadata = file.metadata().map_err(|_| unavailable())?;
+    let mut reader = BufReader::new(file);
+    let header = decode_header(&read_line(&mut reader)?).map_err(|_| unavailable())?;
+    if header.id != id {
+        return Ok(None);
+    }
+    let origin = decode_entry(&read_line(&mut reader)?).map_err(|_| unavailable())?;
+    if header.cwd != project
+        || header.parent_session.is_some()
+        || origin.parent.is_some()
+        || !matches!(origin.body, EntryBody::Custom { custom_type, data }
+            if custom_type == ORIGIN && data.as_str() == Some(id))
+    {
+        return Err(unavailable());
+    }
+    Ok(Some((metadata.dev(), metadata.ino())))
 }
 
 impl LeadOwnerBinding {
+    /// Explicit operator action after owner authentication. Returns a new ID for
+    /// user settings. Opens no provider and imports no history, model, or goal.
+    pub fn create(dirs: &Dirs, canonical_project: &Path, owner_uid: u32) -> Result<String, OxaError> {
+        canonical(canonical_project)?;
+        if !canonical_project.is_dir() {
+            return Err(unavailable());
+        }
+        let parent = dirs.sessions_dir.parent().ok_or_else(unavailable)?;
+        private_directory(parent, owner_uid)?;
+        let directory = dirs.sessions_dir.join(session_dir_name(canonical_project));
+        for path in [&dirs.sessions_dir, &directory] {
+            match fs::DirBuilder::new().mode(0o700).create(path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err(unavailable()),
+            }
+            private_directory(path, owner_uid)?;
+        }
+        let store = FsStore::new(dirs.sessions_dir.clone());
+        let session = store
+            .create(canonical_project, None, None)
+            .map_err(|_| unavailable())?;
+        store.acquire(&session).map_err(|_| unavailable())?;
+        store
+            .append(
+                &session,
+                &Entry {
+                    id: new_entry_id(&|_| false),
+                    parent: None,
+                    ts_ms: oxa_proto::time::now_ms(),
+                    body: EntryBody::Custom {
+                        custom_type: ORIGIN.into(),
+                        data: Value::String(session.id.clone()),
+                    },
+                },
+            )
+            .and_then(|()| store.sync(&session))
+            .map_err(|_| unavailable())?;
+        for directory in [directory.as_path(), dirs.sessions_dir.as_path(), parent] {
+            File::open(directory)
+                .and_then(|file| file.sync_all())
+                .map_err(|_| unavailable())?;
+        }
+        Ok(session.id)
+    }
+
     /// Load after verifying the transport's owner. The project is a trusted caller value.
     pub fn load(dirs: &Dirs, canonical_project: &Path, owner_uid: u32) -> Result<Option<Self>, OxaError> {
         let Some(id) = selection(dirs, owner_uid)? else {
@@ -109,9 +175,8 @@ impl LeadOwnerBinding {
             if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
                 continue;
             }
-            let (header, file) = header(&path, owner_uid)?;
-            if header.id == id {
-                if header.cwd != canonical_project || selected.is_some() {
+            if let Some(file) = dedicated_file(&path, owner_uid, &id, canonical_project)? {
+                if selected.is_some() {
                     return Err(unavailable());
                 }
                 selected = Some((path, file));
@@ -130,10 +195,7 @@ impl LeadOwnerBinding {
     fn recheck(&self) -> Result<(), OxaError> {
         canonical(&self.project)?;
         private_directory(&self.dirs.sessions_dir, self.uid)?;
-        let (header, identity) = header(&self.session.path, self.uid)?;
-        if identity != self.file
-            || header.id != self.session.id
-            || header.cwd != self.project
+        if dedicated_file(&self.session.path, self.uid, &self.session.id, &self.project)? != Some(self.file)
             || selection(&self.dirs, self.uid)?.as_deref() != Some(self.session.id.as_str())
         {
             return Err(unavailable());
@@ -162,10 +224,20 @@ pub fn with_lead_owner<T>(
         }
     })?;
     binding.recheck()?;
+    // The serving process owns the normal startup policy. Refuse a mismatch
+    // before provider preparation, without changing policy for other requests.
+    let (offline, remote) = crate::netguard::policy_from(false, env, &Settings::load(dirs, cwd, false));
+    if offline && !oxa_proto::offline() {
+        return Err(oxa_proto::offline_error("Lead chat"));
+    }
+    if !remote && oxa_proto::remote_engine_allowed() {
+        return Err(unavailable());
+    }
     let mode = RunMode::Print;
     let home_workspace =
         crate::home_cwd::check(mode, cwd, env, dirs, &mut std::io::empty(), &mut std::io::sink())?;
     let mut args = Args {
+        no_extensions: true,
         no_tools: true,
         no_skills: true,
         ..Args::default()
