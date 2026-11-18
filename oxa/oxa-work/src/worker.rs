@@ -127,6 +127,7 @@ pub(crate) fn run(
         crate::restrict_child_github(&mut command);
         command.args(["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]);
         if task.id.starts_with("board-") {
+            // The native packet carries a catalog ID. Keep it bound across the child launch.
             command.env("OXA_WORK_EXACT_MODEL", &task.model);
         }
     }
