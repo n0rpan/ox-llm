@@ -295,11 +295,13 @@ fn a_deleted_base_cannot_strand_saving_or_a_cached_success() {
 fn failed_commit_hook_preserves_files_and_blocks() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let hook = env.write("work/project/.git/hooks/pre-commit", "#!/bin/sh\nexit 1\n");
     fs::set_permissions(hook, fs::Permissions::from_mode(0o755)).unwrap();
     let record = run(&env, vec![write_turn(), ScriptTurn::text("done")]);
     assert_eq!(record["outcome"], "blocked", "{record}");
+    assert_eq!(record["acceptance_outcome"], "done", "{record}");
+    assert_eq!(record["checks"][0]["status"], "passed", "{record}");
     assert_eq!(
         fs::read_to_string(tree(&record).join("answer.txt")).unwrap(),
         "retained"
