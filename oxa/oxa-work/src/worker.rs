@@ -8,6 +8,8 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+pub mod owner_cli;
+
 const LINE_CAP: usize = 64 * 1024;
 const DIAGNOSTIC_CAP: usize = 8192;
 
