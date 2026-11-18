@@ -112,17 +112,11 @@ pub(crate) fn run(
     if policy.offline {
         command.arg("--offline");
     }
-    if task.runner_owns_github() {
+    if policy.runner_owns_github {
         // The provider connection is host-side. The worker's tool sandbox and
         // independent tool adapters have no GitHub access.
-        command
-            .env(crate::RUNNER_GITHUB_ENV, "1")
-            .env_remove("GH_TOKEN")
-            .env_remove("GITHUB_TOKEN")
-            .env_remove("GH_ENTERPRISE_TOKEN")
-            .env_remove("GITHUB_ENTERPRISE_TOKEN")
-            .env_remove("GH_CONFIG_DIR")
-            .args(["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]);
+        crate::restrict_child_github(&mut command);
+        command.args(["--no-mcp", "--no-extensions", "--no-web-search", "--no-subagent"]);
     }
     if let Some(id) = session {
         command.arg(format!("--continue={id}"));

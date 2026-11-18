@@ -22,8 +22,19 @@ pub fn run_observed(
     args: &[&str],
     path: Option<String>,
 ) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
-    run_observed_with(env, turns, args, path, |_| {})
+    let (mut records, requests) = run_batch(env, turns, args, path);
+    assert_eq!(records.len(), 1, "expected one task record");
+    (records.remove(0), requests)
 }
+pub fn run_batch(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    path: Option<String>,
+) -> (Vec<serde_json::Value>, Vec<oxa_fake::Recorded>) {
+    run_batch_with(env, turns, args, path, |_| {})
+}
+
 pub fn run_observed_with(
     env: &TestEnv,
     turns: Vec<ScriptTurn>,
@@ -31,6 +42,18 @@ pub fn run_observed_with(
     path: Option<String>,
     configure: impl FnOnce(&mut Command),
 ) -> (serde_json::Value, Vec<oxa_fake::Recorded>) {
+    let (mut records, requests) = run_batch_with(env, turns, args, path, configure);
+    assert_eq!(records.len(), 1, "expected one task record");
+    (records.remove(0), requests)
+}
+
+fn run_batch_with(
+    env: &TestEnv,
+    turns: Vec<ScriptTurn>,
+    args: &[&str],
+    path: Option<String>,
+    configure: impl FnOnce(&mut Command),
+) -> (Vec<serde_json::Value>, Vec<oxa_fake::Recorded>) {
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
@@ -49,12 +72,17 @@ pub fn run_observed_with(
     let out = rx
         .recv_timeout(std::time::Duration::from_secs(90))
         .expect("runner finished");
-    let record = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
-        panic!(
-            "{e}: {} / {}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        )
-    });
-    (record, server.requests())
+    let records = serde_json::Deserializer::from_slice(&out.stdout)
+        .into_iter()
+        .map(|record| {
+            record.unwrap_or_else(|e| {
+                panic!(
+                    "{e}: {} / {}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                )
+            })
+        })
+        .collect();
+    (records, server.requests())
 }
