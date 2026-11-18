@@ -322,7 +322,7 @@ mod tests {
                 pr_head: "a".repeat(40),
                 rejected_group: "b".repeat(40),
                 removal_id: "E_removed".into(),
-                removed_at: 3_500,
+                removed_at: 3_600,
             },
             recipient_id: "U_author".into(),
             recipient_login: "synthetic-author".into(),
@@ -337,8 +337,10 @@ name"])
             .is_err());
         let mut node = json!({
             "id":"IC_comment","repository":{"id":"R_repo"},"pullRequest":{"id":"PR_pull"},
-            "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T01:00:00Z"
+            "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T00:59:59Z"
         });
+        assert!(delivery(&intent, &node).is_err());
+        node["createdAt"] = json!("1970-01-01T01:00:00Z");
         let delivered = delivery(&intent, &node).unwrap();
         node["author"]["id"] = json!("U_unrelated");
         assert!(delivery(&intent, &node).is_err());
