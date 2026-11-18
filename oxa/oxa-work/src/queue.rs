@@ -636,29 +636,31 @@ fn run_queue_inner(
     let (tx, rx) = mpsc::channel();
     let mut active = Workers::default();
     let read_directory = prepared.is_none();
-    let mut pending = Vec::new();
-    let mut bytes = 0;
-    for (index, binding) in prepared.unwrap_or_default().iter().enumerate() {
-        let packet = crate::helper_queue::take_native_packet(&directory, binding)?;
-        let task = native::from_packet(binding, &packet)?;
-        if let Some(selected) = selection {
-            selected
-                .get(&binding.native_task_id)
-                .ok_or("native task was not selected")?
-                .verify_task(&task)?;
-        }
-        bytes += task_bytes(&task);
-        if bytes > MAX_QUEUE_BYTES {
-            return Err("native queue exceeds the task input capacity".into());
-        }
-        pending.push(Job {
-            task,
-            modified: SystemTime::UNIX_EPOCH,
-            file: directory.clone(),
-            index,
-            binding: None,
-        });
-    }
+    let mut pending = if let Some(bindings) = prepared {
+        let mut bytes = 0;
+        crate::helper_queue::take_native_packets(&directory, bindings, |index, binding, packet| {
+            let task = native::from_packet(binding, &packet)?;
+            if let Some(selected) = selection {
+                selected
+                    .get(&binding.native_task_id)
+                    .ok_or("native task was not selected")?
+                    .verify_task(&task)?;
+            }
+            bytes += task_bytes(&task);
+            if bytes > MAX_QUEUE_BYTES {
+                return Err("native queue exceeds the task input capacity".into());
+            }
+            Ok(Job {
+                task,
+                modified: SystemTime::UNIX_EPOCH,
+                file: directory.clone(),
+                index,
+                binding: None,
+            })
+        })?
+    } else {
+        vec![]
+    };
     let (mut external, mut inputs) = (vec![], Inputs::default());
     let (mut finished, mut failed, mut last) = (0, 0, None);
     loop {
@@ -974,10 +976,34 @@ mod tests {
             assert!(queue.join(format!("board-{}.txt", binding.key)).is_file());
         }
         targets[1].host_id = "host-a";
+        let ready: Vec<_> = bindings
+            .iter()
+            .map(|binding| queue.join(format!("board-{}.txt", binding.key)))
+            .collect();
+        let saved: Vec<_> = ready.iter().map(|path| fs::read(path).unwrap()).collect();
+        let held = directory.path().join("withheld-packet");
+        fs::rename(&ready[1], &held).unwrap();
+        assert!(run()
+            .run_native_batch(&claims, &targets, execute.clone(), &mut |_| Ok(()))
+            .unwrap_err()
+            .contains("packet unavailable"));
+        assert_eq!(
+            fs::read(&ready[0]).expect("missing second packet must leave the first ready"),
+            saved[0]
+        );
+        fs::rename(&held, &ready[1]).unwrap();
+
         targets[1].model = models[0];
         assert!(run()
             .run_native_batch(&claims, &targets, execute.clone(), &mut |_| Ok(()))
             .is_err());
+        for (path, bytes) in ready.iter().zip(&saved) {
+            assert_eq!(
+                &fs::read(path).expect("rejected batch must leave both packets ready"),
+                bytes
+            );
+        }
+        assert_eq!(fs::read_dir(queue.join("started")).unwrap().count(), 0);
         assert!(bindings.iter().all(
             |binding| claims.snapshot().unwrap()[&binding.number].lease.as_ref() == Some(&binding.lease)
         ));
