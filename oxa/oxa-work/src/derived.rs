@@ -527,6 +527,13 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
     for path in paths {
         let name = path.rsplit('/').next().unwrap_or(path.as_str());
         let dir = parent_dir(path);
+        // Shared Cargo inputs can change the build without selecting a package.
+        if matches!(name, "rust-toolchain" | "rust-toolchain.toml")
+            || dir.split('/').any(|part| part == ".cargo")
+        {
+            selected.requires_hosted = true;
+            continue;
+        }
         // A missing or unsupported package declaration cannot make a Rust edit verified.
         selected.requires_hosted |= name.ends_with(".rs");
         if name == "Cargo.toml" || name == "Cargo.lock" {
