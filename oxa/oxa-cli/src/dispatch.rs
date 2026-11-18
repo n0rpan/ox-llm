@@ -791,7 +791,13 @@ fn prepare(
             &mut notices,
         )?
     };
-    let mut settings = child.apply(Settings::load(dirs, cwd, trusted));
+    // Inherited trust covers the verified resources, while worker configuration
+    // comes from the user layer. Worktree settings must not change sandbox policy.
+    let mut settings = child.apply(if inherited_source.is_some() {
+        user_settings.clone()
+    } else {
+        Settings::load(dirs, cwd, trusted)
+    });
     if inherited_source.is_some() {
         // The work runner owns acceptance. The child must not run a second
         // local done round just because trusted project resources were loaded.

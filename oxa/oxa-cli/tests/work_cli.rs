@@ -1716,14 +1716,23 @@ fn a_managed_worker_uses_the_sources_approved_project_resources() {
     let project = env.work().join("project");
     let note = "Synthetic approved worker system resource.";
     env.write("work/project/.oxa/SYSTEM.md", note);
-    git(&env, &project, &["add", ".oxa/SYSTEM.md"]);
+    env.write(
+        "work/project/.oxa/settings.json",
+        r#"{"done":["test -f .oxa/settings.json"],"defaultTools":["write"]}"#,
+    );
+    env.write("home/.oxa/agent/settings.json", r#"{"defaultTools":["read"]}"#);
+    git(&env, &project, &["add", ".oxa/SYSTEM.md", ".oxa/settings.json"]);
     git(&env, &project, &["commit", "-m", "Add approved resource fixture"]);
     git(&env, &project, &["push", "origin", "main"]);
 
     let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
     let rows = run_server_records(&env, &server, &["work", "../tasks.json"], None, &[], true);
     assert_eq!(rows[0]["outcome"], "nothing_to_do", "{rows:?}");
-    assert!(server.requests()[0].system.contains(note));
+    let requests = server.requests();
+    assert!(requests[0].system.contains(note));
+    let tools = &requests[0].tools_json;
+    assert!(tools.contains("\"name\":\"read\""), "{tools}");
+    assert!(!tools.contains("\"name\":\"write\""), "{tools}");
 }
 
 fn child_trust_case(mode: &str) {
