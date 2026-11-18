@@ -105,6 +105,8 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    /// L1: the settings files as last seen (`settings_refresh`).
+    pub(crate) settings_watch: Mutex<crate::settings_refresh::Watch>,
     goal_steering_enabled: std::sync::atomic::AtomicBool,
     pub(crate) lead_steering_authority: Mutex<Option<crate::goal::BoundLeadAuthority>>,
     pub(crate) advisor: Mutex<Option<Arc<crate::advice::BoundAdvisor>>>,

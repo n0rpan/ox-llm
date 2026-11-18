@@ -1286,6 +1286,8 @@ pub(crate) fn run_from_wire(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    // L1: one stat per settings file; a changed file is applied before the first request.
+    crate::settings_refresh::refresh_at_run_start(st, sink);
     // X3: while the engine has not yet published metadata for the selected model (a switch
     // to a model that is not loaded, a resumed session), re-read it before the run and
     // again before the after-reply compaction decision.

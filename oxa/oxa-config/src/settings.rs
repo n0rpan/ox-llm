@@ -55,6 +55,8 @@ pub struct Settings {
     user: Value,
     project: Value,
     diagnostics: Vec<Diagnostic>,
+    /// A settings file existed but could not be read or parsed (its layer is empty).
+    layer_failed: bool,
 }
 
 impl Settings {
@@ -72,13 +74,22 @@ impl Settings {
         } else {
             (Value::Null, String::from("project settings"))
         };
-        build(
+        // `read_layer` is the only source of diagnostics so far.
+        let layer_failed = !diagnostics.is_empty();
+        let mut settings = build(
             user,
             project,
             diagnostics,
             &user_path.display().to_string(),
             &project_src,
-        )
+        );
+        settings.layer_failed = layer_failed;
+        settings
+    }
+    /// Whether [`Settings::load`] met a file it could not read or parse. A caller that applies
+    /// a changed file live keeps its previous settings then.
+    pub fn layer_failed(&self) -> bool {
+        self.layer_failed
     }
     /// Whether the project's own settings file declares a non-empty `done` list. Reads the file
     /// whatever the trust (it only looks at that key and never merges it), so the caller can
@@ -380,6 +391,7 @@ fn build(
         user,
         project,
         diagnostics,
+        layer_failed: false,
     }
 }
 
