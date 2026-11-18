@@ -6,6 +6,7 @@ use std::fmt::Write;
 mod chat;
 mod filters;
 mod pages;
+mod proposals;
 mod quotas;
 pub use filters::{Filter, Query};
 pub use pages::{Page, Prompt};
