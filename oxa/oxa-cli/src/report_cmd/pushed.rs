@@ -76,6 +76,45 @@ fn opaque_value(value: &str) -> bool {
             .any(|ch| ch.is_ascii_digit() || !(ch.is_alphabetic() || matches!(ch, '_' | '.' | ':')))
 }
 
+/// Whether a quoted value of a secret-named key is a literal credential. A quoted string is
+/// data (a single-quoted shell word or a JSON/YAML string), so a `$` inside it counts as part
+/// of the value; only a whole variable reference (`${NAME}`, `$(cmd)`, a double-quoted
+/// `$UPPER_NAME`) or a `<placeholder>` is an expression.
+fn quoted_secret_literal(text: &str) -> bool {
+    static QUOTED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static REFERENCE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let quoted = QUOTED.get_or_init(|| {
+        regex::Regex::new(concat!(
+            r#"(?i)(?:^|[^a-z])(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|token"#,
+            r#"|secret|password|passwd|passphrase|authorization|key)["']?\s*[:=]\s*"#,
+            r#"(?:"([^"]*)"|'([^']*)')"#
+        ))
+        .expect("quoted secret pattern")
+    });
+    let reference = REFERENCE.get_or_init(|| {
+        regex::Regex::new(r"^(?:\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$\(.*\)|[<{\[].*[>}\]])$")
+            .expect("reference pattern")
+    });
+    quoted.captures_iter(text).any(|found| {
+        let double = found.get(1).is_some();
+        let value = found.get(1).or(found.get(2)).map_or("", |m| m.as_str());
+        let upper_name = double
+            && value.strip_prefix('$').is_some_and(|name| {
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+            });
+        value.chars().count() >= MIN_SECRET_VALUE_CHARS
+            && !value.contains(char::is_whitespace)
+            && !reference.is_match(value)
+            && !upper_name
+            && value
+                .chars()
+                .any(|ch| ch.is_ascii_digit() || !(ch.is_alphabetic() || matches!(ch, '_' | '.' | ':')))
+    })
+}
+
 fn basename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase()
 }
@@ -202,6 +241,7 @@ impl PushScan {
         // an opaque credential copied from a project file that no configured value matches.
         let value_of = |text: &str| text.split_whitespace().last().unwrap_or_default().to_string();
         if p.keyed.captures_iter(text).any(|found| opaque_value(&found[2]))
+            || quoted_secret_literal(text)
             || p.bearer
                 .find_iter(text)
                 .any(|found| opaque_value(&value_of(found.as_str())))
@@ -391,6 +431,34 @@ mod tests {
             "Bearer {token}",
         ] {
             assert!(scan.check(&line("src/main.rs", text)).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn quoted_literals_with_a_dollar_are_refused_but_variable_expressions_are_not() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        let d = "$";
+        let literals = [
+            format!("\"password\": \"opaque{d}pass17\""),
+            format!("PASSWORD='{d}ecr3t-pass-9'"),
+            format!("token: '{d}ecr3t12345'"),
+            format!("DB_PASSWORD=\"{d}ecr3t_pass\""),
+            format!("{{\"secret\":\"{d}{{x}}opaque17\"}}"),
+        ];
+        for text in &literals {
+            assert!(scan.check(&added("notes.json", text)).is_some(), "{text}");
+        }
+        let expressions = [
+            format!("PASSWORD={d}DB_PASSWORD"),
+            format!("PASSWORD={d}{{DB_PASSWORD}}"),
+            format!("PASSWORD={d}(pass show db)"),
+            format!("\"password\": \"{d}{{DB_PASSWORD}}\""),
+            format!("PASSWORD=\"{d}DB_PASSWORD\""),
+            format!("token: \"{d}(vault read token)\""),
+            "password: \"<your-password-1>\"".to_string(),
+        ];
+        for text in &expressions {
+            assert!(scan.check(&added("src/main.rs", text)).is_none(), "{text}");
         }
     }
 
