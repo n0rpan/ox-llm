@@ -464,6 +464,8 @@ pub enum SessionCmd {
     Compact {
         instructions: Option<String>,
     },
+    /// `/goal [text|clear|pause|resume]`: the text after the command, unparsed (G1 parses it).
+    Goal(String),
     /// `Session::navigate`; `instructions` = the custom focus of the branch summary (D-INT).
     Navigate {
         target: String,
