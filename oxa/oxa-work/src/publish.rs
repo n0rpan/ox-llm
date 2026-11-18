@@ -132,10 +132,7 @@ fn scan_pushed(policy: &RunPolicy, tree: &Path, revisions: &[&str], scan: Conten
         checked(super::git(policy, tree, &args)).map_err(unreadable)
     };
     // Messages and identities are pushed with the commits.
-    let metadata = log(&[
-        "--format=%x00%H%n%an%n%ae%n%cn%n%ce%n%B",
-        "--no-show-signature",
-    ])?;
+    let metadata = log(&["--format=%x00%H%n%an%n%ae%n%cn%n%ce%n%B", "--no-show-signature"])?;
     scan_metadata(&metadata, scan)?;
     let text = log(&[
         "--reverse",
@@ -430,12 +427,7 @@ fn publish_locked(
         // The owner confirmation shows only metadata, so content is checked here,
         // before any remote request, against what the local origin refs record.
         // The destination's own tips are checked again after confirmation.
-        scan_pushed(
-            policy,
-            tree,
-            &[head.as_str(), "--not", "--remotes=origin"],
-            scan,
-        )?;
+        scan_pushed(policy, tree, &[head.as_str(), "--not", "--remotes=origin"], scan)?;
         let remote = checked(git(repo, &["remote", "get-url", "--push", "--all", "origin"]))?;
         if remote.lines().count() != 1 {
             return Err("publishing requires one origin push URL".into());

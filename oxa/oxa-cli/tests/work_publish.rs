@@ -1099,7 +1099,11 @@ fn publication_refuses_a_secret_in_a_local_commit_message() {
     setup(&env, "[]");
     let repo = env.work().join("project");
     let token = format!("ghp_{}", "x".repeat(36));
-    git(&env, &repo, &["commit", "--allow-empty", "-m", &format!("Note {token}")]);
+    git(
+        &env,
+        &repo,
+        &["commit", "--allow-empty", "-m", &format!("Note {token}")],
+    );
     let record = run_args(
         &env,
         edits(),
@@ -1138,7 +1142,11 @@ fn publication_checks_the_push_url_not_the_fetch_url() {
     git(&env, &env.work(), &["init", "--bare", "mirror.git"]);
     git(&env, &repo, &["push", "../mirror.git", "main"]);
     git(&env, &repo, &["remote", "set-url", "origin", "../mirror.git"]);
-    git(&env, &repo, &["remote", "set-url", "--push", "origin", "../remote.git"]);
+    git(
+        &env,
+        &repo,
+        &["remote", "set-url", "--push", "origin", "../remote.git"],
+    );
     git(&env, &repo, &["fetch", "origin"]);
     let record = run_args(
         &env,
