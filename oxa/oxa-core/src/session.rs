@@ -210,9 +210,9 @@ impl Session {
             session_id,
             jobs,
         } = d;
-        // W4: `oxa.jobs.wakeOnFinish` (default off, user settings only): a finished background
+        // W4: `oxa.jobs.wakeOnFinish` (default on, user settings only): a finished background
         // job wakes the session. A project file cannot turn it on: it starts model turns.
-        let wake_on_finish = settings.user_bool("oxa.jobs.wakeOnFinish", false);
+        let wake_on_finish = settings.user_bool("oxa.jobs.wakeOnFinish", true);
         // H: `defaultModel` (pi settings.md "Startup model ID") when no model was chosen and the
         // engine serves it; otherwise the engine's own model, as before.
         let model = match model {
