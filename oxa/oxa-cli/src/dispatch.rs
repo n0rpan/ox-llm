@@ -229,7 +229,11 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                     | CommandId::LeadChat
                     | CommandId::Help
                     | CommandId::WorkStatus
-                    | CommandId::WorkBoard => Err(OxaError::new(
+                    | CommandId::WorkBoard
+                    | CommandId::Memory
+                    | CommandId::MemoryList
+                    | CommandId::MemoryShow
+                    | CommandId::MemoryRm => Err(OxaError::new(
                         codes::USAGE,
                         "registered command handler or arguments are unavailable",
                     )),
