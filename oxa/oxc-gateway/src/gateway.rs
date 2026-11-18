@@ -184,7 +184,7 @@ impl Gateway {
             Some(cached) => cached,
             None => (State::Fresh, self.fetch_catalog(source, &key, timeout)?),
         };
-        let (missing_price, missing_limits) = self
+        let (missing_price, missing_limits, estimated_price) = self
             .runtime
             .apply_provider_catalog(source, offers)
             .map_err(Error::Refused)?;
@@ -192,6 +192,7 @@ impl Gateway {
             state,
             missing_price,
             missing_limits,
+            estimated_price,
         }))
     }
     /// Replace only the private cache on a stale refresh.
