@@ -1,5 +1,8 @@
 //! Correlate a verified rejection with an earlier owner-observed queue admission.
-use super::{Board, File, QueueObservation, Read, Seek, SeekFrom, MAX_LOG_BYTES};
+use super::{
+    publication::{Publication, Publications},
+    Board, File, QueueObservation, Read, Seek, SeekFrom, MAX_LOG_BYTES,
+};
 use crate::board::queue::{is_object_id, Removal};
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -18,6 +21,7 @@ struct PriorSample {
     #[serde(default)]
     queue_rejections: Vec<PriorRejection>,
     landing_main: Option<String>,
+    landing_publication: Option<Publication>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +72,7 @@ impl AdmissionEvidence {
 
 #[derive(Default)]
 pub(super) struct Admissions {
+    pub(super) publications: Publications,
     queued: BTreeMap<u64, Admission>,
     matched: BTreeMap<u64, AdmissionEvidence>,
 }
@@ -96,6 +101,9 @@ impl Admissions {
                 serde_json::from_slice(&line).map_err(|_| "cannot read owner shadow journal")?;
             if prior.schema_version != 1 || prior.observed_at != prior.board.observed_at {
                 return Err("invalid owner shadow journal sample".into());
+            }
+            if let Some(publication) = prior.landing_publication {
+                history.publications.observe(publication)?;
             }
             if prior.landing.is_empty() {
                 continue;

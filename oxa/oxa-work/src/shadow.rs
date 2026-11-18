@@ -15,6 +15,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 mod landing_history;
+pub mod publication;
 use landing_history::{AdmissionEvidence, Admissions};
 
 pub const INTERVAL: Duration = Duration::from_secs(300);
@@ -49,6 +50,8 @@ struct Sample<'a> {
     landing: &'a BTreeMap<u64, LandingDecision>,
     #[serde(skip_serializing_if = "Option::is_none")]
     landing_main: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    landing_publication: Option<&'a publication::Publication>,
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -385,15 +388,9 @@ pub fn run_with_landing(
             matched_queue_admissions: &matched_queue_admissions,
             landing: &landing,
             landing_main: landing_main.as_deref(),
+            landing_publication: None,
         };
-        let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
-        line.push(b'\n');
-        let length = log.metadata().map_err(|_| "cannot inspect shadow log")?.len();
-        if length.saturating_add(line.len() as u64) > MAX_LOG_BYTES {
-            return Err("shadow log reached its size limit; rotate it while stopped".into());
-        }
-        log.write_all(&line).map_err(|_| "cannot append shadow board")?;
-        log.sync_data().map_err(|_| "cannot sync shadow board")?;
+        append(log, &sample)?;
         if let Some(history) = &mut history {
             history.observe(
                 &board,
@@ -472,4 +469,16 @@ fn plan_matched_rejections(
             });
         }
     }
+}
+
+fn append(log: &mut File, sample: &Sample<'_>) -> Result<()> {
+    let mut line = serde_json::to_vec(sample).map_err(|_| "cannot encode shadow board")?;
+    line.push(b'\n');
+    let length = log.metadata().map_err(|_| "cannot inspect shadow log")?.len();
+    if length.saturating_add(line.len() as u64) > MAX_LOG_BYTES {
+        return Err("shadow log reached its size limit; rotate it while stopped".into());
+    }
+    log.write_all(&line).map_err(|_| "cannot append shadow board")?;
+    log.sync_data().map_err(|_| "cannot sync shadow board")?;
+    Ok(())
 }
