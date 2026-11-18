@@ -258,12 +258,14 @@ fn subscription_audit_failure_closes_both_classes_across_independent_instances()
 #[test]
 fn legacy_unscoped_subscription_usd_reserves_nothing_but_its_tokens_still_count() {
     const LEGACY: &str = "00000000000000000000000000000000";
-    // A missing hold, a token-only hold, and a hold whose recorded USD is far
-    // over the entire daily cap. All three must behave identically for money.
+    // A missing hold, a token-only hold, and holds whose recorded USD is far
+    // over the entire daily cap in both legacy shapes: the pre-pool
+    // `reserved_usd` form and the bounded-pool `go_usd` form.
     for legacy in [
         None,
         Some(json!({"subscription_tokens":120})),
         Some(json!({"subscription_tokens":120,"reserved_usd":400.0})),
+        Some(json!({"subscription_tokens":120,"go_usd":400.0})),
     ] {
         let home = Home::new();
         let path = home.ledger();

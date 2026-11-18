@@ -280,23 +280,19 @@ token usage and settle zero USD. Unknown paid work retains its full token bound;
 the cap includes concurrent and crashed-process reservations. It never falls back
 to a paid API balance. Missing metered pricing still refuses metered requests.
 
-For OpenCode Go, `oxa.cloud.opencode.max_request_usd` sets the local reservation
-per request when a USD cap applies. The default is USD 0.25. Set
-`oxa.cloud.opencode.daily_budget_usd` to give Go its own host-local daily USD
-pool. Without that setting, a configured `oxa.cloud.daily_budget_usd` remains the
-combined ceiling. Active bounded Go holds are charged to the Go pool when it has
-its own cap. Subscription requests reserve tokens only: their cost is unknown,
-no daily USD headroom is held for them, and an unknown final cost stays recorded
-as unknown. Unscoped holds written by older versions keep their stored
-`reserved_usd` readable and their tokens still count toward the subscription
-caps, but that recorded USD no longer reserves headroom or pauses admission
-while it is in flight.
-
-The request bound is oxa's reservation, and OpenCode controls whether a call
-falls back to its paid balance. Set the bound conservatively when Extra Usage is
-enabled. If OpenCode reports a higher charge, the ledger records the full amount
-and further Go admission pauses through the end of the spend day. A missing or
-estimated final cost keeps a conservative estimate in the private ledger.
+OpenCode Go and every other subscription request reserve tokens only. Their cost
+is unknown to oxa, so no daily USD headroom is held for them and no local USD
+cap or request bound pauses their admission: a tiny or fully consumed
+`oxa.cloud.daily_budget_usd` never returns a local refusal for them, and the
+former `oxa.cloud.opencode.daily_budget_usd` and
+`oxa.cloud.opencode.max_request_usd` settings are no longer read. OpenCode's
+reported paid charges settle into the ledger and count in the shared daily
+total; estimated or missing usage stays recorded as unknown at zero USD.
+Holds written by older versions — including stored `reserved_usd` and `go_usd`
+amounts — stay readable with their tokens counted toward the subscription caps,
+while their recorded USD reserves nothing. OpenCode controls whether a call falls
+back to its paid balance; if it reports a higher charge than expected, the
+ledger records the full amount and admission continues.
 
 ### Other
 

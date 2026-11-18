@@ -18,14 +18,13 @@ pub struct SpendReader {
     identity: Option<(u64, u64)>,
     offset: u64,
     total: BigDecimal,
-    go_total: BigDecimal,
-    go_bound_exceeded: bool,
     subscription: Counts,
     tail: Vec<u8>,
     bytes_read: u64,
 }
 /// Budget accounting accepts an estimate only when it is explicitly classified
-/// and no actual cost field is present. Older settled rows keep their format.
+/// and no actual cost field is present. Older settled rows keep their format,
+/// including estimate-only OpenCode rows that earlier binaries recorded.
 pub(crate) fn budget_cost(row: &Value) -> Option<f64> {
     let value = match (row.get("cost_usd"), row.get("estimated_cost_usd")) {
         (Some(cost), None) => cost,
@@ -34,7 +33,7 @@ pub(crate) fn budget_cost(row: &Value) -> Option<f64> {
                 && row["billing"] == "metered"
                 && matches!(
                     row["remote_provider"].as_str(),
-                    Some("anthropic" | "openai" | "openai-chat" | "openrouter")
+                    Some("anthropic" | "openai" | "openai-chat" | "openrouter" | "opencode")
                 ) =>
         {
             estimate
@@ -51,15 +50,6 @@ impl SpendReader {
     pub(crate) fn subscription(&self) -> Counts {
         self.subscription
     }
-    pub(crate) fn go_bound_exceeded(&self) -> bool {
-        self.go_bound_exceeded
-    }
-    pub(crate) fn go_spend(&self) -> io::Result<f64> {
-        finite_usd(&self.go_total)
-    }
-    pub(crate) fn metered_spend(&self) -> io::Result<f64> {
-        finite_usd(&(&self.total - &self.go_total))
-    }
     pub fn read(&mut self, path: &Path) -> io::Result<f64> {
         let mut file = match OpenOptions::new()
             .read(true)
@@ -71,8 +61,6 @@ impl SpendReader {
                 self.identity = None;
                 self.offset = 0;
                 self.total = BigDecimal::default();
-                self.go_total = BigDecimal::default();
-                self.go_bound_exceeded = false;
                 self.subscription = Counts::default();
                 self.tail.clear();
                 self.path = path.into();
@@ -90,8 +78,6 @@ impl SpendReader {
             self.identity = Some(identity);
             self.offset = 0;
             self.total = BigDecimal::default();
-            self.go_total = BigDecimal::default();
-            self.go_bound_exceeded = false;
             self.subscription = Counts::default();
             self.tail.clear();
         } else if self.offset > 0 {
@@ -104,8 +90,6 @@ impl SpendReader {
             if tail != self.tail {
                 self.offset = 0;
                 self.total = BigDecimal::default();
-                self.go_total = BigDecimal::default();
-                self.go_bound_exceeded = false;
                 self.subscription = Counts::default();
                 self.tail.clear();
             }
@@ -114,8 +98,6 @@ impl SpendReader {
         reader.seek(SeekFrom::Start(self.offset))?;
         let mut offset = self.offset;
         let mut total = self.total.clone();
-        let mut go_total = self.go_total.clone();
-        let mut go_bound_exceeded = self.go_bound_exceeded;
         let mut subscription = self.subscription;
         let mut tail = self.tail.clone();
         let mut line = Vec::new();
@@ -198,20 +180,15 @@ impl SpendReader {
             // repeated binary addition can invent spend above an exact cap.
             let debit = BigDecimal::from_str(&cost.to_string())
                 .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
-            if row["remote_provider"] == "opencode" {
-                go_total += &debit;
-            }
             if let Some(bound) = row.get("go_reserved_usd") {
-                let bound = bound
-                    .as_f64()
-                    .filter(|n| n.is_finite() && *n > 0.0)
-                    .ok_or(io::ErrorKind::InvalidData)?;
+                // Historical bounded-pool rows stay readable: validate the
+                // recorded bound without ever acting on it.
                 if row["remote_provider"] != "opencode"
                     || !matches!(row["settled"].as_str(), Some("usage" | "reserved"))
+                    || !bound.as_f64().is_some_and(|n| n.is_finite() && n > 0.0)
                 {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
-                go_bound_exceeded |= cost > bound;
             }
             total += debit;
             if total.to_f64().is_none_or(|value| !value.is_finite()) {
@@ -222,8 +199,6 @@ impl SpendReader {
         // Commit the cursor/total together only after every complete row passed.
         self.offset = offset;
         self.total = total;
-        self.go_total = go_total;
-        self.go_bound_exceeded = go_bound_exceeded;
         self.subscription = subscription;
         self.tail = tail;
         // Admission uses this amount directly. Currency display rounding must

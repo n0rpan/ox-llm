@@ -36,9 +36,10 @@ fn options() -> OpenOptions {
     options
 }
 
-/// A subscription request reserves tokens only; its cost is unknown. The USD
-/// field of a `Subscription` hold never reserves headroom: it exists solely so
-/// records written by older binaries round-trip unchanged and stay readable.
+/// A subscription or Go request reserves tokens only; its cost is unknown to
+/// oxa. The USD fields of `Subscription` and `Go` holds never reserve headroom:
+/// they exist solely so records written by older binaries round-trip unchanged
+/// and stay readable.
 pub(crate) enum Reserved {
     Metered(f64),
     Subscription(u64, f64),
@@ -171,31 +172,14 @@ impl Shared {
         }
         Ok(shared)
     }
-    /// USD headroom held against the capped pools. Legacy subscription
-    /// reservation USD stays readable in stored records but reserves nothing.
+    /// USD headroom held against the daily metered cap. Subscription and Go
+    /// requests hold no USD; legacy stored reservation USD in both shapes
+    /// (`reserved_usd`, `go_usd`) stays readable but reserves nothing.
     pub fn reserved(&self) -> f64 {
         self.holds
             .values()
             .filter_map(|amount| match amount {
-                Reserved::Metered(cost) | Reserved::Go(_, cost) => Some(*cost),
-                Reserved::Subscription(_, _) => None,
-            })
-            .sum()
-    }
-    pub fn metered_reserved(&self) -> f64 {
-        self.holds
-            .values()
-            .filter_map(|amount| match amount {
                 Reserved::Metered(cost) => Some(*cost),
-                _ => None,
-            })
-            .sum()
-    }
-    pub fn go_reserved(&self) -> f64 {
-        self.holds
-            .values()
-            .filter_map(|amount| match amount {
-                Reserved::Go(_, cost) => Some(*cost),
                 _ => None,
             })
             .sum()
@@ -216,19 +200,13 @@ impl Shared {
     pub fn insert(&mut self, cost: f64) -> io::Result<String> {
         self.insert_amount(Reserved::Metered(cost))
     }
-    /// A subscription request reserves tokens only. Its cost is unknown, so it
-    /// holds no USD headroom; paid Go requests reserve through `insert_go`.
+    /// A subscription or Go request reserves tokens only. Its cost is unknown
+    /// to oxa, so no USD headroom is ever held for it.
     pub fn insert_subscription(&mut self, tokens: u64) -> io::Result<String> {
         if tokens == 0 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         self.insert_amount(Reserved::Subscription(tokens, 0.0))
-    }
-    pub fn insert_go(&mut self, tokens: u64, usd: f64) -> io::Result<String> {
-        if tokens == 0 || !usd.is_finite() || usd <= 0.0 {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        self.insert_amount(Reserved::Go(tokens, usd))
     }
     fn insert_amount(&mut self, amount: Reserved) -> io::Result<String> {
         if self.holds.len() >= MAX_HOLDS {

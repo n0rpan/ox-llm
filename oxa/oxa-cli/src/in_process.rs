@@ -298,12 +298,6 @@ pub(crate) fn open_gateway(
         },
     )
     .map_err(|e| OxaError::new(e.code, e.message))?;
-    if let Some(go) = cloud.get("opencode") {
-        runtime = runtime.with_opencode_budget(go).map_err(|e| {
-            OxaError::new(e.code, e.message)
-                .with_hint(format!("Check oxa.cloud.{} in user settings.", e.param))
-        })?;
-    }
     if discover {
         runtime = runtime.with_catalog_cache();
         if let Some(pricing) = cloud.get("unpriced_discovered_pricing") {
