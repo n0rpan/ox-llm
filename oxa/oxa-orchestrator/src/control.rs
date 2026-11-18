@@ -9,15 +9,38 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 
 const REQUEST_BYTES: usize = 32 * 1024;
 
+/// The sender's expected assignment. Only a trusted frontend can verify it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SteeringLease {
+    pub holder: String,
+    pub generation: (u64, u32),
+}
+
 /// The steering/lifecycle subset of the retained protocol. Read-only follow uses
 /// the separate history API; goal replacement awaits the current owner's API.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
-    Pause { id: String, revision: u64 },
-    Resume { id: String, revision: u64 },
-    Steer { id: String, revision: u64, text: String },
-    Cancel { id: String, revision: u64 },
+    Pause {
+        id: String,
+        revision: u64,
+    },
+    Resume {
+        id: String,
+        revision: u64,
+    },
+    Steer {
+        id: String,
+        revision: u64,
+        text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lease: Option<SteeringLease>,
+    },
+    Cancel {
+        id: String,
+        revision: u64,
+    },
 }
 
 impl Request {
@@ -60,9 +83,17 @@ pub fn decode(bytes: &[u8]) -> Result<Request, Value> {
     if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
         return Err(json!({"error":"invalid_id"}));
     }
-    if let Request::Steer { text, .. } = &request {
+    if let Request::Steer { text, lease, .. } = &request {
         if text.is_empty() || text.len() > 16 * 1024 || text.contains('\0') {
             return Err(json!({"id":id,"error":"invalid_steer"}));
+        }
+        if lease.as_ref().is_some_and(|lease| {
+            lease.holder.is_empty()
+                || lease.holder.len() > 128
+                || lease.holder.chars().any(char::is_control)
+                || lease.generation.1 == 0
+        }) {
+            return Err(json!({"id":id,"error":"invalid_steer_lease"}));
         }
     }
     Ok(request)

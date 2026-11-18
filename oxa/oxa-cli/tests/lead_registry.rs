@@ -34,6 +34,20 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
 }
 
 #[test]
+fn offline_menu_precedes_home_and_runtime() {
+    let test = TestEnv::new();
+    for args in [vec!["--offline", "lead"], vec!["--offline", "--offline", "lead"]] {
+        let output = command(&test).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Open the lead command menu"));
+    }
+}
+
+#[test]
 fn legacy_shadow_keeps_its_read_only_resource_floor() {
     for text in [
         "lead --shadow task",

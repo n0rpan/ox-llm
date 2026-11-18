@@ -23,6 +23,116 @@ pub struct GoalObservation<'a> {
     pub status: Option<GoalStatus>,
 }
 
+/// The existing lease identity supplied by the trusted assignment owner.
+/// Renewing a lease does not change its holder or generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SteeringLease {
+    pub holder: String,
+    pub generation: (u64, u32),
+}
+
+/// Identity captured for a steering request at submission.
+#[derive(Debug)]
+pub struct SteeringBinding {
+    pub session: SessionRef,
+    pub revision: u64,
+    pub lease: Option<SteeringLease>,
+}
+
+impl SteeringBinding {
+    /// Revalidate just before appending at the native steering boundary. The
+    /// frontend supplies current lease evidence from its existing authority.
+    pub fn validate(
+        &self,
+        owner: &crate::SessionState,
+        current_lease: Option<&SteeringLease>,
+    ) -> Result<(), oxa_proto::OxaError> {
+        if self.session != owner.sref
+            || self.lease.as_ref() != current_lease
+            || !Goal::allows_steering(owner.tree.entries(), self.revision)
+        {
+            return Err(stale_steering());
+        }
+        Ok(())
+    }
+}
+
+const STEER_STALE: &str = "goal_steer_stale";
+
+fn stale_steering() -> oxa_proto::OxaError {
+    oxa_proto::OxaError::new(
+        STEER_STALE,
+        "The goal or its assignment changed. Read the current binding before resending.",
+    )
+}
+
+/// Invoke the supplied operation while the frontend's existing assignment
+/// guard holds, supplying the current lease identity. If verification is
+/// unavailable or fails, never invoke the operation.
+pub type SteeringAuthority = dyn Fn(&SessionRef, &mut dyn FnMut(Option<&SteeringLease>)) + Send + Sync;
+
+/// One typed steering input. Its callback reports the result of appending.
+pub struct GoalSteering {
+    pub(crate) binding: SteeringBinding,
+    text: String,
+    authority: Arc<SteeringAuthority>,
+    receipt: Box<dyn FnOnce(Result<(), &'static str>) + Send>,
+}
+
+impl std::fmt::Debug for GoalSteering {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("GoalSteering").finish_non_exhaustive()
+    }
+}
+
+impl GoalSteering {
+    pub fn new(
+        binding: SteeringBinding,
+        text: String,
+        authority: Arc<SteeringAuthority>,
+        receipt: impl FnOnce(Result<(), &'static str>) + Send + 'static,
+    ) -> Self {
+        Self {
+            binding,
+            text,
+            authority,
+            receipt: Box::new(receipt),
+        }
+    }
+
+    pub(crate) fn reject(self) {
+        (self.receipt)(Err(STEER_STALE));
+    }
+
+    pub(crate) fn deliver<T>(
+        self,
+        owner: &mut crate::SessionState,
+        append: impl FnOnce(&mut crate::SessionState, String) -> Result<T, oxa_proto::OxaError>,
+    ) -> Result<Option<T>, oxa_proto::OxaError> {
+        let Self {
+            binding,
+            text,
+            authority,
+            receipt,
+        } = self;
+        let mut delivery = Some((append, text));
+        let mut result = Err(stale_steering());
+        authority(&binding.session, &mut |current| {
+            if let Some((append, text)) = delivery.take() {
+                result = binding
+                    .validate(owner, current)
+                    .and_then(|()| append(owner, text));
+            }
+        });
+        receipt(result.as_ref().map(|_| ()).map_err(|error| error.code));
+        match result {
+            Ok(entry) => Ok(Some(entry)),
+            Err(error) if error.code == STEER_STALE => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 impl crate::Session {
     /// The saved goal revision, scoped to the owner's current session reference.
     pub fn goal_revision(&self) -> u64 {
@@ -87,6 +197,12 @@ impl crate::Session {
                 "The goal revision advanced. Confirm durability before acknowledging the transition.",
             )
         })?;
+        crate::progress::notify(
+            state,
+            crate::Progress::GoalControlCommitted {
+                revision: applied_revision,
+            },
+        );
         result.map_err(|error| {
             OxaError::new("goal_applied_prefix_failed", error.message)
                 .with_hint("The goal transition was saved. Refresh the session prefix before running again.")
@@ -379,8 +495,17 @@ pub(crate) fn checkpoint(
 ) -> Result<(), oxa_proto::OxaError> {
     account(st, turn)?;
     if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
-        crate::agent_loop::persist(st, goal.snapshot().body(), sink)?;
+        save_checkpoint(st, &goal.snapshot(), sink)?;
     }
+    Ok(())
+}
+pub(crate) fn save_checkpoint(
+    st: &mut crate::SessionState,
+    goal: &Goal,
+    sink: &mut dyn oxa_proto::EventSink,
+) -> Result<(), oxa_proto::OxaError> {
+    let body = goal.checkpoint_body(st.tree.entries());
+    crate::agent_loop::persist(st, body, sink)?;
     Ok(())
 }
 pub(crate) fn terminal(st: &crate::SessionState) -> bool {

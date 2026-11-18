@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 mod controls;
 pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
 mod imports;
+mod native;
+pub use native::NativeBinding;
 mod reviews;
 
 #[derive(Deserialize, Serialize)]
@@ -126,6 +128,16 @@ impl Claims {
         let saved: Saved = serde_json::from_slice(&bytes).map_err(|_| "invalid board claim state")?;
         if saved.version != 1
             || saved.number != number
+            || saved.data.native_binding.as_ref().is_some_and(|binding| {
+                !binding.valid()
+                    || binding.number != number
+                    || binding.lease.generation != (saved.state.utc_day, saved.state.attempts)
+                    || saved
+                        .state
+                        .lease
+                        .as_ref()
+                        .is_some_and(|lease| lease != &binding.lease)
+            })
             || saved.review_requests.iter().any(|key| !key.valid())
             || saved.state.lease.as_ref().is_some_and(|l| {
                 saved.state.attempts == 0
@@ -281,6 +293,7 @@ impl Claims {
             generation: (day, state.attempts),
         };
         state.lease = Some(lease.clone());
+        row.data.native_binding = None;
         let replacing = self.established(entry.number)?;
         self.save(entry.number, row, replacing)?;
         self.mark(entry.number)?;
