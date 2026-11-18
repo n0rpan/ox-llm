@@ -210,6 +210,7 @@ enum NativeSource {
     Issue,
     Reviewed,
     LiveReviewed,
+    StaleModel,
     MissingHead,
     MismatchedPacket,
     AdvancedBranch,
@@ -223,6 +224,11 @@ fn native_refill_executes_the_exact_reviewed_pull_request() {
 #[test]
 fn native_refill_delivers_live_review_context_to_the_bound_runner() {
     native_refill_completion(NativeSource::LiveReviewed);
+}
+
+#[test]
+fn native_refill_refuses_a_stale_model_without_trying_a_similar_alias() {
+    native_refill_completion(NativeSource::StaleModel);
 }
 
 #[test]
@@ -276,7 +282,7 @@ fn native_refill_completion(source: NativeSource) {
             now,
         )
         .unwrap();
-    let live = source == NativeSource::LiveReviewed;
+    let live = matches!(source, NativeSource::LiveReviewed | NativeSource::StaleModel);
     let taskfile = controls.join("task.txt");
     let header = if reviewed_head.is_some() {
         "c44 fake agent/44 agent/44"
@@ -412,10 +418,30 @@ fn native_refill_completion(source: NativeSource) {
             git(&env, &project, &["switch", "main"]);
             Some("not at the reviewed head")
         }
-        NativeSource::Issue | NativeSource::Reviewed | NativeSource::LiveReviewed => None,
+        NativeSource::Issue
+        | NativeSource::Reviewed
+        | NativeSource::LiveReviewed
+        | NativeSource::StaleModel => None,
     };
-    let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
     let args = ["work", "--native-queue", "--config", config.to_str().unwrap()];
+    if source == NativeSource::StaleModel {
+        let server = FakeServer::start(
+            vec![ScriptTurn::text("unexpected substitute")],
+            FakeOpts {
+                model: "fake-alternative".into(),
+                ..FakeOpts::default()
+            },
+        )
+        .unwrap();
+        let _result = run_server(&env, &server, &args, Some(path), &[]);
+        let requested: Vec<_> = server.requests().into_iter().map(|call| call.model).collect();
+        assert!(
+            requested.is_empty(),
+            "stale model attempted these aliases: {requested:?}"
+        );
+        return;
+    }
+    let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
     if let Some(reason) = refusal {
         let result = run_server(&env, &server, &args, Some(path), &[]);
         assert!(!result.status.success(), "{source:?}: {result:?}");
