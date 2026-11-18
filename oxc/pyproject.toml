@@ -15,9 +15,6 @@ readme = "README.md"
 # D6: the native Anthropic Messages upstream uses the official SDK at request time only.
 cloud = ["anthropic==0.125.0"]
 
-[project.scripts]
-oxc-diagnostics = "oxc.__main__:main"
-
 [tool.setuptools.packages.find]
 where = ["src"]
 
