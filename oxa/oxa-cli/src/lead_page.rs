@@ -31,6 +31,8 @@ pub struct View<'a> {
     pub release: Option<(u64, &'a [(bool, String)])>,
     /// Serving process self-image digest, supplied by the authenticated native caller.
     pub running_sha256: Option<&'a str>,
+    /// True only when this listener supplies the agreed authenticated live route.
+    pub live_events: bool,
 }
 
 fn escape(text: &str) -> String {
@@ -91,12 +93,28 @@ pub fn document(view: &View<'_>, now: u64) -> String {
 }
 
 pub fn document_for(page: Page, view: &View<'_>, now: u64) -> String {
+    let live = if view.live_events {
+        "<meta name=oxa-live-events content=1>"
+    } else {
+        ""
+    };
+    let digest = view
+        .running_sha256
+        .filter(|value| {
+            value.len() == 64
+                && value
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        })
+        .map_or_else(String::new, |digest| {
+            format!("<meta name=oxa-running-sha256 content=\"{digest}\">")
+        });
     let refresh = if page == Page::Home {
         "<noscript><meta http-equiv=refresh content=60></noscript>"
     } else {
         ""
     };
-    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=color-scheme content=\"light dark\"><title>oxa lead</title><link rel=stylesheet href=/style.css><script src=/live.js defer></script>{refresh}<a class=skip href=#main>Skip to content</a><header class=top><a href=/>oxa <b>lead</b></a><span id=connection class=age>Snapshot</span></header>{}</html>", content_for(page, view, now))
+    format!("<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><meta name=color-scheme content=\"light dark\">{live}{digest}<title>oxa lead</title><link rel=stylesheet href=/style.css><script src=/live.js defer></script>{refresh}<a class=skip href=#main>Skip to content</a><header class=top><a href=/>oxa <b>lead</b></a><span id=connection class=age>Snapshot</span></header>{}</html>", content_for(page, view, now))
 }
 
 /// Allow-listed HTML fragment, also used by SSE. No worktrees, sessions, errors or headers.
@@ -504,11 +522,26 @@ nav.tabs .badge.quiet { color:var(--muted); background:var(--raised); }
 );
 
 pub const SCRIPT: &str = r#"const badge=document.getElementById('connection');
-let timer,pending;
+const live=!!document.querySelector('meta[name=oxa-live-events]');
+const digest=value=>typeof value==='string'&&/^[0-9a-f]{64}$/.test(value);
+let runningSha=document.querySelector('meta[name=oxa-running-sha256]')?.content;
+if(!digest(runningSha))runningSha=null;
+let timer,pending,stream,reconnectTimer,streamOk=false,reloadNeeded=false;
+function unavailable(){
+  badge.textContent='Refresh unavailable';
+  const notice=document.getElementById('refresh-error');if(notice)notice.hidden=false;
+}
+function reloadWhenIdle(){
+  clearTimeout(timer);if(document.hidden)return;
+  if(readerActive()||document.querySelector('#lead-message')?.value){
+    badge.textContent='Update ready';timer=setTimeout(reloadWhenIdle,15000);
+  }else location.reload();
+}
 function readerActive(){return document.querySelector('main').contains(document.activeElement)&&document.activeElement.matches('a,button,input,textarea,select,summary,[tabindex]');}
 async function refresh(){
   clearTimeout(timer);
-  if(document.hidden)return;
+  if(document.hidden||(stream&&!streamOk))return;
+  if(reloadNeeded){reloadWhenIdle();return;}
   if(readerActive()){timer=setTimeout(refresh,15000);return;}
   if(pending)pending.abort();
   const active=new AbortController();pending=active;
@@ -519,23 +552,49 @@ async function refresh(){
     const doc=new DOMParser().parseFromString(await response.text(),'text/html');
     const next=doc.querySelector('main');
     if(!next)throw new Error('refresh unavailable');
-    if(pending===active&&!readerActive()){
+    if(pending===active&&!readerActive()&&(!stream||streamOk)){
       const current=document.querySelector('main'),work=current.querySelector('details.home-work');
       const replacement=next.querySelector('details.home-work');
       if(work&&replacement)replacement.open=work.open;
+      const draft=current.querySelector('#lead-message'),nextDraft=next.querySelector('#lead-message');
+      if(draft&&nextDraft)nextDraft.value=draft.value;
       current.replaceWith(next);badge.textContent='Connected';
     }
-  }catch(error){if(!active.signal.aborted){
-    badge.textContent='Refresh unavailable';
-    const notice=document.getElementById('refresh-error');
-    if(notice)notice.hidden=false;
-  }}
-  finally{if(pending===active){pending=null;if(!document.hidden)timer=setTimeout(refresh,15000);}}
+  }catch(error){if(!active.signal.aborted)unavailable();}
+  finally{if(pending===active){pending=null;if(!document.hidden&&(!stream||readerActive()))timer=setTimeout(refresh,15000);}}
+}
+function connect(){
+  stream=new EventSource('/events/live');streamOk=false;
+  const activeStream=stream;
+  const waitForEvent=()=>{reconnectTimer=null;if(stream===activeStream&&!document.hidden&&!streamOk)unavailable();};
+  reconnectTimer=setTimeout(waitForEvent,15000);
+  stream.addEventListener('lead-update',async event=>{
+    if(document.hidden||stream!==activeStream)return;
+    let value;
+    try{
+      if(typeof event.data!=='string'||event.data.length>128||/[\r\n]/.test(event.data))throw new Error();
+      value=JSON.parse(event.data);
+      if(!value||Array.isArray(value)||Object.keys(value).length!==1||!Object.prototype.hasOwnProperty.call(value,'running_sha256')||
+        (value.running_sha256!==null&&!digest(value.running_sha256)))throw new Error();
+    }catch{streamOk=false;unavailable();return;}
+    streamOk=true;clearTimeout(reconnectTimer);reconnectTimer=null;
+    if(value.running_sha256!==null){
+      if(runningSha&&runningSha!==value.running_sha256)reloadNeeded=true;
+      if(!reloadNeeded)runningSha=value.running_sha256;
+    }
+    if(reloadNeeded)reloadWhenIdle();else await refresh();
+  });
+  stream.onerror=()=>{
+    if(stream!==activeStream)return;
+    streamOk=false;if(!reconnectTimer)reconnectTimer=setTimeout(waitForEvent,15000);
+  };
 }
 document.addEventListener('visibilitychange',()=>{
-  clearTimeout(timer);if(pending)pending.abort();if(!document.hidden)refresh();
+  clearTimeout(timer);clearTimeout(reconnectTimer);reconnectTimer=null;if(pending)pending.abort();
+  if(stream){stream.close();stream=null;streamOk=false;}
+  if(!document.hidden){if(live&&typeof EventSource==='function')connect();else refresh();}
 });
-timer=setTimeout(refresh,15000);
+if(live&&typeof EventSource==='function')connect();else timer=setTimeout(refresh,15000);
 "#;
 
 #[cfg(test)]
@@ -903,29 +962,29 @@ mod tests {
     }
 
     fn refresh_runtime() -> oxa_script::Runtime {
-        refresh_runtime_config(false, None)
+        refresh_runtime_config(false, None, false)
     }
 
-    fn refresh_runtime_config(events: bool, digest: Option<&str>) -> oxa_script::Runtime {
+    fn refresh_runtime_config(events: bool, digest: Option<&str>, enabled: bool) -> oxa_script::Runtime {
         let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
         runtime
             .eval_script(
                 "dom-fixture",
                 r#"
 let current, supplied, closeDuringFetch, failureMode='ok', focusDuringFetch=false, focused='', inside=false, fetches=0;
-let initialDigest=null, reloads=0, visibilityListener, serial=0;
+let initialDigest=null, liveEnabled=false, reloads=0, visibilityListener, serial=0;
 const timers=new Map(), requested=[], streams=[];
 const connectionBadge={textContent:'Snapshot'};
-function makeMain(open) {
-  const work={open}, notice={hidden:true};
-  return {work, notice, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:null,
+function makeMain(open, text=null) {
+  const work={open}, notice={hidden:true}, draft=text===null?null:{value:text};
+  return {work, notice, draft, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:selector==='#lead-message'?draft:null,
     replaceWith:next=>{current=next;}};
 }
 const document={hidden:false, activeElement:{matches:selectors=>selectors.split(',').includes(focused)},
   getElementById:id=>id==='connection'?connectionBadge:id==='refresh-error'?current.notice:null,
-  querySelector:selector=>selector.startsWith('meta')?(initialDigest?{content:initialDigest}:null):current,
+  querySelector:selector=>selector==='meta[name=oxa-live-events]'?(liveEnabled?{}:null):selector.startsWith('meta')?(initialDigest?{content:initialDigest}:null):selector==='#lead-message'?current?.draft:current,
   addEventListener:(name,fn)=>{if(name==='visibilitychange')visibilityListener=fn;}};
-const setTimeout=(fn,ms)=>{timers.set(++serial,{fn,ms});return serial;}, clearTimeout=id=>timers.delete(id);
+const setTimeout=(fn,ms)=>{const id=++serial;timers.set(id,{fn:()=>{timers.delete(id);return fn();},ms});return id;}, clearTimeout=id=>timers.delete(id);
 class AbortController { constructor(){this.signal={aborted:false};} abort(){this.signal.aborted=true;} }
 class URL { constructor(href){this.href=href;this.searchParams={set:(key,value)=>{this.href+=(href.includes('?')?'&':'?')+key+'='+value;}};} }
 const location={href:'http://example.invalid/board?f=fix&p=2',reload:()=>{reloads++;}};
@@ -948,7 +1007,7 @@ async function fetch(target){
                     "event-source-fixture",
                     &format!(
                         r#"
-initialDigest={};
+initialDigest={};liveEnabled={enabled};
 class EventSource {{
   constructor(url){{this.url=url;this.listeners={{}};this.closed=false;streams.push(this);}}
   addEventListener(name,fn){{this.listeners[name]=fn;}}
@@ -977,17 +1036,21 @@ class EventSource {{
         ] {
             let view = View {
                 running_sha256: Some(&digest),
+                live_events: true,
                 ..Default::default()
             };
             let expected = format!("<meta name=oxa-running-sha256 content=\"{digest}\">");
             assert_eq!(document_for(page, &view, 0).matches(&expected).count(), 1);
+            assert!(document_for(page, &view, 0).contains("<meta name=oxa-live-events content=1>"));
             assert!(!content_for(page, &view, 0).contains("oxa-running-sha256"));
+            assert!(!content_for(page, &view, 0).contains("oxa-live-events"));
         }
+        let uppercase = "AB".repeat(32);
         for digest in [
             None,
             Some(""),
             Some("abcd"),
-            Some("ABCD"),
+            Some(uppercase.as_str()),
             Some("\"><script>private-marker</script>"),
         ] {
             let html = document_for(
@@ -999,18 +1062,37 @@ class EventSource {{
                 0,
             );
             assert!(!html.contains("oxa-running-sha256") && !html.contains("private-marker"));
+            assert!(!html.contains("oxa-live-events"));
         }
     }
 
     #[test]
+    fn listeners_without_the_live_route_keep_the_existing_refresh_path() {
+        let mut runtime = refresh_runtime_config(true, None, false);
+        let result = runtime
+            .eval_async_body(
+                "no-live-route",
+                r#"
+current=makeMain(true);supplied=makeMain(false);
+if(streams.length!==0)throw new Error('listener without live capability was subscribed');
+await refresh();
+if(current!==supplied||!current.work.open||fetches!==1)throw new Error('existing listener lost refresh');
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
+    }
+
+    #[test]
     fn stream_refresh_uses_current_tab_and_preserves_reader_and_digest_authority() {
-        let mut runtime = refresh_runtime_config(true, Some(&"a".repeat(64)));
+        let mut runtime = refresh_runtime_config(true, Some(&"a".repeat(64)), true);
         let result = runtime.eval_async_body("stream-reader", r#"
-current=makeMain(true); supplied=makeMain(false);
+current=makeMain(true,'unsent <draft>'); supplied=makeMain(false,'');
 if(streams.length!==1||streams[0].url!=='/events/live')throw new Error('missing authenticated live route');
 const source=streams[0], send=value=>source.listeners['lead-update']({data:JSON.stringify(value)});
 await send({running_sha256:'a'.repeat(64)});
-if(current!==supplied||!current.work.open||reloads!==0||requested[0]!=='http://example.invalid/board?f=fix&p=2&fragment=1')
+if(current!==supplied||!current.work.open||current.draft.value!=='unsent <draft>'||reloads!==0||requested[0]!=='http://example.invalid/board?f=fix&p=2&fragment=1')
   throw new Error('same-image event lost current tab or reader state');
 inside=true;focused='textarea';supplied=makeMain(false);
 const retained=current, before=fetches;
@@ -1023,10 +1105,18 @@ for(const data of ['not-json','{}','{"running_sha256":3}','{"running_sha256":"AB
   await source.listeners['lead-update']({data});
   if(fetches!==before||reloads!==0||current.notice.hidden)throw new Error('invalid event acquired authority');
 }
-await send({running_sha256:'a'.repeat(64)});
+supplied=makeMain(false);await send({running_sha256:'a'.repeat(64)});
 if(!current.notice.hidden)throw new Error('valid event and fragment did not recover');
+inside=true;focused='textarea';
 await send({running_sha256:'b'.repeat(64)});
-if(reloads!==1)throw new Error('changed serving image did not reload');
+if(reloads!==0)throw new Error('image change discarded focused input');
+inside=false;
+current=makeMain(true,'unsent draft');
+await send({running_sha256:null});
+if(reloads!==0)throw new Error('image change discarded an unfocused draft');
+current.draft.value='';
+await send({running_sha256:null});
+if(reloads!==1)throw new Error('null event erased pending verified image change');
 return true;
 "#).unwrap();
         assert_eq!(result, serde_json::json!(true));
@@ -1034,7 +1124,7 @@ return true;
 
     #[test]
     fn normal_stream_rotation_retains_state_but_failures_require_valid_recovery() {
-        let mut runtime = refresh_runtime_config(true, None);
+        let mut runtime = refresh_runtime_config(true, None, true);
         let result = runtime.eval_async_body("stream-rotation", r#"
 current=makeMain(true);supplied=makeMain(false);
 const source=streams[0], send=value=>source.listeners['lead-update']({data:JSON.stringify(value)});
@@ -1059,6 +1149,8 @@ const before=fetches;await refresh();
 if(fetches!==before)throw new Error('hidden page fetched');
 document.hidden=false;visibilityListener();
 if(streams.length!==2)throw new Error('visible page failed to reauthenticate');
+await send({running_sha256:'c'.repeat(64)});
+if(reloads!==0)throw new Error('closed stream retained image authority');
 await streams[1].listeners['lead-update']({data:JSON.stringify({running_sha256:'b'.repeat(64)})});
 if(reloads!==1)throw new Error('reconnect missed changed image with unchanged board');
 return true;
