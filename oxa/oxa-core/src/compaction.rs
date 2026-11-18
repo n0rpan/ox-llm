@@ -10,7 +10,10 @@ use crate::agent_loop::persist;
 use crate::exec::{request, RequestOpts};
 use crate::SessionState;
 use oxa_compact::prompt;
-use oxa_compact::{decide, file_lists, first_kept_index, summary_request_with_target, When};
+use oxa_compact::{
+    active_skills, active_skills_block, decide, file_lists, first_kept_index, summary_request_with_target,
+    When,
+};
 use oxa_proto::{
     codes, AgentEvent, AssistantTurn, CompactReason, CompactionResult, Entry, EntryBody, EventSink, Finish,
     HookPoint, HookReply, Level, OxaError, Role, TurnKind, Ui, Usage, Value, WireMsg,
@@ -1020,12 +1023,23 @@ fn compact_inner(
         // A hook summary lands as the head as given: no file lists are added (pi).
         HookReply::Summary { text, details } => (text, details, true, None),
         _ => {
-            let (read, modified) = {
+            let (read, modified, skills) = {
                 let summarised = summarised(st, &first_kept);
-                file_lists(&summarised)
+                let (read, modified) = file_lists(&summarised);
+                (read, modified, active_skills(&summarised))
             };
             let mut details = json!({ "readFiles": &read, "modifiedFiles": &modified });
-            let lists = prompt::file_lists_block(&read, &modified);
+            if !skills.is_empty() {
+                details["activeSkills"] = skills
+                    .iter()
+                    .map(|(name, location)| json!({ "name": name, "location": location }))
+                    .collect();
+            }
+            let lists = format!(
+                "{}{}",
+                prompt::file_lists_block(&read, &modified),
+                active_skills_block(&skills)
+            );
             if let Some(p) = pending {
                 // The idle summary: made for this cut over the same messages, no request.
                 details["precomputed"] = json!(true);
@@ -1075,8 +1089,11 @@ fn compact_inner(
                         details["droppedTurns"] = json!(dropped);
                         details["mechanical"] = json!(true);
                         summary_error = Some(e.message.clone());
-                        let summary =
-                            oxa_compact::mechanical_summary(&st.transcript.wire()[..cut], &read, &modified);
+                        let summary = format!(
+                            "{}{}",
+                            oxa_compact::mechanical_summary(&st.transcript.wire()[..cut], &read, &modified),
+                            active_skills_block(&skills)
+                        );
                         (summary, details, false, None)
                     }
                 }

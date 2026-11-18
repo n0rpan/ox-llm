@@ -270,3 +270,73 @@ fn hook_prompt_sections_survive_compaction() {
     let after = section(&st, "hook-policy").expect("hook section after compaction");
     assert!(after.contains("HOOK POLICY TEXT"), "{after}");
 }
+
+// ---------------------------------------------------------------------------------------------
+// C2: the skills active before a compaction are listed in its summary
+
+const LINT: &str = "/skills/lint/SKILL.md";
+
+/// The user message a loaded skill is sent as (`oxa-resources`, `expand_skill_command`).
+fn skill_message(name: &str, location: &str) -> String {
+    format!("<skill name=\"{name}\" location=\"{location}\">\nReferences are relative to /skills.\n\nbody\n</skill>")
+}
+
+/// The summary user message at the head of the wire.
+fn summary_head(st: &SessionState) -> String {
+    st.transcript.wire()[0].content.clone().unwrap_or_default()
+}
+
+/// A skill loaded before the cut is summarised away, and the summary lists it.
+#[test]
+fn skill_loaded_before_cut_is_listed_after_compaction() {
+    let env = TestEnv::new();
+    let mut st = state(&env, Vec::new());
+    say(&mut st, &skill_message("lint", LINT));
+    push(&mut st, WireMsg::assistant("linted"));
+    say(&mut st, "the next task");
+    push(&mut st, WireMsg::assistant("done"));
+    compact(&mut st);
+
+    let head = summary_head(&st);
+    assert!(head.contains("<active-skills>"), "{head}");
+    assert!(head.contains(&format!("lint {LINT}")), "{head}");
+    assert!(head.contains("Re-read these files before continuing."), "{head}");
+}
+
+/// The listed skill is carried by the compaction details into the next compaction, where its
+/// message is no longer in the wire, and it is listed once.
+#[test]
+fn active_skills_carry_across_repeated_compaction() {
+    let env = TestEnv::new();
+    let mut st = state(&env, Vec::new());
+    say(&mut st, &skill_message("lint", LINT));
+    push(&mut st, WireMsg::assistant("linted"));
+    say(&mut st, "the first task");
+    push(&mut st, WireMsg::assistant("done one"));
+    compact(&mut st);
+    assert!(summary_head(&st).contains(LINT), "after one compaction");
+
+    say(&mut st, "the second task");
+    push(&mut st, WireMsg::assistant("done two"));
+    compact(&mut st);
+
+    let head = summary_head(&st);
+    assert!(head.contains(&format!("lint {LINT}")), "{head}");
+    assert_eq!(head.matches(LINT).count(), 1, "listed once: {head}");
+}
+
+/// Without a skill in the summarised messages there is no block.
+#[test]
+fn no_skill_no_block() {
+    let env = TestEnv::new();
+    let mut st = state(&env, Vec::new());
+    say(&mut st, "a plain task");
+    push(&mut st, WireMsg::assistant("done"));
+    say(&mut st, "the next task");
+    push(&mut st, WireMsg::assistant("done too"));
+    compact(&mut st);
+
+    let head = summary_head(&st);
+    assert!(head.contains("SUMMARY ONE"), "{head}");
+    assert!(!head.contains("<active-skills>"), "{head}");
+}
