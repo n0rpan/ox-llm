@@ -913,8 +913,14 @@ fn bash_made_change_outside_git_triggers_checks() {
     assert_eq!(rec.checks(), vec!["done check: true ok".to_string()]);
 }
 
-#[test]
-fn advice_waits_for_the_done_threshold_and_records_only_a_real_passing_check() {
+fn advised_checks(
+    env: &TestEnv,
+    command: &str,
+    paths: &[&str],
+    after: u32,
+    max_calls: u16,
+    failures: u16,
+) -> (Session, Arc<ScriptedEngine>, usize) {
     use oxa_core::advice::{AdviceContext, AdviceDispatcher, BoundAdvisor};
     use oxa_session::{
         advice::{AdviceGrant, AdvicePolicy, AdviceTier, AdviceTrigger, AdvisorRoute},
@@ -938,34 +944,30 @@ fn advice_waits_for_the_done_threshold_and_records_only_a_real_passing_check() {
             _: &CancelToken,
         ) -> Result<String, OxaError> {
             assert_eq!(grant.trigger, AdviceTrigger::DoneChecks);
-            assert!(context.failing_evidence.contains("test -f ready.txt"));
+            assert!(context.failing_evidence.contains("ready.txt"));
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok("Create the readiness marker.".into())
         }
     }
 
-    let env = TestEnv::new();
-    let turns = vec![
-        write("one", "draft.txt"),
-        ScriptTurn::text("done"),
-        write("two", "other.txt"),
-        ScriptTurn::text("done"),
-        write("three", "ready.txt"),
-        ScriptTurn::text("done"),
-    ];
-    let settings = Settings::from_values(json!({"done":["test -f ready.txt"]}), json!({}));
-    let (mut session, worker) = test_session(&env, settings, turns, Arc::new(Direct), Vec::new());
+    let turns = paths
+        .iter()
+        .enumerate()
+        .flat_map(|(index, path)| [write(&format!("check-{index}"), path), ScriptTurn::text("done")])
+        .collect();
+    let settings = Settings::from_values(json!({"done":[command]}), json!({}));
+    let (mut session, worker) = test_session(env, settings, turns, Arc::new(Direct), Vec::new());
     let advisor = Arc::new(Advisor(AtomicUsize::new(0)));
     session.inner().shared.bind_advisor(BoundAdvisor {
         session: session.inner().sref.clone(),
         lease_identity: [4; 32],
         objective: "Qualify the synthetic work.".into(),
         worker: AdviceTier::Bulk,
-        done_checks_after: NonZeroU32::new(2).unwrap(),
+        done_checks_after: NonZeroU32::new(after).unwrap(),
         policy: AdvicePolicy {
             triggers: vec![AdviceTrigger::DoneChecks],
-            max_calls: NonZeroU16::MIN,
-            failures_before_escalation: NonZeroU16::MIN,
+            max_calls: NonZeroU16::new(max_calls).unwrap(),
+            failures_before_escalation: NonZeroU16::new(failures).unwrap(),
             max_output: NonZeroU32::new(64).unwrap(),
         },
         route: AdvisorRoute {
@@ -984,7 +986,21 @@ fn advice_waits_for_the_done_threshold_and_records_only_a_real_passing_check() {
             &mut HeadlessUi::default(),
         )
         .unwrap();
-    assert_eq!(advisor.0.load(Ordering::SeqCst), 1);
+    (session, worker, advisor.0.load(Ordering::SeqCst))
+}
+
+#[test]
+fn advice_waits_for_the_done_threshold_and_records_only_a_real_passing_check() {
+    let env = TestEnv::new();
+    let (session, worker, calls) = advised_checks(
+        &env,
+        "test -f ready.txt",
+        &["draft.txt", "other.txt", "ready.txt"],
+        2,
+        1,
+        1,
+    );
+    assert_eq!(calls, 1);
     assert!(!session.inner().stats.done_failed);
     assert!(!worker.requests()[2].messages.iter().any(|message| message
         .content
@@ -998,4 +1014,53 @@ fn advice_waits_for_the_done_threshold_and_records_only_a_real_passing_check() {
         &entry.body, oxa_proto::EntryBody::Custom { custom_type, data }
             if custom_type == "oxa.advice.v1" && data["phase"] == "resolved"
     )));
+}
+
+#[test]
+fn the_same_done_check_only_requests_advice_once_when_its_exit_status_changes() {
+    let env = TestEnv::new();
+    let (session, _, calls) = advised_checks(
+        &env,
+        "test -f ready.txt || { test -f changed.txt && exit 2; exit 1; }",
+        &["draft.txt", "changed.txt", "later.txt"],
+        1,
+        2,
+        2,
+    );
+    assert_eq!(calls, 1);
+    assert!(session.inner().stats.done_failed);
+}
+
+#[test]
+fn a_final_failed_done_check_escalates_delivered_advice() {
+    let env = TestEnv::new();
+    let (session, _, calls) = advised_checks(
+        &env,
+        "test -f ready.txt",
+        &["draft.txt", "other.txt", "later.txt"],
+        2,
+        1,
+        1,
+    );
+    assert_eq!(calls, 1);
+    assert_eq!(
+        session.outcome(),
+        &oxa_core::RunOutcome::Failed("advisor_escalation_required")
+    );
+}
+
+#[test]
+fn advice_can_arrive_at_the_final_automatic_check_and_get_one_repair() {
+    let env = TestEnv::new();
+    let (session, worker, calls) = advised_checks(
+        &env,
+        "test -f ready.txt",
+        &["draft.txt", "other.txt", "later.txt", "ready.txt"],
+        3,
+        1,
+        1,
+    );
+    assert_eq!(calls, 1);
+    assert!(!session.inner().stats.done_failed);
+    assert_eq!(worker.requests().len(), 8);
 }
