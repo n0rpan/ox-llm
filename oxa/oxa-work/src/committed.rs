@@ -139,23 +139,17 @@ pub(crate) fn verify_commit(
         return Err("clean acceptance checkout is dirty".into());
     }
     // A local compile plan cannot verify saved Rust work for publication.
-    let mut commands: Vec<(CheckOrigin, String)> = execution
+    let commands: Vec<(CheckOrigin, String)> = execution
         .commands
         .iter()
         .map(|command| (CheckOrigin::Settings, command.clone()))
         .collect();
-    let derived = derived::derive(policy, &export.tree, base, head)
+    let requires_hosted = derived::committed_requires_hosted(policy, &export.tree, base, head)
         .map_err(|reason| format!("clean committed acceptance could not run: {reason}"))?;
     let declared = execution.declared.as_deref().unwrap_or_default();
-    if derived.requires_hosted || !declared.is_empty() {
+    if requires_hosted || !declared.is_empty() {
         return Err(crate::HOSTED_TEST_EVIDENCE_REQUIRED.into());
     }
-    commands.extend(
-        derived
-            .commands
-            .into_iter()
-            .map(|command| (CheckOrigin::Derived, command)),
-    );
     if commands.is_empty() {
         return Err(crate::NO_ACCEPTANCE_CHECKS.into());
     }
@@ -511,7 +505,6 @@ mod tests {
             let storage = root.join("private");
             fs::DirBuilder::new().mode(0o700).create(&storage).unwrap();
             let policy = RunPolicy {
-                local_checks: Default::default(),
                 git_binary: "/usr/bin/git".into(),
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,

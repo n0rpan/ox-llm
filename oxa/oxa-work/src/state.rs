@@ -345,7 +345,6 @@ mod tests {
                 .unwrap();
             let before = fs::read(fixture.path()).unwrap();
             let policy = crate::RunPolicy {
-                local_checks: Default::default(),
                 git_binary: fixture.0.path().join("unavailable-git"),
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,

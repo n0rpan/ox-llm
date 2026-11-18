@@ -97,6 +97,7 @@ pub(crate) struct Runner<'a> {
     pub repo: &'a Path,
     pub binary: &'a Path,
     pub policy: &'a RunPolicy,
+    pub local_checks: &'a derived::LocalCheckCommands,
     pub lock: &'a File,
     pub writer: &'a mut Writer,
     pub observer: &'a dyn CheckpointObserver,
@@ -292,7 +293,7 @@ impl Runner<'_> {
                     )
                     .and_then(|out| {
                         if out.status.success() {
-                            derived::from_changed_paths_with(&tree, &out.stdout, &self.policy.local_checks)
+                            derived::from_changed_paths_with(&tree, &out.stdout, self.local_checks)
                         } else {
                             Err(format!(
                                 "change inventory could not run: {}",

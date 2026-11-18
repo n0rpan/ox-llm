@@ -795,7 +795,6 @@ pub struct RunPolicy {
     pub offline: bool,
     /// Set by the runner from the immutable packet before launching its children.
     pub runner_owns_github: bool,
-    pub local_checks: LocalCheckCommands,
     pub storage: PathBuf,
 }
 
@@ -1193,6 +1192,7 @@ pub struct LockedTask<'a> {
     task: &'a Task,
     policy: &'a RunPolicy,
     lock: fs::File,
+    local_checks: LocalCheckCommands,
     #[cfg(target_os = "linux")]
     managed_steering: Option<managed_steering::Launch>,
 }
@@ -1217,9 +1217,15 @@ impl<'a> LockedTask<'a> {
             task,
             policy,
             lock,
+            local_checks: LocalCheckCommands::default(),
             #[cfg(target_os = "linux")]
             managed_steering: None,
         })
+    }
+
+    /// Apply the local compile commands from the trusted frontend's owner settings.
+    pub fn set_local_checks(&mut self, commands: &LocalCheckCommands) {
+        self.local_checks = commands.clone();
     }
 
     /// The owner frontend enables steering for its exact admitted task.
@@ -1378,6 +1384,7 @@ fn run_locked(
         repo: &root,
         binary,
         policy: &policy,
+        local_checks: &locked.local_checks,
         lock: lock_file,
         writer: &mut writer,
         observer,

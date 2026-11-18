@@ -739,7 +739,6 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
     let finished = Arc::new(AtomicBool::new(false));
     let observed = finished.clone();
     let policy = oxa_work::RunPolicy {
-        local_checks: Default::default(),
         git_binary: "/usr/bin/git".into(),
         host_path: "/usr/bin:/bin".into(),
         terminate_binary: None,

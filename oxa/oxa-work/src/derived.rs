@@ -46,7 +46,6 @@ pub enum CheckStatus {
 }
 
 /// Local compile entries and whether their change needs hosted test evidence.
-#[derive(Default)]
 pub(crate) struct DerivedChecks {
     /// Full `in <dir>: <command>` entries, sorted for stable evidence.
     pub commands: Vec<String>,
@@ -141,14 +140,13 @@ impl LocalCheckCommands {
     }
 }
 
-/// The crates of one change, as `cargo check` entries. `Err` is a reason the
-/// derived set could not be planned; the task then ends `unverified`, never `done`.
-pub(crate) fn derive(
+/// Whether this exact committed change needs hosted test evidence.
+pub(crate) fn committed_requires_hosted(
     policy: &RunPolicy,
     root: &Path,
     base: &str,
     head: &str,
-) -> Result<DerivedChecks, String> {
+) -> Result<bool, String> {
     let diff = output(git(
         policy,
         root,
@@ -169,7 +167,7 @@ pub(crate) fn derive(
     if !diff.status.success() {
         return Err("committed change inventory failed".into());
     }
-    from_changed_paths_with(root, &diff.stdout, &policy.local_checks)
+    Ok(select_changed_paths(root, &diff.stdout)?.requires_hosted)
 }
 
 #[cfg(test)]
@@ -182,6 +180,14 @@ pub(crate) fn from_changed_paths_with(
     paths: &[u8],
     local_checks: &LocalCheckCommands,
 ) -> Result<DerivedChecks, String> {
+    let selected = select_changed_paths(root, paths)?;
+    Ok(DerivedChecks {
+        commands: commands(&selected.packages, local_checks),
+        requires_hosted: selected.requires_hosted,
+    })
+}
+
+fn select_changed_paths(root: &Path, paths: &[u8]) -> Result<Selected, String> {
     let paths = std::str::from_utf8(paths).map_err(|_| "change inventory is not UTF-8")?;
     let paths = if paths.is_empty() {
         Vec::new()
@@ -199,10 +205,7 @@ pub(crate) fn from_changed_paths_with(
         }
         paths.into_iter().map(str::to_owned).collect()
     };
-    let selected = select(root, &paths)?;
-    let mut checks = commands(&selected.packages, local_checks);
-    checks.requires_hosted = selected.requires_hosted;
-    Ok(checks)
+    select(root, &paths)
 }
 
 /// One parsed `Cargo.toml`: the package name, whether it roots a workspace, and that
@@ -615,11 +618,11 @@ fn simple_glob(pattern: &str, name: &str) -> bool {
 }
 
 /// One local compile check for each selected crate.
-fn commands(selected: &BTreeSet<(String, String)>, local_checks: &LocalCheckCommands) -> DerivedChecks {
-    let mut out = DerivedChecks::default();
+fn commands(selected: &BTreeSet<(String, String)>, local_checks: &LocalCheckCommands) -> Vec<String> {
+    let mut out = Vec::new();
     for (name, in_dir) in selected {
         for command in &local_checks.0 {
-            out.commands.push(check_entry(in_dir, command, name));
+            out.push(check_entry(in_dir, command, name));
         }
     }
     out
@@ -1048,7 +1051,7 @@ members = ["crates/*", "tools/pinned"]
             &LocalCheckCommands::default(),
         );
         assert_eq!(
-            checks.commands,
+            checks,
             [
                 check_entry("a", "cargo check", "util"),
                 check_entry("b", "cargo check", "util")
@@ -1069,7 +1072,7 @@ members = ["crates/*", "tools/pinned"]
             &LocalCheckCommands::default(),
         );
         assert_eq!(
-            checks.commands,
+            checks,
             [
                 "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo check -p one",
                 "in solo: command -v cargo >/dev/null 2>&1 || exit 127\ncargo check -p solo",

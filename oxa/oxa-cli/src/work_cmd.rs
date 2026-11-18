@@ -163,11 +163,7 @@ pub(crate) fn run(
             Some(&root),
             Some(&dirs.home),
         );
-        let local_checks = oxa_work::LocalCheckCommands::from_owner_setting(
-            Settings::load(dirs, &root, false).get("oxa.work.localChecks"),
-        )?;
         let policy = oxa_work::RunPolicy {
-            local_checks,
             git_binary,
             host_path,
             terminate_binary,
@@ -262,6 +258,9 @@ pub(crate) fn run(
             cwd: root.clone(),
             binary: binary.clone(),
             policy: policy.clone(),
+            local_checks: oxa_work::LocalCheckCommands::from_owner_setting(
+                Settings::load(dirs, &root, false).get("oxa.work.localChecks"),
+            )?,
             dirs: dirs.clone(),
             env: env.clone(),
             rerun,
@@ -417,6 +416,7 @@ struct Context {
     cwd: PathBuf,
     binary: PathBuf,
     policy: oxa_work::RunPolicy,
+    local_checks: oxa_work::LocalCheckCommands,
     dirs: Dirs,
     env: Env,
     rerun: bool,
@@ -452,6 +452,7 @@ impl Context {
         let mut record = if let Some(record) = cached {
             record
         } else {
+            locked.set_local_checks(&self.local_checks);
             let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
             match locked.run_with_notes(root, binary, plan, rerun, observer, &|note| {
                 crate::work_reports::scrub_note(note, &ctx)
