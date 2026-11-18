@@ -188,7 +188,7 @@ fn request(
         _ => return Ok(AdviceResult::Refused),
     };
 
-    let context = build_context(st, &advisor, evidence);
+    let context = build_context(st, advisor, evidence);
     let _request = st.shared.enter_request()?;
     persist(st, receipt.body(), sink)?;
     st.store.sync(&st.sref)?;

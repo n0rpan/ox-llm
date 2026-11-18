@@ -974,6 +974,7 @@ fn advice_waits_for_the_done_threshold_and_records_only_a_real_passing_check() {
             pool: "fixture-pool".into(),
         },
         dispatcher: advisor.clone(),
+        scrub: Arc::new(str::to_owned),
     });
     session
         .prompt(
