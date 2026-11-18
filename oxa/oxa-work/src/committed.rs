@@ -81,6 +81,9 @@ pub(crate) fn verify_commit(
     saved: &state::State,
     lock: &File,
 ) -> Result<Export> {
+    // Explicit saved-work verification has its own budget. It may run long
+    // after the original worker attempt's deadline has passed.
+    let deadline_at_ms = crate::state::now_ms().saturating_add(saved.task.max_time.saturating_mul(1000));
     let record = &saved.record;
     // An explicit later online publication never relaxes the saved check policy.
     let verification_policy = RunPolicy {
@@ -205,6 +208,7 @@ pub(crate) fn verify_commit(
                 operation: SupervisorOperation::CommittedChecks {
                     commands: commands.iter().map(|(_, command)| command.clone()).collect(),
                     index: index.clone(),
+                    deadline_at_ms,
                 },
             },
             policy,

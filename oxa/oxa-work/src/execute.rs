@@ -345,7 +345,7 @@ impl Runner<'_> {
                         self.binary,
                         &tree,
                         self.repo,
-                        &state.task.id,
+                        (&state.task.id, state.deadline_at_ms),
                         &commands,
                         self.policy,
                         self.lock,

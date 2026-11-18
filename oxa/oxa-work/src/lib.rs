@@ -826,10 +826,12 @@ pub enum SupervisorOperation {
         /// Task identity for the round's private output mount.
         task: String,
         commands: Vec<String>,
+        deadline_at_ms: u64,
     },
     CommittedChecks {
         commands: Vec<String>,
         index: PathBuf,
+        deadline_at_ms: u64,
     },
     ChangedPaths {
         base: String,
@@ -896,7 +898,7 @@ fn acceptance(
     binary: &Path,
     root: &Path,
     source: &Path,
-    task: &str,
+    task: (&str, u64),
     commands: &[(CheckOrigin, String)],
     policy: &RunPolicy,
     lock: &fs::File,
@@ -913,8 +915,9 @@ fn acceptance(
         SupervisorRequest {
             source: source.to_path_buf(),
             operation: SupervisorOperation::Checks {
-                task: task.to_owned(),
+                task: task.0.to_owned(),
                 commands: commands.iter().map(|(_, command)| command.clone()).collect(),
+                deadline_at_ms: task.1,
             },
         },
         policy,

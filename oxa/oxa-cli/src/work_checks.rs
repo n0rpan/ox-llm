@@ -84,7 +84,7 @@ pub(crate) fn run(
     let b = b.with_git_dirs(&root);
     b.check().map_err(|e| e.to_string())?;
     let settings = Settings::load(dirs, &source, true);
-    let commands = match request.operation {
+    let (commands, deadline_at_ms) = match request.operation {
         SupervisorOperation::ChangedPaths { base } => return changed_paths(&b, &root, &base, out),
         SupervisorOperation::Inspect => return inspect(&b, &root),
         SupervisorOperation::InspectCommitted { index } => return inspect_committed(&b, &root, &index),
@@ -197,8 +197,16 @@ git --no-replace-objects commit -m {message}
             }
             return Ok(0);
         }
-        SupervisorOperation::Checks { commands, .. }
-        | SupervisorOperation::CommittedChecks { commands, .. } => commands,
+        SupervisorOperation::Checks {
+            commands,
+            deadline_at_ms,
+            ..
+        }
+        | SupervisorOperation::CommittedChecks {
+            commands,
+            deadline_at_ms,
+            ..
+        } => (commands, deadline_at_ms),
     };
     let shell = oxa_tools::ShellConfig {
         shell_path: settings.shell_path(&dirs.home),
@@ -210,6 +218,11 @@ git --no-replace-objects commit -m {message}
     // #1442: one fact per command. The runner pairs this record with what it sent, decides
     // each verdict itself, and keeps the list as the evidence a `done` rests on.
     let mut evidence = Vec::new();
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_millis(
+            deadline_at_ms.saturating_sub(oxa_proto::time::now_ms()),
+        ))
+        .ok_or("invalid acceptance deadline")?;
     for entry in commands {
         let (directory, text) = match entry.strip_prefix("in ").and_then(|s| s.split_once(':')) {
             Some((dir, command)) => (Some(dir.trim()), command.trim()),
@@ -252,12 +265,24 @@ git --no-replace-objects commit -m {message}
                 ("TMPDIR".into(), outputs.to_string_lossy().into_owned()),
             ]);
         }
+        let seconds = deadline
+            .saturating_duration_since(std::time::Instant::now())
+            .as_secs();
+        if seconds == 0 {
+            failed = true;
+            evidence.push(serde_json::json!({
+                "command": entry,
+                "exit": null,
+                "timed_out": true,
+            }));
+            continue;
+        }
         let spec = ExecSpec {
             command,
             cwd: root.clone(),
             writable: !committed,
             net: sandbox.network(),
-            timeout_s: Some(600),
+            timeout_s: Some(seconds.min(600) as u32),
             env: check_env,
         };
         let mut tail = Vec::new();
