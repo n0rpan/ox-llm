@@ -312,8 +312,24 @@ impl Settings {
         }
         self
     }
+    /// Where the value of `key` comes from: the project file, else the user file, else the
+    /// built-in default.
+    pub fn source(&self, key: &str) -> Source {
+        if lookup(&self.project, key).is_some() {
+            Source::Project
+        } else if lookup(&self.user, key).is_some() {
+            Source::User
+        } else {
+            Source::Default
+        }
+    }
+    /// The value `key` has in the user file, if any (not the merged value).
+    pub fn user_value(&self, key: &str) -> Option<&Value> {
+        lookup(&self.user, key)
+    }
     /// Set a key in memory and persist it to the user file (`project = false`) or the project
-    /// file, keeping unrelated content and key order of that file.
+    /// file, keeping unrelated content and key order of that file. A field of a descriptor with
+    /// a hard range is refused outside the range. The read-modify-write holds the file's lock.
     pub fn set(
         &mut self,
         dirs: &Dirs,
@@ -322,12 +338,7 @@ impl Settings {
         value: Value,
         project: bool,
     ) -> Result<(), OxaError> {
-        if key.is_empty() || key.split('.').any(str::is_empty) {
-            return Err(OxaError::new(
-                codes::INVALID,
-                format!("invalid setting key: {key:?}"),
-            ));
-        }
+        check_key_shape(key)?;
         if let Some(def) = find_key(key) {
             if !kind_matches(def.kind, &value) {
                 return Err(OxaError::new(
@@ -336,28 +347,213 @@ impl Settings {
                 ));
             }
         }
+        if let Some(range) = crate::descriptor(key).and_then(|d| d.range).filter(|r| r.hard) {
+            check_hard_range(key, &value, &range)?;
+        }
         let path = if project {
             dirs.project_settings_file(cwd)
         } else {
             dirs.settings_file()
         };
+        let _lock = lock_for_write(&path)?;
         let mut root = read_object_for_write(&path)?;
         set_nested(&mut root, key, value);
-        let mut text = serde_json::to_string_pretty(&Value::Object(root.clone()))
+        self.persist(&path, root, project)
+    }
+    /// Remove `key` from the user file (`project = false`) or the project file, pruning parent
+    /// objects it leaves empty; every other key stays as it is. Nothing is written when the
+    /// file does not hold the key. A symbolic link at the settings path is refused, not followed.
+    pub fn unset(&mut self, dirs: &Dirs, cwd: &Path, key: &str, project: bool) -> Result<(), OxaError> {
+        check_key_shape(key)?;
+        let path = if project {
+            dirs.project_settings_file(cwd)
+        } else {
+            dirs.settings_file()
+        };
+        let _lock = lock_for_write(&path)?;
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+            return Err(OxaError::new(
+                codes::INVALID,
+                format!("{} is a symbolic link; it is not changed", path.display()),
+            )
+            .with_hint("Edit the file the link points to."));
+        }
+        let mut root = read_object_for_write(&path)?;
+        if !remove_nested(&mut root, key) {
+            // Nothing on disk to remove, so nothing is written. The file just read is still the
+            // truth for this layer: adopt it, so an instance that still holds a value another
+            // instance (or an editor) already removed stops reporting it.
+            self.adopt(&path, root, project);
+            return Ok(());
+        }
+        self.persist(&path, root, project)
+    }
+    /// Write `root` to `path` (the user file is private, 0600) and make it the layer in memory.
+    fn persist(&mut self, path: &Path, root: Map<String, Value>, project: bool) -> Result<(), OxaError> {
+        let mut text = serde_json::to_string_pretty(&root)
             .map_err(|e| OxaError::new(codes::INVALID, format!("cannot serialise settings: {e}")))?;
         text.push('\n');
         // The user file is private to the user; a project file keeps the umask default.
-        write_atomic(&path, &text, if project { 0o666 } else { 0o600 })?;
-
-        let source = path.display().to_string();
-        let (checked, _) = check_root(&Value::Object(root), &source);
+        write_atomic(path, &text, if project { 0o666 } else { 0o600 })?;
+        self.adopt(path, root, project);
+        Ok(())
+    }
+    /// Make `root` the layer for `project` in memory and recompose the merged settings.
+    fn adopt(&mut self, path: &Path, root: Map<String, Value>, project: bool) {
+        let (checked, _) = check_root(&Value::Object(root), &path.display().to_string());
         if project {
             self.project = checked;
         } else {
             self.user = checked;
         }
         self.merged = compose(&self.user, &self.project);
-        Ok(())
+    }
+}
+
+/// Where a setting's value comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    Default,
+    User,
+    Project,
+}
+
+fn check_key_shape(key: &str) -> Result<(), OxaError> {
+    if key.is_empty() || key.split('.').any(str::is_empty) {
+        return Err(OxaError::new(
+            codes::INVALID,
+            format!("invalid setting key: {key:?}"),
+        ));
+    }
+    Ok(())
+}
+
+/// A hard range refuses a value outside it; only whole numbers can be inside one.
+fn check_hard_range(key: &str, value: &Value, range: &crate::Range) -> Result<(), OxaError> {
+    let inside = value
+        .as_u64()
+        .is_some_and(|n| n >= range.min && range.max.is_none_or(|max| n <= max));
+    if inside {
+        return Ok(());
+    }
+    let upper = range.max.map_or_else(|| "any".to_string(), |max| max.to_string());
+    Err(OxaError::new(
+        codes::INVALID,
+        format!(
+            "setting `{key}` must be a whole number from {} to {upper}",
+            range.min
+        ),
+    ))
+}
+
+/// The exclusive write lock of a settings file, `<file>.lock` (`settings.json.lock`), held by the
+/// returned handle until it is dropped. Two read-modify-writes under it cannot lose each other's
+/// change. The lock file is private (0600) and is never the settings file itself.
+fn lock_for_write(path: &Path) -> Result<std::fs::File, OxaError> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| OxaError::io(&format!("create {}", parent.display()), &e))?;
+    }
+    let lock_path = path.with_extension("json.lock");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&lock_path)
+        .map_err(|e| OxaError::io(&format!("open {}", lock_path.display()), &e))?;
+    file.lock()
+        .map_err(|e| OxaError::io(&format!("lock {}", lock_path.display()), &e))?;
+    Ok(file)
+}
+
+/// The value at a dotted key of one layer, if the layer has it.
+fn lookup<'a>(layer: &'a Value, key: &str) -> Option<&'a Value> {
+    let mut cur = layer;
+    for part in key.split('.') {
+        cur = cur.as_object()?.get(part)?;
+    }
+    Some(cur)
+}
+
+/// Remove `key` (dotted) from `root`, pruning the parent objects it leaves empty. False when the
+/// key is absent, in which case nothing changed.
+fn remove_nested(root: &mut Map<String, Value>, key: &str) -> bool {
+    let parts: Vec<&str> = key.split('.').collect();
+    remove_path(root, &parts)
+}
+
+fn remove_path(obj: &mut Map<String, Value>, parts: &[&str]) -> bool {
+    match parts {
+        [] => false,
+        [last] => obj.shift_remove(*last).is_some(),
+        [first, rest @ ..] => {
+            let Some(Value::Object(child)) = obj.get_mut(*first) else {
+                return false;
+            };
+            let removed = remove_path(child, rest);
+            if removed && child.is_empty() {
+                obj.shift_remove(*first);
+            }
+            removed
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn set_rejects_field_outside_hard_range() {
+        let range = crate::Range {
+            min: 1,
+            max: Some(65535),
+            hard: true,
+            step: 1,
+            note: "",
+        };
+        assert!(check_hard_range("oxa.lead.serve.port", &json!(1), &range).is_ok());
+        assert!(check_hard_range("oxa.lead.serve.port", &json!(65535), &range).is_ok());
+        assert!(check_hard_range("oxa.lead.serve.port", &json!(0), &range).is_err());
+        assert!(check_hard_range("oxa.lead.serve.port", &json!(65536), &range).is_err());
+        assert!(check_hard_range("oxa.lead.serve.port", &json!("8080"), &range).is_err());
+    }
+
+    #[test]
+    fn remove_prunes_only_emptied_parents() {
+        let mut root = json!({"a": {"b": {"c": 1}, "d": 2}, "e": {"f": 3}});
+        let map = root.as_object_mut().expect("object");
+        assert!(remove_nested(map, "a.b.c"));
+        assert_eq!(root, json!({"a": {"d": 2}, "e": {"f": 3}}));
+        let map = root.as_object_mut().expect("object");
+        assert!(!remove_nested(map, "a.b.c"), "absent key changes nothing");
+        assert!(remove_nested(map, "e.f"));
+        assert_eq!(root, json!({"a": {"d": 2}}));
+    }
+
+    #[test]
+    fn remove_keeps_sibling_key_order() {
+        let mut root = json!({"theme": 1, "retry": 2, "compaction": 3, "p": {"x": {"y": 1}, "z": 2}});
+        let map = root.as_object_mut().expect("object");
+        assert!(remove_nested(map, "theme"));
+        assert!(remove_nested(map, "p.x.y"));
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["retry", "compaction", "p"]);
+        let inner: Vec<&str> = map["p"]
+            .as_object()
+            .expect("object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(inner, ["z"]);
+        let mut root = json!({"p": {"a": {"y": 1}}, "q": 1, "r": 2});
+        let map = root.as_object_mut().expect("object");
+        assert!(remove_nested(map, "p.a.y"));
+        let keys: Vec<&str> = map.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["q", "r"], "pruned empty parent keeps order");
     }
 }
 

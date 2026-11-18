@@ -53,6 +53,7 @@ mod sandbox_layout;
 mod share_cmd;
 mod status;
 mod themes;
+mod wait_probe;
 mod wipe_cmd;
 mod work_board;
 pub use work_board::refill_input;
@@ -60,6 +61,7 @@ mod work_checks;
 mod work_cmd;
 pub mod work_refill;
 mod work_reports;
+pub mod workers;
 
 pub use args::{
     no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, RegistryArgs, Subcommand,

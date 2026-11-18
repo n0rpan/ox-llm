@@ -4,7 +4,7 @@ use crate::exec::{fail_truncated_calls, reply_event, run_calls, RequestOpts};
 use crate::host::observe_hooks;
 use crate::SessionState;
 use oxa_proto::{
-    miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
+    codes, miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
     HookPoint, Level, OxaError, Part, Role, StopReason, TurnKind, Ui, Usage, Value, WireMsg,
 };
 use oxa_session::new_entry_id;
@@ -436,6 +436,44 @@ fn run_inner(
             && st.info.caps.remote
             && !wrapping_up
             && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && st.shared.literal_output_remaining() == Some(0)
+        {
+            // The bounded literal turn has spent its shared output budget: the
+            // recovery request could never reserve a token, so it is neither
+            // scheduled nor described with its internal instruction, and the
+            // partial answer is never presented as a valid reply. The cut stays
+            // as the audit entry; the typed local bound reaches the caller.
+            account_discarded(st, &turn);
+            let text = turn
+                .msg
+                .content
+                .clone()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "The reply reached its output limit before answering.".to_string());
+            persist(
+                st,
+                EntryBody::Shown {
+                    text,
+                    why: shown_why::CUT,
+                },
+                sink,
+            )?;
+            let e = OxaError::new(
+                codes::LITERAL_OUTPUT_EXHAUSTED,
+                "The literal turn's output limit is exhausted.",
+            )
+            .with_hint("Ask for a shorter answer.");
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Error,
+                text: e.to_string(),
+            });
+            return Ok(RunEnd::Failed(e));
+        }
+        if turn.finish == Finish::Length
+            && turn.msg.tool_calls.is_empty()
+            && st.info.caps.remote
+            && !wrapping_up
+            && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
             && length_recoverable(st, length_recoveries)
         {
             account_discarded(st, &turn);
@@ -675,6 +713,15 @@ fn run_inner(
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
+            // A wait that input woke hands that input to the model now: a follow-up is
+            // otherwise only drained when the run stops, after the model has answered
+            // the wait result without it.
+            if calls.iter().any(|call| call.name == "wait") && st.shared.wait_wake.is_cancelled() {
+                st.shared.wait_wake.reset();
+                for text in drain_follow_ups(st, sink) {
+                    push_user(st, text, sink, ui, run_msgs)?;
+                }
+            }
             // L5 mid-run (`oxa.compaction.midRun`): past the soft limit, compact before the next
             // request, keeping this unanswered batch verbatim. A failed or cancelled attempt
             // leaves the wire unchanged and the run goes on (the hard-limit check below still
@@ -763,6 +810,11 @@ fn run_inner(
             let snapshot = goal.stopped();
             crate::goal::save_checkpoint(st, &snapshot, sink)?;
             if goal.pursuing() {
+                // Queued input (a follow-up that woke a wait) is the next user message:
+                // stop so `settle_runs` delivers it instead of the continuation prompt.
+                if st.shared.has_input() {
+                    return Ok(RunEnd::Stopped);
+                }
                 push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
                 continue;
             }
@@ -889,6 +941,20 @@ fn drain_steering(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> {
         sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
     }
     let taken = st.shared.take_steering();
+    if !taken.is_empty() {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    taken
+}
+
+/// Take follow-ups from the shared queue (same announcements as [`drain_steering`]).
+fn drain_follow_ups(st: &SessionState, sink: &mut dyn EventSink) -> Vec<String> {
+    if st.shared.dirty.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let (steering, follow_up) = st.shared.snapshot();
+        sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
+    }
+    let taken = st.shared.take_follow_up();
     if !taken.is_empty() {
         let (steering, follow_up) = st.shared.snapshot();
         sink.emit(&AgentEvent::QueueUpdate { steering, follow_up });
