@@ -125,6 +125,45 @@ fn goal_revisions_follow_saved_goal_records_including_clear_and_replacement() {
 }
 
 #[test]
+fn steering_revision_crosses_only_accounting_records() {
+    let mut goal = objective();
+    let legacy = EntryBody::Custom {
+        custom_type: oxa_session::GOAL_ENTRY.into(),
+        data: goal.value(),
+    };
+    let mut entries = vec![entry("00000001", None, legacy)];
+    assert_eq!(Goal::latest(&entries).unwrap(), Some(goal.clone()));
+    let original = Goal::revision(&entries);
+    goal.charge(Some(15), 250, true).unwrap();
+    entries.push(entry(
+        "00000002",
+        Some("00000001"),
+        goal.checkpoint_body(&entries),
+    ));
+    let counted = Goal::revision(&entries);
+    assert!(counted > original);
+    assert!(Goal::allows_steering(&entries, original));
+    assert_eq!(Goal::latest(&entries).unwrap(), Some(goal.clone()));
+
+    let mut replaced = goal.clone();
+    replaced.objective = "Verify the replacement objective.".into();
+    entries.push(entry("00000003", Some("00000002"), replaced.body()));
+    entries.push(entry("00000004", Some("00000003"), goal.body()));
+    assert!(!Goal::allows_steering(&entries, counted));
+    let restored = Goal::revision(&entries);
+    assert!(Goal::allows_steering(&entries, restored));
+
+    goal.cancel().unwrap();
+    entries.push(entry(
+        "00000005",
+        Some("00000004"),
+        goal.checkpoint_body(&entries),
+    ));
+    assert!(!Goal::allows_steering(&entries, restored));
+    assert!(!Goal::allows_steering(&entries, Goal::revision(&entries)));
+}
+
+#[test]
 fn canceled_goal_round_trips_and_cannot_resume() {
     let mut goal = objective();
     goal.pause();

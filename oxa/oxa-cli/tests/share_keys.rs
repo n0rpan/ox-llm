@@ -370,6 +370,59 @@ fn serving_requires_an_owner_selected_alias_and_enabled_native_engine() {
 
 #[cfg(feature = "share")]
 #[test]
+fn native_cleartext_listener_refuses_wildcard_and_unverified_interfaces() {
+    use oxa_proto::{CancelToken, ChatRequest, StreamEvent};
+    use oxc_gateway::share::{
+        keys::Store,
+        listener::{Access, Binding, Config, Failure, Model, Tailnet},
+        native::{self, Native},
+    };
+    use std::{net::IpAddr, sync::Arc};
+
+    struct TailnetAddresses;
+    impl Tailnet for TailnetAddresses {
+        async fn addresses(&self) -> Result<Vec<IpAddr>, Failure> {
+            Ok(vec!["100.64.0.2".parse().unwrap()])
+        }
+        async fn same_owner(&self, _: IpAddr) -> Result<bool, Failure> {
+            unreachable!("no listener reaches peer authentication")
+        }
+    }
+
+    let home = Home::new();
+    let keys = Arc::new(Store::initialize(&home.0.join(".oxa/share")).unwrap());
+    let answer = Arc::new(
+        Native::new(
+            vec![Model {
+                alias: "synthetic".into(),
+                context_window: 128,
+                max_output: 8,
+                access: Access::Local,
+            }],
+            |_: &ChatRequest<'_>, _: &CancelToken, _: &mut dyn FnMut(StreamEvent)| {
+                unreachable!("the address must refuse before any guest connects")
+            },
+        )
+        .unwrap(),
+    );
+    for address in ["0.0.0.0", "::", "192.0.2.11"] {
+        let result = native::serve(
+            keys.clone(),
+            answer.clone(),
+            Arc::new(TailnetAddresses),
+            Config {
+                binding: Binding::Explicit(address.parse().unwrap()),
+                ..Config::default()
+            },
+            CancelToken::new(),
+            |_| Err(Failure::Failed),
+        );
+        assert!(matches!(result, Err(Failure::Forbidden)), "{address}: {result:?}");
+    }
+}
+
+#[cfg(feature = "share")]
+#[test]
 fn foreground_serve_lists_only_the_owner_selected_local_models_on_loopback() {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{SocketAddr, TcpStream};

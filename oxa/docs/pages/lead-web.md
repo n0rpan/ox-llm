@@ -1,9 +1,9 @@
 # Lead web access scaffold
 
-The read-only lead renderer and this access boundary are preparation for a later
-`oxa lead serve` integration. No listener or production identity adapter is installed
-yet. The owner must read the authentication boundary before merge or live exposure.
-Chat and owner-decision mutations are separate later work.
+Run `oxa lead serve` to serve the read-only board after enabling it in user settings.
+`OXA_LEAD_BOARD_LOG` selects an absolute private board log; refused input stays unavailable.
+The owner must read the final authentication composition before merge or live exposure.
+Chat and owner-decision mutations remain separate work.
 
 Only the user settings file may configure `oxa.lead.serve`; a project's settings
 cannot enable it or choose its listener or identity policy. It is disabled by
@@ -19,7 +19,7 @@ never copy an untrusted Host header into that proof. An untrusted
 `Tailscale-User-Login` header and loopback peer alone prove nothing.
 Only a loopback `bind` is accepted: a wider address is a configuration error, and
 the access check refuses any request whose peer is not loopback.
-No provider is enabled implicitly; the shipped unverified adapter always refuses.
+No provider is enabled implicitly.
 
 The explicit proxy adapter uses user-only `proxy.uid` and `proxy.authority` fields
 inside `oxa.lead.serve`. Authority is configured independently of HTTP headers;
@@ -37,8 +37,7 @@ proof, unchanged login and raw request authority to the existing `read_only`
 boundary. A verification error refuses; it never permits a raw-header fallback.
 The owner must read this producer before any consumer listener or exposure.
 
-After a reviewed listener and trusted proxy adapter are available, configure the
-user layer for your own identity and chosen ports, leaving it off until ready:
+Configure the user layer for your own identity and ports, leaving it off until ready:
 
 ```json
 {"oxa":{"lead":{"serve":{"enabled":false,"identity":"tailscale",

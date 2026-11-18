@@ -109,7 +109,7 @@ mod tests {
 
     fn session(
         env: &oxa_fake::TestEnv,
-        store: Arc<oxa_session::MemStore>,
+        store: Arc<dyn oxa_session::SessionStore>,
         hooks: Vec<Arc<dyn Hooks>>,
         how: oxa_core::Open,
     ) -> Result<oxa_core::Session, OxaError> {
@@ -193,5 +193,103 @@ mod tests {
         let error = lead.set_goal(Some(goal), &mut sink).unwrap_err();
         assert_eq!(error.code, codes::USAGE);
         assert!(lead.goal().is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn follow_observes_the_saved_goal_and_does_not_keep_it_after_a_session_switch() {
+        use oxa_orchestrator::follow::publisher::Publisher;
+        use oxa_session::{FsStore, Goal, GoalStatus};
+        use serde_json::{json, Value};
+
+        let env = oxa_fake::TestEnv::new();
+        let directory = env.root().join("sessions");
+        let open = |how| {
+            session(
+                &env,
+                Arc::new(FsStore::new(directory.clone())),
+                vec![Arc::new(NoHooks)],
+                how,
+            )
+            .unwrap()
+        };
+        let (mut ui, mut sink) = (oxa_proto::HeadlessUi::default(), oxa_proto::VecSink::default());
+        let publisher = Publisher::default();
+        let refresh = |owner: &oxa_core::Session| {
+            let state = owner.state();
+            let observation = owner.goal_observation();
+            let goal = observation.status.map_or(
+                Value::Null,
+                |status| json!({"status": status.as_str(), "revision": observation.revision}),
+            );
+            publisher
+                .bind_session(
+                    &state.session_id,
+                    &state.model,
+                    state.mode.as_str(),
+                    state.is_streaming,
+                )
+                .unwrap();
+            assert_eq!(
+                publisher.publish("goal_status", goal.clone(), None, None),
+                Ok(None)
+            );
+            assert_eq!(
+                publisher.latest().unwrap(),
+                json!({
+                    "goal": goal, "kind": "goal_status", "tasks": null,
+                    "session": {"id": state.session_id, "model": state.model,
+                                "mode": state.mode.as_str(), "busy": state.is_streaming}
+                })
+            );
+        };
+
+        let mut owner = open(oxa_core::Open::New);
+        let saved = owner.inner().sref.clone();
+        let mut goal = Goal::new("Synthetic private goal".into(), Default::default(), 1).unwrap();
+        owner.set_goal(Some(goal.clone()), &mut sink).unwrap();
+        let pursuing_revision = owner.goal_revision();
+        refresh(&owner);
+        assert_eq!(
+            publisher.latest().unwrap()["goal"],
+            json!({"status": "pursuing", "revision": pursuing_revision})
+        );
+        assert_eq!(publisher.page(0).unwrap().latest, 0);
+
+        goal.finish(GoalStatus::Blocked, "Synthetic private evidence".into())
+            .unwrap();
+        owner.set_goal(Some(goal), &mut sink).unwrap();
+        let blocked_revision = owner.goal_revision();
+        assert!(blocked_revision > pursuing_revision);
+        refresh(&owner);
+        let approved_goal = publisher.latest().unwrap()["goal"].clone();
+        let blocked = json!({"status": "blocked", "revision": blocked_revision});
+        assert_eq!(approved_goal, blocked);
+        assert_eq!(
+            publisher.publish("goal_observed", approved_goal, None, None),
+            Ok(Some(1))
+        );
+        owner.shutdown(&mut ui);
+        drop(owner);
+
+        let mut owner = open(oxa_core::Open::Resume(saved.clone()));
+        refresh(&owner);
+        let resumed = publisher.latest().unwrap();
+        assert_eq!(resumed["session"]["id"], saved.id.as_str());
+        assert_eq!(resumed["goal"], blocked);
+        assert_eq!(publisher.page(1).unwrap().latest, 1);
+
+        owner.switch(oxa_core::Open::New, &mut sink, &mut ui).unwrap();
+        let new_id = owner.state().session_id;
+        assert_ne!(new_id, saved.id);
+        refresh(&owner);
+        let current = publisher.latest().unwrap();
+        assert_eq!(current["session"]["id"], new_id.as_str());
+        assert!(current["goal"].is_null());
+        let history = publisher.page(0).unwrap();
+        assert_eq!(history.latest, 1);
+        assert_eq!(history.events[0].1["session"]["id"], saved.id.as_str());
+        assert_eq!(history.events[0].1["goal"], blocked);
+        owner.shutdown(&mut ui);
     }
 }

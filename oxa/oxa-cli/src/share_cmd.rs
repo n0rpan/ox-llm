@@ -31,6 +31,7 @@ pub(crate) fn is_agent(env: &Env) -> bool {
 pub(crate) struct Prepared {
     pub local: Arc<oxc_local::native::LocalEngine>,
     keys: Arc<Store>,
+    ledger: oxc_gateway::ledger::Ledger,
     models: Vec<Model>,
     tailnet: Arc<LocalApi>,
     config: Config,
@@ -38,6 +39,7 @@ pub(crate) struct Prepared {
 
 fn prepare(
     settings: &Settings,
+    effective: &Settings,
     dirs: &Dirs,
     config: Config,
     aliases: Vec<String>,
@@ -57,15 +59,8 @@ fn prepare(
         Store::open(&dirs.home.join(".oxa/share"))
             .map_err(|error| OxaError::new(codes::INVALID, error.to_string()))?,
     );
-    let local = oxc_local::configured_local_engine(
-        settings.get("oxa.local"),
-        dirs.agent_dir.join("local-engine"),
-        oxa_engine::StreamOpts {
-            silence_limit_ms: crate::dispatch::stream_silence_timeout(settings)
-                .unwrap_or(365 * 24 * 3600 * 1000),
-            ..oxa_engine::StreamOpts::default()
-        },
-    )?;
+    let (launch, stream) = crate::in_process::local_engine_settings(settings, effective);
+    let local = oxc_local::configured_local_engine(launch, dirs.agent_dir.join("local-engine"), stream)?;
     let catalog = local.info(None)?;
     let models = aliases
         .into_iter()
@@ -95,9 +90,12 @@ fn prepare(
         LocalApi::new(socket, Duration::from_secs(5))
             .map_err(|error| OxaError::new(codes::INVALID, error.to_string()))?,
     );
+    let ledger = oxc_gateway::ledger::Ledger::open(&dirs.agent_dir.join("cloud-ledger"))
+        .map_err(|_| OxaError::new(codes::INVALID, "The private request ledger is unavailable."))?;
     Ok(Prepared {
         local,
         keys,
+        ledger,
         models,
         tailnet,
         config,
@@ -106,6 +104,7 @@ fn prepare(
 
 pub(crate) fn prepare_session(
     settings: &Settings,
+    effective: &Settings,
     dirs: &Dirs,
     aliases: Vec<String>,
     bind: Option<IpAddr>,
@@ -114,7 +113,14 @@ pub(crate) fn prepare_session(
         binding: bind.map_or(Binding::Tailnet, Binding::Explicit),
         ..Config::default()
     };
-    prepare(settings, dirs, config, aliases, PathBuf::from(TAILSCALE_SOCKET))
+    prepare(
+        settings,
+        effective,
+        dirs,
+        config,
+        aliases,
+        PathBuf::from(TAILSCALE_SOCKET),
+    )
 }
 
 impl Prepared {
@@ -126,6 +132,7 @@ impl Prepared {
         let Self {
             local,
             keys,
+            ledger,
             models,
             tailnet,
             config,
@@ -136,7 +143,8 @@ impl Prepared {
                 local.chat_guest(request, cancel, on)
             },
         )
-        .map_err(service_error)?;
+        .map_err(service_error)?
+        .with_ledger(ledger);
         native::serve(keys, Arc::new(answer), tailnet, config, stop, ready).map_err(service_error)
     }
 
@@ -226,7 +234,7 @@ impl Drop for Serving {
 pub(crate) fn run(args: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write) -> Result<(), OxaError> {
     let (config, aliases, socket) = options(args)?;
     let settings = Settings::load(dirs, cwd, false);
-    let prepared = prepare(&settings, dirs, config, aliases, socket)?;
+    let prepared = prepare(&settings, &settings, dirs, config, aliases, socket)?;
     let stop = CancelToken::new();
     let mut signals =
         signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM])
@@ -285,7 +293,7 @@ fn usage() -> OxaError {
 
 fn service_error(error: Failure) -> OxaError {
     let message = match error {
-        Failure::Forbidden => "No eligible guest model or usable tailnet address.",
+        Failure::Forbidden => "Use loopback or an assigned Tailscale address for LAN sharing.",
         Failure::BadRequest => "Invalid guest listener configuration.",
         Failure::Busy => "Guest listener could not bind or tailscaled is unavailable.",
         _ => "Guest listener stopped unexpectedly.",
@@ -317,11 +325,13 @@ mod tests {
         Store::initialize(&dirs.home.join(".oxa/share")).unwrap();
         let prepared = prepare_session(
             &settings,
+            &settings,
             &dirs,
             vec!["synthetic".into()],
             Some(std::net::Ipv4Addr::LOCALHOST.into()),
         )
         .unwrap();
+        assert!(dirs.agent_dir.join("cloud-ledger/.salt").is_file());
         let local: Arc<LocalEngine> = prepared.local.clone();
         let owner = crate::in_process::select_observed(
             &settings,

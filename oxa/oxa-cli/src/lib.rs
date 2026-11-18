@@ -36,6 +36,7 @@ pub mod lead_panels;
 pub mod lead_peer;
 mod lead_preset;
 pub mod lead_runs;
+pub mod lead_serve;
 mod limits;
 mod login_cmd;
 mod mcp_cmd;
@@ -50,12 +51,15 @@ mod status;
 mod themes;
 mod wipe_cmd;
 mod work_board;
+pub use work_board::refill_input;
 mod work_checks;
 mod work_cmd;
 pub mod work_refill;
+mod work_reports;
 
 pub use args::{
-    no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, Subcommand, NO_TOOL_ALIASES,
+    no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, RegistryArgs, Subcommand,
+    NO_TOOL_ALIASES,
 };
 pub use config_cmd::run_config;
 pub use dispatch::{choose_mode, run, RunMode, Stdio};

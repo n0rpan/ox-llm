@@ -1,6 +1,8 @@
 use super::{nodes, Board, GitHub, Policy, PullRequest, Reader, RequiredCi};
+use oxa_session::parse_utc_seconds;
 use oxa_work::board::review::{
-    self, Approval, Change, ChangeKind, Facts, GitDiff, GitHubRequestReceipt, PathRule, Reviewer, Tier,
+    self, Approval, Change, ChangeKind, Comment, Facts, GitDiff, GitHubRequestReceipt, PathRule, Reviewer,
+    Tier,
 };
 use serde_json::Value;
 use std::{collections::BTreeMap, fs::File, io::Read, path::Path};
@@ -137,17 +139,23 @@ struct Evidence<'a> {
     two_review: bool,
     admitted: bool,
     approvals: Vec<(Reviewer, &'a str)>,
+    summary_approval: Option<String>,
     receipts: Vec<GitHubRequestReceipt>,
 }
 
 impl<'a> Evidence<'a> {
-    fn read(row: &'a Value, root: &Path, policy: &oxa_work::RunPolicy, settings: &Settings) -> Option<Self> {
+    fn read(
+        row: &'a Value,
+        root: &Path,
+        policy: &oxa_work::RunPolicy,
+        settings: &Settings,
+        review_policy: &review::Policy<'_>,
+    ) -> Option<Self> {
         if row["baseRefName"] != "main" {
             return None;
         }
         let base = row["baseRefOid"].as_str()?;
         let head = row["headRefOid"].as_str()?;
-        let git = GitDiff::read(policy, root, base, head).ok().flatten()?;
         let labels = nodes(&row["labels"]).ok()?;
         let labeled = |label| labels.iter().any(|item| item["name"].as_str() == Some(label));
         let admitted = !row["isCrossRepository"].as_bool()?
@@ -168,6 +176,29 @@ impl<'a> Evidence<'a> {
             })
             .collect();
         let comments = nodes(&row["comments"]).ok()?;
+        let summaries = comments
+            .iter()
+            .filter(|comment| {
+                comment["author"]["login"]
+                    .as_str()
+                    .and_then(|actor| settings.reviewer(actor))
+                    == Some(Reviewer::Codex)
+            })
+            .map(|comment| {
+                let bot_id = comment["author"]["databaseId"].as_u64();
+                // GitHub records the connector as editor when it updates its
+                // summary. Edits by another actor invalidate this snapshot.
+                if !comment["lastEditedAt"].is_null() && comment["editor"]["databaseId"].as_u64() != bot_id {
+                    return None;
+                }
+                Some(Comment {
+                    bot_id,
+                    updated_at: comment["updatedAt"].as_str().and_then(parse_utc_seconds),
+                    body: comment["body"].as_str()?,
+                })
+            })
+            .collect::<Option<Vec<_>>>();
+        let summary_approval = review::latest_code_approval(summaries.as_deref());
         let receipts = comments
             .iter()
             .filter(|comment| comment["lastEditedAt"].is_null())
@@ -191,12 +222,27 @@ impl<'a> Evidence<'a> {
                 .then_some((Reviewer::Codex, commit))
             }));
         }
+        let candidates: Vec<_> = approvals
+            .iter()
+            .copied()
+            .chain(
+                summary_approval
+                    .as_deref()
+                    .map(|commit| (Reviewer::Codex, commit)),
+            )
+            .collect();
+        let git = GitDiff::read(policy, root, base, head, &candidates, |path| {
+            review_policy.allows_approval_carry(path, kind(path))
+        })
+        .ok()
+        .flatten()?;
         Some(Self {
             git,
             head,
             two_review: labeled("two-review"),
             admitted,
             approvals,
+            summary_approval,
             receipts,
         })
     }
@@ -218,6 +264,22 @@ pub(super) fn sample(
     settings: &Settings,
     now: u64,
 ) -> Result<(Board, BTreeMap<u64, review::Plan>), String> {
+    let paths: Vec<_> = settings
+        .core
+        .iter()
+        .map(|path| PathRule {
+            path,
+            tier: Tier::Core,
+        })
+        .chain(settings.protected.iter().map(|path| PathRule {
+            path,
+            tier: Tier::Protected,
+        }))
+        .collect();
+    let review_policy = review::Policy {
+        enabled: true,
+        paths: &paths,
+    };
     let pulls = reader.open_pull_requests()?;
     let observations = reader
         .review_rows
@@ -227,7 +289,10 @@ pub(super) fn sample(
         .iter()
         .filter_map(|pr| {
             let row = &observations[format!("p{}", pr.number)];
-            Some((pr.number, Evidence::read(row, root, run_policy, settings)?))
+            Some((
+                pr.number,
+                Evidence::read(row, root, run_policy, settings, &review_policy)?,
+            ))
         })
         .collect();
     let inputs: Vec<_> = observations
@@ -254,9 +319,15 @@ pub(super) fn sample(
                     }
                 })
                 .collect();
-            let predecessors: Vec<_> = evidence
+            let main_predecessors: Vec<_> = evidence
                 .git
                 .main_merge_predecessors
+                .iter()
+                .map(String::as_str)
+                .collect();
+            let owner_predecessors: Vec<_> = evidence
+                .git
+                .owner_approval_predecessors
                 .iter()
                 .map(String::as_str)
                 .collect();
@@ -268,19 +339,34 @@ pub(super) fn sample(
             let approvals: Vec<_> = evidence
                 .approvals
                 .iter()
-                .map(|&(reviewer, head)| Approval {
+                .copied()
+                .chain(
+                    evidence
+                        .summary_approval
+                        .as_deref()
+                        .map(|head| (Reviewer::Codex, head)),
+                )
+                .map(|(reviewer, head)| Approval {
                     reviewer,
                     head,
                     patch_id: &evidence.git.patch_id,
                 })
                 .collect();
-            (*number, evidence, changes, predecessors, requests, approvals)
+            (
+                *number,
+                evidence,
+                changes,
+                main_predecessors,
+                owner_predecessors,
+                requests,
+                approvals,
+            )
         })
         .collect();
     let facts = inputs
         .iter()
         .map(
-            |(number, evidence, changes, predecessors, requested, approvals)| {
+            |(number, evidence, changes, main_predecessors, owner_predecessors, requested, approvals)| {
                 (
                     *number,
                     Facts {
@@ -293,7 +379,8 @@ pub(super) fn sample(
                         body: "",
                         head: evidence.head,
                         patch_id: Some(&evidence.git.patch_id),
-                        main_merge_predecessors: predecessors,
+                        main_merge_predecessors: main_predecessors,
+                        owner_approval_predecessors: owner_predecessors,
                         requested,
                         approvals,
                     },
@@ -301,27 +388,12 @@ pub(super) fn sample(
             },
         )
         .collect();
-    let paths: Vec<_> = settings
-        .core
-        .iter()
-        .map(|path| PathRule {
-            path,
-            tier: Tier::Core,
-        })
-        .chain(settings.protected.iter().map(|path| PathRule {
-            path,
-            tier: Tier::Protected,
-        }))
-        .collect();
     Board::read_with_review_policy(
         &mut Snapshot(pulls),
         board_policy,
         &BTreeMap::new(),
         now,
-        &review::Policy {
-            enabled: true,
-            paths: &paths,
-        },
+        &review_policy,
         &facts,
     )
 }

@@ -1,14 +1,18 @@
 //! Explicitly opted-in, read-only GitHub sampling. Never invokes a worker or mutation.
+pub mod refill_input;
 use oxa_work::board::{Board, GitHub, Mergeability, Policy, PullRequest, RequiredCi};
 use serde_json::Value;
+mod refill;
 use std::{
+    cell::Cell,
     collections::{BTreeMap, BTreeSet},
     io::{BufRead, IsTerminal, Read},
     path::Path,
     process::Command,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
+mod landing;
 mod review;
 
 fn token_line(input: &mut dyn BufRead) -> Result<String, String> {
@@ -35,6 +39,8 @@ pub(crate) struct Reader<'a> {
     repo: &'a str,
     token: &'a str,
     review_rows: Option<Value>,
+    deadline: Cell<Instant>,
+    bytes: Cell<usize>,
 }
 
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
@@ -51,6 +57,69 @@ fn charge(bytes: &mut usize, read: usize) -> Result<(), String> {
 enum QueryError {
     Http(u16),
     Other(&'static str),
+}
+
+enum SnapshotError {
+    Changed(&'static str),
+    Terminal(String),
+}
+impl From<String> for SnapshotError {
+    fn from(message: String) -> Self {
+        Self::Terminal(message)
+    }
+}
+impl From<&str> for SnapshotError {
+    fn from(message: &str) -> Self {
+        Self::Terminal(message.into())
+    }
+}
+impl SnapshotError {
+    fn message(self) -> String {
+        match self {
+            Self::Changed(message) => message.into(),
+            Self::Terminal(message) => message,
+        }
+    }
+}
+
+fn identity(row: &Value) -> Result<(u64, &str), String> {
+    let number = row["number"]
+        .as_u64()
+        .filter(|n| *n > 0)
+        .ok_or("invalid PR number")?;
+    let head = row["headRefOid"]
+        .as_str()
+        .filter(|head| !head.is_empty())
+        .ok_or("missing PR head")?;
+    Ok((number, head))
+}
+
+/// Validate embedded identity pages before classifying differences as changing membership.
+fn listing_page(connection: &Value) -> Result<(&Vec<Value>, u64, bool), String> {
+    let total = connection["totalCount"].as_u64().ok_or("missing PR count")?;
+    let rows = connection["nodes"].as_array().ok_or("missing PR page")?;
+    if total > oxa_work::board::MAX_OPEN_PULL_REQUESTS as u64 || rows.len() > 100 || rows.len() as u64 > total
+    {
+        return Err("GitHub listing exceeds limit".into());
+    }
+    let more = connection["pageInfo"]["hasNextPage"]
+        .as_bool()
+        .ok_or("missing PR pagination")?;
+    if more
+        && (rows.is_empty()
+            || connection["pageInfo"]["endCursor"]
+                .as_str()
+                .is_none_or(str::is_empty))
+    {
+        return Err("invalid PR pagination progress".into());
+    }
+    let mut seen = BTreeSet::new();
+    for row in rows {
+        if !seen.insert(identity(row)?.0) {
+            return Err("duplicate PR in listing".into());
+        }
+    }
+    Ok((rows, total, more))
 }
 impl QueryError {
     fn retryable(&self) -> bool {
@@ -73,7 +142,17 @@ impl<'a> Reader<'a> {
             repo,
             token,
             review_rows: None,
+            deadline: Cell::new(Instant::now() + Duration::from_secs(120)),
+            bytes: Cell::new(0),
         }
+    }
+
+    fn time_left(&self) -> Result<Duration, QueryError> {
+        let remaining = self.deadline.get().saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(QueryError::Other("GitHub snapshot deadline exhausted"));
+        }
+        Ok(remaining)
     }
 
     /// Fixed repository fields from native callers share the bounded, redacted transport.
@@ -82,42 +161,31 @@ impl<'a> Reader<'a> {
         self.query(fields).map_err(QueryError::message)
     }
 
-    fn listing(&self, bytes: &mut usize) -> Result<(Value, Value), String> {
+    fn listing(&self) -> Result<(Value, Value), SnapshotError> {
         let (mut fields, mut rows, mut seen, mut cursors) =
             (LIST.to_owned(), vec![], BTreeSet::new(), BTreeSet::new());
         let mut result = Value::Null;
         loop {
-            let (page, read) =
-                self.repository_read(&format!("{fields} mergeQueue(branch:\"main\"){{id}}"))?;
-            charge(bytes, read)?;
+            let (page, _) = self.repository_read(&format!("{fields} mergeQueue(branch:\"main\"){{id}}"))?;
             if result.is_null() {
                 result = page.clone();
             }
             let connection = &page["pullRequests"];
-            let total = connection["totalCount"].as_u64().ok_or("missing PR count")?;
-            if total > 1000
-                || connection["totalCount"] != result["pullRequests"]["totalCount"]
+            let (nodes, total, more) = listing_page(connection)?;
+            if connection["totalCount"] != result["pullRequests"]["totalCount"]
                 || page["mergeQueue"] != result["mergeQueue"]
             {
-                return Err("GitHub listing exceeds limit or changed during snapshot".into());
-            }
-            let nodes = connection["nodes"].as_array().ok_or("missing PR page")?;
-            if nodes.len() > 100 {
-                return Err("oversized PR page".into());
+                return Err(SnapshotError::Changed(
+                    "GitHub listing changed during snapshot; retry later",
+                ));
             }
             for row in nodes {
-                let number = row["number"]
-                    .as_u64()
-                    .filter(|n| *n > 0)
-                    .ok_or("invalid PR number")?;
-                if !seen.insert(number) || row["headRefOid"].as_str().is_none_or(str::is_empty) {
+                let (number, _) = identity(row)?;
+                if !seen.insert(number) {
                     return Err("duplicate PR or missing head in listing".into());
                 }
                 rows.push(row.clone());
             }
-            let more = connection["pageInfo"]["hasNextPage"]
-                .as_bool()
-                .ok_or("missing PR pagination")?;
             if !more {
                 if rows.len() as u64 != total {
                     return Err("incomplete PR listing".into());
@@ -142,7 +210,11 @@ impl<'a> Reader<'a> {
         loop {
             match self.query_once(fields) {
                 Err(error) if error.retryable() && retries < 2 => {
-                    std::thread::sleep(Duration::from_millis(200 << retries));
+                    let pause = Duration::from_millis(200 << retries);
+                    if self.time_left()? <= pause {
+                        return Err(QueryError::Other("GitHub snapshot deadline exhausted"));
+                    }
+                    std::thread::sleep(pause);
                     retries += 1;
                 }
                 result => return result,
@@ -168,9 +240,18 @@ impl<'a> Reader<'a> {
                 "-f",
                 &format!("query={query}"),
             ]);
-        let (code, text) = crate::report_cmd::command_runner(command, Some(MAX_RESPONSE)).ok_or(invalid(
-            "GitHub read failed, exceeded its byte limit or timed out",
+        let remaining = MAX_RESPONSE
+            .checked_sub(self.bytes.get())
+            .filter(|n| *n > 0)
+            .ok_or(invalid("GitHub snapshot exceeds byte limit"))?;
+        let duration = oxa_work::COMMAND_DEADLINE.min(self.time_left()?);
+        let (code, text) = oxa_work::command_runner(command, Some(remaining), duration).ok_or(invalid(
+            "GitHub read failed: snapshot exceeds byte limit, capture refused or deadline reached",
         ))?;
+        // Charge captured bytes, including headers and non-2xx bodies, before interpreting them.
+        let mut used = self.bytes.get();
+        charge(&mut used, text.len()).map_err(|_| invalid("GitHub snapshot exceeds byte limit"))?;
+        self.bytes.set(used);
         let (headers, body) = text
             .split_once("\r\n\r\n")
             .or_else(|| text.split_once("\n\n"))
@@ -215,6 +296,15 @@ fn nodes(value: &Value) -> Result<&Vec<Value>, String> {
     Ok(rows)
 }
 
+fn check_outcome(check: &Value) -> Option<&str> {
+    match check["status"].as_str() {
+        Some("COMPLETED") => check["conclusion"].as_str(),
+        // GitHub can retain a prior conclusion while the check is active.
+        Some(_) => None,
+        None => check["state"].as_str(),
+    }
+}
+
 fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
     if !base.is_object() {
         return Err("missing PR base requirements".into());
@@ -242,11 +332,10 @@ fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
     Ok(required)
 }
 
-impl GitHub for Reader<'_> {
-    fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
+impl Reader<'_> {
+    fn acquire(&mut self) -> Result<Vec<PullRequest>, SnapshotError> {
         // Verify the complete paginated identity set before publishing any details.
-        let mut bytes = 0;
-        let (list, first) = self.listing(&mut bytes)?;
+        let (list, first) = self.listing()?;
         let has_queue = list["mergeQueue"].is_object();
         let numbers: Vec<u64> = nodes(&list["pullRequests"])?
             .iter()
@@ -255,7 +344,10 @@ impl GitHub for Reader<'_> {
         let expected: BTreeMap<_, _> = numbers.iter().zip(nodes(&list["pullRequests"])?).collect();
         let mut details = serde_json::json!({});
         let review_fields = if self.review_rows.is_some() {
-            "baseRefOid isCrossRepository authorAssociation comments(first:100){totalCount nodes{body author{login} lastEditedAt}} reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
+            "baseRefOid isCrossRepository authorAssociation
+             comments(first:100){totalCount nodes{body updatedAt lastEditedAt
+                author{login ... on Bot{databaseId}} editor{... on Bot{databaseId}}}}
+             reviews(first:100){totalCount nodes{state body author{login} commit{oid} lastEditedAt}}"
         } else {
             ""
         };
@@ -277,22 +369,28 @@ impl GitHub for Reader<'_> {
                 }}}}}}}}}}}}}}"#
                 ));
             }
-            let (page, read) = match self.query(&fields) {
+            let (page, _) = match self.query(&fields) {
                 Ok(page) => page,
                 Err(error) if error.retryable() && end - offset > 1 => {
                     size = (end - offset) / 2;
                     continue;
                 }
-                Err(error) => return Err(error.message()),
+                Err(error) => return Err(error.message().into()),
             };
-            charge(&mut bytes, read)?;
+            listing_page(&page["pullRequests"])?;
             if page["pullRequests"] != first {
-                return Err("open PR set changed during snapshot; retry later".into());
+                return Err(SnapshotError::Changed(
+                    "open PR set changed during snapshot; retry later",
+                ));
             }
             for n in &numbers[offset..end] {
                 let row = &page[format!("p{n}")];
-                if row["number"].as_u64() != Some(*n) || row["headRefOid"] != expected[n]["headRefOid"] {
-                    return Err("missing or mismatched PR details".into());
+                let (number, _) = identity(row)?;
+                if number != *n {
+                    return Err(SnapshotError::from("mismatched PR number"));
+                }
+                if row["headRefOid"] != expected[n]["headRefOid"] {
+                    return Err(SnapshotError::Changed("mismatched PR details; retry later"));
                 }
                 details[format!("p{n}")] = row.clone();
             }
@@ -301,16 +399,22 @@ impl GitHub for Reader<'_> {
                 break;
             }
         }
-        let (verified, _) = self.listing(&mut bytes)?;
+        let (verified, _) = self.listing()?;
         if verified["pullRequests"] != list["pullRequests"] || verified["mergeQueue"] != list["mergeQueue"] {
-            return Err("PR identities changed during snapshot; retry later".into());
+            return Err(SnapshotError::Changed(
+                "PR identities changed during snapshot; retry later",
+            ));
         }
         let rows = nodes(&list["pullRequests"])?
             .iter()
             .map(|pr| {
                 let row = &details[format!("p{}", pr["number"])];
-                if row["state"] != "OPEN" {
-                    return Err("PR changed during snapshot; retry later".into());
+                match row["state"].as_str() {
+                    Some("OPEN") => (),
+                    Some("CLOSED" | "MERGED") => {
+                        return Err(SnapshotError::Changed("PR changed during snapshot; retry later"))
+                    }
+                    _ => return Err(SnapshotError::from("invalid PR state")),
                 }
                 let required = required_contexts(&row["baseRef"])?;
                 let contexts = &row["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"];
@@ -324,7 +428,7 @@ impl GitHub for Reader<'_> {
                 };
                 let required_ci = if checks.iter().any(|c| {
                     matches!(
-                        c["state"].as_str().or(c["conclusion"].as_str()),
+                        check_outcome(c),
                         Some(
                             "FAILURE"
                                 | "ERROR"
@@ -343,12 +447,9 @@ impl GitHub for Reader<'_> {
                             .iter()
                             .any(|c| c["name"].as_str().or(c["context"].as_str()) == Some(*name))
                     })
-                    || checks.iter().any(|c| {
-                        !matches!(
-                            c["state"].as_str().or(c["conclusion"].as_str()),
-                            Some("SUCCESS" | "NEUTRAL" | "SKIPPED")
-                        )
-                    })
+                    || checks
+                        .iter()
+                        .any(|c| !matches!(check_outcome(c), Some("SUCCESS" | "NEUTRAL" | "SKIPPED")))
                 {
                     RequiredCi::Pending
                 } else {
@@ -399,32 +500,53 @@ impl GitHub for Reader<'_> {
                     },
                 })
             })
-            .collect();
+            .collect::<Result<Vec<_>, SnapshotError>>()?;
+        self.time_left().map_err(QueryError::message)?;
         if self.review_rows.is_some() {
             self.review_rows = Some(details);
         }
-        rows
+        Ok(rows)
+    }
+}
+
+impl GitHub for Reader<'_> {
+    fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
+        self.deadline.set(Instant::now() + Duration::from_secs(120));
+        self.bytes.set(0);
+        // A consistency refusal gets exactly one fresh acquisition, sharing its byte budget.
+        match self.acquire() {
+            Err(SnapshotError::Changed(_)) => self.acquire(),
+            result => result,
+        }
+        .map_err(SnapshotError::message)
     }
 }
 
 pub(crate) fn run(
     args: &[String],
     root: &Path,
+    common: &Path,
     env: &oxa_config::Env,
     dirs: &oxa_config::Dirs,
     policy: &oxa_work::RunPolicy,
 ) -> Result<i32, String> {
+    if args.first().is_some_and(|arg| arg == "--refill") {
+        return refill::run(args, root, common, env, dirs, policy);
+    }
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
         [shadow, flag, repo, options @ ..] if shadow == "--shadow" && flag == "--repo" => (repo, options),
-        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--review-policy FILE]".into()),
+        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--review-policy FILE] [--queue-evidence] [--landing-shadow]".into()),
     };
     let (mut once, mut streamed, mut review_file) = (false, false, None);
+    let (mut queue_evidence, mut landing_shadow) = (false, false);
     let mut options = options.iter();
     while let Some(option) = options.next() {
         match option.as_str() {
             "--once" => once = true,
             "--token-stdin" => streamed = true,
+            "--queue-evidence" => queue_evidence = true,
+            "--landing-shadow" => landing_shadow = true,
             "--review-policy" if review_file.is_none() => {
                 review_file = Some(options.next().ok_or("missing board review policy file")?);
             }
@@ -473,8 +595,9 @@ pub(crate) fn run(
         .mode(0o700)
         .create(&storage)
         .map_err(|_| "cannot create shadow storage")?;
+    oxa_work::require_private_directory(&storage)?;
     let mut log = oxa_work::shadow::open_log(&storage.join("board-shadow.jsonl"))?;
-    oxa_work::shadow::run_with_reviews(
+    oxa_work::shadow::run_with_landing(
         &mut log,
         once,
         || {
@@ -493,14 +616,68 @@ pub(crate) fn run(
                 enabled: true,
                 ..Policy::default()
             };
-            if let Some(settings) = &review_settings {
+            let (board, reviews) = if let Some(settings) = &review_settings {
                 review::sample(&mut reader, root, policy, &board_policy, settings, now)
             } else {
                 Board::read(&mut reader, &board_policy, &BTreeMap::new(), now)
                     .map(|board| (board, BTreeMap::new()))
-            }
+            }?;
+            let queue_rejections = if queue_evidence || landing_shadow {
+                oxa_work::board::queue::read(&board, |fields| reader.repository_read(fields))?
+            } else {
+                Vec::new()
+            };
+            let (landing, landing_main) = if landing_shadow {
+                landing::review_decisions(&reader, &board)?
+            } else {
+                (BTreeMap::new(), None)
+            };
+            reader.time_left().map_err(QueryError::message)?;
+            Ok(oxa_work::shadow::LandingSample {
+                board,
+                reviews,
+                queue_rejections,
+                landing,
+                landing_main,
+            })
         },
         std::thread::sleep,
     )?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    use oxa_fake::TestEnv;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn exhausted_budget_refuses_launch_and_remaining_time_bounds_the_child() {
+        let test = TestEnv::new();
+        test.write("work/gh", "#!/bin/sh\nprintf started > \"$0.started\"\nsleep 3\n");
+        let program = test.work().join("gh");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let marker = test.work().join("gh.started");
+        let reader = Reader::new(
+            &program,
+            std::ffi::OsStr::new("/usr/bin:/bin"),
+            "example/repo",
+            "synthetic-app-token",
+        );
+        reader.deadline.set(Instant::now());
+        assert!(reader.repository_read("id").is_err());
+        assert!(!marker.exists(), "an expired operation must not start a child");
+        let start = Instant::now();
+        reader.deadline.set(start + Duration::from_millis(200));
+        assert!(reader.repository_read("id").is_err());
+        assert!(
+            marker.exists(),
+            "the remaining-budget control must launch the real child"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "the last call must not get a fresh 30-second budget"
+        );
+    }
 }

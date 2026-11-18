@@ -19,6 +19,9 @@
 //!   does. stdin close = shutdown.
 #![forbid(unsafe_code)]
 
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+mod a2a_control;
+
 mod client;
 mod cmd_run;
 mod cmd_session;
@@ -34,6 +37,8 @@ pub use events::{
 };
 pub use ext_ui::{RpcUi, UiRouter};
 pub use print::{run_json, run_json_outcome, run_print, run_print_outcome};
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+pub use server::serve_outcome_with_steering_authority;
 pub use server::{parse_command, response_err, response_ok, serve, serve_outcome, RpcCommand};
 
 use oxa_core::{Handle, Session};

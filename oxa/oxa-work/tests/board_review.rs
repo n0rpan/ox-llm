@@ -35,6 +35,7 @@ fn facts<'a>(changes: &'a [Change<'static>]) -> Facts<'a> {
         head: "new-head",
         patch_id: Some(PATCH),
         main_merge_predecessors: &[],
+        owner_approval_predecessors: &[],
         requested: &[],
         approvals: &[],
     }
@@ -76,8 +77,8 @@ fn path_tiers_ignore_routine_tests_and_include_both_paths_of_renames() {
         decide(&input),
         Decision::Review {
             tier: Tier::DocsAndTests,
-            request: vec![],
-            outstanding: vec![],
+            request: vec![Reviewer::Codex],
+            outstanding: vec![Reviewer::Codex],
         }
     );
     input.two_review = true;
@@ -102,6 +103,55 @@ fn path_tiers_ignore_routine_tests_and_include_both_paths_of_renames() {
             outstanding: vec![Reviewer::Codex, Reviewer::Security, Reviewer::Owner],
         }
     );
+}
+
+#[test]
+fn docs_need_codex_and_agent_instructions_are_at_least_product() {
+    for (path, previous_path, tier) in [
+        ("docs/guide.md", None, Tier::DocsAndTests),
+        ("AGENTS.md", None, Tier::Product),
+        ("docs/tools/AGENTS.md", None, Tier::Product),
+        ("skills/check/SKILL.md", None, Tier::Product),
+        ("skills/check/checklist.md", None, Tier::Product),
+        ("oxa/oxa-resources/prompts/default.md", None, Tier::Product),
+        (
+            "oxa/oxa-resources/builtin-skills/review/SKILL.md",
+            None,
+            Tier::Product,
+        ),
+        ("docs/old-guide.md", Some("docs/tools/AGENTS.md"), Tier::Product),
+    ] {
+        let changes = [Change {
+            path,
+            previous_path,
+            kind: ChangeKind::Documentation,
+            ..SOURCE
+        }];
+        let mut input = facts(&changes);
+        assert_eq!(
+            decide(&input),
+            Decision::Review {
+                tier,
+                request: vec![Reviewer::Codex],
+                outstanding: vec![Reviewer::Codex],
+            },
+            "{path}"
+        );
+        input.approvals = &[Approval {
+            reviewer: Reviewer::Codex,
+            head: "new-head",
+            patch_id: PATCH,
+        }];
+        assert_eq!(
+            decide(&input),
+            Decision::Review {
+                tier,
+                request: vec![],
+                outstanding: vec![]
+            },
+            "{path}"
+        );
+    }
 }
 
 #[test]
@@ -368,4 +418,32 @@ fn untrusted_comments_and_incomplete_or_invalid_summaries_cannot_clear_a_hold() 
         }])),
         Findings::Unknown
     );
+}
+
+#[test]
+fn code_approval_requires_the_latest_unambiguous_clean_summary() {
+    let clean = summary(review(NEW, false), absent());
+    let older = summary(review(OLD, false), absent());
+    let mut resolved = review(NEW, false);
+    resolved["has_any_findings"] = true.into();
+    let resolved = summary(resolved, absent());
+    let unresolved_security = summary(review(NEW, false), review(OLD, true));
+
+    assert_eq!(
+        latest_code_approval(Some(&[connector(&clean, 12), connector(&older, 11)])).as_deref(),
+        Some(NEW)
+    );
+    for newer in [&older, &resolved, &unresolved_security] {
+        assert_eq!(
+            latest_code_approval(Some(&[connector(&clean, 12), connector(newer, 12)])),
+            None
+        );
+    }
+    for newer in [&resolved, &unresolved_security] {
+        assert_eq!(
+            latest_code_approval(Some(&[connector(&clean, 12), connector(newer, 13)])),
+            None
+        );
+    }
+    assert_eq!(latest_code_approval(None), None);
 }

@@ -479,6 +479,11 @@ fn agent_options_keep_command_words_as_prompts() {
             assert_eq!(a.subcommand, None, "{word}");
             assert_eq!(a.messages, [word, "example"]);
         }
+        // Only option words may precede the work command; a prompt word before it keeps
+        // `work` a prompt word in place.
+        let a = parse(&["summarise", word, "example"]);
+        assert_eq!(a.subcommand, None, "{word}");
+        assert_eq!(a.messages, ["summarise", word, "example"]);
     }
 }
 
