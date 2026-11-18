@@ -9,8 +9,8 @@ PORTED means the named Rust implementation and its contract tests replace the fe
 | oxc/src/oxc/runtime/cloud_anthropic.py — Anthropic transport, translation and native tool loop | PORTED | oxa/oxc-gateway/src/anthropic_client.rs; anthropic_request.rs; anthropic_stream.rs | oxa/oxc-gateway/tests/anthropic_client.rs; anthropic_request.rs; anthropic_stream.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
 | oxc/src/oxc/runtime/cloud_openai.py — Responses API-key transport, translation and native tool loop | PORTED | oxa/oxc-gateway/src/openai/client.rs; request.rs; stream.rs | oxa/oxc-gateway/tests/openai_client.rs; oxa/oxa-cli/tests/in_process_cloud.rs; production consumer: oxa/oxa-cli/src/in_process.rs. [#1305](https://github.com/oxstack/ox-llm/pull/1305) adds in_process_openai.rs::catalog_default_output_limit_is_visible_and_reaches_a_native_response. The [x86_64 and ARM64 lane](https://github.com/oxstack/ox-llm/actions/runs/44241717571) verifies the catalog limit, one upstream request, and the resulting length stop and exact usage. The legacy SDK wire contract and live-provider acceptance remain separate. |
 | oxc/src/oxc/runtime/cloud_chatgpt.py — subscription transport, account-pinned continuation, sign-in and refresh | PORTED | oxa/oxc-gateway/src/openai/client.rs; chatgpt_tokens.rs; login.rs; oxa/oxa-cli/src/login_cmd.rs | oxa/oxc-gateway/tests/chatgpt_tokens.rs; openai_client.rs; oxa/oxa-cli/tests/native_chatgpt_login.rs; production consumer: oxa/oxa-cli/src/in_process.rs. Source/test mapping, not live-provider acceptance. |
-| oxc/tools/memlat_boot.py — boot-menu/rollback command | PORTED | oxa/oxc-memlat/src/{main,menu,policy,image}.rs | oxa/oxc-memlat/tests/boot.rs ports all 19 Python cases. The actual Rust command replays 28 scenarios and 52 steps against tests/boot-oracle.json, captured with the same synthetic filesystem on both hosted architectures in [run 44196495976](https://github.com/oxstack/ox-llm/actions/runs/44196495976). Replay checks exit, stderr, selected stdout and pre/post ESP file names and bytes by digest. The old command remains subject to packaging, archive and caller gates. |
-| oxc/tests/test_memlat_boot.py — all19 synthetic boot cases | PORTED | oxa/oxc-memlat/tests/boot.rs | Explicit port declaration and matching19-case source inventory. No host boot actions. Keep the stronger actual-command differential coverage. |
+| oxc/tools/memlat_boot.py — boot-menu/rollback command | PORTED | oxa/oxc-memlat/src/{main,menu,policy,image}.rs | oxa/oxc-memlat/tests/boot.rs ports all 19 Python cases. The actual Rust command replays 28 scenarios and 52 steps against tests/boot-oracle.json, captured with the same synthetic filesystem on both hosted architectures in [run 44196495976](https://github.com/oxstack/ox-llm/actions/runs/44196495976). Replay checks exit, stderr, selected stdout and pre/post ESP file names and bytes by digest. [#1322](https://github.com/oxstack/ox-llm/pull/1322) removed the old command after the exact archive and caller gates cleared. |
+| oxc/tests/test_memlat_boot.py — all19 synthetic boot cases | PORTED | oxa/oxc-memlat/tests/boot.rs | [#1322](https://github.com/oxstack/ox-llm/pull/1322) retired the paired Python test after all 19 cases were carried to Rust. Keep the actual-command differential. |
 | oxc/src/oxc/runtime/cloud_prices.py — native live OpenRouter pricing and catalog refresh | PORTED | oxa/oxc-gateway/src/{catalog_cache,catalog_discovery,openrouter,pricing,runtime}.rs; native picker and list in oxa/oxa-cli/src/in_process.rs | [#1236](https://github.com/oxstack/ox-llm/pull/1236) landed account-scoped discovery, a bounded disk cache and stale OpenRouter price refresh before admission. Discovery is opt-in and runs off the inference path. The native OpenRouter CLI discovery and gateway price-floor and token-bound tests passed in the [x86_64 and ARM64 lane](https://github.com/oxstack/ox-llm/actions/runs/44242621656). Preserve the Python daemon's public refresh, backoff and caller tests while that daemon survives. [#628](https://github.com/oxstack/ox-llm/issues/628) retains the owner HTTP catalog and status integration. |
 | oxc/src/oxc/runtime/lan_share.py — production owner share controls | MISSING | Native owner CLI and local serving in `oxa/oxa-cli/src/share_cmd.rs` and `oxa/oxc-gateway/src/share/native.rs` | [#1216](https://github.com/oxstack/ox-llm/pull/1216) and [#1235](https://github.com/oxstack/ox-llm/pull/1235) cover foreground serving of selected local aliases and bind restrictions in `oxa/oxa-cli/tests/share_keys.rs`. `oxa/oxc-gateway/tests/share_listener.rs` covers guest streaming, usage settlement and revocation. [#1237](https://github.com/oxstack/ox-llm/pull/1237) adds sharing the interactive owner’s native engine. `share_cmd.rs::owner_router_and_listener_use_the_same_local_engine` verifies shared engine ownership, and `share_keys.rs::owner_session_sharing_flags_refuse_noninteractive_and_agent_invocations` verifies owner entry gating. [#1255](https://github.com/oxstack/ox-llm/pull/1255) adds local guest accounting in the shared native adapter. `oxa/oxc-gateway/tests/ledger.rs::local_guest_records_usage_or_reservation_without_cloud_spend` covers measured and reserved outcomes, zero cloud spend and salted attribution. `tests/share_listener.rs::authenticated_native_bridge_streams_only_guest_text_and_settles_usage` checks the actual listener-to-ledger path. [#1262](https://github.com/oxstack/ox-llm/pull/1262) adds native owner status, exercised by `share_keys.rs::owner_terminal_reports_share_status_only_when_enabled`. [#1263](https://github.com/oxstack/ox-llm/pull/1263) adds explicitly selected metered guest cloud models with a default-empty owner allowlist. `share_keys.rs::foreground_metered_cloud_requires_owner_allowlist_and_settles_a_guest_request` checks default refusal, streaming and ledger settlement against a loopback provider. [#1278](https://github.com/oxstack/ox-llm/pull/1278) exercises the real foreground CLI against a loopback Anthropic stream with backpressure, checking complete guest text, terminal completion and one private settled ledger row. `share_keys.rs::metered_openrouter_forwards_only_supplied_guest_sampling` checks explicit zero and omitted fields against a loopback upstream. The [exact-head lane](https://github.com/oxstack/ox-llm/actions/runs/44227984285) passed all 29 share cases on x86_64 and ARM64. [#688](https://github.com/oxstack/ox-llm/issues/688) remains open for end-to-end tailnet and remaining owner-control acceptance. |
 | oxc/src/oxc/cloud_install.py — Python-only installer/venv/controller daemon | DROPPED | Direct native oxa package/default path; no replacement Python installer. | Owner retirement [#681](https://github.com/oxstack/ox-llm/issues/681); [parked feature index](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6947705088). [#1286](https://github.com/oxstack/ox-llm/pull/1286) isolates the installer cases in `test_cloud_only_install.py`. [#1295](https://github.com/oxstack/ox-llm/pull/1295) and [#1304](https://github.com/oxstack/ox-llm/pull/1304) scope the cloud-only quickstart to the published v0.2.0 source and link the native guide. The root README and release notes still refer to the legacy guide. Verify the remaining documentation, lab and archive gates before source removal. |
@@ -120,24 +120,20 @@ share work. The diagnostics launcher dispatches
 qualifying those contracts and locating the launcher retirement entries in
 #946.
 
-#### MEMLAT removal preparation and #1198 packaging handoff
+#### MEMLAT source retirement and #1198 packaging evidence
 
 [#1234](https://github.com/oxstack/ox-llm/pull/1234) merged at
 `be0e5b82a47bf313704fbcb079ea68d26ddbb333` after
 [integration CI](https://github.com/oxstack/ox-llm/actions/runs/44199296898).
-The candidate deletion slice is `oxc/tools/memlat_boot.py` and
-`oxc/tests/test_memlat_boot.py`. The old test is the only remaining tracked
-executable importer of the file. `oxa/oxc-memlat/tests/boot.rs` covers the old
-19-case suite. Preserve the captured-oracle replay, its synthetic packaging
-sentinel and the separate `oxc/tools/memlat.py` builder. Update the
-[legacy manual install instruction](https://github.com/oxstack/ox-llm/blob/6ecc77a3ee5b2ff1beed7b11780b5d3f22d4dc74/oxc/docs/MEMLAT.md#L43)
-to point to the packaged Rust command. The four tracked MEMLAT templates
-already invoke `/usr/bin/local-ai-memlat-boot`.
+Before removal, the paired Python test was the only tracked executable
+importer of `oxc/tools/memlat_boot.py`. The Rust suite covers its 19 cases,
+and the four tracked MEMLAT templates invoke
+`/usr/bin/local-ai-memlat-boot`.
 
 - The [stage rule](https://github.com/oxstack/ox-llm/blob/6ecc77a3ee5b2ff1beed7b11780b5d3f22d4dc74/packaging/release/stage.py#L19-L42)
   installs the Rust boot command and excludes the legacy boot script and test
-  via the `tools` and `tests` ignore patterns. The same rule still copies the
-  Python controller and creates Python wrappers on main.
+  via the `tools` and `tests` ignore patterns. That baseline rule also copied the
+  Python controller and created Python wrappers.
 - The [release archive rule](https://github.com/oxstack/ox-llm/blob/6ecc77a3ee5b2ff1beed7b11780b5d3f22d4dc74/.github/workflows/release-build.yml#L63-L75)
   uses unfiltered `git archive HEAD` for the distributed build source and both
   reproducibility inputs. A tracked archive inventory on this commit includes
@@ -157,8 +153,16 @@ their inventory, bytes and modes, plus the service exclusion. The
 passed all 52 captured boot-command steps and the real staging assertion on
 both x86_64 and ARM64. Keep the four templates and the captured oracle.
 
-Source removal remains waiting on accepted packaging and the exact
-`archive/python-oxc` pre-removal commit recorded in #946.
+[archive/python-oxc](https://github.com/oxstack/ox-llm/tree/archive/python-oxc)
+preserves the full pre-removal `oxc/` tree at
+`e64b985a2ff6abf51d406471382ed95a18fd161c`, recorded in
+[#946](https://github.com/oxstack/ox-llm/issues/946#issuecomment-6970464355).
+[#1322](https://github.com/oxstack/ox-llm/pull/1322) removed both Python files
+and updated the manual link in `ab193a52be0ef1d15e675e69287eaf1d9e41d268`.
+The [protected MEMLAT differential](https://github.com/oxstack/ox-llm/actions/runs/44249788127/job/134619511480)
+passed all 52 steps and the staging exclusion assertion after the removal.
+The captured oracle, developer builder and four shipping templates are
+unchanged.
 
 ### Additional runtime contracts at `48f6e431`
 
@@ -366,7 +370,7 @@ shows why the historical contracts stay together. The installed updater
 records both services, and rollback requires that recorded set to match the
 sealed binding. A controller-only stage would make rollback refuse. Preserve
 the seal, preimage, service identity and rollback checks, plus all four real
-MEMLAT templates. The Studio caller, native image and archive gates remain
+MEMLAT templates. [#1323](https://github.com/oxstack/ox-llm/pull/1323) routes the current upgrade guide to native packages and pins both legacy procedure links to the archive. The Studio caller, native image and archive gates remain
 separate.
 
 ## Tests and developer module inventory
