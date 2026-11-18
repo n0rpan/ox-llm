@@ -728,3 +728,124 @@ fn a_queued_turn_delivers_durably_staged_input_before_its_first_request() {
         .any(|message| message.content.as_deref() == Some("Synthetic durable steer.")));
     assert!(session.goal().unwrap().lead.unwrap().pending_steer.is_none());
 }
+
+#[test]
+fn goal_command_set_replace_show_clear() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    assert_eq!(parse_goal_command("  "), GoalCommand::Show);
+    assert_eq!(parse_goal_command(" resume "), GoalCommand::Resume);
+    assert_eq!(
+        parse_goal_command(" Ship it "),
+        GoalCommand::Set("Ship it".into())
+    );
+
+    let env = TestEnv::new();
+    let store = Arc::new(FsStore::new(env.root().join("sessions")));
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Show, 1000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["No goal.".to_string()]);
+    assert_eq!(prompt, None);
+
+    let (lines, prompt) = session
+        .apply_goal_command(parse_goal_command("Ship the parser"), 1000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal set: Ship the parser".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::goal_start("Ship the parser")));
+    let first = session.goal_revision();
+    assert!(first > 0);
+    assert_eq!(
+        Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+        session.goal()
+    );
+
+    session
+        .apply_goal_command(parse_goal_command("Ship the parser v2"), 2000, &mut sink)
+        .unwrap();
+    let second = session.goal_revision();
+    assert!(second > first);
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Show, 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines[0], "Objective: Ship the parser v2");
+    assert_eq!(lines[1], "Status: pursuing");
+    assert_eq!(prompt, None);
+    assert_eq!(
+        Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+        session.goal()
+    );
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Clear, 3000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal cleared.".to_string()]);
+    assert_eq!(prompt, None);
+    assert!(session.goal().is_none());
+    assert!(session.goal_revision() > second);
+    assert_eq!(
+        Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+        None
+    );
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+#[test]
+fn goal_command_pause_resume_returns_continue_prompt() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("Keep the tests green"), 1000, &mut sink)
+        .unwrap();
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Pause, 1500, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal paused.".to_string()]);
+    assert_eq!(prompt, None);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Paused);
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Resume, 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal resumed.".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+}
+
+#[test]
+fn goal_command_set_is_refused_while_busy() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("First objective"), 1000, &mut sink)
+        .unwrap();
+    let revision = session.goal_revision();
+
+    session
+        .inner()
+        .shared
+        .busy
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = session
+        .apply_goal_command(GoalCommand::Set("Second objective".into()), 2000, &mut sink)
+        .unwrap_err();
+    assert_eq!(error.code, oxa_proto::codes::BUSY);
+    session
+        .inner()
+        .shared
+        .busy
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    assert_eq!(session.goal_revision(), revision);
+    assert_eq!(session.goal().unwrap().objective, "First objective");
+}
