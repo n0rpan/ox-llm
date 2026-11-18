@@ -4,6 +4,8 @@
 //! Build the binaries first: `cargo build -p oxa-cli -p oxa-fake`.
 #![cfg(target_os = "linux")]
 use oxa_fake::{parse_script, FakeOpts, FakeServer, TestEnv};
+#[path = "support/status_row.rs"]
+mod status_row;
 use oxa_parity::pty::{encode_kitty, encode_legacy, KeyEncoding, PtyOpts, PtySession, Screen, TermProfile};
 use oxa_proto::Role;
 use std::time::Duration;
@@ -149,7 +151,7 @@ fn resize_rerenders() {
                 let rows = s.rows();
                 rows.iter().any(|r| *r == "─".repeat(60))
                     && rows.iter().all(|r| r.chars().count() <= 60)
-                    && rows[29].contains("fake-model")
+                    && rows[status_row::last_footer_row(s) as usize].contains("fake-model")
             },
             EXIT,
         )

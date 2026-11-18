@@ -20,6 +20,8 @@
 
 #[path = "support/tui_rig.rs"]
 mod rig;
+#[path = "support/status_row.rs"]
+mod status_row;
 #[path = "support/tree_pty.rs"]
 mod tree_pty;
 
@@ -179,29 +181,9 @@ fn raw_since(rig: &Rig, mark: usize) -> String {
     String::from_utf8_lossy(&rig.pty.raw_since(mark)).into_owned()
 }
 
-/// The footer: the last two rows.
-/// #1512 S3: the pi footer's extension status row (`no sandbox · …`, `sandbox`, `YOLO full
-/// access`) is drawn below the footer. Such a row is skipped to find the footer rows.
-fn is_status_row(text: &str) -> bool {
-    let t = text.trim();
-    t == "sandbox"
-        || t.starts_with("no sandbox")
-        || t.starts_with("YOLO full access")
-        || t.ends_with("YOLO full access")
-}
-
-/// The last row that is not an extension status row.
-fn last_footer_row(s: &Screen) -> u16 {
-    let (rows, _) = s.size();
-    let mut row = rows - 1;
-    while row > 1 && is_status_row(&s.row(row)) {
-        row -= 1;
-    }
-    row
-}
-
+/// The footer: the last two rows that are not the extension status row.
 fn footer(s: &Screen) -> (String, String) {
-    let last = last_footer_row(s);
+    let last = status_row::last_footer_row(s);
     (s.row(last - 1), s.row(last))
 }
 
@@ -829,8 +811,10 @@ fn tui_005() {
         let Some(&bottom) = rules.last() else {
             return Vec::new();
         };
-        let (rows_n, _) = s.size();
-        rows[bottom + 1..(rows_n as usize).saturating_sub(2)].to_vec()
+        // The list ends above the footer rows (cwd and HUD); the extension status row below
+        // them is already skipped by `last_footer_row`.
+        let end = (status_row::last_footer_row(s) as usize).saturating_sub(1);
+        rows[bottom + 1..end].to_vec()
     };
     rig.pty.send_text("/");
     let s = rig
@@ -1520,10 +1504,12 @@ fn tui_026() {
     let last = rig.generating().pop().unwrap();
     assert!(l2.contains("cache "), "cache hit: {l2:?}");
     assert!(l2.contains("auto"), "mode: {l2:?}");
-    // Alt+M cycles the mode; the footer follows.
+    // Alt+M cycles the mode; the footer follows. The context segment keeps its own `(auto)`
+    // marker, so the row is compared with the one before the key rather than with a word.
+    let before_mode = footer(&rig.screen()).1;
     rig.pty.send_key("alt+m");
     rig.pty
-        .wait_for_named("mode changed", |s| !footer(s).1.contains("auto"), WAIT)
+        .wait_for_named("mode changed", |s| footer(s).1 != before_mode, WAIT)
         .unwrap();
     // Prefill progress and speed come from the engine's comments and timings (the fake sends
     // neither for a chat request): the footer renders them from the status.

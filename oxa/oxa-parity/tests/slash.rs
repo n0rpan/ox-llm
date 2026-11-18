@@ -17,6 +17,8 @@
 
 #[path = "support/tui_rig.rs"]
 mod rig;
+#[path = "support/status_row.rs"]
+mod status_row;
 #[path = "support/tree_pty.rs"]
 mod tree_pty;
 
@@ -257,30 +259,9 @@ fn base64(data: &[u8]) -> String {
 }
 
 /// The footer's second-to-last row: model, thinking and mode (`fake-model • medium ...`).
-/// The status row: the last row, or the one above it when the `YOLO full access` badge row is
-/// drawn below the footer.
-/// #1512 S3: the pi footer's extension status row (`no sandbox · …`, `sandbox`, `YOLO full
-/// access`) is drawn below the footer. Such a row is skipped to find the footer rows.
-fn is_status_row(text: &str) -> bool {
-    let t = text.trim();
-    t == "sandbox"
-        || t.starts_with("no sandbox")
-        || t.starts_with("YOLO full access")
-        || t.ends_with("YOLO full access")
-}
-
-/// The last row that is not an extension status row.
-fn last_footer_row(s: &Screen) -> u16 {
-    let (rows, _) = s.size();
-    let mut row = rows - 1;
-    while row > 1 && is_status_row(&s.row(row)) {
-        row -= 1;
-    }
-    row
-}
-
+/// The footer's last row, above any extension status row.
 fn footer_last(s: &Screen) -> String {
-    s.row(last_footer_row(s))
+    s.row(status_row::last_footer_row(s))
 }
 
 /// Wait until the editor is empty and the run is over (the state after a selector closes).

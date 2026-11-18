@@ -250,12 +250,15 @@ fn stub(env: &TestEnv, rel: &str, body: &str) -> PathBuf {
 // (`pty::DEFAULT_TIMEOUT`) and never sleep as an assertion.
 // ---------------------------------------------------------------------------------------------
 
+#[path = "support/status_row.rs"]
+pub mod status_row;
+
 #[cfg(target_os = "linux")]
 #[allow(dead_code)] // some helpers serve only part of the rows
 mod tui {
     use super::*;
     pub use oxa_fake::{parse_script, FakeOpts, FakeServer};
-    pub use oxa_parity::pty::{KeyEncoding, PtyOpts, PtySession, Screen, TermProfile, DEFAULT_TIMEOUT};
+    use oxa_parity::pty::{KeyEncoding, PtyOpts, PtySession, Screen, TermProfile, DEFAULT_TIMEOUT};
     use oxa_proto::Role;
 
     /// What a TUI test starts with.
@@ -990,7 +993,7 @@ fn set_008() {
     // new prefix epoch, never inside one). pi settings.md: "Model patterns used for startup
     // selection and model cycling. Uses the same format as `--models`": a new session starts on
     // the first match (pi main.ts `scopedModels[0]`), ctrl+p cycles only through the matches.
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| s.row(status_row::last_footer_row(s));
     let t = Setup::new()
         .settings(json!({ "enabledModels": ["model-c", "model-b*"] }))
         .fake(three_models())
@@ -2798,7 +2801,7 @@ fn key_006() {
     // pi docs: keybindings.md "Selection": tui.select.up (up), down (down), pageUp (pageUp),
     // pageDown (pageDown), confirm (enter), cancel (escape, ctrl+c). Driven on the /thinking
     // list (seven levels, off preselected); the chosen level shows in the footer.
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| s.row(status_row::last_footer_row(s));
     let open = |t: &Tui| {
         t.slash("/thinking");
         t.wait_text("Thinking level");
@@ -3416,7 +3419,7 @@ fn key_013() {
     // epoch (W3): the next request names the new model. Keys: app.model.select (ctrl+l),
     // cycleForward (ctrl+p), cycleBackward (shift+ctrl+p, kitty only), app.models.save (ctrl+s
     // in the selector: select and save as defaultModel).
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| s.row(status_row::last_footer_row(s));
     let t = Setup::new()
         .profile(TermProfile::kitty())
         .fake(three_models())
@@ -3494,7 +3497,7 @@ fn key_014() {
     // thinking cycle (app.thinking.cycle), ctrl+t collapses or expands thinking blocks
     // (app.thinking.toggle), ctrl+s in the thinking selector saves the level as the default
     // (app.thinking.save; pi thinking-selector.ts `onSelectAsDefault`).
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| s.row(status_row::last_footer_row(s));
     let t = Setup::new()
         .settings(json!({ "defaultThinkingLevel": "off" }))
         .script(&[
@@ -3822,7 +3825,7 @@ fn key_019() {
     // pi docs: keybindings.md "Scoped models selector": app.models.enableAll (ctrl+a),
     // clearAll (ctrl+x), reorderUp (alt+up), reorderDown (alt+down); app.models.save (ctrl+s)
     // writes the configuration to settings (`enabledModels`), which then scopes the cycle keys.
-    let footer = |s: &Screen| s.row(s.size().0 - 1);
+    let footer = |s: &Screen| s.row(status_row::last_footer_row(s));
     let order = |s: &Screen| -> Vec<String> {
         s.rows()
             .iter()
