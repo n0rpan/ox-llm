@@ -449,6 +449,7 @@ impl ForegroundShare {
                 .current_dir(&home.0)
                 .stdin(Stdio::null())
                 .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()
                 .unwrap(),
         );
@@ -692,6 +693,91 @@ fn foreground_metered_cloud_requires_owner_allowlist_and_settles_a_guest_request
     ] {
         assert!(!rows[0].to_string().contains(private));
     }
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn foreground_share_without_cap_warns_on_stderr_and_keeps_readiness() {
+    use metered_peer::{MockAnthropic, Reply, CREDENTIAL};
+    use serde_json::json;
+    use std::io::{BufRead, BufReader};
+
+    let events = vec![
+        json!({"type":"message_start","message":{"id":"msg_synthetic","type":"message","role":"assistant",
+            "model":"synthetic-anthropic","content":[],"stop_reason":null,
+            "usage":{"input_tokens":7,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}}),
+        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Synthetic uncapped reply."}}),
+        json!({"type":"content_block_stop","index":0}),
+        json!({"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},
+            "usage":{"output_tokens":24}}),
+        json!({"type":"message_stop"}),
+    ];
+    let upstream = MockAnthropic::start(vec![Reply::events(events).unfragmented()]);
+    let home = Home::new();
+    let agent = home.0.join(".oxa/agent");
+    fs::create_dir_all(&agent).unwrap();
+    // The settings of the capped foreground loopback, with the USD cap removed.
+    let settings = json!({"oxa":{
+        "engine":{"inProcessCloud":true},
+        "share":{"remoteModels":["synthetic-metered"]},
+        "cloud":{"models":{
+            "synthetic-metered":{"provider":"anthropic","base_url":upstream.base_url(),
+                "upstream_model":"synthetic-anthropic","context_window":4096,"max_output":64,
+                "pricing":{"input_per_million":2,"output_per_million":3}}
+        }}
+    }});
+    fs::write(agent.join("settings.json"), settings.to_string()).unwrap();
+    write_mock_provider_key(&home, "anthropic", CREDENTIAL);
+    let bearer = add_test_guest(&home);
+
+    // `start` parses the first stdout line as the listener address, so it passes only while
+    // the readiness line stays first and parseable.
+    let (mut serving, address) = ForegroundShare::start(&home, &["synthetic-metered"]);
+    let stderr = serving.0.stderr.take().unwrap();
+    let (send, recv) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut line = String::new();
+        let result = BufReader::new(stderr).read_line(&mut line).map(|_| line);
+        let _ = send.send(result);
+    });
+    let warning = recv
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap();
+    reader.join().unwrap();
+    assert!(
+        warning.starts_with("WARNING") && warning.contains("without a USD limit"),
+        "{warning}"
+    );
+
+    let completion = guest_request(
+        address,
+        "POST",
+        "/v1/chat/completions",
+        &bearer,
+        r#"{"model":"synthetic-metered","messages":[{"role":"user","content":"Synthetic guest question"}],"max_tokens":32,"stream":true}"#,
+    );
+    assert!(completion.starts_with("HTTP/1.1 200"), "{completion}");
+    assert!(completion.contains("Synthetic uncapped reply."), "{completion}");
+    assert!(completion.contains("[DONE]"), "{completion}");
+    assert_eq!(upstream.requests().len(), 1);
+    let rows: Vec<serde_json::Value> = fs::read_dir(agent.join("cloud-ledger"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .flat_map(|path| {
+            fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["origin"], "api");
+    assert!(rows[0]["cost_usd"].as_f64().unwrap() > 0.0);
+    assert!(rows[0].get("cost_unknown").is_none());
 }
 
 #[cfg(feature = "share")]
