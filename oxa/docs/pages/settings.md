@@ -200,11 +200,12 @@ configured catalog and reports the failure. Discovery stays off in offline mode.
 OpenRouter supplies model limits and token prices. When a provider omits
 prices, set conservative rates for the model under `oxa.cloud.models` in user
 settings before using it for paid inference. The gateway uses those rates to
-reserve budget and calculate charges from usage. A charge calculated from
-catalog rates is distinct from a charge reported by the provider. The ledger
-labels estimated and reserved costs. Models without enough pricing or limit
-data to enforce the budget are reported and omitted. When the same provider has several configured base URLs, select the
-discovery endpoint with `oxa.cloud.discovery.<provider>.base_url`.
+reserve budget and calculate charges from usage. Live prices cannot lower
+configured rates. A charge calculated from catalog rates is distinct from a
+charge reported by the provider. The ledger labels estimated and reserved
+costs. Models without enough pricing or limit data to enforce the budget are
+reported and omitted. When the same provider has several configured base URLs,
+select the discovery endpoint with `oxa.cloud.discovery.<provider>.base_url`.
 
 The merged catalog is available through the model picker and `--list-models`.
 The LAN guest catalog lists only guest-allowlisted models.
