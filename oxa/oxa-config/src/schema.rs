@@ -159,6 +159,10 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.engine.inProcessLocal", Kind::Bool, "false"),
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
+    // The owner's explicit route for the Lead conversation: an exact model id for
+    // the normal `--model` selector and the normal gateway. User settings only;
+    // unset keeps the ordinary startup model.
+    key("oxa.lead.model", Kind::String, "null"),
     // Lead web access scaffold: user-layer object, disabled by default, no listener installed yet.
     // The CLI validates the fields it reads (identity mode, loopback bind, port, allow-list).
     key("oxa.lead.serve", Kind::Object, "{}"),
@@ -220,6 +224,9 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.toolRepair", Kind::Bool, "true"),
     // The repeat guard for identical tool calls (oxa-core `repeat.rs`).
     key("oxa.toolRepeatGuard", Kind::Bool, "true"),
+    // W2: the `wait` tool's `until` conditions, answered by hook sets (`Hooks::poll_event`).
+    key("oxa.wait.maxSeconds", Kind::Number, "3600"),
+    key("oxa.wait.pollSeconds", Kind::Number, "30"),
     // O-169: `web_search` (oxa-web); declared only with a Brave key and never offline.
     key("oxa.webSearch.enabled", Kind::Bool, "true"),
     key("oxa.webSearch.maxTokens", Kind::Number, "2048"),

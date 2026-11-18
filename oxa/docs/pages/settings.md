@@ -27,7 +27,7 @@ Settings that older files may contain but oxa does not implement are not listed 
 
 Where the user file alone counts, the table says so:
 
-- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
+- user settings only: `defaultProjectTrust`, `httpProxy`, `oxa.allowHomeCwd`, `oxa.offline`, `oxa.engine.allowRemote`, `oxa.engine.inProcessCloud`, `oxa.cloud`, `oxa.engine.inProcessLocal`, `oxa.local`, `oxa.lead.shadow`, `oxa.lead.serve`, `oxa.lead.sessionId`, `oxa.lead.model`, and every `oxa.sandbox.*` key. A project file cannot set them, because a project file cannot widen what the model can reach.
 - project settings are trust-gated. In an untrusted project they are not read. Project files that run or load code (`hooks`, `shellPath`, `shellCommandPrefix`, `packages`, `extensions`, `skills`, `prompts`) also need the content approval described in [security.md](security.md#project-trust).
 
 Interactive selectors (`/settings`, `/thinking` and `/model` with Ctrl+S) write the user file.
@@ -104,6 +104,8 @@ Types: `bool`, `number` (whole, not negative), `string`, `list` (of strings), `o
 | `oxa.toolOutputCap` | number (bytes) | `16384` | cap on one tool output sent to the model. When `oxa.compaction.softTokens` is set or the engine publishes a compaction point, one tool result is at most a quarter of it (never below 2048 bytes), unless this is set; `grep`, `find`, `ls` and a `read` with `offset` or `limit` are cut at that cap, the first page of `read` at 8 KiB within it; see [tools-context.md](tools-context.md) |
 | `oxa.toolRepair` | bool | `true` | repair a malformed tool call with one extra turn ([tools.md](tools.md#repair-turn)) |
 | `oxa.toolRepeatGuard` | bool | `true` | answer a tool call that returned the same result three times in a row with a short note, and warn once (shown and kept in the session) if it goes on; the run continues ([tools.md](tools.md#repeated-calls)) |
+| `oxa.wait.maxSeconds` | number (seconds) | `3600` | cap on one `wait` call's `seconds` (schema maximum 86400); a longer request is cut to it |
+| `oxa.wait.pollSeconds` | number (seconds) | `30` | how often a `wait` with an `until` condition asks the hook sets for its state; no model request is made meanwhile |
 | `oxa.subagent.enabled` | bool | unset | the `subagent` tool; unset is on unless the model is Flash or its window is below 32K |
 | `oxa.subagent.smallContext` | bool | `false` | declare `subagent` on a model with a window below 32K |
 | `oxa.subagent.softTokens` | number | `24000` | compaction point of a child agent |
@@ -151,11 +153,11 @@ The compaction rules are in [compaction.md](compaction.md).
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `retry.enabled` | bool | `true` | retry a failed request in the agent loop |
+| `retry.enabled` | bool | `true` | retry a failed request; off sends each request once, with no provider retry |
 | `retry.maxRetries` | number | `3` | retries of an agent request |
 | `retry.baseDelayMs` | number | `2000` | first delay, doubled each retry |
 | `retry.maxAgentDelayMs` | number | `60000` | longest delay the agent loop waits |
-| `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply |
+| `retry.provider.maxRetries` | number | `0` | silent retries of one HTTP request, before the first byte of the reply; `retry.enabled` false disables them |
 | `retry.provider.maxRetryDelayMs` | number | `60000` | longest wait of one HTTP retry |
 | `retry.provider.timeoutMs` | number | `null` | silence limit of the engine stream; unset uses `httpIdleTimeoutMs` |
 
@@ -175,6 +177,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; user settings only. See [lead-web.md](lead-web.md) |
 | `oxa.lead.sessionId` | string | unset | exact ID of the dedicated Lead Session created by the native owner operation, from owner-private user settings. Free text is disabled when unset. |
+| `oxa.lead.model` | string | unset | exact model id the Lead conversation resolves through the normal `--model` selector and gateway; user settings only, read from the owner-private settings file. Unset keeps the ordinary startup model; a route that does not resolve is reported, never silently replaced. A metered model still needs its daily USD cap, so choose a subscription route while the cap is absent. |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
@@ -250,9 +253,13 @@ The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
 Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
-reads neither the key nor the ledger and contacts no provider. A missing price or
-daily budget refuses a request before credentials or provider I/O. Requests retain
-their budget reservation until the private row is durable.
+reads neither the key nor the ledger and contacts no provider. A missing price
+refuses a request before credentials or provider I/O. `daily_budget_usd` is
+optional: without it there is no budget check, requests are admitted and their
+cost is still recorded in the ledger (a request whose cost cannot be bounded is
+recorded with `cost_unknown`). When set it must be a positive number, and a
+request that would exceed it is refused with `budget_exceeded` (HTTP 429). Requests
+retain their budget reservation until the private row is durable.
 
 An `openai` route uses the same model/price fields, reads the `openai` key from
 that key file, and defaults to `https://api.openai.com/v1`. Both native providers

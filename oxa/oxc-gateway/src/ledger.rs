@@ -367,6 +367,13 @@ impl Entry {
         if let Some(value) = fields["usage_missing"].as_bool() {
             self.row["usage_missing"] = json!(value);
         }
+        // Only `true` is meaningful: the settled cost could not be determined. The spend
+        // reader requires this marker to close a later capped admission.
+        match fields.get("cost_unknown") {
+            None => {}
+            Some(Value::Bool(true)) => self.row["cost_unknown"] = json!(true),
+            Some(_) => return Err(io::ErrorKind::InvalidData.into()),
+        }
         let settled = fields["settled"]
             .as_str()
             .filter(|value| ["usage", "reserved", "estimated", "not_forwarded", "refused"].contains(value))

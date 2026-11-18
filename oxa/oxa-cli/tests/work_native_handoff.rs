@@ -222,7 +222,7 @@ fn a_later_native_attempt_continues_the_branch_of_a_finished_attempt() {
         return;
     }
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     in_child(
         "a_later_native_attempt_continues_the_branch_of_a_finished_attempt",
         &env,
@@ -236,7 +236,7 @@ fn native_attempts_on_one_reviewed_pull_request_hand_over_its_branch() {
         return;
     }
     let env = TestEnv::new();
-    setup(&env, "[]");
+    setup(&env, r#"["test -f .oxa/settings.json"]"#);
     let project = env.work().join("project");
     git(&env, &project, &["checkout", "-q", "-b", PR_BRANCH]);
     env.write("work/project/reviewed.txt", "pull request change\n");

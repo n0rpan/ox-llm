@@ -1,6 +1,6 @@
 //! Session-local goal controls; no worker, timer thread or external scheduler.
 use oxa_proto::{Access, Exposure, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
-use oxa_session::{Goal, GoalStatus, SessionRef};
+use oxa_session::{Goal, GoalBudget, GoalStatus, SessionRef};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Wake, Waker};
@@ -189,14 +189,9 @@ impl crate::Session {
         if applied_revision == revision {
             return result.map(|()| applied_revision);
         }
-        let state = self.inner();
-        state.store.sync(&state.sref).map_err(|error| {
-            OxaError::new("goal_sync_failed", error.message).with_hint(
-                "The goal revision advanced. Confirm durability before acknowledging the transition.",
-            )
-        })?;
+        self.sync_goal_transition()?;
         crate::progress::notify(
-            state,
+            self.inner(),
             crate::Progress::GoalControlCommitted {
                 revision: applied_revision,
             },
@@ -206,6 +201,33 @@ impl crate::Session {
                 .with_hint("The goal transition was saved. Refresh the session prefix before running again.")
         })?;
         Ok(applied_revision)
+    }
+
+    /// Make the goal revision advanced by the last transition durable. Every goal
+    /// transition goes through here before it is acknowledged, so a failed sync is
+    /// never reported as success.
+    fn sync_goal_transition(&self) -> Result<(), oxa_proto::OxaError> {
+        let state = self.inner();
+        state.store.sync(&state.sref).map_err(|error| {
+            oxa_proto::OxaError::new("goal_sync_failed", error.message).with_hint(
+                "The goal revision advanced. Confirm durability before acknowledging the transition.",
+            )
+        })
+    }
+
+    /// Apply a `/goal` set or clear and wait for the store sync before it is reported.
+    fn commit_goal(
+        &mut self,
+        goal: Option<Goal>,
+        sink: &mut dyn oxa_proto::EventSink,
+    ) -> Result<(), oxa_proto::OxaError> {
+        let before = self.goal_revision();
+        let result = self.set_goal(goal, sink);
+        if result.is_err() && self.goal_revision() == before {
+            return result;
+        }
+        self.sync_goal_transition()?;
+        result
     }
 }
 
@@ -338,7 +360,13 @@ impl GoalRuntime {
             state.goal.stopped(true);
         }
     }
-    pub(crate) fn tools(self: &Arc<Self>, interrupt: oxa_proto::CancelToken) -> Vec<Arc<dyn Tool>> {
+    pub(crate) fn tools(
+        self: &Arc<Self>,
+        shared: &Arc<crate::queue::Shared>,
+        hooks: &[Arc<dyn oxa_proto::Hooks>],
+        wait: WaitPolicy,
+    ) -> Vec<Arc<dyn Tool>> {
+        let interrupt = shared.cancel_retry.clone();
         [
             (
                 "goal_done",
@@ -356,6 +384,9 @@ impl GoalRuntime {
             Arc::new(Control {
                 goal: self.clone(),
                 interrupt: interrupt.clone(),
+                shared: shared.clone(),
+                hooks: hooks.to_vec(),
+                wait,
                 spec: ToolSpec {
                     name: name.into(),
                     description: description.into(),
@@ -369,9 +400,31 @@ impl GoalRuntime {
         .collect()
     }
 }
+/// The `oxa.wait.*` settings, read when the goal tools are built (each epoch). Missing or
+/// mistyped values fall back to the defaults.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WaitPolicy {
+    /// How often a wait with `until` asks the hook sets for the condition's state.
+    poll: Duration,
+    /// Cap on one wait's `seconds`.
+    max_secs: u64,
+}
+impl WaitPolicy {
+    pub(crate) fn from_settings(settings: &oxa_config::Settings) -> WaitPolicy {
+        WaitPolicy {
+            poll: Duration::from_secs(u64::from(settings.u32("oxa.wait.pollSeconds", 30)).max(1)),
+            max_secs: u64::from(settings.u32("oxa.wait.maxSeconds", 3600)).clamp(1, 86400),
+        }
+    }
+}
 struct Control {
     goal: Arc<GoalRuntime>,
     interrupt: oxa_proto::CancelToken,
+    /// Its `wait_wake` ends a wait early when input for the active session arrives.
+    shared: Arc<crate::queue::Shared>,
+    /// Hook sets consulted for a wait's `until` condition (`Hooks::poll_event`).
+    hooks: Vec<Arc<dyn oxa_proto::Hooks>>,
+    wait: WaitPolicy,
     spec: ToolSpec,
 }
 impl Tool for Control {
@@ -410,7 +463,7 @@ impl Tool for Control {
             if state.goal.status != GoalStatus::Pursuing || state.goal.exhausted() {
                 return ToolOutput::error("Goal is not pursuing or its budget is exhausted.");
             }
-            let asked = Duration::from_secs(args["seconds"].as_u64().unwrap());
+            let asked = Duration::from_secs(args["seconds"].as_u64().unwrap().min(self.wait.max_secs));
             let spent = state.clock.map_or(0, |t| t.elapsed().as_millis());
             let remaining = state.goal.budget.max_time_ms.map(|cap| {
                 Duration::from_millis(
@@ -420,12 +473,55 @@ impl Tool for Control {
             });
             remaining.map_or(asked, |remaining| asked.min(remaining))
         };
+        self.shared.arm_wait_wake();
         live("Waiting; cancellation remains available.");
-        wait_cancelled(cx.cancel, &self.interrupt, duration);
+        if let Some(until) = args.get("until") {
+            return self.wait_until(until, duration, cx);
+        }
+        wait_cancelled(cx.cancel, &self.interrupt, &self.shared.wait_wake, duration);
         if cx.cancel.is_cancelled() {
             ToolOutput::error("Wait cancelled.")
+        } else if self.shared.wait_wake.is_cancelled() {
+            ToolOutput::ok("Wait ended: input arrived.")
         } else {
             ToolOutput::ok("Wait ended.")
+        }
+    }
+}
+impl Control {
+    /// A wait with an `until` condition: poll the hook sets, sleeping `oxa.wait.pollSeconds`
+    /// between polls, until one answers. No model request is made meanwhile.
+    fn wait_until(&self, until: &Value, duration: Duration, cx: &ToolCtx) -> ToolOutput {
+        let deadline = Instant::now() + duration;
+        loop {
+            // The first hook set that answers `Some` decides this poll.
+            let kind = until["kind"].as_str().unwrap_or("");
+            match self.hooks.iter().find_map(|h| h.poll_event(kind, until)) {
+                None => return ToolOutput::error(format!("Unknown wait condition: {kind}.")),
+                Some(Err(e)) => return ToolOutput::error(e),
+                Some(Ok(Some(evidence))) => return ToolOutput::ok(evidence),
+                Some(Ok(None)) => {}
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // The probe contract carries no text for a pending state, so the last state is none.
+                return ToolOutput::ok("Wait ended: deadline; last state: none");
+            }
+            wait_cancelled(
+                cx.cancel,
+                &self.interrupt,
+                &self.shared.wait_wake,
+                remaining.min(self.wait.poll),
+            );
+            if cx.cancel.is_cancelled() {
+                return ToolOutput::error("Wait cancelled.");
+            }
+            if self.shared.wait_wake.is_cancelled() {
+                return ToolOutput::ok("Wait ended: input arrived.");
+            }
+            if self.interrupt.is_cancelled() {
+                return ToolOutput::ok("Wait ended.");
+            }
         }
     }
 }
@@ -438,8 +534,19 @@ fn validate(name: &str, args: &Value) -> Result<(), String> {
                 .as_str()
                 .is_some_and(|s| !s.trim().is_empty() && s.len() <= 8192)
     } else {
-        object.len() == 2
-            && args["seconds"].as_u64().is_some_and(|n| (1..=3600).contains(&n))
+        // `until` is optional; its kind is answered by the hook sets, so only its shape is checked.
+        let until_ok = match object.get("until") {
+            None => true,
+            Some(until) => {
+                until.is_object()
+                    && until["kind"]
+                        .as_str()
+                        .is_some_and(|k| !k.trim().is_empty() && k.len() <= 64)
+            }
+        };
+        (object.len() == 2 || (object.len() == 3 && object.contains_key("until")))
+            && until_ok
+            && args["seconds"].as_u64().is_some_and(|n| (1..=86400).contains(&n))
             && args["reason"]
                 .as_str()
                 .is_some_and(|s| !s.trim().is_empty() && s.len() <= 1024)
@@ -456,15 +563,22 @@ impl Wake for Unpark {
         self.0.unpark();
     }
 }
-fn wait_cancelled(cancel: &oxa_proto::CancelToken, interrupt: &oxa_proto::CancelToken, duration: Duration) {
+fn wait_cancelled(
+    cancel: &oxa_proto::CancelToken,
+    interrupt: &oxa_proto::CancelToken,
+    wake: &oxa_proto::CancelToken,
+    duration: Duration,
+) {
     let deadline = Instant::now() + duration;
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cancelled = std::pin::pin!(cancel.cancelled());
     let mut interrupted = std::pin::pin!(interrupt.cancelled());
+    let mut woken = std::pin::pin!(wake.cancelled());
     let mut context = Context::from_waker(&waker);
     loop {
         if cancelled.as_mut().poll(&mut context).is_ready()
             || interrupted.as_mut().poll(&mut context).is_ready()
+            || woken.as_mut().poll(&mut context).is_ready()
         {
             return;
         }
@@ -558,4 +672,81 @@ pub(crate) fn uncertain(error: &oxa_proto::OxaError, output: bool, pre_cancelled
             | "cloud_credentials_unavailable"
             | "cloud_sdk_unavailable"
     )
+}
+
+/// A parsed `/goal` command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GoalCommand {
+    Show,
+    Set(String),
+    Clear,
+    Pause,
+    Resume,
+}
+
+/// Empty text shows the goal, a bare control word controls it, and any other
+/// text sets the objective.
+pub fn parse_goal_command(args: &str) -> GoalCommand {
+    match args.trim() {
+        "" => GoalCommand::Show,
+        "clear" => GoalCommand::Clear,
+        "pause" => GoalCommand::Pause,
+        "resume" => GoalCommand::Resume,
+        objective => GoalCommand::Set(objective.to_string()),
+    }
+}
+
+fn show_lines(goal: Option<&Goal>) -> Vec<String> {
+    let Some(goal) = goal else {
+        return vec!["No goal.".into()];
+    };
+    vec![
+        format!("Objective: {}", goal.objective),
+        format!("Status: {}", goal.status.as_str()),
+        format!("Tokens: {}", goal.tokens_used),
+        format!("Elapsed: {} ms", goal.elapsed_ms),
+        format!("Turns: {}", goal.turns),
+    ]
+}
+
+impl crate::Session {
+    /// Apply a `/goal` command on the idle session. Returns the display lines and
+    /// the prompt to run next, if any. A set or replace is refused with `busy`
+    /// during a run.
+    pub fn apply_goal_command(
+        &mut self,
+        cmd: GoalCommand,
+        now_ms: u64,
+        sink: &mut dyn oxa_proto::EventSink,
+    ) -> Result<(Vec<String>, Option<String>), oxa_proto::OxaError> {
+        match cmd {
+            GoalCommand::Show => Ok((show_lines(self.goal().as_ref()), None)),
+            GoalCommand::Set(objective) => {
+                let goal = Goal::new(objective, GoalBudget::default(), now_ms)?;
+                let line = format!("Goal set: {}", goal.objective);
+                let prompt = crate::prompt::goal_start(&goal.objective);
+                self.commit_goal(Some(goal), sink)?;
+                Ok((vec![line], Some(prompt)))
+            }
+            GoalCommand::Clear => {
+                self.commit_goal(None, sink)?;
+                Ok((vec!["Goal cleared.".into()], None))
+            }
+            GoalCommand::Pause => {
+                let bound = self.inner().sref.clone();
+                let revision = self.goal_revision();
+                self.control_goal(&bound, revision, GoalControl::Pause, sink)?;
+                Ok((vec!["Goal paused.".into()], None))
+            }
+            GoalCommand::Resume => {
+                let bound = self.inner().sref.clone();
+                let revision = self.goal_revision();
+                self.control_goal(&bound, revision, GoalControl::Resume, sink)?;
+                Ok((
+                    vec!["Goal resumed.".into()],
+                    Some(crate::prompt::GOAL_CONTINUE.into()),
+                ))
+            }
+        }
+    }
 }

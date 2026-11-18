@@ -130,3 +130,97 @@ fn owner_turn_uses_the_selected_writer_and_sends_slash_and_shell_text_literally(
     assert_eq!(error.code, "lead_owner_unavailable");
     assert_eq!(server.requests().len(), requests.len());
 }
+
+#[test]
+fn owner_turn_resolves_the_user_only_explicit_lead_model_route() {
+    let test = TestEnv::new();
+    let (dirs, uid) = setup(&test);
+    let cwd = test.work().canonicalize().unwrap();
+    let store = FsStore::new(dirs.sessions_dir.clone());
+    let id = LeadOwnerBinding::create(&dirs, &cwd, uid).unwrap();
+    let owner = store.resolve(&id).unwrap();
+    select(&dirs, &owner.id);
+    let binding = LeadOwnerBinding::load(&dirs, &cwd, uid).unwrap().unwrap();
+    let opts = oxa_fake::FakeOpts {
+        models: vec![
+            oxa_fake::FakeModel::moe("fake-model", 1 << 16),
+            oxa_fake::FakeModel::moe("synthetic-go-route", 1 << 16),
+        ],
+        ..FakeOpts::default()
+    };
+    let server = FakeServer::start(
+        vec![
+            ScriptTurn::text("First."),
+            ScriptTurn::text("Second."),
+            ScriptTurn::text("Third."),
+        ],
+        opts,
+    )
+    .unwrap();
+    let pairs = test.envs(&server.url());
+    let env = Env::from_pairs(
+        &pairs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect::<Vec<_>>(),
+    );
+    let prompt = |binding: &LeadOwnerBinding| {
+        with_lead_owner(binding, &env, |session| {
+            session.prompt_literal(
+                "route question".into(),
+                &mut VecSink::default(),
+                &mut HeadlessUi::default(),
+            )
+        })
+    };
+
+    // Unset: the ordinary startup model, unchanged.
+    prompt(&binding).unwrap();
+    assert_eq!(server.requests()[0].model, "fake-model");
+
+    // A repository project file never supplies the route.
+    test.write(
+        "work/.oxa/settings.json",
+        r#"{"oxa":{"lead":{"model":"project-injected-model"}}}"#,
+    );
+    prompt(&binding).unwrap();
+    assert_eq!(server.requests()[1].model, "fake-model");
+
+    // The user-only explicit route resolves exactly through the normal selector.
+    fs::write(
+        dirs.settings_file(),
+        serde_json::json!({"oxa":{"lead":{"sessionId":owner.id,"model":"synthetic-go-route"}}}).to_string(),
+    )
+    .unwrap();
+    prompt(&binding).unwrap();
+    assert_eq!(server.requests()[2].model, "synthetic-go-route");
+
+    fs::write(
+        dirs.settings_file(),
+        serde_json::json!({"oxa":{"lead":{"sessionId":owner.id,"model":"synthetic-go"}}}).to_string(),
+    )
+    .unwrap();
+    let error = prompt(&binding).unwrap_err();
+    assert_eq!(error.code, oxa_proto::codes::NOT_FOUND);
+    assert_eq!(server.requests().len(), 3);
+
+    // A route the selector cannot resolve is reported as itself: no request, no
+    // silent fallback to the startup model.
+    fs::write(
+        dirs.settings_file(),
+        serde_json::json!({"oxa":{"lead":{"sessionId":owner.id,"model":"absent-model"}}}).to_string(),
+    )
+    .unwrap();
+    let error = prompt(&binding).unwrap_err();
+    assert_eq!(error.code, oxa_proto::codes::NOT_FOUND);
+    assert!(error.message.contains("absent-model"), "{}", error.message);
+    assert!(
+        error
+            .hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("synthetic-go-route")),
+        "{}",
+        error.hint.unwrap_or_default()
+    );
+    assert_eq!(server.requests().len(), 3);
+}

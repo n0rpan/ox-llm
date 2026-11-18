@@ -650,7 +650,7 @@ fn run_queue_inner(
     let mut pending = if let Some(bindings) = prepared {
         let mut bytes = 0;
         crate::helper_queue::take_native_packets(&directory, bindings, |index, binding, packet| {
-            let task = native::from_packet(binding, &packet)?;
+            let task = native::from_packet(binding, &packet, policy)?;
             if let Some(selected) = selection {
                 selected
                     .get(&binding.native_task_id)

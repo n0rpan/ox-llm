@@ -15,7 +15,7 @@ fn command(test: &TestEnv) -> Command {
 #[test]
 fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
     let test = TestEnv::new();
-    for args in [vec!["lead"], vec!["lead", "--help"], vec!["help", "lead"]] {
+    for args in [vec!["lead", "--help"], vec!["help", "lead"]] {
         let output = command(&test).args(&args).output().unwrap();
         assert!(
             output.status.success(),
@@ -24,7 +24,7 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
         );
         let text = String::from_utf8_lossy(&output.stdout);
         assert!(text.contains("lead"));
-        assert_eq!(text.contains("lead serve"), args.as_slice() == ["lead"]);
+        assert!(text.contains("dedicated Lead session"));
     }
     for child in ["board", "status", "chat"] {
         let output = command(&test).args(["lead", child]).output().unwrap();
@@ -34,16 +34,19 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
 }
 
 #[test]
-fn offline_menu_precedes_home_and_runtime() {
+fn offline_help_precedes_home_and_runtime() {
     let test = TestEnv::new();
-    for args in [vec!["--offline", "lead"], vec!["--offline", "--offline", "lead"]] {
+    for args in [
+        vec!["--offline", "lead", "--help"],
+        vec!["--offline", "--offline", "lead", "--help"],
+    ] {
         let output = command(&test).args(args).output().unwrap();
         assert!(
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("Open the lead command menu"));
+        assert!(String::from_utf8_lossy(&output.stdout).contains("dedicated Lead session"));
     }
 }
 
@@ -60,6 +63,52 @@ fn legacy_shadow_keeps_its_read_only_resource_floor() {
         assert!(args.no_tools && args.no_mcp && args.no_extensions && args.no_web_search);
         assert_eq!(args.tools.unwrap(), ["read", "grep", "find", "ls"]);
     }
+}
+
+#[test]
+fn one_shot_lead_tail_reaches_the_registered_chat_command() {
+    let parse =
+        |args: &[&str]| oxa_cli::parse_args(&args.iter().map(|s| (*s).into()).collect::<Vec<_>>(), &[]);
+    for (args, id, tail) in [
+        (
+            vec!["lead", "one-shot", "owner", "message"],
+            oxa_interactive::command_registry::CommandId::Lead,
+            vec!["one-shot", "owner", "message"],
+        ),
+        (
+            vec!["--offline", "lead", "one-shot message"],
+            oxa_interactive::command_registry::CommandId::Lead,
+            vec!["one-shot message"],
+        ),
+        (
+            vec!["lead", "chat", "status"],
+            oxa_interactive::command_registry::CommandId::LeadChat,
+            vec!["status"],
+        ),
+        (
+            vec!["lead", "serve"],
+            oxa_interactive::command_registry::CommandId::LeadServe,
+            vec![],
+        ),
+    ] {
+        let parsed = parse(&args).unwrap();
+        assert!(
+            matches!(
+                &parsed.subcommand,
+                Some(oxa_cli::Subcommand::Registered(parsed_id, words))
+                    if *parsed_id == id && words.0 == tail
+            ),
+            "{args:?}"
+        );
+        assert!(!parsed.lead && !parsed.shadow, "{args:?}");
+    }
+    // The named lead children stay on their own surface declarations and the
+    // preset keeps its own spelling.
+    assert!(parse(&["lead", "board"]).is_err());
+    assert!(parse(&["lead", "status"]).is_err());
+    let shadow = parse(&["lead", "--shadow", "-p", "task"]).unwrap();
+    assert!(shadow.lead && shadow.shadow && shadow.subcommand.is_none());
+    assert!(parse(&["lead"]).is_ok());
 }
 
 #[test]

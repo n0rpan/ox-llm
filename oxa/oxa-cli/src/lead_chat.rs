@@ -173,17 +173,84 @@ fn write_conversation(reply: &conversation::ConversationReply, out: &mut dyn Wri
     Ok(())
 }
 
+pub(crate) fn local_binding(
+    project: &Path,
+    env: &Env,
+) -> Result<crate::dispatch::LeadOwnerBinding, OxaError> {
+    if crate::dispatch::is_agent(env) {
+        return Err(OxaError::new(codes::INVALID, "Use Lead from the owner session."));
+    }
+    let dirs = oxa_config::dirs_from_env(env, None)?;
+    let project = canonical_project(project)?;
+    crate::dispatch::LeadOwnerBinding::load(&dirs, &project, owner_uid()?)?
+        .ok_or_else(|| OxaError::new(codes::USAGE, "Lead owner chat is unavailable"))
+}
+
+pub(crate) fn run_direct(
+    words: &[String],
+    project: &Path,
+    env: &Env,
+    out: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    let prompt = if words
+        .first()
+        .is_some_and(|word| matches!(word.as_str(), "-p" | "--print"))
+    {
+        &words[1..]
+    } else {
+        words
+    };
+    if prompt.is_empty() || prompt.first().is_some_and(|word| word.starts_with('-')) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "Use oxa lead, oxa lead <prompt>, or oxa lead -p <prompt>.",
+        ));
+    }
+    let reply = run_cli_conversation(&prompt.join(" "), project, env)?;
+    write_conversation(&reply, out).map_err(|error| OxaError::io("cannot write lead chat reply", &error))?;
+    Ok(0)
+}
+
 fn run_cli_conversation(
     message: &str,
     project: &Path,
     env: &Env,
 ) -> Result<conversation::ConversationReply, OxaError> {
-    let dirs = oxa_config::dirs_from_env(env, None)?;
-    let project = canonical_project(project)?;
-    let uid = owner_uid()?;
-    let binding = crate::dispatch::LeadOwnerBinding::load(&dirs, &project, uid)?
-        .ok_or_else(|| OxaError::new(codes::USAGE, "Lead owner chat is unavailable"))?;
-    converse_bound(message, &binding, env)
+    let binding = local_binding(project, env)?;
+    converse_bound(message, &binding, env).map_err(cli_conversation_error)
+}
+
+fn cli_conversation_error(error: OxaError) -> OxaError {
+    // Provider errors can carry private response bytes in messages and hints.
+    // Keep the typed internal failure for the journal, and render only fixed text here.
+    let message = match error.code {
+        "budget_not_configured" => {
+            "Cloud models need a positive oxa.cloud.daily_budget_usd in oxa user settings."
+        }
+        "budget_exceeded" | codes::BUDGET_EXHAUSTED => "The daily cloud budget is exhausted.",
+        codes::LITERAL_OUTPUT_EXHAUSTED => {
+            "The Lead reply stopped at its bounded output limit; ask for a shorter answer."
+        }
+        "subscription_limit_exceeded" => "The local subscription limit would be exceeded.",
+        "subscription_limits_not_configured" => "Subscription limits are unavailable.",
+        "lead_owner_unavailable" => "The selected Lead session is unavailable.",
+        "lead_reply_invalid" => "Lead returned an invalid reply.",
+        "lead_evidence_invalid" => "The Lead reply cited observations outside the bounded input.",
+        "lead_reply_incomplete" => "Lead reply did not complete.",
+        "cloud_provider_forbidden" => "This subscription provider serves only the owner agent.",
+        "cloud_not_shared" => "Cloud models are not available to shared guests.",
+        codes::BUSY => "The selected Lead session is busy.",
+        codes::NOT_FOUND => "The configured Lead model ID is unavailable.",
+        codes::USAGE => "Lead chat requires a bounded message.",
+        codes::OFFLINE => "Lead chat cannot reach the configured provider in offline mode.",
+        codes::ENGINE_HTTP
+        | codes::ENGINE_DOWN
+        | codes::ENGINE_BUSY
+        | codes::STREAM_BROKEN
+        | "cloud_rate_limited" => "The Lead provider request failed.",
+        _ => return OxaError::new(codes::INVALID, "Lead reply did not complete."),
+    };
+    OxaError::new(error.code, message)
 }
 
 pub(crate) fn converse_bound(
