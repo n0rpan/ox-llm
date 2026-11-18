@@ -428,10 +428,12 @@ fn rebase_cause_is_compaction() {
     assert_eq!(rebase_why::COMPACTION, "compaction");
 }
 
-/// Both first-summary and update-summary prompts keep identifiers verbatim under Critical Context.
+/// Both first-summary and update-summary requests keep identifiers verbatim. The rule lives in
+/// the oxa-owned header, because pi's summary prompts are pinned byte-for-byte by parity.
 #[test]
-fn summary_prompts_require_verbatim_identifiers() {
-    let line = "- Keep verbatim: PR and issue numbers, commit SHAs, branch names, CI run ids with their conclusions, worker names and session ids, and open questions awaiting the owner.";
-    assert!(prompt::SUMMARIZATION_PROMPT.contains(line));
-    assert!(prompt::UPDATE_SUMMARIZATION_INSTRUCTIONS.contains(line));
+fn summary_requests_require_verbatim_identifiers() {
+    let line = "Keep verbatim: PR and issue numbers, commit SHAs, branch names, CI run ids with their conclusions, worker names and session ids, and open questions awaiting the owner.";
+    assert!(prompt::SUMMARY_INSTRUCTION_HEADER.contains(line));
+    assert!(prompt::summary_instruction(SummaryKind::Initial, None).contains(line));
+    assert!(prompt::summary_instruction(SummaryKind::Update, None).contains(line));
 }
