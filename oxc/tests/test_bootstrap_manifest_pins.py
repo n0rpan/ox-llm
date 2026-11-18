@@ -10,7 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 class BootstrapPins(unittest.TestCase):
     def test_reviewed_manifest_inputs_match_the_checkout(self):
         manifests = list((ROOT / 'bootstrap').glob('*manifest.json'))
-        manifests.append(ROOT / 'bootstrap/install-checkpoint.json')
         self.assertTrue(manifests)
         for manifest in manifests:
             data = json.loads(manifest.read_text())

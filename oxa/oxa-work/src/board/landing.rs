@@ -127,6 +127,37 @@ pub struct Plan<'a> {
     pub repeat_rejection_alarm: bool,
 }
 
+/// Read-only proposals for a held PR. A writer must revalidate the head,
+/// current hold and its authority before submitting either operation.
+#[derive(serde::Serialize)]
+pub struct HoldIntervention {
+    pull_request_id: String,
+    head: String,
+    disable_auto_merge: bool,
+    dequeue: bool,
+}
+
+impl Plan<'_> {
+    pub fn hold_intervention(
+        &self,
+        pull_request_id: &str,
+        head: &str,
+        disable_auto_merge: bool,
+        dequeue: bool,
+    ) -> Option<HoldIntervention> {
+        (self.next == Next::HoldFindings
+            && is_node_id(pull_request_id)
+            && is_object_id(head)
+            && (disable_auto_merge || dequeue))
+            .then(|| HoldIntervention {
+                pull_request_id: pull_request_id.into(),
+                head: head.into(),
+                disable_auto_merge,
+                dequeue,
+            })
+    }
+}
+
 impl Board {
     /// Uses the board's observation time for the queue-age threshold. Missing
     /// observations hold landing. Issue intake items have no landing decision.

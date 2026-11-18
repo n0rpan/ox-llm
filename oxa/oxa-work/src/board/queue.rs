@@ -259,7 +259,8 @@ fn node_id(value: &Value) -> Option<&str> {
     value.as_str().filter(|id| is_node_id(id))
 }
 
-pub(crate) fn is_node_id(id: &str) -> bool {
+/// Verify the bounded, opaque format used by provider node IDs.
+pub fn is_node_id(id: &str) -> bool {
     (1..=128).contains(&id.len())
         && id
             .bytes()

@@ -11,7 +11,7 @@ fn io<T>(value: std::io::Result<T>) -> Result<T> {
     value.map_err(|e| format!("board queue storage: {:?}", e.kind()))
 }
 
-fn directory(path: &Path) -> Result<()> {
+pub(crate) fn directory(path: &Path) -> Result<()> {
     let metadata = io(fs::symlink_metadata(path))?;
     // SAFETY: geteuid has no preconditions.
     let owner = unsafe { libc::geteuid() };

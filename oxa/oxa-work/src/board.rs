@@ -15,7 +15,9 @@ mod intake;
 pub mod landing;
 pub mod queue;
 pub use intake::{ImportState, Issue, Snapshot};
+mod goal_plan;
 pub mod review;
+pub use goal_plan::GoalStep;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +145,12 @@ pub struct Entry {
     pub lease: Option<Lease>,
     pub attempts_today: u32,
     pub eligible: bool,
+}
+
+impl Entry {
+    fn priority(&self) -> (bool, Action, u64) {
+        (!self.release_pinned, self.action, self.number)
+    }
 }
 
 /// Maximum open pull requests in a complete repository board observation.
@@ -288,9 +296,7 @@ impl Board {
                 now,
             ));
         }
-        board
-            .entries
-            .sort_by_key(|e| (!e.release_pinned, e.action, e.number));
+        board.entries.sort_by_key(Entry::priority);
         Ok((board, review_plans))
     }
 }

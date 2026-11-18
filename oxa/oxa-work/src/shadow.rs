@@ -331,6 +331,8 @@ pub struct LandingDecision {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub repeat_rejection_alarm: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_intervention: Option<landing::HoldIntervention>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub queue: Option<QueueObservation>,
     #[serde(skip)]
     pub latest_reviews: landing::LatestReviews,

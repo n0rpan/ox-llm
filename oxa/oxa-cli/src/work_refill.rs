@@ -27,8 +27,19 @@ pub struct Partition {
     pub residues: BTreeSet<u64>,
 }
 impl Partition {
-    fn contains(&self, number: u64) -> bool {
+    pub(crate) fn contains(&self, number: u64) -> bool {
         self.residues.contains(&(number % self.modulus))
+    }
+
+    pub(crate) fn validate(&self, max_attempts_per_day: u32) -> Result<()> {
+        if self.modulus == 0
+            || self.residues.is_empty()
+            || self.residues.iter().any(|r| *r >= self.modulus)
+            || max_attempts_per_day > 3
+        {
+            return Err("invalid board partition or attempt cap".into());
+        }
+        Ok(())
     }
 }
 struct Partitioned<'a, S>(&'a mut S, &'a Partition);
@@ -89,17 +100,7 @@ impl Consumer<'_> {
             return Ok(vec![]);
         }
         let host = source.host_id()?.map(str::to_owned);
-        if self.partition.modulus == 0
-            || self.partition.residues.is_empty()
-            || self
-                .partition
-                .residues
-                .iter()
-                .any(|r| *r >= self.partition.modulus)
-            || self.policy.max_attempts_per_day > 3
-        {
-            return Err("invalid board partition or attempt cap".into());
-        }
+        self.partition.validate(self.policy.max_attempts_per_day)?;
         let board = self.claims.assignment_board(
             &mut Partitioned(source, self.partition),
             self.policy,
