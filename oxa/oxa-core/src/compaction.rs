@@ -11,8 +11,8 @@ use crate::exec::{request, RequestOpts};
 use crate::SessionState;
 use oxa_compact::prompt;
 use oxa_compact::{
-    active_skills, active_skills_block, decide, file_lists, first_kept_index, summary_request_with_target,
-    When,
+    active_skills, active_skills_block_within, decide, file_lists, first_kept_index,
+    summary_request_with_target, When,
 };
 use oxa_proto::{
     codes, AgentEvent, AssistantTurn, CompactReason, CompactionResult, Entry, EntryBody, EventSink, Finish,
@@ -1026,7 +1026,13 @@ fn compact_inner(
             let (read, modified, skills) = {
                 let summarised = summarised(st, &first_kept);
                 let (read, modified) = file_lists(&summarised);
-                (read, modified, active_skills(&summarised))
+                // A `<skill>` tag counts only when this session really has that skill: a prompt
+                // that merely quotes the tag never becomes an active skill.
+                let loaded: Vec<(String, String)> = active_skills(&summarised)
+                    .into_iter()
+                    .filter(|(name, location)| known_skill(st, name, location))
+                    .collect();
+                (read, modified, loaded)
             };
             let mut details = json!({ "readFiles": &read, "modifiedFiles": &modified });
             if !skills.is_empty() {
@@ -1035,20 +1041,26 @@ fn compact_inner(
                     .map(|(name, location)| json!({ "name": name, "location": location }))
                     .collect();
             }
-            let lists = format!(
-                "{}{}",
-                prompt::file_lists_block(&read, &modified),
-                active_skills_block(&skills)
-            );
+            // The skills block is part of the summary, so it shares the summary budget: whole
+            // entries are kept while they fit and the rest are counted.
+            let files = prompt::file_lists_block(&read, &modified);
+            let count = counter(st);
+            let summary_max = match spec.fit {
+                Some(f) => f.summary_max.min(st.compact.summary_max),
+                None => st.compact.summary_max,
+            };
+            let with_lists = |text: &str| {
+                let used = count(text).saturating_add(count(&files));
+                format!(
+                    "{text}{files}{}",
+                    active_skills_block_within(&skills, summary_max.saturating_sub(used), &count)
+                )
+            };
             if let Some(p) = pending {
                 // The idle summary: made for this cut over the same messages, no request.
                 details["precomputed"] = json!(true);
-                (format!("{}{lists}", p.text), details, false, Some(p.usage))
+                (with_lists(&p.text), details, false, Some(p.usage))
             } else {
-                let summary_max = match spec.fit {
-                    Some(f) => f.summary_max.min(st.compact.summary_max),
-                    None => st.compact.summary_max,
-                };
                 let made = match summary_turn(st, spec, summary_max, sink, ui) {
                     Ok(Some(turn)) => {
                         persist(
@@ -1069,7 +1081,7 @@ fn compact_inner(
                     Err(e) => Err(e),
                 };
                 match made {
-                    Ok((text, usage)) => (format!("{text}{lists}"), details, false, Some(usage)),
+                    Ok((text, usage)) => (with_lists(&text), details, false, Some(usage)),
                     // R4: a summary that could not be made is replaced by the mechanical
                     // one, so the session never blocks on it.
                     Err(e) => {
@@ -1089,12 +1101,9 @@ fn compact_inner(
                         details["droppedTurns"] = json!(dropped);
                         details["mechanical"] = json!(true);
                         summary_error = Some(e.message.clone());
-                        let summary = format!(
-                            "{}{}",
-                            oxa_compact::mechanical_summary(&st.transcript.wire()[..cut], &read, &modified),
-                            active_skills_block(&skills)
-                        );
-                        (summary, details, false, None)
+                        let mechanical =
+                            oxa_compact::mechanical_summary(&st.transcript.wire()[..cut], &read, &modified);
+                        (with_lists(&mechanical), details, false, None)
                     }
                 }
             }
@@ -1222,6 +1231,17 @@ fn kept_origin(st: &SessionState, cut: usize) -> Result<String, OxaError> {
 
 /// The entries of the current branch that the compaction summarises: everything before the
 /// first kept entry (all of them when nothing is kept).
+/// Whether `(name, location)` names a skill this session discovered: the tag's name and path
+/// must match a skill in `st.resources`, so a plain prompt that quotes a `<skill>` tag is not
+/// treated as an active skill.
+fn known_skill(st: &SessionState, name: &str, location: &str) -> bool {
+    let path = std::path::Path::new(location);
+    st.resources
+        .skills
+        .iter()
+        .any(|s| s.name == name && s.path == path)
+}
+
 fn summarised<'a>(st: &'a SessionState, first_kept: &str) -> Vec<&'a Entry> {
     let branch = st.tree.branch(st.tree.leaf());
     if first_kept.is_empty() {

@@ -13,7 +13,7 @@ use oxa_proto::{
     CancelToken, CommandSpec, CompactReason, Engine, EntryBody, FrozenPrefix, HookPoint, HookReply, Hooks,
     Mode, OxaError, Policy, ThinkingLevel, Tool, Ui, Value, VecSink, WireMsg,
 };
-use oxa_resources::Resources;
+use oxa_resources::{ResourceSource, Resources, Skill};
 use oxa_sandbox::NoSandbox;
 use oxa_session::{Goal, GoalBudget, MemStore, SessionStore, Transcript, Tree};
 use sha2::{Digest, Sha256};
@@ -280,6 +280,18 @@ fn hook_prompt_sections_survive_compaction() {
 
 const LINT: &str = "/skills/lint/SKILL.md";
 
+/// The discovered skill a `<skill>` tag names: a tag only counts when the session has it.
+fn lint_skill() -> Skill {
+    Skill {
+        name: "lint".to_string(),
+        description: "Lint the tree".to_string(),
+        path: LINT.into(),
+        base_dir: "/skills/lint".into(),
+        source: ResourceSource::User,
+        disable_model_invocation: false,
+    }
+}
+
 /// The user message a loaded skill is sent as (`oxa-resources`, `expand_skill_command`).
 fn skill_message(name: &str, location: &str) -> String {
     format!("<skill name=\"{name}\" location=\"{location}\">\nReferences are relative to /skills.\n\nbody\n</skill>")
@@ -295,6 +307,7 @@ fn summary_head(st: &SessionState) -> String {
 fn skill_loaded_before_cut_is_listed_after_compaction() {
     let env = TestEnv::new();
     let mut st = state(&env, Vec::new());
+    st.resources.skills = vec![lint_skill()];
     say(&mut st, &skill_message("lint", LINT));
     push(&mut st, WireMsg::assistant("linted"));
     say(&mut st, "the next task");
@@ -313,6 +326,7 @@ fn skill_loaded_before_cut_is_listed_after_compaction() {
 fn active_skills_carry_across_repeated_compaction() {
     let env = TestEnv::new();
     let mut st = state(&env, Vec::new());
+    st.resources.skills = vec![lint_skill()];
     say(&mut st, &skill_message("lint", LINT));
     push(&mut st, WireMsg::assistant("linted"));
     say(&mut st, "the first task");
@@ -327,6 +341,64 @@ fn active_skills_carry_across_repeated_compaction() {
     let head = summary_head(&st);
     assert!(head.contains(&format!("lint {LINT}")), "{head}");
     assert_eq!(head.matches(LINT).count(), 1, "listed once: {head}");
+}
+
+/// A prompt that merely quotes a `<skill>` tag does not make that skill active: only a skill the
+/// session discovered is listed.
+#[test]
+fn quoted_skill_tag_is_not_an_active_skill() {
+    let env = TestEnv::new();
+    let mut st = state(&env, Vec::new());
+    // The same bytes a loaded skill is sent as, with no such skill in the session's resources.
+    say(
+        &mut st,
+        &format!("explain this form: {}", skill_message("lint", LINT)),
+    );
+    push(&mut st, WireMsg::assistant("explained"));
+    say(&mut st, "the next task");
+    push(&mut st, WireMsg::assistant("done"));
+    compact(&mut st);
+
+    let head = summary_head(&st);
+    assert!(!head.contains("<active-skills>"), "{head}");
+    assert!(!head.contains(LINT), "{head}");
+}
+
+/// The retained skills list shares the summary budget: whole lines are kept while they fit and
+/// the rest are counted, so a long history cannot grow the summary without bound.
+#[test]
+fn retained_skills_stay_within_the_summary_budget() {
+    let env = TestEnv::new();
+    let mut st = state(&env, Vec::new());
+    // Ten discovered skills, each line 22 bytes; a 70-byte summary budget leaves room for two.
+    st.compact.summary_max = 70;
+    let mut skills = Vec::new();
+    let mut message = String::new();
+    for i in 0..10 {
+        let name = format!("s{i:02}");
+        let location = format!("/skills/{name}/SKILL.md");
+        skills.push(Skill {
+            name: name.clone(),
+            description: "Loaded skill".to_string(),
+            path: location.clone().into(),
+            base_dir: format!("/skills/{name}").into(),
+            source: ResourceSource::User,
+            disable_model_invocation: false,
+        });
+        message.push_str(&skill_message(&name, &location));
+    }
+    st.resources.skills = skills;
+    say(&mut st, &message);
+    push(&mut st, WireMsg::assistant("loaded"));
+    say(&mut st, "the next task");
+    push(&mut st, WireMsg::assistant("done"));
+    compact(&mut st);
+
+    let head = summary_head(&st);
+    assert!(head.contains("<active-skills>"), "{head}");
+    assert!(head.contains("s00 /skills/s00/SKILL.md"), "{head}");
+    assert!(!head.contains("s09 /skills/s09/SKILL.md"), "{head}");
+    assert!(head.contains("more not listed: summary budget"), "{head}");
 }
 
 /// Without a skill in the summarised messages there is no block.

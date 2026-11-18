@@ -29,7 +29,7 @@ pub use branch::{branch_entries, branch_summary_request, budget_newest_first};
 pub use files::file_lists;
 pub use mechanical::mechanical_summary;
 pub use policy::{decide, policy_from, CompactPolicy, When};
-pub use skills::{active_skills, active_skills_block};
+pub use skills::{active_skills, active_skills_block, active_skills_block_within};
 pub use summary::{
     first_kept_index, head_after, summary_request, summary_request_with_target, tail_elisions,
     ELIDE_MIN_TOKENS,

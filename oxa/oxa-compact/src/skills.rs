@@ -96,6 +96,39 @@ pub fn active_skills_block(skills: &[(String, String)]) -> String {
     format!("{BLOCK_OPEN}{}\n{RE_READ}{BLOCK_CLOSE}", lines.join("\n"))
 }
 
+/// The block listing `skills` within `budget` tokens of the summary: whole `name location` lines
+/// are kept in order while they fit, and the ones left out are counted, never silently cut. The
+/// elision line is only written when at least one line was kept. Empty when nothing fits, like
+/// [`active_skills_block`] with no skills.
+pub fn active_skills_block_within(
+    skills: &[(String, String)],
+    budget: u32,
+    count: impl Fn(&str) -> u32,
+) -> String {
+    if skills.is_empty() {
+        return String::new();
+    }
+    let mut kept: Vec<String> = Vec::new();
+    let mut used = 0u32;
+    for (name, location) in skills {
+        let line = format!("{name} {location}");
+        let cost = count(&line);
+        if used.saturating_add(cost) > budget {
+            break;
+        }
+        used = used.saturating_add(cost);
+        kept.push(line);
+    }
+    if kept.is_empty() {
+        return String::new();
+    }
+    let left = skills.len() - kept.len();
+    if left > 0 {
+        kept.push(format!("({left} more not listed: summary budget)"));
+    }
+    format!("{BLOCK_OPEN}{}\n{RE_READ}{BLOCK_CLOSE}", kept.join("\n"))
+}
+
 /// A summary text without the trailing [`active_skills_block`] it may end with.
 pub(crate) fn without_active_skills(summary: &str) -> &str {
     if !summary.ends_with(BLOCK_CLOSE) {
@@ -133,5 +166,31 @@ mod tests {
         );
         assert_eq!(without_active_skills(&format!("S{block}")), "S");
         assert_eq!(without_active_skills("plain"), "plain");
+    }
+
+    /// The counter the session uses, one token per byte (the fake's template).
+    fn bytes(text: &str) -> u32 {
+        u32::try_from(text.len()).unwrap_or(u32::MAX)
+    }
+
+    #[test]
+    fn budgeted_block_keeps_whole_lines_and_counts_the_rest() {
+        let skills: Vec<(String, String)> = (0..5)
+            .map(|i| (format!("s{i}"), format!("/s/s{i}/SKILL.md")))
+            .collect();
+        // Two lines fit in 40 bytes (each is 17), the third does not.
+        let block = active_skills_block_within(&skills, 40, bytes);
+        assert!(block.contains("s0 /s/s0/SKILL.md"), "{block}");
+        assert!(block.contains("s1 /s/s1/SKILL.md"), "{block}");
+        assert!(!block.contains("s2 "), "{block}");
+        assert!(block.contains("(3 more not listed: summary budget)"), "{block}");
+        assert!(block.ends_with("Re-read these files before continuing.\n</active-skills>"));
+        // Nothing fits: no block at all, like a session with no skills.
+        assert_eq!(active_skills_block_within(&skills, 5, bytes), "");
+        // Everything fits: the plain block, no elision line.
+        assert_eq!(
+            active_skills_block_within(&skills, 10_000, bytes),
+            active_skills_block(&skills)
+        );
     }
 }
