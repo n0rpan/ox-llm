@@ -485,7 +485,15 @@ mod tests {
                 .split("<a ")
                 .find(|anchor| anchor.split('>').next().unwrap().contains("aria-current=page"))
                 .unwrap();
-            assert!(current.starts_with(&format!("href={selected}")), "{page:?}");
+            assert!(
+                current
+                    .split('>')
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .any(|attribute| attribute == format!("href={selected}")),
+                "{page:?}"
+            );
             for path in ["/", "/asks", "/board", "/workers", "/usage", "/chat"] {
                 assert!(nav.contains(&format!("href={path}")), "{page:?} {path}");
             }
