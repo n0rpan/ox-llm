@@ -44,6 +44,24 @@ fn until(mut ready: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+fn runner_clock(env: &TestEnv) -> PathBuf {
+    let clock = env.tmp().join("runner-clock.so");
+    let compiled = Command::new("cc")
+        .args(["-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-Werror"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/common/runner_clock.c"))
+        .arg("-o")
+        .arg(&clock)
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "runner clock fixture compilation failed"
+    );
+    clock
+}
+
 fn status(env: &TestEnv) -> serde_json::Value {
     let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["work", "status", "--json"])
@@ -704,20 +722,7 @@ fn child_deadline_case() {
 
     let env = TestEnv::new();
     setup(&env, "[]");
-    let clock = env.tmp().join("runner-clock.so");
-    let compiled = Command::new("cc")
-        .args(["-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-Werror"])
-        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/common/runner_clock.c"))
-        .arg("-o")
-        .arg(&clock)
-        .env_clear()
-        .envs(env.envs("http://127.0.0.1:1"))
-        .output()
-        .unwrap();
-    assert!(
-        compiled.status.success(),
-        "runner clock fixture compilation failed"
-    );
+    let clock = runner_clock(&env);
     env.write(
         "work/tasks.json",
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","max_time":1}]"#,
@@ -885,6 +890,7 @@ fn acceptance_deadline_case() {
          exec /usr/bin/git \"$@\"\n",
     ).unwrap();
     fs::set_permissions(&delayed_git, fs::Permissions::from_mode(0o700)).unwrap();
+    let clock = runner_clock(&env);
     let delayed = env.tmp().join("startup-delayed");
     let command_path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
     let (record, requests) = work::run_observed_with(
@@ -894,6 +900,9 @@ fn acceptance_deadline_case() {
         Some(command_path),
         |command| {
             command
+                .env("LD_PRELOAD", &clock)
+                .env("OXA_TEST_RUNNER_STARTED", ready_tree.join("acceptance-started"))
+                .env("OXA_TEST_RUNNER_ELAPSED", "1")
                 .env("OXA_TEST_STARTUP_STATE", path(&env))
                 .env("OXA_TEST_STARTUP_DELAYED", &delayed);
         },
@@ -915,7 +924,9 @@ fn acceptance_deadline_case() {
         git(&env, tree(&record), &["show", "HEAD:acceptance-started"]),
         "started"
     );
-    assert_eq!(load(&env)["task"]["max_time"], 2);
+    let state = load(&env);
+    assert_eq!(state["task"]["max_time"], 2);
+    assert!(record["checkpoint_at_ms"].as_u64().unwrap() >= state["deadline_at_ms"].as_u64().unwrap());
 }
 
 #[test]
