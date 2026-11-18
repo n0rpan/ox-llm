@@ -251,7 +251,7 @@ impl Gateway {
         if cancel.is_cancelled() {
             return Err(Error::Upstream(anthropic_client::Error::Cancelled));
         }
-        let mut call = self.runtime.begin(payload, context).map_err(Error::Refused)?;
+        let call = self.runtime.begin(payload, context).map_err(Error::Refused)?;
         if let Some(request) = history {
             if let Err(error) = call.verify_history(request) {
                 call.finish(Outcome::Complete, error.status, Some(error.code))
