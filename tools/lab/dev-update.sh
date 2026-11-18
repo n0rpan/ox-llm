@@ -3,12 +3,23 @@
 set -euo pipefail
 umask 077
 repo=oxstack/ox-llm
-prefix=${1:-"$HOME/oxa-lab/dev"}
 test "$#" -le 1 || { echo 'Usage: dev-update.sh [separate-dev-prefix]' >&2; exit 2; }
-for tool in curl jq gh sha256sum tar flock diff; do command -v "$tool" >/dev/null; done
+for tool in curl jq gh sha256sum tar flock diff getent; do command -v "$tool" >/dev/null; done
 case $(uname -m) in aarch64|x86_64) arch=$(uname -m);; *) echo 'Unsupported architecture' >&2; exit 1;; esac
+# Match the sandbox's denied .local/state/oxc path under the real account home.
+[[ $UID == "$EUID" ]]
+account=$(getent passwd "$UID")
+[[ $account != *$'\n'* && $account != *$'\r'* ]]
+IFS=: read -r _ _ account_uid _ _ account_home _ <<< "$account"
+[[ $account_uid == "$UID" && $account_home == /* && $account_home != / && /$account_home/ != */../* ]]
+root=$(realpath -ms -- "$account_home/.local/state/oxc/dev-builds")
+prefix=${1:-"$root/default"}
 [[ $prefix != *$'\n'* && $prefix != *$'\r'* && /$prefix/ != */../* ]]
 prefix=$(realpath -ms -- "$prefix")
+if [[ ${prefix%/*} != "$root" ]]; then
+  echo 'Refusing a dev prefix outside the protected dev-builds directory' >&2
+  exit 1
+fi
 ensure_ancestor() {
   local path=$1 parent owner mode
   if [[ $path != / ]]; then

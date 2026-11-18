@@ -9,12 +9,15 @@ SHA. SHA256SUMS and downloadable provenance accompany them. The workflow moves o
 publication until the canonical Rust-only packaging is present.
 
 Run `tools/lab/dev-update.sh` (lab copy: `~/oxa-lab/dev-update.sh`). It requires Linux,
-Bash, GNU coreutils/tar, flock, curl, jq and a recent GitHub CLI. No login or saved GitHub
+Bash, GNU coreutils/tar, getent, flock, curl, jq and a recent GitHub CLI. No login or saved GitHub
 credentials are used. Checksums and provenance must match this repository's main commit
-and dev workflow before activation. The default private prefix is `~/oxa-lab/dev`.
-An optional argument selects another empty or already marked dev prefix. An existing
-prefix must be owned by your user and have mode `0700`. Its path must use real
-directories owned by root or your user. Ancestors writable by others must be sticky.
-No stable
-prefix, service or PATH is changed. Use `~/oxa-lab/dev/bin/oxa`; its receipt is
-`~/oxa-lab/dev/current/receipt.json`. The current and one previous build are retained.
+and dev workflow before activation. The default prefix is
+`~/.local/state/oxc/dev-builds/default` under your account home. The sandbox denies
+access to `~/.local/state/oxc`. An optional argument selects another empty or
+already marked direct child of `dev-builds`. An existing prefix must be owned by
+your user and have mode `0700`. Its path must use real directories owned by root
+or your user. Ancestors writable by others must be sticky.
+No stable prefix, service or PATH is changed. The executable is at
+`~/.local/state/oxc/dev-builds/default/bin/oxa` and its receipt is at
+`~/.local/state/oxc/dev-builds/default/current/receipt.json`. The current and one
+previous build are retained.

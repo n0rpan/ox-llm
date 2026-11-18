@@ -88,7 +88,10 @@ sys.exit(int(os.environ.get('REJECT_VERIFY', '0')))
         return sha, digest, payload
 
     def run_update(self, prefix=None):
-        return subprocess.run(['bash', str(SCRIPT), str(prefix or self.prefix)], env=self.env,
+        args = ['bash', str(SCRIPT)]
+        if prefix is not None:
+            args.append(str(prefix))
+        return subprocess.run(args, env=self.env,
                               text=True, capture_output=True, timeout=20)
 
     def test_installs_receipt_and_reuses_verified_build_without_touching_stable(self):
