@@ -14,6 +14,8 @@
 //! cwd (github.com only) and never from the call; every call has a deadline and an output cap;
 //! stderr is discarded and no token or environment value is printed; `gh` is found with
 //! `netguard::trusted_executable_for` like every other host tool, so a project shim is never run.
+//! A runner-owned worker session (`OXA_RUNNER_OWNS_GITHUB=1`) runs no `gh` at all, `GH_HOST` is
+//! pinned to github.com, and every call is bounded by the wait's own remaining time.
 use oxa_proto::{CommandSpec, HookPoint, HookReply, Hooks, OxaError, Tool, Ui};
 use serde_json::Value;
 use std::ffi::OsString;
@@ -35,6 +37,9 @@ pub(crate) struct ProbeHooks {
     home: PathBuf,
     path: Option<OsString>,
     repo: Mutex<Option<String>>,
+    /// A runner-owned `oxa work` worker has no GitHub access (AGENTS.md); the runner owns
+    /// every GitHub call, including these probes.
+    runner_owns_github: bool,
 }
 
 impl ProbeHooks {
@@ -44,16 +49,29 @@ impl ProbeHooks {
             home: home.to_path_buf(),
             path: std::env::var_os("PATH"),
             repo: Mutex::new(None),
+            runner_owns_github: std::env::var_os(oxa_work::RUNNER_GITHUB_ENV)
+                .is_some_and(|value| value == "1"),
         }
     }
 
     #[cfg(test)]
     fn for_test(cwd: &Path, home: &Path, path: &Path, repo: &str) -> Self {
+        Self::for_test_role(cwd, home, path, repo, false)
+    }
+
+    #[cfg(test)]
+    fn for_test_runner_owned(cwd: &Path, home: &Path, path: &Path, repo: &str) -> Self {
+        Self::for_test_role(cwd, home, path, repo, true)
+    }
+
+    #[cfg(test)]
+    fn for_test_role(cwd: &Path, home: &Path, path: &Path, repo: &str, runner_owns_github: bool) -> Self {
         Self {
             cwd: cwd.to_path_buf(),
             home: home.to_path_buf(),
             path: Some(path.as_os_str().to_os_string()),
             repo: Mutex::new(Some(repo.to_string())),
+            runner_owns_github,
         }
     }
 
@@ -66,7 +84,7 @@ impl ProbeHooks {
         )
     }
 
-    fn run(&self, program: &str, args: &[String]) -> Result<String, String> {
+    fn run(&self, program: &str, args: &[String], budget: Duration) -> Result<String, String> {
         let exe = self.exe(program).ok_or_else(|| {
             format!("{program} was not found in a trusted PATH directory; wait until ci / pr_merged needs the GitHub CLI (gh)")
         })?;
@@ -77,10 +95,15 @@ impl ProbeHooks {
             .env("GH_PROMPT_DISABLED", "1")
             .env("GH_NO_UPDATE_NOTIFIER", "1")
             .env("NO_COLOR", "1");
-        match oxa_work::command_runner(command, Some(OUTPUT_CAP), CALL_DEADLINE) {
+        if program == "gh" {
+            // The repository comes from a github.com origin; never let an inherited GH_HOST
+            // send the call to an enterprise instance with a same-named repository.
+            command.env("GH_HOST", "github.com");
+        }
+        match oxa_work::command_runner(command, Some(OUTPUT_CAP), budget) {
             None => Err(format!(
                 "{program} did not finish within {} seconds, could not be started, or printed more than {OUTPUT_CAP} bytes",
-                CALL_DEADLINE.as_secs()
+                budget.as_secs()
             )),
             Some((0, out)) => Ok(out),
             Some((code, _)) => Err(format!(
@@ -90,42 +113,49 @@ impl ProbeHooks {
     }
 
     /// `owner/name` from the `origin` remote of the session cwd.
-    fn repo(&self) -> Result<String, String> {
+    fn repo(&self, budget: Duration) -> Result<String, String> {
         let mut cached = self.repo.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(r) = cached.as_ref() {
             return Ok(r.clone());
         }
-        let url = self.run("git", &["remote".into(), "get-url".into(), "origin".into()])?;
+        let url = self.run(
+            "git",
+            &["remote".into(), "get-url".into(), "origin".into()],
+            budget,
+        )?;
         let repo = parse_github_remote(url.trim())
             .ok_or("the origin remote of this directory is not a github.com repository")?;
         *cached = Some(repo.clone());
         Ok(repo)
     }
 
-    fn gh(&self, args: &[&str]) -> Result<Value, String> {
+    fn gh(&self, args: &[&str], budget: Duration) -> Result<Value, String> {
         let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
-        let out = self.run("gh", &args)?;
+        let out = self.run("gh", &args, budget)?;
         serde_json::from_str(&out).map_err(|_| "gh printed output that is not JSON".to_string())
     }
 
-    fn ci(&self, args: &Value) -> Result<Option<String>, String> {
+    fn ci(&self, args: &Value, budget: Duration) -> Result<Option<String>, String> {
         let sha = valid_sha(args["sha"].as_str())?;
         let workflow = valid_workflow(args["workflow"].as_str())?;
-        let repo = self.repo()?;
-        let runs = self.gh(&[
-            "run",
-            "list",
-            "-R",
-            &repo,
-            "--workflow",
-            &workflow,
-            "--commit",
-            &sha,
-            "--json",
-            "databaseId,status,conclusion,headSha",
-            "-L",
-            "5",
-        ])?;
+        let repo = self.repo(budget)?;
+        let runs = self.gh(
+            &[
+                "run",
+                "list",
+                "-R",
+                &repo,
+                "--workflow",
+                &workflow,
+                "--commit",
+                &sha,
+                "--json",
+                "databaseId,status,conclusion,headSha",
+                "-L",
+                "5",
+            ],
+            budget,
+        )?;
         // Only a run of exactly this head counts; the newest one decides.
         let run = runs
             .as_array()
@@ -148,7 +178,7 @@ impl ProbeHooks {
         let mut text = format!("{workflow} run {id} at {sha}: {conclusion}");
         if conclusion != "success" {
             let id = id.to_string();
-            let jobs = self.gh(&["run", "view", &id, "-R", &repo, "--json", "jobs"])?;
+            let jobs = self.gh(&["run", "view", &id, "-R", &repo, "--json", "jobs"], budget)?;
             let failed: Vec<String> = jobs["jobs"]
                 .as_array()
                 .into_iter()
@@ -172,22 +202,25 @@ impl ProbeHooks {
         Ok(Some(text))
     }
 
-    fn pr_merged(&self, args: &Value) -> Result<Option<String>, String> {
+    fn pr_merged(&self, args: &Value, budget: Duration) -> Result<Option<String>, String> {
         let pr = args["pr"]
             .as_u64()
             .filter(|n| *n > 0)
             .ok_or("pr must be a positive integer")?;
-        let repo = self.repo()?;
+        let repo = self.repo(budget)?;
         let pr_arg = pr.to_string();
-        let view = self.gh(&[
-            "pr",
-            "view",
-            &pr_arg,
-            "-R",
-            &repo,
-            "--json",
-            "state,mergedAt,headRefOid",
-        ])?;
+        let view = self.gh(
+            &[
+                "pr",
+                "view",
+                &pr_arg,
+                "-R",
+                &repo,
+                "--json",
+                "state,mergedAt,headRefOid",
+            ],
+            budget,
+        )?;
         let merged = view["state"].as_str() == Some("MERGED")
             || view["mergedAt"].as_str().is_some_and(|m| !m.is_empty());
         if merged {
@@ -269,9 +302,21 @@ impl Hooks for ProbeHooks {
     fn prompt_sections(&self) -> Vec<(String, String)> {
         Vec::new()
     }
-    fn poll_event(&self, kind: &str, args: &Value) -> Option<Result<Option<String>, String>> {
+    fn poll_event(
+        &self,
+        kind: &str,
+        args: &Value,
+        budget: Duration,
+    ) -> Option<Result<Option<String>, String>> {
         if kind != "ci" && kind != "pr_merged" {
             return None;
+        }
+        if self.runner_owns_github {
+            return Some(Err(
+                "GitHub access is withheld in a runner-owned worker session: the runner makes \
+                 every GitHub call, so use the issue, review and CI facts it supplies"
+                    .to_string(),
+            ));
         }
         if oxa_proto::offline() {
             return Some(Err(oxa_proto::offline_error(
@@ -279,10 +324,15 @@ impl Hooks for ProbeHooks {
             )
             .to_string()));
         }
+        // One `gh` call must finish inside the wait's own remaining time.
+        let budget = budget.min(CALL_DEADLINE);
+        if budget.is_zero() {
+            return Some(Ok(None));
+        }
         Some(if kind == "ci" {
-            self.ci(args)
+            self.ci(args, budget)
         } else {
-            self.pr_merged(args)
+            self.pr_merged(args, budget)
         })
     }
 }
@@ -318,7 +368,7 @@ mod tests {
             for d in [&bin, &work, &home] {
                 mk(d);
             }
-            let script = "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$dir/calls\"\ncase \"$1 $2\" in\n  \"run list\") cat \"$dir/run_list.json\" ;;\n  \"run view\") cat \"$dir/run_view.json\" ;;\n  \"pr view\") cat \"$dir/pr_view.json\" ;;\n  *) exit 2 ;;\nesac\n";
+            let script = "#!/bin/sh\ndir=\"$(dirname \"$0\")\"\necho \"$@\" >> \"$dir/calls\"\necho \"host=$GH_HOST\" >> \"$dir/hosts\"\ncase \"$1 $2\" in\n  \"run list\") cat \"$dir/run_list.json\" ;;\n  \"run view\") cat \"$dir/run_view.json\" ;;\n  \"pr view\") cat \"$dir/pr_view.json\" ;;\n  *) exit 2 ;;\nesac\n";
             let gh = bin.join("gh");
             std::fs::write(&gh, script).unwrap();
             std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -334,9 +384,19 @@ mod tests {
             std::fs::read_to_string(self.bin.join("calls")).ok()
         }
 
+        fn hosts(&self) -> Option<String> {
+            std::fs::read_to_string(self.bin.join("hosts")).ok()
+        }
+
         fn poll(&self, args: Value) -> Result<Option<String>, String> {
+            self.poll_within(args, Duration::from_secs(30))
+        }
+
+        fn poll_within(&self, args: Value, budget: Duration) -> Result<Option<String>, String> {
             let kind = args["kind"].as_str().unwrap().to_string();
-            self.hooks.poll_event(&kind, &args).expect("kind is answered")
+            self.hooks
+                .poll_event(&kind, &args, budget)
+                .expect("kind is answered")
         }
     }
 
@@ -438,7 +498,10 @@ mod tests {
         let cwd = f.bin.parent().unwrap().join("work");
         let home = f.bin.parent().unwrap().join("home");
         let hooks = ProbeHooks::for_test(&cwd, &home, &empty, "acme/widgets");
-        let e = hooks.poll_event("ci", &ci_args(SHA)).unwrap().unwrap_err();
+        let e = hooks
+            .poll_event("ci", &ci_args(SHA), Duration::from_secs(30))
+            .unwrap()
+            .unwrap_err();
         assert!(e.contains("gh"), "{e}");
     }
 
@@ -474,7 +537,57 @@ mod tests {
     #[test]
     fn probe_leaves_other_kinds_to_other_sets() {
         let f = Fake::new("kinds");
-        assert!(f.hooks.poll_event("deploy", &json!({"kind": "deploy"})).is_none());
+        assert!(f
+            .hooks
+            .poll_event("deploy", &json!({"kind": "deploy"}), Duration::from_secs(30))
+            .is_none());
+    }
+
+    #[test]
+    fn runner_owned_worker_sessions_never_run_gh() {
+        let f = Fake::new("runner");
+        f.answer("run_list", "[]");
+        f.answer(
+            "pr_view",
+            &format!(r#"{{"state":"OPEN","mergedAt":null,"headRefOid":"{SHA}"}}"#),
+        );
+        let owned = ProbeHooks::for_test_runner_owned(
+            &f.hooks.cwd,
+            &f.hooks.home,
+            Path::new(f.hooks.path.as_deref().unwrap()),
+            "acme/widgets",
+        );
+        for args in [ci_args(SHA), json!({"kind": "pr_merged", "pr": 7})] {
+            let kind = args["kind"].as_str().unwrap().to_string();
+            let error = owned
+                .poll_event(&kind, &args, Duration::from_secs(30))
+                .unwrap()
+                .unwrap_err();
+            assert!(error.contains("runner-owned"), "{error}");
+        }
+        assert_eq!(f.calls(), None, "no gh call runs in a runner-owned session");
+    }
+
+    #[test]
+    fn a_wait_with_no_time_left_runs_no_probe() {
+        let f = Fake::new("zerobudget");
+        f.answer("run_list", "[]");
+        assert_eq!(
+            f.poll_within(ci_args(SHA), Duration::ZERO),
+            Ok(None),
+            "a zero budget is pending, not a shortened call"
+        );
+        assert_eq!(f.calls(), None);
+    }
+
+    #[test]
+    fn gh_calls_are_pinned_to_github_com() {
+        let f = Fake::new("host");
+        f.answer("run_list", "[]");
+        assert_eq!(f.poll(ci_args(SHA)), Ok(None));
+        let hosts = f.hosts().expect("the fake gh records GH_HOST");
+        assert!(hosts.contains("host=github.com"), "{hosts}");
+        assert!(!hosts.contains("host=enterprise"), "{hosts}");
     }
 
     #[test]

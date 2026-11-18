@@ -1074,7 +1074,12 @@ impl oxa_proto::Hooks for Probe {
     fn prompt_sections(&self) -> Vec<(String, String)> {
         Vec::new()
     }
-    fn poll_event(&self, kind: &str, args: &serde_json::Value) -> Option<Result<Option<String>, String>> {
+    fn poll_event(
+        &self,
+        kind: &str,
+        args: &serde_json::Value,
+        _budget: std::time::Duration,
+    ) -> Option<Result<Option<String>, String>> {
         (self.0)(kind, args)
     }
 }
