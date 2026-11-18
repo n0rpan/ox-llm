@@ -425,27 +425,41 @@ fn auto_bash_keeps_session_scratch_between_commands() {
     );
 }
 
-/// Real file-tool opens, not only policy answers: yolo lifts the credential and git/config
-/// floor; auto keeps its denials and the protected project-config question.
+/// Real file-tool opens, not only policy answers (#1512 S4): yolo drops the project-config
+/// question, so that write goes through; git's own files stay denied under yolo, and the
+/// credential read stays refused as it is under auto.
 #[test]
-fn yolo_file_tools_read_credentials_and_write_git_and_project_config() {
-    for rel in [".git/hooks/pre-commit", ".git/config", ".oxa/settings.json"] {
+fn yolo_file_tools_keep_git_and_credential_guards_and_drop_the_config_question() {
+    for rel in [".git/hooks/pre-commit", ".git/config"] {
         let env = TestEnv::new();
         let target = env.work().join(rel);
-        let (out, _) = run(&env, write_call(&target), &["-p", "--auto", "write it"]);
-        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        assert!(!target.exists(), "auto must keep the floor for {rel}");
         let (out, _) = run(&env, write_call(&target), &["-p", "--yolo", "write it"]);
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "x", "{rel}");
+        assert!(!target.exists(), "yolo keeps git's files denied: {rel}");
     }
+    let env = TestEnv::new();
+    let target = env.work().join(".oxa/settings.json");
+    let (out, _) = run(&env, write_call(&target), &["-p", "--auto", "write it"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        !target.exists(),
+        "auto must keep the floor for the project configuration"
+    );
+    let (out, _) = run(&env, write_call(&target), &["-p", "--yolo", "write it"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "x");
+
     let env = TestEnv::new();
     let secret = env.write("home/.ssh/id_test", "synthetic-sensitive-marker\n");
     let read = || ScriptTurn::tool("c1", "read", &json!({"path": secret}).to_string());
-    let (out, reqs) = run(&env, read(), &["-p", "--auto", "read it"]);
-    assert!(out.status.success());
-    assert!(tool_result(&reqs).contains("keys, tokens or agent state"));
-    let (out, reqs) = run(&env, read(), &["-p", "--yolo", "read it"]);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(tool_result(&reqs).contains("synthetic-sensitive-marker"));
+    for flag in ["--auto", "--yolo"] {
+        let (out, reqs) = run(&env, read(), &["-p", flag, "read it"]);
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let result = tool_result(&reqs);
+        assert!(result.contains("keys, tokens or agent state"), "{flag}: {result}");
+        assert!(
+            !result.contains("synthetic-sensitive-marker"),
+            "{flag} read the credential"
+        );
+    }
 }
