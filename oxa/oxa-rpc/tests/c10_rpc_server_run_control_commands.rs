@@ -644,8 +644,9 @@ mod live_steering {
             assert!(result["error"].is_string());
         }
         rpc.finish();
-        let before_resume = entries(&env, &binding);
         assert!(!store.armed.load(Ordering::SeqCst));
+        drop(store);
+        let before_resume = entries(&env, &binding);
         assert_eq!(appended(&before_resume).is_some(), !rejected);
         if fail_sync {
             let engine = Arc::new(ScriptedEngine::new(vec![ScriptTurn::text("continued")]));
