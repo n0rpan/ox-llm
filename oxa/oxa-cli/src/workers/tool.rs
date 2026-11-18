@@ -63,8 +63,19 @@ pub struct WorkerConfig {
     pub sessions_dir: PathBuf,
     /// The process environment of this session; the child environment is made from it.
     pub parent_env: Vec<(String, String)>,
+    /// The parent's token allowance, tool exclusions and resolved session directory.
+    pub parent_scope: ParentScope,
     /// The process's autonomy switch (the parent's level sets the worker's ceiling).
     pub yolo: YoloSwitch,
+}
+
+/// What the parent session allows a worker to have.
+#[derive(Debug, Clone, Default)]
+pub struct ParentScope {
+    pub max_tokens: Option<u64>,
+    pub exclude_tools: Vec<String>,
+    /// Set when the parent's session directory is not the child's own default.
+    pub session_dir: Option<PathBuf>,
 }
 
 /// State shared by the tool and the hook set.
@@ -74,6 +85,7 @@ pub struct WorkerCore {
     max: usize,
     sessions_dir: PathBuf,
     parent_env: Vec<(String, String)>,
+    parent_scope: ParentScope,
     yolo: YoloSwitch,
     supervisor: Supervisor,
     /// Serializes start and stop: the registry is read, changed and written back.
@@ -250,6 +262,7 @@ impl WorkerCore {
             max: cfg.max,
             sessions_dir: cfg.sessions_dir,
             parent_env: cfg.parent_env,
+            parent_scope: cfg.parent_scope,
             yolo: cfg.yolo,
             supervisor: cfg.supervisor,
             gate: Mutex::new(()),
@@ -405,6 +418,9 @@ impl WorkerCore {
             model: model.clone(),
             goal_file: goal_file.to_string_lossy().into_owned(),
             mode: wanted,
+            max_tokens: self.parent_scope.max_tokens,
+            exclude_tools: self.parent_scope.exclude_tools.clone(),
+            session_dir: self.parent_scope.session_dir.clone(),
         };
         let (argv, notice) = match child_argv(&spec, mode, autonomy) {
             Ok(v) => v,
@@ -697,6 +713,7 @@ mod tests {
             supervisor: Supervisor::new(Duration::from_secs(1), kill).expect("supervisor"),
             sessions_dir: agent.join("sessions"),
             parent_env: Vec::new(),
+            parent_scope: ParentScope::default(),
             yolo: YoloSwitch::new(Autonomy::Standard),
         })
     }

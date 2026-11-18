@@ -260,6 +260,14 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                             .session_dir(&i.dirs.home, i.cwd)
                             .filter(|_| i.env.get("OXA_SESSION_DIR").is_none())
                             .unwrap_or_else(|| i.dirs.sessions_dir.clone());
+                        // The child keeps the parent's allowance, exclusions and session
+                        // directory: a worker is not a way around them.
+                        let default_sessions = i.dirs.sessions_dir.clone();
+                        let parent_scope = worker_tool::ParentScope {
+                            max_tokens: i.args.max_tokens,
+                            exclude_tools: i.args.exclude_tools.clone(),
+                            session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
+                        };
                         let workers = Arc::new(WorkerHooks::new(WorkerConfig {
                             oxa_bin: bin,
                             agent_dir: i.dirs.agent_dir.clone(),
@@ -267,6 +275,7 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
                             supervisor,
                             sessions_dir,
                             parent_env: i.env.pairs().to_vec(),
+                            parent_scope,
                             yolo: i.yolo.clone(),
                         }));
                         sets.hooks.push(workers.clone());

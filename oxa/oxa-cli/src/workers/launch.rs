@@ -53,6 +53,12 @@ pub struct WorkerSpec {
     /// The requested mode; `None` means `workspace`. `Some(WorkerMode::Yolo)` is the only way to
     /// ask for yolo.
     pub mode: Option<WorkerMode>,
+    /// The parent's token allowance (`--max-tokens`): the child may not spend more than it.
+    pub max_tokens: Option<u64>,
+    /// The parent's explicit tool exclusions (`--no-bash`, `-xt`): the child keeps them.
+    pub exclude_tools: Vec<String>,
+    /// The parent's resolved session directory, when it is not the default one.
+    pub session_dir: Option<std::path::PathBuf>,
 }
 
 /// The name rule: `[a-z0-9][a-z0-9-]{0,39}`.
@@ -121,7 +127,7 @@ pub fn child_argv(
             mode.as_arg()
         )
     });
-    let args = [
+    let mut args = [
         "--mode",
         "json",
         "--session-id",
@@ -137,6 +143,20 @@ pub fn child_argv(
     ]
     .map(str::to_string)
     .to_vec();
+    // The parent's own limits and scope reach the child, so starting a worker is not a way
+    // around them.
+    if let Some(tokens) = spec.max_tokens {
+        args.push(format!("--max-tokens={tokens}"));
+    }
+    if !spec.exclude_tools.is_empty() {
+        let excluded: Vec<&str> = spec.exclude_tools.iter().map(String::as_str).collect();
+        check_value("excluded tool", &excluded.join(","))?;
+        args.push(format!("--exclude-tools={}", excluded.join(",")));
+    }
+    if let Some(dir) = &spec.session_dir {
+        check_value("session directory", &dir.to_string_lossy())?;
+        args.push(format!("--session-dir={}", dir.display()));
+    }
     Ok((args, notice))
 }
 
@@ -210,6 +230,9 @@ mod tests {
             model: "gpt-x".into(),
             goal_file: "/work/goal.md".into(),
             mode,
+            max_tokens: None,
+            exclude_tools: Vec::new(),
+            session_dir: None,
         }
     }
 
@@ -323,6 +346,26 @@ mod tests {
         let mut flag = spec(None);
         flag.model = "--yolo".into();
         assert!(child_argv(&flag, Mode::Workspace, Autonomy::Standard).is_err());
+    }
+
+    #[test]
+    fn child_argv_carries_the_parent_limits_and_scope() {
+        let mut spec = spec(None);
+        spec.max_tokens = Some(5000);
+        spec.exclude_tools = vec!["bash".into(), "web_search".into()];
+        spec.session_dir = Some(std::path::PathBuf::from("/work/sessions"));
+        let (args, _) = child_argv(&spec, Mode::Workspace, Autonomy::Standard).unwrap();
+        for expected in [
+            "--max-tokens=5000",
+            "--exclude-tools=bash,web_search",
+            "--session-dir=/work/sessions",
+        ] {
+            assert!(args.iter().any(|a| a == expected), "{expected}: {args:?}");
+        }
+        // A value that would read as a flag is refused rather than forwarded.
+        let mut bad = spec.clone();
+        bad.exclude_tools = vec!["--yolo".into()];
+        assert!(child_argv(&bad, Mode::Workspace, Autonomy::Standard).is_err());
     }
 
     #[test]
