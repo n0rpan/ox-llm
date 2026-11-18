@@ -552,7 +552,7 @@ async function refresh(){
     const doc=new DOMParser().parseFromString(await response.text(),'text/html');
     const next=doc.querySelector('main');
     if(!next)throw new Error('refresh unavailable');
-    if(pending===active&&!readerActive()&&(!stream||streamOk)){
+    if(pending===active&&!active.signal.aborted&&!document.hidden&&!readerActive()&&(!stream||streamOk)){
       const current=document.querySelector('main'),work=current.querySelector('details.home-work');
       const replacement=next.querySelector('details.home-work');
       if(work&&replacement)replacement.open=work.open;
@@ -971,7 +971,7 @@ mod tests {
             .eval_script(
                 "dom-fixture",
                 r#"
-let current, supplied, closeDuringFetch, failureMode='ok', focusDuringFetch=false, focused='', inside=false, fetches=0;
+let current, supplied, closeDuringFetch, failureMode='ok', focusDuringFetch=false, hideDuringFetch=false, focused='', inside=false, fetches=0;
 let initialDigest=null, liveEnabled=false, reloads=0, visibilityListener, serial=0;
 const timers=new Map(), requested=[], streams=[];
 const connectionBadge={textContent:'Snapshot'};
@@ -993,6 +993,7 @@ async function fetch(target){
   fetches++;
   requested.push(target.href);
   if(focusDuringFetch){inside=true; focused='[tabindex]';}
+  if(hideDuringFetch){document.hidden=true;visibilityListener();}
   if(failureMode==='network')throw new Error('private-refresh-marker');
   if(failureMode==='abort'){pending.abort();throw new Error('aborted');}
   if(closeDuringFetch)current.work.open=false;
@@ -1183,6 +1184,10 @@ if(current!==supplied)throw new Error('refresh did not resume after leaving main
 current=makeMain(true); supplied=makeMain(false); focusDuringFetch=true;
 await refresh();
 if(current===supplied)throw new Error('focus acquired during fetch was lost');
+focusDuringFetch=false;inside=false;hideDuringFetch=true;
+current=makeMain(true);supplied=makeMain(false);
+await refresh();
+if(current===supplied)throw new Error('late fragment replaced a hidden page after abort');
 return true;
 "#,
             )
