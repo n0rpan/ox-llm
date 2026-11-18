@@ -8,6 +8,7 @@ pub use claims::{
     LeaseSignal, NativeBinding, ReleaseRecord, VerifiedMilestone,
 };
 pub mod assignment;
+pub mod check_recovery;
 mod intake;
 pub mod landing;
 pub mod queue;
