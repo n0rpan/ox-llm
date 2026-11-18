@@ -32,6 +32,11 @@ maintainer, who says in the PR when a hardware check is needed.
   (on-by-default with an opt-out setting is normal and is not itself a finding); deleted or
   disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
   body; a test weakened, skipped or rewritten to pass instead of fixing the code.
+- **Policy changes carry their rules:** a change to a default, limit, budget, approval, sandbox or
+  other security behaviour updates, in the same PR, the review guidelines here, `SECURITY.md`, and
+  the user docs (`oxa/docs/pages/`) that describe it. Flag a missing update as P2. A review finding
+  that contradicts an owner decision stated in the linked issue or PR is answered by updating these
+  rules in that PR, not by changing the behaviour.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
 - Owner policy: nothing blocks by default except the security invariants above (secrets,
