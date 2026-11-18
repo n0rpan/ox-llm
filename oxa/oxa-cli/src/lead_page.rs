@@ -140,24 +140,17 @@ fn attention(html: &mut String, view: &View<'_>) {
         .flatten()
         .filter(|pr| view.overdue_queue.contains(pr))
         .collect();
-    if view.main_red
-        || view.main_merge_stalled
-        || !view.stalled_runs.is_empty()
-        || !overdue.is_empty()
-        || ask_count > 0
-    {
-        let role = if view.main_red
-            || view.main_merge_stalled
-            || !view.stalled_runs.is_empty()
-            || !overdue.is_empty()
-        {
-            "alert"
+    let alarm =
+        view.main_red || view.main_merge_stalled || !view.stalled_runs.is_empty() || !overdue.is_empty();
+    if alarm || ask_count > 0 {
+        let (role, icon, label) = if alarm {
+            ("alert", "!", "Alarm")
         } else {
-            "status"
+            ("status", "?", "Needs you")
         };
         let _ = write!(
             html,
-            "<section id=attention role={role}><h2>Needs attention</h2><ul>"
+            "<section id=attention role={role}><p class=severity><span aria-hidden=true>{icon}</span> {label}</p><h2>Needs attention</h2><ul>"
         );
         if ask_count > 0 {
             let _ = write!(
@@ -189,7 +182,11 @@ fn attention(html: &mut String, view: &View<'_>) {
             }
             html.push_str("</ul></details></li>");
         }
-        html.push_str("</ul></section>");
+        html.push_str("</ul>");
+        if alarm {
+            html.push_str("<p class=muted>Lead response observations unavailable.</p>");
+        }
+        html.push_str("</section>");
     }
 }
 
@@ -392,6 +389,11 @@ pub const STYLE: &str = concat!(
     include_str!("lead_page/style.css"),
     r#"
 :root { --nav-height:3.875rem; }
+:root { --bad:#b62c24; --bad-soft:#fde7e4; }
+@media(prefers-color-scheme:dark) { :root { --bad:#ff8a80; --bad-soft:#331917; } }
+#attention .severity { font-weight:700; color:var(--warn); }
+#attention[role=alert] { background:var(--bad-soft); }
+#attention[role=alert] h2,#attention[role=alert] .severity { color:var(--bad); }
 nav.tabs a { position:relative; flex-direction:column; gap:.125rem; font-size:.75rem; line-height:1.25; }
 nav.tabs svg { order:-1; flex:none; width:1.375rem; height:1.375rem; }
 nav.tabs .badge {
@@ -702,6 +704,128 @@ return true;
             );
         }
     }
+    #[test]
+    fn known_alarms_have_visible_severity_and_keep_their_observed_evidence() {
+        let queue = [PullRequest {
+            number: 17,
+            head: "a".repeat(40),
+        }];
+        let runs = [29];
+        for (view, evidence) in [
+            (
+                View {
+                    main_red: true,
+                    ..View::default()
+                },
+                "Checks on main are failing.",
+            ),
+            (
+                View {
+                    main_merge_stalled: true,
+                    ..View::default()
+                },
+                "No PR merged into main for 45 minutes",
+            ),
+            (
+                View {
+                    stalled_runs: &runs,
+                    ..View::default()
+                },
+                "Run 29",
+            ),
+            (
+                View {
+                    queue: Some(&queue),
+                    overdue_queue: &queue,
+                    ..View::default()
+                },
+                "PR #17 has waited too long",
+            ),
+        ] {
+            let html = content_for(Page::Home, &view, 100);
+            let banner = html
+                .split("<section id=attention")
+                .nth(1)
+                .unwrap()
+                .split("</section>")
+                .next()
+                .unwrap();
+            assert!(banner.contains("role=alert"));
+            assert!(banner.contains("aria-hidden=true>!</span> Alarm</p>"));
+            assert!(banner.contains(evidence));
+            assert!(banner.contains("Lead response observations unavailable."));
+            assert!(!banner.contains("All good"));
+            assert!(!banner.contains("<form") && !banner.contains("<button"));
+        }
+    }
+
+    #[test]
+    fn owner_decisions_are_distinct_from_alarms_and_unknown_is_not_healthy() {
+        let mut snapshot = observed_asks();
+        let ask_only = content_for(
+            Page::Home,
+            &View {
+                situation: Some(&snapshot),
+                ..View::default()
+            },
+            100,
+        );
+        let banner = ask_only
+            .split("<section id=attention")
+            .nth(1)
+            .unwrap()
+            .split("</section>")
+            .next()
+            .unwrap();
+        assert!(banner.contains("role=status"));
+        assert!(banner.contains("aria-hidden=true>?</span> Needs you</p>"));
+        assert!(banner.contains(&format!("Unanswered owner decisions ({})", snapshot.asks.len())));
+        assert!(!banner.contains("Alarm</p>") && !banner.contains("Lead response"));
+        let mixed = content_for(
+            Page::Home,
+            &View {
+                situation: Some(&snapshot),
+                main_red: true,
+                ..View::default()
+            },
+            100,
+        );
+        assert!(mixed.contains("role=alert") && mixed.contains(" Alarm</p>"));
+        assert!(
+            mixed.find("Unanswered owner decisions").unwrap()
+                < mixed.find("Checks on main are failing").unwrap()
+        );
+        snapshot.asks.clear();
+        let queue = [PullRequest {
+            number: 17,
+            head: "a".repeat(40),
+        }];
+        let old_head = [PullRequest {
+            number: 17,
+            head: "b".repeat(40),
+        }];
+        for situation in [None, Some(&snapshot)] {
+            for (queue, overdue_queue) in [
+                (None, queue.as_slice()),
+                (Some(queue.as_slice()), old_head.as_slice()),
+                (Some(queue.as_slice()), &[]),
+            ] {
+                let unknown = content_for(
+                    Page::Home,
+                    &View {
+                        situation,
+                        queue,
+                        overdue_queue,
+                        ..View::default()
+                    },
+                    100,
+                );
+                assert!(!unknown.contains("id=attention"));
+                assert!(!unknown.contains("role=alert") && !unknown.contains("All good"));
+            }
+        }
+    }
+
     #[test]
     fn only_failed_main_rollups_render_an_alarm() {
         for (state, red) in [
