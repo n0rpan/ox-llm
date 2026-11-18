@@ -656,6 +656,7 @@ mod tests {
             &fixture.root.join("unavailable-worker"),
             &fixture.policy,
             &lock,
+            None,
         )
         .is_err());
         assert!(

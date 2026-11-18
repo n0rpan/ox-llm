@@ -222,7 +222,7 @@ pub(super) fn run(
         if let Some(objective) = &steering_objective {
             lock.bind_managed_steering(&claims_path, &steering_binding, objective)?;
         }
-        match lock.plan_native(&worker_context.cwd, worker_context.reports) {
+        match lock.plan_native(&worker_context.cwd, worker_context.reports, &admission_binding) {
             Ok(plan) => worker_context.planned_locked(&plan, lock, &observe),
             Err(error) => Ok(oxa_work::blocked_record(task, error)),
         }
