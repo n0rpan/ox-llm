@@ -361,7 +361,10 @@ fn write_json_header(session: &Session, out: &mut dyn Write) -> Result<(), OxaEr
 
 /// The managed frontend has authenticated the assignment before mounting this worker.
 /// The JSON header remains first. All model events and receipts share one line writer.
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
 pub fn run_json_outcome_with_steering_authority(
     session: &mut Session,
     prompts: Vec<(String, Vec<Part>)>,
@@ -370,7 +373,7 @@ pub fn run_json_outcome_with_steering_authority(
     agent_dir: &std::path::Path,
     authority: std::sync::Arc<oxa_core::goal::SteeringAuthority>,
 ) -> Result<RunOutcome, OxaError> {
-    use crate::{a2a_control::queue_steering, server::write_control_receipt};
+    use crate::a2a_control::{queue_steering, write_control_receipt};
     use serde_json::json;
     use std::sync::{Arc, Mutex};
 
@@ -407,10 +410,16 @@ pub fn run_json_outcome_with_steering_authority(
     run_json_prompts(session, prompts, &mut writer, err)
 }
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
 struct SharedRecords(crate::Out);
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
 impl Write for SharedRecords {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         self.0
