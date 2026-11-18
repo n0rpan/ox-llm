@@ -52,27 +52,61 @@ mod tests {
         let check = check();
         assert_eq!(decide(false, &check, 87_001, History::Unused), Decision::Quiet);
         for other in [
-            Observation { required: false, ..check },
-            Observation { status: "completed", ..check },
-            Observation { status: "queued", ..check },
-            Observation { conclusion: None, ..check },
-            Observation { conclusion: Some(""), ..check },
-            Observation { completed_at: None, ..check },
-            Observation { completed_at: Some("bad date"), ..check },
-            Observation { completed_at: Some("1970-01-03T00:00:00Z"), ..check },
+            Observation {
+                required: false,
+                ..check
+            },
+            Observation {
+                status: "completed",
+                ..check
+            },
+            Observation {
+                status: "queued",
+                ..check
+            },
+            Observation {
+                conclusion: None,
+                ..check
+            },
+            Observation {
+                conclusion: Some(""),
+                ..check
+            },
+            Observation {
+                completed_at: None,
+                ..check
+            },
+            Observation {
+                completed_at: Some("bad date"),
+                ..check
+            },
+            Observation {
+                completed_at: Some("1970-01-03T00:00:00Z"),
+                ..check
+            },
             Observation { job_id: 0, ..check },
-            Observation { run_attempt: 0, ..check },
+            Observation {
+                run_attempt: 0,
+                ..check
+            },
         ] {
             assert_eq!(decide(true, &other, 87_001, History::Unused), Decision::Quiet);
         }
         assert_eq!(decide(true, &check, 87_000, History::Unused), Decision::Quiet);
-        assert_eq!(decide(true, &check, 87_001, History::Unused), Decision::RerunJob(23));
+        assert_eq!(
+            decide(true, &check, 87_001, History::Unused),
+            Decision::RerunJob(23)
+        );
     }
 
     #[test]
     fn stale_receipts_and_ambiguous_writes_cannot_authorize_another_rerun() {
         let check = check();
-        for history in [History::Unknown, History::Reserved, History::Requested { before_attempt: 2 }] {
+        for history in [
+            History::Unknown,
+            History::Reserved,
+            History::Requested { before_attempt: 2 },
+        ] {
             assert_eq!(decide(true, &check, 87_001, history), Decision::WaitForReceipt);
         }
         assert_eq!(
