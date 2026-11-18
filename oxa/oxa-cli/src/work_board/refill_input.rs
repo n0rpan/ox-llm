@@ -19,6 +19,7 @@ pub struct Input<'a> {
     reader: Reader<'a>,
     packets: &'a [Prepared],
     intake: bool,
+    host: Option<&'a str>,
 }
 impl<'a> Input<'a> {
     /// Caller authorizes the source, trusted executable and App token before acquisition.
@@ -34,7 +35,12 @@ impl<'a> Input<'a> {
             reader: Reader::new(gh, path, repo, token),
             packets,
             intake,
+            host: None,
         }
+    }
+    pub fn with_host(mut self, host: &'a str) -> Self {
+        self.host = Some(host);
+        self
     }
 }
 impl GitHub for Input<'_> {
@@ -140,6 +146,9 @@ impl GitHub for Input<'_> {
     }
 }
 impl Source for Input<'_> {
+    fn host_id(&self) -> Result<Option<&str>, String> {
+        Ok(self.host)
+    }
     fn revalidate(&mut self, entry: &Entry) -> Result<bool, String> {
         let board = Board::read(
             self,

@@ -8,6 +8,8 @@ struct Fake<'a> {
     checks: usize,
     stale: bool,
     on_check: Option<(&'a Claims, &'a Worker, &'a Policy)>,
+    host: Option<&'a str>,
+    existing: Option<ExistingWork>,
 }
 impl GitHub for Fake<'_> {
     fn snapshot(&mut self) -> oxa_work::Result<Snapshot> {
@@ -38,6 +40,12 @@ impl GitHub for Fake<'_> {
     }
 }
 impl Source for Fake<'_> {
+    fn host_id(&self) -> oxa_work::Result<Option<&str>> {
+        Ok(self.host)
+    }
+    fn existing_work(&mut self, _entry: &Entry) -> oxa_work::Result<Option<ExistingWork>> {
+        Ok(self.existing.take())
+    }
     fn revalidate(&mut self, entry: &Entry) -> oxa_work::Result<bool> {
         self.checks += 1;
         if let Some((claims, worker, policy)) = self.on_check.take() {
@@ -323,4 +331,107 @@ fn unknown_held_owner_only_and_reviewer_work_never_publishes() {
     assert!(fs::read_dir(&fixture.queue)
         .unwrap()
         .all(|e| e.unwrap().path().is_dir()));
+}
+
+#[test]
+fn two_hosts_share_one_item_reservation_and_persist_the_winning_host() {
+    let fixture = Fixture::new();
+    seed(&fixture.claims, 44, false);
+    let second_queue = fixture._env.tmp().join("second-queue");
+    fs::DirBuilder::new().mode(0o700).create(&second_queue).unwrap();
+    let mut second_worker = fixture.worker.clone();
+    second_worker.id = "oxa:peer/helper".into();
+    let targets = [
+        fixture.target(),
+        Consumer {
+            queue: &second_queue,
+            worker: &second_worker,
+            ..fixture.target()
+        },
+    ];
+    let barrier = std::sync::Barrier::new(2);
+    let winners = std::thread::scope(|scope| {
+        let pending: Vec<_> = targets
+            .into_iter()
+            .zip(["host-a", "host-b"])
+            .map(|(target, host)| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    target.once(
+                        &mut Fake {
+                            host: Some(host),
+                            ..Fake::default()
+                        },
+                        &PACKETS,
+                        10,
+                        |_| {
+                            barrier.wait();
+                            Ok(())
+                        },
+                        |receipt| {
+                            let binding = NativeBinding::new(
+                                receipt.number,
+                                &receipt.key,
+                                &receipt.lease,
+                                "agent/issue-44",
+                            )?;
+                            assert!(target.claims.bind_native(&receipt.lease.holder, &binding)?);
+                            Ok(())
+                        },
+                    )
+                })
+            })
+            .collect();
+        pending
+            .into_iter()
+            .map(|thread| match thread.join().unwrap() {
+                Ok(receipts) => receipts.len(),
+                Err(reason) => {
+                    assert!(reason.contains("owned"), "{reason}");
+                    0
+                }
+            })
+            .sum::<usize>()
+    });
+    assert_eq!(winners, 1);
+    let rows = fixture.claims.assignments().unwrap();
+    let row = &rows[&44];
+    let expected = if row.state.lease.as_ref().unwrap().holder == fixture.worker.id {
+        "host-a"
+    } else {
+        "host-b"
+    };
+    assert_eq!(
+        row.data.item_owner.as_ref().expect("host-bound refill").host_id,
+        expected
+    );
+    assert_eq!(row.state.attempts, 1);
+}
+
+#[test]
+fn hosted_refill_refuses_existing_pr_or_branch_before_publication() {
+    for existing in [
+        ExistingWork::PullRequest {
+            number: 45,
+            owner: "worker-a".into(),
+        },
+        ExistingWork::Branch {
+            name: "agent/existing".into(),
+            owner: "worker-a".into(),
+        },
+    ] {
+        let fixture = Fixture::new();
+        seed(&fixture.claims, 44, false);
+        let mut source = Fake {
+            host: Some("host-b"),
+            existing: Some(existing),
+            ..Fake::default()
+        };
+        let result =
+            fixture
+                .target()
+                .once(&mut source, &PACKETS, 10, |_| Ok(()), |_| panic!("existing work"));
+        assert!(result.is_err_and(|reason| reason.contains("worker-a")));
+        assert_eq!(fixture.claims.snapshot().unwrap()[&44].attempts, 0);
+    }
 }

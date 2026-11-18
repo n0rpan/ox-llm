@@ -43,6 +43,25 @@ impl Saved {
 }
 
 impl Claims {
+    pub fn claim_idle_item_for(
+        &self,
+        entry: &Entry,
+        policy: &Policy,
+        worker: &Worker,
+        host_id: &str,
+        timing: (u64, u64),
+        _observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
+    ) -> Result<Option<ItemLease>> {
+        self.claim_idle_for(entry, policy, worker, timing.0, timing.1)
+            .map(|lease| {
+                lease.map(|lease| ItemLease {
+                    expires_at: lease.expires_at,
+                    lease,
+                    host_id: host_id.into(),
+                })
+            })
+    }
+
     /// Explicit opt-in before any new work. The trusted observer must check complete, fresh
     /// PR and branch evidence for this repository/item or fail. It runs under the Claims lock
     /// and must not call Claims. All hosts must use this same protected authority.

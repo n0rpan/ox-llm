@@ -6,6 +6,12 @@ use std::{collections::BTreeSet, fs, path::Path};
 /// Read-only acquisition and authoritative revision/action revalidation; no write capability.
 pub trait Source: GitHub {
     fn revalidate(&mut self, entry: &Entry) -> Result<bool>;
+    fn host_id(&self) -> Result<Option<&str>> {
+        Ok(None)
+    }
+    fn existing_work(&mut self, _entry: &Entry) -> Result<Option<ExistingWork>> {
+        Err("hosted admission requires complete existing-work evidence".into())
+    }
 }
 /// Apply the same operator-selected item partition to BOTH PR and issue intake.
 pub struct Partition {

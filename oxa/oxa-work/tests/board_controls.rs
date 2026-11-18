@@ -802,3 +802,54 @@ fn idle_claims_require_saved_state_not_a_denied_claim_marker() {
         .is_some());
     assert_eq!(fixture.store().snapshot().unwrap()[&44].attempts, 1);
 }
+
+#[test]
+fn hosted_idle_admission_keeps_bootstrap_and_cross_item_worker_fences() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let worker = worker("hosted-slot");
+    let first = entry();
+    let mut second = first.clone();
+    second.number = 2;
+    assert!(store
+        .claim_idle_item_for(&first, &policy(), &worker, "host-a", (10, 20), |_| panic!(
+            "unknown row"
+        ))
+        .unwrap()
+        .is_none());
+    fixture.establish([first.number, second.number]);
+    let receipt = store
+        .claim_idle_item_for(&first, &policy(), &worker, "host-a", (10, 20), |_| Ok(None))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.assignments().unwrap()[&first.number]
+            .data
+            .item_owner
+            .as_ref()
+            .expect("durable host fence")
+            .host_id,
+        "host-a"
+    );
+    for now in [11, 31] {
+        assert!(store
+            .claim_idle_item_for(&second, &policy(), &worker, "host-b", (now, 20), |_| panic!(
+                "busy worker"
+            ))
+            .unwrap()
+            .is_none());
+    }
+    assert!(store
+        .release_for(
+            first.number,
+            &worker.id,
+            &receipt.lease,
+            32,
+            "verified completion"
+        )
+        .unwrap());
+    assert!(store
+        .claim_idle_item_for(&second, &policy(), &worker, "host-b", (33, 20), |_| Ok(None))
+        .unwrap()
+        .is_some());
+}

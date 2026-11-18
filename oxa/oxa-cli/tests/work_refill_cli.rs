@@ -148,7 +148,7 @@ fn durable_publication(pull_request: bool) {
     fs::write(&task, valid).unwrap();
     fs::set_permissions(&task, fs::Permissions::from_mode(0o600)).unwrap();
     let config = controls.join("refill.json");
-    fs::write(&config, json!({"enabled":true,"intake":true,"queue":queue,"claims":root,
+    fs::write(&config, json!({"enabled":true,"host_id":"host-a","intake":true,"queue":queue,"claims":root,
         "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
         "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
         "partition":{"modulus":22,"residues":[0]},
@@ -173,7 +173,7 @@ cat "$0.reply"
     };
     fs::write(env.tmp().join("gh.reply"), json!({"data":{"repository":{
         "mergeQueue":null,"pullRequests":{"totalCount":rows.len(),"nodes":rows,"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
-        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},
+        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null,
         "p44":{"number":44,"headRefOid":revision,"baseRefName":"main","state":"OPEN","body":"",
             "isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY",
             "baseRef":{"refUpdateRule":null,"rules":{"totalCount":0,"nodes":[]}},
@@ -195,6 +195,14 @@ cat "$0.reply"
     assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
     assert_eq!(fs::read_dir(&queue).unwrap().count(), 0);
     fs::write(&task, valid).unwrap();
+    let original_config = fs::read(&config).unwrap();
+    let mut hostless: serde_json::Value = serde_json::from_slice(&original_config).unwrap();
+    hostless.as_object_mut().unwrap().remove("host_id");
+    fs::write(&config, hostless.to_string()).unwrap();
+    let refused = invoke(&env, &config, "synthetic\n", false);
+    assert_eq!(refused.status.code(), Some(2), "native refill requires a host");
+    assert!(!env.tmp().join("gh.calls").exists());
+    fs::write(&config, original_config).unwrap();
     let result = invoke(&env, &config, "synthetic\n", false);
     assert!(
         result.status.success(),
