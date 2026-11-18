@@ -421,13 +421,14 @@ impl Context {
             Ok(locked) => locked,
             Err(error) => return Ok(blocked_plan(plan, error)),
         };
-        self.planned_locked(plan, &mut locked)
+        self.planned_locked(plan, &mut locked, &|_: &oxa_work::Record| Ok(()))
     }
 
     fn planned_locked(
         &self,
         plan: &oxa_work::PlannedTask,
         locked: &mut oxa_work::LockedTask<'_>,
+        observer: &dyn oxa_work::CheckpointObserver,
     ) -> Result<oxa_work::Record, String> {
         let root = &self.cwd;
         let binary = &self.binary;
@@ -444,14 +445,9 @@ impl Context {
             record
         } else {
             let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
-            match locked.run_with_notes(
-                root,
-                binary,
-                plan,
-                rerun,
-                &|_: &oxa_work::Record| Ok(()),
-                &|note| crate::work_reports::scrub_note(note, &ctx),
-            ) {
+            match locked.run_with_notes(root, binary, plan, rerun, observer, &|note| {
+                crate::work_reports::scrub_note(note, &ctx)
+            }) {
                 Ok(record) => record,
                 Err(oxa_work::RunError::Blocked(detail)) => blocked_plan(plan, detail),
                 Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),

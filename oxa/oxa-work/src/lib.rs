@@ -1206,6 +1206,14 @@ fn run_locked(
             return Err("task specification changed; use a new task id".into());
         }
         writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
+        if planned.native
+            && old.record.checkpoint_kind == CheckpointKind::WorkerFinished
+            && old.record.worker_launch_revision.is_some()
+        {
+            // Other tasks can acknowledge the shared repository cursor. The task lock
+            // still fences this exact worker result and the consumer deduplicates it.
+            observer.checkpoint(&old.record).map_err(RunError::Checkpoint)?;
+        }
         // Action recovery cannot turn a changed HEAD into fresh acceptance.
         // Only an explicit rerun starts a new execution for these checkpoints.
         if !rerun && matches!(old.record.step, Step::Publishing | Step::Reporting) {
