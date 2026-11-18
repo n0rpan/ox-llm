@@ -39,6 +39,13 @@ with tempfile.TemporaryDirectory() as sandbox, tempfile.TemporaryDirectory() as 
            'PYTHONDONTWRITEBYTECODE': '1'}
     for retired in ('/usr/share/ox-llm/oxc', '/usr/bin/oxc', '/usr/bin/oxc-diagnostics'):
         assert not os.path.lexists(retired), f'Legacy Python payload installed: {retired}'
+    templates = tuple(Path('/usr/share/ox-llm/memlat').iterdir())
+    assert {path.name for path in templates} == {
+        '05-local-ai-memlat-fallback.hook', '20-local-ai-memlat-fallback',
+        '85-local-ai-memlat-rebuild', '99-z-local-ai-memlat-rebuild.hook',
+    }
+    for path in templates:
+        assert path.is_file() and not path.is_symlink() and path.stat().st_mode & 0o777 == 0o644, path
     for binary in ('oxa', 'oxe'):
         result = subprocess.run([binary, '--version'], env=env, text=True, capture_output=True, check=True)
         assert '0.2.0' in result.stdout, (binary, result.stdout)

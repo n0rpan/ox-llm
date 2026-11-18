@@ -27,6 +27,12 @@ for workspace in ('oxc', 'oxc-rs'):
                 if target.exists():
                     raise SystemExit('duplicate binary: ' + binary.name)
                 shutil.copy2(binary, target)
+# Ship the owner-approved MEMLAT templates as data outside active hook paths.
+templates = dest / 'usr/share/ox-llm/memlat'
+templates.mkdir(parents=True)
+for name in ('05-local-ai-memlat-fallback.hook', '20-local-ai-memlat-fallback',
+             '85-local-ai-memlat-rebuild', '99-z-local-ai-memlat-rebuild.hook'):
+    shutil.copy2(root / 'oxc/packaging/memlat' / name, templates / name)
 licenses = dest / 'usr/share/licenses/ox-llm'
 licenses.mkdir(parents=True)
 for product in ('engine', 'oxa', 'oxc'):
