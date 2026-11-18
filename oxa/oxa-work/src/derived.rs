@@ -911,6 +911,25 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
+    fn quoted_cargo_keys_still_select_a_touched_package() {
+        let dir = PrivateDir::new("derived-quoted-keys");
+        manifest(&dir, "Cargo.toml", "[\"workspace\"]\n\"members\" = [\"one\"]\n");
+        manifest(&dir, "one/Cargo.toml", "[package]\n\"name\" = \"one\"\n");
+        let plan = from_changed_paths(dir.path(), b"one/src/lib.rs\0").unwrap();
+        assert!(plan.requires_hosted);
+        assert_eq!(plan.commands, [check_entry("", "cargo check", "one")]);
+    }
+
+    #[test]
+    fn an_unmapped_rust_source_still_requires_hosted_test_evidence() {
+        let dir = PrivateDir::new("derived-unmapped-rust");
+        manifest(&dir, "Cargo.toml", "package.name = \"one\"\n");
+        let plan = from_changed_paths(dir.path(), b"src/lib.rs\0").unwrap();
+        assert!(plan.requires_hosted);
+        assert!(plan.commands.is_empty());
+    }
+
+    #[test]
     fn workspace_metadata_does_not_trigger_a_local_workspace_sweep() {
         let dir = PrivateDir::new("derived-members");
         manifest(&dir, "Cargo.toml", "[workspace]\nmembers = [\"./app\"]\n");

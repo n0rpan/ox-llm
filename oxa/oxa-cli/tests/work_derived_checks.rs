@@ -245,6 +245,36 @@ fn a_check_that_never_ran_leaves_the_task_unverified_and_the_runner_failing() {
 }
 
 #[test]
+fn a_missing_selected_toolchain_is_not_run_and_does_not_launch_repair() {
+    let env = TestEnv::new();
+    setup_with_files(&env, "[]", &crate_files());
+    let tools = tools_with_cargo(
+        &env,
+        "#!/bin/sh\n\
+         if [ \"$1\" = --version ]; then exit 1; fi\n\
+         printf '%s\\n' \"$*\" >> \"$OXA_WORK_OUTPUT_DIR/calls\"\n\
+         exit 1\n",
+    );
+    let (record, requests) = run_observed(
+        &env,
+        vec![
+            write_turn("crates/one/src/lib.rs"),
+            ScriptTurn::text("finished"),
+            ScriptTurn::text("unexpected repair"),
+        ],
+        &["work", "../tasks.json"],
+        Some(path_with(&tools)),
+    );
+    assert_eq!(record["outcome"], "unverified", "{record}");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(record["checks"][0]["origin"], "derived", "{record}");
+    assert_eq!(record["checks"][0]["status"], "not_run", "{record}");
+    assert_eq!(record["checks"][0]["exit"], 127, "{record}");
+    let calls = tree_of(&record).parent().unwrap().join(".work-output/test/calls");
+    assert!(!calls.exists(), "compile command started without its toolchain");
+}
+
+#[test]
 fn a_declared_acceptance_crate_does_not_add_a_local_command() {
     let env = TestEnv::new();
     setup_with_files(&env, "[]", &crate_files());
