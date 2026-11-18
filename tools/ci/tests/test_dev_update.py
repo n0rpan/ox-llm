@@ -472,16 +472,18 @@ class DevPromote(Fixture):
 
     def test_release_source_off_main_is_refused(self):
         old, old_digest = self.prepare()
+        previous_downloads = self.assets()
         self.compare({f'{old}...{"b" * 40}': 'ahead', f'{"b" * 40}...main': 'diverged'})
         result = self.promote()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('the release source is not on main', result.stderr)
         self.assertEqual(self.restarts(), [])
-        self.assertEqual(self.assets(), [])
+        self.assertEqual(self.assets(), previous_downloads)
         self.assertEqual(hashlib.sha256(self.binary.read_bytes()).hexdigest(), old_digest)
 
     def test_busy_session_defers_without_replacing_the_pair(self):
         _, old_digest = self.prepare()
+        previous_downloads = self.assets()
         holder = subprocess.Popen(['flock', str(self.session) + '.lock', 'sleep', '60'])
         self.addCleanup(holder.kill)
         for _ in range(100):
@@ -494,17 +496,18 @@ class DevPromote(Fixture):
         self.assertIn('an owner chat turn is in flight', result.stdout + result.stderr)
         self.assertEqual(hashlib.sha256(self.binary.read_bytes()).hexdigest(), old_digest)
         self.assertEqual(self.restarts(), [])
-        self.assertEqual(self.assets(), [])
+        self.assertEqual(self.assets(), previous_downloads)
 
     def test_active_board_sampler_defers_without_replacing_the_pair(self):
         _, old_digest = self.prepare()
+        previous_downloads = self.assets()
         (self.remote / 'board.state').write_text('activating')
         result = self.promote()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('the board sampler is not idle', result.stdout + result.stderr)
         self.assertEqual(hashlib.sha256(self.binary.read_bytes()).hexdigest(), old_digest)
         self.assertEqual(self.restarts(), [])
-        self.assertEqual(self.assets(), [])
+        self.assertEqual(self.assets(), previous_downloads)
 
     def test_operator_install_lock_blocks_only_the_activation(self):
         _, old_digest = self.prepare()
