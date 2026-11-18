@@ -19,6 +19,8 @@ pub struct AssignmentData {
     pub native_binding: Option<NativeBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_owner: Option<super::ownership::ItemOwner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_activity: Option<super::activity::LeaseActivity>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
