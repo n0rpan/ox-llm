@@ -579,6 +579,7 @@ fn review_reservations_survive_reopening_and_head_changes() {
             head,
             patch_id: Some(patch_id),
             main_merge_predecessors: &[],
+            owner_approval_predecessors: &[],
             requested: &[],
             approvals: &[],
         };

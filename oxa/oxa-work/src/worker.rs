@@ -63,6 +63,7 @@ pub(crate) struct Worker {
     pub result: WorkerResult,
     pub session: Option<String>,
     pub diagnostic: String,
+    pub notes: Vec<crate::ProblemNote>,
 }
 
 impl Worker {
@@ -184,11 +185,12 @@ pub(crate) fn run(
                     interruption: Some(WorkerInterruption::Deadline),
                     tokens,
                 },
-                session: session.ok().flatten(),
+                session: session.ok().and_then(|(id, _)| id),
                 diagnostic: "worker exceeded max_time and its wrap-up grace; worktree retained".into(),
+                notes: vec![],
             });
         }
-        let session = session?;
+        let (session, notes) = session?;
         let (result, diagnostic) = terminal?;
         if status.code() != Some(result.exit_code) {
             return Err("worker exit code disagrees with its oxa_result".into());
@@ -200,11 +202,15 @@ pub(crate) fn run(
             result,
             session,
             diagnostic,
+            notes,
         })
     })
 }
 
-fn read_session(pipe: impl Read, on_session: &mut dyn FnMut(&str) -> Result<()>) -> Result<Option<String>> {
+fn read_session(
+    pipe: impl Read,
+    on_session: &mut dyn FnMut(&str) -> Result<()>,
+) -> Result<(Option<String>, Vec<crate::ProblemNote>)> {
     let mut reader = BufReader::new(pipe);
     let session = line(&mut reader)?.and_then(|line| {
         let value: serde_json::Value = serde_json::from_slice(&line).ok()?;
@@ -220,9 +226,27 @@ fn read_session(pipe: impl Read, on_session: &mut dyn FnMut(&str) -> Result<()>)
             })
     });
     let recorded = session.as_deref().map(on_session).transpose();
-    std::io::copy(&mut reader, &mut std::io::sink()).map_err(|e| e.to_string())?;
+    let mut notes = vec![];
+    while let Some(bytes) = line(&mut reader)? {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if value["type"] == "message_end" && value["message"]["role"] == "assistant" {
+            let mut text = String::new();
+            if let Some(parts) = value["message"]["content"].as_array() {
+                for part in parts {
+                    if part["type"] == "text" {
+                        if let Some(value) = part["text"].as_str() {
+                            text.push_str(value);
+                        }
+                    }
+                }
+            }
+            notes = crate::notes::parse(&text);
+        }
+    }
     recorded?;
-    Ok(session)
+    Ok((session, notes))
 }
 
 fn read_result(pipe: impl Read) -> Result<(WorkerResult, String)> {

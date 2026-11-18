@@ -241,3 +241,33 @@ one short line per task.
 The [checkpoint integration contract](work-state.md) defines the runner's public
 event hook. Event/situation/standing stores and their CLI adapters are a separate
 integration; this slice does not infer facts from worker prose or raw logs.
+`oxa work tasks.json --publish` pushes the accepted, saved commit to `origin` and
+creates or updates its PR through `gh`. Sign in with `gh auth login --hostname HOST`
+for the host in `origin`. Publication uses that host's saved login. Red acceptance never pushes; green
+acceptance makes the PR ready. Blocked tasks do not create PRs. Drift-only accepted reruns may update an existing PR.
+The runner checks existing PR queue membership before every push and refuses a
+queued PR; use a new task branch for follow-up work. It refuses branch changes
+made after acceptance until `--rerun` checks them. PR bodies include task ID and
+acceptance state, without raw prompts, transcripts or failed-check output.
+Execution preserves a saved offline restriction across restarts; later explicit
+publication uses the current network policy without changing that restriction.
+A publication failure keeps a publication checkpoint; another `--publish` retries
+without replaying the agent. Offline mode refuses network publication.
+Before each push, the runner asks through the controlling terminal for approval
+of the accepted commit, branch and PR destination. Piped input cannot approve it.
+
+`--report-problems` independently authorizes filing the task's own structured
+problem notes using the `report-issue` workflow. This flag must be launched by the
+user outside an agent tool. Each new report or comment shows its exact cleaned
+text and requires controlling-terminal confirmation, as `oxa report-issue submit`
+does. Without confirmation it stays a local draft. Reports use the user setting `oxa.reportIssue.repo`;
+project settings cannot choose a destination. Notes, titles and queries pass
+through the existing report scrubber. The runner performs two or three symptom
+queries against open issues and PRs and reads the top matches before writing.
+It comments only new notes on a matching issue, links an existing fixing PR, or
+files a new report with related links. Search failure, offline mode or missing
+report configuration keeps a local scrubbed draft and records its path/detail.
+A later explicit `--report-problems` retries local reports without replaying the
+agent. A draft-write failure records a failed report and finishes the task checkpoint;
+`--report-problems` can retry it. Reports contain only scrubbed structured symptom
+summaries, without raw assistant output or acceptance logs.

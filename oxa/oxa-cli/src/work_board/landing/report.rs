@@ -1,5 +1,5 @@
 //! Download an exact Actions report through the existing Board Reader.
-use super::Reader;
+use crate::work_board::{QueryError, Reader};
 use oxa_work::board::queue::{
     report::{
         attempt_for, select, ActionMetadata, ReportArchive, ReportSource, VerifiedArchive, VerifiedReports,
@@ -82,17 +82,14 @@ impl Reader<'_> {
         command
     }
 
-    fn actions_json(&self, path: &str, observed_bytes: &mut usize) -> Result<Value, String> {
-        let (code, text) = oxa_work::command_runner(
-            self.actions_get(path),
-            Some(crate::work_board::MAX_RESPONSE),
-            oxa_work::COMMAND_DEADLINE,
-        )
-        .ok_or("GitHub Actions response exceeds its limit or timed out")?;
+    fn actions_json(&self, path: &str) -> Result<Value, String> {
+        let (remaining, duration) = self.read_budget().map_err(QueryError::message)?;
+        let (code, text) = oxa_work::command_runner(self.actions_get(path), Some(remaining), duration)
+            .ok_or("GitHub Actions response exceeds its limit or timed out")?;
+        self.charge_capture(text.len()).map_err(QueryError::message)?;
         if code != 0 {
             return Err("GitHub Actions metadata unavailable".into());
         }
-        crate::work_board::charge(observed_bytes, text.len())?;
         serde_json::from_str(&text).map_err(|_| "invalid GitHub Actions metadata".into())
     }
 
@@ -102,7 +99,6 @@ impl Reader<'_> {
         settings: &mut Settings,
     ) -> Result<(), String> {
         let mut previous = std::mem::take(&mut settings.verified);
-        let mut observed_bytes = 0;
         for rejection in rejections {
             let mut attempts = BTreeMap::<_, Vec<_>>::new();
             for id in rejection.workflow_checks() {
@@ -114,13 +110,7 @@ impl Reader<'_> {
                 let key = (rejection.removal_event().to_owned(), run, attempt);
                 let proof = match previous.remove(&key) {
                     Some(saved) if saved.failed_check_runs == checks => Some(saved),
-                    _ => self.verify_attempt_reports(
-                        rejection,
-                        checks,
-                        (run, attempt),
-                        settings,
-                        &mut observed_bytes,
-                    )?,
+                    _ => self.verify_attempt_reports(rejection, checks, (run, attempt), settings)?,
                 };
                 if let Some(proof) = proof {
                     rejection.record_verified_reports(proof.clone());
@@ -137,17 +127,13 @@ impl Reader<'_> {
         checks: Vec<u64>,
         (run, attempt): (u64, u64),
         settings: &Settings,
-        observed_bytes: &mut usize,
     ) -> Result<Option<VerifiedReports>, String> {
-        let workflow = self.actions_json(&format!("runs/{run}/attempts/{attempt}"), observed_bytes)?;
+        let workflow = self.actions_json(&format!("runs/{run}/attempts/{attempt}"))?;
         if workflow["path"].as_str() != Some(settings.workflow_path.as_str()) {
             return Ok(None);
         }
-        let producer_jobs = self.actions_json(
-            &format!("runs/{run}/attempts/{attempt}/jobs?per_page=100"),
-            observed_bytes,
-        )?;
-        let artifacts = self.actions_json(&format!("runs/{run}/artifacts?per_page=100"), observed_bytes)?;
+        let producer_jobs = self.actions_json(&format!("runs/{run}/attempts/{attempt}/jobs?per_page=100"))?;
+        let artifacts = self.actions_json(&format!("runs/{run}/artifacts?per_page=100"))?;
         let metadata = ActionMetadata {
             attempt: &workflow,
             jobs: &producer_jobs,
@@ -173,7 +159,7 @@ impl Reader<'_> {
         }
         let mut verified = Vec::new();
         for report in archives {
-            self.verify_archive(&report, observed_bytes)?;
+            self.verify_archive(&report)?;
             verified.push(VerifiedArchive {
                 id: report.artifact_id,
                 sha256: report.sha256.to_owned(),
@@ -187,15 +173,19 @@ impl Reader<'_> {
         }))
     }
 
-    fn verify_archive(&self, selected: &ReportArchive<'_>, observed_bytes: &mut usize) -> Result<(), String> {
+    fn verify_archive(&self, selected: &ReportArchive<'_>) -> Result<(), String> {
         let size = usize::try_from(selected.size_bytes).map_err(|_| "invalid GitHub archive size")?;
-        crate::work_board::charge(observed_bytes, size)?;
+        let (remaining, duration) = self.read_budget().map_err(QueryError::message)?;
+        if size > remaining {
+            return Err("GitHub test archive exceeds remaining snapshot byte limit".into());
+        }
         let (code, bytes) = oxa_work::command_output_bytes(
             self.actions_get(&format!("artifacts/{}/zip", selected.artifact_id)),
             Some(size),
-            oxa_work::COMMAND_DEADLINE,
+            duration,
         )
         .ok_or("GitHub test archive exceeds its limit or timed out")?;
+        self.charge_capture(bytes.len()).map_err(QueryError::message)?;
         if code != 0 || bytes.len() != size {
             return Err("GitHub test archive unavailable or incomplete".into());
         }

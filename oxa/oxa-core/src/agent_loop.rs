@@ -692,7 +692,7 @@ fn run_inner(
                 return Ok(RunEnd::Stopped);
             }
             let snapshot = goal.stopped();
-            persist(st, snapshot.body(), sink)?;
+            crate::goal::save_checkpoint(st, &snapshot, sink)?;
             if goal.pursuing() {
                 push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
                 continue;

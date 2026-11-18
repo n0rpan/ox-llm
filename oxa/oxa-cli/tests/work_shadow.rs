@@ -384,12 +384,23 @@ if [ "$#" -gt "$(cat limit)" ]; then status=$(cat failure); fi
 if [ -e fail-after ] && [ "$(wc -l < batch-sizes)" -gt "$(cat fail-after)" ]; then status=403; fi
 if [ -e fail-page ] && [ "$cursor" = "$(cat fail-page)" ]; then status=403; fi
 if "$include"; then printf 'HTTP/2.0 %s Synthetic\r\n\r\n' "$status"; fi
+if [ -e response-padding ]; then
+  head -c "$(cat response-padding)" /dev/zero | tr '\000' ' '
+fi
 if [ "$status" != 200 ]; then
   printf '{"message":"synthetic-private-response-marker"}'
   exit 1
 fi
+if [ -e advance-after-list ] && [ "$#" -gt 0 ]; then
+  mv next-page.json pages/first.json
+  rm advance-after-list
+fi
 printf '{"data":{"repository":{"pullRequests":'
-cat "pages/${cursor:-first}.json"
+if [ -e unstable-page.json ] && [ "$#" -gt 0 ]; then
+  cat unstable-page.json
+else
+  cat "pages/${cursor:-first}.json"
+fi
 printf ',"mergeQueue":null'
 for number in "$@"; do
   printf ',"p%s":' "$number"
@@ -407,6 +418,107 @@ fn batch_sizes(env: &TestEnv) -> Vec<usize> {
         .lines()
         .map(|line| line.parse().unwrap())
         .collect()
+}
+
+fn changing_membership_fixture() -> TestEnv {
+    let env = batched_fixture(2, 15, 504);
+    let page = env.work().join("pages/first.json");
+    fs::copy(&page, env.work().join("next-page.json")).unwrap();
+    let mut before: serde_json::Value = serde_json::from_slice(&fs::read(&page).unwrap()).unwrap();
+    before["totalCount"] = 1.into();
+    before["nodes"].as_array_mut().unwrap().truncate(1);
+    before["pageInfo"]["endCursor"] = "c1".into();
+    fs::write(page, before.to_string()).unwrap();
+    fs::write(env.work().join("advance-after-list"), "").unwrap();
+    env
+}
+
+#[test]
+fn one_clean_reacquisition_uses_fresh_membership_and_publishes_once() {
+    let env = changing_membership_fixture();
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(batch_sizes(&env), [0, 1, 0, 2, 0]);
+    let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    assert_eq!(text.lines().count(), 1);
+    let sample: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
+    let numbers: Vec<_> = sample["board"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["number"].as_u64().unwrap())
+        .collect();
+    assert_eq!(numbers, [1, 2]);
+}
+
+#[test]
+fn persistent_change_gets_only_one_reacquisition_and_keeps_the_previous_sample() {
+    let env = batched_fixture(2, 15, 504);
+    let args = "work board --shadow --repo example/repo --once";
+    assert!(invoke(&env, args).status.success());
+    let previous = fs::read(log_for(&env, "example/repo")).unwrap();
+    fs::write(env.work().join("batch-sizes"), "").unwrap();
+    let mut changed: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.work().join("pages/first.json")).unwrap()).unwrap();
+    changed["totalCount"] = 3.into();
+    changed["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"number":3,"headRefOid":"synthetic-head"}));
+    changed["pageInfo"]["endCursor"] = "c3".into();
+    fs::write(env.work().join("unstable-page.json"), changed.to_string()).unwrap();
+    assert!(!invoke(&env, args).status.success());
+    assert_eq!(batch_sizes(&env), [0, 2, 0, 2]);
+    assert_eq!(fs::read(log_for(&env, "example/repo")).unwrap(), previous);
+}
+
+#[test]
+fn reacquisition_keeps_the_same_aggregate_response_budget() {
+    let env = changing_membership_fixture();
+    fs::write(env.work().join("response-padding"), "1500000").unwrap();
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("snapshot exceeds byte limit"));
+    assert_eq!(batch_sizes(&env), [0, 1, 0]);
+    assert!(fs::read(log_for(&env, "example/repo")).unwrap().is_empty());
+}
+
+#[test]
+fn transient_http_output_uses_the_same_snapshot_byte_budget() {
+    let env = batched_fixture(31, 7, 504);
+    fs::write(env.work().join("response-padding"), "800000").unwrap();
+    let out = invoke(&env, "work board --shadow --repo example/repo --once");
+    assert!(!out.status.success());
+    assert_eq!(batch_sizes(&env), [0, 15, 15, 15, 7, 7]);
+    assert!(fs::read(log_for(&env, "example/repo")).unwrap().is_empty());
+}
+
+#[test]
+fn a_wrong_detail_number_does_not_gain_a_consistency_retry() {
+    let env = batched_fixture(1, 15, 504);
+    let path = env.work().join("rows/1.json");
+    let mut row: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    row["number"] = 2.into();
+    fs::write(path, row.to_string()).unwrap();
+    assert!(!invoke(&env, "work board --shadow --repo example/repo --once")
+        .status
+        .success());
+    assert_eq!(batch_sizes(&env), [0, 1]);
+    assert!(fs::read(log_for(&env, "example/repo")).unwrap().is_empty());
+}
+
+#[test]
+fn malformed_membership_is_not_a_consistency_retry() {
+    let env = batched_fixture(2, 15, 504);
+    let mut malformed: serde_json::Value =
+        serde_json::from_slice(&fs::read(env.work().join("pages/first.json")).unwrap()).unwrap();
+    malformed["nodes"][0]["headRefOid"] = serde_json::Value::Null;
+    fs::write(env.work().join("unstable-page.json"), malformed.to_string()).unwrap();
+    assert!(!invoke(&env, "work board --shadow --repo example/repo --once")
+        .status
+        .success());
+    assert_eq!(batch_sizes(&env), [0, 2]);
+    assert!(fs::read(log_for(&env, "example/repo")).unwrap().is_empty());
 }
 
 #[test]
@@ -587,7 +699,7 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
     let head = git(&["rev-parse", "HEAD"]);
     env.write(
         "home/review.json",
-        r#"{"requester":"review-bot","codex":"code-reviewer","security":"security-reviewer","owner":"owner-reviewer","core":["engine"],"protected":[]}"#,
+        r#"{"requester":"review-bot","codex":"code-reviewer","security":"security-reviewer","owner":"owner-reviewer","core":["engine"],"protected":["docs/protected"]}"#,
     );
     detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = head.clone().into();
     let row = &mut detail["data"]["repository"]["p42"];
@@ -736,6 +848,73 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
         assert_eq!(
             sample["reviews"]["42"]["decision"]["review"]["outstanding"],
             outstanding
+        );
+    }
+
+    env.write("work/docs/protected/contract.md", "protected change\n");
+    git(&["add", "docs/protected/contract.md"]);
+    git(&["commit", "-m", "owner-reviewed change"]);
+    let reviewed_head = git(&["rev-parse", "HEAD"]);
+
+    for (paths, owner_opinion, outstanding) in [
+        (
+            &["docs/token-usage.md", "engine/tests/regression.rs"][..],
+            "APPROVED",
+            serde_json::json!(["codex", "security"]),
+        ),
+        (&[][..], "APPROVED", serde_json::json!(["codex", "security"])),
+        (
+            &["docs/token-usage.md"][..],
+            "DISMISSED",
+            serde_json::json!(["codex", "security", "owner"]),
+        ),
+        (
+            &["docs/AGENTS.md"][..],
+            "APPROVED",
+            serde_json::json!(["codex", "security", "owner"]),
+        ),
+        (
+            &["docs/protected/guide.md"][..],
+            "APPROVED",
+            serde_json::json!(["codex", "security", "owner"]),
+        ),
+        (
+            &["engine/other.rs"][..],
+            "APPROVED",
+            serde_json::json!(["codex", "security", "owner"]),
+        ),
+    ] {
+        git(&["reset", "--hard", &reviewed_head]);
+        for path in paths {
+            env.write(&format!("work/{path}"), "follow-up\n");
+            git(&["add", "--", path]);
+        }
+        git(&["commit", "--allow-empty", "-m", "follow-up"]);
+        let new_head = git(&["rev-parse", "HEAD"]);
+        detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = new_head.clone().into();
+        let row = &mut detail["data"]["repository"]["p42"];
+        row["headRefOid"] = new_head.into();
+        row["comments"] = serde_json::json!({"totalCount":0,"nodes":[]});
+        row["latestOpinionatedReviews"] = serde_json::json!({
+            "totalCount":3,
+            "nodes":[
+                {"state":"APPROVED","commit":{"oid":reviewed_head},"author":{"login":"code-reviewer"}},
+                {"state":"APPROVED","commit":{"oid":reviewed_head},"author":{"login":"security-reviewer"}},
+                {"state":owner_opinion,"commit":{"oid":reviewed_head},"author":{"login":"owner-reviewer"}}
+            ]
+        });
+        fs::write(env.work().join("first.json"), detail.to_string()).unwrap();
+        fs::write(env.work().join("detail.json"), detail.to_string()).unwrap();
+        let out = invoke(
+            &env,
+            "work board --shadow --repo example/repo --once --review-policy ../home/review.json",
+        );
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let log = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+        let sample: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert_eq!(
+            sample["reviews"]["42"]["decision"]["review"]["outstanding"], outstanding,
+            "{paths:?}"
         );
     }
 }
@@ -902,7 +1081,7 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     write("report-jobs.json", jobs);
     let result = invoke(&env, &args);
     assert!(result.status.success());
-    let updated = fs::read_to_string(log).unwrap();
+    let updated = fs::read_to_string(&log).unwrap();
     assert!(updated.starts_with(&saved));
     let sample: Value = serde_json::from_str(updated.lines().last().unwrap()).unwrap();
     assert!(sample["queue_rejections"][0]
@@ -912,6 +1091,18 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
         fs::read_to_string(env.work().join("report-reads")).unwrap(),
         "read\nread\n"
     );
+
+    // This REST reply fits in isolation, but the board has already used part of the budget.
+    let attempt_path = env.work().join("report-attempt.json");
+    let mut attempt: Value = serde_json::from_str(&fs::read_to_string(&attempt_path).unwrap()).unwrap();
+    let cap = 4 * 1024 * 1024;
+    attempt["padding"] = "a".repeat(cap - 512).into();
+    assert!(attempt.to_string().len() < cap);
+    write("report-attempt.json", attempt);
+    let result = invoke(&env, &args);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("GitHub Actions response exceeds its limit"));
+    assert_eq!(fs::read_to_string(log).unwrap(), updated);
 }
 
 #[test]
