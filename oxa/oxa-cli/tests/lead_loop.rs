@@ -99,13 +99,19 @@ fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
     assert_eq!(first["asks"][0]["id"], "lead:board:66");
 
     write_board(&board, now, &[(12, Action::BuildIssue, true)]);
-    for args in [vec!["run", "--once"], vec!["asks"]] {
-        let reopened = command().args(args).output().unwrap();
-        assert!(reopened.status.success(), "{reopened:?}");
-        let reopened: Value = serde_json::from_slice(&reopened.stdout).unwrap();
-        assert_eq!(reopened["goal_revision"], first["goal_revision"]);
-        assert_eq!(reopened["asks"], first["asks"]);
-    }
+    assert!(first["asks"][0].get("question").is_none());
+    let reopened = command().args(["run", "--once"]).output().unwrap();
+    assert!(reopened.status.success(), "{reopened:?}");
+    let reopened: Value = serde_json::from_slice(&reopened.stdout).unwrap();
+    assert_eq!(reopened["goal_revision"], first["goal_revision"]);
+    assert_eq!(reopened["asks"], first["asks"]);
+
+    let asks = command().arg("asks").output().unwrap();
+    assert!(asks.status.success(), "{asks:?}");
+    let asks: Value = serde_json::from_slice(&asks.stdout).unwrap();
+    assert_eq!(asks["goal_revision"], first["goal_revision"]);
+    assert_eq!(asks["asks"][0]["id"], first["asks"][0]["id"]);
+    assert!(asks["asks"][0]["question"].as_str().unwrap().contains("#66"));
     let saved = Goal::latest(&store.load(&session).unwrap()).unwrap().unwrap();
     assert!(saved.lead.unwrap().held_leases.is_empty());
     assert!(server.requests().is_empty());

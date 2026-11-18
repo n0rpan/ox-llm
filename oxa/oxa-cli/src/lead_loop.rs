@@ -70,15 +70,15 @@ fn tick(binding: &LeadOwnerBinding, board: &Board, now_ms: u64) -> Result<Value,
                 goal.pause();
                 goal
             }
-            None => return Ok(view(None, revision, "goal_cleared")),
+            None => return Ok(view(None, revision, "goal_cleared", false)),
         };
         if goal.objective != OBJECTIVE || !matches!(goal.status, GoalStatus::Paused | GoalStatus::Pursuing) {
-            return Ok(view(Some(&goal), revision, "goal_inactive"));
+            return Ok(view(Some(&goal), revision, "goal_inactive", false));
         }
         if goal.lead.as_ref().is_some_and(|lead| !lead.open_asks.is_empty()) {
             // An earlier process may have appended and stopped before it could sync.
             store.sync(session)?;
-            return Ok(view(Some(&goal), revision, "awaiting_owner"));
+            return Ok(view(Some(&goal), revision, "awaiting_owner", false));
         }
         let next = entries.len() as u64 + 1;
         let ask = fresh.then(|| proposal(board, next)).flatten();
@@ -96,16 +96,22 @@ fn tick(binding: &LeadOwnerBinding, board: &Board, now_ms: u64) -> Result<Value,
             (true, false) => "no_eligible_action",
             (false, false) => "board_unavailable",
         };
-        Ok(view(Some(&goal), revision, status))
+        Ok(view(Some(&goal), revision, status, false))
     })
 }
 
-fn view(goal: Option<&Goal>, revision: u64, state: &str) -> Value {
+fn view(goal: Option<&Goal>, revision: u64, state: &str, include_text: bool) -> Value {
     let asks: Vec<_> = goal
         .and_then(|goal| goal.lead.as_ref())
         .into_iter()
         .flat_map(|lead| &lead.open_asks)
-        .map(|ask| serde_json::json!({"id": ask.id, "revision": ask.revision, "question": ask.question}))
+        .map(|ask| {
+            let mut value = serde_json::json!({"id": ask.id, "revision": ask.revision});
+            if include_text {
+                value["question"] = ask.question.clone().into();
+            }
+            value
+        })
         .collect();
     serde_json::json!({
         "state": state,
@@ -126,7 +132,14 @@ pub(crate) fn asks(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> R
     let result = binding.with_goal_store(|store, session| {
         let entries = store.load(session)?;
         let goal = Goal::latest(&entries)?;
-        Ok(view(goal.as_ref(), Goal::revision(&entries), "observed"))
+        if goal
+            .as_ref()
+            .and_then(|goal| goal.lead.as_ref())
+            .is_some_and(|lead| !lead.open_asks.is_empty())
+        {
+            store.sync(session)?;
+        }
+        Ok(view(goal.as_ref(), Goal::revision(&entries), "observed", true))
     })?;
     write(out, &result)?;
     Ok(0)
