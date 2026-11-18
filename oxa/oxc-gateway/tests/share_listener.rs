@@ -261,6 +261,12 @@ async fn authenticated_stream_is_guest_only_settles_usage_and_revocation_is_fres
         / 86400;
     assert_eq!(r.keys.guest_usage(day, &r.id).unwrap(), (1, 8));
     r.keys.revoke(&r.id).unwrap();
+    let usage = r.keys.guest_usage_snapshot(day).unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].key.name, "Device");
+    assert_eq!(usage[0].key.id, r.id);
+    assert!(usage[0].key.revoked);
+    assert_eq!((usage[0].requests, usage[0].tokens), (1, 8));
     assert!(r.models().await.starts_with("HTTP/1.1 401"));
     r.close().await;
 }

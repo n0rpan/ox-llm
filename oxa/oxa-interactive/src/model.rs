@@ -734,6 +734,9 @@ pub enum AppAction {
 /// Saves a `/trust` decision (see `save_trust`).
 pub type TrustSaver = Box<dyn FnMut(crate::TrustChoice) -> Result<(), OxaError> + Send>;
 
+/// Optional owner-only details read on demand by the existing engine command.
+pub type EngineStatus = Box<dyn Fn() -> Vec<String> + Send>;
+
 /// Everything `run` needs besides the session. Built by `oxa-cli`.
 pub struct InteractiveOpts {
     /// `true` = alternate screen layout, `false` = regular (main screen).
@@ -770,6 +773,7 @@ pub struct InteractiveOpts {
     pub save_trust: Option<TrustSaver>,
     /// The gated project resources (`oxa_perm::gated_resources`), listed by `/trust` (D-INT).
     pub gated: Vec<String>,
+    pub engine_status: Option<EngineStatus>,
     /// O-182: the process's YOLO switch, shared with the policy of every session. `None` =
     /// YOLO cannot be switched here (the policy does not listen; tests, ephemeral setups).
     pub yolo: Option<oxa_proto::YoloSwitch>,

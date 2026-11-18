@@ -5,6 +5,7 @@ use oxc_gateway::share::{
     keys::Store,
     listener::{Access, Binding, Config, Failure, Model},
     native,
+    status::Status,
     tailnet::LocalApi,
 };
 use std::{
@@ -12,7 +13,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const TAILSCALE_SOCKET: &str = "/var/run/tailscale/tailscaled.sock";
@@ -126,7 +127,7 @@ impl Prepared {
     fn serve(
         self,
         stop: CancelToken,
-        ready: impl FnOnce(SocketAddr) -> Result<(), Failure>,
+        ready: impl FnOnce(SocketAddr, Status) -> Result<(), Failure>,
     ) -> Result<(), OxaError> {
         let Self {
             local,
@@ -148,21 +149,23 @@ impl Prepared {
     }
 
     pub(super) fn start(self) -> Result<(Serving, SocketAddr), OxaError> {
+        let keys = self.keys.clone();
         let stop = CancelToken::new();
         let thread_stop = stop.clone();
         let (send, receive) = std::sync::mpsc::channel();
         let thread = std::thread::Builder::new()
             .spawn(move || {
-                self.serve(thread_stop, |address| {
-                    send.send(address).map_err(|_| Failure::Failed)
+                self.serve(thread_stop, |address, status| {
+                    send.send((address, status)).map_err(|_| Failure::Failed)
                 })
             })
             .map_err(|error| OxaError::io("cannot start the guest listener", &error))?;
         match receive.recv() {
-            Ok(address) => Ok((
+            Ok((address, status)) => Ok((
                 Serving {
                     stop,
                     thread: Some(thread),
+                    status: OwnerStatus { status, keys },
                 },
                 address,
             )),
@@ -177,6 +180,46 @@ impl Prepared {
 pub(super) struct Serving {
     stop: CancelToken,
     thread: Option<std::thread::JoinHandle<Result<(), OxaError>>>,
+    pub(super) status: OwnerStatus,
+}
+
+#[derive(Clone)]
+pub(super) struct OwnerStatus {
+    status: Status,
+    keys: Arc<Store>,
+}
+
+impl OwnerStatus {
+    pub(super) fn lines(&self) -> Vec<String> {
+        let Ok(live) = self.status.snapshot() else {
+            return vec!["LAN sharing activity unavailable.".into()];
+        };
+        let mut lines = vec![format!("LAN sharing · {} connections", live.connections)];
+        for key in live.keys {
+            lines.push(format!("{} · {} active", key.name, key.active_requests));
+        }
+        let usage = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|time| self.keys.guest_usage_snapshot(time.as_secs() / 86400).ok());
+        match usage {
+            Some(usage) => {
+                lines.push("Guest usage today (UTC)".into());
+                for row in usage {
+                    lines.push(format!(
+                        "{} · {}/{} requests · {}/{} tokens",
+                        row.key.name,
+                        row.requests,
+                        row.key.limits.daily_requests,
+                        row.tokens,
+                        row.key.limits.daily_tokens,
+                    ));
+                }
+            }
+            None => lines.push("Daily guest usage unavailable.".into()),
+        }
+        lines
+    }
 }
 
 impl Drop for Serving {
@@ -206,7 +249,7 @@ pub(crate) fn run(args: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write)
         })
         .map_err(|error| OxaError::io("cannot start listener shutdown handler", &error))?;
 
-    let result = prepared.serve(stop, |address| {
+    let result = prepared.serve(stop, |address, _| {
         writeln!(out, "Guest OpenAI API listening at http://{address}/v1")
             .and_then(|()| out.flush())
             .map_err(|_| Failure::Failed)

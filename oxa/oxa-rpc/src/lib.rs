@@ -36,6 +36,8 @@ pub use events::{
     JsonSink,
 };
 pub use ext_ui::{RpcUi, UiRouter};
+#[cfg(all(target_os = "linux", feature = "a2a-control"))]
+pub use print::run_json_outcome_with_steering_authority;
 pub use print::{run_json, run_json_outcome, run_print, run_print_outcome};
 #[cfg(all(target_os = "linux", feature = "a2a-control"))]
 pub use server::serve_outcome_with_steering_authority;

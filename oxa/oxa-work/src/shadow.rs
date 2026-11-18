@@ -15,6 +15,19 @@ use landing_history::{AdmissionEvidence, Admissions};
 pub const INTERVAL: Duration = Duration::from_secs(300);
 pub const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
 
+/// Read the owner's explicit report policy through the private facts storage checks.
+pub fn read_queue_report_policy(path: &Path) -> Result<Vec<u8>> {
+    let path = std::path::absolute(path).map_err(|_| "invalid queue report policy path")?;
+    let name = path
+        .file_name()
+        .and_then(|file| file.to_str())
+        .ok_or("invalid queue report policy file")?;
+    let parent = path
+        .parent()
+        .ok_or("queue report policy needs a private directory")?;
+    crate::facts_io::Root::open(parent, false)?.read(name, 16_384)
+}
+
 #[derive(Serialize)]
 struct Sample<'a> {
     schema_version: u32,

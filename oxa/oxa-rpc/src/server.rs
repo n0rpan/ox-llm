@@ -412,7 +412,7 @@ fn publish(cx: &RpcCx) -> Published {
 }
 
 #[cfg(all(target_os = "linux", feature = "a2a-control"))]
-fn write_control_receipt(out: &Out, data: Value) {
+pub(super) fn write_control_receipt(out: &Out, data: Value) {
     write_out(out, &json!({"type": "goal_control_receipt", "data": data}));
 }
 
@@ -495,55 +495,25 @@ fn session_loop(
                                 return true;
                             }
                         };
-                        if let oxa_orchestrator::control::Request::Steer {
-                            id,
-                            revision,
-                            text,
-                            lease,
-                        } = request
-                        {
-                            use oxa_core::goal::{GoalSteering, SteeringBinding, SteeringLease};
-                            let lease = lease.map(|lease| SteeringLease {
-                                holder: lease.holder,
-                                generation: lease.generation,
-                            });
-                            let mut lease_matches = false;
-                            steering_authority(&binding, &mut |current| {
-                                lease_matches = current == lease.as_ref();
-                            });
-                            if !lease_matches {
-                                write_control_receipt(&out, json!({"id":id,"error":"goal_steer_stale"}));
+                        let result_gate = control_gate.clone();
+                        let result_out = out.clone();
+                        let request = match crate::a2a_control::queue_steering(
+                            &handle,
+                            &binding,
+                            request,
+                            &steering_authority,
+                            move |receipt| {
+                                // Mark admission before publishing a result from the owner boundary.
+                                let _gate = lock(&result_gate);
+                                write_control_receipt(&result_out, receipt);
+                            },
+                        ) {
+                            Ok(admission) => {
+                                write_control_receipt(&out, admission);
                                 return true;
                             }
-                            let result_gate = control_gate.clone();
-                            let result_out = out.clone();
-                            let result_id = id.clone();
-                            let request = GoalSteering::new(
-                                SteeringBinding {
-                                    session: binding.clone(),
-                                    revision,
-                                    lease,
-                                },
-                                text,
-                                steering_authority.clone(),
-                                move |result| {
-                                    // Admission is written under this gate first, even if
-                                    // the next owner boundary consumes the request immediately.
-                                    let _gate = lock(&result_gate);
-                                    let data = match result {
-                                        Ok(()) => json!({"id": result_id, "appended": true}),
-                                        Err(code) => json!({"id": result_id, "error": code}),
-                                    };
-                                    write_control_receipt(&result_out, data);
-                                },
-                            );
-                            let data = match handle.submit_goal_steering(request) {
-                                Ok(()) => json!({"id": id, "queued": true}),
-                                Err(code) => json!({"id": id, "error": code}),
-                            };
-                            write_control_receipt(&out, data);
-                            return true;
-                        }
+                            Err(request) => request,
+                        };
                         let control = BoundControl::new(binding.clone(), request);
                         if sender.send(Job::GoalControl(control)).is_err() {
                             return false;

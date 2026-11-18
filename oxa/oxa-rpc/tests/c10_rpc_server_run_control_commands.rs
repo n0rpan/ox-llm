@@ -400,6 +400,10 @@ mod live_steering {
         fn start(&self, rpc: &mut Rpc) {
             let started = rpc.call("start", json!({"type":"prompt","message":"Start the goal"}));
             assert_eq!(started["success"], true);
+            self.wait_until_entered();
+        }
+
+        fn wait_until_entered(&self) {
             let wait = Instant::now();
             while !self.entered.load(Ordering::SeqCst) {
                 assert!(
@@ -470,6 +474,59 @@ mod live_steering {
         );
         assert!(appended(&entries(env, session)).is_none());
         revision
+    }
+
+    #[test]
+    fn managed_json_preserves_the_worker_header_and_delivers_only_lease_bound_input() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let session = owner(
+            &env,
+            held.engine(vec![ScriptTurn::text("first"), ScriptTurn::text("second")]),
+            "first",
+        );
+        let binding = session.inner().sref.clone();
+        let expected = binding.clone();
+        let lease = SteeringLease {
+            holder: "fixture/native".into(),
+            generation: (3, 2),
+        };
+        let current = lease.clone();
+        let rpc = Rpc::start_with(session, &env, move |mut session, dirs, _input, out| {
+            oxa_rpc::run_json_outcome_with_steering_authority(
+                &mut session,
+                vec![("Start the goal".into(), vec![])],
+                out,
+                &mut Vec::new(),
+                &dirs.agent_dir,
+                Arc::new(move |requested, operation| {
+                    if requested == &expected {
+                        operation(Some(&current));
+                    }
+                }),
+            )
+        });
+        held.wait_until_entered();
+        assert_eq!(rpc.records()[0]["type"], "session");
+        send(
+            &env,
+            &binding,
+            json!({
+                "method":"steer","id":"unleased","revision":Goal::revision(&entries(&env, &binding)),
+                "text":"Synthetic unleased input"
+            }),
+        );
+        assert_eq!(receipt(&rpc, "unleased", "queued")["error"], "goal_steer_stale");
+        submit(
+            &env,
+            &rpc,
+            &binding,
+            json!({"holder":lease.holder,"generation":lease.generation}),
+        );
+        held.release();
+        assert_eq!(receipt(&rpc, "steer", "appended")["appended"], true);
+        rpc.finish();
+        assert!(appended(&entries(&env, &binding)).is_some());
     }
 
     #[test]

@@ -4,6 +4,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod report;
+
 const BATCH: usize = 8;
 const MAX_PRS: usize = 1000;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -18,6 +20,8 @@ pub struct RejectionEvidence {
     failed_required_check_runs: Vec<u64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     failed_required_workflows: BTreeMap<u64, WorkflowIdentity>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    verified_test_reports: Vec<report::VerifiedReports>,
 }
 
 pub(crate) struct Removal<'a> {
@@ -137,12 +141,14 @@ pub fn read(
 }
 
 fn node_id(value: &Value) -> Option<&str> {
-    value.as_str().filter(|id| {
-        (1..=128).contains(&id.len())
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_=".contains(&b))
-    })
+    value.as_str().filter(|id| is_node_id(id))
+}
+
+pub(super) fn is_node_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_=".contains(&b))
 }
 
 /// Verify a complete lowercase object ID from a GitHub commit field.
@@ -235,6 +241,7 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
             .into_iter()
             .filter_map(|(id, workflow)| workflow.map(|workflow| (id, workflow)))
             .collect(),
+        verified_test_reports: Vec::new(),
     }))
 }
 
