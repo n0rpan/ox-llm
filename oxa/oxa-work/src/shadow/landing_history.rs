@@ -3,7 +3,10 @@ use super::{Board, File, QueueObservation, Read, Seek, SeekFrom, MAX_LOG_BYTES};
 use crate::board::queue::{is_object_id, Removal};
 use crate::Result;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, io::BufReader};
+use std::{
+    collections::BTreeMap,
+    io::{BufRead, BufReader},
+};
 
 #[derive(Deserialize)]
 struct PriorSample {
@@ -68,9 +71,23 @@ impl Admissions {
         log.seek(SeekFrom::Start(0))
             .map_err(|_| "cannot seek owner shadow journal")?;
         let mut history = Self::default();
-        let reader = BufReader::new(log.take(MAX_LOG_BYTES));
-        for prior in serde_json::Deserializer::from_reader(reader).into_iter::<PriorSample>() {
-            let prior = prior.map_err(|_| "cannot read owner shadow journal")?;
+        let mut reader = BufReader::new(log.take(MAX_LOG_BYTES + 1));
+        let mut line = Vec::new();
+        let mut offset = 0;
+        loop {
+            line.clear();
+            let bytes = reader
+                .read_until(b'\n', &mut line)
+                .map_err(|_| "cannot read owner shadow journal")?;
+            if bytes == 0 {
+                break;
+            }
+            offset += bytes as u64;
+            if offset > MAX_LOG_BYTES || line.last() != Some(&b'\n') {
+                return Err("owner shadow journal exceeds its limit or contains an incomplete record".into());
+            }
+            let prior: PriorSample =
+                serde_json::from_slice(&line).map_err(|_| "cannot read owner shadow journal")?;
             if prior.schema_version != 1 || prior.observed_at != prior.board.observed_at {
                 return Err("invalid owner shadow journal sample".into());
             }
