@@ -87,17 +87,26 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         _ => page.title().into(),
     };
     let mut html = format!("<main><h1 id=main tabindex=-1>{title}</h1>");
-    if page == Page::Home {
-        attention(&mut html, view);
-    }
-    html.push_str(&page.navigation());
+    html.push_str(&page.navigation(view.situation.map(|snapshot| snapshot.asks.len())));
     match page {
         Page::Home => {
+            html.push_str("<div class=home-layout><div class=home-decisions>");
+            attention(&mut html, view);
+            asks(&mut html, view);
+            html.push_str("</div><div class=home-overview><section><h2>Snapshot overview</h2>");
+            if let Some(board) = view.board {
+                let _ = write!(html,
+                    "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed at {} (Unix seconds)</p>",
+                    board.entries.len(), if stale(board, now) { "Stale snapshot" } else { "Board snapshot" }, board.observed_at);
+            } else {
+                html.push_str("<p>Board unavailable.</p>");
+            }
+            html.push_str("</section><details class=home-work><summary>Observed work</summary>");
             board(&mut html, view, now, Query::default());
             workers(&mut html, view);
             queue(&mut html, view);
             release(&mut html, view);
-            asks(&mut html, view);
+            html.push_str("</details></div></div>");
         }
         Page::Board | Page::BoardQuery(_) => {
             let query = if let Page::BoardQuery(query) = page {
@@ -109,7 +118,11 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             queue(&mut html, view);
         }
         Page::Workers => workers(&mut html, view),
-        Page::Asks => asks(&mut html, view),
+        Page::Asks => {
+            html.push_str("<div class=asks-layout>");
+            asks(&mut html, view);
+            html.push_str("</div>");
+        }
         Page::Item(number) => item(&mut html, view, number, now),
         Page::Chat(prompt) => chat::render(&mut html, view, prompt),
         Page::Usage => html
@@ -133,7 +146,25 @@ fn attention(html: &mut String, view: &View<'_>) {
         || !overdue.is_empty()
         || ask_count > 0
     {
-        html.push_str("<section id=attention><h2>Needs attention</h2><ul>");
+        let role = if view.main_red
+            || view.main_merge_stalled
+            || !view.stalled_runs.is_empty()
+            || !overdue.is_empty()
+        {
+            "alert"
+        } else {
+            "status"
+        };
+        let _ = write!(
+            html,
+            "<section id=attention role={role}><h2>Needs attention</h2><ul>"
+        );
+        if ask_count > 0 {
+            let _ = write!(
+                html,
+                "<li><a href=#asks>Unanswered owner decisions ({ask_count})</a></li>"
+            );
+        }
         if view.main_red {
             html.push_str("<li>Checks on main are failing.</li>");
         }
@@ -143,7 +174,7 @@ fn attention(html: &mut String, view: &View<'_>) {
         for pr in overdue {
             let _ = write!(
                 html,
-                "<li><a href=#queue>PR #{} has waited too long in the merge queue</a></li>",
+                "<li><a href=/board#queue>PR #{} has waited too long in the merge queue</a></li>",
                 pr.number
             );
         }
@@ -158,24 +189,21 @@ fn attention(html: &mut String, view: &View<'_>) {
             }
             html.push_str("</ul></details></li>");
         }
-        if ask_count > 0 {
-            let _ = write!(
-                html,
-                "<li><a href=#asks>Unanswered owner decisions ({ask_count})</a></li>"
-            );
-        }
         html.push_str("</ul></section>");
     }
+}
+
+fn stale(board: &Board, now: u64) -> bool {
+    board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900
 }
 
 fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
     html.push_str("<section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
-        let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
         let _ = write!(
             html,
             "<p class=muted>{} · observed at {} (Unix seconds)</p>",
-            if stale {
+            if stale(board, now) {
                 "Stale snapshot"
             } else {
                 "GitHub snapshot"
@@ -338,9 +366,11 @@ fn release(html: &mut String, view: &View<'_>) {
 fn asks(html: &mut String, view: &View<'_>) {
     html.push_str("<section id=asks><h2>For your decision</h2>");
     if let Some(s) = view.situation {
+        html.push_str("<div class=ask-cards>");
         for ask in &s.asks {
-            let _ = write!(html, "<article><p class=muted>{}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", subject(&ask.subject), escape(&ask.question));
+            let _ = write!(html, "<article><p class=muted>Ask {} · {}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", escape(&ask.id), subject(&ask.subject), escape(&ask.question));
         }
+        html.push_str("</div>");
         if s.asks.is_empty() {
             html.push_str("<p>No open asks in these runner facts.</p>");
         }
@@ -350,7 +380,33 @@ fn asks(html: &mut String, view: &View<'_>) {
     html.push_str("</section>");
 }
 
-pub const STYLE: &str = include_str!("lead_page/style.css");
+pub const STYLE: &str = concat!(
+    include_str!("lead_page/style.css"),
+    r#"
+:root { --nav-height:3.875rem; }
+nav.tabs a { position:relative; flex-direction:column; gap:.125rem; font-size:.75rem; line-height:1.25; }
+nav.tabs svg { order:-1; flex:none; width:1.375rem; height:1.375rem; }
+nav.tabs .badge {
+  position:absolute; top:.25rem; right:.25rem; max-width:calc(100% - .5rem);
+  padding:.125rem .375rem; border-radius:1rem; font-size:.71875rem;
+  color:var(--warn); background:var(--warn-soft); white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+nav.tabs .badge.quiet { color:var(--muted); background:var(--raised); }
+.home-decisions,.home-overview,.ask-cards>article { min-width:0; }
+.home-work { border:1px solid var(--line); border-radius:var(--radius); padding:16px; background:var(--surface); }
+.home-work>summary { min-height:44px; font-weight:600; }
+.ask-cards { display:grid; gap:14px; }
+.ask-cards>article { margin:0; }
+@media(min-width:900px) {
+  body { padding-left:5.75rem; }
+  nav.tabs { width:5.75rem; }
+  .home-layout { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr); gap:24px; align-items:start; }
+  .asks-layout .ask-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  nav.tabs a { min-height:4.5rem; padding:.625rem .25rem; justify-content:center; font-size:.78125rem; }
+}
+"#
+);
 
 pub const SCRIPT: &str = r#"const badge=document.getElementById('connection');
 let timer,pending;
@@ -483,6 +539,7 @@ mod tests {
             assert!(html.contains(&escape(&ask.question)));
         }
         assert!(html.contains("No open PRs in this snapshot"));
+        assert!(html.contains("href=/board>0 observed items"));
         assert!(html.contains("Options, recommendation and meanwhile are unavailable"));
         assert!(!html.contains("<form") && !html.contains("onclick="));
     }
