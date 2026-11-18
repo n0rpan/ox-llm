@@ -456,11 +456,7 @@ impl Hold {
                 row[field] = json!(value);
             }
         }
-        let paid = self.model.provider == "opencode";
-        // Only an actually reported cost settles as a paid charge. Estimated or
-        // missing usage stays unknown at zero USD: no reservation exists to
-        // floor it and no local estimate is invented.
-        let cost = if paid { usage.reported_cost } else { Some(0.0) }.filter(|n| n.is_finite() && *n >= 0.0);
+        let go = self.model.provider == "opencode";
         let actual = usage.total_tokens();
         let final_usage = matches!(
             outcome,
@@ -470,21 +466,29 @@ impl Hold {
                     ..
                 }
         );
-        match (actual.filter(|_| final_usage), cost) {
-            (Some(actual), Some(cost)) => {
-                row["subscription_tokens"] = json!(actual);
-                row["settled"] = json!("usage");
-                if paid && cost > 0.0 {
+        let cost = usage
+            .reported_cost
+            .filter(|n| final_usage && n.is_finite() && *n >= 0.0);
+        if go {
+            match cost {
+                Some(cost) if cost > 0.0 => {
                     row["billing"] = json!("metered");
                     row["cost_usd"] = json!(cost);
                     row["reported_cost_usd"] = json!(cost);
                 }
+                Some(_) => {}
+                None => {
+                    row.as_object_mut().unwrap().remove("cost_usd");
+                }
             }
-            _ => {
-                row["subscription_tokens"] = json!(self.reserved_tokens.max(actual.unwrap_or(0)));
-                row["settled"] = json!("reserved");
-                row["usage_missing"] = json!(true);
-            }
+        }
+        if let Some(actual) = actual.filter(|_| final_usage && (!go || cost.is_some())) {
+            row["subscription_tokens"] = json!(actual);
+            row["settled"] = json!("usage");
+        } else {
+            row["subscription_tokens"] = json!(self.reserved_tokens.max(actual.unwrap_or(0)));
+            row["settled"] = json!("reserved");
+            row["usage_missing"] = json!(true);
         }
         row
     }

@@ -287,7 +287,8 @@ cap or request bound pauses their admission: a tiny or fully consumed
 former `oxa.cloud.opencode.daily_budget_usd` and
 `oxa.cloud.opencode.max_request_usd` settings are no longer read. OpenCode's
 reported paid charges settle into the ledger and count in the shared daily
-total; estimated or missing usage stays recorded as unknown at zero USD.
+total. Missing or estimated Go costs stay unknown, with no actual USD amount.
+Historical Go estimates remain readable and do not count toward the daily total.
 Holds written by older versions — including stored `reserved_usd` and `go_usd`
 amounts — stay readable with their tokens counted toward the subscription caps,
 while their recorded USD reserves nothing. OpenCode controls whether a call falls
