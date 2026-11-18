@@ -25,6 +25,21 @@ pub(crate) struct Prepared {
     models: Vec<Model>,
     tailnet: Arc<LocalApi>,
     config: Config,
+    /// Shown to the owner while guests can spend metered provider credit without a cap.
+    warning: Option<String>,
+}
+
+/// With no `oxa.cloud.daily_budget_usd` there is no budget check: guests of a shared metered
+/// model spend the owner's provider credit, recorded in the ledger but not limited by USD.
+fn uncapped_warning(settings: &Settings, remote: &std::collections::BTreeSet<String>) -> Option<String> {
+    let capped = settings
+        .get("oxa.cloud.daily_budget_usd")
+        .is_some_and(|cap| !cap.is_null());
+    (!remote.is_empty() && !capped).then(|| {
+        "WARNING: guests can spend your metered provider credit without a USD limit. Set \
+         oxa.cloud.daily_budget_usd to cap it; guest request and token quotas still apply."
+            .into()
+    })
 }
 
 fn metered_aliases(
@@ -155,6 +170,7 @@ fn prepare(
         ledger,
         models,
         tailnet,
+        warning: uncapped_warning(settings, &config.remote_models),
         config,
     })
 }
@@ -195,6 +211,7 @@ impl Prepared {
             models,
             tailnet,
             config,
+            ..
         } = self;
         let chat = move |request: &ChatRequest<'_>, cancel: &CancelToken, on: &mut dyn FnMut(StreamEvent)| {
             engines
@@ -214,6 +231,7 @@ impl Prepared {
 
     pub(super) fn start(self) -> Result<(Serving, SocketAddr), OxaError> {
         let keys = self.keys.clone();
+        let warning = self.warning.clone();
         let stop = CancelToken::new();
         let thread_stop = stop.clone();
         let (send, receive) = std::sync::mpsc::channel();
@@ -229,7 +247,11 @@ impl Prepared {
                 Serving {
                     stop,
                     thread: Some(thread),
-                    status: OwnerStatus { status, keys },
+                    status: OwnerStatus {
+                        status,
+                        keys,
+                        warning,
+                    },
                 },
                 address,
             )),
@@ -251,14 +273,21 @@ pub(super) struct Serving {
 pub(super) struct OwnerStatus {
     status: Status,
     keys: Arc<Store>,
+    warning: Option<String>,
 }
 
 impl OwnerStatus {
+    pub(super) fn warning(&self) -> Option<&str> {
+        self.warning.as_deref()
+    }
     pub(super) fn lines(&self) -> Vec<String> {
         let Ok(live) = self.status.snapshot() else {
-            return vec!["LAN sharing activity unavailable.".into()];
+            let mut lines = vec!["LAN sharing activity unavailable.".into()];
+            lines.extend(self.warning.clone());
+            return lines;
         };
         let mut lines = vec![format!("LAN sharing · {} connections", live.connections)];
+        lines.extend(self.warning.clone());
         for key in live.keys {
             lines.push(format!("{} · {} active", key.name, key.active_requests));
         }
@@ -299,6 +328,11 @@ pub(crate) fn run(args: &[String], dirs: &Dirs, cwd: &Path, out: &mut dyn Write)
     let (config, aliases, socket) = options(args)?;
     let settings = Settings::load(dirs, cwd, false);
     let prepared = prepare(&settings, &settings, dirs, config, aliases, socket, None)?;
+    if let Some(warning) = &prepared.warning {
+        writeln!(out, "{warning}")
+            .and_then(|()| out.flush())
+            .map_err(|_| OxaError::new(codes::INVALID, "cannot write the sharing warning"))?;
+    }
     let stop = CancelToken::new();
     let mut signals =
         signal_hook::iterator::Signals::new([signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM])
@@ -369,6 +403,21 @@ fn service_error(error: Failure) -> OxaError {
 mod tests {
     use super::*;
     use oxc_local::native::LocalEngine;
+
+    #[test]
+    fn sharing_without_cap_warns_owner() {
+        let remote: std::collections::BTreeSet<String> = ["paid".to_string()].into();
+        let none = std::collections::BTreeSet::new();
+        let uncapped = Settings::from_values(serde_json::json!({"oxa":{"cloud":{}}}), serde_json::json!({}));
+        let warning = uncapped_warning(&uncapped, &remote).unwrap();
+        assert!(warning.starts_with("WARNING") && warning.contains("without a USD limit"));
+        assert!(uncapped_warning(&uncapped, &none).is_none());
+        let capped = Settings::from_values(
+            serde_json::json!({"oxa":{"cloud":{"daily_budget_usd":5}}}),
+            serde_json::json!({}),
+        );
+        assert!(uncapped_warning(&capped, &remote).is_none());
+    }
 
     #[test]
     fn owner_router_and_listener_use_the_same_local_engine() {
