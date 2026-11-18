@@ -115,8 +115,17 @@ impl Claims {
     }
     /// Full private query projection, not a second facts database.
     pub fn assignments(&self) -> Result<BTreeMap<u64, Assignment>> {
+        self.assignments_with_repair(true)
+    }
+
+    /// Validated snapshot without repairing witnesses; never grants admission or clearance.
+    pub fn assignments_read_only(&self) -> Result<BTreeMap<u64, Assignment>> {
+        self.assignments_with_repair(false)
+    }
+
+    fn assignments_with_repair(&self, repair_markers: bool) -> Result<BTreeMap<u64, Assignment>> {
         Ok(self
-            .rows()?
+            .rows_with_repair(repair_markers)?
             .into_iter()
             .map(|(number, row)| {
                 (

@@ -142,7 +142,7 @@ fn same_store_readback_preserves_full_claims_and_unknown_legacy_coverage_while_p
     assert_eq!(readback["worker"], value["worker"]);
     assert_eq!(readback["host_id"], "host-a");
     assert_eq!(readback["partition"], value["partition"]);
-    assert_eq!(readback["source"], "Claims::assignments");
+    assert_eq!(readback["source"], "Claims::assignments_read_only");
     assert_eq!(readback["partition_source"], "protected-owner-configuration");
     assert_eq!(
         readback["partition_membership"],

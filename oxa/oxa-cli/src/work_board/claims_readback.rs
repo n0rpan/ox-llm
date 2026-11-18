@@ -24,13 +24,13 @@ pub(super) fn run(
     let (worker, host) = crate::work_cmd::registered_native_worker(&value)?;
     let partition = refill::partition(&value)?;
     partition.validate(Policy::default().max_attempts_per_day)?;
-    let assignments = claims.assignments()?;
+    let assignments = claims.assignments_read_only()?;
     let membership: BTreeMap<_, _> = assignments
         .keys()
         .map(|number| (*number, partition.contains(*number)))
         .collect();
     let receipt = json!({
-        "schema_version":1,"source":"Claims::assignments",
+        "schema_version":1,"source":"Claims::assignments_read_only",
         "worker":worker,"host_id":host,"refill_enabled":value["enabled"] == true,
         "partition":{"modulus":partition.modulus,"residues":partition.residues},
         "partition_source":"protected-owner-configuration","partition_membership":membership,
