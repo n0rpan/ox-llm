@@ -3,6 +3,11 @@
 # --promote mode activates the verified build for the operator's existing N0
 # units by replacing their regular executable and checksum manifest together,
 # and rolls the exact previous pair back when the result cannot be verified.
+#
+# Registry exception: this is a repository operator script under tools/lab/,
+# not a shipped oxa CLI surface, so its flags have no declaration in
+# oxa/oxa-interactive/src/command_registry.rs. Its usage lives in this file and
+# in docs/DEV.md, next to the units it edits.
 set -euo pipefail
 umask 077
 repo=oxstack/ox-llm

@@ -31,7 +31,9 @@ verification path to activate a verified build for existing units, and adds noth
 no second downloader, publisher, cron, service or host compile.
 
 The mode takes the operator's own existing artifacts as input, so no private path or
-identity is built in:
+identity is built in. The flags are a repository operator-script surface, not a shipped oxa
+CLI command: they are declared here and in the script's usage text rather than in
+`oxa/oxa-interactive/src/command_registry.rs`, which lists product commands only.
 
 ```sh
 tools/lab/dev-update.sh [dev-prefix] --promote \
