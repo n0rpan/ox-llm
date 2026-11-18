@@ -168,9 +168,7 @@ fn record(log: &mut File, board: &Board, publication: &Publication) -> Result<()
     )
 }
 
-/// The existing Reader supplies the fresh board and authorization after the
-/// journal lock is acquired. Reconciliation reads the precise acknowledged
-/// entry with that Reader. With the default policy neither callback is used.
+/// Apply one fresh Reader snapshot under the existing owner-journal lock.
 pub fn run_once(
     policy: &Policy,
     journal_path: &Path,
@@ -190,29 +188,31 @@ pub fn run_once(
     let mut history = Admissions::load(&mut log)?;
     let sample = read()?;
     let action = authorize(policy, &mut history, &sample);
-    advance(
+    let board = sample.board.clone();
+    let mut sample = Some(sample);
+    super::run_with_landing(
         &mut log,
-        &history.publications,
-        &sample.board,
-        action,
-        |file, action| {
-            let publisher = LandingPublisher::new(repo, run, gh_binary, file);
-            match action {
-                Approved::Notice { intent, failed_tests } => {
-                    let names: Vec<_> = failed_tests.iter().map(String::as_str).collect();
-                    Ok(Publication::Delivered(publisher.notice(&intent, &names)?))
-                }
-                Approved::Retry { intent, .. } => match publisher.enqueue(&intent)? {
-                    Admission::Pending(ack) => Ok(Publication::Acknowledged(ack)),
-                    Admission::Confirmed(receipt) => Ok(Publication::Admitted(receipt)),
-                },
-                Approved::Reconcile(ack) => match ack.reconcile(&read_acknowledged(&ack)?)? {
-                    Admission::Pending(ack) => Ok(Publication::Acknowledged(ack)),
-                    Admission::Confirmed(receipt) => Ok(Publication::Admitted(receipt)),
-                },
+        true,
+        || sample.take().ok_or_else(|| "snapshot already written".into()),
+        |_| {},
+    )?;
+    advance(&mut log, &history.publications, &board, action, |file, action| {
+        let publisher = LandingPublisher::new(repo, run, gh_binary, file);
+        match action {
+            Approved::Notice { intent, failed_tests } => {
+                let names: Vec<_> = failed_tests.iter().map(String::as_str).collect();
+                Ok(Publication::Delivered(publisher.notice(&intent, &names)?))
             }
-        },
-    )
+            Approved::Retry { intent, .. } => match publisher.enqueue(&intent)? {
+                Admission::Pending(ack) => Ok(Publication::Acknowledged(ack)),
+                Admission::Confirmed(receipt) => Ok(Publication::Admitted(receipt)),
+            },
+            Approved::Reconcile(ack) => match ack.reconcile(&read_acknowledged(&ack)?)? {
+                Admission::Pending(ack) => Ok(Publication::Acknowledged(ack)),
+                Admission::Confirmed(receipt) => Ok(Publication::Admitted(receipt)),
+            },
+        }
+    })
 }
 
 fn authorize(policy: &Policy, history: &mut Admissions, sample: &LandingSample) -> Option<Authorization> {
