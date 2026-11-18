@@ -3,7 +3,7 @@
 //! had to choose between a line it could not follow and the rule that forbade it, so the metadata
 //! read was dropped.
 //!
-//! The repository guidance now names the instruction that decides, says the fetch line is provenance
+//! The repository guidance assigns access to the runner, says the fetch line is provenance
 //! rather than an order, and says a fact the packet leaves out is reported instead of fetched. It
 //! also scopes every `gh` command in the file to a session that owns GitHub access, so the two
 //! directions cannot disagree again.
@@ -36,8 +36,12 @@ fn a_fetch_line_in_a_runner_owned_packet_is_not_an_order() {
     let text = guidance();
     let rule = rule(&text);
     assert!(
-        rule.contains("The session prompt says which; the two never apply at once."),
-        "the rule has to name the instruction that decides: {rule}"
+        rule.contains("Their runner owns GitHub access."),
+        "the rule has to assign GitHub access to the worker's runner: {rule}"
+    );
+    assert!(
+        rule.contains("provenance, not an order"),
+        "a packet's fetch line must not authorize a GitHub call: {rule}"
     );
     assert!(
         rule.contains("make no `gh` call"),

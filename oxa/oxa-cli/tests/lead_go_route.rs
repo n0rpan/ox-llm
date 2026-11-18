@@ -9,6 +9,7 @@ mod anthropic;
 mod upstream;
 use anthropic::MockAnthropic;
 use oxa_fake::TestEnv;
+use oxa_session::SessionStore;
 use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
@@ -23,7 +24,7 @@ const METERED_MODEL: &str = "synthetic-cloud";
 const CREDENTIAL: &str = "synthetic-provider-credential";
 
 fn discovery(base: &str) -> Value {
-    json!({"data":[{"id":"synthetic-flash","canonical_id":"synthetic/canonical","limit":{"context":32768,"output":512},
+    json!({"data":[{"id":"synthetic-flash","canonical_id":"synthetic/canonical","limit":{"context":32768,"output":8192},
         "api":{"chat-completions":{"base_url":format!("{base}/inference/go/openai/v1")}},"cost":{"input":0.1},"capabilities":{"tools":true},"modalities":{"input":["text"],"output":["text"]}}]})
 }
 fn usage() -> Value {
@@ -31,11 +32,11 @@ fn usage() -> Value {
         "opencode":{"billing_source":"go","list_cost":0.001,"allowance":0.0008,
             "tokens":{"input":20,"output":5,"reasoning":1,"cache_read":80,"cache_write_5m":0,"cache_write_1h":0}}})
 }
-fn stream(text: &str) -> Reply {
+fn stream_with_usage(text: &str, usage: Value) -> Reply {
     let chunks = [
         json!({"id":"synthetic-chat","choices":[{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]}),
         json!({"id":"synthetic-chat","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}),
-        json!({"choices":[],"usage":usage()}),
+        json!({"choices":[],"usage":usage}),
     ];
     let mut bytes = Vec::new();
     for chunk in chunks {
@@ -43,6 +44,9 @@ fn stream(text: &str) -> Reply {
     }
     bytes.extend(b"data: [DONE]\r\n\r\n");
     Reply::raw(200, "text/event-stream", bytes, vec![])
+}
+fn stream(text: &str) -> Reply {
+    stream_with_usage(text, usage())
 }
 
 /// Settings keep the metered default model and the Go subscription route, and
@@ -110,6 +114,19 @@ fn rows(env: &TestEnv) -> Vec<Value> {
         .collect()
 }
 
+/// The exact recorded upstream sequence of one chat process. Naming the whole
+/// sequence keeps a blind reply queue honest: one catalog discovery per process,
+/// then the bounded completion. A fixture that queued replies without this check
+/// could feed a JSON catalog body to the completion stream.
+fn assert_sequence(mock: &MockOpenAi, expected: &[&str]) {
+    let recorded: Vec<String> = mock
+        .requests()
+        .iter()
+        .map(|request| format!("{} {}", request.method, request.target))
+        .collect();
+    assert_eq!(recorded, expected);
+}
+
 fn go_chat_requests(mock: &MockOpenAi) -> Vec<upstream::Request> {
     mock.requests()
         .into_iter()
@@ -172,6 +189,7 @@ fn lead_chat_keeps_the_metered_guard_and_routes_the_go_subscription_choice() {
     let chats = go_chat_requests(&go);
     assert_eq!(chats.len(), 1);
     assert_eq!(chats[0].body["model"], "synthetic-flash");
+    assert_eq!(chats[0].body["max_tokens"], 4096, "the one bounded turn");
     assert!(metered.requests().is_empty());
 
     // The restored one-shot drives the same bounded path through the gateway.
@@ -189,6 +207,199 @@ fn lead_chat_keeps_the_metered_guard_and_routes_the_go_subscription_choice() {
         assert_eq!(row["billing"], "subscription", "{row:?}");
         assert_eq!(row["remote_provider"], "opencode", "{row:?}");
     }
+    // Three chat processes: each one discovers the Go catalog once, and only
+    // the two routed turns reach the completion stream.
+    assert_sequence(
+        &go,
+        &[
+            "GET /inference/go/v1/models",
+            "GET /inference/go/v1/models",
+            "POST /inference/go/openai/v1/chat/completions",
+            "GET /inference/go/v1/models",
+            "POST /inference/go/openai/v1/chat/completions",
+        ],
+    );
+    go.assert_healthy();
+    metered.finish();
+}
+
+/// One Go reply that stops at the output limit after generating the whole
+/// bounded budget, as the live DeepSeek route did: HTTP 200, 512 generated
+/// tokens, `finish_reason: "length"`, partial content only.
+fn length_stream(partial: &str) -> Reply {
+    let usage = json!({"prompt_tokens":100,"completion_tokens":4096,"total_tokens":4196,
+        "prompt_tokens_details":{"cached_tokens":80},"cost":0,
+        "opencode":{"billing_source":"go","list_cost":0.001,"allowance":0.0008,
+            "tokens":{"input":20,"output":4096,"reasoning":4000,"cache_read":80,"cache_write_5m":0,"cache_write_1h":0}}});
+    let chunks = [
+        json!({"id":"synthetic-chat","choices":[{"index":0,"delta":{"role":"assistant","content":partial},"finish_reason":null}]}),
+        json!({"id":"synthetic-chat","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}),
+        json!({"choices":[],"usage":usage}),
+    ];
+    let mut bytes = Vec::new();
+    for chunk in chunks {
+        bytes.extend_from_slice(format!("data: {chunk}\r\n\r\n").as_bytes());
+    }
+    bytes.extend(b"data: [DONE]\r\n\r\n");
+    Reply::raw(200, "text/event-stream", bytes, vec![])
+}
+
+#[test]
+fn a_length_stopped_bounded_reply_fails_typed_without_an_impossible_retry() {
+    let env = TestEnv::new_in(std::path::Path::new("/tmp"));
+    fs::set_permissions(&env.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let metered = MockAnthropic::start(vec![]);
+    let go = MockOpenAi::start_with(|base| {
+        // One chat process: one catalog discovery, then the one bounded turn.
+        // No recovery reply is queued, so a forwarded recovery request would be
+        // an unexpected upstream request rather than a silent pass.
+        vec![
+            Reply::json(discovery(base)),
+            length_stream(r#"{"text":"a concise answer that ran"#),
+        ]
+    });
+    settings(&env, &format!("http://{}", go.address()), Value::Null);
+    // The live incident ran with the ordinary thinking and retry policy: the
+    // bounded turn spent its shared 512-token budget on reasoning, the visible
+    // answer was cut, and the core then scheduled its length recovery.
+    let path = env.agent_dir().join("settings.json");
+    let arrange = |path: &std::path::Path| {
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        value["defaultThinkingLevel"] = json!("medium");
+        value["retry"] = json!({"enabled": true});
+        fs::write(path, value.to_string()).unwrap();
+        fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    arrange(&path);
+    write_key(&env);
+
+    let initialized = run(&env, &["lead", "chat", "--init"]);
+    assert!(initialized.status.success(), "{initialized:?}");
+    let id = String::from_utf8(initialized.stdout).unwrap().trim().to_owned();
+    settings(
+        &env,
+        &format!("http://{}", go.address()),
+        json!({"sessionId": id, "model": GO_MODEL}),
+    );
+    arrange(&path);
+
+    let refused = run(&env, &["lead", "chat", "A concise question?"]);
+    assert_sequence(
+        &go,
+        &[
+            "GET /inference/go/v1/models",
+            "POST /inference/go/openai/v1/chat/completions",
+        ],
+    );
+    assert!(!refused.status.success(), "{refused:?}");
+    let diagnostic = String::from_utf8_lossy(&refused.stderr);
+    // The typed local literal-limit reason, never the metered USD reason.
+    assert!(
+        diagnostic.contains("bounded output limit"),
+        "the bounded literal-limit reason must reach the CLI: {diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains("daily cloud budget"),
+        "a local literal limit is not a spent metered budget: {diagnostic}"
+    );
+    assert_eq!(refused.status.code(), Some(1), "not the spent-budget exit");
+
+    // The recovery request can never be reserved, so it is never forwarded and
+    // its internal instructions never enter the protected Session.
+    let chats = go_chat_requests(&go);
+    assert_eq!(chats.len(), 1, "no impossible recovery request: {chats:?}");
+    // The gateway normalizes the bounded turn to one fixed bound: the visible
+    // reply plus reasoning headroom. The Go adapter removes `reasoning_effort:
+    // none`, so this headroom (not a stripped control) is the viable path.
+    assert_eq!(chats[0].body["max_tokens"], 4096, "{}", chats[0].body);
+    let dirs = oxa_config::Dirs::under(env.root());
+    let store = oxa_session::FsStore::new(dirs.sessions_dir);
+    let selected = store.resolve(&id).unwrap();
+    let logs = fs::read_to_string(&selected.path).unwrap();
+    assert!(
+        !logs.contains("reached its output limit and was discarded"),
+        "the internal recovery note must not enter the protected Session: {logs}"
+    );
+    assert!(
+        logs.contains("a concise answer that ran"),
+        "the cut is kept as an audit entry: {logs}"
+    );
+
+    // Actual accounting is preserved: the one forwarded request settled its
+    // real 200/512 usage against the subscription route, not a refusal.
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1, "{ledger:?}");
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert_eq!(ledger[0]["billing"], "subscription");
+    assert_eq!(ledger[0]["subscription_tokens"], 4196);
+    assert!(metered.requests().is_empty());
+    go.assert_healthy();
+    metered.finish();
+}
+
+#[test]
+fn a_reasoning_heavy_go_reply_still_completes_inside_the_bounded_turn() {
+    let env = TestEnv::new_in(std::path::Path::new("/tmp"));
+    fs::set_permissions(&env.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let metered = MockAnthropic::start(vec![]);
+    let reasoning_usage = json!({"prompt_tokens":100,"completion_tokens":3050,"total_tokens":3150,
+        "prompt_tokens_details":{"cached_tokens":80},"cost":0,
+        "opencode":{"billing_source":"go","list_cost":0.001,"allowance":0.0008,
+            "tokens":{"input":20,"output":3050,"reasoning":3000,"cache_read":80,"cache_write_5m":0,"cache_write_1h":0}}});
+    let go = MockOpenAi::start_with(|base| {
+        // One chat process: one catalog discovery, then the one bounded turn.
+        vec![
+            Reply::json(discovery(base)),
+            stream_with_usage(
+                r#"{"text":"a concise reasoning answer","facts":[],"action":null}"#,
+                reasoning_usage,
+            ),
+        ]
+    });
+    settings(&env, &format!("http://{}", go.address()), Value::Null);
+    // The live incident's ordinary thinking policy: reasoning stays on for the Go
+    // route (its adapter drops `reasoning_effort: none`), so the turn must carry
+    // enough bounded headroom for reasoning plus the visible answer.
+    let path = env.agent_dir().join("settings.json");
+    let arrange = |path: &std::path::Path| {
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        value["defaultThinkingLevel"] = json!("medium");
+        fs::write(path, value.to_string()).unwrap();
+        fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    arrange(&path);
+    write_key(&env);
+
+    let initialized = run(&env, &["lead", "chat", "--init"]);
+    assert!(initialized.status.success(), "{initialized:?}");
+    let id = String::from_utf8(initialized.stdout).unwrap().trim().to_owned();
+    settings(
+        &env,
+        &format!("http://{}", go.address()),
+        json!({"sessionId": id, "model": GO_MODEL}),
+    );
+    arrange(&path);
+
+    let answered = run(&env, &["lead", "chat", "A concise question?"]);
+    assert_sequence(
+        &go,
+        &[
+            "GET /inference/go/v1/models",
+            "POST /inference/go/openai/v1/chat/completions",
+        ],
+    );
+    assert!(answered.status.success(), "{answered:?}");
+    assert!(String::from_utf8_lossy(&answered.stdout).contains("a concise reasoning answer"));
+    let chats = go_chat_requests(&go);
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0].body["max_tokens"], 4096, "{}", chats[0].body);
+    // The reasoning-heavy reply settled its real usage inside the same bound.
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1, "{ledger:?}");
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert_eq!(ledger[0]["billing"], "subscription");
+    assert_eq!(ledger[0]["subscription_tokens"], 3150);
+    assert!(metered.requests().is_empty());
     go.assert_healthy();
     metered.finish();
 }
