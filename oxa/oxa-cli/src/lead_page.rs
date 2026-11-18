@@ -29,6 +29,8 @@ pub struct View<'a> {
     pub overdue_queue: &'a [PullRequest],
     /// Source issue and its reported checkbox states; these do not establish validation.
     pub release: Option<(u64, &'a [(bool, String)])>,
+    /// Serving process self-image digest, supplied by the authenticated native caller.
+    pub running_sha256: Option<&'a str>,
 }
 
 fn escape(text: &str) -> String {
@@ -901,12 +903,18 @@ mod tests {
     }
 
     fn refresh_runtime() -> oxa_script::Runtime {
+        refresh_runtime_config(false, None)
+    }
+
+    fn refresh_runtime_config(events: bool, digest: Option<&str>) -> oxa_script::Runtime {
         let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
         runtime
             .eval_script(
                 "dom-fixture",
                 r#"
 let current, supplied, closeDuringFetch, failureMode='ok', focusDuringFetch=false, focused='', inside=false, fetches=0;
+let initialDigest=null, reloads=0, visibilityListener, serial=0;
+const timers=new Map(), requested=[], streams=[];
 const connectionBadge={textContent:'Snapshot'};
 function makeMain(open) {
   const work={open}, notice={hidden:true};
@@ -915,14 +923,16 @@ function makeMain(open) {
 }
 const document={hidden:false, activeElement:{matches:selectors=>selectors.split(',').includes(focused)},
   getElementById:id=>id==='connection'?connectionBadge:id==='refresh-error'?current.notice:null,
-  querySelector:()=>current, addEventListener:()=>{}};
-const setTimeout=()=>1, clearTimeout=()=>{};
+  querySelector:selector=>selector.startsWith('meta')?(initialDigest?{content:initialDigest}:null):current,
+  addEventListener:(name,fn)=>{if(name==='visibilitychange')visibilityListener=fn;}};
+const setTimeout=(fn,ms)=>{timers.set(++serial,{fn,ms});return serial;}, clearTimeout=id=>timers.delete(id);
 class AbortController { constructor(){this.signal={aborted:false};} abort(){this.signal.aborted=true;} }
-class URL { constructor(){this.searchParams={set(){}};} }
-const location={href:'http://example.invalid/'};
+class URL { constructor(href){this.href=href;this.searchParams={set:(key,value)=>{this.href+=(href.includes('?')?'&':'?')+key+'='+value;}};} }
+const location={href:'http://example.invalid/board?f=fix&p=2',reload:()=>{reloads++;}};
 class DOMParser { parseFromString(){return {querySelector:()=>failureMode==='missing'?null:supplied};} }
-async function fetch(){
+async function fetch(target){
   fetches++;
+  requested.push(target.href);
   if(focusDuringFetch){inside=true; focused='[tabindex]';}
   if(failureMode==='network')throw new Error('private-refresh-marker');
   if(failureMode==='abort'){pending.abort();throw new Error('aborted');}
@@ -932,8 +942,128 @@ async function fetch(){
 "#,
             )
             .unwrap();
+        if events {
+            runtime
+                .eval_script(
+                    "event-source-fixture",
+                    &format!(
+                        r#"
+initialDigest={};
+class EventSource {{
+  constructor(url){{this.url=url;this.listeners={{}};this.closed=false;streams.push(this);}}
+  addEventListener(name,fn){{this.listeners[name]=fn;}}
+  close(){{this.closed=true;}}
+}}
+"#,
+                        serde_json::to_string(&digest).unwrap()
+                    ),
+                )
+                .unwrap();
+        }
         runtime.eval_script("live.js", SCRIPT).unwrap();
         runtime
+    }
+
+    #[test]
+    fn serving_digest_is_validated_and_only_in_full_document_metadata() {
+        let digest = "ab".repeat(32);
+        for page in [
+            Page::Home,
+            Page::Asks,
+            Page::Board,
+            Page::Workers,
+            Page::Usage,
+            Page::Chat(Prompt::Status),
+        ] {
+            let view = View {
+                running_sha256: Some(&digest),
+                ..Default::default()
+            };
+            let expected = format!("<meta name=oxa-running-sha256 content=\"{digest}\">");
+            assert_eq!(document_for(page, &view, 0).matches(&expected).count(), 1);
+            assert!(!content_for(page, &view, 0).contains("oxa-running-sha256"));
+        }
+        for digest in [
+            None,
+            Some(""),
+            Some("abcd"),
+            Some("ABCD"),
+            Some("\"><script>private-marker</script>"),
+        ] {
+            let html = document_for(
+                Page::Home,
+                &View {
+                    running_sha256: digest,
+                    ..Default::default()
+                },
+                0,
+            );
+            assert!(!html.contains("oxa-running-sha256") && !html.contains("private-marker"));
+        }
+    }
+
+    #[test]
+    fn stream_refresh_uses_current_tab_and_preserves_reader_and_digest_authority() {
+        let mut runtime = refresh_runtime_config(true, Some(&"a".repeat(64)));
+        let result = runtime.eval_async_body("stream-reader", r#"
+current=makeMain(true); supplied=makeMain(false);
+if(streams.length!==1||streams[0].url!=='/events/live')throw new Error('missing authenticated live route');
+const source=streams[0], send=value=>source.listeners['lead-update']({data:JSON.stringify(value)});
+await send({running_sha256:'a'.repeat(64)});
+if(current!==supplied||!current.work.open||reloads!==0||requested[0]!=='http://example.invalid/board?f=fix&p=2&fragment=1')
+  throw new Error('same-image event lost current tab or reader state');
+inside=true;focused='textarea';supplied=makeMain(false);
+const retained=current, before=fetches;
+await send({running_sha256:'a'.repeat(64)});
+if(current!==retained||fetches!==before)throw new Error('stream replaced focused composer');
+inside=false;await send({running_sha256:null});
+if(current!==supplied||reloads!==0)throw new Error('null image must refresh without reload');
+for(const data of ['not-json','{}','{"running_sha256":3}','{"running_sha256":"AB"}','{"running_sha256":null,"extra":1}']) {
+  const before=fetches;
+  await source.listeners['lead-update']({data});
+  if(fetches!==before||reloads!==0||current.notice.hidden)throw new Error('invalid event acquired authority');
+}
+await send({running_sha256:'a'.repeat(64)});
+if(!current.notice.hidden)throw new Error('valid event and fragment did not recover');
+await send({running_sha256:'b'.repeat(64)});
+if(reloads!==1)throw new Error('changed serving image did not reload');
+return true;
+"#).unwrap();
+        assert_eq!(result, serde_json::json!(true));
+    }
+
+    #[test]
+    fn normal_stream_rotation_retains_state_but_failures_require_valid_recovery() {
+        let mut runtime = refresh_runtime_config(true, None);
+        let result = runtime.eval_async_body("stream-rotation", r#"
+current=makeMain(true);supplied=makeMain(false);
+const source=streams[0], send=value=>source.listeners['lead-update']({data:JSON.stringify(value)});
+await send({running_sha256:null});
+await send({running_sha256:'a'.repeat(64)});
+if(reloads!==0)throw new Error('unknown document image cannot authorize reload');
+source.onerror();
+if(!current.notice.hidden)throw new Error('normal finite stream rotation flashed failure');
+await send({running_sha256:'a'.repeat(64)});
+if(!current.notice.hidden||timers.size!==0)throw new Error('normal reconnect failed to retain successful state');
+source.onerror();
+for(const {fn} of [...timers.values()])fn();
+if(current.notice.hidden)throw new Error('transport failure never surfaced');
+failureMode='network';const retained=current;supplied=makeMain(false);
+await send({running_sha256:'a'.repeat(64)});
+if(current!==retained||current.notice.hidden)throw new Error('failed read erased last view or failure');
+failureMode='ok';await send({running_sha256:'a'.repeat(64)});
+if(current!==supplied||!current.notice.hidden)throw new Error('valid event and read must recover');
+document.hidden=true;visibilityListener();
+if(!source.closed)throw new Error('hidden page retained stream');
+const before=fetches;await refresh();
+if(fetches!==before)throw new Error('hidden page fetched');
+document.hidden=false;visibilityListener();
+if(streams.length!==2)throw new Error('visible page failed to reauthenticate');
+await streams[1].listeners['lead-update']({data:JSON.stringify({running_sha256:'b'.repeat(64)})});
+if(reloads!==1)throw new Error('reconnect missed changed image with unchanged board');
+return true;
+"#).unwrap();
+        assert_eq!(result, serde_json::json!(true));
     }
 
     #[test]
