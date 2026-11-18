@@ -82,7 +82,8 @@ pub fn before_credentials(
     Ok(())
 }
 
-/// Admission math only. The accounting slice supplies an atomic ledger snapshot
+/// Admission math only. An unset cap (`null`) means no budget check: the owner
+/// chose no limit, so the request is admitted and its cost is still recorded. The accounting slice supplies an atomic ledger snapshot
 /// and outstanding holds, and retains the lock through creation of a new hold.
 /// This function alone neither grants a reservation nor forwards a request.
 pub fn daily_budget(
@@ -92,10 +93,15 @@ pub fn daily_budget(
     reserved: f64,
     required: f64,
 ) -> Result<(), Refusal> {
+    if cap.is_null() {
+        return Ok(());
+    }
     let Some(cap) = cap.as_f64().filter(|n| n.is_finite() && *n > 0.0) else {
+        // A configured but unusable cap (zero, negative, non-numeric) is a
+        // configuration error, not an absent budget.
         return Err(Refusal {
             status: 403,
-            message: "Cloud models need a per-day USD budget (`cloud.daily_budget_usd`).",
+            message: "`cloud.daily_budget_usd` must be a positive number when set.",
             code: "budget_not_configured",
             param: "model",
         });

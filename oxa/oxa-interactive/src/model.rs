@@ -263,6 +263,49 @@ mod thinking_tests {
     }
 }
 
+/// #873: the unit a budget is counted in. The HUD spells it out (`$`, `tok`), so a number is
+/// never read as the wrong kind of budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetUnit {
+    /// US dollars, two decimals.
+    Usd,
+    /// Tokens, compact (`12k`, `1.5M`).
+    Tokens,
+}
+
+/// #873: what a budget covers. The HUD spells it out (`day`, `run`, `goal`), so a used/cap
+/// pair is never read as a different scope than the one it was projected from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetScope {
+    /// The gateway's per-day cloud budget (`cloud.daily_budget_usd`).
+    Day,
+    /// One invocation's soft token budget (`--max-tokens`).
+    Run,
+    /// A stored goal's budget (`oxa.goal.v1`).
+    Goal,
+}
+
+/// #873: one authoritative budget the HUD can show: what is used against what cap, in which
+/// unit and for which scope. A front end builds it from an authoritative projection (the
+/// gateway's daily USD budget, an invocation token budget, a goal budget); the HUD never
+/// computes a budget of its own, never forecasts and never issues a request.
+///
+/// The projection is optional and may be partial: `used: None` means settlement is
+/// unavailable, and the HUD shows `?` rather than a zero. `incomplete` means some usage is
+/// not settled yet, so `used` is a lower bound and the HUD marks it (`8.10+`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BudgetMeter {
+    /// Settled usage so far, in `unit`; `None` = settlement is unavailable (never a zero).
+    pub used: Option<f64>,
+    /// The cap, or `None` when no cap is set (unlimited or not configured).
+    pub cap: Option<f64>,
+    pub unit: BudgetUnit,
+    pub scope: BudgetScope,
+    /// Some usage is not settled yet, so `used` is a lower bound. Ignored when `used` is
+    /// `None` (an unknown settlement has no lower bound to mark).
+    pub incomplete: bool,
+}
+
 /// Everything the chrome (D6) draws. Updated by [`crate::apply_event`] and by the app from
 /// `Session::state()` / `Session::stats()` after each settle.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -317,6 +360,11 @@ pub struct StatusModel {
     /// #202: the process's autonomy level (standard, auto or yolo); with `mode` it gives the
     /// permission mode the status bar shows.
     pub autonomy: oxa_proto::Autonomy,
+    /// #873: the authoritative budget the HUD shows, when a front end has one. `None` = no
+    /// budget projection is available, and the HUD shows no budget part at all (never a zero).
+    /// The projection itself is the public budget surface of #627; until it lands no front end
+    /// sets this, so the part is absent in a real session.
+    pub budget: Option<BudgetMeter>,
 }
 
 impl StatusModel {
@@ -753,8 +801,10 @@ pub struct InteractiveOpts {
     pub initial_parts: Vec<Part>,
     /// Further messages from the command line, sent as follow-ups in order.
     pub initial_follow_ups: Vec<String>,
-    /// `--theme` override (a name or a path).
+    /// Initial theme override (a name or a path).
     pub theme: Option<String>,
+    /// Ordered discovered and explicit theme files/directories (later paths win).
+    pub theme_paths: Vec<std::path::PathBuf>,
     /// Startup notices from loading settings, resources and extensions.
     pub notices: Vec<(Level, String)>,
     /// Environment snapshot for capability detection, editor and clipboard choice.

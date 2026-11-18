@@ -350,21 +350,35 @@ pub struct Comment<'a> {
 /// A newer summary replaces an older one, even if it refers to another head.
 /// Conflicting summaries with the same update time cannot authorize landing.
 pub fn latest_findings(comments: Option<&[Comment<'_>]>) -> Findings {
-    latest_summary(comments).map_or(Findings::Unknown, |summary| summary.findings)
+    latest_summary(comments, None).map_or(Findings::Unknown, |summary| summary.findings)
+}
+
+/// Landing requires completed Code review on this head for clearance. Older
+/// unresolved findings still hold landing, but cannot authorize an action.
+pub fn latest_findings_for_head(comments: Option<&[Comment<'_>]>, head: &str) -> (Findings, bool) {
+    latest_summary(comments, Some(head)).map_or((Findings::Unknown, false), |summary| {
+        let findings = match summary.findings {
+            Findings::Clear if !summary.exact_code_completed => Findings::Unknown,
+            findings => findings,
+        };
+        (findings, summary.exact_hold)
+    })
 }
 
 /// The full commit reviewed by Codex when the latest trusted summary has no
 /// code findings. The caller must still match it against the PR's own diff.
 pub fn latest_code_approval(comments: Option<&[Comment<'_>]>) -> Option<String> {
-    latest_summary(comments)?.code_approval
+    latest_summary(comments, None)?.code_approval
 }
 
 struct Summary {
     findings: Findings,
     code_approval: Option<String>,
+    exact_code_completed: bool,
+    exact_hold: bool,
 }
 
-fn latest_summary(comments: Option<&[Comment<'_>]>) -> Option<Summary> {
+fn latest_summary(comments: Option<&[Comment<'_>]>, head: Option<&str>) -> Option<Summary> {
     let mut latest = None;
     for comment in comments? {
         if comment.bot_id != Some(CONNECTOR_BOT_ID) {
@@ -375,9 +389,11 @@ fn latest_summary(comments: Option<&[Comment<'_>]>) -> Option<Summary> {
             continue;
         }
         let updated_at = comment.updated_at?;
-        let state = state_line(lines.next()).unwrap_or(Summary {
+        let state = state_line(lines.next(), head).unwrap_or(Summary {
             findings: Findings::Unknown,
             code_approval: None,
+            exact_code_completed: false,
+            exact_hold: false,
         });
         match latest {
             Some((time, _)) if time > updated_at => {}
@@ -400,13 +416,15 @@ fn combine_tied(left: Summary, right: Summary) -> Summary {
     };
     Summary {
         findings,
+        exact_code_completed: left.exact_code_completed && right.exact_code_completed,
+        exact_hold: left.exact_hold && right.exact_hold,
         code_approval: left
             .code_approval
             .filter(|head| left.findings == right.findings && right.code_approval.as_ref() == Some(head)),
     }
 }
 
-fn state_line(line: Option<&str>) -> Option<Summary> {
+fn state_line(line: Option<&str>, head: Option<&str>) -> Option<Summary> {
     let state = line?
         .strip_prefix(STATE_PREFIX)
         .and_then(|line| line.strip_suffix(STATE_SUFFIX))
@@ -429,9 +447,21 @@ fn state_line(line: Option<&str>) -> Option<Summary> {
                 && findings != Findings::Unresolved
         })
         .map(str::to_owned);
+    let completed_on_head = |review: &Value| {
+        head.is_some_and(|head| {
+            git::object_id(head)
+                && review["commit_sha"].as_str() == Some(head)
+                && review["status"] == "completed"
+        })
+    };
+    let exact_hold = [code, security]
+        .into_iter()
+        .any(|review| completed_on_head(review) && review["has_unresolved_findings"] == true);
     Some(Summary {
         findings,
         code_approval,
+        exact_code_completed: completed_on_head(code),
+        exact_hold,
     })
 }
 

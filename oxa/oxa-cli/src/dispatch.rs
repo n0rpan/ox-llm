@@ -89,23 +89,6 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         cwd,
     } = io;
 
-    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(crate::help::command_words(argv)) {
-        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
-            && invocation.args.is_empty()
-        {
-            let menu = oxa_interactive::command_menu::menu(
-                invocation.command.id,
-                oxa_interactive::command_registry::Surface::Cli,
-            )
-            .unwrap_or_default();
-            return if stdout.write_all(menu.as_bytes()).is_ok() {
-                0
-            } else {
-                2
-            };
-        }
-    }
-
     if let Some(help) = crate::help::from_argv(argv) {
         return match help {
             Ok(text) => {
@@ -194,6 +177,40 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     if let Some(sub) = a.subcommand.clone() {
+        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::Lead, words) = &sub {
+            if !words.0.is_empty() {
+                return finish(
+                    crate::lead_chat::run_direct(&words.0, &cwd, env, &mut *stdout),
+                    &mut *stderr,
+                );
+            }
+            if !(stdin_is_tty && stdout_is_tty) {
+                return report(
+                    &mut *stderr,
+                    &OxaError::new(
+                        codes::USAGE,
+                        "Lead needs a terminal. Use oxa lead -p <prompt> for print mode.",
+                    ),
+                );
+            }
+            let result = (|| {
+                let binding = crate::lead_chat::local_binding(&cwd, env)?;
+                let dirs = dirs_from_env(env, None)?;
+                let mode = RunMode::Interactive;
+                let workspace = crate::home_cwd::check(mode, &cwd, env, &dirs, &mut *stdin, &mut *stdout)?;
+                let mut args = Args::default();
+                let prep = binding.prepare(&mut args, env, mode, workspace)?;
+                let session = binding.open(&prep)?;
+                Ok((args, prep, session, binding))
+            })();
+            return match result {
+                Ok((args, prep, session, binding)) => {
+                    run_tui(&args, env, &cwd, prep, &mut *stderr, Some((session, binding)))
+                }
+                Err(error) => report(&mut *stderr, &error),
+            };
+        }
+
         if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::LeadChat, words) = &sub {
             return finish(
                 crate::lead_chat::run(&words.0, &cwd, env, &mut *stdout),
@@ -470,10 +487,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     };
 
     match mode {
-        RunMode::Interactive => {
-            let dirs = prep.built.dirs.clone();
-            run_tui(&a, env, &dirs, &cwd, prep, &mut *stderr)
-        }
+        RunMode::Interactive => run_tui(&a, env, &cwd, prep, &mut *stderr, None),
         RunMode::Rpc => {
             let dirs = prep.built.dirs.clone();
             run_rpc(prep, a.max_time, a.max_tokens, dirs, stdin, stdout, &mut *stderr)
@@ -599,6 +613,7 @@ struct Built {
     dirs: Dirs,
     cwd: PathBuf,
     resources: Resources,
+    theme_paths: Vec<PathBuf>,
     selection: ToolSelection,
     model: Option<String>,
     thinking: Option<ThinkingLevel>,
@@ -758,16 +773,45 @@ fn prepare(
     }
 
     let gated = gated_resources(cwd);
-    let trusted = project_trusted(
-        a,
-        env,
-        dirs,
-        cwd,
-        &gated,
-        mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty,
-        &mut notices,
-    )?;
-    let mut settings = child.apply(Settings::load(dirs, cwd, trusted));
+    let inherited_source = env
+        .get(oxa_work::WORKTREE_TRUST_SOURCE_ENV)
+        .filter(|_| mode == RunMode::Json);
+    let trusted = if let Some(source) = inherited_source.filter(|_| a.approve.is_none()) {
+        let source = Path::new(source);
+        let store = TrustStore::load(&dirs.trust_file());
+        let path = std::ffi::OsStr::new(env.get("PATH").unwrap_or(""));
+        let trusted = store.lookup(source) == Some(true)
+            && crate::netguard::trusted_executable_for("git", Some(path), Some(cwd), Some(&dirs.home))
+                .is_some_and(|git| oxa_work::verify_managed_worktree(&git, path, source, cwd).is_ok())
+            && store.approved_worktree_resources(source, cwd);
+        if !trusted {
+            report_untrusted_project(dirs, cwd, &gated, &mut notices);
+        }
+        trusted
+    } else {
+        project_trusted(
+            a,
+            env,
+            dirs,
+            cwd,
+            &gated,
+            mode == RunMode::Interactive && stdin_is_tty && stdout_is_tty,
+            &mut notices,
+        )?
+    };
+    // Inherited trust covers verified resources. Project settings, MCP and
+    // agent definitions need direct approval.
+    let direct_project_trust = trusted && inherited_source.is_none();
+    let mut settings = child.apply(if direct_project_trust {
+        Settings::load(dirs, cwd, true)
+    } else {
+        user_settings.clone()
+    });
+    if inherited_source.is_some() {
+        // The work runner owns acceptance. The child must not run a second
+        // local done round just because trusted project resources were loaded.
+        settings = settings.with_override("done", Value::Array(Vec::new()));
+    }
     // CLI-045 (pi cli.md): `--verbose` overrides `quietStartup` for this run (in memory only).
     if a.verbose {
         settings = settings.with_override("quietStartup", Value::Bool(false));
@@ -894,7 +938,7 @@ fn prepare(
         .iter()
         .map(|p| resolve_path(&dirs.home, cwd, p))
         .collect();
-    notices.extend(crate::themes::theme_diagnostics(&crate::themes::ThemeSources {
+    let theme_sources = crate::themes::ThemeSources {
         dirs,
         cwd,
         settings: &settings,
@@ -902,7 +946,9 @@ fn prepare(
         package_paths: &resources.theme_paths,
         cli_paths: &cli_themes,
         no_themes: a.no_themes,
-    }));
+    };
+    notices.extend(crate::themes::theme_diagnostics(&theme_sources));
+    let theme_paths = crate::themes::theme_paths(&theme_sources);
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
             b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
@@ -997,7 +1043,7 @@ fn prepare(
         settings: &settings,
         resources: &resources,
         sandbox: &sandbox,
-        trusted,
+        trusted: direct_project_trust,
         nested: child.nested(),
         env,
         yolo: yolo.clone(),
@@ -1065,6 +1111,7 @@ fn prepare(
         dirs: dirs.clone(),
         cwd: cwd.to_path_buf(),
         resources,
+        theme_paths,
         selection,
         model,
         thinking,
@@ -1186,7 +1233,14 @@ pub(crate) fn project_trusted(
     if trusted && saved == Some(true) {
         trust_store.record_baseline(&dirs.trust_file(), cwd)?;
     }
-    if !trusted && !gated.is_empty() {
+    if !trusted {
+        report_untrusted_project(dirs, cwd, gated, notices);
+    }
+    Ok(trusted)
+}
+
+fn report_untrusted_project(dirs: &Dirs, cwd: &Path, gated: &[String], notices: &mut Vec<(Level, String)>) {
+    if !gated.is_empty() {
         notices.push((
             Level::Warning,
             format!(
@@ -1197,13 +1251,12 @@ pub(crate) fn project_trusted(
     }
     // `done` is a project-only key in practice: an untrusted project's list is never merged,
     // so say that its checks will not run.
-    if !trusted && Settings::project_declares_done(dirs, cwd) {
+    if Settings::project_declares_done(dirs, cwd) {
         notices.push((
             Level::Warning,
             "done checks in .oxa/settings.json were not run: project is not trusted".to_string(),
         ));
     }
-    Ok(trusted)
 }
 
 fn discover_opts(a: &Args, dirs: &Dirs, cwd: &Path, trusted: bool) -> Result<DiscoverOpts, OxaError> {
@@ -1635,7 +1688,15 @@ fn run_rpc(
 
 /// The interactive terminal: the first prompt and the further messages come from the command
 /// line; `reopen` builds the sessions of `/new`, `/resume`, fork, clone and import.
-fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mut dyn Write) -> i32 {
+fn run_tui(
+    a: &Args,
+    env: &Env,
+    cwd: &Path,
+    prep: Prep,
+    stderr: &mut dyn Write,
+    owner: Option<(Session, LeadOwnerBinding)>,
+) -> i32 {
+    let dirs = &prep.built.dirs.clone();
     let prompts = match build_prompts(a, dirs, cwd, None) {
         Ok(p) => p,
         Err(e) => return report(stderr, &e),
@@ -1658,9 +1719,12 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         name,
         ..
     } = prep;
-    let session = match open_named(&built, session_id, open, name.as_deref()) {
-        Ok(s) => s,
-        Err(e) => return report(stderr, &e),
+    let (session, owner) = match owner {
+        Some((session, binding)) => (session, Some(binding)),
+        None => match open_named(&built, session_id, open, name.as_deref()) {
+            Ok(session) => (session, None),
+            Err(e) => return report(stderr, &e),
+        },
     };
     #[cfg(feature = "share")]
     let guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
@@ -1669,6 +1733,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
                 Level::Info,
                 format!("Guest OpenAI API listening at http://{address}/v1"),
             ));
+            notices.extend(running.status.warning().map(|w| (Level::Warning, w.to_string())));
             Some(running)
         }
         Ok(None) => None,
@@ -1697,7 +1762,17 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
     let settings = built.settings.clone();
     let store = built.store.clone();
     let base = built.clone();
+    let pinned = owner.is_some();
     let reopen: ReopenFn = Box::new(move |request, carry| {
+        if let Some(binding) = &owner {
+            if !matches!(&request, Reopen::Resume(session) if session == binding.session_ref()) {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "Lead is attached to its dedicated session.",
+                ));
+            }
+            binding.recheck()?;
+        }
         let mut deps = base.deps(None);
         // `/new` keeps the model and thinking level of the session it leaves (a `/model`
         // switch is present in the status bar but only as a `ModelChange` entry of the old
@@ -1715,6 +1790,15 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
             Reopen::Fork(sref) => Open::Fork(sref),
         };
         let mut session = Session::open(deps, how)?;
+        if let Some(binding) = &owner {
+            binding.recheck()?;
+            if &session.inner().sref != binding.session_ref() {
+                return Err(OxaError::new(
+                    codes::INVALID,
+                    "The selected Lead session changed.",
+                ));
+            }
+        }
         base.result_facts.attach(&mut session)?;
         session.set_output_schema(base.output_schema.clone());
         Ok(session)
@@ -1736,7 +1820,13 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         initial_prompt,
         initial_parts,
         initial_follow_ups,
-        theme: a.use_theme.clone().or_else(|| a.themes.first().cloned()),
+        theme: a.use_theme.clone().or_else(|| {
+            a.themes.first().and_then(|p| {
+                let path = resolve_path(&dirs.home, cwd, p);
+                path.is_file().then(|| path.to_string_lossy().into_owned())
+            })
+        }),
+        theme_paths: built.theme_paths.clone(),
         notices,
         env: env.pairs().to_vec(),
         caps: None,
@@ -1753,7 +1843,11 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         engine_status: None,
         yolo: Some(yolo),
     };
-    let result = run_interactive(session, opts);
+    let result = if pinned {
+        oxa_interactive::run_pinned(session, opts, "oxa lead")
+    } else {
+        run_interactive(session, opts)
+    };
     let result = match &built.status {
         Some(status) => status.finish_interactive(result, stderr),
         None => result,
@@ -2639,6 +2733,7 @@ mod session_scratch_tests {
             dirs: Dirs::under(env.root()),
             cwd: env.work(),
             resources: Resources::default(),
+            theme_paths: Vec::new(),
             selection: ToolSelection::default(),
             model: None,
             thinking: None,

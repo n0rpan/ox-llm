@@ -2,7 +2,7 @@
 use super::{charge, nodes, Reader};
 use oxa_work::board::{
     landing::{LatestReviews, Observation, Policy, Queue},
-    queue::is_object_id,
+    queue::{is_node_id, is_object_id},
     review::{self, Comment, Findings},
     Action, Board,
 };
@@ -24,6 +24,7 @@ pub(super) fn review_decisions(
         .filter(|entry| !matches!(entry.action, Action::BuildIssue | Action::WaitIssue))
         .collect();
     let mut observations = BTreeMap::new();
+    let mut exact_holds = BTreeMap::new();
     let (queue, received) = reader.repository_read(
         r#"
         main:ref(qualifiedName:"refs/heads/main"){target{oid}}
@@ -44,7 +45,8 @@ pub(super) fn review_decisions(
             write!(
                 fields,
                 r#"p{n}:pullRequest(number:{n}){{
-                    number state headRefOid
+                    id number state headRefOid
+                    autoMergeRequest{{enabledAt}} mergeQueueEntry{{id}}
                     comments(last:100){{totalCount nodes{{author{{... on Bot{{databaseId}}}} updatedAt body}}}}
                 }}"#
             ).expect("writing to a String cannot fail");
@@ -60,7 +62,16 @@ pub(super) fn review_decisions(
                 return Err("PR changed during review evidence read".into());
             }
             let comments = comments(&row["comments"]);
-            let reviews = match review::latest_findings(comments.as_deref()) {
+            let (findings, exact_hold) = review::latest_findings_for_head(comments.as_deref(), &entry.head);
+            if let Some(id) = row["id"].as_str().filter(|_| exact_hold) {
+                let auto_merge = row["autoMergeRequest"]["enabledAt"]
+                    .as_str()
+                    .and_then(oxa_session::parse_utc_seconds)
+                    .is_some();
+                let queued = row["mergeQueueEntry"]["id"].as_str().is_some_and(is_node_id);
+                exact_holds.insert(entry.number, (id.to_owned(), auto_merge, queued));
+            }
+            let reviews = match findings {
                 Findings::Unresolved => LatestReviews::Unresolved,
                 Findings::Clear => LatestReviews::Clear,
                 Findings::Unknown => LatestReviews::Unknown,
@@ -85,11 +96,15 @@ pub(super) fn review_decisions(
         .plan_landing(Policy { enabled: true }, &observations, main.unwrap_or_default())
         .into_iter()
         .map(|(number, plan)| {
+            let hold_intervention = exact_holds.remove(&number).and_then(|(id, auto_merge, queued)| {
+                plan.hold_intervention(&id, observations[&number].head, auto_merge, queued)
+            });
             (
                 number,
                 LandingDecision {
                     next: plan.next,
                     queue_alarm: plan.queue_alarm,
+                    hold_intervention,
                     queue: queued.remove(&number),
                     latest_reviews: observations[&number].reviews,
                     would_notify_rejection: None,

@@ -65,7 +65,8 @@ fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
         command
     };
 
-    assert!(command().output().unwrap().status.success());
+    let help = command().arg("--help").output().unwrap();
+    assert!(help.status.success(), "{help:?}");
     write_board(&board, 1, &[(42, Action::Ready, true, None)]);
     let agent = command()
         .env("AI_AGENT", "")
@@ -118,5 +119,67 @@ fn running_lead_reopens_the_same_owner_ask_after_process_kill() {
     assert!(asks["asks"][0]["question"].as_str().unwrap().contains("#66"));
     let saved = Goal::latest(&store.load(&session).unwrap()).unwrap().unwrap();
     assert!(saved.lead.unwrap().held_leases.is_empty());
+    assert!(server.requests().is_empty());
+}
+
+#[test]
+fn a_missing_protected_board_observation_keeps_the_saved_ask_and_names_the_cause() {
+    let test = TestEnv::new();
+    let dirs = Dirs::under(test.root());
+    fs::set_permissions(&dirs.agent_dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let uid = fs::metadata(&dirs.agent_dir).unwrap().uid();
+    let project = test.work().canonicalize().unwrap();
+    let id = oxa_cli::LeadOwnerBinding::create(&dirs, &project, uid).unwrap();
+    let settings = test.write(
+        "home/.oxa/agent/settings.json",
+        &json!({"oxa":{"lead":{"sessionId":id}}}).to_string(),
+    );
+    fs::set_permissions(&settings, fs::Permissions::from_mode(0o600)).unwrap();
+    let store = FsStore::new(dirs.sessions_dir.clone());
+    let session = store.resolve(&id).unwrap();
+    let board = dirs.agent_dir.join("board.jsonl");
+    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let command = || {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+        command
+            .env_clear()
+            .envs(test.envs(&server.url()))
+            .current_dir(&project)
+            .env("OXA_LEAD_BOARD_LOG", &board)
+            .args(["--offline", "lead"]);
+        command
+    };
+
+    // A fresh observation saves one owner ask in the protected Lead session.
+    let now = oxa_proto::time::now_ms() / 1000;
+    write_board(&board, now, &[(42, Action::Ready, true, None)]);
+    let fresh = command().args(["run", "--once"]).output().unwrap();
+    assert!(fresh.status.success(), "{fresh:?}");
+    let fresh: Value = serde_json::from_slice(&fresh.stdout).unwrap();
+    assert_eq!(fresh["state"], "awaiting_owner");
+    assert_eq!(fresh["asks"][0]["id"], "lead:board:42");
+    let saved = Goal::latest(&store.load(&session).unwrap()).unwrap().unwrap();
+    assert_eq!(saved.lead.unwrap().open_asks.len(), 1);
+
+    // The protected observation is now missing: the saved ask must survive
+    // and the observation must report an actionable, path-free cause.
+    fs::remove_file(&board).unwrap();
+    let missing = command().args(["run", "--once"]).output().unwrap();
+    assert!(missing.status.success(), "{missing:?}");
+    let missing: Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(missing["asks"][0]["id"], "lead:board:42");
+    assert_eq!(
+        missing["cause"].as_str(),
+        Some("the protected Board observation is missing"),
+        "{missing}"
+    );
+    assert_eq!(
+        missing["hint"].as_str(),
+        Some("write a fresh protected Board observation and rerun the Lead loop"),
+        "{missing}"
+    );
+    assert!(!missing.to_string().contains(&*dirs.agent_dir.to_string_lossy()));
+    let saved = Goal::latest(&store.load(&session).unwrap()).unwrap().unwrap();
+    assert_eq!(saved.lead.unwrap().open_asks.len(), 1);
     assert!(server.requests().is_empty());
 }

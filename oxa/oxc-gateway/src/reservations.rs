@@ -44,11 +44,19 @@ pub(crate) enum Reserved {
     Metered(f64),
     Subscription(u64, f64),
     Go(u64, f64),
+    /// An admitted uncapped request whose cost no price bound could establish. It owns the
+    /// USD headroom until its settled row records the cost, across crashes and restarts.
+    Unknown,
 }
 impl Reserved {
     fn from_value(value: &Value) -> io::Result<Self> {
         if let Some(cost) = value.as_f64().filter(|cost| cost.is_finite() && *cost >= 0.0) {
             return Ok(Self::Metered(cost));
+        }
+        if let Some(object) = value.as_object() {
+            if object.len() == 1 && object.get("unknown").and_then(Value::as_bool) == Some(true) {
+                return Ok(Self::Unknown);
+            }
         }
         let object = value
             .as_object()
@@ -85,11 +93,13 @@ impl Reserved {
             }
             Self::Subscription(tokens, _) => json!({"subscription_tokens":tokens}),
             Self::Go(tokens, usd) => json!({"subscription_tokens":tokens,"go_usd":usd}),
+            Self::Unknown => json!({"unknown":true}),
         }
     }
     fn usd(&self) -> f64 {
         match self {
             Self::Metered(cost) | Self::Subscription(_, cost) | Self::Go(_, cost) => *cost,
+            Self::Unknown => 0.0,
         }
     }
 }
@@ -184,11 +194,17 @@ impl Shared {
             })
             .sum()
     }
+    /// An uncapped metered call with no price bound makes a later cap unverifiable.
+    pub fn has_unknown_metered_hold(&self) -> bool {
+        self.holds
+            .values()
+            .any(|amount| matches!(amount, Reserved::Unknown))
+    }
     pub fn subscription_reserved(&self) -> io::Result<Counts> {
         self.holds
             .values()
             .try_fold(Counts::default(), |counts, amount| match amount {
-                Reserved::Metered(_) => Ok(counts),
+                Reserved::Metered(_) | Reserved::Unknown => Ok(counts),
                 Reserved::Subscription(tokens, _) | Reserved::Go(tokens, _) => counts
                     .add(Counts {
                         requests: 1,
@@ -199,6 +215,10 @@ impl Shared {
     }
     pub fn insert(&mut self, cost: f64) -> io::Result<String> {
         self.insert_amount(Reserved::Metered(cost))
+    }
+    /// A hold whose cost no bound establishes; it keeps the headroom closed until settlement.
+    pub fn insert_unknown(&mut self) -> io::Result<String> {
+        self.insert_amount(Reserved::Unknown)
     }
     /// A subscription or Go request reserves tokens only. Its cost is unknown
     /// to oxa, so no USD headroom is ever held for it.

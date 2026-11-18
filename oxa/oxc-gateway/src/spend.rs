@@ -19,6 +19,8 @@ pub struct SpendReader {
     offset: u64,
     total: BigDecimal,
     subscription: Counts,
+    /// Some settled row has an unknown cost (recorded while no budget was set).
+    unknown: bool,
     tail: Vec<u8>,
     bytes_read: u64,
 }
@@ -66,6 +68,11 @@ impl SpendReader {
     pub fn bytes_read(&self) -> u64 {
         self.bytes_read
     }
+    /// True when any row records a cost that could not be determined. A later
+    /// daily cap cannot trust the total, so capped admission must fail closed.
+    pub(crate) fn cost_unknown(&self) -> bool {
+        self.unknown
+    }
     pub(crate) fn subscription(&self) -> Counts {
         self.subscription
     }
@@ -81,6 +88,7 @@ impl SpendReader {
                 self.offset = 0;
                 self.total = BigDecimal::default();
                 self.subscription = Counts::default();
+                self.unknown = false;
                 self.tail.clear();
                 self.path = path.into();
                 return Ok(0.0);
@@ -98,6 +106,7 @@ impl SpendReader {
             self.offset = 0;
             self.total = BigDecimal::default();
             self.subscription = Counts::default();
+            self.unknown = false;
             self.tail.clear();
         } else if self.offset > 0 {
             // A same-inode rewrite can be at least as long as the cached file.
@@ -110,6 +119,7 @@ impl SpendReader {
                 self.offset = 0;
                 self.total = BigDecimal::default();
                 self.subscription = Counts::default();
+                self.unknown = false;
                 self.tail.clear();
             }
         }
@@ -118,6 +128,7 @@ impl SpendReader {
         let mut offset = self.offset;
         let mut total = self.total.clone();
         let mut subscription = self.subscription;
+        let mut unknown = self.unknown;
         let mut tail = self.tail.clone();
         let mut line = Vec::new();
         loop {
@@ -163,6 +174,7 @@ impl SpendReader {
                     {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
+                    unknown |= row.get("cost_unknown") == Some(&Value::Bool(true));
                 }
                 Some(value)
                     if value == "subscription"
@@ -224,6 +236,7 @@ impl SpendReader {
         self.offset = offset;
         self.total = total;
         self.subscription = subscription;
+        self.unknown = unknown;
         self.tail = tail;
         // Admission uses this amount directly. Currency display rounding must
         // never erase a valid positive charge before comparing it with a cap.

@@ -1,5 +1,5 @@
 //! Protected selection of the native Session shared by the owner chat callers.
-use super::{open_named, prepare, Args, RunMode};
+use super::{open_named, prepare, Args, Prep, RunMode};
 use oxa_config::{Dirs, Env, Settings};
 use oxa_core::Session;
 use oxa_proto::{codes, Entry, EntryBody, OxaError, Value};
@@ -19,6 +19,7 @@ const MAX_LINE: u64 = 65_536;
 const ORIGIN: &str = "oxa.lead.owner";
 
 /// One explicitly selected Session. Command and HTTP input cannot change its identity.
+#[derive(Clone)]
 pub struct LeadOwnerBinding {
     dirs: Dirs,
     project: PathBuf,
@@ -55,7 +56,8 @@ fn private_directory(path: &Path, uid: u32) -> Result<(), OxaError> {
     Ok(())
 }
 
-fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
+/// The owner-private user settings, or `None` when no settings file exists.
+fn user_settings(dirs: &Dirs, uid: u32) -> Result<Option<Value>, OxaError> {
     let path = dirs.settings_file();
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -70,7 +72,15 @@ fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
     if bytes.len() as u64 > MAX_SETTINGS {
         return Err(unavailable());
     }
-    let settings: Value = serde_json::from_slice(&bytes).map_err(|_| unavailable())?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| unavailable())
+}
+
+fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
+    let Some(settings) = user_settings(dirs, uid)? else {
+        return Ok(None);
+    };
     let Some(id) = settings.pointer("/oxa/lead/sessionId") else {
         return Ok(None);
     };
@@ -79,6 +89,26 @@ fn selection(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
         .filter(|id| id.len() <= 128 && crate::args::valid_session_id(id))
         .ok_or_else(unavailable)?;
     Ok(Some(id.to_owned()))
+}
+
+/// The user-only explicit model choice for the Lead conversation, read through the
+/// same owner-private settings file as the session ID. HTTP, project and prompt
+/// input never supply it; `None` keeps the ordinary startup model.
+fn lead_model(dirs: &Dirs, uid: u32) -> Result<Option<String>, OxaError> {
+    let Some(settings) = user_settings(dirs, uid)? else {
+        return Ok(None);
+    };
+    let Some(model) = settings.pointer("/oxa/lead/model") else {
+        return Ok(None);
+    };
+    let model = model
+        .as_str()
+        .filter(|model| !model.is_empty() && model.len() <= 128)
+        .ok_or_else(unavailable)?;
+    if model.chars().any(char::is_control) {
+        return Err(unavailable());
+    }
+    Ok(Some(model.to_owned()))
 }
 
 fn read_line(reader: &mut impl BufRead) -> Result<Vec<u8>, OxaError> {
@@ -276,47 +306,93 @@ pub fn with_lead_owner<T>(
     env: &Env,
     run: impl FnOnce(&mut Session) -> Result<T, OxaError>,
 ) -> Result<T, OxaError> {
-    let dirs = &binding.dirs;
-    let cwd = &binding.project;
-    let store = binding.lock_store()?;
-    // The serving process owns the normal startup policy. Refuse a mismatch
-    // before provider preparation, without changing policy for other requests.
-    let (offline, remote) = crate::netguard::policy_from(false, env, &Settings::load(dirs, cwd, false));
-    if offline && !oxa_proto::offline() {
-        return Err(oxa_proto::offline_error("Lead chat"));
-    }
-    if !remote && oxa_proto::remote_engine_allowed() {
-        return Err(unavailable());
-    }
-    let mode = RunMode::Print;
-    let home_workspace =
-        crate::home_cwd::check(mode, cwd, env, dirs, &mut std::io::empty(), &mut std::io::sink())?;
-    let mut args = Args {
-        no_extensions: true,
-        no_tools: true,
-        no_skills: true,
-        ..Args::default()
-    };
-    let prep = prepare(
-        &mut args,
+    let home_workspace = crate::home_cwd::check(
+        RunMode::Print,
+        &binding.project,
         env,
-        dirs,
-        cwd,
-        mode,
-        home_workspace,
-        false,
-        false,
-        &mut |_, _| false,
-        Default::default(),
-        Some((&binding.session, store)),
-    )
-    .map_err(|_| unavailable())?;
-    let mut session = open_named(&prep.built, None, prep.open, None).map_err(|_| unavailable())?;
-    binding.recheck()?;
-    if session.inner().sref != binding.session {
-        return Err(unavailable());
-    }
+        &binding.dirs,
+        &mut std::io::empty(),
+        &mut std::io::sink(),
+    )?;
+    let mut args = Args::default();
+    let prep = binding.prepare(&mut args, env, RunMode::Print, home_workspace)?;
+    let mut session = binding.open(&prep)?;
     let result = run(&mut session);
     session.shutdown(&mut oxa_proto::HeadlessUi::default());
     result
+}
+
+impl LeadOwnerBinding {
+    pub(super) fn prepare(
+        &self,
+        args: &mut Args,
+        env: &Env,
+        mode: RunMode,
+        home_workspace: bool,
+    ) -> Result<Prep, OxaError> {
+        let binding = self;
+        let dirs = &binding.dirs;
+        let cwd = &binding.project;
+        // Stage the same lock Session::open will adopt, before provider I/O.
+        let store = self.lock_store()?;
+        // The serving process owns the normal startup policy. Refuse a mismatch
+        // before provider preparation, without changing policy for other requests.
+        let (offline, remote) = crate::netguard::policy_from(false, env, &Settings::load(dirs, cwd, false));
+        if offline && !oxa_proto::offline() {
+            return Err(oxa_proto::offline_error("Lead chat"));
+        }
+        if !remote && oxa_proto::remote_engine_allowed() {
+            return Err(unavailable());
+        }
+        args.no_extensions = true;
+        args.no_tools = true;
+        args.no_skills = true;
+        // Prepare through the ordinary gateway, then require the configured Lead
+        // route to match its resolved model ID exactly.
+        let route = lead_model(dirs, binding.uid)?;
+        args.model = route.clone();
+        let interactive = mode == RunMode::Interactive;
+        let prep = prepare(
+            args,
+            env,
+            dirs,
+            cwd,
+            mode,
+            home_workspace,
+            interactive,
+            interactive,
+            &mut |_, _| false,
+            Default::default(),
+            Some((&binding.session, store)),
+        )
+        // A configured route the normal selector cannot resolve is reported as
+        // itself; every other preparation failure keeps the bounded refusal.
+        .map_err(|error| match (&route, error.code) {
+            (Some(_), oxa_proto::codes::NOT_FOUND) => error,
+            _ => unavailable(),
+        })?;
+        if let Some(route) = route.as_deref() {
+            if prep.built.model.as_deref() != Some(route) {
+                return Err(OxaError::new(
+                    codes::NOT_FOUND,
+                    "The configured Lead model ID must match exactly",
+                ));
+            }
+        }
+        Ok(prep)
+    }
+
+    pub(super) fn session_ref(&self) -> &SessionRef {
+        &self.session
+    }
+
+    pub(super) fn open(&self, prep: &Prep) -> Result<Session, OxaError> {
+        self.recheck()?;
+        let session = open_named(&prep.built, None, prep.open.clone(), None).map_err(|_| unavailable())?;
+        self.recheck()?;
+        if session.inner().sref != self.session {
+            return Err(unavailable());
+        }
+        Ok(session)
+    }
 }

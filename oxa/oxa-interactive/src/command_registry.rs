@@ -135,8 +135,8 @@ commands! {
         requirements: Requirements { restart: false, browser: false, tty: false, owner_only: false },
     },
     Lead {
-        path: &["lead"], aliases: &[], summary: "Open the lead command menu",
-        arguments: &[Argument { name: "args", kind: ArgumentKind::Tail, required: false }],
+        path: &["lead"], aliases: &[], summary: "Chat with the dedicated Lead session",
+        arguments: &[Argument { name: "prompt", kind: ArgumentKind::Tail, required: false }],
         surfaces: Surfaces {
             cli: Availability::Supported,
             slash: Availability::Exception("The slash menu is not available yet"),

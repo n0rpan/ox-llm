@@ -345,6 +345,7 @@ fn opts(env: &TestEnv) -> InteractiveOpts {
         initial_parts: Vec::new(),
         initial_follow_ups: Vec::new(),
         theme: None,
+        theme_paths: Vec::new(),
         notices: Vec::new(),
         env: Vec::new(),
         caps: Some(TermCaps::BASIC),

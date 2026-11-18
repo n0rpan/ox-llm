@@ -41,6 +41,9 @@ pub struct Hold {
     output: u64,
     forwarded: bool,
     settled: bool,
+    /// Metered admission without a configured cap and without a computable
+    /// price bound: usage is recorded, its USD cost is unknown.
+    cost_unknown: bool,
     id: String,
 }
 #[derive(Clone, Default, Debug)]
@@ -176,9 +179,22 @@ impl Budget {
             return Err(invalid_billing());
         };
         let output = output.min(model.max_output);
-        let required = price
-            .reservation(&model.provider, &model.upstream, model.context, output)
-            .ok_or_else(exhausted)?;
+        let unbudgeted = cap.is_null();
+        let bound = price.reservation(&model.provider, &model.upstream, model.context, output);
+        let cost_unknown = unbudgeted && bound.is_none();
+        let required = if cost_unknown {
+            // No cap means no budget check: admit, and record the cost as unknown.
+            static ONCE: std::sync::Once = std::sync::Once::new();
+            ONCE.call_once(|| {
+                eprintln!(
+                    "oxc-gateway: no daily budget is set and a cloud model has no known price bound; \
+                     its usage is recorded with unknown cost"
+                );
+            });
+            0.0
+        } else {
+            bound.ok_or_else(exhausted)?
+        };
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.failed {
             return Err(Refusal::ledger());
@@ -188,8 +204,19 @@ impl Budget {
             return Err(Refusal::ledger());
         }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
+        // Earlier unbudgeted rows with unknown cost make a later cap unverifiable.
+        if !unbudgeted && (shared.has_unknown_metered_hold() || state.reader.cost_unknown()) {
+            return Err(exhausted());
+        }
         policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
-        let id = shared.insert(required).map_err(|_| Refusal::ledger())?;
+        let id = if cost_unknown {
+            // A pending hold with no established cost is recorded as such, so another
+            // process (or this one after a restart) that applies a cap fails closed until
+            // the settled row carries the cost.
+            shared.insert_unknown().map_err(|_| Refusal::ledger())?
+        } else {
+            shared.insert(required).map_err(|_| Refusal::ledger())?
+        };
         shared.save().map_err(|_| Refusal::ledger())?;
         Ok(Hold {
             budget: self.clone(),
@@ -199,6 +226,7 @@ impl Budget {
             output,
             forwarded: false,
             settled: false,
+            cost_unknown,
             id,
         })
     }
@@ -255,6 +283,7 @@ impl Budget {
             output,
             forwarded: false,
             settled: false,
+            cost_unknown: false,
             id,
         })
     }
@@ -294,6 +323,23 @@ impl Hold {
         Ok(())
     }
     fn record(&self, usage: &Usage, outcome: Outcome) -> Value {
+        let mut row = self.record_row(usage, outcome);
+        // The admission-time bound was unknown. The settled row is marked unknown only when
+        // settlement could not determine the cost either: a usage-priced or an unpaid refused
+        // row is a known cost, and a marker on it would close every later configured cap.
+        // A cancelled request without final usage is settled "estimated" from a clipped
+        // estimate (`usage_missing`); with no admission bound that is not a known cost either.
+        let unpriced = match row["settled"].as_str() {
+            Some("reserved") => true,
+            Some("estimated") => row["usage_missing"] == json!(true),
+            _ => false,
+        };
+        if self.cost_unknown && unpriced {
+            row["cost_unknown"] = json!(true);
+        }
+        row
+    }
+    fn record_row(&self, usage: &Usage, outcome: Outcome) -> Value {
         let model = &self.model;
         let Billing::Metered(price) = &model.billing else {
             return self.subscription_record(usage, outcome);
@@ -413,7 +459,14 @@ impl Hold {
                         Cache::Invalid,
                     )
                     .unwrap_or(self.reserved);
-                row["cost_usd"] = json!(self.reserved.min(estimate).max(actual.unwrap_or(0.0)));
+                // With no admission bound (`reserved` is zero) keep the computable estimate
+                // instead of clipping it to nothing; the row is still marked cost_unknown.
+                let bounded = if self.cost_unknown {
+                    estimate
+                } else {
+                    self.reserved.min(estimate)
+                };
+                row["cost_usd"] = json!(bounded.max(actual.unwrap_or(0.0)));
                 row["usage_missing"] = json!(true);
                 row["settled"] = json!("estimated");
             }
