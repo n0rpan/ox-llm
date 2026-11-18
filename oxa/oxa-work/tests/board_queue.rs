@@ -5,6 +5,9 @@ use oxa_work::{
 use serde_json::{json, Value};
 use std::{fs, time::SystemTime};
 
+#[path = "support/private_dir.rs"]
+mod private_dir;
+
 const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const GROUP: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -394,4 +397,258 @@ fn failed_required_workflows_belong_to_the_removed_commit() {
         assert_eq!(evidence["failed_required_check_runs"], json!([11, 15]));
         assert!(evidence.get("failed_required_workflows").is_none());
     }
+}
+
+#[test]
+fn landing_publication_reconciles_an_acknowledged_retry_and_alarms_on_its_exact_group() {
+    use oxa_work::board::{
+        landing::{LatestReviews, Next},
+        queue::report::{VerifiedArchive, VerifiedReports},
+    };
+    use oxa_work::RunPolicy;
+    use shadow::{publication, LandingDecision, LandingSample, QueueObservation};
+    use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
+
+    const ADMITTED_GROUP: &str = "cccccccccccccccccccccccccccccccccccccccc";
+    const ORIGINAL_MAIN: &str = "dddddddddddddddddddddddddddddddddddddddd";
+    const ADVANCED_MAIN: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    const START: u64 = 1_767_225_600;
+    let temp = private_dir::PrivateDir::new("landing-receipt-roundtrip");
+    let repo = temp.path();
+    let journal = repo.join("owner.jsonl");
+    let git = repo.join("git");
+    let gh = repo.join("gh");
+    fs::write(
+        &git,
+        "#!/bin/sh\nprintf '%s\\n' https://example.invalid/sample/repo\n",
+    )
+    .unwrap();
+    fs::write(&gh, r#"#!/bin/sh
+case "$*" in
+  'repo view https://example.invalid/sample/repo --json id,nameWithOwner,url')
+    printf '%s\n' '{"id":"repo-1","nameWithOwner":"sample/repo","url":"https://example.invalid/sample/repo"}' ;;
+  'api graphql --hostname example.invalid -f query=query{viewer{id}}')
+    printf '%s\n' '{"data":{"viewer":{"id":"publisher-1"}}}' ;;
+  'api graphql --hostname example.invalid -f query=mutation('*' pr=pr-42 -f body=@sample-author '*example::failed*)
+    printf '%s\n' notice >> mutations
+    printf '%s\n' '{"data":{"addComment":{"commentEdge":{"node":{"id":"comment-1",
+        "repository":{"id":"repo-1"},"pullRequest":{"id":"pr-42","author":{"id":"user-1","login":"sample-author"},
+        "headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        "author":{"__typename":"User","id":"publisher-1"},"createdAt":"2026-01-01T00:00:05Z"}}}}}' ;;
+  'api graphql --hostname example.invalid -f query=mutation('*' pr=pr-42 -f head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+    printf '%s\n' enqueue >> mutations
+    /bin/cat admission.json ;;
+  *) exit 1 ;;
+esac
+"#).unwrap();
+    for binary in [&git, &gh] {
+        fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    let admission = json!({
+        "id":"entry-2","enqueuedAt":"2026-01-01T00:01:00Z",
+        "mergeQueue":{"id":"queue-1","repository":{"id":"repo-1"}},
+        "pullRequest":{"id":"pr-42","number":42,"headRefOid":HEAD},
+        "enqueuer":{"__typename":"User","id":"publisher-1"},
+        "headCommit":null
+    });
+    fs::write(
+        repo.join("admission.json"),
+        json!({"data":{"enqueuePullRequest":{"mergeQueueEntry":admission}}}).to_string(),
+    )
+    .unwrap();
+
+    let sample = |observed_at, main: &str, reviews, queue: Option<QueueObservation>, rejections| {
+        let mut board = board();
+        board.observed_at = observed_at;
+        LandingSample {
+            board,
+            queue_rejections: rejections,
+            landing_main: Some(main.into()),
+            landing: BTreeMap::from([(
+                42,
+                LandingDecision {
+                    next: Next::WaitQueue,
+                    queue_alarm: false,
+                    repeat_rejection_alarm: false,
+                    queue,
+                    latest_reviews: reviews,
+                    would_notify_rejection: None,
+                },
+            )]),
+            ..Default::default()
+        }
+    };
+    let rejected = |group: &str, removal: &str, removed_at: &str| {
+        let mut evidence = fixture("FAILURE");
+        evidence["id"] = "repo-1".into();
+        let pr = &mut evidence["p42"];
+        pr["id"] = "pr-42".into();
+        pr["author"] = json!({"__typename":"User","id":"user-1","login":"sample-author"});
+        pr["mergeQueueEntry"] = Value::Null;
+        pr["admissions"] = json!({
+            "pageInfo":{"hasPreviousPage":false,"hasNextPage":false},
+            "nodes":[{"__typename":"AddedToMergeQueueEvent","id":"enqueued-1"}]
+        });
+        let event = &mut pr["timelineItems"]["nodes"][0];
+        event["id"] = removal.into();
+        event["createdAt"] = removed_at.into();
+        let commit = &mut event["beforeCommit"];
+        commit["oid"] = group.into();
+        let rollup = &mut commit["statusCheckRollup"];
+        rollup["commit"]["oid"] = group.into();
+        let mut checks = vec![
+            check(11, true, "COMPLETED", "FAILURE", removed_at),
+            check(15, true, "COMPLETED", "FAILURE", removed_at),
+        ];
+        for check in &mut checks {
+            check["checkSuite"] = json!({
+                "databaseId":51, "commit":{"oid":group},
+                "workflowRun":{"databaseId":61,"event":"merge_group","runAttempt":1}
+            });
+        }
+        rollup["contexts"] = json!({"totalCount":checks.len(),"nodes":checks});
+        let mut result = queue::read(&board(), |fields| {
+            assert!(fields.contains("p42:pullRequest(number:42)"));
+            Ok((evidence.clone(), 4096))
+        })
+        .unwrap();
+        result[0].record_verified_reports(VerifiedReports {
+            failed_check_runs: vec![11, 15],
+            workflow_run: 61,
+            run_attempt: 1,
+            archives: vec![VerifiedArchive {
+                id: 71,
+                sha256: "a".repeat(64),
+            }],
+            failed_tests: vec!["example::failed".into()],
+        });
+        result
+    };
+    let observe = |sample| {
+        let mut log = shadow::open_log(&journal).unwrap();
+        let mut sample = Some(sample);
+        shadow::run_with_landing(&mut log, true, || Ok(sample.take().unwrap()), |_| unreachable!()).unwrap();
+    };
+
+    observe(sample(
+        START,
+        ORIGINAL_MAIN,
+        LatestReviews::Clear,
+        Some(QueueObservation {
+            enqueued_at: START - 1900,
+            group_head: Some(GROUP.into()),
+        }),
+        vec![],
+    ));
+    let run = RunPolicy {
+        git_binary: git,
+        host_path: Default::default(),
+        terminate_binary: None,
+        offline: false,
+        runner_owns_github: false,
+        storage: repo.to_owned(),
+    };
+    let policy = publication::Policy {
+        enabled: true,
+        publisher_id: "publisher-1".into(),
+    };
+    // The Reader saw the removal before dispatch, but GitHub reports both
+    // the removal and the resulting comment in the same UTC second.
+    let first = rejected(GROUP, "removal-1", "2026-01-01T00:00:05Z");
+    for (at, main, review, expected_mutations) in [
+        (START + 5, ORIGINAL_MAIN, LatestReviews::Clear, "notice\n"),
+        (START + 59, ADVANCED_MAIN, LatestReviews::Unresolved, "notice\n"),
+        (
+            START + 60,
+            ADVANCED_MAIN,
+            LatestReviews::Clear,
+            "notice\nenqueue\n",
+        ),
+    ] {
+        publication::run_once(
+            &policy,
+            &journal,
+            repo,
+            &run,
+            &gh,
+            || Ok(sample(at, main, review, None, first.clone())),
+            |_| panic!("a rejection snapshot cannot reconcile an admission"),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(repo.join("mutations")).unwrap(),
+            expected_mutations
+        );
+    }
+
+    for (step, entry_id) in [(1, "unrelated-entry"), (2, "entry-2")] {
+        let mut returned = admission.clone();
+        returned["id"] = entry_id.into();
+        returned["headCommit"] = json!({"oid":ADMITTED_GROUP});
+        let output = publication::run_once(
+            &policy,
+            &journal,
+            repo,
+            &run,
+            &gh,
+            || {
+                Ok(sample(
+                    START + 60 + step,
+                    ADVANCED_MAIN,
+                    LatestReviews::Clear,
+                    Some(QueueObservation {
+                        enqueued_at: START + 60,
+                        group_head: Some(ADMITTED_GROUP.into()),
+                    }),
+                    vec![],
+                ))
+            },
+            |ack| {
+                queue::read_acknowledged_admission(ack, |fields| {
+                    assert!(fields.contains("pullRequest(number:42)"));
+                    Ok((
+                        json!({"id":"repo-1","mergeQueue":{"id":"queue-1"},
+                            "pullRequest":{"mergeQueueEntry":returned}}),
+                        4096,
+                    ))
+                })
+            },
+        );
+        assert_eq!(output.is_ok(), step == 2, "{output:?}");
+    }
+    observe(sample(
+        START + 121,
+        ADVANCED_MAIN,
+        LatestReviews::Clear,
+        None,
+        rejected(ADMITTED_GROUP, "removal-2", "2026-01-01T00:02:00Z"),
+    ));
+    let rows: Vec<Value> = fs::read_to_string(journal)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let steps: Vec<_> = rows
+        .iter()
+        .filter_map(|row| row["landing_publication"]["step"].as_str())
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            "notice_reserved",
+            "delivered",
+            "retry_reserved",
+            "acknowledged",
+            "admitted"
+        ]
+    );
+    assert_eq!(
+        rows.last().unwrap()["landing"]["42"]["repeat_rejection_alarm"],
+        true
+    );
+    assert_eq!(
+        fs::read_to_string(repo.join("mutations")).unwrap(),
+        "notice\nenqueue\n"
+    );
 }

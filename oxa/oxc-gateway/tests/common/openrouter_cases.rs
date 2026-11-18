@@ -41,6 +41,42 @@ fn gateway(mock: &MockAnthropic) -> (Gateway, skeleton::Fixture) {
     .unwrap();
     (Gateway::new(runtime).unwrap(), fixture)
 }
+#[test]
+fn stale_prices_require_a_successful_startup_refresh() {
+    use crate::{
+        catalog_cache::{Cache, FRESH},
+        catalog_discovery::Source,
+        secrets,
+    };
+
+    let mock = MockAnthropic::start(vec![Reply::error(500, "synthetic catalog unavailable")]);
+    let (mut gateway, fixture) = gateway(&mock);
+    let base = mock.base_url();
+    let source = Source::new(Provider::OpenRouter, &base).unwrap();
+    let key = secrets::read(&fixture.key_path, "openrouter").unwrap();
+    Cache::new(
+        fixture.ledger_dir.parent().unwrap(),
+        "openrouter-catalog-cache.json",
+    )
+    .store(
+        &key,
+        json!({"base":base,"data":[{"id":"synthetic-previously-discovered",
+                "context":1024,"output":16,
+                "pricing":{"input_per_million":1,"output_per_million":1}}]}),
+        SystemTime::now() - FRESH - Duration::from_secs(60),
+    )
+    .unwrap();
+    assert!(gateway.discover_cloud(&source, Duration::from_secs(2)).is_err());
+    assert_eq!(mock.requests().len(), 1, "stale prices trigger a startup refresh");
+    let aliases: Vec<_> = gateway.discovery().map(|model| model.id).collect();
+    assert_eq!(
+        aliases,
+        [skeleton::MODEL],
+        "failed refresh keeps configured routes only"
+    );
+    mock.finish();
+}
+
 fn payload(include_usage: bool) -> Value {
     json!({"model":skeleton::MODEL,"messages":[{"role":"user","content":"Synthetic question"}],
         "max_tokens":16,"reasoning_effort":"none","provider":{"zdr":false},

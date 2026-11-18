@@ -38,6 +38,7 @@ impl Gateway {
                 .map_or(0, |t| t.as_secs()),
         };
         let mut terminal_usage = None;
+        let mut forwarding_error = None;
         let result = self
             .openai
             .stream_with_usage(
@@ -49,7 +50,10 @@ impl Gateway {
                         if cancel.is_cancelled() {
                             return client::Control::Stop;
                         }
-                        call.mark_forwarded();
+                        if let Err(error) = call.mark_forwarded() {
+                            forwarding_error = Some(error);
+                            return client::Control::Stop;
+                        }
                         client::Control::Continue
                     }
                     client::Event::Chunk(chunk) => {
@@ -72,6 +76,7 @@ impl Gateway {
                 history: None,
             })
             .map_err(Error::OpenAi);
+        let result = forwarding_error.map_or(result, |error| Err(Error::Refused(error)));
         let usage_final = terminal_usage.is_some();
         if let Some(usage) = terminal_usage {
             call.metered_usage(usage);

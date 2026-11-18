@@ -178,7 +178,7 @@ const BASE: &[Entry] = &[
         summary: "Sample a private read-only GitHub work board",
         usage: &[
             "oxa work board --shadow --repo OWNER/REPO --once",
-            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once]",
+            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once] [--app-quota-shadow]",
             "oxa work board --shadow --repo OWNER/REPO --once --review-policy FILE",
         ],
         example: "oxa work board --shadow --repo example/project --once",

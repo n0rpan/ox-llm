@@ -33,6 +33,21 @@ pub struct TaskUsage {
 
 /// Read one validated checkpoint. A missing task and a legacy task with no usage are distinct.
 pub fn task_usage(policy: &RunPolicy, id: &str) -> Result<Option<TaskUsage>> {
+    read_task_usage(policy, id, None)
+}
+
+/// Read usage for a selected native task from its retained, authoritative Claims binding.
+/// The producer supplies the binding and its protected repository policy. This read does
+/// not establish current ownership, liveness or merged-PR attribution.
+pub fn task_usage_for_binding(
+    policy: &RunPolicy,
+    binding: &crate::board::NativeBinding,
+) -> Result<Option<TaskUsage>> {
+    binding.validate()?;
+    read_task_usage(policy, &binding.native_task_id, Some(&binding.branch))
+}
+
+fn read_task_usage(policy: &RunPolicy, id: &str, branch: Option<&str>) -> Result<Option<TaskUsage>> {
     if !valid_task_id(id) {
         return Err("invalid task id".into());
     }
@@ -40,7 +55,7 @@ pub fn task_usage(policy: &RunPolicy, id: &str) -> Result<Option<TaskUsage>> {
     else {
         return Ok(None);
     };
-    if saved.record.id != id {
+    if saved.record.id != id || branch.is_some_and(|branch| saved.record.branch != branch) {
         return Err("task usage checkpoint identity disagrees with the requested task".into());
     }
     Ok(Some(TaskUsage {
@@ -200,5 +215,72 @@ fn locked(path: &Path, locks: Option<&str>, binary: &Path) -> Option<bool> {
         None
     } else {
         Some(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::{Lease, NativeBinding};
+    use crate::{blocked_record, test_dir::PrivateDir, Task};
+
+    #[test]
+    fn selected_native_usage_requires_the_retained_attempt_and_branch() {
+        let directory = PrivateDir::new("bound-task-usage");
+        let policy = RunPolicy {
+            git_binary: "/usr/bin/git".into(),
+            host_path: "/usr/bin".into(),
+            terminate_binary: None,
+            offline: true,
+            runner_owns_github: true,
+            storage: directory.path().into(),
+        };
+        let lease = Lease {
+            holder: "fixture".into(),
+            expires_at: 2,
+            claimed_at: Some(1),
+            generation: (0, 1),
+        };
+        let key = "a".repeat(64);
+        let binding = NativeBinding::new(42, &key, &lease, "agent/item").unwrap();
+        assert!(task_usage_for_binding(&policy, &binding).unwrap().is_none());
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": binding.native_task_id,
+            "branch": binding.branch,
+            "model": "fake",
+            "prompt": "Synthetic task."
+        }))
+        .unwrap();
+        let mut record = blocked_record(&task, "Synthetic detail.".into());
+        record.task_tokens = Some(TaskTokens {
+            attempts: 2,
+            complete_attempts: 1,
+            completion: Some(0),
+            ..TaskTokens::default()
+        });
+        let mut saved = state::State::new(task, record, true);
+        let checkpoint = policy.storage.join(format!("{}.json", binding.native_task_id));
+        let mut writer = state::Writer::new(checkpoint, false);
+        writer
+            .save(&mut saved, Step::Worker, &|_: &Record| Ok(()))
+            .unwrap();
+
+        let usage = task_usage_for_binding(&policy, &binding).unwrap().unwrap();
+        assert_eq!(usage.task, binding.native_task_id);
+        assert_eq!(usage.checkpoint_revision, saved.record.checkpoint_revision);
+        let tokens = usage.task_tokens.unwrap();
+        assert_eq!(tokens.completion, Some(0));
+        assert!(tokens.prompt.is_none());
+        assert!(!tokens.complete);
+
+        let other_branch = NativeBinding::new(42, &key, &lease, "agent/other").unwrap();
+        assert_eq!(other_branch.native_task_id, binding.native_task_id);
+        assert!(task_usage_for_binding(&policy, &other_branch).is_err());
+        let next_lease = Lease {
+            generation: (0, 2),
+            ..lease
+        };
+        let next = NativeBinding::new(42, &key, &next_lease, &binding.branch).unwrap();
+        assert!(task_usage_for_binding(&policy, &next).unwrap().is_none());
     }
 }

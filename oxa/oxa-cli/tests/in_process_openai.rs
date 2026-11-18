@@ -72,6 +72,91 @@ fn success(output: &Output) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+#[test]
+fn live_openai_ids_filter_the_configured_overlay_and_reuse_the_cache() {
+    let env = TestEnv::new();
+    let mock = mock::MockOpenAi::start(vec![mock::Reply::json(json!({
+        "data": [{"id": "synthetic-openai"}, {"id": "synthetic-unknown-metadata"}],
+    }))]);
+    settings(&env, &mock.base_url(), false);
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let cloud = &mut settings["oxa"]["cloud"];
+    cloud["discover_models"] = json!(true);
+    let mut unavailable = cloud["models"][MODEL].clone();
+    unavailable["upstream_model"] = json!("synthetic-unavailable");
+    cloud["models"]["synthetic-not-offered"] = unavailable;
+    fs::write(path, settings.to_string()).unwrap();
+    private_file(
+        &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        &json!({"openai": KEY}).to_string(),
+    );
+    for _ in 0..2 {
+        let output = run(&env, &["--list-models"], None);
+        success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains(MODEL));
+        assert!(!stdout.contains("synthetic-not-offered"));
+        assert!(!stdout.contains("synthetic-unknown-metadata"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("1 offers with unknown pricing and 1 with unknown limits"),
+            "{stderr}"
+        );
+        assert!(!stdout.contains(KEY) && !stderr.contains(KEY));
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/v1/models");
+    let offline = run(&env, &["--offline", "--list-models"], None);
+    assert!(!offline.status.success());
+    assert_eq!(mock.requests().len(), 1);
+    mock.assert_healthy();
+}
+
+#[test]
+fn live_openrouter_discovery_uses_the_key_scoped_priced_text_offers() {
+    let env = TestEnv::new();
+    let offer = |id: &str, price: &str| {
+        json!({"id": id, "context_length": 4096,
+            "top_provider": {"max_completion_tokens": 128},
+            "pricing": {"prompt": price, "completion": "0.000003"},
+            "supported_parameters": ["tools"]})
+    };
+    let mock = mock::MockOpenAi::start(vec![mock::Reply::json(json!({"data": [
+        offer("vendor/synthetic-priced", "0.000002"),
+        offer("vendor/synthetic-unpriced", "-1"),
+    ]}))]);
+    let base = format!("http://{}/api/v1", mock.address());
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &json!({"oxa":{"engine":{"inProcessCloud":true},"cloud":{
+            "discover_models":true, "discovery":{"openrouter":{"base_url":base}},
+        }}})
+        .to_string(),
+    );
+    private_file(
+        &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        &json!({"openrouter": KEY}).to_string(),
+    );
+    for _ in 0..2 {
+        let output = run(&env, &["--list-models"], None);
+        success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stdout.contains("openrouter/vendor/synthetic-priced"), "{stdout}");
+        assert!(!stdout.contains("synthetic-unpriced"));
+        assert!(stderr.contains("1 offers with unknown pricing"), "{stderr}");
+        assert!(!stdout.contains(KEY) && !stderr.contains(KEY));
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/api/v1/models/user");
+    mock.assert_healthy();
+}
 fn terminal(output: &Output) -> Value {
     let records: Vec<Value> = output
         .stderr
@@ -104,6 +189,60 @@ fn rows(env: &TestEnv) -> Vec<Value> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+#[test]
+fn unpriced_discovery_uses_owner_rates_for_admission_and_estimated_ledger_spend() {
+    let env = TestEnv::new();
+    let peer = mock::MockOpenAi::start(vec![
+        mock::Reply::json(json!({"data":[{"id":"synthetic-openai"}]})),
+        final_reply("Synthetic priced estimate"),
+    ]);
+    settings(&env, &format!("http://{}/v1", peer.address()), false);
+    let path = env.agent_dir().join("settings.json");
+    let mut user: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let cloud = &mut user["oxa"]["cloud"];
+    cloud["discover_models"] = json!(true);
+    cloud["models"][MODEL].as_object_mut().unwrap().remove("pricing");
+    let pricing = json!({MODEL:{"input_per_million":2,"output_per_million":3}});
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"oxa":{"cloud":{"unpriced_discovered_pricing":pricing}}}).to_string(),
+    );
+    private_file(
+        &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        &json!({"openai":KEY}).to_string(),
+    );
+    fs::write(&path, user.to_string()).unwrap();
+    let unpriced = run(&env, &["--list-models"], None);
+    assert!(!String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
+    assert_eq!(peer.requests().len(), 1);
+
+    user["oxa"]["cloud"]["unpriced_discovered_pricing"] = pricing;
+    user["oxa"]["cloud"]["daily_budget_usd"] = json!(0.008239);
+    fs::write(&path, user.to_string()).unwrap();
+    let args = ["-p", "--no-session", "--no-tools", "Synthetic prompt"];
+    let refused = run(&env, &args, None);
+    assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
+    assert_eq!(peer.requests().len(), 1);
+
+    user["oxa"]["cloud"]["daily_budget_usd"] = json!(0.00825);
+    fs::write(&path, user.to_string()).unwrap();
+    let output = run(&env, &args, None);
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("owner-estimated prices"));
+    let row = rows(&env).pop().unwrap();
+    assert_eq!(row["settled"], "estimated");
+    assert_eq!(row["estimated_cost_usd"], 0.000020);
+    assert!(row.get("cost_usd").is_none() && row.get("catalog_cost_usd").is_none());
+    let refused = run(&env, &args, None);
+    assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
+    assert_eq!(
+        peer.requests().len(),
+        2,
+        "the persisted estimate counts against the cap"
+    );
+    peer.assert_healthy();
 }
 
 #[test]
@@ -410,6 +549,85 @@ fn new_process_chatgpt_continuation_is_pinned_to_the_saved_account() {
         }
     }
     peer.assert_healthy();
+}
+
+// Preserve the native equivalent of the SDK controller contract's default output limit.
+#[test]
+fn catalog_default_output_limit_is_visible_and_reaches_a_native_response() {
+    for (override_limit, expected) in [(None, 16), (Some(4), 4)] {
+        let env = TestEnv::new();
+        let peer = mock::MockOpenAi::start(vec![mock::Reply::events(vec![json!({
+            "type":"response.incomplete",
+            "response":{
+                "status":"incomplete",
+                "incomplete_details":{"reason":"max_output_tokens"},
+                "output":[{"type":"message","id":"msg_capped","role":"assistant",
+                    "content":[{"type":"output_text","text":"Synthetic capped answer"}]}],
+                "usage":{"input_tokens":7,"output_tokens":expected,"total_tokens":7 + expected}
+            }
+        })])]);
+        settings(&env, &peer.base_url(), false);
+        if let Some(limit) = override_limit {
+            let path = env.home().join(".oxa/agent/settings.json");
+            let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            config["oxa"]["cloud"]["models"][MODEL]["max_output"] = json!(limit);
+            fs::write(path, config.to_string()).unwrap();
+        }
+        private_file(
+            &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+            &json!({"openai":KEY}).to_string(),
+        );
+
+        let listing = run(&env, &["--list-models", MODEL], None);
+        success(&listing);
+        let listing = String::from_utf8(listing.stdout).unwrap();
+        let model = listing.lines().nth(1).unwrap();
+        let fields: Vec<_> = model.split_whitespace().collect();
+        assert_eq!(fields[1], MODEL);
+        assert_eq!(fields[3].parse::<u64>().unwrap(), expected);
+        assert!(
+            peer.requests().is_empty(),
+            "listing must not send an upstream request"
+        );
+
+        let output = run(
+            &env,
+            &[
+                "--mode",
+                "json",
+                "--no-session",
+                "--no-tools",
+                "-p",
+                "Synthetic length request",
+            ],
+            None,
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result = terminal(&output);
+        assert_eq!(result["error_class"], "output_limit");
+        assert_eq!(result["requests"], 1);
+        let requests = peer.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].body["max_output_tokens"], expected);
+        let messages: Vec<_> = output
+            .stdout
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+            .filter(|event| event["type"] == "message_end" && event["message"]["role"] == "assistant")
+            .collect();
+        assert_eq!(messages.len(), 1);
+        let message = &messages[0]["message"];
+        assert_eq!(message["stopReason"], "length");
+        assert_eq!(message["usage"]["output"], expected);
+        assert_eq!(message["content"][0]["text"], "Synthetic capped answer");
+        peer.assert_healthy();
+    }
 }
 
 #[test]

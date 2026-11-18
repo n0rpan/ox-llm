@@ -1,7 +1,9 @@
 //! D13: mode choice and wiring.
 // ported from pi packages/coding-agent/src/main.ts
+mod lead_owner;
 mod mode;
 
+pub use lead_owner::{with_lead_owner, LeadOwnerBinding};
 use mode::headless_argument_error;
 pub use mode::{choose_mode, RunMode};
 
@@ -182,6 +184,12 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     }
 
     if let Some(sub) = a.subcommand.clone() {
+        if let Subcommand::Registered(oxa_interactive::command_registry::CommandId::LeadChat, words) = &sub {
+            return finish(
+                crate::lead_chat::run_fixed(&words.0, &cwd, env, &mut *stdout),
+                &mut *stderr,
+            );
+        }
         let dirs = match dirs_from_env(env, None) {
             Ok(d) => d,
             Err(e) => return report(&mut *stderr, &e),
@@ -314,10 +322,22 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             Err(e) => return report(&mut *stderr, &e),
         };
         let user = Settings::load(&dirs, &cwd, false);
-        let engine = match crate::in_process::select(&user, &user, &dirs, None, || engine_for(&endpoint)) {
+        let (engine, catalog_notices) = match crate::in_process::select_observed(
+            &user,
+            &user,
+            &dirs,
+            None,
+            None,
+            crate::in_process::SharedEngines::default(),
+            || engine_for(&endpoint),
+        ) {
             Ok(e) => e,
             Err(e) => return report(&mut *stderr, &e),
         };
+        write_diagnostics(
+            &mut *stderr,
+            catalog_notices.into_iter().map(|text| (Level::Info, text)),
+        );
         let result = list_models(
             engine.as_ref(),
             &endpoint.name,
@@ -395,6 +415,7 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
             stdout_is_tty,
             &mut confirm,
             cloud_diagnostics.clone(),
+            None,
         )
     };
     let prep = match prepared {
@@ -672,7 +693,9 @@ fn prepare(
     stdout_is_tty: bool,
     confirm: &mut dyn FnMut(&str, &str) -> bool,
     cloud_diagnostics: oxc_gateway::diagnostics::Diagnostics,
+    owner_open: Option<(&oxa_session::SessionRef, Arc<dyn SessionStore>)>,
 ) -> Result<Prep, OxaError> {
+    let owner_chat = owner_open.is_some();
     if a.goal.is_some() && !matches!(mode, RunMode::Print | RunMode::Json) {
         return Err(OxaError::new(
             codes::USAGE,
@@ -759,7 +782,7 @@ fn prepare(
     // SET-021 / SES-010: `--session-dir` > `OXA_SESSION_DIR` > the `sessionDir` setting
     // (relative to the working directory) > `<agent dir>/sessions`.
     let mut session_dirs = dirs.clone();
-    if a.session_dir.is_none() && env.get("OXA_SESSION_DIR").is_none() {
+    if !owner_chat && a.session_dir.is_none() && env.get("OXA_SESSION_DIR").is_none() {
         if let Some(dir) = settings.session_dir(&dirs.home, cwd) {
             session_dirs.sessions_dir = dir;
         }
@@ -775,7 +798,7 @@ fn prepare(
         || !settings.list("enabledModels").is_empty(),
         |patterns| !patterns.is_empty(),
     );
-    let resuming = a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
+    let resuming = owner_chat || a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
     let requested_model = a.model.clone().or_else(|| {
         // The core chooses a restored/scoped model instead of an unused default.
         if resuming || has_model_scope {
@@ -804,7 +827,7 @@ fn prepare(
         .unwrap_or_default();
     #[cfg(not(feature = "share"))]
     let shared = crate::in_process::SharedEngines::default();
-    let engine = child.wrap(crate::in_process::select_observed(
+    let (engine, catalog_notices) = crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
@@ -812,7 +835,9 @@ fn prepare(
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,
         || engine_with_settings(&endpoint, &settings),
-    )?);
+    )?;
+    let engine = child.wrap(engine);
+    notices.extend(catalog_notices.into_iter().map(|text| (Level::Info, text)));
 
     let opts = discover_opts(a, dirs, cwd, trusted)?;
     // O-152: the built-in skills' files, so the model can read their bodies (written only
@@ -830,7 +855,7 @@ fn prepare(
     // prefix (W3). When the engine does not answer, an existing file keeps its model list.
     // Never under test isolation or in a subagent child (its parent just did it); a failure
     // only keeps the previous text.
-    if env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1") && !child.nested() {
+    if !owner_chat && env.get(oxa_proto::names::ENV_TEST_ISOLATION) != Some("1") && !child.nested() {
         let probe = (!oxa_proto::offline()).then_some(engine.as_ref());
         let facts = crate::identity_cmd::identity_facts(Path::new("/"), probe);
         let keep_known_models = facts.models.is_empty() && oxa_resources::read_identity(dirs).is_some();
@@ -907,8 +932,7 @@ fn prepare(
         // thinking level of its pattern unless `--thinking` is given. Patterns that match
         // nothing are reported.
         let patterns = a.models.clone().unwrap_or_else(|| settings.list("enabledModels"));
-        let continuing = a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
-        if !patterns.is_empty() && !continuing {
+        if !patterns.is_empty() && !resuming {
             let available = engine_model_refs(engine.info(None)?, &endpoint.name);
             let (scoped, diags) = oxa_config::resolve_scoped(&patterns, &available);
             notices.extend(diags.into_iter().map(|d| (d.level, d.message)));
@@ -952,21 +976,23 @@ fn prepare(
         dirs.home.clone(),
         oxa_proto::offline(),
     ));
-    let hook_sets = build_hooks(
-        &HookInputs {
-            args: a,
-            dirs,
-            cwd,
-            settings: &settings,
-            resources: &resources,
-            sandbox: &sandbox,
-            trusted,
-            nested: child.nested(),
-            env,
-            yolo: yolo.clone(),
-        },
-        &mut notices,
-    )?;
+    let hook_inputs = HookInputs {
+        args: a,
+        dirs,
+        cwd,
+        settings: &settings,
+        resources: &resources,
+        sandbox: &sandbox,
+        trusted,
+        nested: child.nested(),
+        env,
+        yolo: yolo.clone(),
+    };
+    let hook_sets = if owner_chat {
+        HookSets::default()
+    } else {
+        build_hooks(&hook_inputs, &mut notices)?
+    };
     // `ctx.mode` of the extensions (pi's names).
     if let Some(ext) = &hook_sets.extensions {
         ext.set_mode(match mode {
@@ -977,12 +1003,15 @@ fn prepare(
         });
     }
 
-    let store: Arc<dyn SessionStore> = if a.no_session {
-        Arc::new(MemStore::new())
-    } else {
-        Arc::new(FsStore::new(dirs.sessions_dir.clone()))
+    let store: Arc<dyn SessionStore> = match &owner_open {
+        Some((_, store)) => store.clone(),
+        None if a.no_session => Arc::new(MemStore::new()),
+        None => Arc::new(FsStore::new(dirs.sessions_dir.clone())),
     };
-    let (open, session_id) = choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?;
+    let (open, session_id) = match owner_open {
+        Some((bound, _)) => (Open::Resume(bound.clone()), None),
+        None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
+    };
     let name = match a.name.as_deref().map(str::trim) {
         Some("") => {
             return Err(OxaError::new(codes::INVALID, "--name requires a non-empty value"));
