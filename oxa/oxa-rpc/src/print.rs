@@ -15,7 +15,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 /// a message followed by tool calls and one line per tool call go to `err`, the final reply of
 /// the last prompt goes to `out`; every write is flushed at once, so a killed run leaves a log.
 struct PrintSink<'a> {
-    wrap_up: Option<oxa_core::Handle>,
     out: &'a mut dyn Write,
     err: &'a mut dyn Write,
     /// The last assistant message of the current prompt.
@@ -31,8 +30,8 @@ struct PrintSink<'a> {
     local_model: bool,
     pending_length: bool,
     continued: Option<String>,
-    /// The final reply of the last prompt, set at `AgentEnd`; written to `out` by `run_print`
-    /// once it knows the run did not fail or abort.
+    /// Completed candidate selected at `AgentEnd` or successful goal settlement; choose stdout or progress after
+    /// settlement, once it knows whether another prompt is admitted or the run failed.
     final_text: Option<String>,
     notes: Vec<String>,
     started: HashMap<String, Instant>,
@@ -57,6 +56,10 @@ impl PrintSink<'_> {
     }
 
     fn next_turn(&mut self) {
+        // A new turn proves the preceding completed candidate is progress.
+        if let Some(text) = self.final_text.take() {
+            self.progress(&text);
+        }
         if self.local_model && self.pending_length {
             self.pending_length = false;
             if let Some(text) = self.pending.take() {
@@ -138,16 +141,9 @@ impl EventSink for PrintSink<'_> {
             }
             AgentEvent::TurnStart => self.next_turn(),
             AgentEvent::AgentEnd { .. } => {
-                if self.is_last_prompt
-                    || self
-                        .wrap_up
-                        .as_ref()
-                        .is_some_and(|handle| handle.wrap_up_requested())
-                {
-                    self.final_text = self.pending.take();
-                } else {
-                    self.flush_pending();
-                }
+                // Settlement hooks may still stop the invocation. Keep the
+                // completed candidate until the driver decides its destination.
+                self.final_text = self.pending.take();
             }
             AgentEvent::ToolExecutionStart {
                 tool_call_id,
@@ -206,7 +202,6 @@ pub fn run_print_outcome(
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
     let mut sink = PrintSink {
-        wrap_up: Some(session.handle()),
         out,
         err,
         last: None,
@@ -272,17 +267,40 @@ pub fn run_print_outcome(
         // included); print only says why on stderr.
         let settled = session.take_outcome();
         outcome.include(settled);
-        // A failed or aborted run prints no reply (only known after the run).
-        if !failed {
-            if let Some(t) = sink.final_text.clone() {
-                sink.write_reply(&t);
-                if let Some(e) = sink.io_error.take() {
-                    return output_failure(outcome, e, sink.err);
+        // goal_done can settle the run on the tool-call message itself. Its
+        // content is final only after goal, schema and project checks succeed.
+        if sink.is_last_prompt
+            && settled == RunOutcome::Done
+            && sink.final_text.is_none()
+            && session
+                .goal()
+                .is_some_and(|goal| goal.status == oxa_session::GoalStatus::Done)
+        {
+            sink.final_text = sink
+                .last
+                .as_ref()
+                .filter(|message| message.msg.tool_calls.iter().any(|call| call.name == "goal_done"))
+                .and_then(|message| message.msg.content.clone());
+        }
+        // Decide once after settlement, retaining failure precedence and progress
+        // routing for an intermediate prompt whose next prompt will be admitted.
+        let stopping = session.handle().wrap_up_requested() || session.handle().interrupted();
+        if let Some(t) = sink.final_text.clone() {
+            if sink.is_last_prompt || stopping {
+                // A failed or aborted run prints no final reply.
+                if !failed {
+                    sink.write_reply(&t);
+                    if let Some(e) = sink.io_error.take() {
+                        return output_failure(outcome, e, sink.err);
+                    }
                 }
+            } else {
+                sink.progress(&t);
+                sink.final_text = None;
             }
         }
         explain_outcome(settled, &mut *sink.err);
-        if session.handle().wrap_up_requested() || session.handle().interrupted() {
+        if stopping {
             outcome.include(RunOutcome::Interrupted);
             break;
         }
@@ -327,13 +345,107 @@ pub fn run_json_outcome(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
+    write_json_header(session, out)?;
+    run_json_prompts(session, prompts, out, err)
+}
+
+fn write_json_header(session: &Session, out: &mut dyn Write) -> Result<(), OxaError> {
     let mut header = session_header_record(&session_header(session));
     header["statusFile"] = session
         .state()
         .status_file
         .map(|p| p.to_string_lossy().into_owned())
         .into();
-    write_record(out, &header)?;
+    write_record(out, &header)
+}
+
+/// The managed frontend has authenticated the assignment before mounting this worker.
+/// The JSON header remains first. All model events and receipts share one line writer.
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
+pub fn run_json_outcome_with_steering_authority(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: crate::Out,
+    err: &mut dyn Write,
+    agent_dir: &std::path::Path,
+    authority: std::sync::Arc<oxa_core::goal::SteeringAuthority>,
+) -> Result<RunOutcome, OxaError> {
+    use crate::a2a_control::{queue_steering, write_control_receipt};
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    let mut writer = SharedRecords(out.clone());
+    write_json_header(session, &mut writer)?;
+    let handle = session.handle();
+    handle.enable_goal_steering();
+    let binding = session.inner().sref.clone();
+    let session_ref = binding.clone();
+    let order = Arc::new(Mutex::new(()));
+    let _inbox = oxa_session::Inbox::watch_control(agent_dir, &binding, move |packet| {
+        if handle.wrap_up_requested() {
+            return false;
+        }
+        let _admission = order.lock().unwrap_or_else(|poison| poison.into_inner());
+        let request = match oxa_orchestrator::control::decode(packet.as_bytes()) {
+            Ok(request) => request,
+            Err(rejection) => {
+                write_control_receipt(&out, rejection);
+                return true;
+            }
+        };
+        let result_order = order.clone();
+        let result_out = out.clone();
+        let response = queue_steering(&handle, &session_ref, request, &authority, move |receipt| {
+            let _receipt = result_order.lock().unwrap_or_else(|poison| poison.into_inner());
+            write_control_receipt(&result_out, receipt);
+        })
+        .unwrap_or_else(|request| json!({"id":request.id(),"error":"unsupported_control"}));
+        write_control_receipt(&out, response);
+        true
+    })
+    .map_err(|error| OxaError::io("cannot mount managed steering inbox", &error))?;
+    run_json_prompts(session, prompts, &mut writer, err)
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
+struct SharedRecords(crate::Out);
+
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
+impl Write for SharedRecords {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .write(bytes)
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .write_all(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap_or_else(|poison| poison.into_inner()).flush()
+    }
+}
+
+fn run_json_prompts(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<RunOutcome, OxaError> {
     let mut ui = HeadlessUi::default();
     let mut sink = JsonSink {
         out: &mut *out,
@@ -556,7 +668,6 @@ mod tests {
     fn failed_tool_line_carries_the_reason() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut sink = PrintSink {
-            wrap_up: None,
             out: &mut out,
             err: &mut err,
             last: None,
@@ -609,7 +720,6 @@ mod tests {
     fn reply_followed_by_another_turn_is_progress_not_the_final_reply() {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let mut sink = PrintSink {
-            wrap_up: None,
             out: &mut out,
             err: &mut err,
             last: None,

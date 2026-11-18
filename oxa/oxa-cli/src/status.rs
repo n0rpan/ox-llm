@@ -88,13 +88,26 @@ pub(crate) struct StatusWriter {
     state: Mutex<State>,
     timeout_ms: Option<u64>,
     interval: Duration,
+    billing: Option<oxc_gateway::diagnostics::Diagnostics>,
+    local_policy: Option<std::sync::Weak<dyn oxa_proto::Engine>>,
 }
 
 impl StatusWriter {
+    pub(crate) fn with_billing(mut self, billing: oxc_gateway::diagnostics::Diagnostics) -> Self {
+        self.billing = Some(billing);
+        self
+    }
+
+    pub(crate) fn with_engine(mut self, engine: &std::sync::Arc<dyn oxa_proto::Engine>) -> Self {
+        self.local_policy = Some(std::sync::Arc::downgrade(engine));
+        self
+    }
     pub(crate) fn new(timeout: Option<Duration>) -> Self {
         let timeout_ms = timeout.map(|d| d.as_millis() as u64);
         Self {
             state: Mutex::new(State::default()),
+            billing: None,
+            local_policy: None,
             timeout_ms,
             interval: Duration::from_millis(timeout_ms.map(|t| (t / 4).clamp(1, 1000)).unwrap_or(1000)),
         }
@@ -159,6 +172,7 @@ impl StatusWriter {
         let outcome = match &result {
             Ok(0) => RunOutcome::Done,
             Ok(130) => RunOutcome::Interrupted,
+            Ok(129) => RunOutcome::Failed(oxa_proto::codes::TERMINAL_CLOSED),
             Ok(_) => RunOutcome::Failed("interactive_exit"),
             Err(e) => RunOutcome::from_error(e),
         };
@@ -172,10 +186,21 @@ impl StatusWriter {
     }
 
     fn write(&self, snapshot: &mut Snapshot) -> std::io::Result<()> {
-        let bytes = serde_json::to_vec(&snapshot.record(
+        let mut record = snapshot.record(
             self.timeout_ms,
             self.interval.as_millis().min(u64::MAX as u128) as u64,
-        ))?;
+        );
+        if let Some(billing) = self.billing.as_ref().and_then(|b| b.last_billing()) {
+            record["last_billing"] = billing.record();
+        }
+        if let Some(engine) = self.local_policy.as_ref() {
+            if let Some((pid, policy, micros)) = engine.upgrade().and_then(|e| e.local_memory_status("")) {
+                record["local_memory_policy"] = policy.into();
+                record["local_engine_pid"] = pid.into();
+                record["local_launcher_us"] = micros.into();
+            }
+        }
+        let bytes = serde_json::to_vec(&record)?;
         if bytes.len() > MAX_BYTES {
             return Err(std::io::Error::other("status snapshot exceeds its size limit"));
         }
@@ -293,6 +318,7 @@ impl ProgressObserver for StatusWriter {
                 true
             }
             Progress::Advanced => false,
+            Progress::GoalControlCommitted { .. } => return,
             Progress::Closing => {
                 snapshot.running = true;
                 snapshot.phase = "closing";
@@ -397,6 +423,7 @@ pub(crate) fn run(
             "worker status does not match this session/version",
         ));
     }
+    strip_unproven_local(&mut value);
     value["stalled"] = value["stall_deadline_ms"]
         .as_u64()
         .is_some_and(|deadline| now_ms() >= deadline)
@@ -405,6 +432,58 @@ pub(crate) fn run(
     out.write_all(b"\n")
         .map_err(|e| OxaError::io("cannot write worker status", &e))?;
     Ok(0)
+}
+
+const LOCAL_FIELDS: [&str; 3] = ["local_memory_policy", "local_engine_pid", "local_launcher_us"];
+
+/// A saved snapshot is untrusted input. A reader may only repeat local facts it can re-prove
+/// from `/proc`: the child's parent is this worker, the child runs under a no-swap policy, and
+/// a `scope` child sits in the transient unit this worker named for it. A partial or tampered
+/// record loses every local field, never only the ones it happened to omit.
+fn strip_unproven_local(value: &mut Value) {
+    if proven_local_engine(value) {
+        return;
+    }
+    if let Some(record) = value.as_object_mut() {
+        for field in LOCAL_FIELDS {
+            record.remove(field);
+        }
+    }
+}
+
+fn proven_local_engine(value: &Value) -> bool {
+    let Some(child) = value["local_engine_pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+    else {
+        return false;
+    };
+    let Some(parent) = value["pid"].as_u64() else {
+        return false;
+    };
+    let policy = value["local_memory_policy"].as_str();
+    if !matches!(policy, Some("scope" | "inherited")) || value["local_launcher_us"].as_u64().is_none() {
+        return false;
+    }
+    let owned = fs::read_to_string(format!("/proc/{child}/stat"))
+        .ok()
+        .and_then(|s| {
+            s.rsplit_once(") ")
+                .and_then(|(_, rest)| rest.split_whitespace().nth(1)?.parse::<u64>().ok())
+        })
+        == Some(parent);
+    let safe = oxc_local::memory::MemorySource::default()
+        .sample_child(child)
+        .is_ok_and(|s| s.swap_limit_zero && s.swap_current_bytes == 0);
+    let scope = policy != Some("scope")
+        || fs::read_to_string(format!("/proc/{child}/cgroup")).is_ok_and(|membership| {
+            membership.lines().any(|line| {
+                line.rsplit('/').next().is_some_and(|name| {
+                    name.starts_with(&format!("oxa-local-{parent}-{child}-")) && name.ends_with(".scope")
+                })
+            })
+        });
+    owned && safe && scope
 }
 
 fn read_snapshot(path: &Path) -> Result<Value, OxaError> {
@@ -447,6 +526,27 @@ mod tests {
     use super::*;
     use oxa_fake::TestEnv;
     use oxa_proto::Usage;
+
+    #[test]
+    fn interactive_terminal_loss_records_the_process_exit() {
+        let env = TestEnv::new();
+        let session = SessionRef {
+            id: "one".into(),
+            path: env.work().join("session.jsonl"),
+        };
+        let writer = StatusWriter::new(None);
+        writer.notify(
+            &session,
+            Progress::Session {
+                file: Some(&session.path),
+            },
+        );
+        assert_eq!(writer.finish_interactive(Ok(129), &mut Vec::new()).unwrap(), 129);
+        let record = read_snapshot(&session.path.with_extension("status.json")).unwrap();
+        assert_eq!(record["phase"], "finished");
+        assert_eq!(record["outcome"]["error_class"], "terminal_closed");
+        assert_eq!(record["outcome"]["exit_code"], 129);
+    }
 
     #[test]
     fn stream_updates_coalesce_and_the_final_snapshot_includes_all_usage() {
@@ -621,6 +721,50 @@ mod tests {
             read_snapshot(&one.path.with_extension("status.json")).unwrap()["phase"],
             "finished"
         );
+    }
+
+    #[test]
+    fn a_partial_local_claim_is_stripped_whole_and_never_left_half_trusted() {
+        let env = TestEnv::new();
+        let path = env.work().join("status.json");
+        let full = json!({
+            "pid": std::process::id(),
+            "local_memory_policy": "inherited",
+            "local_engine_pid": u32::MAX,
+            "local_launcher_us": 7,
+        });
+        // A complete claim is still unproven while `/proc` cannot show a child of this
+        // process under a no-swap policy, so it keeps none of the local facts either.
+        atomic(&path, &serde_json::to_vec(&full).unwrap()).unwrap();
+        let mut read = read_snapshot(&path).unwrap();
+        strip_unproven_local(&mut read);
+        for field in LOCAL_FIELDS {
+            assert!(read.get(field).is_none(), "unproven record must strip {field}");
+        }
+        // Every field is required; a record missing any one of them keeps none of them.
+        for missing in LOCAL_FIELDS {
+            let mut record = full.clone();
+            record.as_object_mut().unwrap().remove(missing);
+            atomic(&path, &serde_json::to_vec(&record).unwrap()).unwrap();
+            let mut read = read_snapshot(&path).unwrap();
+            strip_unproven_local(&mut read);
+            for field in LOCAL_FIELDS {
+                assert!(read.get(field).is_none(), "{missing} must strip {field}");
+            }
+            assert_eq!(read["pid"], full["pid"]);
+        }
+        // An unknown policy word and a non-integer timing are refusals, not passes.
+        for (policy, micros) in [("privileged", json!(7)), ("inherited", json!("7"))] {
+            let mut record = full.clone();
+            record["local_memory_policy"] = policy.into();
+            record["local_launcher_us"] = micros;
+            atomic(&path, &serde_json::to_vec(&record).unwrap()).unwrap();
+            let mut read = read_snapshot(&path).unwrap();
+            strip_unproven_local(&mut read);
+            for field in LOCAL_FIELDS {
+                assert!(read.get(field).is_none(), "{policy}: {field}");
+            }
+        }
     }
 
     #[test]

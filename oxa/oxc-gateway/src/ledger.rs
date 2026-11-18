@@ -123,6 +123,13 @@ pub struct Context<'a> {
     /// never raw text or a session/provider identity. None preserves owner calls.
     pub guest_key_name: Option<&'a str>,
 }
+/// Completion of a local guest request. Missing usage retains its quota reservation.
+pub enum LocalGuestOutcome {
+    Completed { tokens: Option<(u64, u64)> },
+    Cancelled,
+    Failed,
+}
+
 pub struct Entry {
     daily: Daily,
     row: Value,
@@ -306,7 +313,9 @@ impl Entry {
         self.row["remote"] = json!(true);
         self.row["remote_provider"] = fields["remote_provider"].clone();
         if let Some(value) = fields.get("opencode") {
-            if fields["remote_provider"] != "opencode" || fields["billing"] != "subscription" {
+            if fields["remote_provider"] != "opencode"
+                || !matches!(fields["billing"].as_str(), Some("subscription" | "metered"))
+            {
                 return Err(io::ErrorKind::InvalidData.into());
             }
             #[cfg(feature = "anthropic-client")]
@@ -357,9 +366,13 @@ impl Entry {
             return Err(io::ErrorKind::InvalidData.into());
         }
         match fields.get("billing") {
-            Some(value) if value == "subscription" => {
+            Some(value)
+                if value == "subscription"
+                    || value == "metered" && fields["remote_provider"] == "opencode" =>
+            {
                 if !matches!(fields["remote_provider"].as_str(), Some("chatgpt" | "opencode"))
-                    || fields["cost_usd"].as_f64() != Some(0.0)
+                    || (value == "subscription" && fields["cost_usd"].as_f64() != Some(0.0))
+                    || (value == "metered" && fields["cost_usd"].as_f64().is_none_or(|n| n <= 0.0))
                 {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
@@ -375,7 +388,7 @@ impl Entry {
                 {
                     return Err(io::ErrorKind::InvalidData.into());
                 }
-                self.row["billing"] = json!("subscription");
+                self.row["billing"] = value.clone();
                 self.row["subscription_requests"] = json!(requests);
                 self.row["subscription_tokens"] = json!(tokens);
             }
@@ -408,6 +421,48 @@ impl Entry {
         }) {
             self.row["finish_reason"] = json!(finish);
         }
+        self.write_row(status, error, |row| {
+            redact(row);
+            #[cfg(feature = "anthropic-client")]
+            if let Some(plan) = row["opencode"].get("billing_source") {
+                let plan = crate::opencode::PlanName::from_value(plan);
+                row["opencode"]["billing_source"] = plan.as_str().into();
+            }
+        })
+    }
+
+    /// Append one typed terminal row for an authenticated local guest. Local
+    /// usage enters the same private file without entering cloud budget totals.
+    pub fn append_local_guest(mut self, outcome: LocalGuestOutcome) -> io::Result<Value> {
+        if self.row["origin"] != "api"
+            || !self.row["guest_key"].is_string()
+            || !self.row["session"].is_null()
+            || self.row.get("idempotency").is_some()
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        let (status, error, tokens) = match outcome {
+            LocalGuestOutcome::Completed { tokens } => (200, None, tokens),
+            LocalGuestOutcome::Cancelled => (499, Some("local_guest_cancelled"), None),
+            LocalGuestOutcome::Failed => (502, Some("local_guest_failed"), None),
+        };
+        self.row["remote"] = json!(false);
+        self.row["cost_usd"] = json!(0);
+        self.row["usage_missing"] = json!(tokens.is_none());
+        self.row["settled"] = json!(if tokens.is_some() { "usage" } else { "reserved" });
+        if let Some((input, output)) = tokens {
+            self.row["prompt_tokens"] = json!(input);
+            self.row["completion_tokens"] = json!(output);
+        }
+        self.write_row(status, error, |_| {})
+    }
+
+    fn write_row(
+        mut self,
+        status: u16,
+        error: Option<&'static str>,
+        redact: impl FnOnce(&mut Value),
+    ) -> io::Result<Value> {
         let now = Instant::now();
         self.row["status"] = json!(status);
         self.row["error"] = json!(error);

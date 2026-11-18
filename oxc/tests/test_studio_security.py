@@ -1,4 +1,4 @@
-"""F80 for the Image Studio server: Host allowlist, no cross-site POSTs, bounded bodies. No model, owned server."""
+"""Image Studio listener binding, Host allowlist, cross-site refusals, and bounded bodies."""
 import http.client
 import importlib.machinery
 import importlib.util
@@ -6,10 +6,15 @@ from http.server import ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
+
+from _isolation import free_port
 
 SOURCE = Path(__file__).resolve().parents[1] / 'src/oxc/runtime/studio'
 
@@ -81,6 +86,38 @@ class StudioSecurity(unittest.TestCase):
         status, data = self.send('POST', '/upload', h, body)
         self.assertEqual(status, 400)
         self.assertIn(b'unsupported image type', data)
+
+
+class StudioLoopbackTests(unittest.TestCase):
+    def test_studio_listens_on_loopback_only(self):
+        port = free_port()
+        scratch = Path(self.enterContext(tempfile.TemporaryDirectory(dir='/tmp')))
+        env = dict(os.environ, STUDIO_PORT=str(port), IMG_OUTDIR=str(scratch / 'out'),
+                   LOCAL_IMAGE_CONFIG_DIR=str(scratch / 'config'), OXC_LEASE=str(scratch / 'inference.lock'),
+                   SD_HOME=str(scratch / 'stack'))
+        child = subprocess.Popen([sys.executable, str(SOURCE)], env=env,
+                                 cwd=scratch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(lambda: (child.terminate(), child.wait(10)))
+
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if self.listeners(port) or child.poll() is not None:
+                break
+            time.sleep(.02)
+        else:
+            self.assertTrue(self.listeners(port) or child.poll() is not None, 'studio never listened')
+        self.assertIsNone(child.poll(), 'studio exited at start')
+        self.assertEqual(self.listeners(port), {'0100007F'}, 'studio must bind 127.0.0.1 only')
+
+    @staticmethod
+    def listeners(port):
+        found = set()
+        for name in ('/proc/net/tcp', '/proc/net/tcp6'):
+            for line in Path(name).read_text().splitlines()[1:]:
+                fields = line.split()
+                if fields[3] == '0A' and int(fields[1].rsplit(':', 1)[1], 16) == port:
+                    found.add(fields[1].rsplit(':', 1)[0])
+        return found
 
 
 if __name__ == '__main__':

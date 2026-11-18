@@ -31,6 +31,10 @@ pub const MAX_FINISHED: usize = 16;
 pub const BUFFER_CAP: usize = 64 * 1024;
 /// How much of a job's output a read returns, in bytes.
 pub const READ_CAP: usize = 8 * 1024;
+/// How much of a job's output a listing looks at for its last line, in bytes.
+const LAST_LINE_SCAN: usize = 4 * 1024;
+/// The longest last line a listing shows, in characters.
+const LAST_LINE_CAP: usize = 100;
 
 /// The status of one job.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,6 +73,8 @@ struct Job {
     cancel: CancelToken,
     output: Arc<Mutex<Out>>,
     status: Arc<Mutex<JobStatus>>,
+    /// When the job was started, for the age a listing shows.
+    started: Instant,
 }
 
 /// A snapshot of a job for a read.
@@ -88,6 +94,20 @@ pub struct JobKill {
     pub status: JobStatus,
     /// False when the job had already finished before the call.
     pub was_running: bool,
+}
+
+/// A snapshot of one job for a listing (issue #865). Reading it never consumes output: unlike
+/// [`JobRegistry::read`] it does not mark the job's output as seen, so a later
+/// [`JobRegistry::wait`] still reports the news.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobInfo {
+    pub id: String,
+    pub status: JobStatus,
+    /// How long ago the job started.
+    pub age: Duration,
+    /// The last non-empty line of the job's output so far, trimmed and capped. Empty when the
+    /// job has not written a line yet.
+    pub last_line: String,
 }
 
 #[derive(Default)]
@@ -168,7 +188,7 @@ impl JobRegistry {
             .jobs
             .iter()
             .filter(|(_, j)| *j.status.lock().unwrap() != JobStatus::Running)
-            .map(|(id, _)| (id.trim_start_matches("job-").parse().unwrap_or(0), id.clone()))
+            .map(|(id, _)| (job_number(id), id.clone()))
             .collect();
         if finished.len() >= MAX_FINISHED {
             finished.sort();
@@ -188,6 +208,7 @@ impl JobRegistry {
                 cancel: cancel.clone(),
                 output: output.clone(),
                 status: status.clone(),
+                started: Instant::now(),
             },
         );
         drop(state);
@@ -265,6 +286,36 @@ impl JobRegistry {
         state.jobs.get(id).map(|j| j.output.lock().unwrap().buf.len())
     }
 
+    /// The bytes a job has written that no read has shown yet (for tests of the listing's
+    /// non-consuming contract). `None` for an unknown id.
+    #[doc(hidden)]
+    pub fn unseen_len(&self, id: &str) -> Option<u64> {
+        let state = self.state.lock().unwrap();
+        state.jobs.get(id).map(|j| {
+            let out = j.output.lock().unwrap();
+            out.total - out.seen
+        })
+    }
+
+    /// A snapshot of every job, oldest first (issue #865). Unlike [`JobRegistry::read`] it does
+    /// not mark output as seen, so a later [`JobRegistry::wait`] still reports the news.
+    pub fn list(&self) -> Vec<JobInfo> {
+        let state = self.state.lock().unwrap();
+        let mut ids: Vec<&String> = state.jobs.keys().collect();
+        ids.sort_by_key(|id| job_number(id));
+        ids.into_iter()
+            .map(|id| {
+                let job = &state.jobs[id];
+                JobInfo {
+                    id: id.clone(),
+                    status: *job.status.lock().unwrap(),
+                    age: job.started.elapsed(),
+                    last_line: last_line(&job.output.lock().unwrap().buf),
+                }
+            })
+            .collect()
+    }
+
     /// #519: cancel one job and wait (briefly) for it to settle, so its slot is free when this
     /// returns. A job that already finished is left as it is (`was_running: false`). `Err` for an
     /// unknown id.
@@ -303,6 +354,30 @@ impl JobRegistry {
         for job in state.jobs.values() {
             job.cancel.cancel();
         }
+    }
+}
+
+/// The number of a `job-N` id, for ordering a listing and forgetting the oldest finished jobs.
+fn job_number(id: &str) -> u64 {
+    id.trim_start_matches("job-").parse().unwrap_or(0)
+}
+
+/// The last non-empty line of a job's output, trimmed and capped for a listing. Only the tail
+/// of the ring buffer is looked at, so a flooding job costs a bounded scan.
+fn last_line(buf: &[u8]) -> String {
+    let tail = &buf[buf.len().saturating_sub(LAST_LINE_SCAN)..];
+    let text = String::from_utf8_lossy(tail);
+    let line = text
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    if line.chars().count() > LAST_LINE_CAP {
+        let cut: String = line.chars().take(LAST_LINE_CAP).collect();
+        format!("{cut}...")
+    } else {
+        line.to_string()
     }
 }
 
@@ -528,5 +603,80 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "job did not finish");
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn list_snapshots_without_consuming_output() {
+        let reg = JobRegistry::new();
+        reg.set_sandbox(Arc::new(Blocking {
+            seen: Mutex::new(None),
+        }));
+        let id = reg.spawn(spec()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let jobs = reg.list();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, id);
+        assert_eq!(jobs[0].status, JobStatus::Running);
+        assert_eq!(jobs[0].last_line, "started");
+        // The listing did not mark the output as seen: a read still has news to show.
+        assert_eq!(reg.unseen_len(&id), Some(8));
+        assert_eq!(reg.read(&id).unwrap().output, "started\n");
+        assert_eq!(reg.unseen_len(&id), Some(0));
+        // The buffered output is still there after the listing and the read.
+        assert_eq!(reg.list()[0].last_line, "started");
+        reg.kill_all();
+    }
+
+    #[test]
+    fn list_is_oldest_first_and_shows_finished_jobs() {
+        let reg = JobRegistry::new();
+        reg.set_sandbox(Arc::new(Blocking {
+            seen: Mutex::new(None),
+        }));
+        let first = reg.spawn(spec()).unwrap();
+        let second = reg.spawn(spec()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let ids: Vec<String> = reg.list().into_iter().map(|j| j.id).collect();
+        assert_eq!(ids, vec![first.clone(), second.clone()]);
+        assert!(reg.list().iter().all(|j| j.status == JobStatus::Running));
+        assert_eq!(reg.kill(&first).unwrap().status, JobStatus::Killed);
+        let jobs = reg.list();
+        assert_eq!(jobs[0].status, JobStatus::Killed);
+        assert_eq!(jobs[1].status, JobStatus::Running);
+        assert_eq!(reg.unseen_len("job-9"), None);
+        reg.kill_all();
+    }
+
+    #[test]
+    fn list_last_line_skips_blanks_and_is_capped() {
+        struct Lines;
+        impl Sandbox for Lines {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, live: &mut dyn FnMut(&[u8])) -> ExecResult {
+                live(b"first\n");
+                live(&[b'x'; LAST_LINE_CAP + 50]);
+                live(b"\n\n");
+                ExecResult {
+                    output: Vec::new(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let reg = JobRegistry::new();
+        reg.set_sandbox(Arc::new(Lines));
+        let id = reg.spawn(spec()).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while reg.read(&id).unwrap().status == JobStatus::Running {
+            assert!(std::time::Instant::now() < deadline, "job did not finish");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let line = reg.list()[0].last_line.clone();
+        assert_eq!(line, format!("{}...", "x".repeat(LAST_LINE_CAP)));
     }
 }

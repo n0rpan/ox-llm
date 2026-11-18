@@ -211,6 +211,18 @@ choice!(WorkerOutcome {
     Done => "done", NothingToDo => "nothing_to_do", Blocked => "blocked",
     Failed => "failed", Interrupted => "interrupted",
 });
+choice!(TaskStep {
+    Preparing => "preparing", Worker => "worker", Acceptance => "acceptance",
+    Repair => "repair", Recheck => "recheck", Saving => "saving", Finished => "finished",
+});
+choice!(StepReason {
+    Resumed => "resumed", Prepared => "prepared", WorkerDone => "worker_done",
+    WorkerNothingToDo => "worker_nothing_to_do", WorkerBlocked => "worker_blocked",
+    WorkerFailed => "worker_failed", ChecksPassed => "checks_passed", ChecksFailed => "checks_failed",
+    RepairDone => "repair_done", RepairFailed => "repair_failed", Saved => "saved", SaveFailed => "save_failed",
+    Interrupted => "interrupted", Deadline => "deadline", SessionUnavailable => "session_unavailable",
+    SetupFailed => "setup_failed",
+});
 choice!(EvidenceKind {
     LocalCheck => "local_check", Gate => "gate", Review => "review", Queue => "queue",
     Status => "status", Standing => "standing",
@@ -309,14 +321,25 @@ record!(
         | { atom(&s.id, 256) }
 );
 record!(Running {
-    task: String, host: String, branch: String, worktree: String, session_id: Option<String>,
+    task: String, host: String, branch: String, worktree: String, session_id: Option<String>, step: TaskStep,
 } |s| {
     atom(&s.task, 128)?;
     atom(&s.host, 128)?;
     require(!s.branch.starts_with('-') && s.branch.len() <= 256, "invalid task branch")?;
     if let Some(id) = &s.session_id { atom(id, 128)?; }
+    require(s.step != TaskStep::Finished, "finished task cannot be running")?;
     Ok(())
 });
+record!(
+    /// One durable runner step, with no task-state contents or implied publication/landing.
+    /// Finished means this local attempt ended; only the separate acceptance/merge facts
+    /// provide those respective claims. A terminal step requires an explicit fixed reason.
+    TaskTransition { task: String, step: TaskStep, session_id: Option<String>, reason: Option<StepReason> } |s| {
+        atom(&s.task, 128)?;
+        if let Some(id) = &s.session_id { atom(id, 128)?; }
+        require(s.step != TaskStep::Finished || s.reason.is_some(), "finished step requires a reason")
+    }
+);
 record!(WorkerFinished {
     task: String, session_id: Option<String>, outcome: WorkerOutcome, error_class: Option<String>,
 } |s| {
@@ -393,7 +416,17 @@ record!(
         }
 );
 record!(AskClosed { id: String } | s | { atom(&s.id, 128) });
-record!(Incident { id: String, subject: Subject, kind: IncidentKind, evidence: Option<Evidence> } |s| { atom(&s.id, 128) });
+record!(Incident { id: String, subject: Subject, kind: IncidentKind, evidence: Option<Evidence> } |s| { atom(&s.id, 256) });
+record!(
+    /// One durable standing revision. Ask details/answers stay in the protected standing file.
+    StandingChanged {
+        revision: u64, goal: Option<String>, ask_opened: Option<Ask>,
+        ask_closed: Option<AskClosed>, incident: Option<Incident>
+    } |s| {
+        require(s.revision > 0, "standing revision must be positive")?;
+        require(s.ask_opened.is_none() || s.ask_closed.is_none(), "standing mutation has two ask transitions")
+    }
+);
 record!(
     Mechanical {
         subject: Subject,
@@ -406,6 +439,7 @@ tagged!(
     /// No variant grants permission or updates runner state. Only PrMerged is evidence of landing.
     Fact {
         TaskStarted(Running) => "task_started",
+        TaskTransition(TaskTransition) => "task_transition",
         WorkerFinished(WorkerFinished) => "worker_finished",
         LocalAcceptance(LocalAcceptance) => "local_acceptance",
         Published(Publication) => "published",
@@ -413,9 +447,11 @@ tagged!(
         Enqueued(PullRequest) => "enqueued",
         PrMerged(Landed) => "pr_merged",
         Blocked(Blocked) => "blocked",
+        Unblocked(Subject) => "unblocked",
         AskOpened(Ask) => "ask_opened",
         AskClosed(AskClosed) => "ask_closed",
         Incident(Incident) => "incident",
+        StandingChanged(StandingChanged) => "standing_changed",
         Mechanical(Mechanical) => "mechanical",
     }
 );
@@ -426,6 +462,11 @@ impl Fact {
             Self::Mechanical(_) => EventClass::Mechanical,
             Self::Blocked(_) | Self::AskOpened(_) => EventClass::Attention,
             Self::Incident(incident) => incident.kind.class(),
+            Self::StandingChanged(change) if change.ask_opened.is_some() => EventClass::Attention,
+            Self::StandingChanged(change) => change
+                .incident
+                .as_ref()
+                .map_or(EventClass::Routine, |incident| incident.kind.class()),
             _ => EventClass::Routine,
         }
     }
@@ -438,8 +479,14 @@ record!(
         at_ms: u64,
         checkpoint: Checkpoint,
         fact: Fact
-    } | s
-        | { require(s.seq > 0, "event sequence must be positive") }
+    } |s| {
+        require(s.seq > 0, "event sequence must be positive")?;
+        if let Fact::StandingChanged(change) = &s.fact {
+            require(s.checkpoint.source == "standing" && s.checkpoint.revision == change.revision, "standing checkpoint identity disagrees")?;
+        }
+        require(s.checkpoint.source != "standing" || matches!(s.fact, Fact::StandingChanged(_)), "standing source is reserved for standing revisions")?;
+        Ok(())
+    }
 );
 record!(
     /// A bounded materialized read view, not task state. Never drop running/blocked/asks to fit.
