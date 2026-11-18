@@ -40,9 +40,6 @@ for path in sorted(payload.rglob('*')):
         relative = path.relative_to(payload).as_posix()
         components[relative] = {'type': 'file', 'bom-ref': relative, 'name': relative,
                                 'hashes': [{'alg': 'SHA-256', 'content': hashlib.sha256(path.read_bytes()).hexdigest()}]}
-# The Python controller and its provenance/notices are included in the oxc source payload.
-components['python-controller'] = {'type': 'application', 'bom-ref': 'ox-llm-python-controller',
-    'name': 'oxc', 'version': '0.2.0', 'licenses': [{'license': {'id': 'MIT'}}]}
 output.write_text(json.dumps({'bomFormat': 'CycloneDX', 'specVersion': '1.6', 'version': 1,
     'metadata': {'component': {'type': 'application', 'name': 'ox-llm', 'version': '0.2.0'}},
     'components': sorted(components.values(), key=lambda p: p['bom-ref'])}, indent=2) + '\n')

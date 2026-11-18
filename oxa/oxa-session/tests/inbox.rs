@@ -7,6 +7,27 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 #[test]
+fn managed_controls_leave_plain_follow_ups_for_their_owner() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let session = SessionRef {
+        path: env.root().join("managed.jsonl"),
+        id: "managed".into(),
+    };
+    let packet = r#"{"method":"steer","id":"fixture","revision":1,"text":"fixture"}"#;
+    send_inbox(&agent, &session.id, "plain fixture").unwrap();
+    send_inbox_control(&agent, &session, packet).unwrap();
+    let (tx, rx) = mpsc::channel();
+    let managed = Inbox::watch_control(&agent, &session, move |text| tx.send(text).is_ok()).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), packet);
+    assert!(Inbox::watch(&agent, &session.id, |_| true).is_err());
+    drop(managed);
+    let (tx, rx) = mpsc::channel();
+    let _plain = Inbox::watch(&agent, &session.id, move |text| tx.send(text).is_ok()).unwrap();
+    assert_eq!(rx.recv_timeout(Duration::from_secs(3)).unwrap(), "plain fixture");
+}
+
+#[test]
 fn inbox_backlog_live_atomic_delivery_and_restart() {
     let env = TestEnv::new();
     let agent = env.root().join("agent");

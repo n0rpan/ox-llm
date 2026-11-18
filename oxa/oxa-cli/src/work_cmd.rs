@@ -3,6 +3,9 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[path = "work_cmd/native_queue.rs"]
+mod native_queue;
+
 pub(crate) fn trusted(cwd: &Path, env: &Env, dirs: &Dirs) -> Result<bool, String> {
     crate::dispatch::project_trusted(
         &crate::Args::default(),
@@ -227,6 +230,63 @@ pub(crate) fn run(
         }
         let task_args = &args[..end];
         let is_trusted = trusted(&root, env, dirs)?;
+        let context = Context {
+            cwd: root.clone(),
+            binary: binary.clone(),
+            policy: policy.clone(),
+            dirs: dirs.clone(),
+            env: env.clone(),
+            rerun,
+            publish,
+            reports,
+        };
+        if task_args.first().is_some_and(|word| word == "--native-queue") {
+            if !is_trusted {
+                return Err("source project is not trusted; approve it before unattended work".into());
+            }
+            let [_, flag, config] = task_args else {
+                return Err("usage: oxa work --native-queue --config PATH".into());
+            };
+            if flag != "--config" || rerun || publish {
+                return Err("invalid native queue options".into());
+            }
+            return native_queue::run(context, &common, &cwd.join(config), out);
+        }
+        if task_args.first().is_some_and(|word| word == "--queue") {
+            if !is_trusted {
+                return Err("source project is not trusted; approve it before unattended work".into());
+            }
+            let (directory, options) = queue_options(task_args, cwd)?;
+            let df = crate::netguard::trusted_executable_for(
+                "df",
+                Some(policy.host_path.as_os_str()),
+                Some(&root),
+                Some(&dirs.home),
+            )
+            .ok_or("no trusted disk-space executable outside the source project")?;
+            let worker = std::sync::Arc::new(move |task: &oxa_work::Task| {
+                let plan = if context.publish || context.reports {
+                    oxa_work::plan_task_for_actions(
+                        &context.cwd,
+                        task.clone(),
+                        &context.policy,
+                        context.rerun,
+                    )
+                } else {
+                    oxa_work::plan_task_for_run(&context.cwd, task.clone(), &context.policy, context.rerun)
+                };
+                match plan {
+                    Ok(plan) => context.planned(&plan),
+                    Err(error) => Ok(oxa_work::blocked_record(task, error)),
+                }
+            });
+            let summary =
+                oxa_work::run_queue(&root, &directory, &options, &policy, &df, worker, &mut |event| {
+                    serde_json::to_writer(&mut *out, &event).map_err(|e| e.to_string())?;
+                    writeln!(out).and_then(|_| out.flush()).map_err(|e| e.to_string())
+                })?;
+            return Ok(i32::from(summary.failed > 0 || summary.pending > 0));
+        }
         let tasks = match task_args {
             [file] if !file.starts_with('-') => oxa_work::read_tasks(&cwd.join(file))?,
             [flag, number, model_flag, model] if flag == "--issue" && model_flag == "--model" => {
@@ -298,88 +358,7 @@ pub(crate) fn run(
         let mut code = 0;
         for task in planned {
             let record = match task {
-                Ok(plan) => {
-                    let cached = if (publish || reports) && !rerun {
-                        oxa_work::action_record(&policy, plan.task())?
-                    } else {
-                        None
-                    };
-                    let mut record = if let Some(record) = cached {
-                        record
-                    } else {
-                        let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
-                        match oxa_work::run_task_with_notes(
-                            &root,
-                            &binary,
-                            &plan,
-                            &policy,
-                            rerun,
-                            &|_: &oxa_work::Record| Ok(()),
-                            &|note| crate::work_reports::scrub_note(note, &ctx),
-                        ) {
-                            Ok(record) => record,
-                            Err(oxa_work::RunError::Blocked(detail)) => {
-                                let mut record = oxa_work::blocked_record(plan.task(), detail);
-                                record.base_sha = Some(plan.base_sha().to_owned());
-                                record
-                            }
-                            Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),
-                        }
-                    };
-                    if publish && !record.worktree.as_os_str().is_empty() {
-                        let gh = crate::netguard::trusted_executable_for(
-                            "gh",
-                            Some(policy.host_path.as_os_str()),
-                            Some(&root),
-                            Some(&dirs.home),
-                        )
-                        .unwrap_or_else(|| PathBuf::from("/unavailable/gh"));
-                        record = oxa_work::publish(
-                            &root,
-                            &binary,
-                            plan.task(),
-                            &policy,
-                            &gh,
-                            &|_: &oxa_work::Record| Ok(()),
-                            &mut crate::report_cmd::tty_confirm(env),
-                        )?;
-                    }
-                    if reports && !record.worktree.as_os_str().is_empty() {
-                        let settings = oxa_config::Settings::load(dirs, &root, false);
-                        let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
-                        record = oxa_work::report_notes(
-                            plan.task(),
-                            &policy,
-                            &|_: &oxa_work::Record| Ok(()),
-                            &mut |note, lock, offline| {
-                                let mut runner = |program: &str, args: &[String]| {
-                                    let executable = crate::netguard::trusted_executable_for(
-                                        program,
-                                        Some(policy.host_path.as_os_str()),
-                                        Some(&root),
-                                        Some(&dirs.home),
-                                    )?;
-                                    crate::work_reports::process(
-                                        &executable.to_string_lossy(),
-                                        args,
-                                        &root,
-                                        lock,
-                                    )
-                                };
-                                crate::work_reports::report(
-                                    note,
-                                    dirs,
-                                    &settings,
-                                    &ctx,
-                                    offline,
-                                    &mut crate::report_cmd::tty_confirm(env),
-                                    &mut runner,
-                                )
-                            },
-                        )?;
-                    }
-                    record
-                }
+                Ok(plan) => context.planned(&plan)?,
                 Err(record) => *record,
             };
             if matches!(
@@ -401,4 +380,164 @@ pub(crate) fn run(
             2
         }
     }
+}
+
+struct Context {
+    cwd: PathBuf,
+    binary: PathBuf,
+    policy: oxa_work::RunPolicy,
+    dirs: Dirs,
+    env: Env,
+    rerun: bool,
+    publish: bool,
+    reports: bool,
+}
+impl Context {
+    fn planned(&self, plan: &oxa_work::PlannedTask) -> Result<oxa_work::Record, String> {
+        let mut locked = match oxa_work::LockedTask::acquire(plan.task(), &self.policy) {
+            Ok(locked) => locked,
+            Err(error) => return Ok(blocked_plan(plan, error)),
+        };
+        self.planned_locked(plan, &mut locked)
+    }
+
+    fn planned_locked(
+        &self,
+        plan: &oxa_work::PlannedTask,
+        locked: &mut oxa_work::LockedTask<'_>,
+    ) -> Result<oxa_work::Record, String> {
+        let root = &self.cwd;
+        let binary = &self.binary;
+        let policy = &self.policy;
+        let dirs = &self.dirs;
+        let env = &self.env;
+        let (rerun, publish, reports) = (self.rerun, self.publish, self.reports);
+        let cached = if (publish || reports) && !rerun {
+            oxa_work::action_record(policy, plan.task())?
+        } else {
+            None
+        };
+        let mut record = if let Some(record) = cached {
+            record
+        } else {
+            let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+            match locked.run_with_notes(
+                root,
+                binary,
+                plan,
+                rerun,
+                &|_: &oxa_work::Record| Ok(()),
+                &|note| crate::work_reports::scrub_note(note, &ctx),
+            ) {
+                Ok(record) => record,
+                Err(oxa_work::RunError::Blocked(detail)) => blocked_plan(plan, detail),
+                Err(oxa_work::RunError::Checkpoint(error)) => return Err(error),
+            }
+        };
+        if publish && !record.worktree.as_os_str().is_empty() {
+            let gh = crate::netguard::trusted_executable_for(
+                "gh",
+                Some(policy.host_path.as_os_str()),
+                Some(root),
+                Some(&dirs.home),
+            )
+            .unwrap_or_else(|| PathBuf::from("/unavailable/gh"));
+            record = locked.publish(
+                root,
+                binary,
+                &gh,
+                &|_: &oxa_work::Record| Ok(()),
+                &mut crate::report_cmd::tty_confirm(env),
+            )?;
+        }
+        if reports && !record.worktree.as_os_str().is_empty() {
+            let settings = oxa_config::Settings::load(dirs, root, false);
+            let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+            let semantic = crate::report_cmd::semantic_reporting(&settings);
+            record = locked.report_notes(
+                &|_: &oxa_work::Record| Ok(()),
+                &mut |note, saved, lock, offline| {
+                    let runner = |program: &str, args: &[String], gate: &std::fs::File| {
+                        if offline {
+                            return None;
+                        }
+                        if semantic && program == "oxa" {
+                            return crate::report_cmd::judge_report(args.first()?, dirs, &settings, env)
+                                .map(|reply| (0, reply));
+                        }
+                        let semantic_github = semantic && program == "gh";
+                        let executable = crate::netguard::trusted_executable_for(
+                            program,
+                            Some(policy.host_path.as_os_str()),
+                            Some(root),
+                            Some(&dirs.home),
+                        )?;
+                        crate::work_reports::process(
+                            &executable.to_string_lossy(),
+                            args,
+                            if semantic_github { &dirs.home } else { root },
+                            lock,
+                            gate,
+                            semantic_github,
+                        )
+                    };
+                    let mut confirm = crate::report_cmd::tty_confirm(env);
+                    if semantic && !offline {
+                        return crate::work_reports::report_semantic(
+                            note,
+                            (saved, &policy.storage),
+                            dirs,
+                            &settings,
+                            &ctx,
+                            &mut confirm,
+                            runner,
+                        );
+                    }
+                    crate::work_reports::report(note, dirs, &settings, &ctx, offline, &mut confirm, runner)
+                },
+            )?;
+        }
+        Ok(record)
+    }
+}
+fn blocked_plan(plan: &oxa_work::PlannedTask, detail: String) -> oxa_work::Record {
+    let mut record = oxa_work::blocked_record(plan.task(), detail);
+    record.base_sha = Some(plan.base_sha().to_owned());
+    record
+}
+
+fn queue_options(args: &[String], cwd: &Path) -> Result<(PathBuf, oxa_work::QueueOptions), String> {
+    let directory = cwd.join(args.get(1).ok_or("--queue needs a directory")?);
+    let mut options = oxa_work::QueueOptions::default();
+    let mut i = 2;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--max" => {
+                i += 1;
+                options.max = args
+                    .get(i)
+                    .ok_or("--max needs a value")?
+                    .parse()
+                    .map_err(|_| "invalid --max")?;
+            }
+            "--min-free-mib" => {
+                i += 1;
+                let mib: u64 = args
+                    .get(i)
+                    .ok_or("--min-free-mib needs a value")?
+                    .parse()
+                    .map_err(|_| "invalid free-space minimum")?;
+                options.min_free_bytes = mib
+                    .checked_mul(1024 * 1024)
+                    .ok_or("free-space minimum is too large")?;
+            }
+            "--once" => options.once = true,
+            word => return Err(format!("unknown queue option: {word}")),
+        }
+        i += 1;
+    }
+    if options.max == 0 {
+        return Err("--max must be positive".into());
+    }
+    Ok((directory, options))
 }

@@ -521,3 +521,24 @@ fn foreground_serve_lists_only_the_owner_selected_local_models_on_loopback() {
     assert!(!reply.contains("synthetic-hidden"));
     assert!(!reply.contains(bearer));
 }
+
+#[cfg(feature = "share")]
+#[test]
+fn owner_session_sharing_flags_refuse_noninteractive_and_agent_invocations() {
+    let home = Home::new();
+    let args = [
+        "--share-model",
+        "synthetic-visible",
+        "--share-bind",
+        "127.0.0.1",
+        "-p",
+        "probe",
+    ];
+    let headless = home.run(&args);
+    assert!(!headless.status.success());
+    assert!(String::from_utf8_lossy(&headless.stderr).contains("requires an interactive owner session"));
+    let agent = home.marked(&args, "OXA_CODING_AGENT", "");
+    assert!(!agent.status.success());
+    assert!(String::from_utf8_lossy(&agent.stderr).contains("requires the owner outside an agent tool"));
+    assert!(!home.0.join(".oxa/share").exists());
+}

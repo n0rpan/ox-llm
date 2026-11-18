@@ -1,43 +1,25 @@
 //! Explicit publishing of the accepted commit; existing queued PRs are never pushed.
-use super::{checked, state, tree, CheckpointObserver, Outcome, Record, Result, RunPolicy, Task};
+use super::{checked, state, tree, CheckpointObserver, LockedTask, Outcome, Record, Result, RunPolicy, Task};
 use state::Step;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::{fd::AsRawFd, unix::process::CommandExt};
 use std::{
     fs::File,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
 
-fn context(
-    task: &Task,
-    policy: &RunPolicy,
+fn action_context(
+    locked: &LockedTask<'_>,
     observer: &dyn CheckpointObserver,
-) -> Result<(state::Writer, File, state::State)> {
-    super::validate(task)?;
-    super::verify_task_storage(&policy.storage).map_err(|e| format!("task storage: {e}"))?;
-    let path = policy.storage.join(format!("{}.json", task.id));
-    let lock = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .custom_flags(super::shadow::OWNER_FILE_FLAGS)
-        .open(path.with_extension("lock"))
-        .map_err(|e| e.to_string())?;
-    let metadata = lock
-        .metadata()
-        .map_err(|e| format!("cannot inspect task lock: {e}"))?;
-    // SAFETY: geteuid has no arguments or preconditions.
-    if !super::shadow::regular_file_owned_by(&metadata, unsafe { libc::geteuid() }) {
-        return Err("cannot lock task: lock must be an owner-controlled regular file".into());
-    }
-    lock.try_lock()
-        .map_err(|e| format!("task is already running: {e}"))?;
+) -> Result<(state::Writer, state::State)> {
+    let path = locked.policy.storage.join(format!("{}.json", locked.task.id));
     let value = state::load(&path)?;
-    if value.task != *task {
+    if value.task != *locked.task {
         return Err("task specification changed".into());
     }
     let mut writer = state::Writer::new(path, true);
     writer.replay(&value, observer)?;
-    Ok((writer, lock, value))
+    Ok((writer, value))
 }
 const MAX_PUBLICATION_RESPONSE_BYTES: usize = 1024 * 1024;
 
@@ -155,7 +137,19 @@ pub fn publish(
     observer: &dyn CheckpointObserver,
     confirm: &mut dyn FnMut(&str) -> Option<bool>,
 ) -> Result<Record> {
-    let (mut writer, lock, mut value) = context(task, policy, observer)?;
+    LockedTask::open(task, policy, false)?.publish(repo, binary, gh_binary, observer, confirm)
+}
+
+fn publish_locked(
+    repo: &Path,
+    binary: &Path,
+    locked: &LockedTask<'_>,
+    gh_binary: &Path,
+    observer: &dyn CheckpointObserver,
+    confirm: &mut dyn FnMut(&str) -> Option<bool>,
+) -> Result<Record> {
+    let (mut writer, mut value) = action_context(locked, observer)?;
+    let (task, policy, lock) = (locked.task, locked.policy, &locked.lock);
     let accepted = value.record.acceptance_outcome.unwrap_or(value.record.outcome);
     if !super::completed_execution(value.record.step)
         || !matches!(accepted, Outcome::Done | Outcome::NothingToDo)
@@ -172,14 +166,14 @@ pub fn publish(
         }
         let tree = &value.record.worktree;
         tree::validate(policy, repo, tree, task)?;
-        if super::dirty_worktree(binary, tree, repo, policy, &lock)? {
+        if super::dirty_worktree(binary, tree, repo, policy, lock)? {
             return Err("uncommitted work must be saved before publishing".into());
         }
         let head = checked(git(tree, &["rev-parse", "HEAD"]))?;
         if value.record.head_sha.as_deref() != Some(head.as_str()) {
             return Err("task branch changed after acceptance; use --rerun before publishing".into());
         }
-        let proof = super::committed::verify_commit(repo, binary, policy, &value, &lock)?;
+        let proof = super::committed::verify_commit(repo, binary, policy, &value, lock)?;
         let accepted_base = value
             .record
             .base_sha
@@ -195,7 +189,7 @@ pub fn publish(
         }
         let repository = repository(&json(&gh(
             tree,
-            &lock,
+            lock,
             &["repo", "view", &remote, "--json", "nameWithOwner,url"],
         )?)?)?;
         let name = repository.qualified.as_str();
@@ -203,7 +197,7 @@ pub fn publish(
         let repo_name = repository.name.as_str();
         let prs = json(&gh(
             tree,
-            &lock,
+            lock,
             &[
                 "pr",
                 "list",
@@ -237,7 +231,7 @@ pub fn publish(
             let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
             let value = json(&gh(
                 tree,
-                &lock,
+                lock,
                 &["pr", "view", &number, "--repo", name, "--json", "body"],
             )?)?;
             Some(value["body"].as_str().ok_or("PR body missing")?.to_owned())
@@ -264,7 +258,7 @@ pub fn publish(
             let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}";
             let data = json(&gh(
                 tree,
-                &lock,
+                lock,
                 &[
                     "api",
                     "graphql",
@@ -329,7 +323,7 @@ pub fn publish(
             let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
             gh(
                 tree,
-                &lock,
+                lock,
                 &[
                     "pr",
                     "edit",
@@ -348,7 +342,7 @@ pub fn publish(
                 if draft {
                     args.push("--undo");
                 }
-                gh(tree, &lock, &args)?;
+                gh(tree, lock, &args)?;
             }
             pr["url"].as_str().ok_or("PR URL missing")?.to_string()
         } else {
@@ -370,7 +364,7 @@ pub fn publish(
             if draft {
                 args.push("--draft");
             }
-            gh(tree, &lock, &args)?
+            gh(tree, lock, &args)?
         };
         let _ = std::fs::remove_file(body);
         Ok((result.trim().to_string(), draft))
@@ -391,13 +385,38 @@ pub fn publish(
     }
     Ok(value.record)
 }
+/// Keep a report's per-user lease held if the controller dies during a host command.
+pub fn inherit_report_lease(command: &mut Command, gate: &File) -> std::io::Result<()> {
+    let gate = gate.try_clone()?;
+    // SAFETY: the closure owns the descriptor, and only changes its flags
+    // in this child. fcntl is async-signal-safe.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(gate.as_raw_fd(), libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 pub fn report_notes(
     task: &Task,
     policy: &RunPolicy,
     observer: &dyn CheckpointObserver,
-    reporter: &mut dyn FnMut(&super::ProblemNote, &File, bool) -> Result<super::ReportRecord>,
+    reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
 ) -> Result<Record> {
-    let (mut writer, lock, mut value) = context(task, policy, observer)?;
+    LockedTask::open(task, policy, false)?.report_notes(observer, reporter)
+}
+
+fn report_locked(
+    locked: &LockedTask<'_>,
+    observer: &dyn CheckpointObserver,
+    reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
+) -> Result<Record> {
+    let (mut writer, mut value) = action_context(locked, observer)?;
+    let (policy, lock) = (locked.policy, &locked.lock);
     let prior_step = value.record.step;
     // Reporting is ancillary: a failed save/publication remains recoverable even
     // if reporting is interrupted between durable report receipts.
@@ -415,15 +434,18 @@ pub fn report_notes(
             continue;
         }
         writer.save(&mut value, reporting_step, observer)?;
-        let report =
-            reporter(&value.record.problem_notes[index], &lock, policy.offline).unwrap_or_else(|detail| {
-                super::ReportRecord {
-                    disposition: "failed".into(),
-                    draft: PathBuf::new(),
-                    url: None,
-                    detail,
-                }
-            });
+        let report = reporter(
+            &value.record.problem_notes[index],
+            &value.record,
+            lock,
+            policy.offline || value.offline,
+        )
+        .unwrap_or_else(|detail| super::ReportRecord {
+            disposition: "failed".into(),
+            draft: PathBuf::new(),
+            url: None,
+            detail,
+        });
         if index < value.record.reports.len() {
             value.record.reports[index] = report;
         } else {
@@ -441,4 +463,25 @@ pub fn report_notes(
         observer,
     )?;
     Ok(value.record)
+}
+
+impl LockedTask<'_> {
+    pub fn publish(
+        &mut self,
+        repo: &Path,
+        binary: &Path,
+        gh_binary: &Path,
+        observer: &dyn CheckpointObserver,
+        confirm: &mut dyn FnMut(&str) -> Option<bool>,
+    ) -> Result<Record> {
+        publish_locked(repo, binary, self, gh_binary, observer, confirm)
+    }
+
+    pub fn report_notes(
+        &mut self,
+        observer: &dyn CheckpointObserver,
+        reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
+    ) -> Result<Record> {
+        report_locked(self, observer, reporter)
+    }
 }

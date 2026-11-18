@@ -1,5 +1,7 @@
+use super::Query;
 use std::fmt::Write;
 
+pub(super) const BOARD_ROWS: usize = 50;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Prompt {
     Status,
@@ -13,8 +15,10 @@ pub enum Page {
     Home,
     Asks,
     Board,
+    BoardQuery(Query),
     Workers,
     Usage,
+    Item(u64),
     Chat(Prompt),
 }
 
@@ -25,9 +29,10 @@ impl Page {
         match self {
             Self::Home => "Status",
             Self::Asks => "Asks",
-            Self::Board => "Board",
+            Self::Board | Self::BoardQuery(_) => "Board",
             Self::Workers => "Workers",
             Self::Usage => "Usage",
+            Self::Item(_) => "Item",
             Self::Chat(_) => "Chat with lead",
         }
     }
@@ -36,7 +41,7 @@ impl Page {
         match self {
             Self::Home => "/",
             Self::Asks => "/asks",
-            Self::Board => "/board",
+            Self::Board | Self::BoardQuery(_) | Self::Item(_) => "/board",
             Self::Workers => "/workers",
             Self::Usage => "/usage",
             Self::Chat(_) => "/chat",
@@ -48,6 +53,13 @@ impl Page {
             .strip_suffix("?fragment=1")
             .or_else(|| path.strip_suffix("&fragment=1"))
             .map_or((path, false), |path| (path, true));
+        if let Some(number) = path.strip_prefix("/items/") {
+            let parsed: u64 = number.parse().ok()?;
+            return (parsed > 0 && parsed.to_string() == number).then_some((Self::Item(parsed), fragment));
+        }
+        if let Some(query) = path.strip_prefix("/board?") {
+            return Some((Self::BoardQuery(Query::parse(query)?), fragment));
+        }
         let prompt = match path {
             "/chat" | "/chat?prompt=status" => Some(Prompt::Status),
             "/chat?prompt=workers" => Some(Prompt::Workers),
@@ -65,12 +77,21 @@ impl Page {
 
     pub(super) fn navigation(self) -> String {
         let mut html = String::from("<nav class=tabs aria-label=Main>");
+        let selected = if matches!(self, Self::BoardQuery(_) | Self::Item(_)) {
+            Self::Board
+        } else {
+            self
+        };
         for page in Self::ALL {
             let _ = write!(
                 html,
                 "<a href={}{}>{}</a>",
                 page.path(),
-                if page == self { " aria-current=page" } else { "" },
+                if page == selected {
+                    " aria-current=page"
+                } else {
+                    ""
+                },
                 if page == Self::Home { "Home" } else { page.title() }
             );
         }

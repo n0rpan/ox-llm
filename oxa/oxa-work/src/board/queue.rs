@@ -24,6 +24,24 @@ pub struct RejectionEvidence {
     verified_test_reports: Vec<report::VerifiedReports>,
 }
 
+pub(crate) struct Removal<'a> {
+    pub number: u64,
+    pub event: &'a str,
+    pub group: &'a str,
+    pub removed_at: &'a str,
+}
+
+impl RejectionEvidence {
+    pub(crate) fn admission_identity(&self) -> Removal<'_> {
+        Removal {
+            number: self.number,
+            event: &self.removal_event,
+            group: &self.merge_group_head,
+            removed_at: &self.removed_at,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 struct WorkflowIdentity {
     check_suite_id: u64,
@@ -123,12 +141,14 @@ pub fn read(
 }
 
 fn node_id(value: &Value) -> Option<&str> {
-    value.as_str().filter(|id| {
-        (1..=128).contains(&id.len())
-            && id
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"-_=".contains(&b))
-    })
+    value.as_str().filter(|id| is_node_id(id))
+}
+
+pub(super) fn is_node_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_=".contains(&b))
 }
 
 /// Verify a complete lowercase object ID from a GitHub commit field.

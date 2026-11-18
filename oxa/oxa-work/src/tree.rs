@@ -271,6 +271,63 @@ pub(crate) fn validate(policy: &RunPolicy, repo: &Path, tree: &Path, task: &Task
     Ok(())
 }
 
+/// A published task branch may have no local ref at all: the worktree would
+/// then start at the base, so a worker auditing a pull request's head would
+/// redo work from a tree that predates it. Only a lone remote-tracking tip
+/// that descends from the captured base (and carries commits the base lacks) is
+/// adopted; no fetch runs, and an unrelated or diverging tip is never preferred
+/// over the base. Selection is read-only; the sandboxed checkout materializes
+/// this commit using the adopted-tip execution policy.
+fn published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &str) -> Result<Option<String>> {
+    let base_sha = match output(git(
+        policy,
+        repo,
+        &["rev-parse", "--verify", "--quiet", &format!("{base}^{{commit}}")],
+    ))? {
+        // An unresolvable base is left to the ordinary path, which reports it.
+        out if !out.status.success() => return Ok(None),
+        out => String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+    };
+    let pattern = format!("refs/remotes/*/{branch}");
+    let tracking = checked(git(
+        policy,
+        repo,
+        &["for-each-ref", "--format=%(refname)", &pattern],
+    ))?;
+    let mut heads = Vec::new();
+    for name in tracking.lines().filter(|name| !name.ends_with("/HEAD")) {
+        // A stale or dangling tracking ref is ignored, not turned into a block.
+        let read = output(git(
+            policy,
+            repo,
+            &["rev-parse", "--verify", &format!("{name}^{{commit}}")],
+        ))?;
+        if !read.status.success() {
+            continue;
+        }
+        let tip = String::from_utf8_lossy(&read.stdout).trim().to_owned();
+        heads.push(tip);
+    }
+    heads.sort();
+    heads.dedup();
+    let [tip] = heads.as_slice() else {
+        return Ok(None);
+    };
+    if tip == &base_sha
+        || output(git(
+            policy,
+            repo,
+            &["merge-base", "--is-ancestor", &base_sha, tip],
+        ))?
+        .status
+        .code()
+            != Some(0)
+    {
+        return Ok(None);
+    }
+    Ok(Some(tip.clone()))
+}
+
 /// Preserve an earlier, finished round in place while releasing its branch for this round.
 fn release_review_branch(
     repo: &Path,
@@ -307,7 +364,7 @@ fn release_review_branch(
     {
         return Err(blocked.into());
     }
-    let prior_lock = lock_task(policy, prior_id)?;
+    let prior_lock = lock_task(policy, prior_id, true)?;
     let prior = load_task_checkpoint(policy, prior_id)?.ok_or(blocked)?;
     if prior.task.id != prior_id
         || prior.task.reviewed_head().is_none()
@@ -381,6 +438,11 @@ pub(crate) fn prepare(
             Some(1) => true,
             _ => return Err(String::from_utf8_lossy(&exists.stderr).into()),
         };
+        let published = if create {
+            published_head(policy, repo, &task.branch, base)?
+        } else {
+            None
+        };
         let tree_arg = tree.to_str().ok_or("non-UTF8 worktree path")?;
         let mut args = vec![
             "-c",
@@ -389,11 +451,17 @@ pub(crate) fn prepare(
             "add",
             "--no-checkout",
         ];
+        // A fresh branch is created only by the sandboxed checkout. If another
+        // writer creates it meanwhile, Git refuses instead of replacing its work.
         if create {
             args.push("--detach");
         }
         args.push(tree_arg);
-        args.push(if create { base } else { &task.branch });
+        args.push(if create {
+            published.as_deref().unwrap_or(base)
+        } else {
+            &task.branch
+        });
         // Only metadata on the host. Git still refuses a branch checked out
         // elsewhere; no task-branch update or checkout callback runs here.
         checked(git(policy, repo, &args))?;
@@ -406,6 +474,7 @@ pub(crate) fn prepare(
                 operation: SupervisorOperation::Checkout {
                     branch: task.branch.clone(),
                     create,
+                    adopted: published.is_some(),
                     normalize: holder.as_ref().map(|(_, update)| update.clone()),
                 },
             },

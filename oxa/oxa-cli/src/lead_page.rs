@@ -1,10 +1,12 @@
 //! Read-only web projection. Never serialize runner records or arbitrary GitHub payloads.
 use oxa_proto::work::{IncidentKind, PullRequest, Snapshot, Subject};
-use oxa_work::board::{Action, Board};
+use oxa_work::board::{Action, Board, Entry};
 use std::fmt::Write;
 
 mod chat;
+mod filters;
 mod pages;
+pub use filters::{Filter, Query};
 pub use pages::{Page, Prompt};
 
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
@@ -80,25 +82,35 @@ pub fn content(view: &View<'_>, now: u64) -> String {
 }
 
 pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
-    let mut html = format!("<main><h1 id=main tabindex=-1>{}</h1>", page.title());
+    let title = match page {
+        Page::Item(number) => format!("Item #{number}"),
+        _ => page.title().into(),
+    };
+    let mut html = format!("<main><h1 id=main tabindex=-1>{title}</h1>");
     if page == Page::Home {
         attention(&mut html, view);
     }
     html.push_str(&page.navigation());
     match page {
         Page::Home => {
-            board(&mut html, view, now);
+            board(&mut html, view, now, Query::default());
             workers(&mut html, view);
             queue(&mut html, view);
             release(&mut html, view);
             asks(&mut html, view);
         }
-        Page::Board => {
-            board(&mut html, view, now);
+        Page::Board | Page::BoardQuery(_) => {
+            let query = if let Page::BoardQuery(query) = page {
+                query
+            } else {
+                Query::default()
+            };
+            board(&mut html, view, now, query);
             queue(&mut html, view);
         }
         Page::Workers => workers(&mut html, view),
         Page::Asks => asks(&mut html, view),
+        Page::Item(number) => item(&mut html, view, number, now),
         Page::Chat(prompt) => chat::render(&mut html, view, prompt),
         Page::Usage => html
             .push_str("<section><h2>Plans and quotas</h2><p>Usage observations unavailable.</p></section>"),
@@ -156,7 +168,7 @@ fn attention(html: &mut String, view: &View<'_>) {
     }
 }
 
-fn board(html: &mut String, view: &View<'_>, now: u64) {
+fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
     html.push_str("<section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
         let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
@@ -170,19 +182,19 @@ fn board(html: &mut String, view: &View<'_>, now: u64) {
             },
             board.observed_at
         );
+        query.navigation(html, board, view);
+        if !query.filter.available(view) {
+            html.push_str("<p>Blocked observations unavailable.</p></section>");
+            return;
+        }
+        let rows = query.rows(board, view);
         html.push_str("<div class=scroll><table><thead><tr><th>PR</th><th>Next action</th><th>Priority</th><th>Lease</th><th>Attempts today</th></tr></thead><tbody>");
-        for row in &board.entries {
-            let lease = row.lease.as_ref().map_or("Unleased".into(), |l| {
-                format!(
-                    "{} · expires {}{}",
-                    escape(&l.holder),
-                    l.expires_at,
-                    if l.expires_at <= now { " (expired)" } else { "" }
-                )
-            });
+        let offset = query.page.saturating_mul(pages::BOARD_ROWS);
+        for row in rows.iter().skip(offset).take(pages::BOARD_ROWS) {
+            let lease = lease(row, now);
             let _ = write!(
                 html,
-                "<tr><td>#{}</td><td>{}</td><td>{}</td><td>{lease}</td><td>{}</td></tr>",
+                "<tr><td><a href=/items/{0}>#{0}</a></td><td>{1}</td><td>{2}</td><td>{lease}</td><td>{3}</td></tr>",
                 row.number,
                 action(row.action),
                 if row.release_pinned { "Release" } else { "Normal" },
@@ -192,11 +204,58 @@ fn board(html: &mut String, view: &View<'_>, now: u64) {
         html.push_str("</tbody></table></div>");
         if board.entries.is_empty() {
             html.push_str("<p>No open PRs in this snapshot.</p>");
+        } else {
+            let shown = rows.len().saturating_sub(offset).min(pages::BOARD_ROWS);
+            let _ = write!(html, "<p>Showing {shown} of {} items</p>", rows.len());
+            html.push_str("<nav class=pages aria-label=\"Board pages\">");
+            if query.page > 0 {
+                let path = escape(&Query { page: 0, ..query }.url());
+                let _ = write!(html, "<a href=\"{path}\">First page</a>");
+            }
+            if offset.saturating_add(pages::BOARD_ROWS) < rows.len() {
+                let path = escape(
+                    &Query {
+                        page: query.page + 1,
+                        ..query
+                    }
+                    .url(),
+                );
+                let _ = write!(html, "<a href=\"{path}\">Show more</a>");
+            }
+            html.push_str("</nav>");
         }
     } else {
         html.push_str("<p>Board unavailable.</p>");
     }
     html.push_str("</section>");
+}
+
+fn lease(row: &Entry, now: u64) -> String {
+    row.lease.as_ref().map_or("Unleased".into(), |l| {
+        format!(
+            "{} · expires {}{}",
+            escape(&l.holder),
+            l.expires_at,
+            if l.expires_at <= now { " (expired)" } else { "" }
+        )
+    })
+}
+
+fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
+    html.push_str("<p><a href=/board>Back to Board</a></p>");
+    let Some(board) = view.board else {
+        html.push_str("<p>Board unavailable.</p>");
+        return;
+    };
+    let Some(row) = board.entries.iter().find(|row| row.number == number) else {
+        html.push_str("<p>Item unavailable in this snapshot.</p>");
+        return;
+    };
+    let _ = write!(html,
+        "<section><h2>Next action</h2><p>{}</p></section><section><h2>State</h2><p>{}</p><p>{}</p><p>Attempts today: {}</p><p class=muted>Observed at {} (Unix seconds)</p></section>",
+        action(row.action), if row.release_pinned { "Release" } else { "Normal priority" },
+        lease(row, now), row.attempts_today, board.observed_at);
+    html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable.</p></section>");
 }
 
 fn workers(html: &mut String, view: &View<'_>) {

@@ -1,13 +1,16 @@
 //! Read-only sampling: this runner has no executor or GitHub mutation interface.
 use crate::board::{landing::Next, queue::RejectionEvidence, review, Board, Entry};
 use crate::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{File, Metadata, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+mod landing_history;
+use landing_history::{AdmissionEvidence, Admissions};
 
 pub const INTERVAL: Duration = Duration::from_secs(300);
 pub const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
@@ -35,6 +38,8 @@ struct Sample<'a> {
     reviews: &'a BTreeMap<u64, review::Plan>,
     #[serde(skip_serializing_if = "<[RejectionEvidence]>::is_empty")]
     queue_rejections: &'a [RejectionEvidence],
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    matched_queue_admissions: &'a BTreeMap<u64, AdmissionEvidence>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     landing: &'a BTreeMap<u64, LandingDecision>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -156,6 +161,61 @@ mod tests {
         assert!(refused);
     }
 
+    fn snapshot_bytes() -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 1,
+            "observed_at": 0,
+            "board": Board::default()
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn admission_replay_rejects_and_open_log_preserves_interrupted_tail_bytes() {
+        let full = snapshot_bytes();
+        for fragment in [full.as_slice(), &full[..full.len() / 2]] {
+            let dir = path("interrupted-admission");
+            std::fs::create_dir(&dir).unwrap();
+            let journal = dir.join("owner.jsonl");
+            let mut log = open_log(&journal).unwrap();
+            log.write_all(&full).unwrap();
+            log.write_all(b"\n").unwrap();
+            log.write_all(fragment).unwrap();
+            assert!(Admissions::load(&mut log).is_err());
+            drop(log);
+
+            let mut log = open_log(&journal).unwrap();
+            assert!(Admissions::load(&mut log).is_ok());
+            drop(log);
+            assert_eq!(std::fs::read(&journal).unwrap(), [&full[..], b"\n"].concat());
+            let tail = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| path != &journal)
+                .unwrap();
+            assert_eq!(std::fs::read(&tail).unwrap(), fragment);
+            std::fs::remove_file(tail).unwrap();
+            std::fs::remove_file(journal).unwrap();
+            std::fs::remove_dir(dir).unwrap();
+        }
+    }
+
+    #[test]
+    fn admission_replay_refuses_multiple_objects_on_one_complete_line() {
+        let journal = path("corrupt-admission");
+        let snapshot = snapshot_bytes();
+        let line = [&snapshot[..], &snapshot[..], b"\n"].concat();
+        let mut log = open_log(&journal).unwrap();
+        log.write_all(&line).unwrap();
+        drop(log);
+
+        let mut log = open_log(&journal).unwrap();
+        assert!(Admissions::load(&mut log).is_err());
+        drop(log);
+        assert_eq!(std::fs::read(&journal).unwrap(), line);
+        std::fs::remove_file(journal).unwrap();
+    }
+
     #[test]
     fn a_full_log_is_not_extended() {
         let path = path("limit");
@@ -238,7 +298,7 @@ pub struct LandingDecision {
     pub queue: Option<QueueObservation>,
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 pub struct QueueObservation {
     pub enqueued_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -262,6 +322,7 @@ pub fn run_with_landing(
     mut snapshot: impl FnMut() -> Result<LandingSample>,
     mut wait: impl FnMut(Duration),
 ) -> Result<()> {
+    let mut history = None;
     loop {
         let started = Instant::now();
         let LandingSample {
@@ -271,6 +332,18 @@ pub fn run_with_landing(
             landing,
             landing_main,
         } = snapshot()?;
+        let matched_queue_admissions = if landing.is_empty() {
+            BTreeMap::new()
+        } else {
+            if history.is_none() {
+                history = Some(Admissions::load(log)?);
+            }
+            history.as_mut().expect("owner journal was loaded").matches(
+                &board,
+                landing_main.as_deref(),
+                queue_rejections.iter().map(RejectionEvidence::admission_identity),
+            )
+        };
         let sample = Sample {
             schema_version: 1,
             observed_at: board.observed_at,
@@ -278,6 +351,7 @@ pub fn run_with_landing(
             board: &board,
             reviews: &reviews,
             queue_rejections: &queue_rejections,
+            matched_queue_admissions: &matched_queue_admissions,
             landing: &landing,
             landing_main: landing_main.as_deref(),
         };
@@ -289,6 +363,14 @@ pub fn run_with_landing(
         }
         log.write_all(&line).map_err(|_| "cannot append shadow board")?;
         log.sync_data().map_err(|_| "cannot sync shadow board")?;
+        if let Some(history) = &mut history {
+            history.observe(
+                &board,
+                landing
+                    .iter()
+                    .map(|(number, decision)| (*number, decision.queue.as_ref())),
+            );
+        }
         if once {
             return Ok(());
         }

@@ -54,6 +54,34 @@ fn complete_private_publication_dedups_started_and_priority_changes() {
 }
 
 #[test]
+fn native_started_packet_resumes_only_its_original_lease_generation() {
+    use oxa_work::{
+        board::{Lease, NativeBinding},
+        helper_queue::take_native_packet,
+    };
+
+    let env = TestEnv::new();
+    let queue = env.tmp().join("queue");
+    fs::create_dir(&queue).unwrap();
+    let key = "a".repeat(64);
+    let mut lease = Lease {
+        holder: "oxa:fixture".into(),
+        claimed_at: Some(10),
+        expires_at: 20,
+        generation: (0, 1),
+    };
+    let original = NativeBinding::new(42, &key, &lease, "agent/42-fix").unwrap();
+    assert!(publish(&queue, &key, TASK, true, &enabled()).unwrap());
+    assert_eq!(take_native_packet(&queue, &original).unwrap(), TASK);
+
+    lease.generation = (0, 2);
+    let newer = NativeBinding::new(42, &key, &lease, "agent/42-fix").unwrap();
+    assert!(take_native_packet(&queue, &newer).is_err());
+    assert!(!publish(&queue, &key, TASK, false, &enabled()).unwrap());
+    assert_eq!(take_native_packet(&queue, &original).unwrap(), TASK);
+}
+
+#[test]
 fn concurrent_publishers_create_exactly_one_complete_task() {
     if let Some(queue) = std::env::var_os("OXA_TEST_BOARD_QUEUE") {
         publish(
