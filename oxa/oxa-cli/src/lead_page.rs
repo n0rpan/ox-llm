@@ -15,6 +15,7 @@ pub use pages::{Page, Prompt};
 #[derive(Default)]
 pub struct View<'a> {
     /// Ephemeral form credential supplied only by the authorized HTTP caller.
+    pub owner_chat: Option<OwnerChatView<'a>>,
     pub fixed_prompt_csrf: Option<&'a str>,
     /// Canonical goal and matching native observation from the authenticated caller.
     /// The caller retains full SessionRef/revision authority; identities are never rendered.
@@ -33,6 +34,13 @@ pub struct View<'a> {
     pub overdue_queue: &'a [PullRequest],
     /// Source issue and its reported checkbox states; these do not establish validation.
     pub release: Option<(u64, &'a [(bool, String)])>,
+}
+
+pub struct OwnerChatView<'a> {
+    pub csrf: &'a str,
+    pub(crate) reply: Option<&'a crate::lead_chat::conversation::ConversationReply>,
+    pub proposal: Option<&'a (String, serde_json::Value)>,
+    pub confirmed: bool,
 }
 
 fn escape(text: &str) -> String {
@@ -526,6 +534,12 @@ async function refresh(){
       const current=document.querySelector('main'),work=current.querySelector('details.home-work');
       const replacement=next.querySelector('details.home-work');
       if(work&&replacement)replacement.open=work.open;
+      const draft=current.querySelector('#lead-message');
+      if(draft?.value){
+        const nextDraft=next.querySelector('#lead-message');
+        if(!nextDraft)return;
+        nextDraft.value=draft.value;
+      }
       current.replaceWith(next);badge.textContent='Connected';
     }
   }catch(error){if(!active.signal.aborted){
@@ -1115,9 +1129,9 @@ mod tests {
                 r#"
 let current, supplied, closeDuringFetch, failureMode='ok', focusDuringFetch=false, focused='', inside=false, fetches=0;
 const connectionBadge={textContent:'Snapshot'};
-function makeMain(open) {
-  const work={open}, notice={hidden:true};
-  return {work, notice, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:null,
+function makeMain(open, message=null) {
+  const work={open}, notice={hidden:true}, draft=message===null?null:{value:message};
+  return {work, notice, draft, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:selector==='#lead-message'?draft:null,
     replaceWith:next=>{current=next;}};
 }
 const document={hidden:false, activeElement:{matches:selectors=>selectors.split(',').includes(focused)},
@@ -1168,6 +1182,32 @@ if(current!==supplied)throw new Error('refresh did not resume after leaving main
 current=makeMain(true); supplied=makeMain(false); focusDuringFetch=true;
 await refresh();
 if(current===supplied)throw new Error('focus acquired during fetch was lost');
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
+    }
+
+    #[test]
+    fn live_refresh_preserves_an_unfocused_unsent_chat_draft() {
+        let mut runtime = refresh_runtime();
+        let result = runtime
+            .eval_async_body(
+                "chat-draft",
+                r#"
+current=makeMain(false,'unsent owner message'); supplied=makeMain(false,'');
+await refresh();
+if(current!==supplied||current.draft.value!=='unsent owner message')
+  throw new Error('fragment replacement lost the draft');
+const retained=current;
+supplied=makeMain(false);
+await refresh();
+if(current!==retained||current.draft.value!=='unsent owner message')
+  throw new Error('missing composer dropped the draft');
+current.draft.value='';
+await refresh();
+if(current!==supplied)throw new Error('refresh did not resume after clearing the draft');
 return true;
 "#,
             )
