@@ -989,7 +989,24 @@ fn real_shadow_cli_records_exact_queue_evidence_only_when_opted_in() {
 fn report_policy_records_only_archives_verified_for_all_required_failed_checks() {
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
+    use std::io::{Cursor, Write};
+    use zip::{write::SimpleFileOptions, CompressionMethod, ZipWriter};
     let (env, mut detail) = fixture();
+    fs::rename(env.tmp().join("gh"), env.tmp().join("gh-fixture")).unwrap();
+    let gh = env.write(
+        "tmp/gh",
+        r#"#!/bin/sh
+if [ "$1 $2 $3" = 'api --hostname github.com' ]; then
+  case "$#:$4:$5:$6:$7" in
+    '7:--include:graphql:-f:query=query{'*|'6:--method:GET:repos/example/repo/actions/'*':')
+      exec "$0-fixture" "$@" ;;
+  esac
+fi
+printf 'unexpected command\n' >> unexpected-github-command
+exit 94
+"#,
+    );
+    fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
     let second_head = "second-synthetic-head";
     let group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     let workflow_path = ".github/workflows/checks.yml";
@@ -1025,6 +1042,7 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     second["headRefOid"] = second_head.into();
     second["timelineItems"]["nodes"][0]["id"] = "removal-2".into();
     rows["p43"] = second;
+    let valid_queue = queue.clone();
     write("queue.json", queue.clone());
     write(
         "report-attempt.json",
@@ -1054,9 +1072,24 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     );
     fs::set_permissions(&policy, fs::Permissions::from_mode(0o600)).unwrap();
 
-    let bytes = b"synthetic opaque report bytes";
-    fs::write(env.work().join("report.zip"), bytes).unwrap();
-    let digest = format!("{:x}", Sha256::digest(bytes));
+    let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
+    archive
+        .start_file(
+            "junit.xml",
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+        )
+        .unwrap();
+    archive
+        .write_all(
+            br#"<testsuite name="example">
+  <testcase classname="example" name="passed"/>
+  <testcase classname="example" name="failed"><failure>synthetic output</failure></testcase>
+</testsuite>"#,
+        )
+        .unwrap();
+    let bytes = archive.finish().unwrap().into_inner();
+    fs::write(env.work().join("report.zip"), &bytes).unwrap();
+    let digest = format!("{:x}", Sha256::digest(&bytes));
     let listing = |sha256: &str| {
         json!({"total_count":1,"artifacts":[{"id":71,"name":"report-1",
         "size_in_bytes":bytes.len(),"digest":format!("sha256:{sha256}"),"expired":false,
@@ -1081,6 +1114,7 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
         let row = &sample["queue_rejections"][index];
         assert_eq!(row["number"], number);
         assert_eq!(row["removal_event"], event);
+        assert_eq!(row["merge_group_head"], group);
         assert_eq!(
             row["verified_test_reports"],
             json!([{
@@ -1163,6 +1197,36 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
         fs::read_to_string(env.work().join("report-reads")).unwrap(),
         "read\nread\nread\n"
     );
+
+    let mut wrong_suite = valid_queue;
+    let checks = &mut wrong_suite["data"]["repository"]["p43"]["timelineItems"]["nodes"][0]["beforeCommit"]
+        ["statusCheckRollup"]["contexts"]["nodes"];
+    for check in checks.as_array_mut().unwrap() {
+        check["checkSuite"]["databaseId"] = 52.into();
+    }
+    write("queue.json", wrong_suite);
+    let result = invoke(&env, &args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let text = fs::read_to_string(log_for(&env, "example/repo")).unwrap();
+    let sample: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        sample["queue_rejections"][0]["verified_test_reports"][0]["archives"],
+        json!([{"id":71,"sha256":digest}])
+    );
+    let other = &sample["queue_rejections"][1];
+    assert_eq!(other["merge_group_head"], group);
+    assert_eq!(other["removal_event"], "removal-2");
+    assert_eq!(other["failed_required_check_runs"], json!([11, 12]));
+    assert!(other.get("verified_test_reports").is_none());
+    assert_eq!(
+        fs::read_to_string(env.work().join("report-reads")).unwrap(),
+        "read\nread\nread\nread\n"
+    );
+    assert!(!env.work().join("unexpected-github-command").exists());
 }
 
 #[test]
