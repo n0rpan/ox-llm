@@ -234,6 +234,9 @@ pub struct Descriptor {
 
 /// Starts a descriptor. Every other field has a safe default: a raw editor, `Apply::Restart`
 /// unchecked, read-only on the web, not secret, not advanced. The builder methods change them.
+// The constructor has no caller until the descriptor table is filled (the next setting lane);
+// the module is private, so nothing outside can use it yet either.
+#[allow(dead_code)]
 pub const fn d(
     key: &'static str,
     group: Group,
