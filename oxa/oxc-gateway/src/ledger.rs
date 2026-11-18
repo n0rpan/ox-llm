@@ -304,9 +304,7 @@ impl Entry {
         if fields["remote"] != true
             || !["anthropic", "openai", "openrouter", "chatgpt", "opencode"]
                 .contains(&fields["remote_provider"].as_str().unwrap_or(""))
-            || fields["cost_usd"]
-                .as_f64()
-                .is_none_or(|value| !value.is_finite() || value < 0.0)
+            || crate::spend::budget_cost(fields).is_none()
         {
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -343,7 +341,12 @@ impl Entry {
                 self.row[name] = json!(value.as_u64().ok_or(io::ErrorKind::InvalidData)?);
             }
         }
-        for name in ["cost_usd", "catalog_cost_usd", "reported_cost_usd"] {
+        for name in [
+            "cost_usd",
+            "catalog_cost_usd",
+            "reported_cost_usd",
+            "estimated_cost_usd",
+        ] {
             if let Some(value) = fields.get(name) {
                 if value
                     .as_f64()

@@ -23,7 +23,7 @@ pub struct ItemOwner {
 }
 
 impl Saved {
-    fn item_lease(&self) -> Option<ItemLease> {
+    pub(super) fn item_lease(&self) -> Option<ItemLease> {
         let owner = self.data.item_owner.as_ref()?;
         Some(ItemLease {
             lease: self.state.lease.clone()?,
@@ -43,6 +43,52 @@ impl Saved {
 }
 
 impl Claims {
+    /// Retain the same directory lock across each authenticated active-item update.
+    pub(super) fn active_item_for(
+        &self,
+        worker_id: &str,
+        host_id: &str,
+        binding: &NativeBinding,
+        receipt: &ItemLease,
+        now: u64,
+    ) -> Result<Option<(File, Saved)>> {
+        binding.validate()?;
+        if !valid_worker_id(host_id)
+            || worker_id != binding.lease.holder
+            || receipt.host_id != host_id
+            || receipt.lease != binding.lease
+        {
+            return Err("authenticated item observer and original binding required".into());
+        }
+        let lock = self.lock(binding.number)?;
+        let row = self.load(binding.number)?;
+        if row.item_lease().as_ref() != Some(receipt)
+            || row.data.native_binding.as_ref() != Some(binding)
+            || now >= receipt.expires_at
+        {
+            return Ok(None);
+        }
+        if receipt.lease.claimed_at.is_none_or(|start| now < start) {
+            return Err("item observation clock moved backwards".into());
+        }
+        Ok(Some((lock, row)))
+    }
+
+    /// Hosted automatic admission retains the existing atomic idle/bootstrap fence.
+    /// Its observer receives the current retained binding under that same lock,
+    /// so a replacement packet can check the prior branch as well as its new branch.
+    pub fn claim_idle_item_for(
+        &self,
+        entry: &Entry,
+        policy: &Policy,
+        worker: &Worker,
+        host_id: &str,
+        timing: (u64, u64),
+        observe: impl FnOnce(u64, Option<&NativeBinding>) -> Result<Option<ExistingWork>>,
+    ) -> Result<Option<ItemLease>> {
+        self.claim_item_checked(entry, policy, worker, host_id, timing, true, observe)
+    }
+
     /// Explicit opt-in before any new work. The trusted observer must check complete, fresh
     /// PR and branch evidence for this repository/item or fail. It runs under the Claims lock
     /// and must not call Claims. All hosts must use this same protected authority.
@@ -55,17 +101,35 @@ impl Claims {
         timing: (u64, u64),
         observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
     ) -> Result<Option<ItemLease>> {
+        self.claim_item_checked(entry, policy, worker, host_id, timing, false, |number, _| {
+            observe(number)
+        })
+    }
+
+    fn claim_item_checked(
+        &self,
+        entry: &Entry,
+        policy: &Policy,
+        worker: &Worker,
+        host_id: &str,
+        timing: (u64, u64),
+        idle: bool,
+        observe: impl FnOnce(u64, Option<&NativeBinding>) -> Result<Option<ExistingWork>>,
+    ) -> Result<Option<ItemLease>> {
         if !valid_worker_id(host_id) {
             return Err("authenticated host identity required".into());
         }
         self.claim_checked(entry, policy, &worker.id, timing, Some(host_id), |row| {
-            if let Some(existing) = observe(entry.number)? {
+            if idle && !self.idle_for(entry.number, &worker.id, row)? {
+                return Ok(false);
+            }
+            if let Some(existing) = observe(entry.number, row.data.native_binding.as_ref())? {
                 let (owner, kind) = match existing {
                     ExistingWork::PullRequest { number, owner } if number > 0 => (owner, "open PR"),
                     ExistingWork::Branch { name, owner } if !name.is_empty() => (owner, "branch"),
                     _ => return Err("invalid existing work evidence".into()),
                 };
-                if !valid_worker_id(&owner) {
+                if !valid_worker_id(owner.strip_suffix("[bot]").unwrap_or(&owner)) {
                     return Err("existing work requires an identified owner".into());
                 }
                 return Err(format!("item {}: {kind} owned by {owner}", entry.number));

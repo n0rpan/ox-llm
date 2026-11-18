@@ -88,19 +88,23 @@ impl RejectionEvidence {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
-struct WorkflowIdentity {
-    check_suite_id: u64,
-    workflow_run_id: u64,
+pub(super) struct WorkflowIdentity {
+    pub(super) check_suite_id: u64,
+    pub(super) workflow_run_id: u64,
     // GitHub may begin a new workflow attempt after the check completed.
     // The job's own attempt must match before using any test report.
-    observed_run_attempt: u64,
+    pub(super) observed_run_attempt: u64,
 }
 
 impl WorkflowIdentity {
     fn read(check: &Value, merge_group_head: &str) -> Option<Self> {
+        Self::for_event(check, merge_group_head, "merge_group")
+    }
+
+    pub(super) fn for_event(check: &Value, head: &str, event: &str) -> Option<Self> {
         let suite = &check["checkSuite"];
         let run = &suite["workflowRun"];
-        if suite["commit"]["oid"].as_str() != Some(merge_group_head) || run["event"] != "merge_group" {
+        if suite["commit"]["oid"].as_str() != Some(head) || run["event"] != event {
             return None;
         }
         Some(Self {
@@ -111,7 +115,7 @@ impl WorkflowIdentity {
     }
 }
 
-fn positive_id(value: &Value) -> Option<u64> {
+pub(super) fn positive_id(value: &Value) -> Option<u64> {
     value.as_u64().filter(|id| *id > 0)
 }
 
@@ -293,7 +297,7 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
 }
 
 /// Validate a canonical UTC second before comparing GitHub event times.
-fn github_utc(value: &Value) -> Option<&str> {
+pub(super) fn github_utc(value: &Value) -> Option<&str> {
     value
         .as_str()
         .filter(|time| oxa_session::parse_utc_seconds(time).is_some())

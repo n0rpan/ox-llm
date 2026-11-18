@@ -15,6 +15,7 @@ pub enum Mode {
 /// Identity settings are deliberately not Debug/Display output.
 pub struct Config {
     enabled: bool,
+    fixed_prompts: bool,
     mode: Mode,
     bind: IpAddr,
     port: u16,
@@ -25,6 +26,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             enabled: false,
+            fixed_prompts: false,
             mode: Mode::Local,
             bind: Ipv4Addr::LOCALHOST.into(),
             port: 8743,
@@ -44,6 +46,7 @@ impl Config {
         if values.keys().any(|key| {
             ![
                 "enabled",
+                "fixed_prompts",
                 "identity",
                 "bind",
                 "port",
@@ -57,6 +60,9 @@ impl Config {
         let mut config = Self::default();
         if let Some(value) = values.get("enabled") {
             config.enabled = value.as_bool().ok_or("invalid lead serve enable flag")?;
+        }
+        if let Some(value) = values.get("fixed_prompts") {
+            config.fixed_prompts = value.as_bool().ok_or("invalid fixed prompt flag")?;
         }
         if let Some(value) = values.get("identity") {
             config.mode = match value.as_str() {
@@ -114,6 +120,9 @@ impl Config {
     pub fn mode(&self) -> Mode {
         self.mode
     }
+    pub(crate) fn fixed_prompts(&self) -> bool {
+        self.fixed_prompts
+    }
 }
 
 /// Trusted request-bound proof: local ownership, or login plus independently verified authority.
@@ -159,6 +168,38 @@ pub fn read_only<T>(
     if method != "GET" {
         return Err(Refusal::ReadOnly);
     }
+    observe(config, peer, authority, forwarded_login, identity, read)
+}
+
+pub(crate) fn fixed_prompt(
+    config: &Config,
+    peer: IpAddr,
+    request: &crate::lead_http::Request<'_>,
+    identity: &impl IdentityProvider,
+) -> bool {
+    config.enabled
+        && config.fixed_prompts
+        && request.method == "POST"
+        && request.path == "/chat"
+        && observe(
+            config,
+            peer,
+            request.authority,
+            request.forwarded_login,
+            identity,
+            || (),
+        )
+        .is_ok()
+}
+
+fn observe<T>(
+    config: &Config,
+    peer: IpAddr,
+    authority: &str,
+    forwarded_login: Option<&str>,
+    identity: &impl IdentityProvider,
+    read: impl FnOnce() -> T,
+) -> Result<T, Refusal> {
     if !peer.is_loopback() {
         return Err(Refusal::LocalOnly);
     }

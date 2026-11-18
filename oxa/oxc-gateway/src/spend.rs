@@ -22,6 +22,26 @@ pub struct SpendReader {
     tail: Vec<u8>,
     bytes_read: u64,
 }
+/// Budget accounting accepts an estimate only when it is explicitly classified
+/// and no actual cost field is present. Older settled rows keep their format.
+pub(crate) fn budget_cost(row: &Value) -> Option<f64> {
+    let value = match (row.get("cost_usd"), row.get("estimated_cost_usd")) {
+        (Some(cost), None) => cost,
+        (None, Some(estimate))
+            if matches!(row["settled"].as_str(), Some("estimated" | "reserved"))
+                && row["billing"] == "metered"
+                && matches!(
+                    row["remote_provider"].as_str(),
+                    Some("anthropic" | "openai" | "openrouter")
+                ) =>
+        {
+            estimate
+        }
+        _ => return None,
+    };
+    value.as_f64().filter(|cost| cost.is_finite() && *cost >= 0.0)
+}
+
 impl SpendReader {
     pub fn bytes_read(&self) -> u64 {
         self.bytes_read
@@ -103,10 +123,7 @@ impl SpendReader {
             if row["remote"] != true {
                 continue;
             }
-            let cost = row["cost_usd"]
-                .as_f64()
-                .filter(|cost| cost.is_finite() && *cost >= 0.0)
-                .ok_or(io::ErrorKind::InvalidData)?;
+            let cost = budget_cost(&row).ok_or(io::ErrorKind::InvalidData)?;
             match row.get("billing") {
                 None => {
                     if matches!(row["remote_provider"].as_str(), Some("chatgpt" | "opencode"))

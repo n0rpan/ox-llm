@@ -316,10 +316,16 @@ A controller lock prevents two queue controllers from exceeding the worker cap.
 The native board adapter runs one previously admitted packet from that board's
 existing spool. Use `oxa work --native-queue --config PATH` from the source
 repository with the same private config used by refill and `nativeExecution`
-explicitly enabled. This execution path uses the offline policy. It moves the
+explicitly enabled. The owner-protected config supplies the registered `worker`
+and `host_id`. Launch requires a matching hosted claim and the original binding
+before taking the packet. This execution path uses the offline policy. It moves the
 matching packet into `started` and resumes from the task checkpoint after
 interruption. The original claim releases after the whole task finishes and
 its worker process exits.
+
+Set `nativeActivity` to `true` in the same protected config to record verified
+worker results on the original hosted claim. The setting defaults to off.
+A saved worker result keeps its launch identity across checkpoint replay.
 
 Problem-report workflows hold a per-user kernel lease across drafting, duplicate
 search, match reads and writing, so concurrent workers share one reporting lane.

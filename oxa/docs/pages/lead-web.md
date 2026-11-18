@@ -5,6 +5,10 @@ Run `oxa lead serve` to serve the read-only board after enabling it in user sett
 The owner must read the final authentication composition before merge or live exposure.
 Chat and owner-decision mutations remain separate work.
 
+Optional user setting `oxa.lead.serve.fixed_prompts` defaults to false.
+It enables no-JS, same-origin/CSRF-protected fixed questions at zero model tokens.
+Private situation data needs browser proof separate from tool UIDs; absent inputs stay unavailable.
+
 Only the user settings file may configure `oxa.lead.serve`; a project's settings
 cannot enable it or choose its listener or identity policy. It is disabled by
 default. The default identity mode is `local`, the bind is `127.0.0.1`, and the

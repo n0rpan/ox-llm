@@ -1,9 +1,9 @@
 //! Atomic publication only. The caller must reserve a core claim and authorize the target first.
 use crate::{board::Policy, Result};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Read;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub(crate) const MAX_TASK_BYTES: usize = 64 * 1024;
 
@@ -23,13 +23,6 @@ fn directory(path: &Path) -> Result<()> {
         return Err("board queue requires a canonical owner-controlled directory".into());
     }
     Ok(())
-}
-
-struct Staged(PathBuf);
-impl Drop for Staged {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
 }
 
 /// `key` is the lowercase SHA-256 identity of repository, PR, head and action.
@@ -108,26 +101,14 @@ pub fn publish_reserved(
     if !reserve()? {
         return Ok(false);
     }
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "invalid board queue clock")?
-        .as_nanos();
-    let temporary = Staged(queue.join(format!(".board-{key}-{}-{nonce}.tmp", std::process::id())));
-    let mut file = io(OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&temporary.0))?;
-    io(file.write_all(task.as_bytes()))?;
-    io(file.sync_all())?;
     let prefix = if pinned { "p1-board-" } else { "board-" };
-    // hard_link publishes a complete inode atomically and never replaces another file.
-    io(fs::hard_link(
-        &temporary.0,
-        queue.join(format!("{prefix}{key}.txt")),
-    ))?;
-    drop(temporary);
-    io(lock.sync_all())?;
+    crate::checkpoint::write_atomic_in(
+        &lock,
+        &queue.join(format!("{prefix}{key}.txt")),
+        task.as_bytes(),
+        false,
+    )
+    .map_err(|error| format!("board queue storage: {error}"))?;
     Ok(true)
 }
 

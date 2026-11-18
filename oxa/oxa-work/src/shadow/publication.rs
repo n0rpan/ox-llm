@@ -151,7 +151,7 @@ impl Publications {
 fn record(log: &mut File, board: &Board, publication: &Publication) -> Result<()> {
     append(
         log,
-        &Sample {
+        Sample {
             schema_version: 1,
             observed_at: board.observed_at,
             board,
@@ -161,6 +161,7 @@ fn record(log: &mut File, board: &Board, publication: &Publication) -> Result<()
             matched_queue_admissions: &BTreeMap::new(),
             landing: &BTreeMap::new(),
             landing_main: None,
+            app_quota: None,
             landing_publication: Some(publication),
         },
     )
