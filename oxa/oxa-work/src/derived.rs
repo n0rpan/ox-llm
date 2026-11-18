@@ -587,7 +587,10 @@ fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
             continue;
         }
         for ancestor in manifests.ancestors(root, dir)? {
-            if let Some(package) = manifests.root[&ancestor].package.clone() {
+            let manifest = &manifests.root[&ancestor];
+            // A workspace member can consume files outside its package directory.
+            selected.requires_hosted |= manifest.workspace;
+            if let Some(package) = manifest.package.clone() {
                 selected.requires_hosted = true;
                 let in_dir = manifests.in_dir(root, &ancestor, &mut budget)?;
                 selected.packages.insert((package, in_dir));
