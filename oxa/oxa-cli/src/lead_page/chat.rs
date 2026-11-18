@@ -23,5 +23,48 @@ pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt, now: u6
         };
         let _ = write!(html, "<p>Snapshot observations unavailable for this prompt. This question needs a {needed} observation; none reached this page.</p>");
     }
-    html.push_str("<p class=muted>From the snapshot · 0 tokens</p></article></div><p>Messaging unavailable. This page supports snapshot questions only.</p></section>");
+    html.push_str("<p class=muted>From the snapshot · 0 tokens</p></article></div></section>");
+    if let Some(owner) = &view.owner_chat {
+        let csrf = super::escape(owner.csrf);
+        let _ = write!(
+            html,
+            r#"<section><h2>Chat with Lead</h2><form method=post action=/chat><input type=hidden name=csrf value="{csrf}"><label for=lead-message>Message</label><textarea id=lead-message name=message required></textarea><button>Send</button></form>"#
+        );
+        if let Some(reply) = owner.reply {
+            let _ = write!(
+                html,
+                "<article><h3>Lead reply</h3><p>{}</p>",
+                super::escape(&reply.text)
+            );
+            for fact in &reply.facts {
+                let _ = write!(
+                    html,
+                    r#"<p><a href="{}">{}</a> · observed {}</p>"#,
+                    super::escape(&fact.href),
+                    super::escape(&fact.label),
+                    super::human_time(fact.observed_at, now)
+                );
+            }
+            if let Some((id, proposal)) = owner.proposal {
+                let _ = write!(
+                    html,
+                    "<h3>Proposed action</h3><pre>{}</pre>",
+                    super::escape(&proposal["draft"].to_string())
+                );
+                if owner.confirmed {
+                    html.push_str("<p>Confirmation recorded. Application is pending.</p>");
+                } else {
+                    let id = super::escape(id);
+                    let _ = write!(
+                        html,
+                        r#"<form method=post action=/chat><input type=hidden name=csrf value="{csrf}"><input type=hidden name=proposal_id value="{id}"><button>Confirm proposal</button></form>"#
+                    );
+                }
+            }
+            html.push_str("</article>");
+        }
+        html.push_str("</section>");
+    } else {
+        html.push_str("<p>Messaging unavailable. This page supports snapshot questions only.</p>");
+    }
 }

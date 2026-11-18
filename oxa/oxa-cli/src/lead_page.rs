@@ -14,6 +14,7 @@ pub use pages::{Page, Prompt};
 #[derive(Default)]
 pub struct View<'a> {
     /// Ephemeral form credential supplied only by the authorized HTTP caller.
+    pub owner_chat: Option<OwnerChatView<'a>>,
     pub fixed_prompt_csrf: Option<&'a str>,
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
@@ -29,6 +30,13 @@ pub struct View<'a> {
     pub overdue_queue: &'a [PullRequest],
     /// Source issue and its reported checkbox states; these do not establish validation.
     pub release: Option<(u64, &'a [(bool, String)])>,
+}
+
+pub struct OwnerChatView<'a> {
+    pub csrf: &'a str,
+    pub(crate) reply: Option<&'a crate::lead_chat::conversation::ConversationReply>,
+    pub proposal: Option<&'a (String, serde_json::Value)>,
+    pub confirmed: bool,
 }
 
 fn escape(text: &str) -> String {
