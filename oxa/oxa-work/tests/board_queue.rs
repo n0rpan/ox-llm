@@ -190,6 +190,7 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
                         LandingDecision {
                             next: Next::AlreadyQueued,
                             queue_alarm: false,
+                            repeat_rejection_alarm: false,
                             latest_reviews: LatestReviews::Clear,
                             would_notify_rejection: None,
                             queue: Some(QueueObservation {
@@ -280,6 +281,7 @@ fn the_owner_journal_matches_only_the_previously_queued_head_and_group() {
                                 Next::WaitQueue
                             },
                             queue_alarm: false,
+                            repeat_rejection_alarm: false,
                             queue: queued,
                             latest_reviews: reviews,
                             would_notify_rejection: None,

@@ -308,6 +308,8 @@ pub fn run_with_queue_evidence(
 pub struct LandingDecision {
     pub next: Next,
     pub queue_alarm: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub repeat_rejection_alarm: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue: Option<QueueObservation>,
     #[serde(skip)]
@@ -377,6 +379,7 @@ pub fn run_with_landing(
             landing_main.as_deref().unwrap_or_default(),
             &queue_rejections,
             &matched_queue_admissions,
+            history.as_ref().map(|history| &history.publications),
         );
         let sample = Sample {
             schema_version: 1,
@@ -412,6 +415,7 @@ fn plan_matched_rejections(
     main: &str,
     rejections: &[RejectionEvidence],
     admissions: &BTreeMap<u64, AdmissionEvidence>,
+    published: Option<&publication::Publications>,
 ) {
     let rejections: BTreeMap<_, _> = rejections
         .iter()
@@ -429,6 +433,31 @@ fn plan_matched_rejections(
         else {
             continue;
         };
+        let binding = rejection.publication_binding().map(|(binding, _)| binding);
+        let (delivery, retry) = match (published, binding.as_ref()) {
+            (Some(published), Some(binding)) => {
+                let delivered = published.delivered(binding).filter(|receipt| {
+                    rejection.notification_target().is_some_and(|target| {
+                        target.author_id == receipt.intent.recipient_id
+                            && target.login == receipt.intent.recipient_login
+                    })
+                });
+                let retry = published
+                    .admitted(binding)
+                    .map_or(landing::Retry::Unknown, |receipt| landing::Retry::Consumed {
+                        first_rejected_group: &receipt
+                            .acknowledgment
+                            .intent
+                            .delivery
+                            .intent
+                            .rejection
+                            .rejected_group,
+                        admitted_group: Some(&receipt.admitted_group),
+                    });
+                (delivered, retry)
+            }
+            _ => (None, landing::Retry::Unknown),
+        };
         let failed_tests = rejection.reported_failure_names();
         let plan = landing::Policy { enabled: true }.plan(
             entry,
@@ -443,13 +472,14 @@ fn plan_matched_rejections(
                 } else {
                     landing::RejectionCause::FailedTests(&failed_tests)
                 },
-                notified_event: None,
-                retry: landing::Retry::Unknown,
+                notified_event: delivery.map(|receipt| receipt.intent.rejection.removal_id.as_str()),
+                retry,
             }),
             main,
             board.observed_at,
         );
         decision.next = plan.next;
+        decision.repeat_rejection_alarm = plan.repeat_rejection_alarm;
         if let (
             Some(landing::Notice {
                 head,

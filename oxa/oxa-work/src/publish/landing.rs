@@ -13,7 +13,8 @@ const ADD_COMMENT: &str = "mutation($pr:ID!,$body:String!){addComment(input:{sub
     ... on User{id} ... on Bot{id}} createdAt}}}}";
 const ENQUEUE: &str = "mutation($pr:ID!,$head:GitObjectID!){enqueuePullRequest(input:{
     pullRequestId:$pr,expectedHeadOid:$head}){mergeQueueEntry{id enqueuedAt
-    mergeQueue{id repository{id}} pullRequest{id headRefOid} headCommit{oid}}}}";
+    mergeQueue{id repository{id}} pullRequest{id number headRefOid} headCommit{oid}
+    enqueuer{__typename ... on User{id} ... on Bot{id}}}}}";
 
 /// Identity supplied by the board Reader and matched to the owner journal.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -21,6 +22,7 @@ pub struct RejectedLanding {
     pub repository_id: String,
     pub queue_id: String,
     pub pull_request_id: String,
+    pub pull_request_number: u64,
     pub pr_head: String,
     pub rejected_group: String,
     pub removal_id: String,
@@ -41,6 +43,7 @@ impl RejectedLanding {
             || !is_object_id(&self.rejected_group)
             || self.rejected_group == self.pr_head
             || self.removed_at == 0
+            || self.pull_request_number == 0
         {
             return Err("invalid rejected landing identity".into());
         }
@@ -287,6 +290,9 @@ fn admission(intent: &RetryIntent, entry: &Value) -> Result<Admission> {
         || entry["mergeQueue"]["id"].as_str() != Some(&rejection.queue_id)
         || entry["pullRequest"]["id"].as_str() != Some(&rejection.pull_request_id)
         || entry["pullRequest"]["headRefOid"].as_str() != Some(&rejection.pr_head)
+        || entry["pullRequest"]["number"].as_u64() != Some(rejection.pull_request_number)
+        || !matches!(entry["enqueuer"]["__typename"].as_str(), Some("User" | "Bot"))
+        || entry["enqueuer"]["id"].as_str() != Some(&intent.delivery.intent.publisher_id)
     {
         return Err("admission acknowledgment does not match the landing reservation".into());
     }
@@ -319,13 +325,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn typed_landing_receipts_refuse_partial_and_mismatched_evidence() {
-        let intent = NoticeIntent {
+    fn test_intent() -> NoticeIntent {
+        NoticeIntent {
             rejection: RejectedLanding {
                 repository_id: "R_repo".into(),
                 queue_id: "MQ_main".into(),
                 pull_request_id: "PR_pull".into(),
+                pull_request_number: 42,
                 pr_head: "a".repeat(40),
                 rejected_group: "b".repeat(40),
                 removal_id: "E_removed".into(),
@@ -334,14 +340,58 @@ mod tests {
             recipient_id: "U_author".into(),
             recipient_login: "synthetic-author".into(),
             publisher_id: "U_publisher".into(),
+        }
+    }
+
+    #[test]
+    fn notice_uses_the_canonical_transport_on_a_mock_executable() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        let temp = crate::test_dir::PrivateDir::new("landing-transport");
+        let git = temp.path().join("git");
+        let gh = temp.path().join("gh");
+        fs::write(
+            &git,
+            "#!/bin/sh\nprintf '%s\\n' https://example.invalid/sample/repo\n",
+        )
+        .unwrap();
+        fs::write(&gh, r#"#!/bin/sh
+test -z "${GH_TOKEN+x}" || exit 1
+case "$*" in
+  'repo view https://example.invalid/sample/repo --json id,nameWithOwner,url')
+    printf '%s\n' '{"id":"R_repo","nameWithOwner":"sample/repo","url":"https://example.invalid/sample/repo"}' ;;
+  'api graphql --hostname example.invalid -f query=query{viewer{id}}')
+    printf '%s\n' '{"data":{"viewer":{"id":"U_publisher"}}}' ;;
+  'api graphql --hostname example.invalid -f query=mutation('*' pr=PR_pull -f body=@synthetic-author '*)
+    printf '%s\n' '{"data":{"addComment":{"commentEdge":{"node":{"id":"IC_comment",
+        "repository":{"id":"R_repo"},"pullRequest":{"id":"PR_pull"},
+        "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T01:00:00Z"}}}}}'
+    ;;
+  *) exit 1 ;;
+esac
+"#).unwrap();
+        for binary in [&git, &gh] {
+            fs::set_permissions(binary, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let policy = RunPolicy {
+            git_binary: git,
+            host_path: Default::default(),
+            terminate_binary: None,
+            offline: false,
+            storage: temp.path().to_owned(),
         };
+        let log = crate::shadow::open_log(&temp.path().join("owner.jsonl")).unwrap();
+        let publisher = LandingPublisher::new(temp.path(), &policy, &gh, &log);
+        let receipt = publisher.notice(&test_intent(), &["synthetic::test"]).unwrap();
+        assert_eq!(receipt.comment_id, "IC_comment");
+    }
+
+    #[test]
+    fn typed_landing_receipts_refuse_partial_and_mismatched_evidence() {
+        let intent = test_intent();
         let body = intent.body(&["suite::test`@unrelated"]).unwrap();
         assert!(body.starts_with("@synthetic-author "));
         assert!(body.ends_with("`suite::test’@unrelated`"));
-        assert!(intent
-            .body(&["bad
-name"])
-            .is_err());
+        assert!(intent.body(&["bad\nname"]).is_err());
         let mut node = json!({
             "id":"IC_comment","repository":{"id":"R_repo"},"pullRequest":{"id":"PR_pull"},
             "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T01:00:00Z"
@@ -360,7 +410,8 @@ name"])
         let mut entry = json!({
             "id":"MQE_entry","enqueuedAt":"1970-01-01T01:04:00Z",
             "mergeQueue":{"id":"MQ_main","repository":{"id":"R_repo"}},
-            "pullRequest":{"id":"PR_pull","headRefOid":intent.rejection.pr_head},
+            "pullRequest":{"id":"PR_pull","number":42,"headRefOid":intent.rejection.pr_head},
+            "enqueuer":{"__typename":"User","id":"U_publisher"},
             "headCommit":null
         });
         let Admission::Pending(pending) = admission(&retry, &entry).unwrap() else {

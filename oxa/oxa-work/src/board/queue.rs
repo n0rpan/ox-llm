@@ -9,7 +9,7 @@ pub mod report;
 const BATCH: usize = 8;
 const MAX_PRS: usize = 1000;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
-const QUEUE: &str = r#"mergeQueue(branch:"main"){id}"#;
+const QUEUE: &str = r#"id mergeQueue(branch:"main"){id}"#;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub struct RejectionEvidence {
@@ -18,6 +18,8 @@ pub struct RejectionEvidence {
     removed_at: String,
     #[serde(skip)]
     notification_target: Option<NotificationTarget>,
+    #[serde(skip)]
+    publication: Option<PublicationBinding>,
     merge_group_head: String,
     failed_required_check_runs: Vec<u64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -28,9 +30,18 @@ pub struct RejectionEvidence {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 pub(crate) struct NotificationTarget {
-    pull_request_id: String,
-    author_id: String,
-    login: String,
+    pub(crate) pull_request_id: String,
+    pub(crate) author_id: String,
+    pub(crate) login: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PublicationBinding {
+    repository_id: String,
+    queue_id: String,
+    pr_head: String,
+    absent: bool,
+    admission_upper_bound: Option<u8>,
 }
 
 impl NotificationTarget {
@@ -68,6 +79,24 @@ pub(crate) struct Removal<'a> {
 impl RejectionEvidence {
     pub(crate) fn notification_target(&self) -> Option<&NotificationTarget> {
         self.notification_target.as_ref()
+    }
+
+    pub(crate) fn publication_binding(&self) -> Option<(crate::RejectedLanding, Option<u8>)> {
+        let binding = self.publication.as_ref()?;
+        let target = self.notification_target()?;
+        Some((
+            crate::RejectedLanding {
+                repository_id: binding.repository_id.clone(),
+                queue_id: binding.queue_id.clone(),
+                pull_request_id: target.pull_request_id.clone(),
+                pull_request_number: self.number,
+                pr_head: binding.pr_head.clone(),
+                rejected_group: self.merge_group_head.clone(),
+                removal_id: self.removal_event.clone(),
+                removed_at: oxa_session::parse_utc_seconds(&self.removed_at)?,
+            },
+            binding.admission_upper_bound.filter(|_| binding.absent),
+        ))
     }
 
     pub(crate) fn admission_identity(&self) -> Removal<'_> {
@@ -136,6 +165,8 @@ pub fn read(
                 fields,
                 r#"p{n}:pullRequest(number:{n}){{
                     id number headRefOid state baseRefName
+                    mergeQueueEntry{{id}}
+                    admissions:timelineItems(first:1,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT]){{totalCount}}
                     author{{__typename login ... on User{{id}} ... on Bot{{id}}}}
                     timelineItems(last:1,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){{
                         nodes{{__typename ... on RemovedFromMergeQueueEvent{{
@@ -171,12 +202,44 @@ pub fn read(
         }
         let Some(queue_id) = current else { continue };
         for entry in batch {
-            if let Some(rejection) = rejection(&data[format!("p{}", entry.number)], entry, queue_id)? {
+            if let Some(rejection) = rejection(
+                &data[format!("p{}", entry.number)],
+                entry,
+                queue_id,
+                node_id(&data["id"]),
+            )? {
                 rejections.push(rejection);
             }
         }
     }
     Ok(rejections)
+}
+
+/// Re-read the exact pending entry using the same repository Reader.
+pub fn read_acknowledged_admission(
+    acknowledgment: &crate::AdmissionAcknowledgment,
+    mut repository_read: impl FnMut(&str) -> Result<(Value, usize), String>,
+) -> Result<Value, String> {
+    let rejection = &acknowledgment.intent.delivery.intent.rejection;
+    let number = rejection.pull_request_number;
+    let (data, bytes) = repository_read(&format!(
+        r#"id mergeQueue(branch:"main"){{id}} pullRequest(number:{number}){{
+            mergeQueueEntry{{id enqueuedAt mergeQueue{{id repository{{id}}}}
+                pullRequest{{id number headRefOid}} headCommit{{oid}}
+                enqueuer{{__typename ... on User{{id}} ... on Bot{{id}}}}}}
+        }}"#
+    ))?;
+    if bytes > MAX_BYTES
+        || data["id"].as_str() != Some(&rejection.repository_id)
+        || data["mergeQueue"]["id"].as_str() != Some(&rejection.queue_id)
+    {
+        return Err("queue changed since the recorded admission acknowledgment".into());
+    }
+    data["pullRequest"]["mergeQueueEntry"]
+        .as_object()
+        .cloned()
+        .map(Value::Object)
+        .ok_or_else(|| "the acknowledged queue entry is unavailable".into())
 }
 
 fn node_id(value: &Value) -> Option<&str> {
@@ -198,7 +261,12 @@ pub fn is_object_id(sha: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<RejectionEvidence>, String> {
+fn rejection(
+    row: &Value,
+    entry: &Entry,
+    queue_id: &str,
+    repository_id: Option<&str>,
+) -> Result<Option<RejectionEvidence>, String> {
     if row["number"].as_u64() != Some(entry.number)
         || row["headRefOid"].as_str() != Some(entry.head.as_str())
         || row["state"] != "OPEN"
@@ -275,6 +343,17 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
         removal_event: removal_event.to_owned(),
         removed_at: removed_at.to_owned(),
         notification_target: NotificationTarget::read(row),
+        publication: repository_id.map(|repository_id| PublicationBinding {
+            repository_id: repository_id.to_owned(),
+            queue_id: queue_id.to_owned(),
+            pr_head: entry.head.clone(),
+            absent: row.get("mergeQueueEntry") == Some(&Value::Null),
+            // Earlier heads can only increase the count. An ambiguous or
+            // exhausted upper bound cannot authorize a native retry.
+            admission_upper_bound: row["admissions"]["totalCount"]
+                .as_u64()
+                .and_then(|total| u8::try_from(total).ok()),
+        }),
         merge_group_head: sha.to_owned(),
         failed_required_check_runs: failed.keys().copied().collect(),
         failed_required_workflows: failed

@@ -65,6 +65,10 @@ struct RejectionBaseline {
 }
 
 impl AdmissionEvidence {
+    pub(super) fn last_admission_at(&self) -> u64 {
+        self.enqueued_at
+    }
+
     pub(super) fn baseline_main(&self) -> &str {
         self.rejection_baseline.as_ref().map_or("", |value| &value.main)
     }
