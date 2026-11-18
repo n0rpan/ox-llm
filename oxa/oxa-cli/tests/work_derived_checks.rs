@@ -41,9 +41,11 @@ fn write_turn(path: &str) -> ScriptTurn {
     )
 }
 
-/// A private, trusted tools directory holding a `cargo` that runs `script`.
+/// A private tools directory holding a `cargo` that runs `script`. It lives under the
+/// test home: PATH entries under `$HOME` are bound read-only into the check sandbox
+/// (a fresh tmpfs masks the host `/tmp` there), so the sandboxed round resolves the fake.
 fn tools_with_cargo(env: &TestEnv, script: &str) -> PathBuf {
-    let tools = env.tmp().join("trusted-tools");
+    let tools = env.home().join("trusted-tools");
     fs::DirBuilder::new().mode(0o700).create(&tools).unwrap();
     let cargo = tools.join("cargo");
     fs::write(&cargo, script).unwrap();
