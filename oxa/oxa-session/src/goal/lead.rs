@@ -1,10 +1,8 @@
 //! Private continuation data carried by the native Session goal record.
 use super::invalid;
-use oxa_proto::{OxaError, Value};
+use oxa_proto::{work::MAX_ITEMS, OxaError, Value};
 use serde_json::json;
 use std::collections::BTreeSet;
-
-const MAX_ITEMS: usize = 32;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LeadGoalState {

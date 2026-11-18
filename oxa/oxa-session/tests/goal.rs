@@ -241,11 +241,14 @@ fn lead_state_survives_compaction_and_stays_private_to_its_session() {
     let session = store.create(&env.work(), None, None).unwrap();
     let mut goal = objective();
     goal.lead = Some(LeadGoalState {
-        open_asks: vec![OpenGoalAsk {
-            id: "ask-1".into(),
-            revision: 2,
-            question: "Which synthetic result should be used?".into(),
-        }],
+        // Existing standing-store fixtures retain 39 concurrently open asks.
+        open_asks: (1..=39)
+            .map(|id| OpenGoalAsk {
+                id: format!("ask-{id}"),
+                revision: 2,
+                question: "Which synthetic result should be used?".into(),
+            })
+            .collect(),
         standing_refs: vec!["rule-1".into()],
         held_leases: vec![HeldGoalLease {
             task: "task-1".into(),
