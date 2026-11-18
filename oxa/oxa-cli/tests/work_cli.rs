@@ -456,7 +456,14 @@ fn native_refill_completion(source: NativeSource) {
         assert_eq!(server.requests()[0].model, "fake-alternative");
         return;
     }
-    let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
+    let server = FakeServer::start(
+        vec![ScriptTurn::text("finished")],
+        FakeOpts {
+            model: "fake".into(),
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
     if let Some(reason) = refusal {
         let result = run_server(&env, &server, &args, Some(path), &[]);
         assert!(!result.status.success(), "{source:?}: {result:?}");
