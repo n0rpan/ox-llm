@@ -7,10 +7,11 @@ fn auto_mode_text_never_claims_a_sandbox_when_none_is_available() {
         let t = m.describe_with(false);
         if m != PermissionMode::Yolo && m != PermissionMode::Plan {
             assert!(t.contains("no OS sandbox"), "{m:?}: {t}");
-            assert!(!t.contains("sandbox and deny-list on"), "{m:?}: {t}");
-            assert!(!t.contains("the bash sandbox"), "{m:?}: {t}");
         }
-        assert!(!t.contains("sandbox on"), "{m:?}: {t}");
+        // An operative claim, not the negation: "no OS sandbox on this platform" says the
+        // opposite and must not be read as one.
+        assert!(!t.contains("sandbox and deny-list on"), "{m:?}: {t}");
+        assert!(!t.contains("the bash sandbox,"), "{m:?}: {t}");
     }
 }
 
