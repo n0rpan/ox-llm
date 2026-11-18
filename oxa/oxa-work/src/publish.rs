@@ -260,7 +260,7 @@ fn publish_locked(
         // only after it returns, immediately before the push.
         if let Some(pr) = prs.first() {
             let number = pr["number"].as_u64().ok_or("PR number missing")?.to_string();
-            let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id}}}}";
+            let query = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){mergeQueueEntry{id state}}}}";
             let data = json(&gh(
                 tree,
                 lock,
@@ -280,11 +280,19 @@ fn publish_locked(
                 ],
             )?)?;
             let pull = &data["data"]["repository"]["pullRequest"];
-            if !pull.is_object() || pull.get("mergeQueueEntry").is_none() {
-                return Err("cannot determine whether PR is in the merge queue".into());
-            }
-            if !pull["mergeQueueEntry"].is_null() {
-                return Err("PR is in the merge queue; use a new task branch for follow-up work".into());
+            let entry = pull
+                .get("mergeQueueEntry")
+                .ok_or("cannot determine whether PR is in the merge queue")?;
+            if !entry.is_null() {
+                let status = if entry["state"] == "UNMERGEABLE" {
+                    "PR is in the merge queue and cannot merge."
+                } else {
+                    "PR is in the merge queue."
+                };
+                return Err(format!(
+                    "{status} Preserve this branch and retry publication after queue release."
+                )
+                .into());
             }
         }
         let mut push = git(

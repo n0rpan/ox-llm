@@ -465,7 +465,7 @@ fn queued_pr_is_never_pushed_and_publication_retries_without_agent_replay() {
         assert_eq!(blocked["head_sha"], published["head_sha"], "{blocked}");
         assert_eq!(
             blocked["detail"],
-            format!("{message} Preserve this branch and retry publication after queue release.")
+            format!("publishing: {message} Preserve this branch and retry publication after queue release.")
         );
     }
     assert_eq!(
