@@ -1009,30 +1009,58 @@ mod tests {
         ));
 
         targets[1].model = models[1];
+        let failed_binding = &bindings[0];
+        let failed_id = failed_binding.native_task_id.clone();
+        let run_successfully = execute.clone();
+        let mixed: Arc<NativeWorkerFn> = Arc::new(move |task, locked| {
+            if task.id == failed_id {
+                return Err("synthetic native worker failure".into());
+            }
+            run_successfully(task, locked)
+        });
         let mut both_active = false;
         let mut completed = HashSet::new();
-        let status = run()
-            .run_native_batch(&claims, &targets, execute, &mut |event| {
-                match event {
-                    QueueEvent::State { status } => both_active |= status.active.len() == 2,
-                    QueueEvent::Task { record } => {
-                        assert_eq!(record.checkpoint_kind, CheckpointKind::TaskTransition);
-                        let binding = bindings
-                            .iter()
-                            .find(|binding| record.id == binding.native_task_id)
-                            .unwrap();
-                        let rows = claims.assignments().unwrap();
-                        assert!(rows[&binding.number].state.lease.is_none());
-                        assert!(rows[&binding.number].data.native_binding.as_ref() == Some(binding));
-                        assert!(completed.insert(record.id));
-                    }
-                    QueueEvent::Error { detail, .. } => panic!("{detail}"),
+        let mut failures = 0;
+        let mut emit = |event| {
+            match event {
+                QueueEvent::State { status } => both_active |= status.active.len() == 2,
+                QueueEvent::Task { record } => {
+                    assert_eq!(record.checkpoint_kind, CheckpointKind::TaskTransition);
+                    let binding = bindings
+                        .iter()
+                        .find(|binding| record.id == binding.native_task_id)
+                        .unwrap();
+                    let rows = claims.assignments().unwrap();
+                    assert!(rows[&binding.number].state.lease.is_none());
+                    assert!(rows[&binding.number].data.native_binding.as_ref() == Some(binding));
+                    assert!(completed.insert(record.id));
                 }
-                Ok(())
-            })
+                error @ QueueEvent::Error { .. } => {
+                    let event = serde_json::to_value(error).unwrap();
+                    assert_eq!(event["detail"], "synthetic native worker failure");
+                    assert_eq!(event["native_task_id"], failed_binding.native_task_id);
+                    failures += 1;
+                }
+            }
+            Ok(())
+        };
+        let status = run()
+            .run_native_batch(&claims, &targets, mixed, &mut emit)
             .unwrap();
+        assert_eq!((status.finished, status.failed), (1, 1));
+        let rows = claims.assignments().unwrap();
+        assert_eq!(
+            rows[&failed_binding.number].state.lease.as_ref(),
+            Some(&failed_binding.lease)
+        );
+        assert!(rows[&bindings[1].number].state.lease.is_none());
+
+        let resumed = run()
+            .run_native_batch(&claims, &targets[..1], execute, &mut emit)
+            .unwrap();
+        assert_eq!((resumed.finished, resumed.failed), (1, 0));
         assert!(both_active);
-        assert_eq!((status.finished, status.failed, completed.len()), (2, 0, 2));
+        assert_eq!((completed.len(), failures), (2, 1));
     }
 
     #[test]
