@@ -94,10 +94,28 @@ pub(super) fn run(
         residues: serde_json::from_value(value["partition"]["residues"].clone())
             .map_err(|_| "invalid partition residues")?,
     };
-    let rows = value["packets"]
-        .as_array()
-        .filter(|rows| rows.len() <= 20)
-        .ok_or("expected bounded prepared packets")?;
+    let live = value["live"] == true;
+    let model = if live {
+        if value.get("packets").is_some() || value["intake"] == true {
+            return Err("live fix packets cannot use prepared packets or issue intake".into());
+        }
+        let model = text(&value, "model")?;
+        if model.is_empty() || model.bytes().any(|b| b.is_ascii_whitespace() || b == 0) {
+            return Err("live model must be one task header field".into());
+        }
+        Some(model)
+    } else {
+        None
+    };
+    let rows = if live {
+        &[][..]
+    } else {
+        value["packets"]
+            .as_array()
+            .filter(|rows| rows.len() <= 20)
+            .ok_or("expected bounded prepared packets")?
+            .as_slice()
+    };
     let mut packets = vec![];
     let mut seen = BTreeSet::new();
     for row in rows {
@@ -156,7 +174,6 @@ pub(super) fn run(
         crate::netguard::trusted_executable_for("gh", Some(&policy.host_path), Some(root), Some(&dirs.home))
             .ok_or("no trusted gh executable")?;
     let intake = value["intake"] == true;
-    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake).with_host(host);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|_| "invalid system clock")?
@@ -165,6 +182,12 @@ pub(super) fn run(
         enabled: true,
         ..Policy::default()
     };
+    if let Some(model) = model {
+        packets = Input::new(&gh, &policy.host_path, repo, &token, &[], false)
+            .with_host(host)
+            .prepare_live(&claims, &policy, &worker, &partition, now, model)?;
+    }
+    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake).with_host(host);
     let consumer = Consumer {
         repository: repo,
         queue: &queue,
