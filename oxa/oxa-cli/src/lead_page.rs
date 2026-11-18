@@ -425,7 +425,7 @@ fn queue(html: &mut String, view: &View<'_>) {
 fn release(html: &mut String, view: &View<'_>) {
     html.push_str("<section id=release><h2>Release checklist</h2>");
     if let Some((number, items)) = view.release {
-        let _ = write!(html, "<p class=muted>Issue #{number} · {} / {} reported complete; validation requires merge evidence.</p><ul>", items.iter().filter(|i| i.0).count(), items.len());
+        let _ = write!(html, "<p class=muted>Issue #{number} · {} / {} checkboxes reported checked.</p><p class=muted>Owner outcome verification unavailable. This checklist does not include release or installability evidence.</p><ul>", items.iter().filter(|i| i.0).count(), items.len());
         for (checked, text) in items {
             let _ = write!(
                 html,
@@ -735,6 +735,42 @@ mod tests {
         assert!(usage.contains("No valid model plan was reported"));
         assert!(usage.contains("No valid current model window was reported"));
         assert!(!usage.contains("<meter "));
+    }
+
+    #[test]
+    fn release_checkboxes_do_not_claim_owner_outcome_acceptance() {
+        for (checked, total) in [(0, 0), (0, 1), (2, 2)] {
+            let items: Vec<_> = (0..total)
+                .map(|index| (index < checked, format!("Reported step {index}")))
+                .collect();
+            let html = document_for(
+                Page::Home,
+                &View {
+                    release: Some((19, &items)),
+                    ..Default::default()
+                },
+                100,
+            );
+            let checklist = html
+                .split("<section id=release>")
+                .nth(1)
+                .unwrap()
+                .split("</section>")
+                .next()
+                .unwrap();
+            assert!(checklist.contains(&format!("{checked} / {total} checkboxes reported checked")));
+            assert!(checklist.contains("Owner outcome verification unavailable"));
+            assert!(checklist.contains("release or installability evidence"));
+            assert_eq!(checklist.matches('☑').count(), checked);
+            assert_eq!(checklist.matches('☐').count(), total - checked);
+            for unverified in [
+                "reported complete",
+                "validation requires merge evidence",
+                "Goal complete",
+            ] {
+                assert!(!checklist.contains(unverified), "{unverified}");
+            }
+        }
     }
 
     #[test]
@@ -1495,7 +1531,7 @@ return true;
         ] {
             assert!(page.contains(unknown));
         }
-        assert!(page.contains("0 / 1 reported complete"));
+        assert!(page.contains("0 / 1 checkboxes reported checked"));
     }
 
     fn usage_page(observation: Option<&oxa_work::Result<Option<oxa_work::TaskUsage>>>) -> String {
