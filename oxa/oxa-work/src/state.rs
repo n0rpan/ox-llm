@@ -33,6 +33,8 @@ pub enum Step {
     Repair,
     Recheck,
     Saving,
+    /// The saved commit is pushed and its lane workflow is being observed.
+    Lane,
     #[default]
     Finished,
     Publishing,
@@ -165,6 +167,8 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         "acceptance_outcome",
         "task_tokens",
         "worker_launch_revision",
+        "lane",
+        "lane_repairs",
     ];
     if keys.iter().any(|key| !record.contains_key(*key))
         || record
@@ -314,6 +318,7 @@ mod tests {
             prompt: "Synthetic task".into(),
             max_time: crate::default_max_time(),
             reviewed_pull_request: None,
+            lane_ci: false,
         };
         let record = crate::blocked_record(&task, String::new());
         State::new(task, record, false)
@@ -349,6 +354,8 @@ mod tests {
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,
                 offline: true,
+                gh_binary: None,
+                push_approved: false,
                 runner_owns_github: false,
                 storage: fixture.0.path().to_path_buf(),
             };

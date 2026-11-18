@@ -163,15 +163,21 @@ pub(crate) fn run(
             Some(&root),
             Some(&dirs.home),
         );
-        let policy = oxa_work::RunPolicy {
+        let mut policy = oxa_work::RunPolicy {
             git_binary,
             host_path,
             terminate_binary,
+            gh_binary: None,
+            push_approved: false,
             offline: oxa_proto::offline(),
             runner_owns_github: false,
             storage: dirs.agent_dir.join("work").join(key),
         };
         protected_storage(&policy.storage, &root, &common)?;
+        // Lane acceptance needs the trusted gh executable and the owner's push
+        // approval. The queue may hold lane tasks, so its approval is taken from
+        // the environment only; an interactive run asks below once it knows.
+        configure_lane(&mut policy, &root, env, dirs, false);
         if args.first().is_some_and(|arg| arg == "board") {
             return crate::work_board::run(&args[1..], &root, &common, env, dirs, &policy);
         }
@@ -254,7 +260,7 @@ pub(crate) fn run(
         }
         let task_args = &args[..end];
         let is_trusted = trusted(&root, env, dirs)?;
-        let context = Context {
+        let mut context = Context {
             cwd: root.clone(),
             binary: binary.clone(),
             policy: policy.clone(),
@@ -359,6 +365,10 @@ pub(crate) fn run(
                     .into(),
             ),
         };
+        if tasks.iter().any(|task| task.lane_ci) {
+            configure_lane(&mut policy, &root, env, dirs, true);
+            context.policy = policy.clone();
+        }
         // Freeze every task before checkout hooks or a first worker can change
         // shared refs. A bad plan remains a per-task error, not a batch abort.
         let plans = if is_trusted {
@@ -403,6 +413,26 @@ pub(crate) fn run(
             let _ = writeln!(err, "oxa work: {e}");
             2
         }
+    }
+}
+
+/// Resolve `gh` and the owner's lane push approval. Missing gh only blocks the
+/// lane task that needs it; other tasks run unchanged.
+fn configure_lane(policy: &mut oxa_work::RunPolicy, root: &Path, env: &Env, dirs: &Dirs, ask: bool) {
+    if policy.gh_binary.is_none() {
+        policy.gh_binary = crate::netguard::trusted_executable_for(
+            "gh",
+            Some(policy.host_path.as_os_str()),
+            Some(root),
+            Some(&dirs.home),
+        );
+    }
+    if env.get("OXA_WORK_OWNER_CONFIRMED") == Some("1") {
+        policy.push_approved = true;
+    }
+    if ask && !policy.push_approved {
+        let question = "Lane acceptance will push each accepted commit to origin and wait for lane CI. Type yes to allow pushes for this run: ";
+        policy.push_approved = crate::report_cmd::tty_confirm(env)(question) == Some(true);
     }
 }
 

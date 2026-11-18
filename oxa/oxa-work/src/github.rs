@@ -173,6 +173,7 @@ pub fn pull_request_task(
         prompt: context.prompt,
         max_time: default_max_time(),
         reviewed_pull_request: None,
+        lane_ci: false,
     })
 }
 
@@ -330,6 +331,7 @@ mod tests {
                 number: 1,
                 head: head.clone(),
             }),
+            lane_ci: false,
         };
         assert_eq!(task.reviewed_source(), Some((1, head.as_str())));
         task.id = format!("pr-1-{head}");

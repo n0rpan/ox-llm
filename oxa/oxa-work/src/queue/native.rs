@@ -56,6 +56,7 @@ pub(super) fn from_packet(binding: &board::NativeBinding, packet: &str) -> Resul
             prompt: body.into(),
             max_time: crate::default_max_time(),
             reviewed_pull_request: None,
+            lane_ci: false,
         },
     )
 }
@@ -210,12 +211,15 @@ mod tests {
             prompt: "Synthetic task".into(),
             max_time: 30,
             reviewed_pull_request: None,
+            lane_ci: false,
         };
         let policy = RunPolicy {
             git_binary: "/usr/bin/git".into(),
             host_path: "/usr/bin".into(),
             terminate_binary: None,
             offline: true,
+            gh_binary: None,
+            push_approved: false,
             runner_owns_github: false,
             storage: directory.path().join("runner"),
         };

@@ -312,7 +312,11 @@ impl Runner<'_> {
                         self.advance(state, Step::Saving)?;
                     }
                 }
-                Step::Saving | Step::Finished | Step::Publishing | Step::Reporting => return Ok(()),
+                // Lane acceptance runs after the saved commit exists; its own
+                // checkpoint step is observed by the caller.
+                Step::Saving | Step::Lane | Step::Finished | Step::Publishing | Step::Reporting => {
+                    return Ok(())
+                }
             }
         }
     }

@@ -743,6 +743,8 @@ fn a_monitor_error_drains_admitted_workers_before_returning() {
         host_path: "/usr/bin:/bin".into(),
         terminate_binary: None,
         offline: true,
+        gh_binary: None,
+        push_approved: false,
         runner_owns_github: false,
         storage: env.agent_dir().join("work/monitor-fixture"),
     };

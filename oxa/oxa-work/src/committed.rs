@@ -64,6 +64,7 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
     {
         return Err("only finished successful work can be verified for publication".into());
     }
+    require_lane_evidence(&saved)?;
     let export = verify_commit(repo, binary, policy, &saved, &lock)?;
     Ok(VerifiedTask {
         record: saved.record,
@@ -71,6 +72,21 @@ pub fn verify_saved_task(repo: &Path, binary: &Path, policy: &RunPolicy, id: &st
         _lock: lock,
         checked_at_ms: crate::state::now_ms(),
     })
+}
+
+/// A lane task's saved success is only as good as its run at the saved head.
+pub(crate) fn require_lane_evidence(saved: &state::State) -> Result<()> {
+    if !saved.task.lane_ci {
+        return Ok(());
+    }
+    let green = saved.record.lane.as_ref().is_some_and(|verdict| {
+        Some(verdict.head.as_str()) == saved.record.head_sha.as_deref() && verdict.passed()
+    });
+    if green {
+        Ok(())
+    } else {
+        Err("saved lane CI evidence is not green at this head".into())
+    }
 }
 
 /// Check the saved commit while the caller holds the task lock.
@@ -474,6 +490,8 @@ mod tests {
                 host_path: "/usr/bin:/bin".into(),
                 terminate_binary: None,
                 offline: true,
+                gh_binary: None,
+                push_approved: false,
                 runner_owns_github: false,
                 storage,
             };
@@ -647,6 +665,7 @@ mod tests {
             prompt: "Synthetic task".into(),
             max_time: 2700,
             reviewed_pull_request: None,
+            lane_ci: false,
         };
         assert!(tree::prepare(
             &fixture.source,

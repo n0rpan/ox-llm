@@ -143,7 +143,39 @@ keep their normal read-only protection: a checkout that needs to populate a trac
 protected hook directory blocks with the worktree retained.
 Acceptance commands are frozen from the captured base commit before checkout
 callbacks can change settings. The runner executes those `done` commands outside the
-agent after it exits, even without edits. The source project must pass the existing
+agent after it exits, even without edits.
+
+## Lane CI acceptance
+
+Add `"lane_ci": true` to a task to make the repository's own CI the acceptance
+authority. The branch must be one `.github/workflows/lane.yml` runs on (`agent/`,
+`codex/`, `air/` or `runner/`) and its base must be `main`, because the workflow
+selects the branch diff against `main`. Other tasks keep local-only acceptance.
+
+After the local `done` commands pass and the saved commit exists, the runner
+first re-verifies that exact commit with the existing committed proof (a clean,
+object-verified export whose captured checks run), then pushes it to
+`refs/heads/<branch>` on `origin`. It waits, without a model turn, for the `lane`
+workflow run whose `headSha` is exactly that commit and whose event is the push,
+and records its terminal conclusion in the task record (`lane`). A crash during
+the wait resumes the saved `lane` step instead of rerunning the worker.
+
+A green run accepts the task (`done`). Any other conclusion is a failed
+acceptance: the runner spends its single repair round with the failed job, step
+and test names, saves and pushes the repaired commit, and observes the new head
+once more. A second failure is `red`; an unobservable run (no matching push run
+before the bounded wait, or a GitHub read error) is `blocked`. In both cases the
+task is never `done`.
+
+The push is gated. The owner confirms it at the controlling terminal before the
+run starts, or a web/runner surface that already holds the owner's confirmation
+sets `OXA_WORK_OWNER_CONFIRMED=1`. Without that confirmation a lane task ends
+`blocked` before any worker starts and pushes nothing. Offline mode, an untrusted
+project, a missing trusted `gh`, or a missing sandbox refuse it later.
+
+`--publish` refuses a `lane_ci` task unless its saved record has a passing lane
+run at the saved head, so a pull request is opened only after CI passed at that
+head. `oxa work verify` uses the same saved record and therefore the same rule. The source project must pass the existing
 trust and executable-content approval before a task starts. Invoking `work` does
 not approve an untrusted project. Acceptance runs in the normal bwrap sandbox;
 missing or unusable bwrap blocks the task. Checkout and each check have the same ten-minute limit
@@ -157,8 +189,9 @@ Agent-internal done checks may also run when the project is trusted.
 The runner reads the child's exit code, terminal `oxa_result` and session header,
 without retaining its event stream. It checkpoints the session ID as soon as the
 header arrives. A blocked or failed worker remains blocked; an interrupted worker
-remains interrupted. Neither consumes a repair attempt. Failed acceptance after a successful
-worker continues that same saved session once, then acceptance runs once more.
+remains interrupted. Neither consumes a repair attempt. Failed acceptance (local
+or lane) after a successful worker continues that same saved session once, then
+acceptance runs once more.
 JSON lines include the worker result, session ID, captured `base_sha`, saved
 `head_sha`/`tree_sha`, step, checkpoint revision and time. Outcomes are `done`,
 `nothing_to_do` (no worker commits or file changes), `red` (checks still fail),
@@ -186,12 +219,14 @@ directory so the normal sandbox can bind git objects and refs for commits.
 Before finishing, the runner saves staged, unstaged and untracked work with an
 ordinary sandboxed commit, including red, blocked and interrupted work. Normal
 hooks remain active. Unresolved merges are kept in progress; a rejecting hook or
-remaining dirty files block completion. No automatic cleanup, push or PR creation
-is implemented. Keep retained work until its saved commit has been published and
-inspected. Review task prompts and bases before running them.
+remaining dirty files block completion. No automatic cleanup or PR creation is implemented. A task with `lane_ci`
+pushes its accepted commit as described below; other tasks never push. Keep
+retained work until its saved commit has been published and inspected. Review
+task prompts and bases before running them.
 
-`done` here describes locally checked and saved work. It does not mean published,
-externally accepted or merged. Publication must verify a clean committed export,
+`done` here describes locally checked and saved work. For a `lane_ci` task it
+also requires the lane run at the saved head to have passed. It does not mean
+published or merged. Publication must verify a clean committed export,
 bind checks to that commit and verify base-object integrity before pushing;
 ignored files in a retained working directory are not commit-bound evidence.
 
