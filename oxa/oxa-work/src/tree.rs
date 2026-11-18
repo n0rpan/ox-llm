@@ -331,8 +331,9 @@ fn published_head(policy: &RunPolicy, repo: &Path, branch: &str, base: &str) -> 
 /// The earlier task that may hand its checked-out branch to this one.
 #[derive(Clone, Copy)]
 enum Lineage<'a> {
-    /// An earlier reviewed round of the same pull request; the branch is at `reviewed`.
-    Review(&'a str),
+    /// An earlier reviewed round of the same pull request (its frozen typed number);
+    /// this round's branch is at `reviewed`, which may differ from the earlier round's.
+    Review { number: u64, reviewed: &'a str },
     /// An earlier native board attempt on the same branch. Each admission has its
     /// own task id, and therefore its own worktree.
     Native,
@@ -370,7 +371,7 @@ fn release_prior_branch(
     }
     let previous = Path::new(path);
     let blocked = match lineage {
-        Lineage::Review(_) => {
+        Lineage::Review { .. } => {
             "reviewed branch is already checked out outside a finished task for this pull request"
         }
         Lineage::Native => {
@@ -381,11 +382,10 @@ fn release_prior_branch(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or(blocked)?;
+    // Execution IDs change between attempts on the same pull request, so a review
+    // round is matched by the prior's frozen pull request number under its lock.
     let same_lineage = match lineage {
-        Lineage::Review(_) => {
-            let (pull_request, _) = task.id.rsplit_once('-').ok_or(blocked)?;
-            prior_id.rsplit_once('-').map(|(pr, _)| pr) == Some(pull_request)
-        }
+        Lineage::Review { .. } => true,
         Lineage::Native => prior_id.starts_with("board-"),
     };
     if previous.parent() != tree.parent()
@@ -398,8 +398,8 @@ fn release_prior_branch(
     let prior_lock = lock_task(policy, prior_id, true)?;
     let prior = load_task_checkpoint(policy, prior_id)?.ok_or(blocked)?;
     let prior_kind = match lineage {
-        Lineage::Review(_) => {
-            prior.task.reviewed_head().is_some()
+        Lineage::Review { number, .. } => {
+            prior.task.reviewed_source().map(|(prior_number, _)| prior_number) == Some(number)
                 && matches!(prior.record.outcome, Outcome::Done | Outcome::NothingToDo)
         }
         // A retry follows any finished attempt; its saved work is on the branch.
@@ -429,7 +429,7 @@ fn release_prior_branch(
         return Err("previous task worktree has uncommitted changes".into());
     }
     let head = match lineage {
-        Lineage::Review(reviewed) => reviewed.to_string(),
+        Lineage::Review { reviewed, .. } => reviewed.to_string(),
         Lineage::Native => checked(git(policy, previous, &["rev-parse", "--verify", &branch]))?,
     };
     // Change only the attached HEAD. The index, files, branch ref and prior receipt stay intact.
@@ -460,7 +460,7 @@ pub(crate) fn prepare(
 ) -> Result<Prepared> {
     let (base, alias) = base;
     verify_objects(policy, repo, base)?;
-    if let Some(reviewed) = task.reviewed_head() {
+    if let Some((number, reviewed)) = task.reviewed_source() {
         let branch = format!("refs/heads/{}", task.branch);
         let local = checked(git(policy, repo, &["rev-parse", "--verify", &branch]))
             .map_err(|_| "local pull request branch is unavailable at the reviewed head")?;
@@ -468,7 +468,14 @@ pub(crate) fn prepare(
             return Err("local pull request branch is not at the reviewed head".into());
         }
         if !tree.exists() {
-            release_prior_branch(repo, tree, task, Lineage::Review(reviewed), binary, policy)?;
+            release_prior_branch(
+                repo,
+                tree,
+                task,
+                Lineage::Review { number, reviewed },
+                binary,
+                policy,
+            )?;
         }
     } else if native_attempt(task) && !tree.exists() {
         release_prior_branch(repo, tree, task, Lineage::Native, binary, policy)?;
