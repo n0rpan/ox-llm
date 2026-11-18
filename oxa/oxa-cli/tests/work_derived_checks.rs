@@ -112,6 +112,46 @@ fn tree_of(record: &serde_json::Value) -> &Path {
 }
 
 #[test]
+fn the_supervisor_uses_one_deadline_for_every_check_in_a_round() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let source = env.work().join("project");
+    for (deadline, exit, timed_out) in [(oxa_proto::time::now_ms() + 60_000, 0, false), (0, 1, true)] {
+        let request = json!({
+            "source": &source,
+            "operation": {
+                "kind": "checks",
+                "task": "test-deadline",
+                "deadline_at_ms": deadline,
+                "commands": ["true", "true # second check"],
+            },
+        });
+        let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args(["work", "--supervise", &request.to_string()])
+            .current_dir(&source)
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:1"))
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(exit),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let receipt: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let check_exit = (!timed_out).then_some(0);
+        assert_eq!(
+            receipt["checks"],
+            json!([
+                {"command": "true", "exit": check_exit, "timed_out": timed_out},
+                {"command": "true # second check", "exit": check_exit, "timed_out": timed_out},
+            ])
+        );
+    }
+}
+
+#[test]
 fn the_touched_crate_tests_and_clippy_join_the_static_list_in_the_done_evidence() {
     let env = TestEnv::new();
     setup_with_files(&env, r#"["true"]"#, &crate_files());
