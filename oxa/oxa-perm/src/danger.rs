@@ -1,0 +1,1183 @@
+//! #1512 S1: the dangerous-command classifier. Pure: it parses a command line the way a POSIX
+//! shell reads it and reports which simple commands match a rule. No policy, no prompt, no
+//! wiring: the caller decides what a hit means.
+//!
+//! The parser is a small tokenizer, not a regex: quotes and backslashes are removed before any
+//! rule looks at a word, so `r\m`, `'r'm` and `"rm"` are all `rm`. Command substitutions and
+//! `sh -c` strings are parsed again and checked too. A line the tokenizer cannot read is one
+//! `unparsed` hit (fail closed).
+use crate::paths::{is_inside, normalize};
+use crate::policy::PathGuard;
+use std::path::{Path, PathBuf};
+
+/// The owner setting that lists the rules (`oxa.approval.dangerous`); user settings only.
+pub const SETTING_DANGEROUS: &str = "oxa.approval.dangerous";
+
+/// Every built-in rule: (id, one-line reason).
+pub const BUILTIN_RULES: &[(&str, &str)] = &[
+    (
+        "rm-recursive-outside",
+        "recursive delete outside the workspace, of / or ~, or of a glob or variable at the top",
+    ),
+    (
+        "git-push-force",
+        "git push with a force flag, --mirror, --delete or a +refspec",
+    ),
+    (
+        "credential-write",
+        "write, delete or redirect into a credential, agent or token path",
+    ),
+    (
+        "pipe-to-shell",
+        "a pipeline or heredoc feeds a shell, or an interpreter is fed by curl or wget",
+    ),
+    (
+        "disk-destroy",
+        "raw disk write, mkfs, wipefs, partitioning or a redirect to a disk device",
+    ),
+    (
+        "chmod-recursive-open",
+        "recursive chmod to world-writable modes, or chown -R outside the workspace",
+    ),
+    ("sudo", "privilege escalation: sudo, doas, su, pkexec or run0"),
+    (
+        "sql-drop",
+        "SQL DROP of a table, database or schema, or a TRUNCATE statement",
+    ),
+    (
+        "kill-foreign",
+        "kill of processes by name, of pid 1, of -1 or of a process group",
+    ),
+    (
+        "oxa-self-approve",
+        "oxa send or oxa approve, or a write into the agent directory",
+    ),
+    (
+        "eval-dynamic",
+        "eval or source of a command the shell builds at run time",
+    ),
+    ("unparsed", "the command line cannot be parsed (fail closed)"),
+];
+
+/// One match: the rule, its reason, and the simple command that matched, re-joined with
+/// single spaces (redirections included).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DangerHit {
+    pub rule: String,
+    pub reason: String,
+    pub segment: String,
+}
+
+impl DangerHit {
+    /// The string stored for a session or always grant: `rule segment`.
+    pub fn key(&self) -> String {
+        format!("{} {}", self.rule, self.segment)
+    }
+}
+
+/// The enabled rules: built-in ids and custom `cmd:<words>` prefixes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DangerRules {
+    builtin: Vec<&'static str>,
+    custom: Vec<Vec<String>>,
+}
+
+/// Recursion cap for nested `$( )`, backticks and `sh -c` strings.
+const MAX_DEPTH: usize = 8;
+
+const RESERVED: &[&str] = &[
+    "{", "}", "!", "if", "then", "else", "elif", "do", "while", "until",
+];
+const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish"];
+const INTERPRETERS: &[&str] = &["python", "python3", "perl", "ruby", "node"];
+const WRITE_OPS: &[&str] = &[">", ">>", ">|", ">&", "&>", "&>>", "<>"];
+const SUDO_WITH_ARG: &[&str] = &[
+    "-u", "-g", "-C", "-D", "-p", "-r", "-t", "-U", "--user", "--group",
+];
+const XARGS_WITH_ARG: &[&str] = &[
+    "-a",
+    "-d",
+    "-E",
+    "-I",
+    "-L",
+    "-n",
+    "-P",
+    "-s",
+    "--arg-file",
+    "--delimiter",
+    "--max-args",
+    "--max-procs",
+];
+
+impl DangerRules {
+    /// Every built-in rule, no custom ones.
+    pub fn builtin() -> DangerRules {
+        DangerRules {
+            builtin: BUILTIN_RULES.iter().map(|row| row.0).collect(),
+            custom: Vec::new(),
+        }
+    }
+
+    /// The rules named by `entries`, which the caller has already patched (`apply_list_patch`
+    /// over the built-in ids): built-in ids, and `cmd:<words>` for a custom rule. Unknown
+    /// entries are ignored and reported in the returned warnings, never an error.
+    pub fn from_list(entries: &[String]) -> (DangerRules, Vec<String>) {
+        let mut builtin: Vec<&'static str> = Vec::new();
+        let mut custom: Vec<Vec<String>> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
+        for entry in entries {
+            let e = entry.trim();
+            if let Some(rest) = e.strip_prefix("cmd:") {
+                let words: Vec<String> = rest.split_whitespace().map(str::to_string).collect();
+                if words.is_empty() {
+                    warnings.push(format!("{SETTING_DANGEROUS}: empty `cmd:` rule ignored"));
+                } else if !custom.contains(&words) {
+                    custom.push(words);
+                }
+            } else if let Some(row) = BUILTIN_RULES.iter().find(|row| row.0 == e) {
+                if !builtin.contains(&row.0) {
+                    builtin.push(row.0);
+                }
+            } else {
+                warnings.push(format!("{SETTING_DANGEROUS}: unknown rule `{e}` ignored"));
+            }
+        }
+        (DangerRules { builtin, custom }, warnings)
+    }
+
+    /// Every simple command of `command` that matches an enabled rule. `cwd` is the workspace
+    /// (relative paths are taken from it) and `guard` decides which paths are credentials.
+    pub fn classify(&self, command: &str, cwd: &Path, guard: &PathGuard) -> Vec<DangerHit> {
+        let ctx = Ctx { cwd, guard };
+        let mut hits: Vec<DangerHit> = Vec::new();
+        match parse_line(command) {
+            Some(stages) => self.check_stages(&stages, &ctx, 0, false, &mut hits),
+            None => self.push(&mut hits, "unparsed", command.trim()),
+        }
+        hits
+    }
+
+    /// Adds a hit for a built-in rule (only when enabled) or for a custom `cmd:` rule.
+    fn push(&self, hits: &mut Vec<DangerHit>, rule: &str, segment: &str) {
+        let reason = match BUILTIN_RULES.iter().find(|row| row.0 == rule) {
+            Some(row) => {
+                if !self.builtin.iter().any(|b| *b == rule) {
+                    return;
+                }
+                row.1.to_string()
+            }
+            None => format!("custom rule {rule}"),
+        };
+        if hits.iter().any(|h| h.rule == rule && h.segment == segment) {
+            return;
+        }
+        hits.push(DangerHit {
+            rule: rule.to_string(),
+            reason,
+            segment: segment.to_string(),
+        });
+    }
+
+    fn check_stages(
+        &self,
+        stages: &[Stage],
+        ctx: &Ctx<'_>,
+        depth: usize,
+        unknown: bool,
+        hits: &mut Vec<DangerHit>,
+    ) {
+        // The names of the earlier stages of the current pipeline (`curl x | python3`).
+        let mut pipeline: Vec<String> = Vec::new();
+        for stage in stages {
+            if !stage.pipe_in {
+                pipeline.clear();
+            }
+            let name = self.check_words(
+                &stage.words,
+                &stage.redirects,
+                stage.pipe_in,
+                &pipeline,
+                unknown,
+                ctx,
+                depth,
+                hits,
+            );
+            if let Some(name) = name {
+                pipeline.push(name);
+            }
+        }
+    }
+
+    /// Checks one simple command: its redirections, then the command after the wrappers
+    /// (`sudo`, `env`, `nice`, `xargs`, ...) are peeled off. Returns the command name, for the
+    /// pipeline of the next stage.
+    #[allow(clippy::too_many_arguments)]
+    fn check_words(
+        &self,
+        words: &[String],
+        redirects: &[(String, String)],
+        pipe_in: bool,
+        prior: &[String],
+        unknown_in: bool,
+        ctx: &Ctx<'_>,
+        depth: usize,
+        hits: &mut Vec<DangerHit>,
+    ) -> Option<String> {
+        let seg = segment(words, redirects);
+        if depth > MAX_DEPTH {
+            self.push(hits, "unparsed", &seg);
+            return None;
+        }
+        // A redirection belongs to the simple command, whatever wraps it.
+        for (op, target) in redirects {
+            if WRITE_OPS.contains(&op.as_str()) {
+                self.write_hit(target, &seg, ctx, hits);
+            }
+        }
+        let heredoc = redirects
+            .iter()
+            .any(|(op, _)| matches!(op.as_str(), "<<" | "<<-" | "<<<"));
+        let peeled = peel(words, unknown_in);
+        let unknown = peeled.unknown;
+        let mut inline = peeled.inline;
+        let argv: &[String] = if peeled.start < words.len() {
+            &words[peeled.start..]
+        } else {
+            &[]
+        };
+        if !argv.is_empty() {
+            let name_raw = argv[0].as_str();
+            let name = base_name(name_raw);
+            // The command name itself is computed at run time: `$x -rf /`, `$(which rm)`.
+            if has_dynamic(name_raw) {
+                self.push(hits, "eval-dynamic", &seg);
+            }
+            if peeled.privileged {
+                self.push(hits, "sudo", &seg);
+            }
+            if SHELLS.contains(&name) {
+                if pipe_in || heredoc {
+                    self.push(hits, "pipe-to-shell", &seg);
+                }
+                if let Some(script) = shell_script(argv) {
+                    inline.push(script);
+                }
+                for (op, target) in redirects {
+                    if op.as_str() == "<<<" {
+                        inline.push(target.clone());
+                    }
+                }
+            }
+            if INTERPRETERS.contains(&name) && pipe_in && prior.iter().any(|p| p == "curl" || p == "wget") {
+                self.push(hits, "pipe-to-shell", &seg);
+            }
+            let args = &argv[1..];
+            match name {
+                "eval" => {
+                    if args.iter().any(|a| has_dynamic(a)) {
+                        self.push(hits, "eval-dynamic", &seg);
+                    } else if !args.is_empty() {
+                        inline.push(args.join(" "));
+                    }
+                }
+                "source" | "." => {
+                    if args.iter().any(|a| has_dynamic(a)) {
+                        self.push(hits, "eval-dynamic", &seg);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for script in &inline {
+            match parse_line(script) {
+                Some(stages) => self.check_stages(&stages, ctx, depth + 1, unknown, hits),
+                None => self.push(hits, "unparsed", script),
+            }
+        }
+        if argv.is_empty() {
+            return None;
+        }
+        self.custom_hits(argv, &seg, hits);
+        self.command_hits(argv, unknown, depth, ctx, &seg, hits, words);
+        Some(base_name(&argv[0]).to_string())
+    }
+
+    /// The `cmd:<words>` rules: the leading words of `argv` (basename on the first) equal them.
+    fn custom_hits(&self, argv: &[String], seg: &str, hits: &mut Vec<DangerHit>) {
+        for rule in &self.custom {
+            let Some(head) = rule.first() else { continue };
+            if argv.len() < rule.len() || base_name(&argv[0]) != head.as_str() {
+                continue;
+            }
+            if argv[1..rule.len()]
+                .iter()
+                .zip(rule[1..].iter())
+                .all(|(a, b)| a == b)
+            {
+                let id = format!("cmd:{}", rule.join(" "));
+                self.push(hits, &id, seg);
+            }
+        }
+    }
+
+    /// The built-in rules of one command, by its name and arguments.
+    #[allow(clippy::too_many_arguments)]
+    fn command_hits(
+        &self,
+        argv: &[String],
+        unknown: bool,
+        depth: usize,
+        ctx: &Ctx<'_>,
+        seg: &str,
+        hits: &mut Vec<DangerHit>,
+        words: &[String],
+    ) {
+        let name = base_name(&argv[0]);
+        let args = &argv[1..];
+        let ops = operands(args);
+        if name.starts_with("mkfs") || matches!(name, "wipefs" | "fdisk" | "sfdisk" | "parted") {
+            self.push(hits, "disk-destroy", seg);
+        }
+        match name {
+            "rm" => {
+                if is_recursive(args) && (unknown || ops.iter().any(|t| target_outside(t, ctx))) {
+                    self.push(hits, "rm-recursive-outside", seg);
+                }
+                for t in &ops {
+                    self.write_hit(t, seg, ctx, hits);
+                }
+            }
+            "tee" | "touch" | "truncate" | "mv" => {
+                for t in &ops {
+                    self.write_hit(t, seg, ctx, hits);
+                }
+            }
+            "shred" => {
+                if args.iter().any(|a| a.starts_with("/dev/")) {
+                    self.push(hits, "disk-destroy", seg);
+                }
+                for t in &ops {
+                    self.write_hit(t, seg, ctx, hits);
+                }
+            }
+            "chmod" => {
+                if is_recursive(args) && matches!(ops.first(), Some(mode) if mode_is_open(mode)) {
+                    self.push(hits, "chmod-recursive-open", seg);
+                }
+                for t in ops.iter().skip(1) {
+                    self.write_hit(t, seg, ctx, hits);
+                }
+            }
+            "chown" | "chgrp" => {
+                if is_recursive(args) && (unknown || ops.iter().skip(1).any(|t| target_outside(t, ctx))) {
+                    self.push(hits, "chmod-recursive-open", seg);
+                }
+                for t in ops.iter().skip(1) {
+                    self.write_hit(t, seg, ctx, hits);
+                }
+            }
+            "cp" | "ln" | "install" => {
+                if let Some(t) = ops.last() {
+                    self.write_hit(t, seg, ctx, hits);
+                }
+            }
+            "sed" => {
+                if args
+                    .iter()
+                    .any(|a| short_has(a, 'i') || a.starts_with("--in-place"))
+                {
+                    for t in ops.iter().skip(1) {
+                        self.write_hit(t, seg, ctx, hits);
+                    }
+                }
+            }
+            "dd" => {
+                for a in args {
+                    if let Some(t) = a.strip_prefix("of=") {
+                        if t.starts_with("/dev/") {
+                            self.push(hits, "disk-destroy", seg);
+                        }
+                        self.write_hit(t, seg, ctx, hits);
+                    }
+                }
+            }
+            "git" => self.git_hits(argv, seg, hits),
+            "find" => self.find_hits(args, unknown, depth, ctx, seg, hits),
+            "kill" => {
+                if kill_foreign(args) {
+                    self.push(hits, "kill-foreign", seg);
+                }
+            }
+            "pkill" | "killall" => self.push(hits, "kill-foreign", seg),
+            "oxa" => {
+                if matches!(argv.get(1).map(String::as_str), Some("send") | Some("approve")) {
+                    self.push(hits, "oxa-self-approve", seg);
+                }
+            }
+            _ => {}
+        }
+        if sql_drop(words) {
+            self.push(hits, "sql-drop", seg);
+        }
+    }
+
+    /// `git push` with a force flag, a mirror or delete, or a `+refspec`.
+    fn git_hits(&self, argv: &[String], seg: &str, hits: &mut Vec<DangerHit>) {
+        // Global options (`git -C dir -c k=v`) come before the subcommand.
+        let mut k = 1usize;
+        while k < argv.len() {
+            let a = argv[k].as_str();
+            if matches!(a, "-C" | "-c" | "--git-dir" | "--work-tree" | "--namespace") {
+                k += 2;
+            } else if a.starts_with('-') {
+                k += 1;
+            } else {
+                break;
+            }
+        }
+        if argv.get(k).map(String::as_str) != Some("push") {
+            return;
+        }
+        let rest = &argv[k + 1..];
+        let force = rest.iter().any(|a| {
+            let a = a.as_str();
+            a.starts_with("--force")
+                || a == "--mirror"
+                || a == "--delete"
+                || (!a.starts_with("--") && a.starts_with('-') && (short_has(a, 'f') || short_has(a, 'd')))
+        });
+        let refspec = rest.iter().any(|a| a.starts_with('+'));
+        if force || refspec {
+            self.push(hits, "git-push-force", seg);
+        }
+    }
+
+    /// `find` roots, `-delete` and `-exec`/`-ok` commands. A command run by `-exec` has
+    /// unknown targets (`{}`) when the roots are outside the workspace.
+    fn find_hits(
+        &self,
+        args: &[String],
+        unknown: bool,
+        depth: usize,
+        ctx: &Ctx<'_>,
+        seg: &str,
+        hits: &mut Vec<DangerHit>,
+    ) {
+        let roots: Vec<&str> = args
+            .iter()
+            .map(String::as_str)
+            .take_while(|a| !is_find_expr(a))
+            .collect();
+        let roots_outside = roots.iter().any(|r| target_outside(r, ctx));
+        let outside = unknown || roots_outside;
+        if outside && args.iter().any(|a| a == "-delete") {
+            self.push(hits, "rm-recursive-outside", seg);
+        }
+        let mut k = 0usize;
+        while k < args.len() {
+            if matches!(args[k].as_str(), "-exec" | "-execdir" | "-ok" | "-okdir") {
+                let end = args[k + 1..]
+                    .iter()
+                    .position(|a| a == ";" || a == "+")
+                    .map_or(args.len(), |e| k + 1 + e);
+                let cmd = &args[k + 1..end];
+                if !cmd.is_empty() {
+                    self.check_words(cmd, &[], false, &[], outside, ctx, depth + 1, hits);
+                }
+                k = end + 1;
+            } else {
+                k += 1;
+            }
+        }
+    }
+
+    /// A write to `raw` (a redirect or a file operand).
+    fn write_hit(&self, raw: &str, seg: &str, ctx: &Ctx<'_>, hits: &mut Vec<DangerHit>) {
+        let Some(path) = ctx.resolve(raw) else { return };
+        if ctx.guard.denies(&path) {
+            self.push(hits, "credential-write", seg);
+        }
+        if is_inside(&path, &ctx.guard.agent_dir) {
+            self.push(hits, "oxa-self-approve", seg);
+        }
+        let p = path.to_string_lossy();
+        if p.starts_with("/dev/sd") || p.starts_with("/dev/nvme") || p.starts_with("/dev/mmcblk") {
+            self.push(hits, "disk-destroy", seg);
+        }
+    }
+}
+
+/// The workspace and the guard, passed down the checks.
+struct Ctx<'a> {
+    cwd: &'a Path,
+    guard: &'a PathGuard,
+}
+
+impl Ctx<'_> {
+    /// `raw` as an absolute, normalised path; `None` when the shell computes part of it.
+    fn resolve(&self, raw: &str) -> Option<PathBuf> {
+        let expanded = expand_home(raw, &self.guard.home);
+        if has_dynamic(&expanded) {
+            return None;
+        }
+        Some(normalize(Path::new(&expanded), self.cwd))
+    }
+}
+
+/// A tokenized simple command. `pipe_in`: it reads the stdout of the stage before it.
+#[derive(Debug, Default)]
+struct Stage {
+    words: Vec<String>,
+    /// (operator, target), e.g. (">>", "~/.ssh/authorized_keys"); `<<` and `<<<` included.
+    redirects: Vec<(String, String)>,
+    pipe_in: bool,
+}
+
+/// Splits a line into simple commands, flattening command substitutions, backticks and
+/// subshells into the same list. `None` when the line cannot be read (an open quote, a
+/// trailing backslash, too much nesting).
+fn parse_line(src: &str) -> Option<Vec<Stage>> {
+    parse_depth(src, 0)
+}
+
+fn parse_depth(src: &str, depth: usize) -> Option<Vec<Stage>> {
+    if depth > MAX_DEPTH {
+        return None;
+    }
+    let chars: Vec<char> = src.chars().collect();
+    let n = chars.len();
+    let mut out: Vec<Stage> = Vec::new();
+    let mut cur = Stage::default();
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
+    let mut p = 0usize;
+    while p < n {
+        let c = chars[p];
+        let next = chars.get(p + 1).copied();
+        match c {
+            ' ' | '\t' | '\r' => p += 1,
+            '\n' => {
+                end_stage(&mut out, &mut cur, false);
+                p += 1;
+                for (delim, strip) in std::mem::take(&mut heredocs) {
+                    p = skip_heredoc(&chars, p, &delim, strip);
+                }
+            }
+            ';' | '(' | ')' => {
+                end_stage(&mut out, &mut cur, false);
+                p += 1;
+            }
+            '&' if next == Some('>') => {
+                let (op, len) = if chars.get(p + 2) == Some(&'>') {
+                    ("&>>", 3)
+                } else {
+                    ("&>", 2)
+                };
+                p = redirect(&chars, p + len, op, depth, &mut cur, &mut heredocs, &mut out)?;
+            }
+            '&' if next == Some('&') => {
+                end_stage(&mut out, &mut cur, false);
+                p += 2;
+            }
+            '&' => {
+                end_stage(&mut out, &mut cur, false);
+                p += 1;
+            }
+            '|' if next == Some('|') => {
+                end_stage(&mut out, &mut cur, false);
+                p += 2;
+            }
+            '|' if next == Some('&') => {
+                end_stage(&mut out, &mut cur, true);
+                p += 2;
+            }
+            '|' => {
+                end_stage(&mut out, &mut cur, true);
+                p += 1;
+            }
+            '#' => {
+                while p < n && chars[p] != '\n' {
+                    p += 1;
+                }
+            }
+            '<' | '>' => {
+                let (op, len) = redirect_op(&chars, p);
+                p = redirect(&chars, p + len, op, depth, &mut cur, &mut heredocs, &mut out)?;
+            }
+            _ => {
+                let (word, np) = read_word(&chars, p, depth, &mut out)?;
+                // `2>file`: a digit word glued to a redirection is a file descriptor, not an argument.
+                let raw_digits = chars[p..np].iter().all(|ch| ch.is_ascii_digit());
+                let fd = raw_digits && matches!(chars.get(np).copied(), Some('<') | Some('>'));
+                if !fd {
+                    cur.words.push(word);
+                }
+                p = np;
+            }
+        }
+    }
+    end_stage(&mut out, &mut cur, false);
+    Some(out)
+}
+
+/// Closes the current simple command. `pipe`: the next one reads this one's output.
+fn end_stage(out: &mut Vec<Stage>, cur: &mut Stage, pipe: bool) {
+    if cur.words.is_empty() && cur.redirects.is_empty() {
+        // An empty stage (`( `, `{ `, a doubled separator) keeps a pending pipe.
+        cur.pipe_in = cur.pipe_in || pipe;
+        return;
+    }
+    out.push(std::mem::take(cur));
+    cur.pipe_in = pipe;
+}
+
+/// The operator at `p` (`<`, `>`, `>>`, `<<`, `<<-`, `<<<`, `<>`, `>|`, `>&`) and its length.
+fn redirect_op(chars: &[char], p: usize) -> (&'static str, usize) {
+    let c = chars[p];
+    let nx = chars.get(p + 1).copied();
+    let nx2 = chars.get(p + 2).copied();
+    if c == '<' {
+        match nx {
+            Some('<') => {
+                if nx2 == Some('<') {
+                    ("<<<", 3)
+                } else if nx2 == Some('-') {
+                    ("<<-", 3)
+                } else {
+                    ("<<", 2)
+                }
+            }
+            Some('>') => ("<>", 2),
+            _ => ("<", 1),
+        }
+    } else {
+        match nx {
+            Some('>') => (">>", 2),
+            Some('|') => (">|", 2),
+            Some('&') => (">&", 2),
+            _ => (">", 1),
+        }
+    }
+}
+
+/// Reads the target word of a redirection that ends at `start`.
+fn redirect(
+    chars: &[char],
+    start: usize,
+    op: &'static str,
+    depth: usize,
+    cur: &mut Stage,
+    heredocs: &mut Vec<(String, bool)>,
+    out: &mut Vec<Stage>,
+) -> Option<usize> {
+    let mut p = start;
+    while p < chars.len() && (chars[p] == ' ' || chars[p] == '\t') {
+        p += 1;
+    }
+    let (target, np) = read_word(chars, p, depth, out)?;
+    if op == "<<" || op == "<<-" {
+        heredocs.push((target.clone(), op == "<<-"));
+    }
+    cur.redirects.push((op.to_string(), target));
+    Some(np)
+}
+
+/// Reads one word from `start`: quotes and backslashes removed, `$( )` and backticks kept
+/// raw in the word (so a dynamic word is visible to the rules) and parsed into `out`.
+fn read_word(chars: &[char], start: usize, depth: usize, out: &mut Vec<Stage>) -> Option<(String, usize)> {
+    let n = chars.len();
+    let mut w = String::new();
+    let mut p = start;
+    while p < n {
+        let c = chars[p];
+        match c {
+            ' ' | '\t' | '\r' | '\n' | ';' | '|' | '&' | '(' | ')' | '<' | '>' => break,
+            '\'' => {
+                p += 1;
+                loop {
+                    let q = *chars.get(p)?;
+                    p += 1;
+                    if q == '\'' {
+                        break;
+                    }
+                    w.push(q);
+                }
+            }
+            '"' => {
+                p += 1;
+                loop {
+                    let q = *chars.get(p)?;
+                    match q {
+                        '"' => {
+                            p += 1;
+                            break;
+                        }
+                        '\\' => {
+                            let nx = *chars.get(p + 1)?;
+                            if matches!(nx, '$' | '`' | '"' | '\\') {
+                                w.push(nx);
+                            } else if nx != '\n' {
+                                w.push('\\');
+                                w.push(nx);
+                            }
+                            p += 2;
+                        }
+                        '$' if chars.get(p + 1) == Some(&'(') => {
+                            let (inner, np) = scan_paren(chars, p + 2)?;
+                            w.push_str("$(");
+                            w.push_str(&inner);
+                            w.push(')');
+                            out.extend(parse_depth(&inner, depth + 1)?);
+                            p = np;
+                        }
+                        '`' => {
+                            let (inner, np) = scan_backtick(chars, p + 1)?;
+                            w.push('`');
+                            w.push_str(&inner);
+                            w.push('`');
+                            out.extend(parse_depth(&inner, depth + 1)?);
+                            p = np;
+                        }
+                        _ => {
+                            w.push(q);
+                            p += 1;
+                        }
+                    }
+                }
+            }
+            '\\' => {
+                let nx = *chars.get(p + 1)?;
+                if nx != '\n' {
+                    w.push(nx);
+                }
+                p += 2;
+            }
+            '$' if chars.get(p + 1) == Some(&'(') => {
+                let (inner, np) = scan_paren(chars, p + 2)?;
+                w.push_str("$(");
+                w.push_str(&inner);
+                w.push(')');
+                out.extend(parse_depth(&inner, depth + 1)?);
+                p = np;
+            }
+            '`' => {
+                let (inner, np) = scan_backtick(chars, p + 1)?;
+                w.push('`');
+                w.push_str(&inner);
+                w.push('`');
+                out.extend(parse_depth(&inner, depth + 1)?);
+                p = np;
+            }
+            _ => {
+                w.push(c);
+                p += 1;
+            }
+        }
+    }
+    Some((w, p))
+}
+
+/// The raw text up to the `)` that closes a `$(` opened just before `start`, and the index
+/// after it. Quotes and backslashes are skipped over while counting parentheses.
+fn scan_paren(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let mut depth = 1usize;
+    let mut s = String::new();
+    let mut p = start;
+    while p < chars.len() {
+        let c = chars[p];
+        match c {
+            '\'' => {
+                s.push(c);
+                p += 1;
+                loop {
+                    let q = *chars.get(p)?;
+                    s.push(q);
+                    p += 1;
+                    if q == '\'' {
+                        break;
+                    }
+                }
+            }
+            '"' => {
+                s.push(c);
+                p += 1;
+                loop {
+                    let q = *chars.get(p)?;
+                    s.push(q);
+                    p += 1;
+                    if q == '\\' {
+                        let nx = *chars.get(p)?;
+                        s.push(nx);
+                        p += 1;
+                    } else if q == '"' {
+                        break;
+                    }
+                }
+            }
+            '\\' => {
+                s.push(c);
+                let nx = *chars.get(p + 1)?;
+                s.push(nx);
+                p += 2;
+            }
+            '(' => {
+                depth += 1;
+                s.push(c);
+                p += 1;
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((s, p + 1));
+                }
+                s.push(c);
+                p += 1;
+            }
+            _ => {
+                s.push(c);
+                p += 1;
+            }
+        }
+    }
+    None
+}
+
+/// The raw text up to the closing backtick, and the index after it.
+fn scan_backtick(chars: &[char], start: usize) -> Option<(String, usize)> {
+    let mut s = String::new();
+    let mut p = start;
+    while p < chars.len() {
+        let c = chars[p];
+        if c == '\\' {
+            let nx = *chars.get(p + 1)?;
+            s.push(c);
+            s.push(nx);
+            p += 2;
+            continue;
+        }
+        if c == '`' {
+            return Some((s, p + 1));
+        }
+        s.push(c);
+        p += 1;
+    }
+    None
+}
+
+/// Skips a heredoc body that starts at `start` (just after a newline), through the line that
+/// is the delimiter. The body is not parsed.
+fn skip_heredoc(chars: &[char], start: usize, delim: &str, strip: bool) -> usize {
+    let n = chars.len();
+    let mut p = start;
+    while p < n {
+        let mut e = p;
+        while e < n && chars[e] != '\n' {
+            e += 1;
+        }
+        let raw: String = chars[p..e].iter().collect();
+        let line = raw.trim_end_matches('\r');
+        let cmp = if strip {
+            line.trim_start_matches('\t')
+        } else {
+            line
+        };
+        if cmp == delim {
+            return (e + 1).min(n);
+        }
+        p = e + 1;
+    }
+    n
+}
+
+/// What is left of a simple command after its wrappers.
+struct Peeled {
+    /// Index of the command name in the words.
+    start: usize,
+    privileged: bool,
+    /// The targets are not known (`xargs`).
+    unknown: bool,
+    /// Scripts run by the wrapper (`su -c`, `flock -c`, `env -S`).
+    inline: Vec<String>,
+}
+
+/// Skips assignments, reserved words and the wrappers that run another command.
+fn peel(words: &[String], unknown_in: bool) -> Peeled {
+    let mut out = Peeled {
+        start: 0,
+        privileged: false,
+        unknown: unknown_in,
+        inline: Vec::new(),
+    };
+    let mut i = 0usize;
+    loop {
+        while i < words.len() && (RESERVED.contains(&words[i].as_str()) || is_assignment(&words[i])) {
+            i += 1;
+        }
+        if i >= words.len() {
+            break;
+        }
+        match base_name(&words[i]) {
+            "sudo" | "doas" | "pkexec" | "run0" => {
+                out.privileged = true;
+                i = skip_flags(words, i + 1, SUDO_WITH_ARG);
+            }
+            "su" => {
+                out.privileged = true;
+                out.inline
+                    .extend(script_after(words, i + 1, &["-c", "--command"]));
+                i = words.len();
+            }
+            "env" => i = skip_env(words, i + 1, &mut out.inline),
+            "xargs" => {
+                out.unknown = true;
+                i = skip_flags(words, i + 1, XARGS_WITH_ARG);
+            }
+            "nice" => i = skip_flags(words, i + 1, &["-n", "--adjustment"]),
+            "nohup" | "command" | "builtin" | "setsid" => i = skip_flags(words, i + 1, &[]),
+            "time" => i = skip_flags(words, i + 1, &["-f", "-o"]),
+            "exec" => i = skip_flags(words, i + 1, &["-a"]),
+            "stdbuf" => i = skip_flags(words, i + 1, &["-i", "-o", "-e"]),
+            "ionice" => i = skip_flags(words, i + 1, &["-c", "-n", "-p", "-P", "-u"]),
+            "timeout" => i = skip_positional(words, i + 1, &["-s", "-k"]),
+            "chrt" | "taskset" => i = skip_positional(words, i + 1, &[]),
+            "watch" => i = skip_flags(words, i + 1, &["-n", "--interval"]),
+            "flock" => match script_after(words, i + 1, &["-c", "--command"]) {
+                Some(script) => {
+                    out.inline.push(script);
+                    i = words.len();
+                }
+                None => i = skip_positional(words, i + 1, &["-w", "--timeout", "-E", "--conflict-exit-code"]),
+            },
+            _ => break,
+        }
+    }
+    out.start = i.min(words.len());
+    out
+}
+
+/// Skips the options from `from`; an option in `with_arg` takes the next word too.
+fn skip_flags(words: &[String], from: usize, with_arg: &[&str]) -> usize {
+    let mut i = from;
+    while i < words.len() && words[i].len() > 1 && words[i].starts_with('-') {
+        let w = words[i].as_str();
+        i += 1;
+        if w == "--" {
+            break;
+        }
+        if with_arg.contains(&w) {
+            i += 1;
+        }
+    }
+    i.min(words.len())
+}
+
+/// Skips the options, then one positional word (`timeout 5`, `flock FILE`, `taskset MASK`).
+fn skip_positional(words: &[String], from: usize, with_arg: &[&str]) -> usize {
+    let i = skip_flags(words, from, with_arg);
+    if i < words.len() {
+        i + 1
+    } else {
+        i
+    }
+}
+
+/// Skips `env`'s options and `NAME=value` words. `env -S 'cmd ...'` runs that string.
+fn skip_env(words: &[String], from: usize, inline: &mut Vec<String>) -> usize {
+    let mut i = from;
+    while i < words.len() {
+        let w = words[i].as_str();
+        if w == "-S" {
+            if let Some(script) = words.get(i + 1) {
+                inline.push(script.clone());
+            }
+            return words.len();
+        }
+        if w == "-u" || w == "-C" {
+            i += 2;
+        } else if w.starts_with('-') || is_assignment(w) {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    i.min(words.len())
+}
+
+/// The word after the first of `flags` at or after `from`.
+fn script_after(words: &[String], from: usize, flags: &[&str]) -> Option<String> {
+    let tail = words.get(from..)?;
+    let k = tail.iter().position(|w| flags.contains(&w.as_str()))?;
+    tail.get(k + 1).cloned()
+}
+
+/// The script of `sh -c <script>`, `bash -lc <script>`, `--login -c <script>`, ...
+fn shell_script(argv: &[String]) -> Option<String> {
+    let mut k = 1usize;
+    while k < argv.len() {
+        let a = argv[k].as_str();
+        if a == "--" || a == "-" || !(a.starts_with('-') || a.starts_with('+')) {
+            return None;
+        }
+        if a == "-o" || a == "+o" {
+            k += 2;
+            continue;
+        }
+        if a.starts_with("--") {
+            k += 1;
+            continue;
+        }
+        if a.starts_with('-') && a[1..].contains('c') {
+            return argv.get(k + 1).cloned();
+        }
+        k += 1;
+    }
+    None
+}
+
+/// The words that are not options (after `--`, everything is an operand).
+fn operands(args: &[String]) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
+    let mut end = false;
+    for a in args {
+        if !end && a == "--" {
+            end = true;
+            continue;
+        }
+        if end || !a.starts_with('-') || a == "-" {
+            out.push(a.as_str());
+        }
+    }
+    out
+}
+
+/// `true` when `args` has a recursive flag (`-r`, `-R`, `-rf`, `--recursive`).
+fn is_recursive(args: &[String]) -> bool {
+    args.iter().any(|a| {
+        a == "--recursive"
+            || (a.starts_with('-') && !a.starts_with("--") && (a.contains('r') || a.contains('R')))
+    })
+}
+
+/// A `chmod` mode that opens a file to everyone.
+fn mode_is_open(mode: &str) -> bool {
+    mode.contains("777") || mode.contains("666") || mode.contains("a+rwx") || mode.contains("o+w")
+}
+
+/// `true` when `value` is a short-option cluster (`-abc`, not `--long`) with `letter`.
+fn short_has(value: &str, letter: char) -> bool {
+    value.starts_with('-') && !value.starts_with("--") && value[1..].contains(letter)
+}
+
+/// `kill` with pid 1, a negative pid (a process group) or `-1`, after its signal.
+fn kill_foreign(args: &[String]) -> bool {
+    let mut signal_done = false;
+    let mut after_dd = false;
+    for a in args {
+        let a = a.as_str();
+        if !after_dd && a == "--" {
+            after_dd = true;
+            continue;
+        }
+        if !after_dd
+            && !signal_done
+            && a.len() > 1
+            && a.starts_with('-')
+            && a[1..].chars().all(|c| c.is_ascii_alphanumeric())
+        {
+            signal_done = true;
+            continue;
+        }
+        if let Ok(pid) = a.parse::<i64>() {
+            if pid == 1 || pid < 0 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// A SQL `DROP` of a table, database or schema, or a `TRUNCATE` statement, in any word.
+fn sql_drop(words: &[String]) -> bool {
+    words.iter().any(|w| {
+        let l = w.to_lowercase();
+        l.contains("drop table")
+            || l.contains("drop database")
+            || l.contains("drop schema")
+            || l.trim_start().starts_with("truncate ")
+    })
+}
+
+/// `find` arguments that are expressions, not roots.
+fn is_find_expr(a: &str) -> bool {
+    a.starts_with('-') || a.starts_with('(') || a.starts_with('!')
+}
+
+/// `true` when the text has a `$` or a backtick: a value the shell computes.
+fn has_dynamic(text: &str) -> bool {
+    text.contains('$') || text.contains('`')
+}
+
+/// `true` for `NAME=value` (a valid name before the first `=`).
+fn is_assignment(w: &str) -> bool {
+    match w.find('=') {
+        Some(eq) if eq > 0 => {
+            let name = &w[..eq];
+            !name.starts_with(|c: char| c.is_ascii_digit())
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    }
+}
+
+/// The last component of a command word (`/bin/rm`, `./rm` -> `rm`).
+fn base_name(w: &str) -> &str {
+    w.rsplit('/').next().unwrap_or(w)
+}
+
+/// `~`, `~/` and `$HOME` at the start of `raw` become the home directory.
+fn expand_home(raw: &str, home: &Path) -> String {
+    let h = home.to_string_lossy();
+    if raw == "~" || raw == "$HOME" {
+        return h.into_owned();
+    }
+    if let Some(rest) = raw.strip_prefix("~/").or_else(|| raw.strip_prefix("$HOME/")) {
+        return format!("{h}/{rest}");
+    }
+    raw.to_string()
+}
+
+/// The simple command as one string: words and redirections, single spaces.
+fn segment(words: &[String], redirects: &[(String, String)]) -> String {
+    let mut parts: Vec<String> = words.to_vec();
+    for (op, target) in redirects {
+        parts.push(op.clone());
+        parts.push(target.clone());
+    }
+    parts.join(" ")
+}
+
+/// `true` when removing or changing `raw` reaches outside the workspace (or is a top-level
+/// glob, a variable, `/` or the home directory itself).
+fn target_outside(raw: &str, ctx: &Ctx<'_>) -> bool {
+    let home = normalize(&ctx.guard.home, ctx.cwd);
+    let is_dynamic = |c: char| matches!(c, '$' | '`' | '*' | '?' | '[');
+    if raw.chars().any(is_dynamic) {
+        // A glob or a variable: safe only under a literal sub-directory of the workspace.
+        let idx = raw.find(is_dynamic).unwrap_or(raw.len());
+        let literal = &raw[..idx];
+        let cut = match literal.rfind('/') {
+            Some(k) => &literal[..k],
+            None => "",
+        };
+        if cut.is_empty() {
+            return true;
+        }
+        return match ctx.resolve(cut) {
+            Some(p) => !(p.as_path() != ctx.cwd && is_inside(&p, ctx.cwd) && p != home),
+            None => true,
+        };
+    }
+    match ctx.resolve(raw) {
+        Some(path) => path.as_path() == Path::new("/") || path == home || !is_inside(&path, ctx.cwd),
+        None => true,
+    }
+}

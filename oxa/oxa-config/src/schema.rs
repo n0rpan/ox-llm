@@ -137,6 +137,8 @@ const SCHEMA: &[KeyDef] = &[
     key("modelThinkingLevels", Kind::Object, "{}"),
     key("outputPad", Kind::Number, "1"),
     key("oxa.allowHomeCwd", Kind::Bool, "false"),
+    // #1512: dangerous-command rules (+id/-id/cmd:..); user settings only.
+    key("oxa.approval.dangerous", Kind::StringList, "[]"),
     // F5: seconds; unset = 120; 0 = none.
     key("oxa.bash.defaultTimeout", Kind::Number, "null"),
     key("oxa.bootPreload", Kind::Bool, "true"),
