@@ -23,7 +23,7 @@ pub const SUMMARIZATION_SYSTEM_PROMPT: &str = "You are a context summarization a
 /// ADAPTED (oxa): first lines of the one user instruction of a summary request. Says what
 /// pi's system prompt says, addressed to the same assistant, and forbids tool calls (the
 /// tools stay declared because the prefix is frozen).
-pub const SUMMARY_INSTRUCTION_HEADER: &str = "Stop working on the task now. Your next reply is a context summary, not a continuation: read the conversation above and produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. Do NOT call tools. ONLY output the structured summary.";
+pub const SUMMARY_INSTRUCTION_HEADER: &str = "Stop working on the task now. Your next reply is a context summary, not a continuation: read the conversation above and produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. Do NOT call tools. ONLY output the structured summary.\n\nKeep verbatim: PR and issue numbers, commit SHAs, branch names, CI run ids with their conclusions, worker names and session ids, and open questions awaiting the owner.";
 
 /// Initial compaction instruction (no previous summary on the wire).
 pub const SUMMARIZATION_PROMPT: &str = r#"The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.

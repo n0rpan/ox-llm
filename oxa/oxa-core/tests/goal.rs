@@ -75,7 +75,9 @@ fn bounded_literal_prompt_keeps_evidence_request_local_and_caps_schema_repair() 
             let Some(RunEnd::Failed(error)) = result.unwrap() else {
                 panic!("the repair should be refused when no output remains");
             };
-            assert_eq!(error.code, codes::BUDGET_EXHAUSTED);
+            // The approved behavior change: the local bounded turn reports its own
+            // literal-limit code, never the metered daily-budget class.
+            assert_eq!(error.code, codes::LITERAL_OUTPUT_EXHAUSTED);
             &[10]
         };
         let requests: Vec<_> = engine
@@ -100,6 +102,65 @@ fn bounded_literal_prompt_keeps_evidence_request_local_and_caps_schema_repair() 
         assert_eq!(last.max_tokens, session.inner().info.max_output);
         assert!(!last.messages.contains(&evidence));
     }
+}
+
+/// Live #1461: a remote bounded literal turn whose only reply stops at the
+/// limit after spending the whole bound must not schedule the recovery request
+/// (it could never reserve a token), must not inject its internal instruction
+/// into the protected Session, and must surface the typed local bound.
+#[test]
+fn bounded_literal_length_stop_fails_typed_without_a_recovery_request() {
+    use oxa_core::RunEnd;
+    use oxa_proto::{codes, Finish};
+    use std::num::NonZeroU32;
+
+    const TURN_TOKENS: u32 = 4096;
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text(r#"{"text":"a concise answer that ran"#);
+    cut.finish = Finish::Length;
+    cut.completion_tokens = Some(TURN_TOKENS);
+    let engine = Arc::new(
+        ScriptedEngine::new(vec![
+            cut,
+            ScriptTurn::text(r#"{"text":"an impossible recovery","facts":[],"action":null}"#),
+        ])
+        .with_remote(),
+    );
+    let store = Arc::new(MemStore::new());
+    let mut session = Session::open(deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let result = session.prompt_literal_bounded(
+        "A concise question?".into(),
+        String::new(),
+        NonZeroU32::new(TURN_TOKENS).unwrap(),
+        &mut sink,
+        &mut ui,
+    );
+    let Some(RunEnd::Failed(error)) = result.unwrap() else {
+        panic!("a length stop at the bounded literal limit must fail typed");
+    };
+    assert_eq!(error.code, codes::LITERAL_OUTPUT_EXHAUSTED);
+    let requests: Vec<_> = engine
+        .requests()
+        .into_iter()
+        .filter(|r| r.max_tokens > 0)
+        .collect();
+    assert_eq!(
+        requests.iter().map(|r| r.max_tokens).collect::<Vec<_>>(),
+        [TURN_TOKENS],
+        "the impossible recovery request is never forwarded"
+    );
+    let entries = store.load(&session.inner().sref).unwrap();
+    let persisted = format!("{entries:?}");
+    assert!(
+        !persisted.contains("reached its output limit and was discarded"),
+        "the internal recovery instruction never enters the Session"
+    );
+    assert!(
+        persisted.contains("a concise answer that ran"),
+        "the cut stays as an audit entry"
+    );
 }
 
 #[test]
