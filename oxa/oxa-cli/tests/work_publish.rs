@@ -169,6 +169,7 @@ fn exercise_save_recovery(test_name: &str, case: SaveRecovery) {
                 &policy,
                 std::path::Path::new("/unavailable/gh"),
                 &|_: &oxa_work::Record| Ok(()),
+                &|_| None,
                 &mut |_| panic!("a pending save cannot request publication approval"),
             )
             .unwrap();
@@ -933,4 +934,126 @@ esac
         unauthorized.is_empty(),
         "public writes without confirmation: {unauthorized:?}"
     );
+}
+
+fn write_turns(path: &str, content: &str) -> Vec<ScriptTurn> {
+    let args = serde_json::json!({"path": path, "content": content}).to_string();
+    vec![
+        ScriptTurn::tool("write", "write", &args),
+        ScriptTurn::text("done"),
+    ]
+}
+
+/// Publication refuses before any GitHub request or push, and names only the place.
+fn assert_refused(env: &TestEnv, record: &serde_json::Value, place: &str, secret: &str) {
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    let detail = record["detail"].as_str().unwrap();
+    assert!(detail.contains("publishing refused"), "{detail}");
+    assert!(detail.contains(place), "{detail}");
+    assert!(!record.to_string().contains(secret), "{record}");
+    assert!(!env.home().join("push-calls").exists());
+    assert!(!env.home().join("gh-calls").exists());
+}
+
+#[test]
+fn publication_refuses_an_added_env_file() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let secret = format!("SERVICE_PASSWORD={}", "q".repeat(20));
+    let record = run_args(
+        &env,
+        write_turns(".env", &format!("{secret}\n")),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, ".env", &secret);
+}
+
+#[test]
+fn publication_refuses_a_github_token_in_source() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let token = format!("ghp_{}", "x".repeat(36));
+    let record = run_args(
+        &env,
+        write_turns(
+            "src/client.rs",
+            &format!("fn main() {{}}\nconst T: &str = \"{token}\";\n"),
+        ),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "src/client.rs:2", &token);
+}
+
+#[test]
+fn publication_refuses_a_private_key() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let body = "x".repeat(64);
+    let key = format!(
+        "-----BEGIN {kind}-----\n{body}\n-----END {kind}-----\n",
+        kind = ["RSA", "PRIVATE KEY"].join(" ")
+    );
+    let record = run_args(
+        &env,
+        write_turns("deploy/notes.txt", &key),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "deploy/notes.txt:1", &body);
+}
+
+#[test]
+fn publication_refuses_the_value_of_a_secret_environment_variable() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let value = format!("synthetic{}", "Q".repeat(12));
+    let (record, _) = work::run_observed_with(
+        &env,
+        write_turns("answer.txt", &format!("copied {value}\n")),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+        |command| {
+            command.env("SYNTHETIC_SERVICE_TOKEN", &value);
+        },
+    );
+    assert_refused(&env, &record, "answer.txt:1", &value);
+}
+
+#[test]
+fn publication_refuses_a_secret_that_a_later_commit_removed() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let path = configure(&env);
+    let token = format!("ghp_{}", "x".repeat(36));
+    let first = run_args(
+        &env,
+        write_turns("answer.txt", &format!("{token}\n")),
+        &["work", "../tasks.json"],
+        Some(path.clone()),
+    );
+    assert_eq!(first["outcome"], "done", "{first}");
+    let record = run_args(
+        &env,
+        write_turns("answer.txt", "clean\n"),
+        &["work", "../tasks.json", "--rerun", "--publish"],
+        Some(path),
+    );
+    assert_ne!(record["head_sha"], first["head_sha"], "{record}");
+    assert_refused(&env, &record, "answer.txt:1", &token);
+}
+
+#[test]
+fn publication_refuses_an_empty_file_named_with_a_token() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let token = format!("ghp_{}", "x".repeat(36));
+    let record = run_args(
+        &env,
+        write_turns(&format!("notes/{token}.txt"), ""),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_refused(&env, &record, "a file whose path", &token);
 }
