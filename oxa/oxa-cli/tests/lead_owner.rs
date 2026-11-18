@@ -121,7 +121,12 @@ fn owner_turn_uses_the_selected_writer_and_sends_slash_and_shell_text_literally(
                 .iter()
                 .any(|message| message.content.as_deref() == Some(text))));
     }
-    assert!(requests.iter().all(|request| request.tools_json == "[]"));
+    // M1: the live owner Lead session declares the worker tool and nothing else.
+    assert!(requests.iter().all(|request| {
+        let tools: serde_json::Value = serde_json::from_str(&request.tools_json).unwrap();
+        let text = tools.to_string();
+        text.contains("\"worker\"") && !text.contains("\"bash\"") && !text.contains("\"read\"")
+    }));
 
     let original = owner.path.with_extension("previous");
     fs::rename(&owner.path, &original).unwrap();

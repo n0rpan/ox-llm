@@ -327,6 +327,9 @@ pub fn with_lead_owner<T>(
         no_extensions: true,
         no_tools: true,
         no_skills: true,
+        // Nothing but the worker tool (M1): `no_tools` drops every other tool and the worker
+        // tool is the one named exception.
+        tools: Some(vec![crate::workers::tool::TOOL_NAME.to_string()]),
         model: route.clone(),
         ..Args::default()
     };

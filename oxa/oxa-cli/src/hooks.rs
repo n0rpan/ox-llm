@@ -83,6 +83,80 @@ pub struct HookInputs<'a> {
     pub yolo: oxa_proto::YoloSwitch,
 }
 
+/// The `worker` tool's hook set (K5a/K5b), or `None` when it is off (a worker child, the
+/// `oxa.workers.enabled` setting, no trusted `kill`, no executable); the reason is a notice.
+/// One builder for every session that starts workers: the ordinary one and the live owner Lead
+/// session ([`build_owner_hooks`]), so both use the same launch, limits (`oxa.workers.max`) and
+/// supervisor.
+fn build_worker_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Option<Arc<WorkerHooks>> {
+    // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
+    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false.
+    let worker_depth = i
+        .env
+        .pairs()
+        .iter()
+        .rev()
+        .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
+        .map(|(_, v)| v.as_str());
+    if worker_tool::built(worker_depth, i.settings.bool(worker_tool::SETTING_ENABLED, true)) {
+        match std::env::current_exe() {
+            Ok(bin) => {
+                // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
+                // so no worker starts without a way to stop it.
+                let host_path = std::ffi::OsString::from(i.env.get("PATH").unwrap_or(""));
+                match crate::workers::proc::start(i.settings, &host_path, i.cwd, &i.dirs.home) {
+                    Ok(supervisor) => {
+                        // The worker child writes its sessions where this session does.
+                        let sessions_dir = i
+                            .settings
+                            .session_dir(&i.dirs.home, i.cwd)
+                            .filter(|_| i.env.get("OXA_SESSION_DIR").is_none())
+                            .unwrap_or_else(|| i.dirs.sessions_dir.clone());
+                        // The child keeps the parent's allowance, exclusions and session
+                        // directory: a worker is not a way around them.
+                        let default_sessions = i.dirs.sessions_dir.clone();
+                        let parent_scope = worker_tool::ParentScope {
+                            max_tokens: i.args.max_tokens,
+                            exclude_tools: i.args.exclude_tools.clone(),
+                            session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
+                        };
+                        let workers = Arc::new(WorkerHooks::new(WorkerConfig {
+                            oxa_bin: bin,
+                            agent_dir: i.dirs.agent_dir.clone(),
+                            max: usize::try_from(i.settings.u32(worker_tool::SETTING_MAX, 4)).unwrap_or(4),
+                            supervisor,
+                            sessions_dir,
+                            parent_env: i.env.pairs().to_vec(),
+                            parent_scope,
+                            yolo: i.yolo.clone(),
+                            resume_on_start: crate::workers::resume::enabled(i.settings),
+                        }));
+                        return Some(workers);
+                    }
+                    Err(e) => notices.push((Level::Warning, format!("worker: the tool is off ({e})"))),
+                }
+            }
+            Err(e) => notices.push((
+                Level::Warning,
+                format!("worker: the oxa executable is not known ({e}); the tool is off"),
+            )),
+        }
+    }
+    None
+}
+
+/// The hook sets of the live, owner-authorized Lead session (`with_lead_owner`): only the
+/// `worker` tool. No extensions, exec hooks, MCP or other tools; the shadow preset
+/// (`args.lead`) never reaches this and stays read-only.
+pub(crate) fn build_owner_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> HookSets {
+    let mut sets = HookSets::default();
+    if let Some(workers) = build_worker_hooks(i, notices) {
+        sets.hooks.push(workers.clone());
+        sets.workers = Some(workers);
+    }
+    sets
+}
+
 /// Build the hook sets. Problems that do not stop the start (a failed extension, a bad hook
 /// entry, an `mcp.json` diagnostic) are pushed to `notices`.
 pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Result<HookSets, OxaError> {
@@ -237,59 +311,9 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
     }
 
     // ---- builtin:worker (K5a) ----
-    // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
-    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false.
-    let worker_depth = i
-        .env
-        .pairs()
-        .iter()
-        .rev()
-        .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
-        .map(|(_, v)| v.as_str());
-    if worker_tool::built(worker_depth, i.settings.bool(worker_tool::SETTING_ENABLED, true)) {
-        match std::env::current_exe() {
-            Ok(bin) => {
-                // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
-                // so no worker starts without a way to stop it.
-                let host_path = std::ffi::OsString::from(i.env.get("PATH").unwrap_or(""));
-                match crate::workers::proc::start(i.settings, &host_path, i.cwd, &i.dirs.home) {
-                    Ok(supervisor) => {
-                        // The worker child writes its sessions where this session does.
-                        let sessions_dir = i
-                            .settings
-                            .session_dir(&i.dirs.home, i.cwd)
-                            .filter(|_| i.env.get("OXA_SESSION_DIR").is_none())
-                            .unwrap_or_else(|| i.dirs.sessions_dir.clone());
-                        // The child keeps the parent's allowance, exclusions and session
-                        // directory: a worker is not a way around them.
-                        let default_sessions = i.dirs.sessions_dir.clone();
-                        let parent_scope = worker_tool::ParentScope {
-                            max_tokens: i.args.max_tokens,
-                            exclude_tools: i.args.exclude_tools.clone(),
-                            session_dir: (sessions_dir != default_sessions).then(|| sessions_dir.clone()),
-                        };
-                        let workers = Arc::new(WorkerHooks::new(WorkerConfig {
-                            oxa_bin: bin,
-                            agent_dir: i.dirs.agent_dir.clone(),
-                            max: usize::try_from(i.settings.u32(worker_tool::SETTING_MAX, 4)).unwrap_or(4),
-                            supervisor,
-                            sessions_dir,
-                            parent_env: i.env.pairs().to_vec(),
-                            parent_scope,
-                            yolo: i.yolo.clone(),
-                            resume_on_start: crate::workers::resume::enabled(i.settings),
-                        }));
-                        sets.hooks.push(workers.clone());
-                        sets.workers = Some(workers);
-                    }
-                    Err(e) => notices.push((Level::Warning, format!("worker: the tool is off ({e})"))),
-                }
-            }
-            Err(e) => notices.push((
-                Level::Warning,
-                format!("worker: the oxa executable is not known ({e}); the tool is off"),
-            )),
-        }
+    if let Some(workers) = build_worker_hooks(i, notices) {
+        sets.hooks.push(workers.clone());
+        sets.workers = Some(workers);
     }
 
     // ---- codemode ----
@@ -421,4 +445,95 @@ fn file_log(path: PathBuf) -> oxa_ext::ExtLog {
             let _ = writeln!(f, "{} {}", level.as_str(), line.replace('\n', " "));
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inputs<'a>(
+        args: &'a Args,
+        dirs: &'a Dirs,
+        cwd: &'a Path,
+        settings: &'a Settings,
+        resources: &'a Resources,
+        sandbox: &'a Arc<dyn Sandbox>,
+        env: &'a oxa_config::Env,
+    ) -> HookInputs<'a> {
+        HookInputs {
+            args,
+            dirs,
+            cwd,
+            settings,
+            resources,
+            sandbox,
+            trusted: false,
+            nested: false,
+            env,
+            yolo: oxa_proto::YoloSwitch::new(oxa_proto::PermissionMode::Standard.autonomy()),
+        }
+    }
+
+    fn tool_names(sets: &HookSets) -> Vec<String> {
+        sets.hooks
+            .iter()
+            .flat_map(|h| h.tools())
+            .map(|t| t.spec().name)
+            .collect()
+    }
+
+    #[test]
+    fn live_lead_session_exposes_worker_tool() {
+        let test = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let settings = Settings::default();
+        let resources = Resources::default();
+        let sandbox: Arc<dyn Sandbox> = Arc::new(oxa_sandbox::NoSandbox);
+        let env = oxa_config::Env::from_pairs(&[("PATH", "/usr/bin:/bin")]);
+        let args = Args::default();
+        let cwd = test.work();
+        let mut notices = Vec::new();
+        let sets = build_owner_hooks(
+            &inputs(&args, &dirs, &cwd, &settings, &resources, &sandbox, &env),
+            &mut notices,
+        );
+        assert!(sets.workers.is_some(), "{notices:?}");
+        assert_eq!(tool_names(&sets), vec!["worker".to_string()]);
+        // Only the worker hook set: no extensions, MCP or subagent in the owner session.
+        assert!(sets.extensions.is_none() && sets.mcp.is_none() && sets.subagent.is_none());
+        // The same off switches as everywhere: a worker child gets none.
+        let nested =
+            oxa_config::Env::from_pairs(&[("PATH", "/usr/bin:/bin"), (worker_tool::ENV_WORKER_DEPTH, "1")]);
+        let none = build_owner_hooks(
+            &inputs(&args, &dirs, &cwd, &settings, &resources, &sandbox, &nested),
+            &mut notices,
+        );
+        assert!(none.workers.is_none() && none.hooks.is_empty());
+    }
+
+    #[test]
+    fn shadow_lead_preset_stays_read_only_without_worker_tool() {
+        let test = oxa_fake::TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let settings = Settings::default();
+        let resources = Resources::default();
+        let sandbox: Arc<dyn Sandbox> = Arc::new(oxa_sandbox::NoSandbox);
+        let env = oxa_config::Env::from_pairs(&[("PATH", "/usr/bin:/bin")]);
+        let args = Args {
+            lead: true,
+            shadow: true,
+            ..Args::default()
+        };
+        let cwd = test.work();
+        let mut notices = Vec::new();
+        let sets = build_hooks(
+            &inputs(&args, &dirs, &cwd, &settings, &resources, &sandbox, &env),
+            &mut notices,
+        )
+        .unwrap();
+        assert!(sets.workers.is_none());
+        assert!(tool_names(&sets).is_empty());
+        assert_eq!(sets.hooks.len(), 1);
+        assert!(sets.hooks.iter().all(|h| !h.allows_goals()));
+    }
 }

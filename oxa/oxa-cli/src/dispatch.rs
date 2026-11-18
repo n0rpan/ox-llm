@@ -1041,7 +1041,8 @@ fn prepare(
         yolo: yolo.clone(),
     };
     let hook_sets = if owner_chat {
-        HookSets::default()
+        // The live owner Lead session: the worker tool only (M1), through the K5a/K5b builder.
+        crate::hooks::build_owner_hooks(&hook_inputs, &mut notices)
     } else {
         build_hooks(&hook_inputs, &mut notices)?
     };
