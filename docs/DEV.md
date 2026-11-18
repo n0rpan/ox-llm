@@ -21,3 +21,53 @@ No stable prefix, service or PATH is changed. The executable is at
 `~/.local/state/oxc/dev-builds/default/bin/oxa` and its receipt is at
 `~/.local/state/oxc/dev-builds/default/current/receipt.json`. The current and one
 previous build are retained.
+
+## Guarded promotion onto existing N0 units
+
+`tools/lab/dev-update.sh` keeps its stock behaviour: it acquires the rolling `dev`
+prerelease, verifies checksums and provenance, and installs the two-build-reproducible
+payload under the dev prefix. The optional `--promote` mode uses that same acquisition and
+verification path to activate a verified build for existing units, and adds nothing else:
+no second downloader, publisher, cron, service or host compile.
+
+The mode takes the operator's own existing artifacts as input, so no private path or
+identity is built in:
+
+```sh
+tools/lab/dev-update.sh [dev-prefix] --promote \
+  --unit oxa-lead.service --board-unit <board-sampler-unit> \
+  --binary <regular-board-binary> --manifest <its-checksum-manifest> \
+  --install-lock <operator-artifact-install-lock> \
+  --session <dedicated-session.jsonl> --receipt <operator-rollout-receipt>
+```
+
+The units run their own regular executable and checksum manifest, not a dev-prefix path.
+The stock receipt's `sha256` is the archive digest and never describes the executable, so
+the release also carries a digest computed from the extracted bytes
+(`current/binary.sha256`); the promoted executable and its manifest both carry that value.
+
+Before anything is downloaded the mode decides from the last successful receipt: the
+source baseline is the digest-bound operator rollout receipt when it describes the binary
+the units run, and only otherwise the stock install whose own executable digest is that
+running binary; the digest hashed is the live process, not what the path holds now. The
+running digest must also match the operator manifest. The candidate must be ahead of that baseline and on `main` (public
+compare metadata, the same question the dev workflow asks — no attestation parser is
+added). Unchanged, older or off-`main` sources deploy nothing, and so does an active shadow
+board sampler unit or a busy Session; a torn board sample cannot prove idleness, so the
+sampler's own systemd state is read instead.
+
+The activation window is short and holds the operator artifact-install lock (separate from
+the stock download lock) plus the native Session sidecar lock; neither is held across the
+download. The exact previous executable and manifest are staged with their digest and
+modes, the verified executable and the matching manifest are renamed into place together,
+only the configured Lead unit is restarted, and the running digest, the manifest and a
+plain `GET` on the chat endpoint (which must be refused) decide the result. Any failure
+restores the staged pair and restarts the unit again; the receipt records the build that
+is actually active.
+
+The receipt is fixed, private text with source and binary digests only. Settings, durable
+sessions, claims, worktrees, Tailscale routes and the shadow schedule are untouched. The
+unattended path performs host canaries only: it never signs in, never reproduces a chat
+turn and never impersonates the owner, whose own acceptance stays a separate owner step.
+Wiring a user timer to this mode is likewise an operator step; the script installs and
+enables nothing.
