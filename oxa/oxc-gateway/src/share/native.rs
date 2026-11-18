@@ -274,29 +274,37 @@ async fn metered_chat(
     if runtime.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
         return Err(Failure::Failed);
     }
+    let (temperature, top_p) = (request.temperature, request.top_p);
     let prepared = GuestChat::prepare(request)?;
     let reply = gateway
-        .chat_authenticated_guest(&prepared.chat(), &guest, &cancel, &mut |event| {
-            let Event::Chunk(chunk) = event else {
-                return Control::Continue;
-            };
-            let delta = &chunk["choices"][0]["delta"];
-            if delta["tool_calls"]
-                .as_array()
-                .is_some_and(|calls| !calls.is_empty())
-            {
-                cancel.cancel();
-                return Control::Stop;
-            }
-            if let Some(text) = delta["content"].as_str().filter(|text| !text.is_empty()) {
-                let sent = tokio::task::block_in_place(|| runtime.block_on(output.text(text)));
-                if sent.is_err() {
+        .chat_authenticated_guest(
+            &prepared.chat(),
+            &guest,
+            temperature,
+            top_p,
+            &cancel,
+            &mut |event| {
+                let Event::Chunk(chunk) = event else {
+                    return Control::Continue;
+                };
+                let delta = &chunk["choices"][0]["delta"];
+                if delta["tool_calls"]
+                    .as_array()
+                    .is_some_and(|calls| !calls.is_empty())
+                {
                     cancel.cancel();
                     return Control::Stop;
                 }
-            }
-            Control::Continue
-        })
+                if let Some(text) = delta["content"].as_str().filter(|text| !text.is_empty()) {
+                    let sent = tokio::task::block_in_place(|| runtime.block_on(output.text(text)));
+                    if sent.is_err() {
+                        cancel.cancel();
+                        return Control::Stop;
+                    }
+                }
+                Control::Continue
+            },
+        )
         .await
         .map_err(|_| Failure::Failed)?;
     if cancel.is_cancelled()
