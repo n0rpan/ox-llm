@@ -173,16 +173,54 @@ fn write_conversation(reply: &conversation::ConversationReply, out: &mut dyn Wri
     Ok(())
 }
 
+pub(crate) fn local_binding(
+    project: &Path,
+    env: &Env,
+) -> Result<crate::dispatch::LeadOwnerBinding, OxaError> {
+    if ["OXA_CODING_AGENT", "AI_AGENT", "OXA_SUBAGENT_DEPTH"]
+        .iter()
+        .any(|name| env.get(name).is_some())
+    {
+        return Err(OxaError::new(codes::INVALID, "Use Lead from the owner session."));
+    }
+    let dirs = oxa_config::dirs_from_env(env, None)?;
+    let project = canonical_project(project)?;
+    crate::dispatch::LeadOwnerBinding::load(&dirs, &project, owner_uid()?)?
+        .ok_or_else(|| OxaError::new(codes::USAGE, "Lead owner chat is unavailable"))
+}
+
+pub(crate) fn run_direct(
+    words: &[String],
+    project: &Path,
+    env: &Env,
+    out: &mut dyn Write,
+) -> Result<i32, OxaError> {
+    let prompt = if words
+        .first()
+        .is_some_and(|word| matches!(word.as_str(), "-p" | "--print"))
+    {
+        &words[1..]
+    } else {
+        words
+    };
+    if prompt.is_empty() || prompt.first().is_some_and(|word| word.starts_with('-')) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            "Use oxa lead, oxa lead <prompt>, or oxa lead -p <prompt>.",
+        ));
+    }
+    let reply = run_cli_conversation(&prompt.join(" "), project, env)?;
+    write_conversation(&reply, out).map_err(|error| OxaError::io("cannot write lead chat reply", &error))?;
+    Ok(0)
+}
+
 fn run_cli_conversation(
     message: &str,
     project: &Path,
     env: &Env,
 ) -> Result<conversation::ConversationReply, OxaError> {
-    let dirs = oxa_config::dirs_from_env(env, None)?;
-    let project = canonical_project(project)?;
+    let binding = local_binding(project, env)?;
     let uid = owner_uid()?;
-    let binding = crate::dispatch::LeadOwnerBinding::load(&dirs, &project, uid)?
-        .ok_or_else(|| OxaError::new(codes::USAGE, "Lead owner chat is unavailable"))?;
     let board = protected_board(env, uid)?;
     let situation = protected_source(env, "OXA_LEAD_SITUATION", uid, crate::lead_input::situation)?;
     converse(&binding, env, message, board.as_ref(), situation.as_ref())

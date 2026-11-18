@@ -487,11 +487,6 @@ fn subcommand(word: &str, rest: &[String]) -> Result<Option<Subcommand>, OxaErro
         .chain(rest.iter().cloned())
         .collect();
     if let Some(invocation) = parse_cli(&words).filter(|i| registry_owned(i.command.id)) {
-        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
-            && !invocation.args.is_empty()
-        {
-            return Err(usage("registered command arguments are unavailable"));
-        }
         return Ok(Some(Subcommand::Registered(
             invocation.command.id,
             RegistryArgs(invocation.args.to_vec()),

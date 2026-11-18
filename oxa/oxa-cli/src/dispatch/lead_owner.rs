@@ -1,5 +1,5 @@
 //! Protected selection of the native Session shared by the owner chat callers.
-use super::{open_named, prepare, Args, RunMode};
+use super::{open_named, prepare, Args, Prep, RunMode};
 use oxa_config::{Dirs, Env, Settings};
 use oxa_core::Session;
 use oxa_proto::{codes, Entry, EntryBody, OxaError, Value};
@@ -19,6 +19,7 @@ const MAX_LINE: u64 = 65_536;
 const ORIGIN: &str = "oxa.lead.owner";
 
 /// One explicitly selected Session. Command and HTTP input cannot change its identity.
+#[derive(Clone)]
 pub struct LeadOwnerBinding {
     dirs: Dirs,
     project: PathBuf,
@@ -192,7 +193,7 @@ impl LeadOwnerBinding {
         }))
     }
 
-    fn recheck(&self) -> Result<(), OxaError> {
+    pub(super) fn recheck(&self) -> Result<(), OxaError> {
         canonical(&self.project)?;
         private_directory(&self.dirs.sessions_dir, self.uid)?;
         if dedicated_file(&self.session.path, self.uid, &self.session.id, &self.project)? != Some(self.file)
@@ -211,57 +212,84 @@ pub fn with_lead_owner<T>(
     env: &Env,
     run: impl FnOnce(&mut Session) -> Result<T, OxaError>,
 ) -> Result<T, OxaError> {
-    let dirs = &binding.dirs;
-    let cwd = &binding.project;
-    binding.recheck()?;
-    let store = Arc::new(FsStore::new(dirs.sessions_dir.clone()));
-    // Stage the very same lock Session::open will adopt, before provider I/O.
-    store.acquire(&binding.session).map_err(|error| {
-        if error.code == oxa_session::LOCKED {
-            OxaError::new(codes::BUSY, "The selected Lead session is busy.")
-        } else {
-            unavailable()
-        }
-    })?;
-    binding.recheck()?;
-    // The serving process owns the normal startup policy. Refuse a mismatch
-    // before provider preparation, without changing policy for other requests.
-    let (offline, remote) = crate::netguard::policy_from(false, env, &Settings::load(dirs, cwd, false));
-    if offline && !oxa_proto::offline() {
-        return Err(oxa_proto::offline_error("Lead chat"));
-    }
-    if !remote && oxa_proto::remote_engine_allowed() {
-        return Err(unavailable());
-    }
-    let mode = RunMode::Print;
-    let home_workspace =
-        crate::home_cwd::check(mode, cwd, env, dirs, &mut std::io::empty(), &mut std::io::sink())?;
-    let mut args = Args {
-        no_extensions: true,
-        no_tools: true,
-        no_skills: true,
-        ..Args::default()
-    };
-    let prep = prepare(
-        &mut args,
+    let home_workspace = crate::home_cwd::check(
+        RunMode::Print,
+        &binding.project,
         env,
-        dirs,
-        cwd,
-        mode,
-        home_workspace,
-        false,
-        false,
-        &mut |_, _| false,
-        Default::default(),
-        Some((&binding.session, store)),
-    )
-    .map_err(|_| unavailable())?;
-    let mut session = open_named(&prep.built, None, prep.open, None).map_err(|_| unavailable())?;
-    binding.recheck()?;
-    if session.inner().sref != binding.session {
-        return Err(unavailable());
-    }
+        &binding.dirs,
+        &mut std::io::empty(),
+        &mut std::io::sink(),
+    )?;
+    let mut args = Args::default();
+    let prep = binding.prepare(&mut args, env, RunMode::Print, home_workspace)?;
+    let mut session = binding.open(&prep)?;
     let result = run(&mut session);
     session.shutdown(&mut oxa_proto::HeadlessUi::default());
     result
+}
+
+impl LeadOwnerBinding {
+    pub(super) fn prepare(
+        &self,
+        args: &mut Args,
+        env: &Env,
+        mode: RunMode,
+        home_workspace: bool,
+    ) -> Result<Prep, OxaError> {
+        let binding = self;
+        let dirs = &binding.dirs;
+        let cwd = &binding.project;
+        binding.recheck()?;
+        let store = Arc::new(FsStore::new(dirs.sessions_dir.clone()));
+        // Stage the very same lock Session::open will adopt, before provider I/O.
+        store.acquire(&binding.session).map_err(|error| {
+            if error.code == oxa_session::LOCKED {
+                OxaError::new(codes::BUSY, "The selected Lead session is busy.")
+            } else {
+                unavailable()
+            }
+        })?;
+        binding.recheck()?;
+        // The serving process owns the normal startup policy. Refuse a mismatch
+        // before provider preparation, without changing policy for other requests.
+        let (offline, remote) = crate::netguard::policy_from(false, env, &Settings::load(dirs, cwd, false));
+        if offline && !oxa_proto::offline() {
+            return Err(oxa_proto::offline_error("Lead chat"));
+        }
+        if !remote && oxa_proto::remote_engine_allowed() {
+            return Err(unavailable());
+        }
+        args.no_extensions = true;
+        args.no_tools = true;
+        args.no_skills = true;
+        let interactive = mode == RunMode::Interactive;
+        prepare(
+            args,
+            env,
+            dirs,
+            cwd,
+            mode,
+            home_workspace,
+            interactive,
+            interactive,
+            &mut |_, _| false,
+            Default::default(),
+            Some((&binding.session, store)),
+        )
+        .map_err(|_| unavailable())
+    }
+
+    pub(super) fn session_ref(&self) -> &SessionRef {
+        &self.session
+    }
+
+    pub(super) fn open(&self, prep: &Prep) -> Result<Session, OxaError> {
+        self.recheck()?;
+        let session = open_named(&prep.built, None, prep.open.clone(), None).map_err(|_| unavailable())?;
+        self.recheck()?;
+        if session.inner().sref != self.session {
+            return Err(unavailable());
+        }
+        Ok(session)
+    }
 }
