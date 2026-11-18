@@ -16,8 +16,11 @@ maintainer, who says in the PR when a hardware check is needed.
 - Offline mode makes no network calls; do not add provider, discovery or HTTP fallback paths.
 - Preserve sandbox/bwrap enforcement and file-tool denials for private paths. Only explicit
   owner-selected yolo deliberately disables the permission floor.
-- Preserve durable ledger/usage settlement, uncertainty reservations and budget caps across
-  retries, cancellation, concurrent processes and restarts; never admit unaccounted spend.
+- Preserve durable ledger/usage settlement, uncertainty reservations and configured budget caps
+  across retries, cancellation, concurrent processes and restarts. Every metered request is recorded
+  in the ledger (an unknown cost is recorded as unknown). Limits are owner configuration: with no cap
+  configured there is no cap check, and a missing price or usage field is logged and recorded, not
+  refused. Do not flag the absence of a block the owner has not configured.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.
@@ -25,11 +28,16 @@ maintainer, who says in the PR when a hardware check is needed.
   `pull_request_target`; unknown authors need `ok-to-review` before token-spending review.
 - **Intent:** the change must do what its linked issue and PR description say, and nothing else.
   Flag as P1: missing or contradicted acceptance criteria from the linked issue; unrelated changes
-  mixed in; user-visible new behaviour that is not behind a default-off flag/setting; deleted or
+  mixed in; a default that contradicts the owner decision stated in the linked issue or PR body
+  (on-by-default with an opt-out setting is normal and is not itself a finding); deleted or
   disabled existing behaviour, tests or checks without a `Removes: <what> — <why>` line in the PR
   body; a test weakened, skipped or rewritten to pass instead of fixing the code.
 - **Commands:** a new CLI subcommand, slash command or user-facing flag must be declared in the command
   registry with its surfaces and help (P1 if added outside it or without an exception reason).
+- Owner policy: nothing blocks by default except the security invariants above (secrets,
+  sandbox, user-only settings, offline, fork safety). Limits, budgets, retries and guards are owner
+  settings with generous defaults that warn and record; a hard block exists only when the owner
+  configures it. Do not ask for a new default block or for a feature to be default-off.
 - Reserve P0/P1 for violations of these invariants or concrete data loss/crash. Report only
   introduced, actionable defects with a failure scenario; skip style and speculative risks.
 - A finding is a claim to verify, not an order. Whoever acts on a review finding first shows it is
