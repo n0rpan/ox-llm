@@ -189,14 +189,9 @@ impl crate::Session {
         if applied_revision == revision {
             return result.map(|()| applied_revision);
         }
-        let state = self.inner();
-        state.store.sync(&state.sref).map_err(|error| {
-            OxaError::new("goal_sync_failed", error.message).with_hint(
-                "The goal revision advanced. Confirm durability before acknowledging the transition.",
-            )
-        })?;
+        self.sync_goal_transition()?;
         crate::progress::notify(
-            state,
+            self.inner(),
             crate::Progress::GoalControlCommitted {
                 revision: applied_revision,
             },
@@ -206,6 +201,33 @@ impl crate::Session {
                 .with_hint("The goal transition was saved. Refresh the session prefix before running again.")
         })?;
         Ok(applied_revision)
+    }
+
+    /// Make the goal revision advanced by the last transition durable. Every goal
+    /// transition goes through here before it is acknowledged, so a failed sync is
+    /// never reported as success.
+    fn sync_goal_transition(&self) -> Result<(), oxa_proto::OxaError> {
+        let state = self.inner();
+        state.store.sync(&state.sref).map_err(|error| {
+            oxa_proto::OxaError::new("goal_sync_failed", error.message).with_hint(
+                "The goal revision advanced. Confirm durability before acknowledging the transition.",
+            )
+        })
+    }
+
+    /// Apply a `/goal` set or clear and wait for the store sync before it is reported.
+    fn commit_goal(
+        &mut self,
+        goal: Option<Goal>,
+        sink: &mut dyn oxa_proto::EventSink,
+    ) -> Result<(), oxa_proto::OxaError> {
+        let before = self.goal_revision();
+        let result = self.set_goal(goal, sink);
+        if result.is_err() && self.goal_revision() == before {
+            return result;
+        }
+        self.sync_goal_transition()?;
+        result
     }
 }
 
@@ -338,7 +360,8 @@ impl GoalRuntime {
             state.goal.stopped(true);
         }
     }
-    pub(crate) fn tools(self: &Arc<Self>, interrupt: oxa_proto::CancelToken) -> Vec<Arc<dyn Tool>> {
+    pub(crate) fn tools(self: &Arc<Self>, shared: &Arc<crate::queue::Shared>) -> Vec<Arc<dyn Tool>> {
+        let interrupt = shared.cancel_retry.clone();
         [
             (
                 "goal_done",
@@ -356,6 +379,7 @@ impl GoalRuntime {
             Arc::new(Control {
                 goal: self.clone(),
                 interrupt: interrupt.clone(),
+                shared: shared.clone(),
                 spec: ToolSpec {
                     name: name.into(),
                     description: description.into(),
@@ -372,6 +396,8 @@ impl GoalRuntime {
 struct Control {
     goal: Arc<GoalRuntime>,
     interrupt: oxa_proto::CancelToken,
+    /// Its `wait_wake` ends a wait early when input for the active session arrives.
+    shared: Arc<crate::queue::Shared>,
     spec: ToolSpec,
 }
 impl Tool for Control {
@@ -420,10 +446,13 @@ impl Tool for Control {
             });
             remaining.map_or(asked, |remaining| asked.min(remaining))
         };
+        self.shared.arm_wait_wake();
         live("Waiting; cancellation remains available.");
-        wait_cancelled(cx.cancel, &self.interrupt, duration);
+        wait_cancelled(cx.cancel, &self.interrupt, &self.shared.wait_wake, duration);
         if cx.cancel.is_cancelled() {
             ToolOutput::error("Wait cancelled.")
+        } else if self.shared.wait_wake.is_cancelled() {
+            ToolOutput::ok("Wait ended: input arrived.")
         } else {
             ToolOutput::ok("Wait ended.")
         }
@@ -456,15 +485,22 @@ impl Wake for Unpark {
         self.0.unpark();
     }
 }
-fn wait_cancelled(cancel: &oxa_proto::CancelToken, interrupt: &oxa_proto::CancelToken, duration: Duration) {
+fn wait_cancelled(
+    cancel: &oxa_proto::CancelToken,
+    interrupt: &oxa_proto::CancelToken,
+    wake: &oxa_proto::CancelToken,
+    duration: Duration,
+) {
     let deadline = Instant::now() + duration;
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cancelled = std::pin::pin!(cancel.cancelled());
     let mut interrupted = std::pin::pin!(interrupt.cancelled());
+    let mut woken = std::pin::pin!(wake.cancelled());
     let mut context = Context::from_waker(&waker);
     loop {
         if cancelled.as_mut().poll(&mut context).is_ready()
             || interrupted.as_mut().poll(&mut context).is_ready()
+            || woken.as_mut().poll(&mut context).is_ready()
         {
             return;
         }
@@ -611,11 +647,11 @@ impl crate::Session {
                 let goal = Goal::new(objective, GoalBudget::default(), now_ms)?;
                 let line = format!("Goal set: {}", goal.objective);
                 let prompt = crate::prompt::goal_start(&goal.objective);
-                self.set_goal(Some(goal), sink)?;
+                self.commit_goal(Some(goal), sink)?;
                 Ok((vec![line], Some(prompt)))
             }
             GoalCommand::Clear => {
-                self.set_goal(None, sink)?;
+                self.commit_goal(None, sink)?;
                 Ok((vec!["Goal cleared.".into()], None))
             }
             GoalCommand::Pause => {
