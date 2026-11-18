@@ -433,12 +433,27 @@ fn native_refill_completion(source: NativeSource) {
             },
         )
         .unwrap();
-        let _result = run_server(&env, &server, &args, Some(path), &[]);
+        let _result = run_server(&env, &server, &args, Some(path.clone()), &[]);
         let requested: Vec<_> = server.requests().into_iter().map(|call| call.model).collect();
         assert!(
             requested.is_empty(),
             "stale model attempted these aliases: {requested:?}"
         );
+        let ordinary = run_server(
+            &env,
+            &server,
+            &[
+                "--model",
+                "fake",
+                "-p",
+                "--no-session",
+                "Ordinary model matching.",
+            ],
+            Some(path),
+            &[],
+        );
+        assert!(ordinary.status.success(), "{ordinary:?}");
+        assert_eq!(server.requests()[0].model, "fake-alternative");
         return;
     }
     let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
