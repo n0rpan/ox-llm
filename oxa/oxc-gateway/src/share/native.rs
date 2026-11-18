@@ -97,8 +97,19 @@ where
             .ok_or(Failure::NotFound)?;
         #[cfg(feature = "anthropic-gateway")]
         if model.access == Access::Metered {
-            let gateway = self.metered.as_deref().ok_or(Failure::Forbidden)?;
-            return metered_chat(gateway, request, guest, output, cancel, &runtime).await;
+            let gateway = self.metered.clone().ok_or(Failure::Forbidden)?;
+            let guest = guest.into_owned();
+            // The provider callback can wait on the bounded output channel.
+            // Schedule it apart from the writer, disconnect and deadline futures.
+            // The listener joins this task even after requesting cancellation.
+            let mut provider = tokio::task::JoinSet::new();
+            provider
+                .spawn(async move { metered_chat(&gateway, request, guest, output, cancel, &runtime).await });
+            return provider
+                .join_next()
+                .await
+                .ok_or(Failure::Failed)?
+                .map_err(|_| Failure::Failed)?;
         }
         if model.access != Access::Local {
             return Err(Failure::Forbidden);
