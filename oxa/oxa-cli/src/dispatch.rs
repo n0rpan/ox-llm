@@ -1733,6 +1733,7 @@ fn run_tui(
                 Level::Info,
                 format!("Guest OpenAI API listening at http://{address}/v1"),
             ));
+            notices.extend(running.status.warning().map(|w| (Level::Warning, w.to_string())));
             Some(running)
         }
         Ok(None) => None,

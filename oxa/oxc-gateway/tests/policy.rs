@@ -46,7 +46,7 @@ fn requests_cannot_multiply_the_reserved_completion() {
 }
 
 #[test]
-fn unknown_prices_and_missing_budget_have_distinct_client_errors() {
+fn unknown_prices_and_unusable_budgets_have_distinct_client_errors() {
     refusal(
         before_credentials(&json!({}), false, false, false).unwrap_err(),
         400,
@@ -54,7 +54,10 @@ fn unknown_prices_and_missing_budget_have_distinct_client_errors() {
         "cloud_error",
         "pricing",
     );
-    for cap in [json!(null), json!(false), json!(-1), json!(0), json!("1")] {
+    // An unset cap is no budget check; only a configured, unusable cap refuses.
+    assert!(daily_budget(&json!(null), true, Some(0.0), 0.0, 0.0).is_ok());
+    assert!(daily_budget(&json!(null), true, Some(5.0), 5.0, 5.0).is_ok());
+    for cap in [json!(false), json!(-1), json!(0), json!("1")] {
         refusal(
             daily_budget(&cap, true, Some(0.0), 0.0, 0.0).unwrap_err(),
             403,
