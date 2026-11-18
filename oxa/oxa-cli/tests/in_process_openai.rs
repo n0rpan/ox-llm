@@ -99,7 +99,12 @@ fn live_openai_ids_filter_the_configured_overlay_and_reuse_the_cache() {
         assert!(stdout.contains(MODEL));
         assert!(!stdout.contains("synthetic-not-offered"));
         assert!(!stdout.contains("synthetic-unknown-metadata"));
-        assert!(!stdout.contains(KEY));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("1 offers with unknown pricing and 1 with unknown limits"),
+            "{stderr}"
+        );
+        assert!(!stdout.contains(KEY) && !stderr.contains(KEY));
     }
     let requests = mock.requests();
     assert_eq!(requests.len(), 1);
