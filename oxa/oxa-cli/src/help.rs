@@ -94,11 +94,25 @@ const BASE: &[Entry] = &[
     Entry {
         path: &["memory"],
         summary: "Show the memory index, or show or remove one memory entry",
-        usage: &[
-            "oxa memory list",
-            "oxa memory show <name>",
-            "oxa memory rm <name>",
-        ],
+        usage: &["oxa memory <list|show|rm>"],
+        example: "oxa memory list",
+    },
+    Entry {
+        path: &["memory", "list"],
+        summary: "Print the memory index",
+        usage: &["oxa memory list"],
+        example: "oxa memory list",
+    },
+    Entry {
+        path: &["memory", "show"],
+        summary: "Print one memory entry",
+        usage: &["oxa memory show <name>"],
+        example: "oxa memory show build-notes",
+    },
+    Entry {
+        path: &["memory", "rm"],
+        summary: "Delete one memory entry and its index line",
+        usage: &["oxa memory rm <name>"],
         example: "oxa memory rm build-notes",
     },
     Entry {
