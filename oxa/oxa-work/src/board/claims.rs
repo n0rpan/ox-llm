@@ -10,14 +10,18 @@ use std::path::{Path, PathBuf};
 
 mod activity;
 mod controls;
+mod dependencies;
 pub use activity::{LeaseActivity, LeaseSignal, VerifiedMilestone};
 pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
+pub use dependencies::{Dependency, DependencyWait};
 mod imports;
 mod native;
 pub use native::NativeBinding;
 mod ownership;
 mod reviews;
+mod timing;
 pub use ownership::{ExistingWork, ItemLease, ItemOwner};
+pub use timing::ActivityTiming;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -105,6 +109,10 @@ impl Claims {
     /// First access to a PR counts. A state file lost after a marker exists is still
     /// corruption, so a vanished marker must not reset the cap by faking a first access.
     fn load(&self, number: u64) -> Result<Saved> {
+        self.load_with_repair(number, true)
+    }
+
+    fn load_with_repair(&self, number: u64, repair_markers: bool) -> Result<Saved> {
         let path = self.path(number);
         let created = self.root.join(format!("{number}.board-claim.created"));
         match fs::symlink_metadata(&path) {
@@ -143,6 +151,15 @@ impl Claims {
                         .is_some_and(|lease| lease != &binding.lease)
             })
             || saved.review_requests.iter().any(|key| !key.valid())
+            || saved.data.dependency.as_ref().is_some_and(|wait| {
+                !wait.valid(number)
+                    || saved.data.item_owner.is_none()
+                    || saved
+                        .data
+                        .native_binding
+                        .as_ref()
+                        .is_none_or(|binding| binding.lease.claimed_at.is_none_or(|at| wait.deadline <= at))
+            })
             || saved
                 .data
                 .lease_activity
@@ -167,7 +184,15 @@ impl Claims {
         {
             return Err("invalid board claim identity or lease".into());
         }
-        self.mark(number)?;
+        if repair_markers {
+            self.mark(number)?;
+        } else {
+            match fs::symlink_metadata(&created) {
+                Ok(_) => self.private(&created)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return io(Err(error)),
+            }
+        }
         Ok(saved)
     }
 
@@ -198,14 +223,22 @@ impl Claims {
 
     /// Atomic replacements permit a coherent per-PR read without taking execution leases.
     fn rows(&self) -> Result<BTreeMap<u64, Saved>> {
+        self.rows_with_repair(true)
+    }
+
+    fn rows_with_repair(&self, repair_markers: bool) -> Result<BTreeMap<u64, Saved>> {
         Self::open(&self.root)?;
         let lock = io(File::open(&self.root))?;
         io(lock.lock())?;
-        self.rows_locked()
+        self.rows_locked_with_repair(repair_markers)
     }
 
     /// Caller holds the directory lock used by every reservation and control update.
     fn rows_locked(&self) -> Result<BTreeMap<u64, Saved>> {
+        self.rows_locked_with_repair(true)
+    }
+
+    fn rows_locked_with_repair(&self, repair_markers: bool) -> Result<BTreeMap<u64, Saved>> {
         let mut states = BTreeMap::new();
         for entry in io(fs::read_dir(&self.root))? {
             let name = io(entry)?.file_name();
@@ -220,7 +253,7 @@ impl Claims {
             if number == 0 || id != number.to_string() {
                 return Err("invalid board claim filename".into());
             }
-            states.insert(number, self.load(number)?);
+            states.insert(number, self.load_with_repair(number, repair_markers)?);
         }
         Ok(states)
     }
@@ -329,6 +362,7 @@ impl Claims {
         });
         row.data.native_binding = None;
         row.data.lease_activity = None;
+        row.data.dependency = None;
         let replacing = self.established(entry.number)?;
         self.save(entry.number, row, replacing)?;
         self.mark(entry.number)?;

@@ -1,7 +1,10 @@
 //! Recovery policy for contradictory required check observations.
 
-use super::queue::{github_utc, is_object_id, positive_id, WorkflowIdentity};
+use super::queue::{github_utc, is_node_id, is_object_id, positive_id, report::unique_row, WorkflowIdentity};
 use serde_json::Value;
+
+mod current;
+pub use current::Current;
 
 #[derive(Clone, Copy)]
 pub enum Trigger {
@@ -12,15 +15,21 @@ pub enum Trigger {
 /// The head, workflow path and required name come from the caller's current
 /// protected Board and configured workflow policy.
 #[derive(Clone, Copy)]
-pub struct Evidence<'a> {
+pub struct Source<'a> {
     pub repository: &'a str,
+    pub repository_id: &'a str,
     pub head: &'a str,
     pub workflow_path: &'a str,
     pub required_name: &'a str,
     pub trigger: Trigger,
     pub check: &'a Value,
-    pub attempt: &'a Value,
-    pub job: &'a Value,
+}
+
+#[derive(Clone, Copy)]
+pub struct Evidence<'a, 'data> {
+    pub source: Source<'a>,
+    pub attempt: &'data Value,
+    pub job: &'data Value,
 }
 
 pub struct Verified<'a> {
@@ -32,6 +41,7 @@ pub struct Verified<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JobLineage<'a> {
     pub repository: &'a str,
+    pub repository_id: &'a str,
     pub head: &'a str,
     pub workflow_path: &'a str,
     pub required_name: &'a str,
@@ -60,33 +70,22 @@ impl JobAttempt<'_> {
 
 /// Join the required check with the exact Actions attempt and job. The
 /// check-run link is compared as text, never followed.
-pub fn verify(evidence: Evidence<'_>) -> Option<Verified<'_>> {
-    let Evidence {
+pub fn verify<'a>(evidence: Evidence<'a, '_>) -> Option<Verified<'a>> {
+    let Evidence { source, attempt, job } = evidence;
+    let Source {
         repository,
+        repository_id,
         head,
         workflow_path,
         required_name,
         trigger,
         check,
-        attempt,
-        job,
-    } = evidence;
-    if !is_object_id(head)
-        || required_name.is_empty()
-        || check["__typename"] != "CheckRun"
-        || check["isRequired"] != true
-        || check["name"].as_str() != Some(required_name)
-    {
-        return None;
-    }
+    } = source;
     let status = check["status"].as_str()?;
     let completed_at = github_utc(&check["completedAt"]);
     let conclusion = check["conclusion"].as_str();
-    let event = match trigger {
-        Trigger::PullRequest => "pull_request",
-        Trigger::MergeGroup => "merge_group",
-    };
-    let identity = WorkflowIdentity::for_event(check, head, event)?;
+    let identity = source.identity()?;
+    let event = trigger.event();
     let check_id = positive_id(&check["databaseId"])?;
     let job_id = positive_id(&job["id"])?;
     let check_url = format!("https://api.github.com/repos/{repository}/check-runs/{check_id}");
@@ -108,6 +107,7 @@ pub fn verify(evidence: Evidence<'_>) -> Option<Verified<'_>> {
         attempt: JobAttempt {
             lineage: JobLineage {
                 repository,
+                repository_id,
                 head,
                 workflow_path,
                 required_name,
@@ -127,6 +127,65 @@ pub fn verify(evidence: Evidence<'_>) -> Option<Verified<'_>> {
             run_attempt: identity.observed_run_attempt,
         },
     })
+}
+
+impl Trigger {
+    fn event(self) -> &'static str {
+        match self {
+            Self::PullRequest => "pull_request",
+            Self::MergeGroup => "merge_group",
+        }
+    }
+}
+
+impl Source<'_> {
+    fn identity(&self) -> Option<WorkflowIdentity> {
+        if !is_node_id(self.repository_id)
+            || !is_object_id(self.head)
+            || self.required_name.is_empty()
+            || self.check["__typename"] != "CheckRun"
+            || self.check["isRequired"] != true
+            || self.check["name"].as_str() != Some(self.required_name)
+        {
+            return None;
+        }
+        WorkflowIdentity::for_event(self.check, self.head, self.trigger.event())
+    }
+}
+
+/// Obtain one complete attempt/job collection via the existing budgeted Actions
+/// Reader. The caller supplies a selected exact-current check from its Board
+/// snapshot and uses the same lock and current-head revalidation before dispatch.
+pub fn read<'a>(
+    source: Source<'a>,
+    mut actions_json: impl FnMut(&str) -> Result<Value, String>,
+) -> Result<Option<Verified<'a>>, String> {
+    let Some(identity) = source.identity() else {
+        return Ok(None);
+    };
+    let Some(check_id) = positive_id(&source.check["databaseId"]) else {
+        return Ok(None);
+    };
+    let address = format!(
+        "runs/{}/attempts/{}",
+        identity.workflow_run_id, identity.observed_run_attempt
+    );
+    let attempt = actions_json(&address)?;
+    let jobs = actions_json(&format!("{address}/jobs?per_page=100"))?;
+    let link = format!(
+        "https://api.github.com/repos/{}/check-runs/{check_id}",
+        source.repository
+    );
+    let Some(job) = unique_row(&jobs, "jobs", |job| {
+        job["check_run_url"].as_str() == Some(link.as_str())
+    }) else {
+        return Ok(None);
+    };
+    Ok(verify(Evidence {
+        source,
+        attempt: &attempt,
+        job,
+    }))
 }
 
 /// A single check and its exact, independently verified Actions job attempt.
@@ -226,13 +285,17 @@ mod tests {
             "id": 23, "run_id": 12, "run_attempt": 2, "head_sha": head, "name": name,
             "check_run_url": "https://api.github.com/repos/example/project/check-runs/31"
         });
-        let evidence = Evidence {
+        let source = Source {
             repository: repo,
+            repository_id: "R_repo",
             head: &head,
             workflow_path: path,
             required_name: name,
             trigger: Trigger::MergeGroup,
             check: &check,
+        };
+        let evidence = Evidence {
+            source,
             attempt: &attempt,
             job: &job,
         };
@@ -264,10 +327,42 @@ mod tests {
             );
         }
         assert!(verify(Evidence {
-            trigger: Trigger::PullRequest,
+            source: Source {
+                trigger: Trigger::PullRequest,
+                ..source
+            },
             ..evidence
         })
         .is_none());
+
+        let mut addresses = Vec::new();
+        let readback = read(source, |address| {
+            addresses.push(address.to_owned());
+            match address {
+                "runs/12/attempts/2" => Ok(attempt.clone()),
+                "runs/12/attempts/2/jobs?per_page=100" => Ok(json!({"total_count":1,"jobs":[job]})),
+                _ => panic!("unexpected Actions address"),
+            }
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(readback.attempt, matched.attempt);
+        assert_eq!(
+            addresses,
+            ["runs/12/attempts/2", "runs/12/attempts/2/jobs?per_page=100"]
+        );
+        for listing in [
+            json!({"total_count":2,"jobs":[job]}),
+            json!({"total_count":2,"jobs":[job,job]}),
+        ] {
+            assert!(read(source, |address| Ok(if address.ends_with("/2") {
+                attempt.clone()
+            } else {
+                listing.clone()
+            }))
+            .unwrap()
+            .is_none());
+        }
 
         assert!(!matched.attempt.replaces(&matched.attempt));
         assert_eq!(
@@ -285,13 +380,24 @@ mod tests {
         later_job["run_attempt"] = 3.into();
         later_job["check_run_url"] = "https://api.github.com/repos/example/project/check-runs/32".into();
         let later = verify(Evidence {
-            check: &replacement,
+            source: Source {
+                check: &replacement,
+                ..source
+            },
             attempt: &later_attempt,
             job: &later_job,
             ..evidence
         })
         .unwrap();
         assert!(later.attempt.replaces(&matched.attempt));
+        assert!(!JobAttempt {
+            lineage: JobLineage {
+                repository_id: "R_other",
+                ..later.attempt.lineage
+            },
+            ..later.attempt
+        }
+        .replaces(&matched.attempt));
         let reconciled = History::Requested {
             before_attempt: matched.attempt.run_attempt,
         };
@@ -303,7 +409,10 @@ mod tests {
         let mut stale_again = replacement.clone();
         stale_again["status"] = "IN_PROGRESS".into();
         let later = verify(Evidence {
-            check: &stale_again,
+            source: Source {
+                check: &stale_again,
+                ..source
+            },
             attempt: &later_attempt,
             job: &later_job,
             ..evidence

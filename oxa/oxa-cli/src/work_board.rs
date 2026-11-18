@@ -1,10 +1,12 @@
 //! Explicitly opted-in, read-only GitHub sampling. Never invokes a worker or mutation.
+use crate::lead_quota::{GitHubIdentity, GitHubQuotas, GitHubResource};
 pub mod refill_input;
 use oxa_work::board::{Board, GitHub, Mergeability, Policy, PullRequest, RequiredCi};
 use serde_json::Value;
+mod claims_readback;
 mod refill;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::{BTreeMap, BTreeSet},
     io::{BufRead, IsTerminal, Read},
     path::Path,
@@ -41,6 +43,7 @@ pub(crate) struct Reader<'a> {
     review_rows: Option<Value>,
     deadline: Cell<Instant>,
     bytes: Cell<usize>,
+    app_quota: Option<RefCell<GitHubQuotas>>,
 }
 
 const MAX_RESPONSE: usize = 4 * 1024 * 1024;
@@ -144,6 +147,7 @@ impl<'a> Reader<'a> {
             review_rows: None,
             deadline: Cell::new(Instant::now() + Duration::from_secs(120)),
             bytes: Cell::new(0),
+            app_quota: None,
         }
     }
 
@@ -234,18 +238,7 @@ impl<'a> Reader<'a> {
         ))?;
         // Charge captured bytes, including headers and non-2xx bodies, before interpreting them.
         self.charge_capture(text.len())?;
-        let (headers, body) = text
-            .split_once("\r\n\r\n")
-            .or_else(|| text.split_once("\n\n"))
-            .ok_or(invalid("GitHub command failed without an HTTP response"))?;
-        let status = headers
-            .lines()
-            .next()
-            .filter(|line| line.starts_with("HTTP/"))
-            .and_then(|line| line.split_whitespace().nth(1))
-            .and_then(|value| value.parse::<u16>().ok())
-            .filter(|value| (100..600).contains(value))
-            .ok_or(invalid("invalid GitHub HTTP status"))?;
+        let (status, body) = self.response(&text, GitHubResource::Graphql)?;
         if !(200..300).contains(&status) {
             return Err(QueryError::Http(status));
         }
@@ -267,6 +260,27 @@ impl<'a> Reader<'a> {
             .cloned()
             .ok_or(invalid("missing GitHub repository"))?;
         Ok((repository, text.len()))
+    }
+
+    fn response<'b>(&self, text: &'b str, resource: GitHubResource) -> Result<(u16, &'b str), QueryError> {
+        let invalid = QueryError::Other;
+        let (headers, body) = text
+            .split_once("\r\n\r\n")
+            .or_else(|| text.split_once("\n\n"))
+            .ok_or(invalid("GitHub command failed without an HTTP response"))?;
+        let status = headers
+            .lines()
+            .next()
+            .filter(|line| line.starts_with("HTTP/"))
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|value| value.parse::<u16>().ok())
+            .filter(|value| (100..600).contains(value))
+            .ok_or(invalid("invalid GitHub HTTP status"))?;
+        if let Some(quota) = &self.app_quota {
+            let headers = if (200..300).contains(&status) { headers } else { "" };
+            quota.borrow_mut().observe(GitHubIdentity::App, resource, headers);
+        }
+        Ok((status, body))
     }
 
     fn read_budget(&self) -> Result<(usize, Duration), QueryError> {
@@ -292,6 +306,38 @@ impl<'a> Reader<'a> {
             .env_remove("GH_DEBUG")
             .args(["api", "--hostname", "github.com"]);
         command
+    }
+
+    fn actions_get(&self, path: &str) -> Command {
+        let mut command = self.api_command();
+        command.args(["--method", "GET", &format!("repos/{}/actions/{path}", self.repo)]);
+        command
+    }
+
+    fn actions_json(&self, path: &str) -> Result<Value, String> {
+        let (remaining, duration) = self.read_budget().map_err(QueryError::message)?;
+        let mut command = self.actions_get(path);
+        if self.app_quota.is_some() {
+            command.arg("--include");
+        }
+        let (code, text) = oxa_work::command_runner(command, Some(remaining), duration)
+            .ok_or("GitHub Actions response exceeds its limit or timed out")?;
+        self.charge_capture(text.len()).map_err(QueryError::message)?;
+        let body = if self.app_quota.is_some() {
+            let (status, body) = self
+                .response(&text, crate::lead_quota::GitHubResource::Core)
+                .map_err(QueryError::message)?;
+            if !(200..300).contains(&status) {
+                return Err("GitHub Actions metadata unavailable".into());
+            }
+            body
+        } else {
+            &text
+        };
+        if code != 0 {
+            return Err("GitHub Actions metadata unavailable".into());
+        }
+        serde_json::from_str(body).map_err(|_| "invalid GitHub Actions metadata".into())
     }
 }
 
@@ -419,7 +465,7 @@ impl Reader<'_> {
                 match row["state"].as_str() {
                     Some("OPEN") => (),
                     Some("CLOSED" | "MERGED") => {
-                        return Err(SnapshotError::Changed("PR changed during snapshot; retry later"))
+                        return Err(SnapshotError::Changed("PR changed during snapshot; retry later"));
                     }
                     _ => return Err(SnapshotError::from("invalid PR state")),
                 }
@@ -520,6 +566,9 @@ impl GitHub for Reader<'_> {
     fn open_pull_requests(&mut self) -> Result<Vec<PullRequest>, String> {
         self.deadline.set(Instant::now() + Duration::from_secs(120));
         self.bytes.set(0);
+        if let Some(quota) = &mut self.app_quota {
+            *quota.get_mut() = GitHubQuotas::default();
+        }
         // A consistency refusal gets exactly one fresh acquisition, sharing its byte budget.
         match self.acquire() {
             Err(SnapshotError::Changed(_)) => self.acquire(),
@@ -537,16 +586,19 @@ pub(crate) fn run(
     dirs: &oxa_config::Dirs,
     policy: &oxa_work::RunPolicy,
 ) -> Result<i32, String> {
+    if args.first().is_some_and(|arg| arg == "--claims-readback") {
+        return claims_readback::run(args, root, common, env, dirs);
+    }
     if args.first().is_some_and(|arg| arg == "--refill") {
         return refill::run(args, root, common, env, dirs, policy);
     }
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
         [shadow, flag, repo, options @ ..] if shadow == "--shadow" && flag == "--repo" => (repo, options),
-        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--review-policy FILE] [--queue-evidence] [--landing-shadow] [--queue-report-policy FILE]".into()),
+        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--app-quota-shadow] [--review-policy FILE] [--queue-evidence] [--landing-shadow] [--queue-report-policy FILE]".into()),
     };
     let (mut once, mut streamed, mut review_file) = (false, false, None);
-    let (mut queue_evidence, mut landing_shadow) = (false, false);
+    let (mut queue_evidence, mut landing_shadow, mut quota_shadow) = (false, false, false);
     let mut report_file = None;
     let mut options = options.iter();
     while let Some(option) = options.next() {
@@ -555,6 +607,7 @@ pub(crate) fn run(
             "--token-stdin" => streamed = true,
             "--queue-evidence" => queue_evidence = true,
             "--landing-shadow" => landing_shadow = true,
+            "--app-quota-shadow" => quota_shadow = true,
             "--queue-report-policy" if report_file.is_none() => {
                 report_file = Some(options.next().ok_or("missing queue report policy file")?);
             }
@@ -566,6 +619,9 @@ pub(crate) fn run(
     }
     if !once && !streamed {
         return Err("continuous sampling requires --token-stdin; use --once with a five-minute token-refresh supervisor otherwise".into());
+    }
+    if quota_shadow && !streamed {
+        return Err("App quota observations require the protected --token-stdin source".into());
     }
     if repo.split('/').count() != 2
         || repo.split('/').any(|p| {
@@ -590,7 +646,10 @@ pub(crate) fn run(
     let mut report_settings = report_file
         .map(|path| landing::report::Settings::read(Path::new(path)))
         .transpose()?;
-    let inherited = env.get("GH_TOKEN").filter(|s| !s.is_empty());
+    let inherited = (!streamed)
+        .then(|| env.get("GH_TOKEN"))
+        .flatten()
+        .filter(|s| !s.is_empty());
     if !streamed && inherited.is_none() {
         return Err("shadow board requires an explicit GitHub App token".into());
     }
@@ -621,6 +680,9 @@ pub(crate) fn run(
                 inherited.ok_or("missing App token")?.to_owned()
             };
             let mut reader = Reader::new(&gh, &policy.host_path, repo, &token);
+            if quota_shadow {
+                reader.app_quota = Some(RefCell::new(GitHubQuotas::default()));
+            }
             reader.review_rows = review_settings.as_ref().map(|_| Value::Null);
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
@@ -656,6 +718,10 @@ pub(crate) fn run(
                 queue_rejections,
                 landing,
                 landing_main,
+                app_quota: reader
+                    .app_quota
+                    .as_ref()
+                    .and_then(|quota| quota.borrow().app_sample(now)),
             })
         },
         std::thread::sleep,

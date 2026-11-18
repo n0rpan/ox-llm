@@ -174,6 +174,7 @@ The compaction rules are in [compaction.md](compaction.md).
 | `oxa.engine.inProcessCloud` | bool | `false` | select the in-process Rust cloud gateway for sessions and model discovery; user settings only |
 | `oxa.cloud` | object | `{}` | native cloud models, prices, USD budget and subscription caps; user settings only; see below |
 | `oxa.lead.serve` | object | `{}` | the lead web access scaffold: `enabled`, `identity` (`local` or `tailscale`), `bind` (a loopback address), `port`, `allowed_identities`. Off by default and no listener is installed yet; user settings only. See [lead-web.md](lead-web.md) |
+| `oxa.lead.sessionId` | string | unset | exact ID of the dedicated Lead Session created by the native owner operation, from owner-private user settings. Free text is disabled when unset. |
 | `oxa.envNote` | bool | unset | append the environment note to each prompt you send: the first one in a session (and the first of a new day, or after a compaction) gets a short `<env>` block with the date, time, time zone, locale, kernel, model, context size, thinking level and permission mode; later ones get `[local time HH:MM ZONE]`. It is never put in the system prompt, so the prompt cache stays exact. Unset is on; `OXA_ENV_NOTE=0` or `=1` overrides it for one run |
 | `oxa.sandbox.net` | `on` / `off` | `on` | network for bash in workspace and ask modes |
 | `oxa.sandbox.allowHomeWrite` | bool | `false` | make the home directory the bash workspace when oxa starts in it, in every mode (its folders and files writable; dotfiles, dot-folders, `~/bin` and the home folder itself stay read-only; never `/` or a parent of home). In interactive mode confirming the start question does the same. User settings only. See [security.md](security.md#starting-in-your-home-directory) |
@@ -199,15 +200,18 @@ shown while a bounded refresh updates the cache for later starts. A failed live
 lookup uses the configured catalog and reports the failure. Discovery stays
 off in offline mode.
 
-OpenRouter supplies model limits and token prices. When a provider omits
-prices, set conservative rates for the model under `oxa.cloud.models` in user
-settings before using it for paid inference. The gateway uses those rates to
-reserve budget and calculate charges from usage. Live prices cannot lower
-configured rates. A charge calculated from catalog rates is distinct from a
-charge reported by the provider. The ledger labels estimated and reserved
-costs. Models without enough pricing or limit data to enforce the budget are
-reported and omitted. When the same provider has several configured base URLs,
-select the discovery endpoint with `oxa.cloud.discovery.<provider>.base_url`.
+OpenRouter supplies model limits and token prices. For a discovered model with
+no known rates, the owner can opt in by adding its exact public alias to
+`oxa.cloud.unpriced_discovered_pricing` in user settings. Each entry needs
+positive `input_per_million` and `output_per_million` USD rates. Choose rates
+that bound the expected provider charge. The gateway uses them for the normal
+budget reservation and records the settlement as `estimated_cost_usd`. Missing
+final usage retains the reservation. Estimates count against the daily cap and
+are recorded separately from actual costs. The setting is empty by default and
+is only read when discovery is enabled. The model still needs known token limits.
+Known provider or configured prices take precedence over this setting.
+When the same provider has several configured base URLs, select the discovery
+endpoint with `oxa.cloud.discovery.<provider>.base_url`.
 
 The merged catalog is available through the model picker and `--list-models`.
 The LAN guest catalog lists only guest-allowlisted models.

@@ -27,7 +27,7 @@ pub struct Partition {
     pub residues: BTreeSet<u64>,
 }
 impl Partition {
-    fn contains(&self, number: u64) -> bool {
+    pub(crate) fn contains(&self, number: u64) -> bool {
         self.residues.contains(&(number % self.modulus))
     }
 
@@ -39,19 +39,24 @@ impl Partition {
         worker: &Worker,
         now: u64,
     ) -> Result<AssignmentBoard> {
-        if self.modulus == 0
-            || self.residues.is_empty()
-            || self.residues.iter().any(|r| *r >= self.modulus)
-            || policy.max_attempts_per_day > 3
-        {
-            return Err("invalid board partition or attempt cap".into());
-        }
+        self.validate(policy.max_attempts_per_day)?;
         claims.assignment_board(
             &mut Partitioned(source, self),
             policy,
             std::slice::from_ref(worker),
             now,
         )
+    }
+
+    pub(crate) fn validate(&self, max_attempts_per_day: u32) -> Result<()> {
+        if self.modulus == 0
+            || self.residues.is_empty()
+            || self.residues.iter().any(|r| *r >= self.modulus)
+            || max_attempts_per_day > 3
+        {
+            return Err("invalid board partition or attempt cap".into());
+        }
+        Ok(())
     }
 }
 struct Partitioned<'a, S>(&'a mut S, &'a Partition);

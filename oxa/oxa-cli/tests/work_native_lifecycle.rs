@@ -116,9 +116,26 @@ impl Fixture {
     }
 
     fn run(&self, server: &FakeServer) -> (Child, Output) {
+        self.invoke(
+            server,
+            &[
+                "work",
+                "--native-queue",
+                "--config",
+                self.config.to_str().unwrap(),
+            ],
+        )
+    }
+
+    fn activity(&self, enabled: bool) {
+        let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&self.config).unwrap()).unwrap();
+        config["nativeActivity"] = enabled.into();
+        fs::write(&self.config, serde_json::to_vec(&config).unwrap()).unwrap();
+    }
+
+    fn invoke(&self, server: &FakeServer, args: &[&str]) -> (Child, Output) {
         let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
-            .args(["work", "--native-queue", "--config"])
-            .arg(&self.config)
+            .args(args)
             .current_dir(self.env.work().join("project"))
             .env_clear()
             .envs(self.env.envs(&server.url()))
@@ -199,7 +216,6 @@ fn renewed_owner_executes_and_settles_the_original_expired_receipt() {
         renewed.expires_at
     );
     assert!(row.data.native_binding.as_ref() == Some(&fixture.binding));
-
     let mut completion = ScriptTurn::tool(
         "done",
         "goal_done",
@@ -232,6 +248,10 @@ fn renewed_owner_executes_and_settles_the_original_expired_receipt() {
     assert!(row.state.lease.is_none());
     assert_eq!(row.state.attempts, 1);
     assert!(row.data.native_binding.as_ref() == Some(&fixture.binding));
+    assert!(
+        row.data.lease_activity.is_none(),
+        "omitted activity setting stays off"
+    );
     assert_eq!(row.data.item_owner.as_ref().unwrap().host_id, "host-a");
     assert_eq!(
         row.data.item_owner.as_ref().unwrap().expires_at,
@@ -304,6 +324,157 @@ fn verified_reclaim_fences_replay_without_consuming_the_old_started_packet() {
     assert_eq!(files(&fixture.queue), queue_before);
     assert_eq!(files(&fixture.storage), checkpoints_before);
     let row = &fixture.reopened().assignments().unwrap()[&42];
+    assert!(row.state.lease.is_none());
+    assert_eq!(row.state.attempts, 1);
+    assert!(row.data.native_binding.as_ref() == Some(&fixture.binding));
+    assert!(row.data.lease_activity.is_none());
+}
+
+fn renew(fixture: &Fixture) {
+    fixture
+        .claims
+        .renew_item_for(
+            42,
+            &fixture.original.lease.holder,
+            "host-a",
+            &fixture.original,
+            fixture.now - 90,
+            600,
+        )
+        .unwrap()
+        .unwrap();
+}
+
+fn completion() -> FakeServer {
+    let mut turn = ScriptTurn::tool(
+        "done",
+        "goal_done",
+        r#"{"status":"complete","evidence":"Synthetic process milestone."}"#,
+    );
+    turn.text = Some("Synthetic activity complete".into());
+    FakeServer::start(vec![turn], FakeOpts::default()).unwrap()
+}
+
+fn checkpoint(fixture: &Fixture) -> serde_json::Value {
+    serde_json::from_slice(
+        &fs::read(
+            fixture
+                .storage
+                .join(format!("{}.json", fixture.binding.native_task_id)),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn activity_requires_opt_in_and_finished_replay_does_not_advance_it() {
+    for enabled in [false, true] {
+        let fixture = Fixture::new();
+        renew(&fixture);
+        fixture.activity(enabled);
+        let server = completion();
+        let (_, output) = fixture.run(&server);
+        assert!(output.status.success(), "activity={enabled}: {output:?}");
+        let saved = checkpoint(&fixture);
+        let row = &fixture.reopened().assignments().unwrap()[&42];
+        assert!(row.state.lease.is_none());
+        assert_eq!(row.state.attempts, 1);
+        assert!(row.data.native_binding.as_ref() == Some(&fixture.binding));
+        let activity = row.data.lease_activity.clone();
+        if enabled {
+            let activity = activity.as_ref().expect("enabled native result reached Claims");
+            assert_eq!(activity.generation, fixture.original.lease.generation);
+            assert!(activity.heartbeat_at.is_none(), "this adapter emits no heartbeat");
+            let action = activity.last_action.as_ref().unwrap();
+            let launch = saved["record"]["worker_launch_revision"].as_u64().unwrap();
+            assert_eq!(action.launch_revision, launch);
+            assert!(launch > 0 && launch < action.revision);
+            assert!(action.revision < saved["record"]["checkpoint_revision"].as_u64().unwrap());
+            assert!(action.at_ms > 0);
+            assert!(action.at_ms <= saved["record"]["checkpoint_at_ms"].as_u64().unwrap());
+        } else {
+            assert!(activity.is_none(), "explicit false stays off");
+        }
+        let requests = server.requests().len();
+        assert_eq!(requests, 1);
+        let (_, replay) = fixture.run(&server);
+        assert!(replay.status.success(), "{replay:?}");
+        assert_eq!(server.requests().len(), requests);
+        let replayed = &fixture.reopened().assignments().unwrap()[&42];
+        assert_eq!(replayed.data.lease_activity, activity);
+        assert!(replayed.state.lease.is_none());
+        assert!(replayed.data.native_binding.as_ref() == Some(&fixture.binding));
+    }
+}
+
+#[test]
+fn saved_native_result_recovers_after_another_task_acknowledges_the_cursor() {
+    let fixture = Fixture::new();
+    renew(&fixture);
+    fixture.activity(true);
+    let claims_path = fixture.config.parent().unwrap().join("claims");
+    // Read and lock remain possible; the real Claims atomic save must fail.
+    // This leaves the actual synced WorkerFinished checkpoint before advancement.
+    fs::set_permissions(&claims_path, fs::Permissions::from_mode(0o500)).unwrap();
+    let server = completion();
+    let (_, refused) = fixture.run(&server);
+    fs::set_permissions(&claims_path, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(
+        !refused.status.success(),
+        "activity write fault must fire: {refused:?}"
+    );
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "the real managed invocation completed"
+    );
+    let saved = checkpoint(&fixture);
+    assert_eq!(saved["record"]["checkpoint_kind"], "worker_finished");
+    let revision = saved["record"]["checkpoint_revision"].as_u64().unwrap();
+    let launch = saved["record"]["worker_launch_revision"].as_u64().unwrap();
+    let at_ms = saved["record"]["checkpoint_at_ms"].as_u64().unwrap();
+    let row = &fixture.reopened().assignments().unwrap()[&42];
+    assert!(row.data.lease_activity.is_none());
+    assert_eq!(row.state.lease.as_ref(), Some(&fixture.original.lease));
+    let cursor = || -> serde_json::Value {
+        serde_json::from_slice(&fs::read(fixture.storage.join(".checkpoint-counter")).unwrap()).unwrap()
+    };
+    assert_eq!(cursor()["pending"], fixture.binding.native_task_id);
+
+    // The ordinary caller's existing no-op observer acknowledges the foreign
+    // pending result in the SAME repository cursor, without changing this task.
+    let foreign = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
+    let (_, output) = fixture.invoke(&foreign, &["work", "../tasks.json"]);
+    assert!(output.status.success(), "{output:?}");
+    assert!(cursor()["pending"].is_null());
+    assert!(cursor()["revision"].as_u64().unwrap() > revision);
+    assert_eq!(checkpoint(&fixture), saved);
+    assert!(fixture.reopened().assignments().unwrap()[&42]
+        .data
+        .lease_activity
+        .is_none());
+
+    let (_, resumed) = fixture.run(&server);
+    assert!(resumed.status.success(), "{resumed:?}");
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "resume must not invoke the model again"
+    );
+    let row = &fixture.reopened().assignments().unwrap()[&42];
+    let activity = row
+        .data
+        .lease_activity
+        .as_ref()
+        .expect("saved native result re-offered");
+    let action = activity.last_action.as_ref().unwrap();
+    assert_eq!(
+        (action.launch_revision, action.revision, action.at_ms),
+        (launch, revision, at_ms)
+    );
+    assert_eq!(activity.generation, fixture.original.lease.generation);
+    assert!(activity.heartbeat_at.is_none());
     assert!(row.state.lease.is_none());
     assert_eq!(row.state.attempts, 1);
     assert!(row.data.native_binding.as_ref() == Some(&fixture.binding));
