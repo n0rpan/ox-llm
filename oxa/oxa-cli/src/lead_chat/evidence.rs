@@ -19,7 +19,8 @@ pub(crate) struct FactChip {
 
 #[derive(Clone)]
 enum Subject {
-    Item(u64),
+    Issue(u64),
+    PullRequest(u64),
     Task(String),
 }
 
@@ -58,9 +59,9 @@ impl EvidencePacket {
             let named = entries.clone().filter(|entry| mentioned.contains(&entry.number));
             let other = entries.filter(|entry| !mentioned.contains(&entry.number));
             for entry in named.chain(other).take(MAX_BOARD_FACTS) {
-                let kind = match entry.action {
-                    Action::BuildIssue | Action::WaitIssue => "Issue",
-                    _ => "PR",
+                let (kind, subject) = match entry.action {
+                    Action::BuildIssue | Action::WaitIssue => ("Issue", Subject::Issue(entry.number)),
+                    _ => ("PR", Subject::PullRequest(entry.number)),
                 };
                 let action = json!(entry.action);
                 let action = action.as_str().unwrap_or("action unavailable");
@@ -68,7 +69,7 @@ impl EvidencePacket {
                     label: format!("{kind} #{} · {}", entry.number, action.replace('_', " ")),
                     href: format!("/items/{}", entry.number),
                     observed_at: board.observed_at,
-                    subject: Some(Subject::Item(entry.number)),
+                    subject: Some(subject),
                 });
             }
         }
@@ -112,9 +113,15 @@ impl EvidencePacket {
     }
 
     pub(super) fn contains_item(&self, item: u64) -> bool {
+        self.facts.iter().any(|fact| {
+            matches!(&fact.subject, Some(Subject::Issue(number) | Subject::PullRequest(number)) if *number == item)
+        })
+    }
+
+    pub(super) fn contains_pr(&self, pr: u64) -> bool {
         self.facts
             .iter()
-            .any(|fact| matches!(&fact.subject, Some(Subject::Item(observed)) if *observed == item))
+            .any(|fact| matches!(&fact.subject, Some(Subject::PullRequest(number)) if *number == pr))
     }
 
     pub(super) fn resolve(&self, references: &[usize]) -> Result<Vec<FactChip>, OxaError> {
