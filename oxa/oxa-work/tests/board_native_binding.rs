@@ -289,3 +289,51 @@ fn a_failed_binding_write_preserves_the_reservation_without_refund() {
         .unwrap()
         .is_none());
 }
+
+#[test]
+fn reviewed_source_survives_reopening_and_cannot_change_within_a_lease() {
+    let (dir, store, lease) = setup();
+    let original = binding(&lease);
+    let mut value = serde_json::to_value(&original).unwrap();
+    value["reviewed_head"] = serde_json::json!("b".repeat(40));
+    let reviewed: NativeBinding =
+        serde_json::from_value(value.clone()).expect("reviewed admission must decode");
+    assert!(store.bind_native(&worker().id, &reviewed).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let bytes = fs::read(&path).unwrap();
+    let reopened = Claims::open(dir.path()).unwrap();
+    let retained = reopened
+        .native_binding(&reviewed.native_task_id, &reviewed.branch)
+        .unwrap()
+        .unwrap();
+    assert_eq!(serde_json::to_value(&retained).unwrap(), value);
+    assert!(reopened.bind_native(&worker().id, &retained).unwrap());
+    value["reviewed_head"] = serde_json::json!("c".repeat(40));
+    let changed = serde_json::from_value(value).unwrap();
+    assert!(!reopened.bind_native(&worker().id, &changed).unwrap());
+    assert!(!reopened.bind_native(&worker().id, &original).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert!(reopened
+        .release_for(1, &worker().id, &lease, 20, "finished")
+        .unwrap());
+    assert!(
+        reopened
+            .native_binding(&retained.native_task_id, &retained.branch)
+            .unwrap()
+            == Some(retained)
+    );
+}
+
+#[test]
+fn legacy_issue_binding_without_review_evidence_retains_its_encoding() {
+    let (dir, store, lease) = setup();
+    let original = binding(&lease);
+    assert!(store.bind_native(&worker().id, &original).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let bytes = fs::read(&path).unwrap();
+    let row: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(row["data"]["native_binding"].get("reviewed_head").is_none());
+    let reopened = Claims::open(dir.path()).unwrap();
+    assert!(reopened.bind_native(&worker().id, &original).unwrap());
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
