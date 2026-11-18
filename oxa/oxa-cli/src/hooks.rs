@@ -237,24 +237,38 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
     }
 
     // ---- builtin:worker (K5a) ----
-    // Off in a worker child (`OXA_WORKER_DEPTH` set) and when `oxa.workers.enabled` is false.
-    if worker_tool::built(
-        i.env.get(worker_tool::ENV_WORKER_DEPTH),
-        i.settings.bool(worker_tool::SETTING_ENABLED, true),
-    ) {
+    // Off in a worker child (`OXA_WORKER_DEPTH` set, even to an empty value: `Env::get` treats
+    // empty as unset, so the pairs are read directly) and when `oxa.workers.enabled` is false.
+    let worker_depth = i
+        .env
+        .pairs()
+        .iter()
+        .rev()
+        .find(|(k, _)| k == worker_tool::ENV_WORKER_DEPTH)
+        .map(|(_, v)| v.as_str());
+    if worker_tool::built(worker_depth, i.settings.bool(worker_tool::SETTING_ENABLED, true)) {
         match std::env::current_exe() {
             Ok(bin) => {
-                let cfg = WorkerConfig {
-                    oxa_bin: bin,
-                    agent_dir: i.dirs.agent_dir.clone(),
-                    max: usize::try_from(i.settings.u32(worker_tool::SETTING_MAX, 4)).unwrap_or(4),
-                    grace: Duration::from_secs(u64::from(i.settings.u32(worker_tool::SETTING_GRACE, 10))),
-                    parent_env: i.env.pairs().to_vec(),
-                    yolo: i.yolo.clone(),
-                };
-                match WorkerHooks::new(cfg) {
-                    Ok(workers) => {
-                        let workers = Arc::new(workers);
+                // The supervisor needs a trusted `kill` from the host PATH (never a project shim),
+                // so no worker starts without a way to stop it.
+                let host_path = std::ffi::OsString::from(i.env.get("PATH").unwrap_or(""));
+                match crate::workers::proc::start(i.settings, &host_path, i.cwd, &i.dirs.home) {
+                    Ok(supervisor) => {
+                        // The worker child writes its sessions where this session does.
+                        let sessions_dir = i
+                            .settings
+                            .session_dir(&i.dirs.home, i.cwd)
+                            .filter(|_| i.env.get("OXA_SESSION_DIR").is_none())
+                            .unwrap_or_else(|| i.dirs.sessions_dir.clone());
+                        let workers = Arc::new(WorkerHooks::new(WorkerConfig {
+                            oxa_bin: bin,
+                            agent_dir: i.dirs.agent_dir.clone(),
+                            max: usize::try_from(i.settings.u32(worker_tool::SETTING_MAX, 4)).unwrap_or(4),
+                            supervisor,
+                            sessions_dir,
+                            parent_env: i.env.pairs().to_vec(),
+                            yolo: i.yolo.clone(),
+                        }));
                         sets.hooks.push(workers.clone());
                         sets.workers = Some(workers);
                     }

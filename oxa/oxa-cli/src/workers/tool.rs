@@ -24,7 +24,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The name the model calls.
 pub const TOOL_NAME: &str = "worker";
@@ -36,8 +36,6 @@ const COMMAND: &str = "oxa worker";
 pub const SETTING_ENABLED: &str = "oxa.workers.enabled";
 /// Setting: the most live workers one session runs.
 pub const SETTING_MAX: &str = "oxa.workers.max";
-/// Setting: seconds a stopped worker gets after SIGINT.
-pub const SETTING_GRACE: &str = "oxa.workers.stopGraceSeconds";
 /// Env: set in a worker child (`launch::child_env` sets it to `1`). Any value, even empty, means
 /// nested; only an unset variable lets the hook set be built.
 pub const ENV_WORKER_DEPTH: &str = "OXA_WORKER_DEPTH";
@@ -58,8 +56,11 @@ pub struct WorkerConfig {
     pub oxa_bin: PathBuf,
     pub agent_dir: PathBuf,
     pub max: usize,
-    /// Time a stopped worker gets after SIGINT.
-    pub grace: Duration,
+    /// The process supervisor (`proc::start`: the trusted `kill` helper and
+    /// `oxa.workers.stopGraceSeconds` are already resolved).
+    pub supervisor: Supervisor,
+    /// The directory the child writes its sessions to (and so its `<session>.status.json`).
+    pub sessions_dir: PathBuf,
     /// The process environment of this session; the child environment is made from it.
     pub parent_env: Vec<(String, String)>,
     /// The process's autonomy switch (the parent's level sets the worker's ceiling).
@@ -71,6 +72,7 @@ pub struct WorkerCore {
     oxa_bin: PathBuf,
     agent_dir: PathBuf,
     max: usize,
+    sessions_dir: PathBuf,
     parent_env: Vec<(String, String)>,
     yolo: YoloSwitch,
     supervisor: Supervisor,
@@ -165,18 +167,38 @@ fn env_wrapper(cwd: &Path, parent: &[(String, String)], child: &[(String, String
     argv
 }
 
-/// The state of a worker from its status file and its process group.
-fn live_state(rec: &WorkerRecord) -> WorkerState {
-    let status: Option<Value> = fs::read(&rec.status_file)
+/// The status file of the worker session `session_id` that ran in `worktree`: the sibling
+/// `<session>.status.json` of its session file (`<stamp>_<id>.jsonl`, written by the status writer
+/// as `session_file.with_extension("status.json")`), in the session directory of the worktree.
+/// The time stamp is the child's, so the file is found by its suffix; `None` until it exists.
+fn status_path(sessions_dir: &Path, worktree: &Path, session_id: &str) -> Option<PathBuf> {
+    let dir = sessions_dir.join(oxa_session::session_dir_name(worktree));
+    let suffix = format!("_{session_id}.status.json");
+    let mut found: Vec<PathBuf> = fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(&suffix))
+        .map(|e| e.path())
+        .collect();
+    found.sort();
+    found.pop()
+}
+
+/// The state of a worker from its status file and its process group. The status file is found
+/// under `sessions_dir` (see [`status_path`]); `rec.status_file` is the fallback.
+fn live_state(rec: &WorkerRecord, sessions_dir: &Path) -> WorkerState {
+    let path =
+        status_path(sessions_dir, &rec.worktree, &rec.session_id).unwrap_or_else(|| rec.status_file.clone());
+    let status: Option<Value> = fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
     let alive = PathBuf::from(format!("/proc/{}", rec.pid)).exists();
     registry::state(rec, status.as_ref(), alive)
 }
 
-fn is_live(rec: &WorkerRecord) -> bool {
+fn is_live(rec: &WorkerRecord, sessions_dir: &Path) -> bool {
     matches!(
-        live_state(rec),
+        live_state(rec, sessions_dir),
         WorkerState::Starting | WorkerState::Working | WorkerState::Idle
     )
 }
@@ -192,29 +214,30 @@ fn label(state: &WorkerState) -> String {
     }
 }
 
-fn describe(rec: &WorkerRecord) -> String {
+fn describe(rec: &WorkerRecord, sessions_dir: &Path) -> String {
     format!(
         "{} session {} branch {} {}",
         rec.name,
         rec.session_id,
         rec.branch,
-        label(&live_state(rec))
+        label(&live_state(rec, sessions_dir))
     )
 }
 
 impl WorkerCore {
-    fn new(cfg: WorkerConfig) -> io::Result<WorkerCore> {
-        Ok(WorkerCore {
+    fn new(cfg: WorkerConfig) -> WorkerCore {
+        WorkerCore {
             oxa_bin: cfg.oxa_bin,
             agent_dir: cfg.agent_dir,
             max: cfg.max,
+            sessions_dir: cfg.sessions_dir,
             parent_env: cfg.parent_env,
             yolo: cfg.yolo,
-            supervisor: Supervisor::new(cfg.grace)?,
+            supervisor: cfg.supervisor,
             gate: Mutex::new(()),
             session: Mutex::new((String::new(), String::new())),
             host: Mutex::new(None),
-        })
+        }
     }
 
     fn session(&self) -> (String, String) {
@@ -236,7 +259,7 @@ impl WorkerCore {
     }
 
     /// `start`: see the module docs for the order of the checks.
-    pub fn start(&self, args: &Value, cwd: &Path, mode: Mode, parent_yolo: bool) -> ToolOutput {
+    pub fn start(&self, args: &Value, cwd: &Path, mode: Mode, autonomy: Autonomy) -> ToolOutput {
         let _gate = lock(&self.gate);
         let name = str_arg(args, "name").unwrap_or("");
         if !valid_name(name) {
@@ -275,7 +298,7 @@ impl WorkerCore {
                 "worker: a worker named {name} already exists in this session; stop it or choose another name"
             ));
         }
-        let live = records.iter().filter(|r| is_live(r)).count();
+        let live = records.iter().filter(|r| is_live(r, &self.sessions_dir)).count();
         if live >= self.max {
             return ToolOutput::error(format!(
                 "worker: {live} live workers already; the limit is {} (oxa.workers.max)",
@@ -339,7 +362,7 @@ impl WorkerCore {
             goal_file: goal_file.to_string_lossy().into_owned(),
             mode: wanted,
         };
-        let (argv, notice) = match child_argv(&spec, mode, parent_yolo) {
+        let (argv, notice) = match child_argv(&spec, mode, autonomy) {
             Ok(v) => v,
             Err(e) => return ToolOutput::error(format!("worker: {e}")),
         };
@@ -370,7 +393,12 @@ impl WorkerCore {
             model,
             mode: effective,
             goal_file,
-            status_file: dir.join(format!("{name}.status.json")),
+            // The child's real file carries a time stamp (see `status_path`); `live_state`
+            // looks for it by session id and falls back to this name.
+            status_file: self
+                .sessions_dir
+                .join(oxa_session::session_dir_name(&worktree))
+                .join(format!("{session_id}.status.json")),
             log_file: log,
             started_ms: started,
             stopped: false,
@@ -404,7 +432,7 @@ impl WorkerCore {
         if records.is_empty() {
             return ToolOutput::ok("no workers in this session");
         }
-        let lines: Vec<String> = records.iter().map(|r| describe(r)).collect();
+        let lines: Vec<String> = records.iter().map(|r| describe(r, &self.sessions_dir)).collect();
         ToolOutput::ok(lines.join("\n"))
     }
 
@@ -445,8 +473,8 @@ impl WorkerCore {
         let records = registry::load(&self.agent_dir, &parent).unwrap_or_default();
         let lines: Vec<String> = records
             .iter()
-            .filter(|r| is_live(r))
-            .map(|r| describe(r))
+            .filter(|r| is_live(r, &self.sessions_dir))
+            .map(|r| describe(r, &self.sessions_dir))
             .collect();
         if lines.is_empty() {
             Vec::new()
@@ -486,10 +514,7 @@ impl Tool for WorkerTool {
 
     fn run(&self, args: &Value, cx: &ToolCtx, _live: &mut dyn FnMut(&str)) -> ToolOutput {
         match str_arg(args, "action") {
-            Some("start") => {
-                let parent_yolo = matches!(self.core.yolo.level(), Autonomy::Yolo);
-                self.core.start(args, cx.cwd, cx.mode, parent_yolo)
-            }
+            Some("start") => self.core.start(args, cx.cwd, cx.mode, self.core.yolo.level()),
             Some("list") => self.core.list(),
             Some("stop") => self.core.stop(args),
             _ => ToolOutput::error("worker: action must be start, list or stop"),
@@ -508,9 +533,9 @@ pub struct WorkerHooks {
 }
 
 impl WorkerHooks {
-    /// The hook set, or the error that stops it (the supervisor thread could not start).
-    pub fn new(cfg: WorkerConfig) -> io::Result<WorkerHooks> {
-        let core = Arc::new(WorkerCore::new(cfg)?);
+    /// The hook set.
+    pub fn new(cfg: WorkerConfig) -> WorkerHooks {
+        let core = Arc::new(WorkerCore::new(cfg));
         let tool: Arc<dyn Tool> = Arc::new(WorkerTool {
             spec: ToolSpec {
                 name: TOOL_NAME.to_string(),
@@ -522,7 +547,7 @@ impl WorkerHooks {
             },
             core: core.clone(),
         });
-        Ok(WorkerHooks { core, tool })
+        WorkerHooks { core, tool }
     }
 }
 
@@ -569,6 +594,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
 
     /// A fresh directory under the system temp directory.
     fn scratch(tag: &str) -> PathBuf {
@@ -610,15 +636,20 @@ mod tests {
     }
 
     fn hooks(fake: &Path, agent: &Path) -> WorkerHooks {
+        let kill = ["/bin/kill", "/usr/bin/kill"]
+            .into_iter()
+            .map(PathBuf::from)
+            .find(|p| p.is_file())
+            .expect("a kill executable");
         WorkerHooks::new(WorkerConfig {
             oxa_bin: fake.to_path_buf(),
             agent_dir: agent.to_path_buf(),
             max: 4,
-            grace: Duration::from_secs(1),
+            supervisor: Supervisor::new(Duration::from_secs(1), kill).expect("supervisor"),
+            sessions_dir: agent.join("sessions"),
             parent_env: Vec::new(),
             yolo: YoloSwitch::new(Autonomy::Standard),
         })
-        .unwrap()
     }
 
     fn set_session(hooks: &WorkerHooks, id: &str) {
@@ -634,7 +665,7 @@ mod tests {
             &json!({"action": "start", "name": "alpha", "goal": "write the thing"}),
             &repo,
             Mode::Workspace,
-            false,
+            Autonomy::Standard,
         );
         assert!(!out.is_error, "{}", out.text);
         let records = registry::load(&agent, "parent-1").unwrap();
@@ -658,9 +689,13 @@ mod tests {
         let hooks = hooks(&fake, &agent);
         set_session(&hooks, "parent-1");
         let args = json!({"action": "start", "name": "alpha", "goal": "one"});
-        let first = hooks.core.start(&args, &repo, Mode::Workspace, false);
+        let first = hooks
+            .core
+            .start(&args, &repo, Mode::Workspace, Autonomy::Standard);
         assert!(!first.is_error, "{}", first.text);
-        let second = hooks.core.start(&args, &repo, Mode::Workspace, false);
+        let second = hooks
+            .core
+            .start(&args, &repo, Mode::Workspace, Autonomy::Standard);
         assert!(second.is_error);
         assert!(second.text.contains("already exists"), "{}", second.text);
         assert_eq!(registry::load(&agent, "parent-1").unwrap().len(), 1);
