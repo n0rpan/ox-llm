@@ -4,10 +4,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod claims;
 pub use claims::{
-    Assignment, AssignmentBoard, AssignmentData, Claims, ExistingWork, ItemLease, ItemOwner, NativeBinding,
-    ReleaseRecord,
+    Assignment, AssignmentBoard, AssignmentData, Claims, ExistingWork, ItemLease, ItemOwner, LeaseActivity,
+    LeaseSignal, NativeBinding, ReleaseRecord, VerifiedMilestone,
 };
 pub mod assignment;
+pub use claims::ActivityTiming;
+pub use claims::{Dependency, DependencyWait};
+pub mod check_recovery;
 mod intake;
 pub mod landing;
 pub mod queue;

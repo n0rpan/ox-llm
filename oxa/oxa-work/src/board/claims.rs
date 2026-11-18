@@ -8,14 +8,20 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+mod activity;
 mod controls;
+mod dependencies;
+pub use activity::{LeaseActivity, LeaseSignal, VerifiedMilestone};
 pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
+pub use dependencies::{Dependency, DependencyWait};
 mod imports;
 mod native;
 pub use native::NativeBinding;
 mod ownership;
 mod reviews;
+mod timing;
 pub use ownership::{ExistingWork, ItemLease, ItemOwner};
+pub use timing::ActivityTiming;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -141,6 +147,20 @@ impl Claims {
                         .is_some_and(|lease| lease != &binding.lease)
             })
             || saved.review_requests.iter().any(|key| !key.valid())
+            || saved.data.dependency.as_ref().is_some_and(|wait| {
+                !wait.valid(number)
+                    || saved.data.item_owner.is_none()
+                    || saved
+                        .data
+                        .native_binding
+                        .as_ref()
+                        .is_none_or(|binding| binding.lease.claimed_at.is_none_or(|at| wait.deadline <= at))
+            })
+            || saved
+                .data
+                .lease_activity
+                .as_ref()
+                .is_some_and(|activity| saved.data.item_owner.is_none() || !activity.valid(&saved.state))
             || saved.data.item_owner.as_ref().is_some_and(|owner| {
                 !valid_worker_id(&owner.host_id)
                     || owner.expires_at == 0
@@ -321,6 +341,8 @@ impl Claims {
             expires_at,
         });
         row.data.native_binding = None;
+        row.data.lease_activity = None;
+        row.data.dependency = None;
         let replacing = self.established(entry.number)?;
         self.save(entry.number, row, replacing)?;
         self.mark(entry.number)?;
