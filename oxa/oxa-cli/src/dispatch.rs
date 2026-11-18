@@ -1015,6 +1015,9 @@ fn prepare(
         (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
         (m, _) => m,
     };
+    if let Some(text) = oxa_proto::no_os_sandbox_notice() {
+        notices.push((Level::Warning, text.to_string()));
+    }
     if !matches!(mode, RunMode::Interactive) {
         notices.push((
             Level::Info,
