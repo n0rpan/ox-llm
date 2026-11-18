@@ -664,7 +664,10 @@ fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
         hooks: Vec::new(),
         policy: Box::new(ModePolicy::new()),
         sandbox: Arc::new(NoSandbox),
-        settings: Settings::from_values(json!({"compaction":{"keepRecentTokens":1}}), json!({})),
+        settings: Settings::from_values(
+            json!({"compaction":{"keepRecentTokens":1},"oxa":{"envNote":false}}),
+            json!({}),
+        ),
         dirs: Dirs::under(env.root()),
         cwd: env.work(),
         selection: ToolSelection::default(),
@@ -695,6 +698,12 @@ fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
     for prompt in [old_prompt, "A more recent synthetic turn."] {
         session.prompt(prompt.into(), vec![], &mut sink, &mut ui).unwrap();
     }
+    assert!(session
+        .inner()
+        .transcript
+        .wire()
+        .iter()
+        .any(|message| message.content.as_deref() == Some(old_prompt)));
     engine.push(ScriptTurn::text("Mock compaction summary."));
     session
         .compact(Some("Summarize the earlier review."), &mut sink, &mut ui)
@@ -719,6 +728,7 @@ fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
     let mut resumed = Session::open(deps(), Open::Resume(bound)).unwrap();
     assert_eq!(resumed.goal(), Some(saved));
     assert_eq!(resumed.goal_revision(), revision);
+    let requests_before_resume = engine.requests().len();
     engine.push(ScriptTurn::text("Resumed mock reply."));
     let resume_prompt = "Resume the synthetic review.";
     resumed
@@ -737,17 +747,14 @@ fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
     }
     assert_eq!(standing.open_asks().find(|open| open.id == ask.id), Some(&ask));
     let requests = engine.requests();
-    let request = requests
+    let request = requests[requests_before_resume..]
         .iter()
-        .find(|request| {
-            request.kind == "chat"
-                && request
-                    .messages
-                    .iter()
-                    .any(|message| message.content.as_deref() == Some(resume_prompt))
-        })
+        .find(|request| request.kind == "chat")
         .expect("a new model turn ran after reopening");
     let messages = &request.messages;
+    assert!(messages
+        .iter()
+        .any(|message| message.content.as_deref() == Some(resume_prompt)));
     assert!(messages
         .iter()
         .any(|message| message.content.as_deref() == Some(summary.as_str())));
