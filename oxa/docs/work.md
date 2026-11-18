@@ -63,6 +63,12 @@ leases survive UTC midnight; corrupt state, or state that vanished after a PR's
 first reservation, fails closed. Execution, fresh-head validation and CLI polling
 remain in the adapter; core claim storage never spawns workers or writes to GitHub.
 
+On a lab host, an owner can share the worker's Cargo check artifacts between
+worktrees. Set `CARGO_TARGET_DIR` in the environment that starts the worker
+and add that directory to the owner-level `oxa.sandbox.writePaths` setting.
+The variable does not grant a writable mount. Keep this cache dedicated to the
+workers. The acceptance supervisor still uses its own isolated check output.
+
 `oxa work tasks.json` opts into sequential tasks in separate git worktrees.
 Run it inside the project repository. The JSON file is an array:
 
