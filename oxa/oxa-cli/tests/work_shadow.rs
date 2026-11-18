@@ -151,22 +151,23 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
     assert_eq!(sample["would_take"][0]["action"], "resolve_conflict");
     assert_eq!(sample["board"]["entries"][0], sample["would_take"][0]);
     let mut actual = vec![];
-    for (conclusion, head, source) in [
-        ("STARTUP_FAILURE", "synthetic-head", ""),
-        ("STALE", "synthetic-head", ""),
-        ("SUCCESS", "old-head", ""),
-        ("SUCCESS", "synthetic-head", ""),
-        ("SUCCESS", "synthetic-head", "engine.c"),
-        ("SUCCESS", "synthetic-head", "view.qml"),
-        ("SUCCESS", "synthetic-head", "header.hpp"),
-        ("SUCCESS", "synthetic-head", "kernel.inc"),
+    for (status, conclusion, head, source) in [
+        ("COMPLETED", "STARTUP_FAILURE", "synthetic-head", ""),
+        ("COMPLETED", "STALE", "synthetic-head", ""),
+        ("IN_PROGRESS", "SUCCESS", "synthetic-head", ""),
+        ("COMPLETED", "SUCCESS", "old-head", ""),
+        ("COMPLETED", "SUCCESS", "synthetic-head", ""),
+        ("COMPLETED", "SUCCESS", "synthetic-head", "engine.c"),
+        ("COMPLETED", "SUCCESS", "synthetic-head", "view.qml"),
+        ("COMPLETED", "SUCCESS", "synthetic-head", "header.hpp"),
+        ("COMPLETED", "SUCCESS", "synthetic-head", "kernel.inc"),
     ] {
         let row = &mut detail["data"]["repository"]["p42"];
         row["mergeable"] = "MERGEABLE".into();
         row["reviewDecision"] = "APPROVED".into();
         row["latestOpinionatedReviews"] =
             serde_json::json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":head}}]});
-        row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":conclusion}]}}}}]});
+        row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"status":status,"conclusion":conclusion}]}}}}]});
         row["files"] = if source.is_empty() {
             serde_json::json!({"totalCount":0,"nodes":[]})
         } else {
@@ -193,6 +194,7 @@ fn real_cli_requires_opt_in_and_offline_never_reads_github() {
         vec![
             "fix_required_ci",
             "fix_required_ci",
+            "wait_required_ci",
             "wait_review",
             "ready",
             "add_removes",
@@ -243,7 +245,7 @@ fn behind_heads_wait_without_a_queue_and_keep_queue_composition() {
     row["reviewDecision"] = "APPROVED".into();
     row["latestOpinionatedReviews"] =
         serde_json::json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":"synthetic-head"}}]});
-    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]}}}}]});
+    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]});
     let mut actions = vec![];
     for queued in [false, true] {
         let mut first = detail.clone();
@@ -316,7 +318,7 @@ fn approval_required_block_has_an_actionable_wait_reason() {
     row["mergeable"] = "MERGEABLE".into();
     row["mergeStateStatus"] = "BLOCKED".into();
     row["reviewDecision"] = "REVIEW_REQUIRED".into();
-    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]}}}}]});
+    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]});
     assert_eq!(
         sample(&env, &detail)["board"]["entries"][0]["action"],
         "wait_review"
@@ -328,7 +330,7 @@ fn unreported_classic_and_ruleset_requirements_are_pending() {
     let (env, mut detail) = fixture();
     let row = &mut detail["data"]["repository"]["p42"];
     row["mergeable"] = "MERGEABLE".into();
-    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]}}}}]});
+    row["commits"] = serde_json::json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"status":"COMPLETED","conclusion":"SUCCESS"}]}}}}]});
     for base in [
         serde_json::json!({"refUpdateRule":{"requiredStatusCheckContexts":["ci","missing"]},"rules":{"totalCount":0,"nodes":[]}}),
         serde_json::json!({"refUpdateRule":null,"rules":{"totalCount":1,"nodes":[{"type":"REQUIRED_STATUS_CHECKS","parameters":{"requiredStatusChecks":[{"context":"ci"},{"context":"missing"}]}}]}}),
@@ -706,7 +708,7 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
     row["mergeable"] = "MERGEABLE".into();
     row["comments"] = serde_json::json!({ "totalCount": 0, "nodes": [] });
     row["commits"] = serde_json::json!({ "nodes": [{ "commit": {"statusCheckRollup":{"contexts":
-        {"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]}
+        {"totalCount":1,"nodes":[{"name":"ci","isRequired":true,"status":"COMPLETED","conclusion":"SUCCESS"}]}
     }}}] });
     row["latestOpinionatedReviews"] = serde_json::json!({
         "totalCount": 2,
@@ -990,7 +992,7 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_older_review() {
     row["latestOpinionatedReviews"] =
         json!({"totalCount":1,"nodes":[{"state":"APPROVED","commit":{"oid":head}}]});
     row["commits"] = json!({"nodes":[{"commit":{"statusCheckRollup":{"contexts":{
-        "totalCount":1,"nodes":[{"name":"ci","isRequired":true,"conclusion":"SUCCESS"}]
+        "totalCount":1,"nodes":[{"name":"ci","isRequired":true,"status":"COMPLETED","conclusion":"SUCCESS"}]
     }}}}]});
     detail["data"]["repository"]["pullRequests"]["nodes"][0]["headRefOid"] = head.into();
     fs::write(env.work().join("first.json"), detail.to_string()).unwrap();
