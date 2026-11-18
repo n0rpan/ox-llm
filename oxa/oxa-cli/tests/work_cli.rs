@@ -349,11 +349,18 @@ fn native_refill_completion(source: NativeSource) {
     if let Some(reason) = refusal {
         let result = run_server(&env, &server, &args, Some(path), &[]);
         assert!(!result.status.success(), "{source:?}: {result:?}");
-        assert!(
-            String::from_utf8_lossy(&result.stderr).contains(reason)
-                || String::from_utf8_lossy(&result.stdout).contains(reason),
-            "{source:?}: {result:?}"
-        );
+        let detail = if source == NativeSource::AdvancedBranch {
+            let receipt = storage(&env).join(format!("{}.json", binding.native_task_id));
+            let checkpoint: serde_json::Value = serde_json::from_slice(&fs::read(receipt).unwrap()).unwrap();
+            checkpoint["record"]["detail"].as_str().unwrap().to_owned()
+        } else {
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&result.stderr),
+                String::from_utf8_lossy(&result.stdout)
+            )
+        };
+        assert!(detail.contains(reason), "{source:?}: {detail} / {result:?}");
         assert!(server.requests().is_empty(), "{source:?} reached the model");
         let state = &claims.assignments().unwrap()[&44].state;
         assert!(state.lease.as_ref() == Some(&binding.lease));
