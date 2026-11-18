@@ -6,6 +6,10 @@ on:
     branches: [main]
 
 # Advisory only: do not add this job to the required checks.
+# Trusted repository maintainers with Write access govern GO_REVIEW_ENABLED,
+# GO_REVIEW_MAX_PER_DAY, and the advisory quota and deduplication markers.
+# This trust covers only the default-off, fixed-price Go allowance. Metered
+# spend and required review and CI gates retain their existing controls.
 permissions:
   contents: read
 
