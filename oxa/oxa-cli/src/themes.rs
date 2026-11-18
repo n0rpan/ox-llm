@@ -20,29 +20,41 @@ pub(crate) struct ThemeSources<'a> {
     pub no_themes: bool,
 }
 
-/// Every problem of every theme file of `src`, one notice each.
-pub(crate) fn theme_diagnostics(src: &ThemeSources<'_>) -> Vec<(Level, String)> {
-    let mut paths: Vec<PathBuf> = Vec::new();
-    let mut explicit: Vec<PathBuf> = Vec::new();
+/// The same ordered sources are used for validation, UI resolution and the picker.
+pub(crate) fn theme_paths(src: &ThemeSources<'_>) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
     if !src.no_themes {
         paths.push(src.dirs.agent_dir.join("themes"));
         if src.trusted {
             paths.push(src.dirs.project_dir(src.cwd).join("themes"));
         }
-        for p in src.settings.list("themes") {
-            explicit.push(resolve(&p, &src.dirs.home, src.cwd));
-        }
-        explicit.extend(src.package_paths.iter().cloned());
+        paths.extend(
+            src.settings
+                .list("themes")
+                .iter()
+                .map(|p| resolve(p, &src.dirs.home, src.cwd)),
+        );
+        paths.extend(src.package_paths.iter().cloned());
     }
-    explicit.extend(src.cli_paths.iter().cloned());
+    paths.extend(src.cli_paths.iter().cloned());
+    paths
+}
 
+/// Every problem of every theme file of `src`, one notice each.
+pub(crate) fn theme_diagnostics(src: &ThemeSources<'_>) -> Vec<(Level, String)> {
+    let paths = theme_paths(src);
+    // Missing conventional discovery directories are normal, unlike explicit paths.
+    let implicit = if src.no_themes {
+        0
+    } else {
+        1 + usize::from(src.trusted)
+    };
     let mut out = Vec::new();
     let mut files: Vec<PathBuf> = Vec::new();
-    for dir in &paths {
-        files.extend(json_files(dir));
-    }
-    for p in &explicit {
-        if !p.exists() {
+    for (i, p) in paths.iter().enumerate() {
+        if i < implicit {
+            files.extend(json_files(p));
+        } else if !p.exists() {
             out.push((
                 Level::Warning,
                 format!("{}: theme path does not exist", p.display()),
@@ -166,6 +178,41 @@ pub(crate) fn check_theme_file(path: &Path) -> Option<String> {
 mod tests {
     use super::*;
     use oxa_fake::TestEnv;
+
+    #[test]
+    fn theme_sources_preserve_explicit_paths_with_discovery_disabled() {
+        let env = TestEnv::new();
+        let dirs = Dirs::under(env.root());
+        let cwd = env.work();
+        let settings = Settings::from_values(
+            serde_json::json!({"themes": ["settings.json"]}),
+            serde_json::json!({}),
+        );
+        let package_paths = vec![env.root().join("package.json")];
+        let cli_paths = vec![env.root().join("custom.json")];
+        let mut src = ThemeSources {
+            dirs: &dirs,
+            cwd: &cwd,
+            settings: &settings,
+            trusted: false,
+            package_paths: &package_paths,
+            cli_paths: &cli_paths,
+            no_themes: false,
+        };
+        assert_eq!(
+            theme_paths(&src),
+            vec![
+                dirs.agent_dir.join("themes"),
+                cwd.join("settings.json"),
+                package_paths[0].clone(),
+                cli_paths[0].clone()
+            ]
+        );
+        src.trusted = true;
+        assert_eq!(theme_paths(&src)[1], dirs.project_dir(&cwd).join("themes"));
+        src.no_themes = true;
+        assert_eq!(theme_paths(&src), cli_paths);
+    }
 
     #[test]
     fn invalid_and_valid_themes() {

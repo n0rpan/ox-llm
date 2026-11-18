@@ -1,5 +1,29 @@
 # v0.2.0 release qualification
 
+## v0.2.1 Rust-only upgrade boundary
+
+The v0.2.1 release target (#763) installs native `oxa` and `oxe-server`, retaining
+the approved native MEMLAT utility and four inert templates, with
+native cloud/local selection: no Python runtime dependency, Python payload,
+`oxc`/diagnostics wrappers, controller daemon or service on port 8092. Packaging
+must qualify that exact artifact. See [native install and upgrade](NATIVE-INSTALL.md)
+for the owner-facing v0.2.0 upgrade procedure.
+
+Keep provider keys in `~/.config/oxc/llm/cloud-secrets.json` and the compatible
+ChatGPT token in `~/.config/oxc/llm/chatgpt-auth.json`, under the same user HOME.
+Reuse them in place, retaining the refresh lock and private permissions. Do not
+require reauthentication, credential export/import, a Python migration command
+or deletion of user state merely to upgrade. Invalid/revoked credentials still
+need normal owner recovery. Sessions and caches may start cold; credential
+compatibility does not promise session, cache or usage-ledger migration.
+
+The release qualification record must identify the v0.2.1 artifact commit and
+checksums, native install/default-config checks and exact-artifact no-Python
+proof. Existing legacy services/launchers must not be mistaken for the new
+runtime. Clean-HOME proofs use synthetic credentials and mocks; an owner's real
+upgrade preserves existing private files. No release clearance, publishing or
+hardware qualification follows from this note.
+
 `release-build.yml` only builds workflow artifacts. It does not create tags,
 GitHub releases, registry entries or AUR uploads. It needs no secrets and has
 `contents: read`. Its only triggers are manual dispatch and PR changes to this
@@ -22,25 +46,18 @@ kernel flags `armv8.6-a+dotprod+i8mm+fp16+bf16+nosve+nosme`. x86_64 uses the bas
 No model weights, NPU device features, Flash external libraries or vendor SDK
 are included. These builds make no inference speed or hardware qualification claim.
 
-Main currently has no Rust controller workspace. Python remains authoritative.
-If `oxc/Cargo.toml` or `oxc-rs/Cargo.toml` exists, the builder also builds and ships
-its binaries with locked dependencies. The Python source payload remains present.
-The `oxc` packaging entry point invokes `oxc/src/oxc/runtime/oxc` from the
-source payload under `/usr/share/ox-llm/oxc`;
-module names and product defaults are preserved. Runtime Rust dependency license
-texts and the vendored ggml license are collected using the existing repository
-license collector, alongside product and Python payload notices.
-`oxc-diagnostics` invokes the separate `python -m oxc` diagnostics CLI. Bootstrap
-data, patches, Python modules and notices retain the layout expected by
-`oxc.bootstrap`. Nothing configures a
-user account, starts a service or downloads a model during package installation.
+Build-time staging collects native executables, Rust dependency license texts,
+the vendored ggml license and product notices. Both Arch recipes omit Python
+from runtime dependencies. The source recipe uses Python to stage files during
+the build. Package installation creates no user account, starts no service and
+downloads no model.
 
 Each architecture produces a tarball containing a standard `usr/` tree, its exact
 source archive, `SHA256SUMS`, `SBOM.cdx.json`, `TOOLCHAIN.txt`, and
 `REPRODUCIBILITY.txt`, retained as workflow artifacts for seven days.
 The CycloneDX 1.6 SBOM inventories Cargo's locked workspace resolution (including
-build/test dependencies and registry source checksums), the stdlib-only Python
-controller, and every shipped file's SHA-256. It is an inventory, not a claim of
+build/test dependencies and registry source checksums) and every shipped file's
+SHA-256. It is an inventory, not a claim of
 vulnerability clearance or a minimal runtime dependency graph.
 
 Two fresh builds use different source and target directories. Their complete
@@ -55,16 +72,13 @@ toolchain versions are essential and reproducibility across dates is not promise
 
 The fresh x86_64 `archlinux:latest` job builds both the binary package and the
 source package, runs the source package's model-free test subset, invokes namcap,
-installs each package, checks the installed Python modules/bootstrap data, runs all three `--version`
-commands and CLI help, validates
+installs each package, checks that its payload and runtime dependencies exclude
+Python, runs the native version and help commands, validates
 `oxe --check-args`, and sends a real loopback completion through `oxe-server`'s
 stub engine. It checks package integrity, uninstalls and verifies every package
 file and package-specific directory is gone. The two Arch packages, their
 checksums and namcap logs are retained as a separate seven-day workflow artifact.
-Namcap warnings about private Python source modules and optional QML panel imports
-are expected: these are bootstrap payload sources outside system site-packages,
-and panel activation is optional. The required Python interpreter and all sibling
-runtime modules are shipped or declared. Bubblewrap is invoked dynamically, so
+Bubblewrap is invoked dynamically, so
 namcap may also report its declared runtime dependency as unused. Errors fail CI. Tests use a fresh HOME and an
 allowlisted environment with no cloud credentials. The official Arch Linux Docker
 image currently has no ARM64 variant. ARM binaries are natively built and their

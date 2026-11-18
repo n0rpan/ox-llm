@@ -1,7 +1,9 @@
 //! C1: steering / follow-up queues and the cross-thread handle.
 // ported from pi packages/agent/src/agent.ts (steer, followUp, queue modes)
+use crate::goal::GoalSteering;
 use oxa_config::QueueMode;
 use oxa_proto::CancelToken;
+use oxa_session::SessionRef;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -14,6 +16,9 @@ pub struct Queue {
     session_id: String,
     /// Inbox messages stay with their destination, including across switches and clones.
     session_follow_up: BTreeMap<String, Vec<String>>,
+    /// One private steering request per active native run.
+    steering_session: Option<SessionRef>,
+    goal_steering: Option<GoalSteering>,
 }
 
 impl Queue {
@@ -42,6 +47,8 @@ pub struct Shared {
     pub cancel: CancelToken,
     /// Cancels a pending auto-retry wait only.
     pub cancel_retry: CancelToken,
+    /// Wakes a running `wait` tool when input for the active session arrives (reset per wait).
+    pub wait_wake: CancelToken,
     /// `true` while `prompt` is running.
     pub busy: std::sync::atomic::AtomicBool,
     pub modes: Mutex<(QueueMode, QueueMode)>,
@@ -100,8 +107,13 @@ impl WrapUpReason {
 ///   the session and has not armed `bg_cancel` yet would otherwise miss the cancel).
 #[derive(Debug, Default)]
 pub struct Gate {
+    goal_steering_enabled: std::sync::atomic::AtomicBool,
+    pub(crate) lead_steering_authority: Mutex<Option<crate::goal::BoundLeadAuthority>>,
+    pub(crate) advisor: Mutex<Option<Arc<crate::advice::BoundAdvisor>>>,
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
+    /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
+    pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
     pub in_flight: std::sync::atomic::AtomicBool,
     /// Sticky headless interruption: abort now, without a final wrap-up turn.
@@ -110,6 +122,7 @@ pub struct Gate {
     pub wrap_up: std::sync::atomic::AtomicU8,
     /// Remaining uncached prompt + completion tokens for an unattended invocation.
     pub token_budget: Mutex<Option<u64>>,
+    literal_turn: Mutex<Option<LiteralTurn>>,
     /// Total charged usage, including non-chat requests and final-turn overspend.
     pub run_tokens_used: Mutex<u64>,
     pub bg_cancel: CancelToken,
@@ -128,6 +141,43 @@ pub struct Gate {
 
 /// Holds [`Gate::in_flight`] for one request; dropping it opens the gate.
 pub(crate) struct GateGuard(Arc<Shared>);
+
+struct LiteralTurn {
+    context: Option<oxa_proto::WireMsg>,
+    remaining: u32,
+}
+
+impl std::fmt::Debug for LiteralTurn {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LiteralTurn")
+            .field("remaining", &self.remaining)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) struct LiteralTurnGuard(Arc<Shared>);
+
+impl Drop for LiteralTurnGuard {
+    fn drop(&mut self) {
+        lock(&self.0.gate.literal_turn).take();
+    }
+}
+
+pub(crate) struct GoalSteeringGuard(Arc<Shared>);
+
+impl Drop for GoalSteeringGuard {
+    fn drop(&mut self) {
+        let pending = {
+            let mut queue = lock(&self.0.queue);
+            queue.steering_session = None;
+            queue.goal_steering.take()
+        };
+        if let Some(request) = pending {
+            request.reject();
+        }
+    }
+}
 
 impl Drop for GateGuard {
     fn drop(&mut self) {
@@ -157,11 +207,73 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
+    pub(crate) fn begin_literal_turn(
+        self: &Arc<Self>,
+        context: Option<oxa_proto::WireMsg>,
+        max_output: std::num::NonZeroU32,
+    ) -> Result<LiteralTurnGuard, oxa_proto::OxaError> {
+        let mut slot = lock(&self.gate.literal_turn);
+        if slot.is_some() {
+            return Err(oxa_proto::OxaError::new(
+                oxa_proto::codes::BUSY,
+                "A literal turn is already active.",
+            ));
+        }
+        *slot = Some(LiteralTurn {
+            context,
+            remaining: max_output.get(),
+        });
+        Ok(LiteralTurnGuard(self.clone()))
+    }
+
+    /// Reserve before generation. On a failure or missing completion count, the
+    /// reservation stays charged, since the provider may already have generated.
+    pub(crate) fn reserve_literal_output(
+        &self,
+        requested: u32,
+        kind: oxa_proto::TurnKind,
+    ) -> Result<Option<(u32, Option<oxa_proto::WireMsg>)>, oxa_proto::OxaError> {
+        let mut slot = lock(&self.gate.literal_turn);
+        let Some(turn) = slot.as_mut().filter(|_| requested > 0) else {
+            return Ok(None);
+        };
+        let reserved = requested.min(turn.remaining);
+        if reserved == 0 {
+            return Err(oxa_proto::OxaError::new(
+                oxa_proto::codes::LITERAL_OUTPUT_EXHAUSTED,
+                "The literal turn's output limit is exhausted.",
+            ));
+        }
+        turn.remaining -= reserved;
+        let context = if kind == oxa_proto::TurnKind::Chat {
+            turn.context.clone()
+        } else {
+            None
+        };
+        Ok(Some((reserved, context)))
+    }
+
+    /// `None` when no bounded literal turn is active, else the output tokens it
+    /// can still reserve. The length-recovery path consults this before it
+    /// schedules a request that could never be admitted.
+    pub(crate) fn literal_output_remaining(&self) -> Option<u32> {
+        lock(&self.gate.literal_turn).as_ref().map(|turn| turn.remaining)
+    }
+
+    pub(crate) fn settle_literal_output(&self, reserved: u32, completion: u32) {
+        if completion > 0 {
+            if let Some(turn) = lock(&self.gate.literal_turn).as_mut() {
+                turn.remaining += reserved.saturating_sub(completion);
+            }
+        }
+    }
+
     pub fn new(steering: QueueMode, follow_up: QueueMode) -> Shared {
         Shared {
             queue: Mutex::new(Queue::default()),
             cancel: CancelToken::new(),
             cancel_retry: CancelToken::new(),
+            wait_wake: CancelToken::new(),
             busy: std::sync::atomic::AtomicBool::new(false),
             modes: Mutex::new((steering, follow_up)),
             dirty: std::sync::atomic::AtomicBool::new(false),
@@ -199,6 +311,15 @@ impl Shared {
         }
     }
 
+    /// Arm the wait wakeup: reset it, then re-check the queues. Input is queued before the
+    /// handle cancels, so input admitted at any moment either is seen here or wakes the wait.
+    pub(crate) fn arm_wait_wake(&self) {
+        self.wait_wake.reset();
+        if self.has_input() {
+            self.wait_wake.cancel();
+        }
+    }
+
     /// Steering or follow-up messages for the active session are queued.
     pub fn has_input(&self) -> bool {
         let q = lock(&self.queue);
@@ -229,6 +350,21 @@ impl Shared {
         taken
     }
 
+    pub(crate) fn open_goal_steering(self: &Arc<Self>, session: &SessionRef) -> Option<GoalSteeringGuard> {
+        if !self.gate.goal_steering_enabled.load(Ordering::Relaxed) {
+            return None;
+        }
+        lock(&self.queue).steering_session = Some(session.clone());
+        Some(GoalSteeringGuard(self.clone()))
+    }
+
+    pub(crate) fn take_goal_steering(&self) -> Option<GoalSteering> {
+        if !self.gate.goal_steering_enabled.load(Ordering::Relaxed) {
+            return None;
+        }
+        lock(&self.queue).goal_steering.take()
+    }
+
     /// Take follow-ups when the agent would stop; same mode rule.
     pub fn take_follow_up(&self) -> Vec<String> {
         let mode = lock(&self.modes).1;
@@ -253,6 +389,28 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// Enable typed steering for this frontend before it starts the native run.
+    pub fn enable_goal_steering(&self) {
+        self.shared
+            .gate
+            .goal_steering_enabled
+            .store(true, Ordering::Relaxed);
+    }
+
+    /// Submit to the current native run. Success reports admission only. The
+    /// owner revalidates the binding when it is ready to append.
+    pub fn submit_goal_steering(&self, request: GoalSteering) -> Result<(), &'static str> {
+        let mut queue = lock(&self.shared.queue);
+        if queue.steering_session.as_ref() != Some(&request.binding.session) {
+            return Err("goal_steer_stale");
+        }
+        if queue.goal_steering.is_some() {
+            return Err("control_queue_full");
+        }
+        queue.goal_steering = Some(request);
+        Ok(())
+    }
+
     /// Queue a steering message (delivered after the current tool batch; when idle the caller
     /// should `prompt` instead).
     /// It also cancels this instance's own background request (ENG-002); a foreground request
@@ -261,6 +419,7 @@ impl Handle {
         lock(&self.shared.queue).steering.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
+        self.shared.wait_wake.cancel();
     }
     /// Queue a follow-up (delivered when the agent would otherwise stop). Cancels this
     /// instance's own background request like [`Handle::steer`].
@@ -268,7 +427,29 @@ impl Handle {
         lock(&self.shared.queue).follow_up.push(text);
         self.shared.dirty.store(true, Ordering::SeqCst);
         self.shared.gate.bg_cancel.cancel();
+        self.shared.wait_wake.cancel();
     }
+    /// Whether these handles control the same ordinary input queues. Reopening creates
+    /// another instance; a fork within the same instance retains its existing queue semantics.
+    pub fn same_instance(&self, other: &Handle) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
+    /// Reserve one worker wake for admitted editor input, even if the active consumer has
+    /// already passed its final queue take. The wake carries this handle across UI rebinds.
+    pub fn request_queued_wake(&self) -> bool {
+        !self.shared.gate.queued_wake_pending.swap(true, Ordering::SeqCst)
+    }
+
+    /// The worker clears the reservation BEFORE checking/taking input, so an admission after
+    /// its empty take can reserve another wake. Clear the originating handle, never a rebind.
+    pub fn clear_queued_wake(&self) {
+        self.shared
+            .gate
+            .queued_wake_pending
+            .store(false, Ordering::SeqCst);
+    }
+
     /// Claim the single pending frontend wake. Queue consumption during a long model
     /// run must not turn every admitted message into another unbounded channel job.
     pub fn request_inbox_wake(&self) -> bool {
@@ -308,6 +489,7 @@ impl Handle {
         if q.session_id == session_id {
             self.shared.dirty.store(true, Ordering::SeqCst);
             self.shared.gate.bg_cancel.cancel();
+            self.shared.wait_wake.cancel();
         }
         true
     }

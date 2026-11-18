@@ -1,9 +1,10 @@
 //! Bounded task/artifact collection. Wire completion and task completion remain
 //! distinct, and direct Message results never receive invented task IDs.
 use crate::wire::*;
+use oxa_proto::bounded_io::BoundedWriter;
 use serde::Serialize;
 use std::collections::BTreeSet;
-use std::io::{self, Write};
+use std::io;
 
 #[derive(Clone)]
 pub struct Collector {
@@ -208,24 +209,8 @@ fn replace(artifacts: &mut Vec<Artifact>, artifact: Artifact) {
 }
 
 fn bounded_size(value: &impl Serialize, max: usize) -> io::Result<()> {
-    struct Count {
-        bytes: usize,
-        max: usize,
-    }
-    impl Write for Count {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            if bytes.len() > self.max.saturating_sub(self.bytes) {
-                return Err(invalid("collected result limit exceeded"));
-            }
-            self.bytes += bytes.len();
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    serde_json::to_writer(Count { bytes: 0, max }, value)
-        .map_err(|_| invalid("collected result limit exceeded"))
+    let exceeded = || invalid("collected result limit exceeded");
+    serde_json::to_writer(BoundedWriter::new(io::sink(), max, exceeded), value).map_err(|_| exceeded())
 }
 
 fn invalid(message: &'static str) -> io::Error {

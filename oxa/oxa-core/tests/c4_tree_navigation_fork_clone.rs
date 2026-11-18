@@ -55,12 +55,14 @@ fn state_with(
         queue: Mutex::new(Queue::default()),
         cancel: CancelToken::new(),
         cancel_retry: CancelToken::new(),
+        wait_wake: CancelToken::new(),
         busy: std::sync::atomic::AtomicBool::new(false),
         modes: Mutex::new((QueueMode::All, QueueMode::OneAtATime)),
         dirty: std::sync::atomic::AtomicBool::new(false),
         gate: Default::default(),
     });
     let st = SessionState {
+        goal: None,
         output_schema: None,
         engine,
         store,

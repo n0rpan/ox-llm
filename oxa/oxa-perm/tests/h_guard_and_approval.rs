@@ -937,3 +937,50 @@ fn the_session_scratch_reads_without_asking_and_links_out_of_it_do_not() {
         "the exception is for reads"
     );
 }
+
+#[test]
+fn a_worktree_can_use_matching_source_approvals_without_saving_a_child_grant() {
+    let env = oxa_fake::TestEnv::new();
+    let source = env.work().join("approved");
+    let child = env.work().join("worker");
+    env.write("work/approved/.oxa/settings.json", r#"{"done":["true"]}"#);
+    env.write("work/worker/.oxa/settings.json", r#"{"done":["true"]}"#);
+    let file = env.home().join("trust.json");
+    let mut store = TrustStore::load(&file);
+    store.save(&file, &source, true).unwrap();
+    assert!(!store.approved_worktree_resources(&source, &child));
+    store.approve(&file, &source).unwrap();
+    assert!(store.approved_worktree_resources(&source, &child));
+    assert_eq!(store.lookup(&child), None);
+    env.write("work/worker/.oxa/settings.json", r#"{"done":["false"]}"#);
+    assert!(!store.approved_worktree_resources(&source, &child));
+    env.write("work/worker/.oxa/settings.json", r#"{"done":["true"]}"#);
+    store.save(&file, &child, false).unwrap();
+    assert!(!store.approved_worktree_resources(&source, &child));
+}
+
+#[test]
+fn a_worktree_approval_does_not_cover_executable_resource_references() {
+    let env = TestEnv::new();
+    let source = env.work().join("approved");
+    let child = env.work().join("worker");
+    let file = env.home().join("trust.json");
+    let mut store = TrustStore::load(&file);
+
+    for (path, contents) in [
+        ("settings.json", r#"{"done":["true"],"packages":["./example"]}"#),
+        ("mcp.json", r#"{"mcpServers":{}}"#),
+        ("extensions/example.js", "// No executable behavior."),
+    ] {
+        let source_file = source.join(".oxa").join(path);
+        let child_file = child.join(".oxa").join(path);
+        env.write(&format!("work/approved/.oxa/{path}"), contents);
+        env.write(&format!("work/worker/.oxa/{path}"), contents);
+        store.save(&file, &source, true).unwrap();
+        store.approve(&file, &source).unwrap();
+        assert!(store.trusted_as_approved(&source), "{path}");
+        assert!(!store.approved_worktree_resources(&source, &child), "{path}");
+        std::fs::remove_file(source_file).unwrap();
+        std::fs::remove_file(child_file).unwrap();
+    }
+}

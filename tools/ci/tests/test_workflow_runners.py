@@ -1,7 +1,7 @@
-"""Every workflow job runs on a hosted ARM image or on the project's runner expression.
+"""Verify the workflow runner routing policy.
 
-A job whose `runs-on` names a hosted x86_64 image directly (ubuntu-latest, ubuntu-24.04, ...)
-bypasses the project's runners for good; this check keeps the x86_64/ARM split automatic.
+Ordinary x86_64 jobs use the routing expression. The engine workspace check is pinned
+to a GitHub-hosted x86_64 runner to verify the engine on that environment.
 Parsed line by line (no YAML library) so it runs with a bare `python3 -I`.
 """
 from pathlib import Path
@@ -11,6 +11,8 @@ import unittest
 WORKFLOWS = Path(__file__).resolve().parents[3] / '.github' / 'workflows'
 
 ARM_IMAGE = 'ubuntu-24.04-arm'
+ENGINE_WORKSPACE_JOB = ('checks.yml', 'engine-x86-workspace')
+ENGINE_WORKSPACE_IMAGE = 'ubuntu-24.04'
 # The runner expression from checks.yml: the project's runners when the switch is on, otherwise
 # (or for fork pull requests) the hosted x86_64 image.
 RUNNER_CONDITION = (
@@ -67,6 +69,10 @@ def problems(name, text):
     found = []
     for job, info in jobs_runs_on(text).items():
         value = info['runs_on']
+        if (name, job) == ENGINE_WORKSPACE_JOB:
+            if value != ENGINE_WORKSPACE_IMAGE:
+                found.append(f'{name}: job {job!r} must use {ENGINE_WORKSPACE_IMAGE}, got {value}')
+            continue
         if value is None:
             continue  # reusable-workflow call: no runner of its own
         # Owner lane CI: standard free Linux runners, including explicit matrix overrides.
@@ -95,7 +101,7 @@ def problems(name, text):
 
 
 class WorkflowRunners(unittest.TestCase):
-    def test_no_job_names_a_hosted_x86_image(self):
+    def test_workflows_follow_runner_policy(self):
         checks = (WORKFLOWS / 'checks.yml').read_text()
         self.assertIn(RUNNER_EXPRESSION, checks, 'the runner expression in this test must match checks.yml')
         found = []
@@ -132,6 +138,18 @@ class WorkflowRunners(unittest.TestCase):
             self.assertTrue(problems('lane.yml', override))
         override = text + '        include:\n          - runner: ${{ inputs.runner }}\n'
         self.assertTrue(problems('lane.yml', override))
+
+    def test_engine_workspace_requires_its_hosted_x86_runner(self):
+        workflow, job = ENGINE_WORKSPACE_JOB
+        prefix = f'jobs:\n  {job}:\n'
+        hosted = prefix + f'    runs-on: {ENGINE_WORKSPACE_IMAGE}\n'
+        self.assertFalse(problems(workflow, hosted))
+        self.assertTrue(problems('other.yml', hosted))
+        self.assertTrue(problems(workflow, hosted.replace(job, 'other')))
+        for value in (ARM_IMAGE, RUNNER_EXPRESSION, 'self-hosted', '${{ inputs.runner }}'):
+            with self.subTest(value=value):
+                self.assertTrue(problems(workflow, prefix + f'    runs-on: {value}\n'))
+        self.assertTrue(problems(workflow, prefix))
 
     def test_accepts_arm_and_expression(self):
         for value in (ARM_IMAGE, RUNNER_EXPRESSION):

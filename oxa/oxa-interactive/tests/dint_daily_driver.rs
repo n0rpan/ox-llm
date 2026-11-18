@@ -282,6 +282,7 @@ impl World {
             initial_parts: Vec::new(),
             initial_follow_ups: Vec::new(),
             theme: None,
+            theme_paths: Vec::new(),
             notices: Vec::new(),
             // These tests exercise behaviour (streams, errors, keys), not the skin: pin the
             // plain skin so the assertions on the header stay stable (OXA is the default).
@@ -299,6 +300,7 @@ impl World {
             open_picker: false,
             save_trust: None,
             gated: Vec::new(),
+            engine_status: None,
             yolo: None,
         }
     }
@@ -417,6 +419,51 @@ const TREE_OPEN_WAIT: &[&str] = &["second question", "BETA answer.", "Session Tr
 
 /// open -> prompt -> tool call -> `/model` selector -> `/tree` navigate -> `/new` ->
 /// `/resume` picker -> fullscreen scroll + search -> exit, against the fake over HTTP.
+#[test]
+fn explicit_custom_theme_is_selected_and_listed() {
+    let world = World::new(Vec::new());
+    let path = world.env.write(
+        "custom.json",
+        &oxa_tui::THEME_DARK_JSON.replacen("\"name\": \"dark\"", "\"name\": \"synthetic-theme\"", 1),
+    );
+    let mut opts = world.opts(true);
+    opts.theme = Some("synthetic-theme".into());
+    opts.theme_paths = vec![path];
+    let session = Session::open(world.deps(), Open::New).unwrap();
+    let (_, _, term, _) = run_with(
+        &world,
+        session,
+        opts,
+        (100, 30),
+        vec![
+            step("start", &["fake-model"], typed("/theme", &["enter"])),
+            step("picker", &["synthetic-theme"], vec![key("escape")]),
+            step("close", &[], vec![key("ctrl+d")]),
+        ],
+    );
+    assert!(term.seen("picker").contains("synthetic-theme  (current)"));
+    assert!(!term.all_text().contains("theme not found"));
+}
+
+#[test]
+fn unknown_initial_theme_reports_the_fallback() {
+    let world = World::new(Vec::new());
+    let mut opts = world.opts(true);
+    opts.theme = Some("missing-theme".into());
+    let session = Session::open(world.deps(), Open::New).unwrap();
+    run_with(
+        &world,
+        session,
+        opts,
+        (100, 30),
+        vec![step(
+            "warning",
+            &["theme not found: missing-theme", "dark"],
+            vec![key("ctrl+d")],
+        )],
+    );
+}
+
 #[test]
 fn fullscreen_daily_driver_flow() {
     let world = World::with(
@@ -908,6 +955,7 @@ fn controls_are_rebound_to_the_new_session() {
             ..FakeOpts::default()
         },
     );
+    let server = world.server.clone();
     let steps = vec![
         step("open", &["oxa v"], typed("first", &["enter"])),
         // A final content delta does not mean the worker is idle. The queued,
@@ -932,7 +980,13 @@ fn controls_are_rebound_to_the_new_session() {
             "running",
             &["slow question", "Working..."],
             typed("steer me", &["enter"]),
-        ),
+        )
+        .until(move || {
+            server
+                .requests()
+                .iter()
+                .any(|r| r.max_tokens > 0 && last_user(r) == "slow question")
+        }),
         // The message waits in the new session's queue, shown above the editor. Escape aborts
         // the run and brings the queued message back into the editor.
         step("steered", &["Steering: steer me"], vec![key("escape")]),
@@ -1365,8 +1419,25 @@ fn trust_question_before_the_session() {
         )],
     );
     assert_eq!(
-        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated),
+        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated)
+            .expect("trust dialog remains connected"),
         Some(TrustChoice::NoTrust)
+    );
+    // Terminal loss is distinct from dismissal and never yields a trust choice.
+    let mut closed = ScriptTerm::new(
+        100,
+        20,
+        vec![step(
+            "question",
+            &["Project trust"],
+            vec![InputEvent::TerminalClosed],
+        )],
+    );
+    assert_eq!(
+        ask_trust_on(&mut closed, &keymap, &theme, "/work/proj", &gated)
+            .unwrap_err()
+            .code,
+        oxa_proto::codes::TERMINAL_CLOSED
     );
     // Ctrl+C leaves it unanswered: untrusted for this run, asked again next time.
     let mut term = ScriptTerm::new(
@@ -1375,7 +1446,8 @@ fn trust_question_before_the_session() {
         vec![step("question", &["Project trust"], vec![key("ctrl+c")])],
     );
     assert_eq!(
-        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated),
+        ask_trust_on(&mut term, &keymap, &theme, "/work/proj", &gated)
+            .expect("trust dialog remains connected"),
         None
     );
 }

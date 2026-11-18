@@ -93,6 +93,21 @@ fn run_tools(
     sandbox: Arc<dyn Sandbox>,
     extra: Vec<Arc<dyn Tool>>,
 ) -> (Rec, Arc<ScriptedEngine>, bool) {
+    let (mut s, engine) = test_session(env, settings, turns, sandbox, extra);
+    let mut rec = Rec::default();
+    s.prompt("go".into(), Vec::new(), &mut rec, &mut HeadlessUi::default())
+        .expect("prompt");
+    let failed = s.inner().stats.done_failed;
+    (rec, engine, failed)
+}
+
+fn test_session(
+    env: &TestEnv,
+    settings: Settings,
+    turns: Vec<ScriptTurn>,
+    sandbox: Arc<dyn Sandbox>,
+    extra: Vec<Arc<dyn Tool>>,
+) -> (Session, Arc<ScriptedEngine>) {
     let engine = Arc::new(ScriptedEngine::new(turns));
     let tools = oxa_tools::builtin_tools();
     let hooks: Vec<Arc<dyn Hooks>> = if extra.is_empty() {
@@ -118,12 +133,7 @@ fn run_tools(
         session_id: None,
         jobs: oxa_core::fresh_jobs(),
     };
-    let mut s = Session::open(deps, Open::New).expect("open");
-    let mut rec = Rec::default();
-    s.prompt("go".into(), Vec::new(), &mut rec, &mut HeadlessUi::default())
-        .expect("prompt");
-    let failed = s.inner().stats.done_failed;
-    (rec, engine, failed)
+    (Session::open(deps, Open::New).expect("open"), engine)
 }
 
 fn write(id: &str, path: &str) -> ScriptTurn {
@@ -901,4 +911,156 @@ fn bash_made_change_outside_git_triggers_checks() {
         ],
     );
     assert_eq!(rec.checks(), vec!["done check: true ok".to_string()]);
+}
+
+fn advised_checks(
+    env: &TestEnv,
+    command: &str,
+    paths: &[&str],
+    after: u32,
+    max_calls: u16,
+    failures: u16,
+) -> (Session, Arc<ScriptedEngine>, usize) {
+    use oxa_core::advice::{AdviceContext, AdviceDispatcher, BoundAdvisor};
+    use oxa_session::{
+        advice::{AdviceGrant, AdvicePolicy, AdviceTier, AdviceTrigger, AdvisorRoute},
+        SessionRef,
+    };
+    use std::{
+        num::{NonZeroU16, NonZeroU32},
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Advisor(AtomicUsize);
+    impl AdviceDispatcher for Advisor {
+        fn authorized(&self, _: &SessionRef, _: u64) -> bool {
+            true
+        }
+
+        fn call(
+            &self,
+            grant: &AdviceGrant,
+            context: &AdviceContext,
+            _: &CancelToken,
+        ) -> Result<String, OxaError> {
+            assert_eq!(grant.trigger, AdviceTrigger::DoneChecks);
+            assert!(context.failing_evidence.contains("ready.txt"));
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok("Create the readiness marker.".into())
+        }
+    }
+
+    let turns = paths
+        .iter()
+        .enumerate()
+        .flat_map(|(index, path)| [write(&format!("check-{index}"), path), ScriptTurn::text("done")])
+        .collect();
+    let settings = Settings::from_values(json!({"done":[command]}), json!({}));
+    let (mut session, worker) = test_session(env, settings, turns, Arc::new(Direct), Vec::new());
+    let advisor = Arc::new(Advisor(AtomicUsize::new(0)));
+    session.inner().shared.bind_advisor(BoundAdvisor {
+        session: session.inner().sref.clone(),
+        lease_identity: [4; 32],
+        objective: "Qualify the synthetic work.".into(),
+        worker: AdviceTier::Bulk,
+        done_checks_after: NonZeroU32::new(after).unwrap(),
+        policy: AdvicePolicy {
+            triggers: vec![AdviceTrigger::DoneChecks],
+            max_calls: NonZeroU16::new(max_calls).unwrap(),
+            failures_before_escalation: NonZeroU16::new(failures).unwrap(),
+            max_output: NonZeroU32::new(64).unwrap(),
+        },
+        route: AdvisorRoute {
+            tier: AdviceTier::Main,
+            model: "fixture-main".into(),
+            pool: "fixture-pool".into(),
+        },
+        dispatcher: advisor.clone(),
+        scrub: Arc::new(str::to_owned),
+    });
+    session
+        .prompt(
+            "go".into(),
+            Vec::new(),
+            &mut Rec::default(),
+            &mut HeadlessUi::default(),
+        )
+        .unwrap();
+    (session, worker, advisor.0.load(Ordering::SeqCst))
+}
+
+#[test]
+fn advice_waits_for_the_done_threshold_and_records_only_a_real_passing_check() {
+    let env = TestEnv::new();
+    let (session, worker, calls) = advised_checks(
+        &env,
+        "test -f ready.txt",
+        &["draft.txt", "other.txt", "ready.txt"],
+        2,
+        1,
+        1,
+    );
+    assert_eq!(calls, 1);
+    assert!(!session.inner().stats.done_failed);
+    assert!(!worker.requests()[2].messages.iter().any(|message| message
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("readiness marker"))));
+    assert!(worker.requests()[4].messages.iter().any(|message| message
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("readiness marker"))));
+    assert!(session.inner().tree.entries().iter().any(|entry| matches!(
+        &entry.body, oxa_proto::EntryBody::Custom { custom_type, data }
+            if custom_type == "oxa.advice.v1" && data["phase"] == "resolved"
+    )));
+}
+
+#[test]
+fn the_same_done_check_only_requests_advice_once_when_its_exit_status_changes() {
+    let env = TestEnv::new();
+    let (session, _, calls) = advised_checks(
+        &env,
+        "test -f ready.txt || { test -f changed.txt && exit 2; exit 1; }",
+        &["draft.txt", "changed.txt", "later.txt"],
+        1,
+        2,
+        2,
+    );
+    assert_eq!(calls, 1);
+    assert!(session.inner().stats.done_failed);
+}
+
+#[test]
+fn a_final_failed_done_check_escalates_delivered_advice() {
+    let env = TestEnv::new();
+    let (session, _, calls) = advised_checks(
+        &env,
+        "test -f ready.txt",
+        &["draft.txt", "other.txt", "later.txt"],
+        2,
+        1,
+        1,
+    );
+    assert_eq!(calls, 1);
+    assert_eq!(
+        session.outcome(),
+        &oxa_core::RunOutcome::Failed("advisor_escalation_required")
+    );
+}
+
+#[test]
+fn advice_can_arrive_at_the_final_automatic_check_and_get_one_repair() {
+    let env = TestEnv::new();
+    let (session, worker, calls) = advised_checks(
+        &env,
+        "test -f ready.txt",
+        &["draft.txt", "other.txt", "later.txt", "ready.txt"],
+        3,
+        1,
+        1,
+    );
+    assert_eq!(calls, 1);
+    assert!(!session.inner().stats.done_failed);
+    assert_eq!(worker.requests().len(), 8);
 }

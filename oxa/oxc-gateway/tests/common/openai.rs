@@ -47,10 +47,18 @@ pub struct Reply {
     headers: Vec<(&'static str, String)>,
     bytes: Vec<u8>,
     fragment: usize,
+    buffer_before_headers: bool,
     pub truncate_transfer: bool,
     gate: Option<mpsc::Receiver<()>>,
 }
 impl Reply {
+    /// Bounded replies for clients that reject the response at its headers.
+    #[allow(dead_code)] // Only header-refusal controls opt in.
+    pub fn buffer_header_refusal(mut self) -> Self {
+        assert!(self.bytes.len() <= 1024 && !self.truncate_transfer);
+        self.buffer_before_headers = true;
+        self
+    }
     #[allow(dead_code)] // Shared fixture constructor; not every consumer refreshes tokens.
     pub fn json(value: Value) -> Self {
         Self {
@@ -61,6 +69,7 @@ impl Reply {
             fragment: 7,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
     #[allow(dead_code)] // Shared fixture constructor for transport boundary cases.
@@ -78,6 +87,7 @@ impl Reply {
             fragment: 1024,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
 
@@ -97,6 +107,7 @@ impl Reply {
             fragment: 7,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
     pub fn error(status: u16, kind: &str, message: &str) -> Self {
@@ -110,6 +121,7 @@ impl Reply {
             fragment: 7,
             truncate_transfer: false,
             gate: None,
+            buffer_before_headers: false,
         }
     }
     /// A Responses quota refusal, including the server's retry delay in seconds.
@@ -205,6 +217,16 @@ impl Reply {
         self.gate = Some(rx);
         (self, tx)
     }
+    /// A stream reply whose last SSE event is `[DONE]`: the native consumer returns
+    /// there without reading the HTTP transfer end (`post_sse`).
+    fn ends_at_done(&self) -> bool {
+        self.content_type == "text/event-stream"
+            && String::from_utf8_lossy(&self.bytes)
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .is_some_and(|line| line.trim() == "data: [DONE]")
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -223,16 +245,45 @@ enum IoPhase {
     ReplyWrite,
     UnexpectedRequest,
 }
-#[derive(Clone, Copy)]
-struct HealthFailure {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ReplyPart {
+    BufferedReply,
+    Headers,
+    HeaderEnd,
+    ChunkHeader,
+    ChunkPayload,
+    ChunkEnd,
+    Flush,
+    TransferEnd,
+    /// Final payload, chunk CRLF and terminal zero in one bounded write; a terminal
+    /// SSE payload also tolerates the peer's expected `[DONE]` disconnect.
+    FinalChunk,
+}
+#[derive(Clone, Copy, Debug)]
+pub(super) struct HealthFailure {
     phase: IoPhase,
-    kind: Option<io::ErrorKind>,
+    pub(super) kind: Option<io::ErrorKind>,
+    pub(super) part: Option<ReplyPart>,
 }
 impl HealthFailure {
     fn io(phase: IoPhase, error: io::Error) -> Self {
         Self {
             phase,
             kind: Some(error.kind()),
+            part: None,
+        }
+    }
+    fn reply(part: ReplyPart, error: io::Error) -> Self {
+        Self {
+            part: Some(part),
+            ..Self::io(IoPhase::ReplyWrite, error)
+        }
+    }
+    fn peer_panic() -> Self {
+        Self {
+            phase: IoPhase::Accept,
+            kind: None,
+            part: None,
         }
     }
 }
@@ -271,9 +322,7 @@ impl MockOpenAi {
                         let replies = replies.clone();
                         peers.push(thread::spawn(move || {
                             if let Err(failure) = serve(stream, &shared, &replies) {
-                                if !shared.stopping.load(Ordering::Acquire) {
-                                    shared.errors.lock().unwrap().push(failure);
-                                }
+                                shared.errors.lock().unwrap().push(failure);
                             }
                         }));
                     }
@@ -291,7 +340,9 @@ impl MockOpenAi {
                 }
             }
             for peer in peers {
-                let _ = peer.join();
+                if peer.join().is_err() {
+                    worker.errors.lock().unwrap().push(HealthFailure::peer_panic());
+                }
             }
         });
         Self {
@@ -330,18 +381,35 @@ impl MockOpenAi {
         };
         assert!(
             empty,
-            "mock upstream reported a connection failure phase={:?} kind={:?}",
+            "mock upstream reported a connection failure phase={:?} kind={:?} part={:?}",
             first.map(|failure| failure.phase),
             first.and_then(|failure| failure.kind),
+            first.and_then(|failure| failure.part),
         );
+    }
+    /// Stop accepting, drain every live peer, then check health. A snapshot taken
+    /// while a peer is still reading or writing cannot certify its own success.
+    pub fn finish(mut self) {
+        self.drain();
+        self.assert_healthy();
+    }
+    fn drain(&mut self) {
+        self.shared.stopping.store(true, Ordering::Release);
+        if let Some(join) = self.join.take() {
+            if join.join().is_err() {
+                self.shared
+                    .errors
+                    .lock()
+                    .unwrap()
+                    .push(HealthFailure::peer_panic());
+            }
+        }
     }
 }
 impl Drop for MockOpenAi {
     fn drop(&mut self) {
-        self.shared.stopping.store(true, Ordering::Release);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
+        // Cleanup only: the health verdict belongs to `finish`.
+        self.drain();
     }
 }
 
@@ -432,6 +500,7 @@ fn serve(
             shared.errors.lock().unwrap().push(HealthFailure {
                 phase: IoPhase::UnexpectedRequest,
                 kind: None,
+                part: None,
             });
             Reply::error(500, "server_error", "unexpected synthetic request")
         });
@@ -457,27 +526,232 @@ fn serve(
             }
         }
     }
-    write_reply(&mut stream, &reply).map_err(|error| HealthFailure::io(IoPhase::ReplyWrite, error))
+    write_reply(&mut stream, &reply)
 }
-fn write_reply(stream: &mut TcpStream, reply: &Reply) -> io::Result<()> {
+pub(super) fn write_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), HealthFailure> {
+    if reply.buffer_before_headers {
+        assert!(reply.bytes.len() <= 1024 && !reply.truncate_transfer);
+        let mut wire = Vec::new();
+        write_fragmented_reply(&mut wire, reply)?;
+        stream
+            .write_all(&wire)
+            .map_err(|error| HealthFailure::reply(ReplyPart::BufferedReply, error))?;
+        return stream
+            .flush()
+            .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error));
+    }
+    write_fragmented_reply(stream, reply)
+}
+
+fn write_fragmented_reply(stream: &mut impl Write, reply: &Reply) -> Result<(), HealthFailure> {
     write!(
         stream,
         "HTTP/1.1 {} Synthetic\r\nContent-Type: {}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n",
         reply.status, reply.content_type
-    )?;
+    )
+    .map_err(|error| HealthFailure::reply(ReplyPart::Headers, error))?;
     for (name, value) in &reply.headers {
-        write!(stream, "{name}: {value}\r\n")?;
+        write!(stream, "{name}: {value}\r\n")
+            .map_err(|error| HealthFailure::reply(ReplyPart::Headers, error))?;
     }
-    stream.write_all(b"\r\n")?;
-    for bytes in reply.bytes.chunks(reply.fragment) {
-        write!(stream, "{:x}\r\n", bytes.len())?;
-        stream.write_all(bytes)?;
-        stream.write_all(b"\r\n")?;
-        stream.flush()?;
+    stream
+        .write_all(b"\r\n")
+        .map_err(|error| HealthFailure::reply(ReplyPart::HeaderEnd, error))?;
+    let chunks = reply.bytes.chunks(reply.fragment);
+    let last = chunks.len().saturating_sub(1);
+    for (index, bytes) in chunks.enumerate() {
+        write!(stream, "{:x}\r\n", bytes.len())
+            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkHeader, error))?;
+        if index == last && !reply.truncate_transfer {
+            // A client may stop reading as soon as it sees its semantic terminal event.
+            // Finish the HTTP message before flushing that final payload to the peer.
+            let mut complete = Vec::with_capacity(bytes.len() + 7);
+            complete.extend_from_slice(bytes);
+            complete.extend_from_slice(b"\r\n0\r\n\r\n");
+            write_final(stream, &complete, bytes.len(), reply.ends_at_done())?;
+            stream
+                .flush()
+                .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error))?;
+            return Ok(());
+        }
+        stream
+            .write_all(bytes)
+            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkPayload, error))?;
+        if index == last && reply.ends_at_done() {
+            // The native client returns at `[DONE]` without waiting for HTTP EOF
+            // (`post_sse`), so only the truncated transfer's closing CRLF remains
+            // after this last payload byte. A peer disconnect here is expected: accept
+            // it only after the whole payload, and only for BrokenPipe/ConnectionReset.
+            // Partial payloads, nonterminal replies and timeouts stay strict.
+            return match stream.write_all(b"\r\n") {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    Ok(())
+                }
+                result => result.map_err(|error| HealthFailure::reply(ReplyPart::TransferEnd, error)),
+            };
+        }
+        stream
+            .write_all(b"\r\n")
+            .map_err(|error| HealthFailure::reply(ReplyPart::ChunkEnd, error))?;
+        stream
+            .flush()
+            .map_err(|error| HealthFailure::reply(ReplyPart::Flush, error))?;
     }
     if reply.truncate_transfer {
         Ok(())
     } else {
-        stream.write_all(b"0\r\n\r\n")
+        stream
+            .write_all(b"0\r\n\r\n")
+            .map_err(|error| HealthFailure::reply(ReplyPart::TransferEnd, error))
+    }
+}
+
+/// Write the coalesced final chunk (payload, chunk CRLF and terminal zero in one bounded
+/// write). The native client returns at `[DONE]` without waiting for HTTP EOF
+/// (`post_sse`), so once the whole payload is on the wire a peer disconnect is expected:
+/// accept it there, and only for BrokenPipe/ConnectionReset. Partial payloads and
+/// timeouts stay strict.
+fn write_final(
+    stream: &mut impl Write,
+    complete: &[u8],
+    payload_len: usize,
+    terminal: bool,
+) -> Result<(), HealthFailure> {
+    let mut written = 0;
+    while written < complete.len() {
+        let count = match stream.write(&complete[written..]) {
+            Ok(0) => {
+                return Err(HealthFailure::reply(
+                    ReplyPart::FinalChunk,
+                    io::ErrorKind::WriteZero.into(),
+                ))
+            }
+            Ok(count) => count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error)
+                if terminal
+                    && written >= payload_len
+                    && matches!(
+                        error.kind(),
+                        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+                    ) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(HealthFailure::reply(ReplyPart::FinalChunk, error)),
+        };
+        written += count;
+    }
+    Ok(())
+}
+
+#[cfg(all(test, feature = "upstream-openai"))]
+mod mock_health {
+    use super::*;
+
+    /// Deterministically model a client closing after any particular wire byte,
+    /// including between the `[DONE]` payload and the final HTTP chunk framing, and
+    /// expect every call that completes before the close to be accepted.
+    struct DisconnectAfter {
+        remaining: usize,
+        kind: io::ErrorKind,
+    }
+    impl Write for DisconnectAfter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.remaining == 0 {
+                return Err(self.kind.into());
+            }
+            let count = bytes.len().min(self.remaining);
+            self.remaining -= count;
+            Ok(count)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn done_stream() -> Reply {
+        Reply::raw(
+            200,
+            "text/event-stream",
+            b"data: {\"choices\":[]}\n\ndata: [DONE]\n\n".to_vec(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn terminal_framing_disconnect_is_healthy_only_after_complete_done() {
+        let mut truncated = done_stream();
+        truncated.truncate_transfer = true;
+        let incomplete = Reply::raw(
+            200,
+            "text/event-stream",
+            b"data: {\"choices\":[]}\n\n".to_vec(),
+            Vec::new(),
+        );
+        let json = Reply::json(json!({"output":[]}));
+        for reply in [done_stream(), truncated, incomplete, json] {
+            let terminal = reply.ends_at_done();
+            let tail: &[u8] = if reply.truncate_transfer {
+                b"\r\n"
+            } else {
+                b"\r\n0\r\n\r\n"
+            };
+            let mut wire = Vec::new();
+            write_reply(&mut wire, &reply).unwrap();
+            // Everything before the closing framing: a coalesced final chunk and a
+            // truncated transfer's closing CRLF both settle the payload at this offset.
+            let framing = wire.len() - tail.len();
+            for kind in [
+                io::ErrorKind::BrokenPipe,
+                io::ErrorKind::ConnectionReset,
+                io::ErrorKind::TimedOut,
+            ] {
+                // The last wire byte, plus a budget that still covers the whole wire.
+                // A fixed `framing + 2` only lands inside the tail of the six-byte
+                // transfer end; the truncated transfer's two-byte tail puts it exactly
+                // at the end, where no write fails at all, so derive it from the tail.
+                for remaining in [0, framing - 1, framing, wire.len() - 1, wire.len()] {
+                    let result = write_reply(&mut DisconnectAfter { remaining, kind }, &reply);
+                    // Only an actually interrupted write can report the peer close: a
+                    // budget covering every byte writes the complete reply and must
+                    // stay healthy whatever disconnect kind the peer would raise.
+                    let expected = remaining >= wire.len()
+                        || (terminal && remaining >= framing && kind != io::ErrorKind::TimedOut);
+                    assert_eq!(
+                        result.is_ok(),
+                        expected,
+                        "terminal={terminal}, byte={remaining}, error={kind:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn finish_accepts_a_client_that_returns_at_done() {
+        let mock = MockOpenAi::start(vec![done_stream(), done_stream()]);
+        for _ in 0..2 {
+            // The native consumer returns at `[DONE]`, skipping the transfer end.
+            let mut stream = TcpStream::connect(mock.address()).unwrap();
+            stream
+                .write_all(b"POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
+                .unwrap();
+            let mut wire = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !wire.windows(12).any(|part| part == b"data: [DONE]") {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0, "the mock closed before [DONE]");
+                wire.extend_from_slice(&chunk[..n]);
+            }
+            stream.shutdown(std::net::Shutdown::Both).unwrap();
+        }
+        assert_eq!(mock.requests().len(), 2);
+        mock.finish();
     }
 }

@@ -479,6 +479,11 @@ fn agent_options_keep_command_words_as_prompts() {
             assert_eq!(a.subcommand, None, "{word}");
             assert_eq!(a.messages, [word, "example"]);
         }
+        // Only option words may precede the work command; a prompt word before it keeps
+        // `work` a prompt word in place.
+        let a = parse(&["summarise", word, "example"]);
+        assert_eq!(a.subcommand, None, "{word}");
+        assert_eq!(a.messages, ["summarise", word, "example"]);
     }
 }
 
@@ -497,6 +502,93 @@ fn only_the_offline_work_prefix_dispatches_after_options() {
     }
 }
 
+/// Extra: a `--no-<tool>` alias is `--exclude-tools <tool>`, and the resolved toolset is the
+/// same for both spellings (the same exclusion precedence).
+#[test]
+fn no_tool_aliases_are_exclude_tools_and_pick_the_same_tools() {
+    for (flag, tool) in oxa_cli::NO_TOOL_ALIASES {
+        let alias = parse(&[flag]);
+        assert_eq!(alias.exclude_tools, [tool], "{flag}");
+        assert_eq!(alias, parse(&["--exclude-tools", tool]), "{flag}");
+        // The effective selection of the real built-in tools is identical.
+        let all = oxa_tools::builtin_tools();
+        let (a, aw) = oxa_core::resolve_toolset(&all, &selection(&alias));
+        let (b, bw) = oxa_core::resolve_toolset(&all, &selection(&parse(&["-xt", tool])));
+        assert_eq!(aw, bw, "{flag}");
+        let names = |set: &oxa_core::Toolset| set.specs().iter().map(|s| s.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&a), names(&b), "{flag}");
+        if tool != "subagent" {
+            assert!(!names(&a).contains(&tool.to_string()), "{flag} kept {tool}");
+        }
+    }
+    // Two aliases accumulate in the order given, like two `-xt` entries.
+    assert_eq!(parse(&["--no-bash", "--no-read"]).exclude_tools, ["bash", "read"]);
+    // A value is a usage error, as for `-xt`'s sibling flags.
+    assert_eq!(parse_err(&["--no-bash=1"]).code, codes::USAGE);
+}
+
+/// A later exclusion must never undo an earlier explicit tool restriction: `-xt` and the
+/// `--no-<tool>` aliases accumulate in one denylist, in either order, and further `-xt` lists
+/// add to it rather than replace it.
+#[test]
+fn mixed_tool_exclusions_remain_disabled_in_either_order() {
+    // Each case also pins the parsed list: both spellings append in the order given, so a
+    // later exclusion never replaces the earlier one.
+    for (words, expected) in [
+        (vec!["--no-bash", "--exclude-tools", "read"], ["bash", "read"]),
+        (vec!["--exclude-tools", "read", "--no-bash"], ["read", "bash"]),
+        (vec!["-xt", "bash", "--exclude-tools", "read"], ["bash", "read"]),
+    ] {
+        let args = parse(&words);
+        let (tools, warnings) = oxa_core::resolve_toolset(&oxa_tools::builtin_tools(), &selection(&args));
+        assert!(warnings.is_empty(), "{words:?}: {warnings:?}");
+        assert_eq!(args.exclude_tools, expected, "{words:?}");
+        let names: Vec<_> = tools.specs().into_iter().map(|s| s.name).collect();
+        assert!(
+            !names.iter().any(|name| name == "bash"),
+            "{words:?} re-enabled bash"
+        );
+        assert!(
+            !names.iter().any(|name| name == "read"),
+            "{words:?} re-enabled read"
+        );
+        assert!(
+            names.iter().any(|name| name == "edit"),
+            "{words:?} removed an unrelated tool"
+        );
+    }
+}
+
+/// Extra: `--animation <mode>` takes the three `ui.animation` values; anything else is a usage
+/// error (exit 2 through `codes::USAGE`).
+#[test]
+fn animation_flag_takes_the_documented_modes_only() {
+    for mode in ["arcade", "minimal", "off"] {
+        assert_eq!(parse(&["--animation", mode]).animation.as_deref(), Some(mode));
+    }
+    assert_eq!(
+        parse(&["--animation=minimal"]).animation.as_deref(),
+        Some("minimal")
+    );
+    for bad in ["none", "Arcade", ""] {
+        let e = parse_err(&["--animation", bad]);
+        assert_eq!(e.code, codes::USAGE, "--animation {bad:?}");
+        assert!(e.message.contains("Invalid animation"), "{bad:?}: {}", e.message);
+    }
+    assert_eq!(parse_err(&["--animation"]).code, codes::USAGE);
+    assert_eq!(parse(&[]).animation, None);
+}
+
+fn selection(a: &Args) -> oxa_core::ToolSelection {
+    oxa_core::ToolSelection {
+        tools: a.tools.clone(),
+        exclude: a.exclude_tools.clone(),
+        no_builtin: a.no_builtin_tools,
+        no_tools: a.no_tools,
+        ..Default::default()
+    }
+}
+
 /// Extra: help lists the flags and the extension flags.
 #[test]
 fn usage_text_lists_flags_and_extension_flags() {
@@ -506,6 +598,8 @@ fn usage_text_lists_flags_and_extension_flags() {
         "--export <input> [output]",
         "--permission-mode <mode>",
         "--no-context-files, -nc",
+        "--no-<tool>",
+        "--animation <mode>",
         "Extension CLI Flags:",
         "--plan",
         "--depth <value>",

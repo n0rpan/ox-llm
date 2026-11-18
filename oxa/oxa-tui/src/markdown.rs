@@ -47,7 +47,7 @@ impl Default for MarkdownOpts {
 /// Supported (CommonMark subset + GFM tables, as pi): headings, paragraphs, emphasis, strong,
 /// strikethrough, inline code, links (`text (url)` or OSC 8), ordered / unordered / nested
 /// lists, task items, blockquotes (nested), fenced and indented code blocks (highlighted
-/// through [`crate::highlight_code`], fences drawn in `mdCodeBlockBorder`), horizontal rules,
+/// through [`crate::highlight_code`], frames drawn in `mdCodeBlockBorder`), horizontal rules,
 /// tables (column widths fitted to `width`, cells wrapped), hard breaks, HTML shown as text.
 /// Mermaid fences are shown as highlighted code blocks (plan sec. 1).
 ///
@@ -968,19 +968,38 @@ fn render_blocks(cx: &Cx, blocks: &[Block], width: usize, base: &St) -> Vec<Stri
             }
             Block::Code { lang, code } => {
                 let border = St::tok("mdCodeBlockBorder");
+                // Leave at least one content column; tiny terminals get horizontal rules
+                // without side borders. The outer renderer still fits zero-width output.
+                let framed = width >= 3;
+                let body_w = if framed { width - 2 } else { width };
                 let indent = match &cx.opts.code_block_prefix {
                     Some(prefix) => prefix.clone(),
                     None => " ".repeat(cx.opts.code_block_indent as usize),
                 };
-                let inner_w = width.saturating_sub(visible_width(&indent)).max(1);
-                out.push(paint(cx, &border, &format!("```{lang}")));
+                let indent = truncate_to_width(&indent, body_w.saturating_sub(1), "");
+                let inner_w = body_w.saturating_sub(visible_width(&indent)).max(1);
                 let language = lang.split_whitespace().next();
+                let label = language.map(|l| format!("─ {l} ")).unwrap_or_default();
+                let label = truncate_to_width(&label, body_w, "");
+                let top = format!("{label}{}", "─".repeat(body_w - visible_width(&label)));
+                let bottom = "─".repeat(body_w);
+                out.push(paint(cx, &border, &if framed { format!("┌{top}┐") } else { top }));
+                let side = paint(cx, &border, "│");
                 for hl in highlight_code(code, language, cx.theme) {
                     for piece in wrap_ansi(&hl, inner_w) {
-                        out.push(format!("{indent}{piece}"));
+                        let line = format!("{indent}{piece}");
+                        out.push(if framed {
+                            format!("{side}{}{side}", pad_to_width(&line, body_w, false))
+                        } else {
+                            line
+                        });
                     }
                 }
-                out.push(paint(cx, &border, "```"));
+                out.push(paint(
+                    cx,
+                    &border,
+                    &if framed { format!("└{bottom}┘") } else { bottom },
+                ));
             }
             Block::Quote(inner) => {
                 let qst = St {

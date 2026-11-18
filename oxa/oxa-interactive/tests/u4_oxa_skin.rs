@@ -265,6 +265,7 @@ fn run_on(
         initial_parts: Vec::new(),
         initial_follow_ups: Vec::new(),
         theme: None,
+        theme_paths: Vec::new(),
         notices: Vec::new(),
         env: env_vars
             .iter()
@@ -283,6 +284,7 @@ fn run_on(
         open_picker: false,
         save_trust: None,
         gated: Vec::new(),
+        engine_status: None,
         yolo: Some(oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard)),
     };
     let mut term = ScriptTerm::new(size.0, size.1, steps);

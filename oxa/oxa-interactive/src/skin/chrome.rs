@@ -46,7 +46,14 @@ pub fn oxa_splash(
     // The three info lines (line 1 has a right part only inside the frame).
     let head = theme.bold(&theme.fg("text", &format!("OXA v{}", clean(&info.version))));
     let model = clean(&info.model);
-    let engine = clean(&info.engine_url);
+    // The endpoint keeps its own bytes; the observed memory policy follows as a note.
+    let engine = match info.memory_policy {
+        Some(policy) => {
+            let policy = clean(policy);
+            format!("{} {} {}", clean(&info.engine_url), g.mid, policy)
+        }
+        None => clean(&info.engine_url),
+    };
     let mut second = String::new();
     if info.model_remote {
         second.push_str(&theme.fg(

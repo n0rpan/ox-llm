@@ -1,8 +1,9 @@
+use oxa_proto::bounded_io::BoundedWriter;
 use serde_json::{json, Value};
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::os::fd::AsRawFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::Instant;
 
@@ -29,14 +30,10 @@ impl Journal {
             .parent()
             .ok_or_else(|| io::Error::other("journal needs a parent directory"))?;
         let namespace = crate::namespace::protected_directory(parent)?;
-        let metadata = namespace.metadata()?;
-        // SAFETY: geteuid has no arguments or memory access side effects.
-        if metadata.uid() != unsafe { libc::geteuid() } || metadata.mode() & 0o077 != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "journal parent must be private and operator-owned",
-            ));
-        }
+        crate::namespace::require_private_directory(
+            &namespace,
+            "journal parent must be private and operator-owned",
+        )?;
         if limit == 0 || limit > 16 * 1024 * 1024 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -101,28 +98,12 @@ impl Journal {
         let value = json!({"schema":1,"sequence":self.sequence,"elapsedMs":self.started.elapsed().as_millis(),"worker":worker,"event":kind,"details":details});
         // Bound the serialization buffer too, rather than allocating an entire
         // oversized record before discovering it cannot be admitted.
-        struct Bounded {
-            bytes: Vec<u8>,
-            limit: usize,
-        }
-        impl Write for Bounded {
-            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-                if data.len() > self.limit.saturating_sub(self.bytes.len()) {
-                    return Err(io::Error::other("orchestrator journal limit exceeded"));
-                }
-                self.bytes.extend_from_slice(data);
-                Ok(data.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let mut buffer = Bounded {
-            bytes: Vec::new(),
-            limit: self.limit.saturating_sub(self.bytes).saturating_sub(1),
-        };
-        serde_json::to_writer(&mut buffer, &value)?;
-        let mut line = buffer.bytes;
+        let mut line = Vec::new();
+        let remaining = self.limit.saturating_sub(self.bytes).saturating_sub(1);
+        let output = BoundedWriter::new(&mut line, remaining, || {
+            io::Error::other("orchestrator journal limit exceeded")
+        });
+        serde_json::to_writer(output, &value)?;
         line.push(b'\n');
         if line.len() > self.limit.saturating_sub(self.bytes) {
             return Err(io::Error::other("orchestrator journal limit exceeded"));
@@ -140,7 +121,7 @@ impl Journal {
 mod tests {
     use super::*;
     use oxa_fake::TestEnv;
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 
     fn private(env: &TestEnv) -> std::path::PathBuf {
         let directory = env.root().join("private");

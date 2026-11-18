@@ -68,7 +68,7 @@ pub enum Outcome {
     },
 }
 impl Usage {
-    fn total_tokens(&self) -> Option<u64> {
+    pub(crate) fn total_tokens(&self) -> Option<u64> {
         let (prompt, output) = self.prompt.zip(self.output)?;
         let cached = self
             .cache_read
@@ -142,6 +142,7 @@ impl Budget {
             state: Arc::new(Mutex::new(State::default())),
         }
     }
+    /// The daily budget debit, including any explicitly estimated settlements.
     pub fn spend(&self) -> Result<f64, Refusal> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.failed {
@@ -187,6 +188,9 @@ impl Budget {
             return Err(Refusal::ledger());
         }
         let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
+        if shared.has_conservative_hold() {
+            return Err(exhausted());
+        }
         policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
         let id = shared.insert(required).map_err(|_| Refusal::ledger())?;
         shared.save().map_err(|_| Refusal::ledger())?;
@@ -207,6 +211,16 @@ impl Budget {
         ledger_enabled: bool,
         model: &Model,
         output: u64,
+    ) -> Result<Hold, Refusal> {
+        self.reserve_subscription_with_budget(limits, ledger_enabled, model, output, None)
+    }
+    pub(crate) fn reserve_subscription_with_budget(
+        &self,
+        limits: Option<SubscriptionLimits>,
+        ledger_enabled: bool,
+        model: &Model,
+        output: u64,
+        cap: Option<&Value>,
     ) -> Result<Hold, Refusal> {
         let limits = limits.ok_or_else(SubscriptionLimits::missing)?;
         if !ledger_enabled {
@@ -236,17 +250,33 @@ impl Budget {
         if shared.failed {
             return Err(Refusal::ledger());
         }
-        state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
+        let spent = state.reader.read(&self.path).map_err(|_| Refusal::ledger())?;
+        let reserved = if let Some(cap) = cap {
+            if shared.has_conservative_hold() {
+                return Err(exhausted());
+            }
+            policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), 0.0)?;
+            // Go has no trusted pre-request price/plan bound. Reserve all remaining
+            // configured USD headroom before sending, alongside its token allowance.
+            let required = cap.as_f64().ok_or_else(Refusal::ledger)? - (spent + shared.reserved());
+            if !required.is_finite() || required <= 0.0 {
+                return Err(exhausted());
+            }
+            policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
+            required
+        } else {
+            0.0
+        };
         let held = shared.subscription_reserved().map_err(|_| Refusal::ledger())?;
         limits.check(state.reader.subscription(), held, required)?;
         let id = shared
-            .insert_subscription(tokens)
+            .insert_subscription_with_usd(tokens, reserved)
             .map_err(|_| Refusal::ledger())?;
         shared.save().map_err(|_| Refusal::ledger())?;
         Ok(Hold {
             budget: self.clone(),
             model: model.clone(),
-            reserved: 0.0,
+            reserved,
             reserved_tokens: tokens,
             output,
             forwarded: false,
@@ -267,8 +297,27 @@ impl Hold {
     pub fn reserved(&self) -> f64 {
         self.reserved
     }
-    pub fn mark_forwarded(&mut self) {
+    /// On first forwarding, verify the persisted reservation before paid bytes.
+    /// All holds already survive a process crash, including before forwarding.
+    pub fn mark_forwarded(&mut self) -> Result<(), Refusal> {
+        // Admission failures must not prevent already-paid work from settling.
+        if self.forwarded {
+            return Ok(());
+        }
+        let mut state = self.budget.state.lock().unwrap_or_else(|e| e.into_inner());
+        let checked: io::Result<()> = (|| {
+            let shared = Shared::open(&self.budget.path)?;
+            if shared.failed || !shared.holds.contains_key(&self.id) {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            Ok(())
+        })();
+        if state.failed || checked.is_err() {
+            state.failed = true;
+            return Err(Refusal::ledger());
+        }
         self.forwarded = true;
+        Ok(())
     }
     fn record(&self, usage: &Usage, outcome: Outcome) -> Value {
         let model = &self.model;
@@ -303,6 +352,39 @@ impl Hold {
                     .saturating_add(usage.cache_write.unwrap_or(0))
                     > prompt
             });
+        if price.is_estimated() {
+            let final_usage = !invalid
+                && matches!(
+                    outcome,
+                    Outcome::Complete
+                        | Outcome::Cancelled {
+                            usage_final: true,
+                            ..
+                        }
+                );
+            let estimate =
+                usage
+                    .prompt
+                    .zip(usage.output)
+                    .filter(|_| final_usage)
+                    .and_then(|(prompt, output)| {
+                        price.cost(&model.provider, &model.upstream, prompt, output, Cache::Invalid)
+                    });
+            let reported = usage.reported_cost.filter(|_| model.provider == "openrouter");
+            if let Some(cost) = reported {
+                row["reported_cost_usd"] = json!(cost);
+            }
+            row["estimated_cost_usd"] = json!(estimate.unwrap_or(self.reserved).max(reported.unwrap_or(0.0)));
+            row["settled"] = json!(if estimate.is_some() {
+                "estimated"
+            } else {
+                "reserved"
+            });
+            if estimate.is_none() {
+                row["usage_missing"] = json!(true);
+            }
+            return row;
+        }
         let cost = if invalid {
             None
         } else {
@@ -400,6 +482,8 @@ impl Hold {
                 row[field] = json!(value);
             }
         }
+        let paid = self.model.provider == "opencode";
+        let cost = if paid { usage.reported_cost } else { Some(0.0) }.filter(|n| n.is_finite() && *n >= 0.0);
         let actual = usage.total_tokens();
         let final_usage = matches!(
             outcome,
@@ -409,7 +493,20 @@ impl Hold {
                     ..
                 }
         );
-        if let Some(actual) = actual.filter(|_| final_usage) {
+        let complete = actual.filter(|_| final_usage && cost.is_some());
+        let settled_cost = if complete.is_some() {
+            cost.unwrap_or(0.0)
+        } else {
+            self.reserved.max(cost.unwrap_or(0.0))
+        };
+        if settled_cost > 0.0 {
+            row["billing"] = json!("metered");
+            row["cost_usd"] = json!(settled_cost);
+            if let Some(cost) = cost {
+                row["reported_cost_usd"] = json!(cost);
+            }
+        }
+        if let Some(actual) = complete {
             row["subscription_tokens"] = json!(actual);
             row["settled"] = json!("usage");
         } else {

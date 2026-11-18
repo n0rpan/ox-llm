@@ -70,6 +70,7 @@ impl Fx {
             engine_url: "",
             models: &[],
             queue: None,
+            engine_status: None,
         }
     }
 
@@ -398,6 +399,19 @@ fn omitted_commands_error() {
         assert_eq!(level, Level::Error);
         assert!(text.contains("unsupported_in_oxa"), "{name}: {text}");
     }
+    // #862: unsupported slash commands must describe the standalone commands truthfully.
+    for (line, expected) in [
+        ("/login", "oxa login chatgpt --experimental"),
+        ("/logout", "oxa logout chatgpt"),
+        ("/share", "oxa share key"),
+    ] {
+        let (_, text) = notice(expect_some(line, fx.run(line)));
+        assert!(text.contains(expected), "{line}: {text}");
+        assert!(!text.contains("oxa has no provider login"), "{line}: {text}");
+    }
+    let (_, share) = notice(expect_some("/share", fx.run("/share")));
+    assert!(share.contains("guest keys"), "{share}");
+    assert!(share.contains("transcript upload"), "{share}");
     // A hook command with the same name runs first (not reserved, as pi).
     let mut fx = Fx::new();
     fx.commands.push(CommandSpec {

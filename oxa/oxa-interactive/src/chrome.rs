@@ -206,6 +206,8 @@ pub struct HeaderInfo {
     /// Loaded context files, skills, templates, extensions, themes: `(kind, names)`.
     pub resources: Vec<(String, Vec<String>)>,
     pub engine_url: String,
+    /// The in-process engine child's observed memory policy, shown beside the endpoint.
+    pub memory_policy: Option<&'static str>,
     pub model: String,
     /// Wave D D4b: where the model runs; shown in the start banner.
     pub model_remote: bool,
@@ -269,8 +271,14 @@ pub fn render_header(
         };
         format!(" · {location} · {}", info.model)
     };
+    // The endpoint keeps its own bytes; the observed policy is a note after it, and an
+    // engine that observes none adds nothing.
+    let endpoint = match info.memory_policy {
+        Some(policy) => format!("{} · {policy}", info.engine_url),
+        None => info.engine_url.clone(),
+    };
     out.push(truncate_to_width(
-        &theme.dim(&format!("{}{model}", info.engine_url)),
+        &theme.dim(&format!("{endpoint}{model}")),
         w,
         "...",
     ));

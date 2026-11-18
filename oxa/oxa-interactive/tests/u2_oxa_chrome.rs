@@ -53,6 +53,7 @@ fn info() -> HeaderInfo {
             ("context".to_string(), vec!["AGENTS.md".to_string()]),
         ],
         engine_url: "http://127.0.0.1:8090".to_string(),
+        memory_policy: None,
         model: "qwen3-coder-30b".to_string(),
         model_remote: false,
         model_provider: None,
@@ -1254,6 +1255,25 @@ fn ascii_skin_is_pure_ascii() {
     }
 }
 
+/// The splash names the endpoint and, when the engine observes one, its memory policy; an
+/// engine that observes none shows the endpoint alone, in both skins.
+#[test]
+fn splash_shows_endpoint_and_memory_policy() {
+    let theme = Theme::plain();
+    let scoped = HeaderInfo {
+        memory_policy: Some("scope"),
+        ..info()
+    };
+    for skin in [Skin::Oxa, Skin::OxaAscii] {
+        let lines = oxa_splash(&scoped, "oxa", true, 100, &theme, skin).join("\n");
+        assert!(lines.contains("127.0.0.1:8090"), "endpoint in {skin:?}: {lines}");
+        assert!(lines.contains("scope"), "policy in {skin:?}: {lines}");
+        let plain = oxa_splash(&info(), "oxa", true, 100, &theme, skin).join("\n");
+        assert!(plain.contains("127.0.0.1:8090"), "endpoint in {skin:?}: {plain}");
+        assert!(!plain.contains("scope"), "no policy in {skin:?}: {plain}");
+    }
+}
+
 #[test]
 fn ascii_skin_splash_cloud_label_is_ascii() {
     let theme = Theme::plain();
@@ -1301,6 +1321,7 @@ fn never_panics_on_odd_content_and_fits_every_width() {
         version: String::new(),
         resources: vec![(String::new(), vec![String::new()])],
         engine_url: "\n".to_string(),
+        memory_policy: None,
         model: String::new(),
         model_remote: false,
         model_provider: None,
