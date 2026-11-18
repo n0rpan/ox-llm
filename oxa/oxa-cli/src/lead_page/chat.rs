@@ -14,7 +14,11 @@ pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt) {
             reply.text, reply.href, reply.source, reply.observed_at
         );
     } else {
-        html.push_str("<p>Snapshot observations unavailable for this prompt.</p>");
+        let needed = match prompt {
+            Prompt::Status => "board",
+            Prompt::Workers | Prompt::Attention => "runner",
+        };
+        let _ = write!(html, "<p>Snapshot observations unavailable for this prompt. This question needs a {needed} observation; none reached this page.</p>");
     }
-    html.push_str("<p class=muted>From the snapshot · 0 tokens</p></article></div><p>Messaging unavailable.</p></section>");
+    html.push_str("<p class=muted>From the snapshot · 0 tokens</p></article></div><p>Messaging unavailable. This page supports snapshot questions only.</p></section>");
 }

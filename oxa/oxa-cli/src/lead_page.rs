@@ -110,7 +110,7 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
                     "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed at {} (Unix seconds)</p>",
                     board.entries.len(), if stale(board, now) { "Stale snapshot" } else { "Board snapshot" }, board.observed_at);
             } else {
-                html.push_str("<p>Board unavailable.</p>");
+                html.push_str("<p>Board unavailable. No board observation reached this page; the source did not say why.</p>");
             }
             html.push_str("</section><details class=home-work><summary>Observed work</summary>");
             board(&mut html, view, now, Query::default());
@@ -197,7 +197,7 @@ fn attention(html: &mut String, view: &View<'_>) {
         }
         html.push_str("</ul>");
         if alarm {
-            html.push_str("<p class=muted>Lead response observations unavailable.</p>");
+            html.push_str("<p class=muted>Lead response observations unavailable. These observations report the alarm, without a Lead response.</p>");
         }
         html.push_str("</section>");
     }
@@ -222,7 +222,7 @@ fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
         );
         query.navigation(html, board, view);
         if !query.filter.available(view) {
-            html.push_str("<p>Blocked observations unavailable.</p></section>");
+            html.push_str("<p>Blocked observations unavailable. The runner observation is missing or cannot associate every block and ask with a PR.</p></section>");
             return;
         }
         let rows = query.rows(board, view);
@@ -263,7 +263,9 @@ fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
             html.push_str("</nav>");
         }
     } else {
-        html.push_str("<p>Board unavailable.</p>");
+        html.push_str(
+            "<p>Board unavailable. No board observation reached this page; the source did not say why.</p>",
+        );
     }
     html.push_str("</section>");
 }
@@ -282,24 +284,29 @@ fn lease(row: &Entry, now: u64) -> String {
 fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
     html.push_str("<p><a href=/board>Back to Board</a></p>");
     let Some(board) = view.board else {
-        html.push_str("<p>Board unavailable.</p>");
+        html.push_str(
+            "<p>Board unavailable. No board observation reached this page; the source did not say why.</p>",
+        );
         return;
     };
     let Some(row) = board.entries.iter().find(|row| row.number == number) else {
-        html.push_str("<p>Item unavailable in this snapshot.</p>");
+        html.push_str(
+            "<p>Item unavailable in this snapshot. The board observation does not include this item.</p>",
+        );
         return;
     };
     let _ = write!(html,
         "<section><article><h2>Next action</h2><p>{}</p></article></section><section><article><h2>State</h2><dl><dt>Priority</dt><dd>{}</dd><dt>Lease</dt><dd>{}</dd><dt>Attempts today</dt><dd>{}</dd><dt>Observed at</dt><dd>{} (Unix seconds)</dd></dl></article></section>",
         action(row.action), if row.release_pinned { "Release" } else { "Normal priority" },
         lease(row, now), row.attempts_today, board.observed_at);
-    html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable.</p></section>");
+    html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable. This board observation contains next actions and leases, without those details.</p></section>");
 }
 
 fn usage(html: &mut String, view: &View<'_>) {
     html.push_str("<section id=task-usage><h2>Task usage</h2>");
     match view.selected_task_usage {
-        None | Some(Err(_)) => html.push_str("<p>Task usage observations unavailable.</p>"),
+        None => html.push_str("<p>Task usage observations unavailable. No selected-task usage observation reached this page.</p>"),
+        Some(Err(_)) => html.push_str("<p>Task usage observations unavailable. The selected task usage could not be read.</p>"),
         Some(Ok(None)) => html.push_str("<p>No saved checkpoint for the selected task.</p>"),
         Some(Ok(Some(usage))) => {
             let _ = write!(
@@ -316,10 +323,10 @@ fn usage(html: &mut String, view: &View<'_>) {
                     if tokens.complete { "complete" } else { "partial" }, tokens.attempts, tokens.complete_attempts,
                     count(tokens.prompt), count(tokens.completion), count(tokens.cached));
             } else {
-                html.push_str("<p>Saved token aggregate unknown.</p>");
+                html.push_str("<p>Saved token aggregate unknown. The checkpoint has no token aggregate; this does not mean zero usage.</p>");
             }
             html.push_str(
-                "<p class=muted>Task-scoped checkpoint; merged-PR attribution unavailable.</p></article>",
+                "<p class=muted>Task-scoped checkpoint; merged-PR attribution unavailable. This checkpoint does not link usage to merged PRs.</p></article>",
             );
         }
     }
@@ -358,7 +365,7 @@ fn workers(html: &mut String, view: &View<'_>) {
             );
         }
         if s.running.is_empty() {
-            html.push_str("<p>No running tasks reported. Idle worker inventory is unavailable.</p>");
+            html.push_str("<p>No running tasks reported. Idle worker inventory is unavailable because these facts do not include a complete worker inventory.</p>");
         }
         for incident in &s.incidents {
             if let Subject::Host(host) = &incident.subject {
@@ -372,7 +379,7 @@ fn workers(html: &mut String, view: &View<'_>) {
             }
         }
     } else {
-        html.push_str("<p>Lane status unavailable.</p>");
+        html.push_str("<p>Lane status unavailable. No runner observation reached this page, so workers and their state cannot be shown; the source did not say why.</p>");
     }
     html.push_str("</section>");
 }
@@ -387,7 +394,7 @@ fn queue(html: &mut String, view: &View<'_>) {
             html.push_str("<p>Queue empty at observation.</p>");
         }
     } else {
-        html.push_str("<p>Merge queue unavailable. Ready to land does not establish queue membership.</p>");
+        html.push_str("<p>Merge queue unavailable. No queue observation reached this page. Ready to land does not establish queue membership.</p>");
     }
     html.push_str("</section>");
 }
@@ -406,7 +413,7 @@ fn release(html: &mut String, view: &View<'_>) {
         }
         html.push_str("</ul>");
     } else {
-        html.push_str("<p>Release checklist unavailable.</p>");
+        html.push_str("<p>Release checklist unavailable. No release issue and checklist were supplied.</p>");
     }
     html.push_str("</section>");
 }
@@ -423,7 +430,7 @@ fn asks(html: &mut String, view: &View<'_>) {
             html.push_str("<p>No open asks in these runner facts.</p>");
         }
     } else {
-        html.push_str("<p>Owner asks unavailable.</p>");
+        html.push_str("<p>Owner asks unavailable. No runner observation reached this page, so open decisions cannot be shown; the source did not say why.</p>");
     }
     html.push_str("</section>");
 }
