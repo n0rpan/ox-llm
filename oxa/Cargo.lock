@@ -1204,6 +1204,7 @@ dependencies = [
  "pulldown-cmark",
  "quick-xml",
  "regex",
+ "serde",
  "serde_json",
  "sha2",
  "signal-hook",
