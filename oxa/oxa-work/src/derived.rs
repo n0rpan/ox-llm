@@ -134,7 +134,13 @@ pub(crate) fn from_changed_paths(root: &Path, paths: &[u8]) -> Result<DerivedChe
         }
         paths.into_iter().map(str::to_owned).collect()
     };
-    Ok(commands(&select(root, &paths)?))
+    let selected = select(root, &paths)?;
+    let mut checks = commands(&selected.packages);
+    for workspace in selected.workspaces {
+        checks.commands.push(test_entry_for(&workspace, "--workspace"));
+        checks.commands.push(clippy_entry_for(&workspace, "--workspace"));
+    }
+    Ok(checks)
 }
 
 /// One parsed `Cargo.toml`: the package name, whether it roots a workspace, and that
@@ -145,7 +151,7 @@ struct Manifest {
     workspace: bool,
     members: Vec<String>,
     excludes: Vec<String>,
-    incomplete_workspace_list: bool,
+    unsupported_workspace_list: bool,
 }
 
 /// Read a bounded regular manifest beneath the checkout. Walk by descriptor so
@@ -208,7 +214,7 @@ fn read_manifest(root: &Path, dir: &str) -> Result<Option<Manifest>, String> {
             let path = join_dir(dir, "Cargo.toml");
             let text = std::str::from_utf8(&bytes).map_err(|_| format!("{path} is not UTF-8"))?;
             let manifest = parse_manifest(text);
-            if manifest.incomplete_workspace_list
+            if manifest.unsupported_workspace_list
                 || manifest.members.len() > MAX_MEMBERS
                 || manifest.excludes.len() > MAX_MEMBERS
                 || manifest
@@ -243,7 +249,10 @@ fn parse_manifest(text: &str) -> Manifest {
                 } else {
                     &mut out.members
                 };
-                *paths = quoted_items(buffer);
+                match quoted_items(buffer) {
+                    Some(items) => *paths = items,
+                    None => out.unsupported_workspace_list = true,
+                }
                 list = None;
             }
             continue;
@@ -272,14 +281,17 @@ fn parse_manifest(text: &str) -> Manifest {
                     } else {
                         &mut out.members
                     };
-                    *paths = quoted_items(value);
+                    match quoted_items(value) {
+                        Some(items) => *paths = items,
+                        None => out.unsupported_workspace_list = true,
+                    }
                 } else {
                     list = Some((exclude, value.to_owned()));
                 }
             }
         }
     }
-    out.incomplete_workspace_list = list.is_some();
+    out.unsupported_workspace_list |= list.is_some();
     out.members.sort();
     out.members.dedup();
     out.excludes.sort();
@@ -314,21 +326,25 @@ fn unquoted_delimiter(line: &str, delimiter: char) -> Option<usize> {
 }
 
 /// The quoted strings of a `members` value, without comments, in order.
-fn quoted_items(value: &str) -> Vec<String> {
+fn quoted_items(value: &str) -> Option<Vec<String>> {
     let mut items = Vec::new();
-    let mut rest = value;
-    while let Some(open) = rest.find(['"', '\'']) {
-        let quote = rest[open..].chars().next().expect("non-empty");
-        let Some(end) = rest[open + 1..].find(quote) else {
-            break;
-        };
-        let item = &rest[open + 1..open + 1 + end];
-        if valid_member_path(item) {
-            items.push(item.to_owned());
+    let mut rest = value.trim().strip_prefix('[')?.trim();
+    loop {
+        if rest == "]" {
+            return Some(items);
         }
-        rest = &rest[open + 1 + end + 1..];
+        let quote = rest.chars().next().filter(|ch| matches!(ch, '"' | '\''))?;
+        let end = rest[1..].find(quote)? + 1;
+        let item = rest[1..end].trim_start_matches("./");
+        if !valid_member_path(item) || item.contains('\\') {
+            return None;
+        }
+        items.push(item.to_owned());
+        rest = rest[end + 1..].trim();
+        if rest != "]" {
+            rest = rest.strip_prefix(',')?.trim();
+        }
     }
-    items
 }
 
 /// Member paths are relative workspace locations: no `..`, absolute paths or empty parts.
@@ -432,10 +448,15 @@ impl Manifests {
 /// The crates of the changed paths. A workspace's own manifest or lockfile selects every
 /// member (like the CI rule that unknown paths conservatively select every component);
 /// other files outside a crate select nothing.
-fn select(root: &Path, paths: &[String]) -> Result<BTreeSet<(String, String)>, String> {
+#[derive(Debug, Default)]
+struct Selected {
+    packages: BTreeSet<(String, String)>,
+    workspaces: BTreeSet<String>,
+}
+
+fn select(root: &Path, paths: &[String]) -> Result<Selected, String> {
     let mut manifests = Manifests::default();
-    let mut selected = BTreeSet::new();
-    let mut expanded = BTreeSet::new();
+    let mut selected = Selected::default();
     let mut budget = MAX_GLOB_WORK;
     for path in paths {
         let name = path.rsplit('/').next().unwrap_or(path.as_str());
@@ -443,41 +464,27 @@ fn select(root: &Path, paths: &[String]) -> Result<BTreeSet<(String, String)>, S
         if name == "Cargo.toml" || name == "Cargo.lock" {
             let manifest = manifests.at(root, dir)?;
             if manifest.workspace {
-                if !expanded.insert(dir) {
-                    continue;
-                }
-                let package = manifest.package.clone();
-                let members = manifest.members.clone();
-                let excludes = manifest.excludes.clone();
-                for member in members {
-                    for member_dir in member_dirs(root, dir, &member, &mut budget)? {
-                        if workspace_excludes(dir, &member_dir, &excludes, &mut budget)? {
-                            continue;
-                        }
-                        if let Some(package) = manifests.at(root, &member_dir)?.package.clone() {
-                            selected.insert((package, dir.to_owned()));
-                        }
-                    }
-                }
-                if let Some(package) = package {
-                    selected.insert((package, dir.to_owned()));
-                }
+                // Cargo includes implicit path-dependency members as well as the
+                // listed ones. Let the sandboxed command select the whole workspace.
+                selected.workspaces.insert(dir.to_owned());
             } else if let Some(package) = manifest.package.clone() {
-                selected.insert((package, manifests.in_dir(root, dir, &mut budget)?));
+                selected
+                    .packages
+                    .insert((package, manifests.in_dir(root, dir, &mut budget)?));
             }
             continue;
         }
         for ancestor in manifests.ancestors(root, dir)? {
             if let Some(package) = manifests.root[&ancestor].package.clone() {
                 let in_dir = manifests.in_dir(root, &ancestor, &mut budget)?;
-                selected.insert((package, in_dir));
+                selected.packages.insert((package, in_dir));
                 break;
             }
         }
     }
-    if selected.len() > MAX_PACKAGES {
+    if selected.packages.len() + selected.workspaces.len() > MAX_PACKAGES {
         return Err(format!(
-            "the change affects more than {MAX_PACKAGES} crates, so their checks cannot be listed"
+            "the change affects more than {MAX_PACKAGES} Cargo targets, so their checks cannot be listed"
         ));
     }
     Ok(selected)
@@ -527,66 +534,6 @@ fn workspace_excludes(
     Ok(false)
 }
 
-/// The directories a `members` entry names, with `*`/`?` glob components expanded.
-fn member_dirs(root: &Path, base: &str, member: &str, budget: &mut usize) -> Result<Vec<String>, String> {
-    let full = join_dir(base, member);
-    if !full.contains(['*', '?']) {
-        return Ok(valid_member_path(&full).then_some(full).into_iter().collect());
-    }
-    let mut frontier = vec![String::new()];
-    for part in full.split('/') {
-        let mut next = Vec::new();
-        for dir in &frontier {
-            if part.contains('*') || part.contains('?') {
-                next.extend(glob_dirs(root, dir, part, budget)?);
-            } else if valid_member_path(&join_dir(dir, part)) {
-                next.push(join_dir(dir, part));
-            }
-            if next.len() > MAX_MEMBERS {
-                return Err("workspace member expansion exceeds its path limit".into());
-            }
-        }
-        frontier = next;
-        if frontier.is_empty() {
-            break;
-        }
-    }
-    frontier.retain(|dir| valid_member_path(dir));
-    frontier.sort();
-    Ok(frontier)
-}
-
-/// The subdirectories of `dir` matching `pattern`.
-fn glob_dirs(root: &Path, dir: &str, pattern: &str, budget: &mut usize) -> Result<Vec<String>, String> {
-    let entries = match std::fs::read_dir(root.join(dir)) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return Err("workspace member directory could not be read".into()),
-    };
-    let mut out = Vec::new();
-    for entry in entries {
-        spend_glob_work(budget, 1)?;
-        let entry = entry.map_err(|_| "workspace member entry could not be read")?;
-        if !entry
-            .file_type()
-            .map_err(|_| "workspace member entry type could not be read")?
-            .is_dir()
-        {
-            continue;
-        }
-        let Some(file) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if match_component(pattern, &file, budget)? {
-            out.push(join_dir(dir, &file));
-            if out.len() > MAX_MEMBERS {
-                return Err("workspace member expansion exceeds its path limit".into());
-            }
-        }
-    }
-    Ok(out)
-}
-
 /// `*` and `?` only, anchored at both ends; member globs never need character classes.
 fn simple_glob(pattern: &str, name: &str) -> bool {
     // Track which name prefixes match the preceding pattern. Each pattern
@@ -632,8 +579,12 @@ fn entry_dir(in_dir: &str) -> &str {
 /// The tests of one crate. `--frozen` keeps the lockfile and the network out of the
 /// worktree; a cold registry or a drifted lockfile is a failure to fix, not a silent pass.
 fn test_entry(in_dir: &str, name: &str) -> String {
+    test_entry_for(in_dir, &format!("-p {name}"))
+}
+
+fn test_entry_for(in_dir: &str, target: &str) -> String {
     format!(
-        "in {}: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen -p {name}",
+        "in {}: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen {target}",
         entry_dir(in_dir)
     )
 }
@@ -641,8 +592,12 @@ fn test_entry(in_dir: &str, name: &str) -> String {
 /// Clippy of one crate, guarded so a missing component is `not_run` (the task stays
 /// `unverified`) instead of cargo's generic failure.
 fn clippy_entry(in_dir: &str, name: &str) -> String {
+    clippy_entry_for(in_dir, &format!("-p {name}"))
+}
+
+fn clippy_entry_for(in_dir: &str, target: &str) -> String {
     format!(
-        "in {}: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen -p {name} -- -D warnings",
+        "in {}: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen {target} -- -D warnings",
         entry_dir(in_dir)
     )
 }
@@ -891,7 +846,10 @@ members = ["crates/*", "tools/pinned"]
         manifest(&dir, "crates/one/Cargo.toml", "[package]\nname = \"one\"\n");
         manifest(&dir, "crates/two/Cargo.toml", "[package]\nname = \"two\"\n");
         let selected = select(dir.path(), &["crates/two/src/lib.rs".to_owned()]).unwrap();
-        assert_eq!(selected, BTreeSet::from([("two".to_owned(), "".to_owned())]));
+        assert_eq!(
+            selected.packages,
+            BTreeSet::from([("two".to_owned(), "".to_owned())])
+        );
     }
 
     #[test]
@@ -899,21 +857,31 @@ members = ["crates/*", "tools/pinned"]
         let dir = PrivateDir::new("derived-standalone");
         manifest(&dir, "solo/Cargo.toml", "[package]\nname = \"solo\"\n");
         let selected = select(dir.path(), &["solo/src/main.rs".to_owned()]).unwrap();
-        assert_eq!(selected, BTreeSet::from([("solo".to_owned(), "solo".to_owned())]));
+        assert_eq!(
+            selected.packages,
+            BTreeSet::from([("solo".to_owned(), "solo".to_owned())])
+        );
     }
 
     #[test]
-    fn a_workspace_manifest_or_lockfile_change_selects_every_member() {
+    fn a_workspace_manifest_or_lockfile_selects_cargos_full_membership() {
         let dir = PrivateDir::new("derived-members");
-        manifest(&dir, "Cargo.toml", root_package_workspace());
-        manifest(&dir, "crates/one/Cargo.toml", "[package]\nname = \"one\"\n");
-        manifest(&dir, "crates/two/Cargo.toml", "[package]\nname = \"two\"\n");
-        manifest(&dir, "tools/pinned/Cargo.toml", "[package]\nname = \"pinned\"\n");
+        manifest(&dir, "Cargo.toml", "[workspace]\nmembers = [\"./app\"]\n");
+        manifest(
+            &dir,
+            "app/Cargo.toml",
+            "[package]\nname = \"app\"\n[dependencies]\nhelper = { path = \"../helper\" }\n",
+        );
+        manifest(&dir, "helper/Cargo.toml", "[package]\nname = \"helper\"\n");
         for changed in ["Cargo.toml", "Cargo.lock"] {
-            let selected = select(dir.path(), &[changed.to_owned()]).unwrap();
+            let changes = format!("{changed}\0");
+            let checks = from_changed_paths(dir.path(), changes.as_bytes()).unwrap();
             assert_eq!(
-                selected.iter().map(|(name, _)| name).collect::<Vec<_>>(),
-                ["one", "pinned", "top", "two"],
+                checks.commands,
+                [
+                    "in .: command -v cargo >/dev/null 2>&1 || exit 127\ncargo test --frozen --workspace",
+                    "in .: cargo clippy --version >/dev/null 2>&1 || exit 127\ncargo clippy --frozen --workspace -- -D warnings",
+                ],
                 "workspace-wide change {changed}"
             );
         }
@@ -931,21 +899,19 @@ members = ["crates/*", "tools/pinned"]
         manifest(&dir, "crates/other/Cargo.toml", "[package]\nname = \"other\"\n");
         let changed = select(dir.path(), &["crates/solo/src/lib.rs".to_owned()]).unwrap();
         assert_eq!(
-            changed,
+            changed.packages,
             BTreeSet::from([("solo".to_owned(), "crates/solo".to_owned())])
         );
         let root = select(dir.path(), &["Cargo.lock".to_owned()]).unwrap();
-        assert_eq!(root, BTreeSet::from([("other".to_owned(), "".to_owned())]));
+        assert_eq!(root.workspaces, BTreeSet::from([String::new()]));
     }
 
     #[test]
-    fn workspace_patterns_are_deduplicated_and_expansion_has_a_shared_budget() {
-        let dir = PrivateDir::new("derived-glob-budget");
-        manifest(&dir, "crates/one/Cargo.toml", "[package]\nname = \"one\"\n");
-        let parsed = parse_manifest("[workspace]\nmembers = [\"crates/*\", \"crates/*\"]");
-        assert_eq!(parsed.members, ["crates/*"]);
+    fn workspace_patterns_are_deduplicated_and_matching_has_a_shared_budget() {
+        let parsed = parse_manifest("[workspace]\nexclude = [\"./crates/*\", \"crates/*\"]");
+        assert_eq!(parsed.excludes, ["crates/*"]);
         let mut budget = 1;
-        let error = member_dirs(dir.path(), "", &parsed.members[0], &mut budget).unwrap_err();
+        let error = workspace_excludes("", "crates/one", &parsed.excludes, &mut budget).unwrap_err();
         assert!(error.contains("work limit"), "{error}");
     }
 
@@ -965,11 +931,29 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
+    fn an_unsupported_member_path_cannot_disappear_from_the_plan() {
+        let dir = PrivateDir::new("derived-unsupported-member");
+        manifest(
+            &dir,
+            "Cargo.toml",
+            "[workspace]\nmembers = [\"app\", \"../helper\"]\n",
+        );
+        let error = select(dir.path(), &["Cargo.lock".to_owned()]).unwrap_err();
+        assert!(
+            error.contains("unsupported or incomplete workspace path list"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn a_standalone_lockfile_change_selects_its_package() {
         let dir = PrivateDir::new("derived-standalone-lock");
         manifest(&dir, "solo/Cargo.toml", "[package]\nname = \"solo\"\n");
         let selected = select(dir.path(), &["solo/Cargo.lock".to_owned()]).unwrap();
-        assert_eq!(selected, BTreeSet::from([("solo".to_owned(), "solo".to_owned())]));
+        assert_eq!(
+            selected.packages,
+            BTreeSet::from([("solo".to_owned(), "solo".to_owned())])
+        );
     }
 
     #[test]
@@ -993,7 +977,7 @@ members = ["crates/*", "tools/pinned"]
             &["docs/page.md".to_owned(), "unrelated/Cargo.toml".to_owned()],
         )
         .unwrap();
-        assert!(selected.is_empty());
+        assert!(selected.packages.is_empty() && selected.workspaces.is_empty());
     }
 
     #[test]
@@ -1001,7 +985,10 @@ members = ["crates/*", "tools/pinned"]
         let dir = PrivateDir::new("derived-root-package");
         manifest(&dir, "Cargo.toml", root_package_workspace());
         let selected = select(dir.path(), &["docs/page.md".to_owned()]).unwrap();
-        assert_eq!(selected, BTreeSet::from([("top".to_owned(), "".to_owned())]));
+        assert_eq!(
+            selected.packages,
+            BTreeSet::from([("top".to_owned(), "".to_owned())])
+        );
     }
 
     #[test]
@@ -1020,7 +1007,7 @@ members = ["crates/*", "tools/pinned"]
             );
         }
         let paths = ["a/util/src/lib.rs".to_owned(), "b/util/src/lib.rs".to_owned()];
-        let checks = commands(&select(dir.path(), &paths).unwrap());
+        let checks = commands(&select(dir.path(), &paths).unwrap().packages);
         assert_eq!(
             checks.commands,
             [
