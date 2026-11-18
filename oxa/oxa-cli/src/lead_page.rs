@@ -13,6 +13,8 @@ pub use pages::{Page, Prompt};
 /// Borrowed presentation inputs, not a second runner state store. None means unavailable.
 #[derive(Default)]
 pub struct View<'a> {
+    /// Ephemeral form credential supplied only by the authorized HTTP caller.
+    pub fixed_prompt_csrf: Option<&'a str>,
     pub board: Option<&'a Board>,
     pub situation: Option<&'a Snapshot>,
     /// C's selected checkpoint observation; the renderer never acquires runner state.
@@ -224,13 +226,13 @@ fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
             return;
         }
         let rows = query.rows(board, view);
-        html.push_str("<div class=scroll><table><thead><tr><th>PR</th><th>Next action</th><th>Priority</th><th>Lease</th><th>Attempts today</th></tr></thead><tbody>");
+        html.push_str("<div class=scroll role=region aria-labelledby=board-table-title tabindex=0><table><caption id=board-table-title>Observed board items</caption><thead><tr><th scope=col>PR</th><th scope=col>Next action</th><th scope=col>Priority</th><th scope=col>Lease</th><th scope=col>Attempts today</th></tr></thead><tbody>");
         let offset = query.page.saturating_mul(pages::BOARD_ROWS);
         for row in rows.iter().skip(offset).take(pages::BOARD_ROWS) {
             let lease = lease(row, now);
             let _ = write!(
                 html,
-                "<tr><td><a href=/items/{0}>#{0}</a></td><td>{1}</td><td>{2}</td><td>{lease}</td><td>{3}</td></tr>",
+                "<tr><th scope=row><a href=/items/{0}>#{0}</a></th><td>{1}</td><td>{2}</td><td>{lease}</td><td>{3}</td></tr>",
                 row.number,
                 action(row.action),
                 if row.release_pinned { "Release" } else { "Normal" },
@@ -430,6 +432,8 @@ pub const STYLE: &str = concat!(
     include_str!("lead_page/style.css"),
     r#"
 :root { --nav-height:3.875rem; }
+.scroll caption { text-align:left; padding:12px; font-weight:600; }
+.scroll th[scope=row]>a { display:inline-flex; align-items:center; min-height:44px; }
 .stale-notice { padding:16px; margin:16px 0; border:1px dashed var(--muted); border-radius:var(--radius); background:var(--raised); }
 :root { --bad:#b62c24; --bad-soft:#fde7e4; }
 @media(prefers-color-scheme:dark) { :root { --bad:#ff8a80; --bad-soft:#331917; } }
@@ -457,15 +461,18 @@ nav.tabs .badge.quiet { color:var(--muted); background:var(--raised); }
   .asks-layout .ask-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
   nav.tabs a { min-height:4.5rem; padding:.625rem .25rem; justify-content:center; font-size:.78125rem; }
 }
+.quota-windows dd { margin:0 0 16px; overflow-wrap:anywhere; }
+.quota-windows meter { display:block; width:100%; max-width:24rem; margin-top:6px; }
 "#
 );
 
 pub const SCRIPT: &str = r#"const badge=document.getElementById('connection');
 let timer,pending;
+function readerActive(){return document.querySelector('main').contains(document.activeElement)&&document.activeElement.matches('a,button,input,textarea,select,summary,[tabindex]');}
 async function refresh(){
   clearTimeout(timer);
   if(document.hidden)return;
-  if(document.querySelector('main').contains(document.activeElement)&&document.activeElement.matches('a,button,input,textarea,select,summary')){timer=setTimeout(refresh,15000);return;}
+  if(readerActive()){timer=setTimeout(refresh,15000);return;}
   if(pending)pending.abort();
   const active=new AbortController();pending=active;
   const target=new URL(location.href);target.searchParams.set('fragment','1');
@@ -475,7 +482,7 @@ async function refresh(){
     const doc=new DOMParser().parseFromString(await response.text(),'text/html');
     const next=doc.querySelector('main');
     if(!next)throw new Error('refresh unavailable');
-    if(pending===active){
+    if(pending===active&&!readerActive()){
       const current=document.querySelector('main'),work=current.querySelector('details.home-work');
       const replacement=next.querySelector('details.home-work');
       if(work&&replacement)replacement.open=work.open;
@@ -640,14 +647,14 @@ mod tests {
             .eval_script(
                 "dom-fixture",
                 r#"
-let current, supplied, closeDuringFetch, failureMode='ok';
+let current, supplied, closeDuringFetch, failureMode='ok', focusDuringFetch=false, focused='', inside=false, fetches=0;
 const connectionBadge={textContent:'Snapshot'};
 function makeMain(open) {
   const work={open}, notice={hidden:true};
-  return {work, notice, contains:()=>false, querySelector:selector=>selector==='details.home-work'?work:null,
+  return {work, notice, contains:()=>inside, querySelector:selector=>selector==='details.home-work'?work:null,
     replaceWith:next=>{current=next;}};
 }
-const document={hidden:false, activeElement:{matches:()=>false},
+const document={hidden:false, activeElement:{matches:selectors=>selectors.split(',').includes(focused)},
   getElementById:id=>id==='connection'?connectionBadge:id==='refresh-error'?current.notice:null,
   querySelector:()=>current, addEventListener:()=>{}};
 const setTimeout=()=>1, clearTimeout=()=>{};
@@ -656,6 +663,8 @@ class URL { constructor(){this.searchParams={set(){}};} }
 const location={href:'http://example.invalid/'};
 class DOMParser { parseFromString(){return {querySelector:()=>failureMode==='missing'?null:supplied};} }
 async function fetch(){
+  fetches++;
+  if(focusDuringFetch){inside=true; focused='[tabindex]';}
   if(failureMode==='network')throw new Error('private-refresh-marker');
   if(failureMode==='abort'){pending.abort();throw new Error('aborted');}
   if(closeDuringFetch)current.work.open=false;
@@ -680,6 +689,19 @@ for(const [open,close,expected] of [[false,false,false],[true,false,true],[true,
   await refresh();
   if(current!==supplied||current.work.open!==expected)throw new Error('reader disclosure state lost');
 }
+closeDuringFetch=false; inside=true;
+for(focused of ['summary','[tabindex]']) {
+  current=makeMain(true); supplied=makeMain(false);
+  const before=fetches;
+  await refresh();
+  if(current===supplied||fetches!==before)throw new Error('focused reader region was replaced');
+}
+inside=false;
+await refresh();
+if(current!==supplied)throw new Error('refresh did not resume after leaving main');
+current=makeMain(true); supplied=makeMain(false); focusDuringFetch=true;
+await refresh();
+if(current===supplied)throw new Error('focus acquired during fetch was lost');
 return true;
 "#,
             )
@@ -1130,6 +1152,56 @@ return true;
     }
 
     #[test]
+    fn board_scroll_region_and_table_headers_are_available_without_javascript() {
+        let board = Board {
+            observed_at: 100,
+            entries: vec![Entry {
+                number: 17,
+                head: "private-head-marker".into(),
+                release_pinned: false,
+                action: Action::WaitReview,
+                lease: None,
+                attempts_today: 2,
+                eligible: true,
+            }],
+        };
+        for page in [Page::Home, Page::Board, Page::BoardQuery(Query::default())] {
+            let html = content_for(
+                page,
+                &View {
+                    board: Some(&board),
+                    ..View::default()
+                },
+                100,
+            );
+            assert!(html.contains("class=scroll role=region aria-labelledby=board-table-title tabindex=0"));
+            assert_eq!(html.matches("id=board-table-title").count(), 1);
+            assert!(html.contains("<caption id=board-table-title>Observed board items</caption>"));
+            for label in ["PR", "Next action", "Priority", "Lease", "Attempts today"] {
+                assert!(html.contains(&format!("<th scope=col>{label}</th>")));
+            }
+            assert!(html.contains("<th scope=row><a href=/items/17>#17</a></th>"));
+            for value in ["Wait for review", "Normal", "Unleased", "2"] {
+                assert!(html.contains(&format!("<td>{value}</td>")));
+            }
+            assert!(!html.contains("private-head-marker") && !html.contains("onclick="));
+        }
+        let empty = content_for(
+            Page::Board,
+            &View {
+                board: Some(&Board::default()),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(empty.contains("No open PRs in this snapshot."));
+        assert!(empty.contains("<caption id=board-table-title>Observed board items</caption>"));
+        let unavailable = content_for(Page::Board, &View::default(), 100);
+        assert!(unavailable.contains("Board unavailable."));
+        assert!(!unavailable.contains("role=region") && !unavailable.contains("<table"));
+    }
+
+    #[test]
     fn fake_board_uses_policy_and_does_not_render_source_payloads() {
         struct Fake;
         impl GitHub for Fake {
@@ -1257,10 +1329,13 @@ return true;
         assert!(page.contains("Usage coverage: complete"));
         assert!(page.contains("<dt>Task attempts</dt><dd>1</dd>"));
         assert!(page.contains("<dt>Attempts with complete usage</dt><dd>1</dd>"));
-        assert_eq!(page.matches("<dd>0</dd>").count(), 3);
-        assert!(!page.contains("<dd>Unknown</dd>"));
+        assert!(page.contains("<dt>Prompt tokens</dt><dd>0</dd>"));
+        assert!(page.contains("<dt>Completion tokens</dt><dd>0</dd>"));
+        assert!(page.contains("<dt>Cached input tokens</dt><dd>0</dd>"));
         assert!(page.contains("Task-scoped checkpoint; merged-PR attribution unavailable."));
-        assert!(page.contains("<h2>Plans and quotas</h2><p>Usage observations unavailable.</p>"));
+        assert!(page.contains("GitHub App · GraphQL</dt><dd>Unknown"));
+        assert!(page.contains("GitHub Owner · REST core</dt><dd>Unknown"));
+        assert!(page.contains("Primary model window</dt><dd>Unknown"));
         assert!(page.contains("aria-current=page>Usage"));
         assert!(!page.contains("<form") && !page.contains("<button"));
         let partial = Ok(Some(oxa_work::TaskUsage {
