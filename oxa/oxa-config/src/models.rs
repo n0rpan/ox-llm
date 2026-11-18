@@ -317,7 +317,8 @@ fn parse_cloud_provider(name: &str, entry: &serde_json::Value) -> Option<CloudPr
     valid_models.then_some(provider)
 }
 
-fn valid_cloud_name(name: &str) -> bool {
+/// Validate a cloud provider, key-file selector or budget pool identifier.
+pub fn valid_cloud_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
         && name

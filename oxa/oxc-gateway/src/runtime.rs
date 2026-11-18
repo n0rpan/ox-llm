@@ -305,7 +305,8 @@ impl Runtime {
         offers: Vec<Offer>,
     ) -> Result<(usize, usize, usize), Refusal> {
         let same_source = |model: &Model| {
-            model.info().provider == source.provider()
+            model.configured_route().is_none()
+                && model.info().provider == source.provider()
                 && model.endpoint().as_str().trim_end_matches('/') == source.base().trim_end_matches('/')
         };
         let (configured, mut routes): (Vec<_>, Vec<_>) = self
@@ -597,7 +598,7 @@ impl Runtime {
                         self.key_file
                             .as_ref()
                             .map_err(|_| self.credential_error())?
-                            .read(model.info().provider.as_str())
+                            .read(model.credential_name())
                             .map_err(|_| self.credential_error())?,
                     ))
                 }
@@ -703,15 +704,29 @@ impl<'a> Call<'a> {
         self.credential.key()
     }
     pub fn provider_account_scope(&self) -> [u8; 32] {
-        self.credential.account_scope()
+        let account = self.credential.account_scope();
+        let Some(route) = self.model.configured_route() else {
+            return account;
+        };
+        use sha2::{Digest, Sha256};
+        let mut scope = Sha256::new();
+        scope.update(account);
+        scope.update(route.provider().as_bytes());
+        scope.update([0]);
+        scope.update(self.model.endpoint().as_str().as_bytes());
+        scope.finalize().into()
     }
     /// Provider-bound conversation hint, distinct from the private ledger's
     /// session identifier. Neither the raw session id nor the salt leaves here.
     pub fn provider_session_hint(&self) -> Result<String, Refusal> {
-        self.entry
-            .as_ref()
-            .and_then(|entry| entry.provider_session_hint(self.model.info().provider.as_str()))
-            .ok_or_else(|| invalid("session"))
+        let entry = self.entry.as_ref().ok_or_else(|| invalid("session"))?;
+        let hint = match self.model.configured_route() {
+            Some(route) => {
+                entry.provider_session_hint(&format!("{}\0{}", route.provider(), self.model.endpoint()))
+            }
+            None => entry.provider_session_hint(self.model.info().provider.as_str()),
+        };
+        hint.ok_or_else(|| invalid("session"))
     }
     pub fn openai_auth_handle(&self) -> Result<OpenAiAuthHandle, Refusal> {
         match (self.model.info().provider, &self.credential) {
