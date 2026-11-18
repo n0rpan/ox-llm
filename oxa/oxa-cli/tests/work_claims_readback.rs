@@ -1,6 +1,6 @@
 use oxa_fake::TestEnv;
 use oxa_work::board::{assignment::*, *};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 
 fn private(path: &Path, directory: bool) {
@@ -27,15 +27,13 @@ fn invoke(env: &TestEnv, config: &Path) -> std::process::Output {
 
 fn fixture() -> (TestEnv, std::path::PathBuf, Value) {
     let env = TestEnv::new();
-    assert!(
-        Command::new("git")
-            .args(["-c", "core.hooksPath=/dev/null", "init", "-b", "main"])
-            .current_dir(env.work())
-            .output()
-            .unwrap()
-            .status
-            .success()
-    );
+    assert!(Command::new("git")
+        .args(["-c", "core.hooksPath=/dev/null", "init", "-b", "main"])
+        .current_dir(env.work())
+        .output()
+        .unwrap()
+        .status
+        .success());
     oxa_perm::TrustStore::default()
         .save(&env.agent_dir().join("trust.json"), &env.work(), true)
         .unwrap();
@@ -111,16 +109,21 @@ fn same_store_readback_preserves_full_claims_and_unknown_legacy_coverage_while_p
     claims
         .import_snapshot(
             Some(ManualAuthority::Owner),
-            &BTreeMap::from([(
-                44,
-                ImportState {
-                    state: AttemptState {
-                        attempts: 7,
-                        ..AttemptState::default()
-                    },
-                    excluded: true,
-                },
-            )]),
+            &[34, 44]
+                .into_iter()
+                .map(|number| {
+                    (
+                        number,
+                        ImportState {
+                            state: AttemptState {
+                                attempts: 7,
+                                ..AttemptState::default()
+                            },
+                            excluded: true,
+                        },
+                    )
+                })
+                .collect(),
             10,
         )
         .unwrap();
@@ -137,6 +140,12 @@ fn same_store_readback_preserves_full_claims_and_unknown_legacy_coverage_while_p
     assert_eq!(readback["worker"], value["worker"]);
     assert_eq!(readback["host_id"], "host-a");
     assert_eq!(readback["partition"], value["partition"]);
+    assert_eq!(readback["source"], "Claims::assignments");
+    assert_eq!(readback["partition_source"], "protected-owner-configuration");
+    assert_eq!(
+        readback["partition_membership"],
+        json!({"22":true,"34":false,"44":true})
+    );
     assert_eq!(readback["legacy_coverage"], "unknown");
     assert_eq!(readback["refill_enabled"], false);
     assert_eq!(files(root), before);
