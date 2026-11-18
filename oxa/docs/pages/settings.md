@@ -253,9 +253,13 @@ The key is read for each request from the existing private
 `~/.config/oxc/llm/cloud-secrets.json` (owner-only, mode `0600`, outside a checkout).
 Keep keys out of settings. The file uses the existing provider-key JSON format.
 Private settlement rows live in `<agent directory>/cloud-ledger/`. Listing models
-reads neither the key nor the ledger and contacts no provider. A missing price or
-daily budget refuses a request before credentials or provider I/O. Requests retain
-their budget reservation until the private row is durable.
+reads neither the key nor the ledger and contacts no provider. A missing price
+refuses a request before credentials or provider I/O. `daily_budget_usd` is
+optional: without it there is no budget check, requests are admitted and their
+cost is still recorded in the ledger (a request whose cost cannot be bounded is
+recorded with `cost_unknown`). When set it must be a positive number, and a
+request that would exceed it is refused with `budget_exceeded` (HTTP 429). Requests
+retain their budget reservation until the private row is durable.
 
 An `openai` route uses the same model/price fields, reads the `openai` key from
 that key file, and defaults to `https://api.openai.com/v1`. Both native providers

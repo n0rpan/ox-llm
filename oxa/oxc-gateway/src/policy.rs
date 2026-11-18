@@ -82,7 +82,17 @@ pub fn before_credentials(
     Ok(())
 }
 
-/// Admission math only. The accounting slice supplies an atomic ledger snapshot
+fn ledger_disabled() -> Refusal {
+    Refusal {
+        status: 503,
+        message: "The request ledger is disabled; cloud calls are blocked until it is enabled.",
+        code: "cloud_ledger_unavailable",
+        param: "model",
+    }
+}
+
+/// Admission math only. An unset cap (`null`) means no budget check: the owner
+/// chose no limit, so the request is admitted and its cost is still recorded. The accounting slice supplies an atomic ledger snapshot
 /// and outstanding holds, and retains the lock through creation of a new hold.
 /// This function alone neither grants a reservation nor forwards a request.
 pub fn daily_budget(
@@ -92,21 +102,26 @@ pub fn daily_budget(
     reserved: f64,
     required: f64,
 ) -> Result<(), Refusal> {
+    if cap.is_null() {
+        // Only the cap check is skipped. Metered admission still needs the durable ledger.
+        return if ledger_enabled {
+            Ok(())
+        } else {
+            Err(ledger_disabled())
+        };
+    }
     let Some(cap) = cap.as_f64().filter(|n| n.is_finite() && *n > 0.0) else {
+        // A configured but unusable cap (zero, negative, non-numeric) is a
+        // configuration error, not an absent budget.
         return Err(Refusal {
             status: 403,
-            message: "Cloud models need a per-day USD budget (`cloud.daily_budget_usd`).",
+            message: "`cloud.daily_budget_usd` must be a positive number when set.",
             code: "budget_not_configured",
             param: "model",
         });
     };
     if !ledger_enabled {
-        return Err(Refusal {
-            status: 503,
-            message: "The request ledger is disabled; cloud calls are blocked until it is enabled.",
-            code: "cloud_ledger_unavailable",
-            param: "model",
-        });
+        return Err(ledger_disabled());
     }
     let spent = spent
         .filter(|n| n.is_finite() && *n >= 0.0)

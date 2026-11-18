@@ -50,8 +50,9 @@ fn stream(text: &str) -> Reply {
 }
 
 /// Settings keep the metered default model and the Go subscription route, and
-/// deliberately omit `daily_budget_usd`: the absent cap is the owner restriction
-/// under test, not something this change may invent or bypass.
+/// deliberately omit `daily_budget_usd`: an absent cap means no budget check, so
+/// the metered default is admitted (its unreachable upstream then fails) and only
+/// the owner's explicit Go choice avoids it.
 fn settings(env: &TestEnv, go: &str, lead: Value) {
     let mut value = json!({"defaultProjectTrust":"always","defaultModel":METERED_MODEL,
         "defaultThinkingLevel":"off","permissions":{"defaultMode":"auto"},
@@ -158,8 +159,9 @@ fn lead_chat_keeps_the_metered_guard_and_routes_the_go_subscription_choice() {
     let id = String::from_utf8(initialized.stdout).unwrap().trim().to_owned();
 
     // The dedicated Lead Session is bound, but no route is chosen yet: the
-    // startup model is metered and the daily USD cap is absent, so the guard
-    // refuses exactly as before. No fallback, no upstream request.
+    // startup model is metered and the daily USD cap is absent: no cap is no
+    // budget check, so the request is admitted to the metered route (whose
+    // upstream is unreachable here) instead of being refused. No fallback to Go.
     settings(
         &env,
         &format!("http://{}", go.address()),
@@ -168,13 +170,13 @@ fn lead_chat_keeps_the_metered_guard_and_routes_the_go_subscription_choice() {
     let refused = run(&env, &["lead", "chat", "Which items need attention?"]);
     assert!(!refused.status.success(), "{refused:?}");
     let diagnostic = String::from_utf8_lossy(&refused.stderr);
-    assert!(diagnostic.contains("oxa.cloud.daily_budget_usd"), "{diagnostic}");
+    assert!(!diagnostic.contains("oxa.cloud.daily_budget_usd"), "{diagnostic}");
     assert!(metered.requests().is_empty());
     assert!(go_chat_requests(&go).is_empty());
     let ledger = rows(&env);
     assert_eq!(ledger.len(), 1, "{ledger:?}");
-    assert_eq!(ledger[0]["status"], 403);
-    assert_eq!(ledger[0]["error"], "budget_not_configured");
+    assert_ne!(ledger[0]["status"], 403, "{ledger:?}");
+    assert_ne!(ledger[0]["error"], "budget_not_configured", "{ledger:?}");
 
     // The owner's user-only explicit choice takes the approved Go subscription
     // route: independent positive limits, no USD hold with the cap absent.
@@ -199,10 +201,13 @@ fn lead_chat_keeps_the_metered_guard_and_routes_the_go_subscription_choice() {
     assert_eq!(go_chat_requests(&go).len(), 2);
     assert!(metered.requests().is_empty());
 
-    // Both settled rows are subscription spends; the refusal row stays refused.
+    // Both settled rows are subscription spends. The first, metered turn ran with no
+    // budget configured: it was admitted (no cap = no check) and recorded, and it failed
+    // upstream because the metered fixture endpoint is unreachable.
     let ledger = rows(&env);
     assert_eq!(ledger.len(), 3, "{ledger:?}");
-    assert_eq!(ledger[0]["status"], 403);
+    assert_eq!(ledger[0]["status"], 502, "{ledger:?}");
+    assert_ne!(ledger[0]["error"], "budget_not_configured", "{ledger:?}");
     for row in &ledger[1..] {
         assert_eq!(row["billing"], "subscription", "{row:?}");
         assert_eq!(row["remote_provider"], "opencode", "{row:?}");

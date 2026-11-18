@@ -37,7 +37,7 @@ pub struct SlashCx<'a> {
 /// Kept in oxa: every command of slash-commands.md that plan sec. 1 keeps, plus `engine`,
 /// `mode` and `mcp`. Omitted pi commands (`login`, `logout`, `share`) are handled too: they
 /// answer the fixed `unsupported_in_oxa` notice.
-pub const INTERACTIVE_COMMANDS: [&str; 32] = [
+pub const INTERACTIVE_COMMANDS: [&str; 33] = [
     "settings",
     "model",
     "scoped-models",
@@ -70,6 +70,7 @@ pub const INTERACTIVE_COMMANDS: [&str; 32] = [
     "share",
     "help",
     "usage",
+    "goal",
 ];
 
 /// pi commands oxa omits (verdict O). A hook command, template or skill with the same name
@@ -263,6 +264,9 @@ pub fn dispatch_slash(line: &str, cx: &SlashCx) -> Option<AppAction> {
                 },
                 AppAction::Session(SessionCmd::Reload),
             ])
+        }),
+        "goal" => idle_or(cx, name, || {
+            AppAction::Session(SessionCmd::Goal(args.to_string()))
         }),
         "debug" => AppAction::DebugDump,
         "mcp" => AppAction::Open(SelectorKind::Mcp),
