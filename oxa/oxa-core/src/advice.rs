@@ -95,7 +95,7 @@ pub(crate) fn on_repeat(
         revision,
         point,
         AdviceTrigger::RepeatGuard,
-        evidence,
+        Some(evidence),
         sink,
     )
 }
@@ -122,7 +122,7 @@ fn active(st: &SessionState) -> Option<(Arc<BoundAdvisor>, u64)> {
 pub(crate) fn observe_done(
     st: &mut SessionState,
     observation: Option<crate::done::CheckObservation>,
-    evidence: Option<&str>,
+    allow_advice: bool,
     sink: &mut dyn EventSink,
 ) -> Result<AdviceResult, OxaError> {
     use crate::done::CheckObservation;
@@ -138,9 +138,12 @@ pub(crate) fn observe_done(
         persist(st, receipt.advance(phase)?.body(), sink)?;
         st.store.sync(&st.sref)?;
     }
-    match (observation, evidence) {
-        (CheckObservation::Failed { identity, rounds }, Some(evidence))
-            if rounds >= advisor.done_checks_after.get() =>
+    match observation {
+        CheckObservation::Failed {
+            identity,
+            rounds,
+            evidence,
+        } if allow_advice && rounds >= advisor.done_checks_after.get() =>
         {
             let key = format!("done_checks:{:x}", Sha256::digest(identity.as_bytes()));
             let point = StuckPoint::for_lease(&advisor.lease_identity, key.as_bytes())?;
@@ -150,7 +153,7 @@ pub(crate) fn observe_done(
                 revision,
                 point,
                 AdviceTrigger::DoneChecks,
-                evidence,
+                evidence.as_deref(),
                 sink,
             )
         }
@@ -164,7 +167,7 @@ fn request(
     revision: u64,
     point: StuckPoint,
     trigger: AdviceTrigger,
-    evidence: &str,
+    evidence: Option<&str>,
     sink: &mut dyn EventSink,
 ) -> Result<AdviceResult, OxaError> {
     let mut history = AdviceHistory::load(st.tree.entries())?;
@@ -188,6 +191,9 @@ fn request(
         _ => return Ok(AdviceResult::Refused),
     };
 
+    let Some(evidence) = evidence else {
+        return Ok(AdviceResult::Refused);
+    };
     let context = build_context(st, advisor, evidence);
     let _request = st.shared.enter_request()?;
     persist(st, receipt.body(), sink)?;

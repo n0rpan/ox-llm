@@ -18,7 +18,11 @@ const OUT_CAP: usize = 4096;
 
 pub(crate) enum CheckObservation {
     Passed,
-    Failed { identity: String, rounds: u32 },
+    Failed {
+        identity: String,
+        rounds: u32,
+        evidence: Option<String>,
+    },
 }
 
 #[derive(Default)]
@@ -211,7 +215,7 @@ pub(crate) fn check(
     state.dirty = false;
     let _ = ui;
     let mut failed = String::new();
-    let mut identity = String::new();
+    let mut failed_checks = Vec::new();
     for cmd in &cmds {
         // A cancel stops the whole done phase: no further command, no notice, no repair text.
         if st.shared.cancel.is_cancelled() {
@@ -239,8 +243,8 @@ pub(crate) fn check(
             text: text.clone(),
         });
         if !ok {
-            identity.push_str(&line);
-            identity.push('\n');
+            let (dir, command) = parse_entry(cmd);
+            failed_checks.push((dir.unwrap_or("."), command));
             failed.push_str(&text);
             failed.push_str("\n\n");
         }
@@ -256,18 +260,21 @@ pub(crate) fn check(
         state.rounds = 0;
         return None;
     }
-    state.observation = Some(CheckObservation::Failed {
-        identity,
-        rounds: state.rounds + 1,
+    state.rounds = state.rounds.saturating_add(1);
+    let repair = (state.rounds <= MAX_ROUNDS).then(|| {
+        format!(
+            "The project's done checks failed. Fix the problems, then finish.\n\n{}",
+            failed.trim_end()
+        )
     });
-    if state.rounds >= MAX_ROUNDS {
-        return None;
-    }
-    state.rounds += 1;
-    Some(format!(
-        "The project's done checks failed. Fix the problems, then finish.\n\n{}",
-        failed.trim_end()
-    ))
+    state.observation = Some(CheckObservation::Failed {
+        identity: serde_json::json!(failed_checks).to_string(),
+        rounds: state.rounds,
+        // A newly delivered suggestion can support one repair after the normal rounds.
+        // Subsequent checks can settle or escalate that advice without another call.
+        evidence: (state.rounds <= MAX_ROUNDS + 1).then_some(failed),
+    });
+    repair
 }
 
 pub(crate) fn inject(

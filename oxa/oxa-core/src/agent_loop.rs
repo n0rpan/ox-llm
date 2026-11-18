@@ -590,7 +590,7 @@ fn run_inner(
             crate::goal::account(st, false)?;
             if crate::goal::terminal(st) {
                 let _ = crate::done::check(st, &mut done, sink, ui);
-                crate::advice::observe_done(st, done.observation.take(), None, sink)?;
+                crate::advice::observe_done(st, done.observation.take(), false, sink)?;
                 if st.stats.done_failed {
                     if let Some(goal) = &st.goal {
                         goal.reject_completion();
@@ -658,7 +658,7 @@ fn run_inner(
                 // The files edited so far are still checked and the result shown; the run is
                 // over, so a failure is not sent back to the model.
                 let _ = crate::done::check(st, &mut done, sink, ui);
-                crate::advice::observe_done(st, done.observation.take(), None, sink)?;
+                crate::advice::observe_done(st, done.observation.take(), false, sink)?;
                 // Giving up is not a finished task: a caller must not read it as success.
                 return Ok(RunEnd::Failed(OxaError::new(code, text)));
             }
@@ -720,8 +720,7 @@ fn run_inner(
             continue;
         }
         let failed_check = crate::done::check(st, &mut done, sink, ui);
-        let advised =
-            crate::advice::observe_done(st, done.observation.take(), failed_check.as_deref(), sink)?;
+        let advised = crate::advice::observe_done(st, done.observation.take(), true, sink)?;
         if matches!(advised, crate::advice::AdviceResult::Escalate) {
             return Ok(RunEnd::Failed(OxaError::new(
                 "advisor_escalation_required",
@@ -730,6 +729,9 @@ fn run_inner(
         }
         if let Some(text) = failed_check {
             crate::done::inject(st, text, sink, ui, run_msgs)?;
+            continue;
+        }
+        if matches!(advised, crate::advice::AdviceResult::Continue) {
             continue;
         }
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {
