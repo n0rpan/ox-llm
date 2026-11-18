@@ -44,6 +44,20 @@ fn escape(text: &str) -> String {
         })
         .collect()
 }
+
+/// Presentation follows the serving host's zone; native observations retain UTC timestamps.
+fn human_time(timestamp: u64, now: u64) -> String {
+    let local = |value| i64::try_from(value).ok().and_then(oxa_session::local_time);
+    let Some(at) = local(timestamp) else {
+        return "time not available (the host clock cannot format this observation)".into();
+    };
+    let date = if local(now).is_some_and(|today| today.date == at.date) {
+        String::new()
+    } else {
+        format!("{} ", at.date)
+    };
+    escape(&format!("{date}{} {}", at.hm, at.zone_label()))
+}
 fn action(value: Action) -> &'static str {
     match value {
         Action::FixFindings => "Fix findings",
@@ -103,18 +117,26 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         Page::Home => {
             html.push_str("<div class=home-layout><div class=home-decisions>");
             attention(&mut html, view);
-            asks(&mut html, view);
+            asks(&mut html, view, now);
             html.push_str("</div><div class=home-overview><section><h2>Snapshot overview</h2>");
             if let Some(board) = view.board {
-                let _ = write!(html,
-                    "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed at {} (Unix seconds)</p>",
-                    board.entries.len(), if stale(board, now) { "Stale snapshot" } else { "Board snapshot" }, board.observed_at);
+                let _ = write!(
+                    html,
+                    "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed {}</p>",
+                    board.entries.len(),
+                    if stale(board, now) {
+                        "Stale snapshot"
+                    } else {
+                        "Board snapshot"
+                    },
+                    human_time(board.observed_at, now)
+                );
             } else {
                 html.push_str("<p>Board unavailable.</p>");
             }
             html.push_str("</section><details class=home-work><summary>Observed work</summary>");
             board(&mut html, view, now, Query::default());
-            workers(&mut html, view);
+            workers(&mut html, view, now);
             queue(&mut html, view);
             release(&mut html, view);
             html.push_str("</details></div></div>");
@@ -128,14 +150,14 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             board(&mut html, view, now, query);
             queue(&mut html, view);
         }
-        Page::Workers => workers(&mut html, view),
+        Page::Workers => workers(&mut html, view, now),
         Page::Asks => {
             html.push_str("<div class=asks-layout>");
-            asks(&mut html, view);
+            asks(&mut html, view, now);
             html.push_str("</div>");
         }
         Page::Item(number) => item(&mut html, view, number, now),
-        Page::Chat(prompt) => chat::render(&mut html, view, prompt),
+        Page::Chat(prompt) => chat::render(&mut html, view, prompt, now),
         Page::Usage => {
             usage(&mut html, view);
             quotas::render(&mut html, view, now);
@@ -212,13 +234,13 @@ fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
     if let Some(board) = view.board {
         let _ = write!(
             html,
-            "<p class=muted>{} · observed at {} (Unix seconds)</p>",
+            "<p class=muted>{} · observed {}</p>",
             if stale(board, now) {
                 "Stale snapshot"
             } else {
                 "GitHub snapshot"
             },
-            board.observed_at
+            human_time(board.observed_at, now)
         );
         query.navigation(html, board, view);
         if !query.filter.available(view) {
@@ -273,7 +295,7 @@ fn lease(row: &Entry, now: u64) -> String {
         format!(
             "{} · expires {}{}",
             escape(&l.holder),
-            l.expires_at,
+            human_time(l.expires_at, now),
             if l.expires_at <= now { " (expired)" } else { "" }
         )
     })
@@ -290,9 +312,9 @@ fn item(html: &mut String, view: &View<'_>, number: u64, now: u64) {
         return;
     };
     let _ = write!(html,
-        "<section><article><h2>Next action</h2><p>{}</p></article></section><section><article><h2>State</h2><dl><dt>Priority</dt><dd>{}</dd><dt>Lease</dt><dd>{}</dd><dt>Attempts today</dt><dd>{}</dd><dt>Observed at</dt><dd>{} (Unix seconds)</dd></dl></article></section>",
+        "<section><article><h2>Next action</h2><p>{}</p></article></section><section><article><h2>State</h2><dl><dt>Priority</dt><dd>{}</dd><dt>Lease</dt><dd>{}</dd><dt>Attempts today</dt><dd>{}</dd><dt>Observed at</dt><dd>{}</dd></dl></article></section>",
         action(row.action), if row.release_pinned { "Release" } else { "Normal priority" },
-        lease(row, now), row.attempts_today, board.observed_at);
+        lease(row, now), row.attempts_today, human_time(board.observed_at, now));
     html.push_str("<section><h2>Details and changes</h2><p>Title, checks, findings and diff observations unavailable.</p></section>");
 }
 
@@ -326,13 +348,14 @@ fn usage(html: &mut String, view: &View<'_>) {
     html.push_str("</section>");
 }
 
-fn workers(html: &mut String, view: &View<'_>) {
+fn workers(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section id=lanes><h2>Workers</h2>");
     if let Some(s) = view.situation {
         let _ = write!(
             html,
-            "<p class=muted>Runner facts · sequence {} · observed at {} (Unix milliseconds)</p>",
-            s.as_of_seq, s.at_ms
+            "<p class=muted>Runner facts · sequence {} · observed {}</p>",
+            s.as_of_seq,
+            human_time(s.at_ms / 1000, now)
         );
         let mut ordered: Vec<_> = s
             .running
@@ -411,9 +434,14 @@ fn release(html: &mut String, view: &View<'_>) {
     html.push_str("</section>");
 }
 
-fn asks(html: &mut String, view: &View<'_>) {
+fn asks(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section id=asks><h2>For your decision</h2>");
     if let Some(s) = view.situation {
+        let _ = write!(
+            html,
+            "<p class=muted>Runner facts · observed {}</p>",
+            human_time(s.at_ms / 1000, now)
+        );
         html.push_str("<div class=ask-cards>");
         for ask in &s.asks {
             let _ = write!(html, "<article><p class=muted>Ask {} · {}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", escape(&ask.id), subject(&ask.subject), escape(&ask.question));
@@ -1514,6 +1542,11 @@ return true;
             )
         };
         let page = render(Some(&board));
+        let lease_time = format!(
+            "<dt>Lease</dt><dd>worker-example · expires {} (expired)</dd>",
+            human_time(200, 201)
+        );
+        let observed_time = format!("<dt>Observed at</dt><dd>{}</dd>", human_time(100, 201));
         for expected in [
             "<h1 id=main tabindex=-1>Item #17</h1>",
             "href=/board>Back to Board</a>",
@@ -1521,9 +1554,9 @@ return true;
             "<h2>Next action</h2><p>Fix findings</p>",
             "<h2>State</h2><dl>",
             "<dt>Priority</dt><dd>Release</dd>",
-            "<dt>Lease</dt><dd>worker-example · expires 200 (expired)</dd>",
+            lease_time.as_str(),
             "<dt>Attempts today</dt><dd>2</dd>",
-            "<dt>Observed at</dt><dd>100 (Unix seconds)</dd>",
+            observed_time.as_str(),
             "Title, checks, findings and diff observations unavailable.",
         ] {
             assert!(page.contains(expected), "{expected}");
@@ -1543,7 +1576,10 @@ return true;
             generation: (0, 1),
         });
         let leased = render(Some(&board));
-        assert!(leased.contains("&lt;worker&gt;&amp;example · expires 300</dd>"));
+        assert!(leased.contains(&format!(
+            "&lt;worker&gt;&amp;example · expires {}</dd>",
+            human_time(300, 201)
+        )));
         assert!(!leased.contains("(expired)") && !leased.contains("<worker>"));
         board.entries.clear();
         for (source, expected) in [

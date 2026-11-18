@@ -2,7 +2,7 @@
 use super::{Prompt, View};
 use std::fmt::Write;
 
-pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt) {
+pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt, now: u64) {
     if let Some(csrf) = view.fixed_prompt_csrf {
         let _ = write!(html, "<form class=fixed-prompts method=post action=/chat><input type=hidden name=csrf value=\"{}\"><fieldset><legend>Ask about this observation</legend><button name=prompt value=status>Status</button><button name=prompt value=workers>Are workers on goal?</button><button name=prompt value=attention>What needs me?</button></fieldset></form>", super::escape(csrf));
     }
@@ -10,8 +10,11 @@ pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt) {
     if let Some(reply) = crate::lead_chat::quick_reply(prompt, view.board, view.situation) {
         let _ = write!(
             html,
-            "<p>{}</p><p><a href={}>{} · observed at {} (Unix seconds)</a></p>",
-            reply.text, reply.href, reply.source, reply.observed_at
+            "<p>{}</p><p><a href={}>{} · observed {}</a></p>",
+            reply.text,
+            reply.href,
+            reply.source,
+            super::human_time(reply.observed_at, now)
         );
     } else {
         html.push_str("<p>Snapshot observations unavailable for this prompt.</p>");
