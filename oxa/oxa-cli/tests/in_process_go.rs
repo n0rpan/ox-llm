@@ -90,6 +90,7 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
         ("--model", "synthetic-flash"),
         ("--model", "oxe/opencode/synthetic-flash"),
         ("--models", MODEL),
+        ("--models", "*-flash"),
     ];
     let mock = MockOpenAi::start_with(|base| {
         let mut replies = vec![Reply::json(discovery(base))];

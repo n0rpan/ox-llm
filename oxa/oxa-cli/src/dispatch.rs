@@ -794,7 +794,7 @@ fn prepare(
         Some((bound, _)) => (Open::Resume(bound.clone()), None),
         None => choose_open(a, store.as_ref(), cwd, mode, &mut notices, confirm)?,
     };
-    let continued_go = if a.model.is_none() && a.continue_ && !owner_chat {
+    let continued_go = if a.model.is_none() && a.continue_ && !owner_chat && !child.nested() {
         continued_go_model(dirs, cwd, &user_settings, store.as_ref(), &mut open)?
     } else {
         None
@@ -806,6 +806,11 @@ fn prepare(
         |patterns| !patterns.is_empty(),
     );
     let resuming = owner_chat || a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
+    let owner_scope = if a.model.is_none() && !resuming && !child.nested() {
+        a.models.as_deref().unwrap_or_default()
+    } else {
+        &[]
+    };
     let requested_model = a.model.clone().or_else(|| continued_go.clone()).or_else(|| {
         // The core chooses a restored/scoped model instead of an unused default.
         if resuming || has_model_scope {
@@ -840,12 +845,17 @@ fn prepare(
         dirs,
         crate::in_process::ModelSelection {
             pattern: requested_model.as_deref(),
+            scope: owner_scope,
             endpoint: &endpoint.name,
-            owner_selected: a.model.is_some()
-                || continued_go.is_some()
-                || requested_model
-                    .as_ref()
-                    .is_some_and(|model| user_settings.string("defaultModel").as_ref() == Some(model)),
+            // Subagent argv is selected by the parent tool, so it cannot opt
+            // into a provider that the owner has not explicitly enabled.
+            owner_selected: !child.nested()
+                && (a.model.is_some()
+                    || continued_go.is_some()
+                    || !owner_scope.is_empty()
+                    || requested_model
+                        .as_ref()
+                        .is_some_and(|model| user_settings.string("defaultModel").as_ref() == Some(model))),
         },
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,

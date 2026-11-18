@@ -21,6 +21,7 @@ type Selected = (Arc<dyn Engine>, Vec<String>);
 
 pub(crate) struct ModelSelection<'a> {
     pub pattern: Option<&'a str>,
+    pub scope: &'a [String],
     pub endpoint: &'a str,
     pub owner_selected: bool,
 }
@@ -113,6 +114,7 @@ pub(crate) fn select(
         dirs,
         ModelSelection {
             pattern: requested,
+            scope: &[],
             endpoint: "",
             owner_selected: requested.is_some(),
         },
@@ -271,14 +273,15 @@ fn select_for(
     shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
-    let (requested, endpoint, owner_selected, show_status) = match purpose {
+    let (requested, scope, endpoint, owner_selected, show_status) = match purpose {
         SelectPurpose::Model(selection) => (
             selection.pattern,
+            selection.scope,
             selection.endpoint,
             selection.owner_selected,
             false,
         ),
-        SelectPurpose::Inventory => (None, "", false, true),
+        SelectPurpose::Inventory => (None, &[][..], "", false, true),
     };
     let local_engine = || match shared.local {
         Some(engine) => Ok(engine as Arc<dyn Engine>),
@@ -290,7 +293,6 @@ fn select_for(
     let go = go_state(user, dirs);
     let go_error = go.refusal();
     let go_enabled = go_error.is_none();
-    let go_requested = requested.is_some_and(|pattern| routing::is_go_model(pattern, endpoint));
     let native_local = user.bool(oxc_local::LOCAL_SETTING, false);
     let explicit_cloud = user.bool(SETTING, false);
     let explicit_go = user.bool(GO_SETTING, false);
@@ -304,11 +306,23 @@ fn select_for(
         && requested.is_some_and(|model| {
             routing::resolve_in_catalog(model, endpoint, aliases("oxa.local.models")).is_some()
         });
+    let cloud_models = aliases("oxa.cloud.models");
+    let requests_go = |pattern: &str| {
+        routing::is_go_model(pattern, endpoint)
+            && !(explicit_cloud
+                && routing::resolve_in_catalog(pattern, endpoint, cloud_models.iter().cloned()).is_some())
+    };
+    let go_requested = requested.map_or_else(
+        || !scope.is_empty() && scope.iter().all(|pattern| requests_go(pattern)),
+        requests_go,
+    );
     // A keyed catalog is available for inventory and owner model selection.
     // A project default alone cannot choose a new cloud transport.
     let native_cloud = explicit_cloud
         || (go_enabled
-            && (show_status || owner_selected || explicit_go && (requested.is_none() || go_requested)));
+            && (show_status
+                || owner_selected && (!requested_local || explicit_go)
+                || explicit_go && (requested.is_none() || go_requested)));
     let availability_notice = || {
         if show_status {
             vec![go.notice("OpenCode Go", GO_SETTING)]
@@ -362,7 +376,7 @@ fn select_for(
             local: local_engine(),
             cloud,
             local_models: aliases("oxa.local.models"),
-            cloud_models: aliases("oxa.cloud.models"),
+            cloud_models,
             go_error: go_error.cloned().or(go_failure),
             endpoint: endpoint.to_owned(),
             default: effective.string("defaultModel"),
@@ -380,15 +394,19 @@ fn select_for(
         return http().map(|engine| (engine, availability_notice()));
     }
     let selected = cloud_engine();
-    if !explicit_cloud && !show_status && !go_requested && requested.is_some() {
-        let resolves_go = selected.as_ref().ok().is_some_and(|(engine, _, _)| {
-            requested
-                .zip(engine.info(None).ok())
-                .is_some_and(|(pattern, info)| {
+    if !explicit_cloud && !show_status && !go_requested && (requested.is_some() || !scope.is_empty()) {
+        let resolves_go = selected
+            .as_ref()
+            .ok()
+            .and_then(|(engine, _, _)| engine.info(None).ok())
+            .is_some_and(|info| {
+                if let Some(pattern) = requested {
                     routing::resolve_in_catalog(pattern, endpoint, info.models)
                         .is_some_and(|model| routing::is_go_model(&model, ""))
-                })
-        });
+                } else {
+                    routing::scope_includes_go(scope, endpoint, info.models)
+                }
+            });
         if !resolves_go {
             return http().map(|engine| (engine, Vec::new()));
         }

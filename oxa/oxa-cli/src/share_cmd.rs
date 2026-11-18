@@ -414,6 +414,7 @@ mod tests {
             &dirs,
             crate::in_process::ModelSelection {
                 pattern: Some("synthetic"),
+                scope: &[],
                 endpoint: "",
                 owner_selected: true,
             },

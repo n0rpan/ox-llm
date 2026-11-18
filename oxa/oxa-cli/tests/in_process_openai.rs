@@ -178,7 +178,10 @@ fn final_reply(text: &str) -> mock::Reply {
 #[test]
 fn a_configured_openai_alias_in_the_go_namespace_keeps_its_provider() {
     let env = TestEnv::new();
-    let peer = mock::MockOpenAi::start(vec![final_reply("Synthetic configured reply")]);
+    let peer = mock::MockOpenAi::start(vec![
+        final_reply("Synthetic configured reply"),
+        final_reply("Synthetic scoped reply"),
+    ]);
     settings(&env, &peer.base_url(), false);
     let path = env.agent_dir().join("settings.json");
     let mut user: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
@@ -201,8 +204,17 @@ fn a_configured_openai_alias_in_the_go_namespace_keeps_its_provider() {
     );
     success(&output);
     assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic configured reply"));
-    assert_eq!(peer.requests().len(), 1);
-    assert_eq!(rows(&env)[0]["remote_provider"], "openai");
+    let scoped = run(
+        &env,
+        &["--models", alias, "--no-tools", "-p", "Synthetic scoped request"],
+        None,
+    );
+    success(&scoped);
+    assert!(String::from_utf8_lossy(&scoped.stdout).contains("Synthetic scoped reply"));
+    assert_eq!(peer.requests().len(), 2);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 2);
+    assert!(ledger.iter().all(|row| row["remote_provider"] == "openai"));
     peer.assert_healthy();
 }
 

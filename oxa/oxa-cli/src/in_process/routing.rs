@@ -21,17 +21,28 @@ pub(super) fn resolve_in_catalog(
     endpoint: &str,
     models: impl IntoIterator<Item = String>,
 ) -> Option<String> {
-    let available: Vec<_> = models
+    let available = model_refs(endpoint, models);
+    oxa_config::resolve_model(pattern, None, &available)
+        .ok()
+        .map(|resolved| resolved.model)
+}
+
+pub(super) fn scope_includes_go(scope: &[String], endpoint: &str, models: Vec<String>) -> bool {
+    oxa_config::resolve_scoped(scope, &model_refs(endpoint, models))
+        .0
+        .iter()
+        .any(|model| is_go_model(&model.model, ""))
+}
+
+fn model_refs(endpoint: &str, models: impl IntoIterator<Item = String>) -> Vec<oxa_config::ModelRef> {
+    models
         .into_iter()
         .map(|model| oxa_config::ModelRef {
             endpoint: endpoint.to_owned(),
             model,
             thinking: None,
         })
-        .collect();
-    oxa_config::resolve_model(pattern, None, &available)
-        .ok()
-        .map(|resolved| resolved.model)
+        .collect()
 }
 
 pub(super) struct Routed {
@@ -62,10 +73,10 @@ impl Routed {
         // CLI model resolution needs a catalog first. If that catalog cannot
         // be discovered, retain the selected dynamic provider's saved failure
         // before the caller can replace it with a model-not-found error.
-        let requested_local = requested
+        let requested_known = requested
             .and_then(|pattern| resolve_in_catalog(pattern, &self.endpoint, self.models()))
-            .is_some_and(|model| self.local_models.contains(&model));
-        if !requested_local {
+            .is_some();
+        if !requested_known {
             if let Some(error) = requested.and_then(|model| self.dynamic_error(model)) {
                 return Err(error.clone());
             }
@@ -76,7 +87,7 @@ impl Routed {
         Ok(Arc::new(self))
     }
     fn dynamic_error(&self, model: &str) -> Option<&OxaError> {
-        if is_go_model(model, &self.endpoint) && !self.local_models.contains(model) {
+        if is_go_model(model, &self.endpoint) {
             self.go_error.as_ref().or_else(|| self.cloud.as_ref().err())
         } else {
             None
