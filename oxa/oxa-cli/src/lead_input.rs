@@ -1,7 +1,7 @@
 //! Bounded, read-only access to existing board samples and typed runner situation exports.
 //! These functions return facts, never raw file content or input-bearing diagnostics.
-use oxa_proto::work::{Snapshot, MAX_ITEMS, MAX_SNAPSHOT_BYTES};
-use oxa_work::board::Board;
+use oxa_proto::work::{Snapshot, MAX_SNAPSHOT_BYTES};
+use oxa_work::board::{Action, Board, MAX_OPEN_PULL_REQUESTS};
 use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
@@ -10,11 +10,13 @@ use std::{
 };
 
 const MAX_SAMPLE: u64 = 1_048_576;
+// Retain the previous board row ceiling for issue intake.
+const MAX_ISSUE_ROWS: usize = 128;
 type Result<T> = std::result::Result<T, &'static str>;
 
 /// The caller supplies the owner's uid from its user configuration, never project metadata.
 /// Sources must have private parent directories; producers may atomically replace files.
-fn open(path: &Path, uid: u32) -> Result<File> {
+pub(crate) fn open(path: &Path, uid: u32) -> Result<File> {
     let parent = path.parent().ok_or("missing input directory")?;
     let directory = fs::symlink_metadata(parent).map_err(|_| "input directory unavailable")?;
     if !directory.is_dir() || directory.uid() != uid || directory.mode() & 0o077 != 0 {
@@ -61,7 +63,15 @@ pub fn board(path: &Path, uid: u32) -> Result<Board> {
         return Err("unsupported board sample version");
     }
     let board: Board = serde_json::from_value(sample["board"].clone()).map_err(|_| "invalid shared board")?;
-    if sample["observed_at"].as_u64() != Some(board.observed_at) || board.entries.len() > MAX_ITEMS {
+    let issue_rows = board
+        .entries
+        .iter()
+        .filter(|row| matches!(row.action, Action::BuildIssue | Action::WaitIssue))
+        .count();
+    if sample["observed_at"].as_u64() != Some(board.observed_at)
+        || issue_rows > MAX_ISSUE_ROWS
+        || board.entries.len() - issue_rows > MAX_OPEN_PULL_REQUESTS
+    {
         return Err("invalid board sample bounds");
     }
     let mut seen = std::collections::BTreeSet::new();
@@ -82,6 +92,9 @@ pub fn situation(path: &Path, uid: u32) -> Result<Snapshot> {
     file.take(MAX_SNAPSHOT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "cannot read situation")?;
+    if bytes.len() > MAX_SNAPSHOT_BYTES {
+        return Err("runner situation exceeds limit");
+    }
     Snapshot::from_json(&bytes).map_err(|_| "invalid runner situation")
 }
 
@@ -113,6 +126,60 @@ mod tests {
         fs::write(&path, b"broken complete sample\n").unwrap();
         assert_eq!(board(&path, uid).unwrap_err(), "invalid board sample");
     }
+
+    #[test]
+    fn reads_a_full_paginated_shadow_board() {
+        use oxa_work::board::Entry;
+
+        let env = TestEnv::new();
+        let (path, uid) = fixture(&env, b"");
+        let mut snapshot = Board {
+            observed_at: 20,
+            entries: (1..=1_000)
+                .map(|number| Entry {
+                    number,
+                    head: "a".repeat(40),
+                    action: Action::Ready,
+                    release_pinned: false,
+                    lease: None,
+                    attempts_today: 0,
+                    eligible: true,
+                })
+                .collect(),
+        };
+        let write_sample = |snapshot: &Board| {
+            let mut log = oxa_work::shadow::open_log(&path).unwrap();
+            oxa_work::shadow::run(&mut log, true, || Ok(snapshot.clone()), |_| unreachable!()).unwrap();
+        };
+        write_sample(&snapshot);
+
+        let read = board(&path, uid).expect("complete board sample is readable by lead");
+        assert_eq!(read.observed_at, 20);
+        assert_eq!(read.entries.len(), 1_000);
+        assert_eq!(read.entries.last().unwrap().number, 1_000);
+
+        let template = snapshot.entries[0].clone();
+        snapshot.entries.extend((1_001..=1_128).map(|number| Entry {
+            number,
+            action: Action::BuildIssue,
+            ..template.clone()
+        }));
+        write_sample(&snapshot);
+        assert_eq!(board(&path, uid).unwrap().entries.len(), 1_128);
+
+        snapshot.entries.push(Entry {
+            number: 1_129,
+            action: Action::WaitIssue,
+            ..template.clone()
+        });
+        write_sample(&snapshot);
+        assert_eq!(board(&path, uid).unwrap_err(), "invalid board sample bounds");
+
+        snapshot.entries.last_mut().unwrap().action = Action::Ready;
+        write_sample(&snapshot);
+        assert_eq!(board(&path, uid).unwrap_err(), "invalid board sample bounds");
+    }
+
     #[test]
     fn refuses_shared_links_wrong_owner_and_unbounded_inputs() {
         let env = TestEnv::new();
@@ -142,5 +209,25 @@ mod tests {
         assert_eq!(situation(&path, uid).unwrap(), snapshot);
         fs::write(&path, b"sensitive synthetic malformed data").unwrap();
         assert_eq!(situation(&path, uid).unwrap_err(), "invalid runner situation");
+    }
+
+    #[test]
+    fn situation_reports_inputs_over_the_size_limit() {
+        let env = TestEnv::new();
+        let source = include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl");
+        let expected = source
+            .lines()
+            .find_map(|line| Snapshot::from_json(line.as_bytes()).ok())
+            .unwrap();
+        let mut bytes = expected.to_json().unwrap();
+        bytes.resize(MAX_SNAPSHOT_BYTES, b' ');
+        let (path, uid) = fixture(&env, &bytes);
+        assert_eq!(situation(&path, uid).unwrap(), expected);
+        bytes.push(b' ');
+        fs::write(&path, bytes).unwrap();
+        assert_eq!(
+            situation(&path, uid).unwrap_err(),
+            "runner situation exceeds limit"
+        );
     }
 }

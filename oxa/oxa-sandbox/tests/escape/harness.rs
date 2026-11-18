@@ -54,12 +54,24 @@ pub fn run(sb: &Bwrap, cwd: &Path, command: &str, writable: bool, net: bool) -> 
 
 /// The same command boundary, retaining timeout metadata for fixture diagnostics.
 pub fn run_result(sb: &Bwrap, cwd: &Path, command: &str, writable: bool, net: bool) -> ExecResult {
+    run_result_with_timeout(sb, cwd, command, writable, net, 30)
+}
+
+/// An explicit fixture budget for commands such as a cold toolchain build.
+pub fn run_result_with_timeout(
+    sb: &Bwrap,
+    cwd: &Path,
+    command: &str,
+    writable: bool,
+    net: bool,
+    timeout_s: u32,
+) -> ExecResult {
     let spec = ExecSpec {
         command: command.to_string(),
         cwd: cwd.to_path_buf(),
         writable,
         net,
-        timeout_s: Some(30),
+        timeout_s: Some(timeout_s),
         env: Vec::new(),
     };
     sb.run(&spec, &CancelToken::new(), &mut |_| {})

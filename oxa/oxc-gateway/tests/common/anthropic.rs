@@ -86,6 +86,11 @@ impl Reply {
             stop_delay: Duration::ZERO,
         }
     }
+    #[allow(dead_code)] // The LAN listener control needs one upstream HTTP chunk.
+    pub fn unfragmented(mut self) -> Self {
+        self.fragment = self.bytes.len().max(1);
+        self
+    }
     pub fn error(status: u16, message: &str) -> Self {
         Self {
             status,
@@ -783,6 +788,14 @@ mod mock_health {
         let reply = Reply::wire("text/event-stream", &body);
         let error = write_reply(&mut CloseOnDoneFlush::default(), &reply).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[test]
+    fn empty_redirect_has_a_valid_zero_chunk() {
+        let mut response = Vec::new();
+        write_reply(&mut response, &Reply::redirect("http://example.invalid/redirect")).unwrap();
+        let body_start = response.windows(4).position(|part| part == b"\r\n\r\n").unwrap() + 4;
+        assert_eq!(&response[body_start..], b"0\r\n\r\n");
     }
 
     #[test]

@@ -61,6 +61,16 @@ fn trusted_tools(env: &TestEnv) -> PathBuf {
     std::fs::DirBuilder::new().mode(0o700).create(&tools).unwrap();
     tools
 }
+fn enable_test_subagent(env: &TestEnv) {
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"subagent":{"enabled":true}}}"#,
+    );
+    env.write(
+        "home/.oxa/agent/agents/scout.md",
+        "---\nname: scout\ndescription: Reads local files\ntools: read\n---\nRead local files.\n",
+    );
+}
 fn run(env: &TestEnv, turns: Vec<ScriptTurn>) -> serde_json::Value {
     run_args(env, turns, &["work", "../tasks.json"], None)
 }
@@ -77,6 +87,16 @@ fn run_records(
     extra: &[(&str, &str)],
 ) -> Vec<serde_json::Value> {
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
+    run_server_records(env, &server, args, path, extra, true)
+}
+fn run_server_records(
+    env: &TestEnv,
+    server: &FakeServer,
+    args: &[&str],
+    path: Option<String>,
+    extra: &[(&str, &str)],
+    expect_output: bool,
+) -> Vec<serde_json::Value> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
         .args(args)
@@ -94,7 +114,11 @@ fn run_records(
     let out = rx
         .recv_timeout(std::time::Duration::from_secs(90))
         .expect("runner finished");
-    assert!(!out.stdout.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        !expect_output || !out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(|line| {
@@ -103,6 +127,50 @@ fn run_records(
         })
         .collect()
 }
+#[test]
+fn task_usage_reads_one_checkpoint_without_exposing_the_task_record() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let record = run(&env, vec![ScriptTurn::text("Measured worker")]);
+    assert_eq!(record["task_tokens"]["complete"], true);
+    let dir = storage(&env);
+    std::fs::write(dir.join("unrelated.json"), "not a checkpoint").unwrap();
+    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let usage = |id| {
+        let mut rows = run_server_records(&env, &server, &["work", "status", "--usage", id], None, &[], true);
+        assert_eq!(rows.len(), 1);
+        rows.remove(0)
+    };
+    let revision = &record["checkpoint_revision"];
+    assert_eq!(
+        usage("test"),
+        serde_json::json!({"task":"test","checkpoint_revision":revision,"task_tokens":record["task_tokens"]})
+    );
+    assert!(usage("missing").is_null());
+
+    let file = dir.join("test.json");
+    let mut checkpoint: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let partial = serde_json::json!({
+        "attempts":2,"complete_attempts":1,"prompt":null,"completion":0,"cached":null,"complete":false
+    });
+    checkpoint["record"]["task_tokens"] = partial.clone();
+    std::fs::write(&file, serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+    assert_eq!(
+        usage("test"),
+        serde_json::json!({"task":"test","checkpoint_revision":revision,"task_tokens":partial})
+    );
+    checkpoint["record"]
+        .as_object_mut()
+        .unwrap()
+        .remove("task_tokens");
+    std::fs::write(file, serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+    assert_eq!(
+        usage("test"),
+        serde_json::json!({"task":"test","checkpoint_revision":revision,"task_tokens":null})
+    );
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn external_checks_run_without_edits_and_retain_worktree() {
     let env = TestEnv::new();
@@ -121,6 +189,145 @@ fn clean_task_is_nothing_to_do() {
         run(&env, vec![ScriptTurn::text("nothing")])["outcome"],
         "nothing_to_do"
     );
+}
+
+#[test]
+fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
+    use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState};
+    use std::{collections::BTreeMap, fs, io::Write, os::unix::fs::PermissionsExt, process::Stdio};
+    let env = TestEnv::new();
+    setup(&env, r#"["printf checked > native-acceptance"]"#);
+    let controls = env.agent_dir().join("native-controls");
+    let queue = controls.join("queue");
+    let root = controls.join("claims");
+    for path in [&controls, &queue, &root] {
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let claims = Claims::open(&root).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    claims
+        .import_snapshot(
+            Some(ManualAuthority::Owner),
+            &BTreeMap::from([(
+                44,
+                ImportState {
+                    state: AttemptState::default(),
+                    excluded: false,
+                },
+            )]),
+            now,
+        )
+        .unwrap();
+    let taskfile = controls.join("task.txt");
+    fs::write(&taskfile, "i44 fake agent/44 main\nSynthetic admitted task.\n").unwrap();
+    fs::set_permissions(&taskfile, fs::Permissions::from_mode(0o600)).unwrap();
+    let config = controls.join("refill.json");
+    fs::write(&config, serde_json::json!({
+        "enabled":true,"nativeExecution":true,"intake":true,"queue":queue,"claims":root,
+        "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
+        "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
+        "partition":{"modulus":22,"residues":[0]},
+        "packets":[{"number":44,"revision":"revision","action":"build_issue","branch":"agent/44","taskfile":taskfile}]
+    }).to_string()).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    let tools = trusted_tools(&env);
+    let gh = tools.join("gh");
+    fs::write(&gh, "#!/bin/sh\n[ \"$GH_TOKEN\" = synthetic ] || exit 93\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n").unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(tools.join("gh.reply"), serde_json::json!({"data":{"repository":{
+        "mergeQueue":null,"pullRequests":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
+        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"}
+    }}}).to_string()).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("PATH", &path)
+        .args([
+            "work",
+            "board",
+            "--refill",
+            "--repo",
+            "example/project",
+            "--once",
+            "--token-stdin",
+            "--config",
+        ])
+        .arg(&config)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"synthetic\n").unwrap();
+    let published = child.wait_with_output().unwrap();
+    assert!(
+        published.status.success(),
+        "{}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    let binding = claims.assignments().unwrap()[&44]
+        .data
+        .native_binding
+        .clone()
+        .unwrap();
+    let name = format!("board-{}.txt", binding.key);
+    assert!(queue.join(&name).is_file());
+    assert!(claims.snapshot().unwrap()[&44].lease.as_ref() == Some(&binding.lease));
+    let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
+    let args = ["work", "--native-queue", "--config", config.to_str().unwrap()];
+    let records = run_server_records(&env, &server, &args, Some(path.clone()), &[], true);
+    assert!(records
+        .iter()
+        .any(|row| row["event"] == "task" && row["id"] == binding.native_task_id));
+    let checkpoint: serde_json::Value = serde_json::from_slice(
+        &fs::read(storage(&env).join(format!("{}.json", binding.native_task_id))).unwrap(),
+    )
+    .unwrap();
+    let record = &checkpoint["record"];
+    assert_eq!(record["id"], binding.native_task_id);
+    assert_eq!(record["branch"], binding.branch);
+    assert_eq!(record["step"], "finished");
+    assert_eq!(record["checkpoint_kind"], "task_transition");
+    assert!(record["checkpoint_revision"].as_u64().unwrap() > 0);
+    assert_eq!(
+        fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("native-acceptance"))
+            .unwrap(),
+        "checked"
+    );
+    let completed = &claims.assignments().unwrap()[&44];
+    assert!(completed.state.lease.is_none());
+    assert_eq!(completed.state.attempts, 1);
+    assert!(completed.data.native_binding.as_ref() == Some(&binding));
+    let started = queue
+        .join("started")
+        .join(format!("native-board-{}", binding.key))
+        .join(format!("{}.txt", binding.native_task_id));
+    assert_eq!(
+        fs::read_to_string(started).unwrap(),
+        fs::read_to_string(taskfile).unwrap()
+    );
+    assert!(!queue.join(name).exists());
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(std::iter::once(requests[0].system.as_str())
+        .chain(requests[0].messages.iter().filter_map(|m| m.content.as_deref()))
+        .any(|text| text.contains("Synthetic admitted task.")));
+    run_server_records(&env, &server, &args, Some(path), &[], false);
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "a released attempt must not launch again"
+    );
+    let replayed = &claims.assignments().unwrap()[&44];
+    assert_eq!(replayed.state.attempts, 1);
+    assert!(replayed.state.lease.is_none());
+    assert!(replayed.data.native_binding.as_ref() == Some(&binding));
 }
 #[test]
 fn failed_checks_get_exactly_one_retry() {
@@ -233,26 +440,436 @@ fn github_issue_input_uses_mock_gh() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     setup(&env, "[]");
+    enable_test_subagent(&env);
     let tools = trusted_tools(&env);
+    let lookup_log = env.write("tmp/issue-lookup.log", "");
+    let lookup_packet = env.write(
+        "tmp/issue-packet.json",
+        r#"{"title":"Synthetic task","body":"Fix the test fixture","state":"OPEN","comments":[{"author":{"login":"reviewer"},"body":"Synthetic follow-up finding"}]}"#,
+    );
     let gh = env.write(
         "tmp/trusted-tools/gh",
         r##"#!/bin/sh
-[ "$*" = 'issue view 42 --json title,body' ] || exit 9
-printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture"}'
+[ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s\n' "$*" >> "$ISSUE_LOOKUP_LOG"
+exec /bin/cat "$ISSUE_LOOKUP_PACKET"
 "##,
     );
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
-    let record = run_args(
-        &env,
-        vec![ScriptTurn::text("done")],
-        &["work", "--issue", "42", "--model", "fake"],
-        Some(path),
-    );
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let mut invocation = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    invocation
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", &path)
+        .env("ISSUE_LOOKUP_LOG", &lookup_log)
+        .env("ISSUE_LOOKUP_PACKET", &lookup_packet)
+        .stdin(std::process::Stdio::null());
+    let out = invocation.output().unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "issue task did not run: {stderr}");
+    let record: serde_json::Value = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .unwrap_or_else(|| panic!("no record: {}", String::from_utf8_lossy(&out.stderr)));
     assert_eq!(record["id"], "issue-42");
     assert_eq!(record["branch"], "agent/42-work");
     assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    assert_eq!(
+        std::fs::read_to_string(&lookup_log).unwrap(),
+        "issue view 42 --json title,body,state,comments\n"
+    );
+    // The packet the child receives is the one lookup: text, state and comments. A worker
+    // that cannot read the issue itself must not receive a title-shaped packet.
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "worker made no request: {record}");
+    let request = &requests[0];
+    assert!(
+        !request.tools_json.contains("\"name\":\"subagent\""),
+        "{request:?}"
+    );
+    let prompt = std::iter::once(request.system.as_str())
+        .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("Fix the test fixture"), "{prompt}");
+    assert!(prompt.contains("Runner-fetched issue state: OPEN."), "{prompt}");
+    assert!(prompt.contains("Synthetic follow-up finding"), "{prompt}");
+    let ownership = prompt
+        .find("The runner owns GitHub access for this task.")
+        .unwrap_or_else(|| panic!("worker did not receive GitHub ownership guidance: {prompt}"));
+    let issue = prompt.find("Implement issue #42: Synthetic task").unwrap();
+    assert!(ownership < issue, "{prompt}");
+    assert!(
+        prompt.contains("Do not invoke gh or authenticated GitHub HTTP"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("NEED-METADATA"), "{prompt}");
+
+    std::fs::write(
+        &lookup_packet,
+        r#"{"title":"Synthetic task","body":"Fix the test fixture","state":"CLOSED","comments":[{"body":"New comment after the task was frozen"}]}"#,
+    )
+    .unwrap();
+    let repeat = invocation.output().unwrap();
+    assert!(
+        repeat.status.success(),
+        "an updated issue prevented checkpoint reuse: {} {}",
+        String::from_utf8_lossy(&repeat.stdout),
+        String::from_utf8_lossy(&repeat.stderr)
+    );
+    let repeated: serde_json::Value = serde_json::from_slice(&repeat.stdout).unwrap();
+    assert_eq!(repeated["checkpoint_revision"], record["checkpoint_revision"]);
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "a settled task started a second worker"
+    );
+
+    let rerun = FakeServer::start(vec![ScriptTurn::text("done again")], FakeOpts::default()).unwrap();
+    let repeated = invocation
+        .envs(env.envs(&rerun.url()))
+        .arg("--rerun")
+        .output()
+        .unwrap();
+    assert!(
+        repeated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&repeated.stdout)
+    );
+    let requests = rerun.requests();
+    assert_eq!(requests.len(), 1, "rerun never started the worker");
+    let request = &requests[0];
+    assert!(
+        !request.tools_json.contains("\"name\":\"subagent\""),
+        "{request:?}"
+    );
+    let prompt = std::iter::once(request.system.as_str())
+        .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(prompt.contains("Synthetic follow-up finding"), "{prompt}");
+    assert!(
+        !prompt.contains("New comment after the task was frozen"),
+        "{prompt}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&lookup_log).unwrap(),
+        "issue view 42 --json title,body,state,comments\n"
+    );
 }
+#[test]
+fn issue_packet_workers_keep_local_tools_and_a_separate_network_namespace() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r#"#!/bin/sh
+[ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Record the local fixture","state":"OPEN","comments":[]}'
+"#,
+    );
+    std::fs::set_permissions(gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let host_namespace = std::fs::read_link("/proc/self/ns/net").unwrap();
+    let turns = |file: &str| {
+        vec![
+            ScriptTurn::tool(
+                "local",
+                "bash",
+                &serde_json::json!({"command": format!("readlink /proc/self/ns/net > {file}")}).to_string(),
+            ),
+            ScriptTurn::text("done"),
+        ]
+    };
+    let assert_isolated = |record: &serde_json::Value, file: &str| {
+        assert!(
+            matches!(record["outcome"].as_str(), Some("done" | "nothing_to_do")),
+            "{record}"
+        );
+        let worktree = Path::new(record["worktree"].as_str().unwrap());
+        let worker_namespace = std::fs::read_to_string(worktree.join(file)).unwrap();
+        assert!(worker_namespace.starts_with("net:["));
+        assert_ne!(Path::new(worker_namespace.trim()), host_namespace.as_path());
+    };
+    let first = run_args(
+        &env,
+        turns("worker-namespace"),
+        &["work", "--issue", "42", "--model", "fake"],
+        Some(path),
+    );
+    assert_isolated(&first, "worker-namespace");
+
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(storage(&env).join("issue-42.json")).unwrap()).unwrap();
+    env.write(
+        "work/frozen-issue.json",
+        &serde_json::json!([saved["task"]]).to_string(),
+    );
+    // The file still describes the exact issue packet, so an explicit rerun
+    // keeps the same tool restriction even without an issue flag.
+    let rerun = run_args(
+        &env,
+        turns("rerun-namespace"),
+        &["work", "../frozen-issue.json", "--rerun"],
+        None,
+    );
+    assert_isolated(&rerun, "rerun-namespace");
+}
+
+/// A dogfood issue carried its content in comments, so a packet built from the
+/// title and body alone reached the worker without it. The child's first request
+/// must contain the body and the comment findings, all as data.
+#[test]
+fn github_issue_packet_carries_comment_findings() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let tools = trusted_tools(&env);
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r##"#!/bin/sh
+[ "$*" = 'issue view 42 --json title,body,state,comments' ] || exit 9
+printf '%s' '{"title":"Synthetic task","body":"Fix the test fixture","state":"OPEN","comments":[{"author":{"login":"reviewer"},"body":"Review finding: keep the frame when delegating"},{"author":null,"body":"Unknown-author finding"}]}'
+"##,
+    );
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "--issue", "42", "--model", "fake"])
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", path)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "issue task did not run: {stderr}");
+    let record: serde_json::Value =
+        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {stderr}"));
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1, "worker made no request: {record}");
+    let mut prompt = requests[0].system.clone();
+    for message in &requests[0].messages {
+        if let Some(content) = &message.content {
+            prompt.push('\n');
+            prompt.push_str(content);
+        }
+    }
+    assert!(prompt.contains("Fix the test fixture"), "{prompt}");
+    assert!(
+        prompt.contains("Review finding: keep the frame when delegating"),
+        "issue comments were not in the task packet: {prompt}"
+    );
+    assert!(prompt.contains("reviewer"), "{prompt}");
+    assert!(prompt.contains("Runner-fetched issue state: OPEN."), "{prompt}");
+    assert!(
+        prompt.contains("--- comment by unknown ---\nUnknown-author finding"),
+        "{prompt}"
+    );
+}
+#[test]
+fn pull_request_packet_carries_reviews_and_failing_checks() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    let host_namespace = std::fs::read_link("/proc/self/ns/net").unwrap();
+    let checks = serde_json::json!([format!(
+        "namespace=$(readlink /proc/self/ns/net) && test \"$namespace\" != '{}'",
+        host_namespace.display()
+    )]);
+    setup(&env, &checks.to_string());
+    enable_test_subagent(&env);
+    let project = env.work().join("project");
+    git(&env, &project, &["switch", "-c", "seed-pr-head"]);
+    env.write("work/project/only-on-pr.txt", "Reviewed change");
+    git(&env, &project, &["add", "only-on-pr.txt"]);
+    git(&env, &project, &["commit", "-m", "Seed distinct PR head"]);
+    let head = git(&env, &project, &["rev-parse", "HEAD"]);
+    git(
+        &env,
+        &project,
+        &["push", "origin", "HEAD:refs/heads/agent/review-fixes"],
+    );
+    git(&env, &project, &["switch", "main"]);
+    env.write("work/project/only-on-main.txt", "Unreviewed base change");
+    git(&env, &project, &["add", "only-on-main.txt"]);
+    git(&env, &project, &["commit", "-m", "Move main after review"]);
+
+    let connection =
+        |nodes: Vec<serde_json::Value>| serde_json::json!({"totalCount": nodes.len(), "nodes": nodes});
+    let mut reply = serde_json::json!({
+        "data": {"repository": {"pullRequest": {
+            "title": "Synthetic PR", "body": "Fix the PR fixture",
+            "headRefOid": head, "headRefName": "agent/review-fixes", "isCrossRepository": false,
+            "reviews": connection(vec![serde_json::json!({
+                "state": "CHANGES_REQUESTED", "body": "Review summary"
+            })]),
+            "comments": connection(vec![serde_json::json!({"body": "Conversation note"})]),
+            "reviewThreads": connection(vec![
+                serde_json::json!({
+                    "isResolved": false, "path": "only-on-pr.txt", "line": 1,
+                    "comments": connection(vec![serde_json::json!({"body": "Inline finding"})])
+                }),
+                serde_json::json!({
+                    "isResolved": true, "path": "only-on-pr.txt", "line": 1,
+                    "comments": connection(vec![serde_json::json!({"body": "Resolved finding"})])
+                })
+            ]),
+            "files": connection(vec![serde_json::json!({"path": "only-on-pr.txt"})]),
+            "commits": {"nodes": [{"commit": {
+                "oid": head,
+                "statusCheckRollup": {"contexts": connection(vec![
+                    serde_json::json!({"name": "checks / oxa", "conclusion": "FAILURE"}),
+                    serde_json::json!({"name": "checks / docs", "conclusion": "SUCCESS"})
+                ])}
+            }}]}
+        }}}
+    });
+    let tools = trusted_tools(&env);
+    env.write("tmp/trusted-tools/pr-packet.json", &reply.to_string());
+    let gh = env.write(
+        "tmp/trusted-tools/gh",
+        r#"#!/bin/sh
+[ "$1" = api ] && [ "$2" = graphql ] || exit 9
+case "$4" in
+  *headRefOid*reviewThreads*files*statusCheckRollup*) ;;
+  *) exit 9 ;;
+esac
+exec /bin/cat "${0%/*}/pr-packet.json"
+"#,
+    );
+    std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
+    command
+        .args(["work", "--pr", "42", "--model", "fake"])
+        .current_dir(&project)
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", &path);
+    let missing = command.output().unwrap();
+    assert!(!missing.status.success());
+    let record: serde_json::Value = serde_json::from_slice(&missing.stdout).unwrap();
+    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert!(
+        record["detail"].as_str().unwrap().contains("reviewed head"),
+        "{record}"
+    );
+    assert!(server.requests().is_empty());
+
+    git(&env, &project, &["branch", "agent/review-fixes", &head]);
+    let out = command.arg("--rerun").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let record: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(record["id"], format!("pr-42-{head}"));
+    assert_eq!(record["outcome"], "nothing_to_do", "{record}");
+    let tree = Path::new(record["worktree"].as_str().unwrap());
+    assert_eq!(git(&env, tree, &["rev-parse", "HEAD"]), head);
+    assert!(tree.join("only-on-pr.txt").exists());
+    assert!(!tree.join("only-on-main.txt").exists());
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    assert!(
+        !request.tools_json.contains("\"name\":\"subagent\""),
+        "{request:?}"
+    );
+    let prompt = std::iter::once(request.system.as_str())
+        .chain(request.messages.iter().filter_map(|m| m.content.as_deref()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for required in [
+        "The runner owns GitHub access",
+        "Fix the PR fixture",
+        "Review summary",
+        "Conversation note",
+        "Inline finding",
+        "only-on-pr.txt:1",
+        "checks / oxa",
+        "Changed files",
+    ] {
+        assert!(prompt.contains(required), "missing {required}: {prompt}");
+    }
+    assert!(!prompt.contains("Resolved finding"), "{prompt}");
+    assert!(!prompt.contains("checks / docs"), "{prompt}");
+
+    let verified = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .args(["work", "verify", record["id"].as_str().unwrap()])
+        .current_dir(&project)
+        .env_clear()
+        .envs(env.envs(&server.url()))
+        .env("PATH", &path)
+        .output()
+        .unwrap();
+    assert!(verified.status.success(), "{verified:?}");
+    assert_eq!(server.requests().len(), 1);
+
+    std::fs::write(tree.join("second-round.txt"), "Review revision").unwrap();
+    git(&env, tree, &["add", "second-round.txt"]);
+    git(&env, tree, &["commit", "-m", "Apply review feedback"]);
+    let next_head = git(&env, tree, &["rev-parse", "HEAD"]);
+    let packet = &mut reply["data"]["repository"]["pullRequest"];
+    packet["headRefOid"] = serde_json::json!(next_head);
+    packet["commits"]["nodes"][0]["commit"]["oid"] = serde_json::json!(next_head);
+    packet["body"] = serde_json::json!("Second review round");
+    env.write("tmp/trusted-tools/pr-packet.json", &reply.to_string());
+
+    let next = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    command.envs(env.envs(&next.url())).env("PATH", &path);
+    let uncommitted = tree.join("local-notes.txt");
+    std::fs::write(&uncommitted, "Retain these notes").unwrap();
+    let blocked = command.output().unwrap();
+    assert!(!blocked.status.success());
+    let blocked: serde_json::Value = serde_json::from_slice(&blocked.stdout).unwrap();
+    assert!(
+        blocked["detail"].as_str().unwrap().contains("uncommitted"),
+        "{blocked}"
+    );
+    assert!(next.requests().is_empty());
+    assert_eq!(
+        git(&env, tree, &["branch", "--show-current"]),
+        "agent/review-fixes"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&uncommitted).unwrap(),
+        "Retain these notes"
+    );
+    std::fs::remove_file(uncommitted).unwrap();
+
+    let second = command.output().unwrap();
+    assert!(second.status.success(), "{second:?}");
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(second["id"], format!("pr-42-{next_head}"));
+    let second_tree = Path::new(second["worktree"].as_str().unwrap());
+    assert_ne!(second_tree, tree);
+    assert_eq!(git(&env, second_tree, &["rev-parse", "HEAD"]), next_head);
+    assert_eq!(
+        git(&env, second_tree, &["branch", "--show-current"]),
+        "agent/review-fixes"
+    );
+    assert!(git(&env, tree, &["branch", "--show-current"]).is_empty());
+    assert!(tree.join("second-round.txt").exists());
+    let requests = next.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].messages.iter().any(|message| {
+        message
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("Second review round"))
+    }));
+}
+
 #[test]
 fn branch_checked_out_elsewhere_is_blocked_without_changing_it() {
     let env = TestEnv::new();
@@ -326,38 +943,45 @@ fn child_can_create_a_commit_with_the_real_sandbox() {
     assert_eq!(String::from_utf8_lossy(&subject.stdout).trim(), "task");
 }
 #[test]
-fn offline_issue_input_never_spawns_gh() {
+fn offline_github_lookup_never_spawns_gh() {
     use std::os::unix::fs::PermissionsExt;
-    for setting in [false, true] {
-        let env = TestEnv::new();
-        setup(&env, "[]");
-        let gh = env.write(
-            "tmp/gh",
-            "#!/bin/sh\nprintf invoked > \"$HOME/gh-invoked\"\nexit 7\n",
-        );
-        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-        if setting {
-            env.write("home/.oxa/agent/settings.json", r#"{"oxa":{"offline":true}}"#);
-        }
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
-        cmd.args(["work", "--issue", "42", "--model", "fake"])
-            .current_dir(env.work().join("project"))
-            .env_clear()
-            .envs(env.envs("http://127.0.0.1:1"))
-            .env(
-                "PATH",
-                format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
+    // Both GitHub inputs share one refusal: an offline run never spawns even a trusted gh,
+    // whether the flag or the user setting turns offline on.
+    for input in ["--issue", "--pr"] {
+        for setting in [false, true] {
+            let env = TestEnv::new();
+            setup(&env, "[]");
+            let gh = env.write(
+                "tmp/gh",
+                "#!/bin/sh\nprintf invoked > \"$HOME/gh-invoked\"\nexit 7\n",
             );
-        if !setting {
-            cmd.env("OXA_OFFLINE", "1");
+            std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+            if setting {
+                env.write("home/.oxa/agent/settings.json", r#"{"oxa":{"offline":true}}"#);
+            }
+            let mut cmd = Command::new(env!("CARGO_BIN_EXE_oxa"));
+            cmd.args(["work", input, "42", "--model", "fake"])
+                .current_dir(env.work().join("project"))
+                .env_clear()
+                .envs(env.envs("http://127.0.0.1:1"))
+                .env(
+                    "PATH",
+                    format!("{}:{}", env.tmp().display(), std::env::var("PATH").unwrap()),
+                );
+            if !setting {
+                cmd.env("OXA_OFFLINE", "1");
+            }
+            let out = cmd.output().unwrap();
+            assert_eq!(out.status.code(), Some(2));
+            assert!(
+                !env.home().join("gh-invoked").exists(),
+                "offline lookup ran gh, input={input}, setting={setting}"
+            );
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains("offline"),
+                "input={input}, setting={setting}"
+            );
         }
-        let out = cmd.output().unwrap();
-        assert_eq!(out.status.code(), Some(2));
-        assert!(
-            !env.home().join("gh-invoked").exists(),
-            "offline lookup ran gh, setting={setting}"
-        );
-        assert!(String::from_utf8_lossy(&out.stderr).contains("offline"));
     }
 }
 
@@ -503,10 +1127,18 @@ fn agent_written_acceptance_code_cannot_write_outside_the_sandbox() {
 fn worker_result_and_session_come_from_the_real_child_contract() {
     let env = TestEnv::new();
     setup(&env, "[]");
-    let record = run(&env, vec![ScriptTurn::text("finished")]);
+    let mut turn = ScriptTurn::text("finished");
+    turn.completion_tokens = Some(5);
+    let record = run(&env, vec![turn]);
     assert_eq!(record["worker"]["outcome"], "done", "{record}");
     assert_eq!(record["worker"]["exit_code"], 0, "{record}");
     assert!(!record["session_id"].as_str().unwrap().is_empty());
+    let tokens = &record["worker"]["tokens"];
+    assert_eq!(tokens["completion"], 5, "{record}");
+    assert_eq!(tokens["complete"], true, "{record}");
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(storage(&env).join("test.json")).unwrap()).unwrap();
+    assert_eq!(&saved["record"]["worker"]["tokens"], tokens);
 }
 
 #[test]
@@ -657,9 +1289,9 @@ fn github_lookup_ignores_project_local_executable() {
     use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
     setup(&env, "[]");
-    let bad = env.write("work/project/bin/gh", "#!/bin/sh\nprintf invoked > \"$HOME/project-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    let bad = env.write("work/project/bin/gh", "#!/bin/sh\nprintf invoked > \"$HOME/project-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\",\"state\":\"OPEN\",\"comments\":[]}'\n");
     trusted_tools(&env);
-    let good = env.write("tmp/trusted-tools/gh", "#!/bin/sh\nprintf invoked > \"$HOME/trusted-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    let good = env.write("tmp/trusted-tools/gh", "#!/bin/sh\nprintf invoked > \"$HOME/trusted-gh-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\",\"state\":\"OPEN\",\"comments\":[]}'\n");
     for path in [&bad, &good] {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
@@ -723,7 +1355,7 @@ fn untrusted_issue_input_never_spawns_even_a_trusted_gh() {
             false,
         )
         .unwrap();
-    let gh = env.write("tmp/gh", "#!/bin/sh\nprintf invoked > \"$HOME/issue-lookup-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\"}'\n");
+    let gh = env.write("tmp/gh", "#!/bin/sh\nprintf invoked > \"$HOME/issue-lookup-ran\"\nprintf '%s' '{\"title\":\"Synthetic task\",\"body\":\"Fixture\",\"state\":\"OPEN\",\"comments\":[]}'\n");
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["work", "--issue", "42", "--model", "fake"])

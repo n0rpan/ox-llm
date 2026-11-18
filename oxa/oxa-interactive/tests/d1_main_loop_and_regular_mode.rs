@@ -111,6 +111,7 @@ fn interactive_opts(env: &TestEnv) -> InteractiveOpts {
         open_picker: false,
         save_trust: None,
         gated: Vec::new(),
+        engine_status: None,
         yolo: None,
     }
 }
@@ -484,17 +485,17 @@ fn escape_aborts_and_restores_queue() {
         vec![WorkerMsg::Event(AgentEvent::AgentStart)],
     );
     assert_eq!(d.code, 0);
-    // Escape took the queued message back into the editor; Enter sent it again as a steer.
+    // Escape restores queued text; explicit Enter recovers after the canceled run.
     let (steering, follow_up) = s.handle().queued();
-    assert_eq!(
-        steering,
-        vec!["q1".to_string()],
-        "the queued message is back in the editor and resubmitted"
+    assert!(
+        steering.is_empty(),
+        "recovered text must not steer the canceled run"
     );
     assert!(follow_up.is_empty());
     assert!(
-        matches!(d.cmds.as_slice(), [SessionCmd::QueuedInput(handle)] if handle.same_instance(&s.handle())),
-        "resubmitting restored input retains one consumer on its original handle"
+        matches!(d.cmds.as_slice(), [SessionCmd::RecoveryPrompt { handle, text, parts }]
+            if handle.same_instance(&s.handle()) && text == "q1" && parts.is_empty()),
+        "restored input becomes exactly one recovery prompt on its original handle"
     );
 }
 
@@ -1418,4 +1419,102 @@ fn stale_tui_inbox_callback_keeps_messages_with_original_session_after_clone_or_
                 if wire.role == oxa_proto::Role::User && wire.content.as_deref() == Some("old destination only"))
         }));
     }
+}
+
+#[test]
+fn regular_renderer_refreshes_live_policy_after_load_and_unload() {
+    struct PolicyTerminal {
+        inner: TestTerminal,
+        messages: Sender<WorkerMsg>,
+        phase: usize,
+        frames: Vec<String>,
+    }
+    impl oxa_tui::Terminal for PolicyTerminal {
+        fn write(&mut self, b: &[u8]) {
+            self.inner.write(b);
+        }
+        fn flush(&mut self) {
+            self.inner.flush();
+        }
+        fn size(&self) -> (u16, u16) {
+            self.inner.size()
+        }
+        fn caps(&self) -> TermCaps {
+            self.inner.caps()
+        }
+        fn set_mode(&mut self, m: oxa_tui::TermMode, b: bool) {
+            self.inner.set_mode(m, b);
+        }
+        fn suspend(&mut self) {
+            self.inner.suspend();
+        }
+        fn resume(&mut self) {
+            self.inner.resume();
+        }
+        fn poll(&mut self, _: u64) -> Vec<InputEvent> {
+            self.frames.push(self.inner.take_output());
+            let policy = match self.phase {
+                0 => Some("scope"),
+                1 => Some("inherited"),
+                2 => None,
+                // Worker messages drain before poll, then the frame is drawn after
+                // poll. Capture the unload frame on the following iteration.
+                3 => {
+                    self.phase += 1;
+                    return Vec::new();
+                }
+                _ => return vec![key("ctrl+d")],
+            };
+            self.messages
+                .send(WorkerMsg::Session(oxa_interactive::SessionInfo {
+                    id: "synthetic".into(),
+                    engine_url: "native-local".into(),
+                    memory_policy: policy,
+                    ..Default::default()
+                }))
+                .unwrap();
+            self.phase += 1;
+            Vec::new()
+        }
+    }
+    let env = TestEnv::new();
+    let s = session(&env);
+    let (cmd, _commands) = mpsc::channel();
+    let (messages, receiver) = mpsc::channel();
+    let (_ui, requests) = mpsc::channel();
+    let mut term = PolicyTerminal {
+        inner: TestTerminal::new(100, 24),
+        messages,
+        phase: 0,
+        frames: Vec::new(),
+    };
+    assert_eq!(
+        run_loop(
+            &mut term,
+            &mut interactive_opts(&env),
+            s.handle(),
+            cmd,
+            receiver,
+            requests,
+            ViewModel::default()
+        )
+        .unwrap(),
+        0
+    );
+    assert!(!term.frames[1].contains("Memory: scope"));
+    assert!(
+        term.frames[2].contains("Memory: scope"),
+        "regular live load: {:?}",
+        term.frames[2]
+    );
+    assert!(
+        term.frames[3].contains("Memory: inherited"),
+        "regular live switch: {:?}",
+        term.frames[3]
+    );
+    assert!(!term.frames[4].contains("Memory: scope") && !term.frames[4].contains("Memory: inherited"));
+    assert!(
+        term.frames[4].contains("\x1b[J"),
+        "unload clears the removed live row through the end of the region"
+    );
 }

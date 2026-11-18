@@ -12,7 +12,7 @@ use oxa_config::{
 };
 use oxa_core::{Deps, Open, Session, ToolSelection};
 use oxa_engine::HttpEngine;
-use oxa_export::{default_output_name, export_html, write_export, ExportOpts, ExportTheme};
+use oxa_export::{default_output_name, export_html, format_for, ExportFormat, ExportOpts, ExportTheme};
 use oxa_interactive::{
     ask_trust_interactive, image_part, run as run_interactive, ClipImage, InteractiveOpts, Reopen, ReopenFn,
     TrustChoice,
@@ -77,6 +77,38 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
         cwd,
     } = io;
 
+    if let Some(invocation) = oxa_interactive::command_registry::parse_cli(crate::help::command_words(argv)) {
+        if invocation.command.id == oxa_interactive::command_registry::CommandId::Lead
+            && invocation.args.is_empty()
+        {
+            let menu = oxa_interactive::command_menu::menu(
+                invocation.command.id,
+                oxa_interactive::command_registry::Surface::Cli,
+            )
+            .unwrap_or_default();
+            return if stdout.write_all(menu.as_bytes()).is_ok() {
+                0
+            } else {
+                2
+            };
+        }
+    }
+
+    if let Some(help) = crate::help::from_argv(argv) {
+        return match help {
+            Ok(text) => {
+                if stdout.write_all(text.as_bytes()).is_ok() {
+                    0
+                } else {
+                    2
+                }
+            }
+            Err(message) => {
+                let _ = writeln!(stderr, "{message}");
+                2
+            }
+        };
+    }
     let a = match parse_args(argv, &[]) {
         Ok(a) => a,
         Err(e) => {
@@ -124,29 +156,78 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
 
     crate::netguard::install(a.offline, env, a.session_dir.as_deref(), &cwd);
 
+    #[cfg(feature = "share")]
+    if !a.share_models.is_empty() || a.share_bind.is_some() {
+        let refusal = if crate::share_cmd::is_agent(env) {
+            Some(OxaError::new(
+                codes::INVALID,
+                "Guest serving requires the owner outside an agent tool",
+            ))
+        } else if a.share_models.is_empty() {
+            Some(OxaError::new(
+                codes::USAGE,
+                "--share-bind requires --share-model ALIAS",
+            ))
+        } else if !loads_extensions || choose_mode(&a, stdin_is_tty, stdout_is_tty) != RunMode::Interactive {
+            Some(OxaError::new(
+                codes::USAGE,
+                "--share-model requires an interactive owner session",
+            ))
+        } else {
+            oxa_proto::check_online("starting the LAN sharing listener").err()
+        };
+        if let Some(error) = refusal {
+            return report(&mut *stderr, &error);
+        }
+    }
+
     if let Some(sub) = a.subcommand.clone() {
         let dirs = match dirs_from_env(env, None) {
             Ok(d) => d,
             Err(e) => return report(&mut *stderr, &e),
         };
         let result = match sub {
+            Subcommand::Registered(id, words) => {
+                use oxa_interactive::command_registry::CommandId;
+                match id {
+                    CommandId::LeadServe if words.0.is_empty() => {
+                        crate::lead_serve::run(&dirs, &cwd, env, &mut *stdout)
+                    }
+                    CommandId::Lead
+                    | CommandId::LeadServe
+                    | CommandId::LeadBoard
+                    | CommandId::LeadStatus
+                    | CommandId::LeadAsks
+                    | CommandId::LeadChat
+                    | CommandId::Help
+                    | CommandId::WorkStatus
+                    | CommandId::WorkBoard => Err(OxaError::new(
+                        codes::USAGE,
+                        "registered command handler or arguments are unavailable",
+                    )),
+                }
+            }
             #[cfg(feature = "share")]
             Subcommand::Share(words) => {
-                // Env::get treats empty values as unset; owner-command policy
-                // refuses marker presence, including an empty value.
-                if env.pairs().iter().any(|(name, _)| {
-                    matches!(
-                        name.as_str(),
-                        "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
-                    )
-                }) {
+                let serve = words.first().is_some_and(|word| word == "serve");
+                if crate::share_cmd::is_agent(env) {
                     return report(
                         &mut *stderr,
                         &OxaError::new(
                             codes::INVALID,
-                            "Guest key commands require the owner outside an agent tool",
+                            if serve {
+                                "Guest serving requires the owner outside an agent tool"
+                            } else {
+                                "Guest key commands require the owner outside an agent tool"
+                            },
                         ),
                     );
+                }
+                if serve {
+                    return match crate::share_cmd::run(&words[1..], &dirs, &cwd, &mut *stdout) {
+                        Ok(()) => 0,
+                        Err(error) => report(&mut *stderr, &error),
+                    };
                 }
                 oxc_gateway::share::command::run(&words, &dirs.home.join(".oxa/share"), &mut *stdout)
                     .map(|()| 0)
@@ -274,6 +355,22 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
     // (main.ts `promptConfirm`): the notice and the question on stdout, one answer line from
     // stdin (read byte by byte, so piped prompt text after it stays unread).
     let mut a = a;
+    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    let managed_steering = match mode {
+        RunMode::Json => {
+            use oxa_work::managed_steering::{ManagedSteering, FD_ENV};
+            use std::os::fd::AsFd;
+            match env
+                .get(FD_ENV)
+                .map(|fd| ManagedSteering::receive(fd, &dirs.agent_dir, std::io::stdin().as_fd()))
+                .transpose()
+            {
+                Ok(authority) => authority,
+                Err(error) => return finish_outcome(Err(OxaError::new(codes::INVALID, error)), &mut *stderr),
+            }
+        }
+        _ => None,
+    };
     let cloud_diagnostics = oxc_gateway::diagnostics::Diagnostics::default();
     let prepared = {
         let mut confirm = |notice: &str, question: &str| -> bool {
@@ -366,8 +463,10 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
                 a.max_tokens,
                 prep,
                 prompts,
-                &mut *stdout,
+                stdout,
                 &mut *stderr,
+                #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+                managed_steering,
             )
         }
     }
@@ -376,6 +475,8 @@ pub fn run(argv: &[String], env: &Env, io: Stdio) -> i32 {
 /// Everything decided before a session is opened.
 struct Prep {
     built: Built,
+    #[cfg(feature = "share")]
+    sharing: Option<crate::share_cmd::Prepared>,
     open: Open,
     session_id: Option<String>,
     notices: Vec<(Level, String)>,
@@ -450,6 +551,7 @@ fn open_named(
 /// `reopen` closure, which builds sessions for `/new`, `/resume`, fork and import.
 #[derive(Clone)]
 struct Built {
+    lead: bool,
     status: Option<Arc<crate::status::StatusWriter>>,
     result_facts: Arc<crate::result_facts::ResultFacts>,
     output_schema: Option<oxa_core::output_schema::OutputSchema>,
@@ -515,6 +617,9 @@ impl Built {
                     .with_owner_present(self.ask_owner_present),
             ));
         }
+        if self.lead {
+            tools.retain(|tool| crate::lead_preset::READ_TOOLS.contains(&tool.spec().name.as_str()));
+        }
         Deps {
             engine: self.engine.clone(),
             store: self.store.clone(),
@@ -575,20 +680,33 @@ fn prepare(
         ));
     }
     let goal = crate::goal_cmd::load(a, cwd)?;
-    let output_schema = a
-        .output_schema
-        .as_ref()
-        .map(|file| {
-            let path = cwd.join(file);
-            let text = std::fs::read_to_string(&path)
-                .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
-            let value = serde_json::from_str(&text)
-                .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
-            oxa_core::output_schema::OutputSchema::new(value)
-        })
-        .transpose()?;
+    let output_schema = if a.lead {
+        Some(crate::lead_preset::schema()?)
+    } else {
+        a.output_schema
+            .as_ref()
+            .map(|file| {
+                let path = cwd.join(file);
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| OxaError::io(&format!("read output schema {}", path.display()), &e))?;
+                let value = serde_json::from_str(&text)
+                    .map_err(|e| OxaError::new(codes::USAGE, format!("Invalid output schema JSON: {e}")))?;
+                oxa_core::output_schema::OutputSchema::new(value)
+            })
+            .transpose()?
+    };
     let mut notices: Vec<(Level, String)> = Vec::new();
     let user_settings = Settings::load(dirs, cwd, false);
+    // Only user settings may enable this default-off proposal session.
+    if a.lead && !user_settings.bool(crate::lead_preset::SETTING, false) {
+        return Err(OxaError::new(
+            codes::USAGE,
+            format!(
+                "lead --shadow is disabled; set \"{}\": true in the user settings.json to enable it",
+                crate::lead_preset::SETTING
+            ),
+        ));
+    }
     let (models, diags) = ModelsConfig::load(dirs, env);
     notices.extend(
         diags
@@ -622,6 +740,8 @@ fn prepare(
         let list = patterns.iter().cloned().map(serde_json::Value::String).collect();
         settings = settings.with_override("enabledModels", serde_json::Value::Array(list));
     }
+    // UX/DX item 5: `--animation` overrides `ui.animation` for this run (in memory only).
+    settings = animation_override(settings, a.animation.as_deref());
     notices.extend(
         settings
             .diagnostics()
@@ -664,12 +784,33 @@ fn prepare(
             settings.string("defaultModel")
         }
     });
+    #[cfg(feature = "share")]
+    let sharing = (!a.share_models.is_empty())
+        .then(|| {
+            crate::share_cmd::prepare_session(
+                &user_settings,
+                &settings,
+                dirs,
+                a.share_models.clone(),
+                a.share_bind,
+                (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
+            )
+        })
+        .transpose()?;
+    #[cfg(feature = "share")]
+    let shared = sharing
+        .as_ref()
+        .map(|prepared| prepared.engines.clone())
+        .unwrap_or_default();
+    #[cfg(not(feature = "share"))]
+    let shared = crate::in_process::SharedEngines::default();
     let engine = child.wrap(crate::in_process::select_observed(
         &user_settings,
         &settings,
         dirs,
         requested_model.as_deref(),
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
+        shared,
         || engine_with_settings(&endpoint, &settings),
     )?);
 
@@ -756,19 +897,7 @@ fn prepare(
     // `defaultModel` (SET-004) is applied by the core when no model was chosen here
     // (`Session::open`), so a resumed session keeps its own model and `--models` scopes it.
     if let Some(pattern) = &a.model {
-        let info = engine.info(None)?;
-        let mut ids = info.models.clone();
-        if !ids.contains(&info.model) {
-            ids.insert(0, info.model.clone());
-        }
-        let available: Vec<ModelRef> = ids
-            .into_iter()
-            .map(|id| ModelRef {
-                endpoint: endpoint.name.clone(),
-                model: id,
-                thinking: None,
-            })
-            .collect();
+        let available = engine_model_refs(engine.info(None)?, &endpoint.name);
         let picked = resolve_model(pattern, a.provider.as_deref(), &available)?;
         model = Some(picked.model);
         thinking = thinking.or(picked.thinking);
@@ -780,19 +909,7 @@ fn prepare(
         let patterns = a.models.clone().unwrap_or_else(|| settings.list("enabledModels"));
         let continuing = a.continue_ || a.session.is_some() || a.fork.is_some() || a.resume;
         if !patterns.is_empty() && !continuing {
-            let info = engine.info(None)?;
-            let mut ids = info.models.clone();
-            if !ids.contains(&info.model) {
-                ids.insert(0, info.model.clone());
-            }
-            let available: Vec<ModelRef> = ids
-                .into_iter()
-                .map(|id| ModelRef {
-                    endpoint: endpoint.name.clone(),
-                    model: id,
-                    thinking: None,
-                })
-                .collect();
+            let available = engine_model_refs(engine.info(None)?, &endpoint.name);
             let (scoped, diags) = oxa_config::resolve_scoped(&patterns, &available);
             notices.extend(diags.into_iter().map(|d| (d.level, d.message)));
             let saved = settings.string("defaultModel");
@@ -882,12 +999,17 @@ fn prepare(
         default_edits: settings.default_tools_edits(),
     };
     let status = (!a.no_session).then(|| {
-        Arc::new(crate::status::StatusWriter::new(a.stall_timeout).with_billing(cloud_diagnostics.clone()))
+        Arc::new(
+            crate::status::StatusWriter::new(a.stall_timeout)
+                .with_billing(cloud_diagnostics.clone())
+                .with_engine(&engine),
+        )
     });
     let result_facts = Arc::new(
         crate::result_facts::ResultFacts::new(status.clone()).with_billing(cloud_diagnostics.clone()),
     );
     let built = Built {
+        lead: a.lead,
         status,
         result_facts,
         output_schema,
@@ -912,6 +1034,8 @@ fn prepare(
     };
     Ok(Prep {
         built,
+        #[cfg(feature = "share")]
+        sharing,
         open,
         session_id,
         notices,
@@ -1074,6 +1198,9 @@ fn discover_opts(a: &Args, dirs: &Dirs, cwd: &Path, trusted: bool) -> Result<Dis
 /// that would need the dialog stays untrusted. Problems are reported on `err` and give no
 /// flags; the help is printed anyway.
 fn help_extension_flags(a: &Args, env: &Env, cwd: &Path, err: &mut dyn Write) -> Vec<oxa_proto::FlagSpec> {
+    if a.lead {
+        return Vec::new();
+    }
     let Ok(dirs) = dirs_from_env(env, a.session_dir.as_deref()) else {
         return Vec::new();
     };
@@ -1216,8 +1343,11 @@ fn run_headless(
     max_tokens: Option<u64>,
     prep: Prep,
     prompts: Vec<(String, Vec<Part>)>,
-    stdout: &mut dyn Write,
+    stdout: Box<dyn Write + Send>,
     stderr: &mut dyn Write,
+    #[cfg(all(target_os = "linux", feature = "managed-steering"))] managed_steering: Option<
+        oxa_work::managed_steering::ManagedSteering,
+    >,
 ) -> i32 {
     let Prep {
         built,
@@ -1231,6 +1361,18 @@ fn run_headless(
     let mut session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return finish_outcome_facts(Err(e), stderr, Some(&built.result_facts)),
+    };
+    let starts_goal = built.goal.is_some();
+    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    let starts_goal = if let Some(steering) = managed_steering.as_ref().filter(|_| session.goal().is_none()) {
+        if let Err(error) = crate::goal_cmd::from_objective(steering.objective().into(), max_time, max_tokens)
+            .and_then(|goal| session.set_goal(Some(goal), &mut oxa_proto::VecSink::default()))
+        {
+            return finish_outcome_facts(Err(error), stderr, Some(&built.result_facts));
+        }
+        true
+    } else {
+        starts_goal
     };
     if continue_goal {
         if let Some(mut goal) = session
@@ -1248,7 +1390,7 @@ fn run_headless(
     let mut prompts = prompts;
     if let Some(goal) = session.goal() {
         if goal.status == oxa_session::GoalStatus::Pursuing {
-            if built.goal.is_some() {
+            if starts_goal {
                 let start = oxa_core::prompt::goal_start(&goal.objective);
                 if let Some((text, _parts)) = prompts.first_mut() {
                     *text = format!("{start}\n\n{text}");
@@ -1266,6 +1408,7 @@ fn run_headless(
                 oxa_session::GoalStatus::Done => oxa_core::RunOutcome::Done,
                 oxa_session::GoalStatus::Blocked => oxa_core::RunOutcome::Blocked("goal_blocked"),
                 oxa_session::GoalStatus::Paused => oxa_core::RunOutcome::Stalled,
+                oxa_session::GoalStatus::Canceled => oxa_core::RunOutcome::Interrupted,
                 oxa_session::GoalStatus::Pursuing => oxa_core::RunOutcome::NothingToDo,
             };
             built.result_facts.goal(Some(goal));
@@ -1319,6 +1462,7 @@ fn run_headless(
         max_time,
         max_tokens,
         built.supervised_child,
+        built.hook_sets.subagent.as_deref(),
     ) {
         Ok(limit) => limit,
         Err(error) => {
@@ -1329,9 +1473,38 @@ fn run_headless(
             return finish_outcome_facts(result, stderr, Some(&built.result_facts));
         }
     };
+    let mut stdout = Some(stdout);
+    #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+    let mut managed_out = None;
     let result = match mode {
-        RunMode::Json => run_json_outcome(&mut session, prompts, stdout, stderr),
-        _ => run_print_outcome(&mut session, prompts, stdout, stderr),
+        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        RunMode::Json if managed_steering.is_some() => {
+            use oxa_core::goal::{SteeringAuthority, SteeringLease};
+            let steering = managed_steering.expect("matched managed steering");
+            let expected = session.inner().sref.clone();
+            let authority: Arc<SteeringAuthority> = Arc::new(move |requested, operation| {
+                if requested == &expected {
+                    let _ = steering.with_live(|lease| {
+                        operation(Some(&SteeringLease {
+                            holder: lease.holder.clone(),
+                            generation: lease.generation,
+                        }));
+                    });
+                }
+            });
+            let out = Arc::new(Mutex::new(stdout.take().expect("stdout is present")));
+            managed_out = Some(out.clone());
+            oxa_rpc::run_json_outcome_with_steering_authority(
+                &mut session,
+                prompts,
+                out,
+                stderr,
+                &built.dirs.agent_dir,
+                authority,
+            )
+        }
+        RunMode::Json => run_json_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
+        _ => run_print_outcome(&mut session, prompts, stdout.as_deref_mut().unwrap(), stderr),
     };
     built.result_facts.goal(session.goal());
     // `session_shutdown` for the hook sets, then their script contexts and MCP servers stop.
@@ -1349,7 +1522,13 @@ fn run_headless(
             "type": "run_usage",
             "tokens": session.handle().run_tokens_used(),
         });
-        let _ = writeln!(stdout, "{usage}");
+        if let Some(stdout) = stdout.as_deref_mut() {
+            let _ = writeln!(stdout, "{usage}");
+        }
+        #[cfg(all(target_os = "linux", feature = "managed-steering"))]
+        if let Some(out) = managed_out {
+            let _ = writeln!(out.lock().unwrap_or_else(|poison| poison.into_inner()), "{usage}");
+        }
     }
     // Child stderr can be captured as a tool result in the parent's history.
     if matches!(
@@ -1390,6 +1569,7 @@ fn run_rpc(
         max_time,
         max_tokens,
         built.supervised_child,
+        built.hook_sets.subagent.as_deref(),
     ) {
         Ok(limit) => limit,
         Err(error) => {
@@ -1426,6 +1606,8 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
 
     let Prep {
         built,
+        #[cfg(feature = "share")]
+        sharing,
         open,
         session_id,
         mut notices,
@@ -1436,6 +1618,18 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
     let session = match open_named(&built, session_id, open, name.as_deref()) {
         Ok(s) => s,
         Err(e) => return report(stderr, &e),
+    };
+    #[cfg(feature = "share")]
+    let guest_listener = match sharing.map(crate::share_cmd::Prepared::start).transpose() {
+        Ok(Some((running, address))) => {
+            notices.push((
+                Level::Info,
+                format!("Guest OpenAI API listening at http://{address}/v1"),
+            ));
+            Some(running)
+        }
+        Ok(None) => None,
+        Err(error) => return report(stderr, &error),
     };
     notices.extend(startup_notices(&built, &session));
     let yolo = built.yolo.clone();
@@ -1507,6 +1701,13 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         open_picker: a.resume,
         save_trust: Some(save_trust),
         gated,
+        #[cfg(feature = "share")]
+        engine_status: guest_listener.as_ref().map(|running| {
+            let status = running.status.clone();
+            Box::new(move || status.lines()) as oxa_interactive::EngineStatus
+        }),
+        #[cfg(not(feature = "share"))]
+        engine_status: None,
         yolo: Some(yolo),
     };
     let result = run_interactive(session, opts);
@@ -1518,6 +1719,20 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         Ok(code) => code,
         Err(e) => report(stderr, &e),
     }
+}
+
+pub(crate) fn engine_model_refs(mut info: oxa_proto::EngineInfo, endpoint: &str) -> Vec<ModelRef> {
+    if !info.models.contains(&info.model) {
+        info.models.insert(0, info.model);
+    }
+    info.models
+        .into_iter()
+        .map(|model| ModelRef {
+            endpoint: endpoint.to_string(),
+            model,
+            thinking: None,
+        })
+        .collect()
 }
 
 /// The default engine endpoint of models.json (or the one `OXA_ENGINE_URL` names).
@@ -1544,6 +1759,24 @@ fn with_api_key(mut endpoint: Endpoint, a: &Args) -> Endpoint {
         endpoint.api_key = Some(key.0.clone());
     }
     endpoint
+}
+
+/// UX/DX item 5: `--animation <mode>` overrides `ui.animation` for this run, in memory only, so the
+/// setting on disk is untouched. `None` (no flag) keeps whatever the settings resolved to.
+///
+/// #869: `off` also overrides `ui.reducedMotion` (the mode and reduced motion draw the same static
+/// badge, as cli.md says), and `arcade`/`minimal` clear it, so the flag is not silently ignored on
+/// a machine whose settings ask for reduced motion. `OXA_REDUCED_MOTION` still wins for the run.
+fn animation_override(settings: Settings, mode: Option<&str>) -> Settings {
+    match mode {
+        Some(mode) => {
+            let reduced = mode == "off";
+            settings
+                .with_override("ui.animation", Value::String(mode.to_string()))
+                .with_override("ui.reducedMotion", Value::Bool(reduced))
+        }
+        None => settings,
+    }
 }
 
 /// [`engine_for`] with the stream silence limit of the settings: `retry.provider.timeoutMs`,
@@ -1706,8 +1939,21 @@ fn format_tokens(count: u64) -> String {
     }
 }
 
-/// `--export <input> [output]`: the session file to HTML; the output name is derived when it
-/// is omitted. Prints `Exported to: <path>`.
+/// True when `dest` names the `input` session: the same path, a hard link, or a symlink that
+/// resolves to it. Writing such a destination would overwrite the session, so it is refused.
+fn aliases_source(input: &Path, dest: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    if input == dest {
+        return true;
+    }
+    match (std::fs::metadata(input), std::fs::metadata(dest)) {
+        (Ok(source), Ok(target)) => source.dev() == target.dev() && source.ino() == target.ino(),
+        _ => false,
+    }
+}
+
+/// `--export <input> [output]`: copy JSONL for a `.jsonl` destination, otherwise render HTML.
+/// The output name is derived when omitted. Prints `Exported to: <path>`.
 fn export_session(
     input: &str,
     output: Option<&str>,
@@ -1726,8 +1972,13 @@ fn export_session(
 }
 
 fn export_inner(input: &str, output: Option<&str>, home: &Path, cwd: &Path) -> Result<PathBuf, OxaError> {
+    use std::os::unix::fs::PermissionsExt;
     let input_path = resolve_path(home, cwd, input);
-    let text = std::fs::read_to_string(&input_path)
+    let mut source = std::fs::File::open(&input_path)
+        .map_err(|e| OxaError::io(&format!("cannot read {}", input_path.display()), &e))?;
+    let mut text = String::new();
+    source
+        .read_to_string(&mut text)
         .map_err(|e| OxaError::io(&format!("cannot read {}", input_path.display()), &e))?;
     let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let first = lines.next().ok_or_else(|| {
@@ -1740,6 +1991,27 @@ fn export_inner(input: &str, output: Option<&str>, home: &Path, cwd: &Path) -> R
     let entries = lines
         .map(|line| decode_entry(line.as_bytes()))
         .collect::<Result<Vec<_>, OxaError>>()?;
+    let dest = match output {
+        Some(o) => resolve_path(home, cwd, o),
+        None => default_output_name(Some(&input_path), &header.id, cwd),
+    };
+    if aliases_source(&input_path, &dest) {
+        return Err(OxaError::new(
+            codes::INVALID,
+            format!(
+                "cannot export to {}: the destination is the source session",
+                dest.display()
+            ),
+        )
+        .with_hint("choose a different output path"));
+    }
+    if format_for(&dest) == ExportFormat::Jsonl {
+        let permissions = source
+            .metadata()
+            .map_err(|e| OxaError::io("cannot inspect source session", &e))?
+            .permissions();
+        return write_session_export(&source, &dest, &text, permissions);
+    }
     let opts = ExportOpts {
         theme: ExportTheme::dark(),
         session_name: None,
@@ -1749,11 +2021,37 @@ fn export_inner(input: &str, output: Option<&str>, home: &Path, cwd: &Path) -> R
         leaf: None,
     };
     let html = export_html(&header, &entries, &opts)?;
-    let dest = match output {
-        Some(o) => resolve_path(home, cwd, o),
-        None => default_output_name(Some(&input_path), &header.id, cwd),
-    };
-    write_export(&dest, &html)
+    write_session_export(&source, &dest, &html, std::fs::Permissions::from_mode(0o644))
+}
+
+/// Compare the opened files before truncating: pathname checks alone race with alias replacement.
+fn write_session_export(
+    source: &std::fs::File,
+    dest: &Path,
+    text: &str,
+    permissions: std::fs::Permissions,
+) -> Result<PathBuf, OxaError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let write_error = |e: std::io::Error| OxaError::io(&format!("cannot write {}", dest.display()), &e);
+    let source_meta = source.metadata().map_err(write_error)?;
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dest)
+        .map_err(write_error)?;
+    let output_meta = output.metadata().map_err(write_error)?;
+    if source_meta.dev() == output_meta.dev() && source_meta.ino() == output_meta.ino() {
+        return Err(OxaError::new(
+            codes::INVALID,
+            "export destination is the source session",
+        ));
+    }
+    output.set_len(0).map_err(write_error)?;
+    output.write_all(text.as_bytes()).map_err(write_error)?;
+    output.set_permissions(permissions).map_err(write_error)?;
+    Ok(dest.to_path_buf())
 }
 
 /// The error code of a declined cross-directory fork offer (CLI-019): `run` prints
@@ -2201,6 +2499,49 @@ mod model_limits_tests {
 }
 
 #[cfg(test)]
+mod animation_override_tests {
+    use super::*;
+
+    /// #869: `--animation <mode>` reaches the settings the interactive driver reads
+    /// (`ui.animation`), `off` is the same as `ui.reducedMotion` for the run (the YOLO flames
+    /// follow the badge), and no flag leaves the resolved setting alone.
+    #[test]
+    fn the_flag_overrides_ui_animation_for_this_run_only() {
+        let loaded = Settings::from_values(serde_json::json!({"ui": {"animation": "arcade"}}), Value::Null);
+        assert_eq!(loaded.string("ui.animation").as_deref(), Some("arcade"));
+        assert!(!loaded.bool("ui.reducedMotion", false));
+
+        let off = animation_override(loaded.clone(), Some("off"));
+        assert_eq!(off.string("ui.animation").as_deref(), Some("off"));
+        assert!(off.bool("ui.reducedMotion", false));
+        // The settings the flag was applied to are untouched: the override is in memory only.
+        assert_eq!(loaded.string("ui.animation").as_deref(), Some("arcade"));
+        assert!(!loaded.bool("ui.reducedMotion", false));
+
+        assert_eq!(
+            animation_override(loaded.clone(), None)
+                .string("ui.animation")
+                .as_deref(),
+            Some("arcade")
+        );
+        assert!(!animation_override(loaded.clone(), None).bool("ui.reducedMotion", false));
+
+        // The other two modes draw, even when the settings ask for reduced motion.
+        let still = Settings::from_values(
+            serde_json::json!({"ui": {"animation": "off", "reducedMotion": true}}),
+            Value::Null,
+        );
+        for mode in ["arcade", "minimal"] {
+            let s = animation_override(still.clone(), Some(mode));
+            assert_eq!(s.string("ui.animation").as_deref(), Some(mode));
+            assert!(!s.bool("ui.reducedMotion", false), "--animation {mode}");
+        }
+        // ... and the settings on disk still say reduced motion.
+        assert!(still.bool("ui.reducedMotion", false));
+    }
+}
+
+#[cfg(test)]
 mod session_scratch_tests {
     use super::*;
     use oxa_proto::ExecSpec;
@@ -2242,6 +2583,7 @@ mod session_scratch_tests {
         let base: Arc<dyn Sandbox> = Arc::new(NetSandbox::new(Arc::new(bwrap), true, false));
         let yolo = oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard);
         let built = Built {
+            lead: false,
             status: None,
             result_facts: Arc::new(crate::result_facts::ResultFacts::default()),
             output_schema: None,
@@ -2312,5 +2654,69 @@ mod session_scratch_tests {
         assert!(b.is_dir(), "ending one session removed another's scratch");
         drop(second);
         assert!(!b.exists(), "the second session's scratch outlived it");
+    }
+}
+
+#[cfg(test)]
+mod export_source_tests {
+    use super::*;
+
+    /// A session file with the header `decode_header` requires, for the alias checks.
+    const HEADER: &str =
+        r#"{"type":"session","version":3,"id":"s1","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/work"}"#;
+
+    fn session(env: &oxa_fake::TestEnv) -> PathBuf {
+        let path = env.home().join("session-1.jsonl");
+        std::fs::write(&path, format!("{HEADER}\n")).unwrap();
+        path
+    }
+
+    /// `--export` must never write onto the session it reads: the same path, a hard link and a
+    /// symlink all name the source file, whatever the destination suffix.
+    #[test]
+    fn destinations_aliasing_the_source_are_detected_everywhere() {
+        let env = oxa_fake::TestEnv::new();
+        let source = session(&env);
+        let work = env.work();
+        let hard = work.join("hard.jsonl");
+        let soft = work.join("soft.html");
+        std::fs::hard_link(&source, &hard).unwrap();
+        std::os::unix::fs::symlink(&source, &soft).unwrap();
+        let sibling = work.join("copy.jsonl");
+        std::fs::write(&sibling, "other\n").unwrap();
+
+        for dest in [source.clone(), hard, soft] {
+            assert!(
+                aliases_source(&source, &dest),
+                "{} names the source session",
+                dest.display()
+            );
+        }
+        assert!(
+            !aliases_source(&source, &sibling),
+            "an existing other file is a copy"
+        );
+        assert!(
+            !aliases_source(&source, &env.home().join("missing.jsonl")),
+            "a new path is a new output"
+        );
+    }
+
+    /// The refusal is a CLI error that names the destination, so the session is left alone.
+    #[test]
+    fn exporting_onto_the_source_is_refused() {
+        let env = oxa_fake::TestEnv::new();
+        let source = session(&env);
+        let before = std::fs::read(&source).unwrap();
+        let err = export_inner(
+            source.to_str().unwrap(),
+            Some(source.to_str().unwrap()),
+            &env.home(),
+            &env.work(),
+        )
+        .expect_err("a JSONL destination naming the source must be refused");
+        assert_eq!(err.code, codes::INVALID);
+        assert!(err.message.contains("source session"), "{}", err.message);
+        assert_eq!(std::fs::read(&source).unwrap(), before);
     }
 }

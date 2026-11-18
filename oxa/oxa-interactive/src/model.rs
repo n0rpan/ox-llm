@@ -445,7 +445,7 @@ pub enum SessionCmd {
     /// Coalesced wake for editor input. The handle binds it to the original ordinary queues;
     /// a wake left behind by a session rebind must not run the replacement's input.
     QueuedInput(oxa_core::Handle),
-    /// Explicit input after Ctrl+C belongs to the canceled session, not a queued replacement.
+    /// Explicit input after a cancel key belongs to the canceled session, not a queued replacement.
     RecoveryPrompt {
         handle: oxa_core::Handle,
         text: String,
@@ -557,6 +557,10 @@ pub struct SessionInfo {
     pub commands: Vec<oxa_proto::CommandSpec>,
     /// The engine endpoint and the models it can serve (`EngineInfo`).
     pub engine_url: String,
+    /// The observed memory policy of an in-process local engine child (`scope`, or
+    /// `inherited` under a no-swap service). `None` for an engine that does not observe one.
+    /// Separate from `engine_url`, which stays the endpoint's own name for comparison.
+    pub memory_policy: Option<&'static str>,
     pub models: Vec<String>,
     /// Requests waiting on the engine, as of the last `Engine::info`.
     pub queue: u32,
@@ -730,6 +734,9 @@ pub enum AppAction {
 /// Saves a `/trust` decision (see `save_trust`).
 pub type TrustSaver = Box<dyn FnMut(crate::TrustChoice) -> Result<(), OxaError> + Send>;
 
+/// Optional owner-only details read on demand by the existing engine command.
+pub type EngineStatus = Box<dyn Fn() -> Vec<String> + Send>;
+
 /// Everything `run` needs besides the session. Built by `oxa-cli`.
 pub struct InteractiveOpts {
     /// `true` = alternate screen layout, `false` = regular (main screen).
@@ -766,6 +773,7 @@ pub struct InteractiveOpts {
     pub save_trust: Option<TrustSaver>,
     /// The gated project resources (`oxa_perm::gated_resources`), listed by `/trust` (D-INT).
     pub gated: Vec<String>,
+    pub engine_status: Option<EngineStatus>,
     /// O-182: the process's YOLO switch, shared with the policy of every session. `None` =
     /// YOLO cannot be switched here (the policy does not listen; tests, ephemeral setups).
     pub yolo: Option<oxa_proto::YoloSwitch>,

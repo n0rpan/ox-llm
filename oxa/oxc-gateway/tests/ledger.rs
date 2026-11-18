@@ -1,7 +1,7 @@
 #![cfg(feature = "ledger")]
 use oxc_gateway::{
     accounting::{Model, Outcome, Usage},
-    ledger::{Context, Ledger, Origin},
+    ledger::{Context, Ledger, LocalGuestOutcome, Origin},
     pricing::Price,
     secrets,
 };
@@ -797,4 +797,52 @@ fn guest_context_refuses_non_api_origin_empty_or_unbounded_names_before_persiste
         assert!(!error.to_string().contains("synthetic-guest"));
     }
     assert!(!home.0.join("requests-20260102.jsonl").exists());
+}
+
+#[test]
+fn local_guest_records_usage_or_reservation_without_cloud_spend() {
+    let home = Home::new();
+    let daily = Ledger::open(&home.0).unwrap().day("20260102").unwrap();
+    let guest = "synthetic-private-device";
+    let entry = || {
+        daily
+            .entry(
+                "synthetic-local",
+                Context {
+                    origin: Origin::Api,
+                    guest_key_name: Some(guest),
+                    ..Context::default()
+                },
+            )
+            .unwrap()
+    };
+    entry()
+        .append_local_guest(LocalGuestOutcome::Completed { tokens: Some((3, 2)) })
+        .unwrap();
+    entry().append_local_guest(LocalGuestOutcome::Cancelled).unwrap();
+    assert!(daily
+        .entry("synthetic-local", Context::default())
+        .unwrap()
+        .append_local_guest(LocalGuestOutcome::Failed)
+        .is_err());
+
+    let rows = home.rows("20260102");
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        assert_eq!(row["origin"], "api");
+        assert_eq!(row["remote"], false);
+        assert_eq!(row["cost_usd"], 0);
+        assert_eq!(row["guest_key"].as_str().unwrap().len(), 32);
+        assert!(!row.to_string().contains(guest));
+    }
+    assert_eq!(rows[0]["guest_key"], rows[1]["guest_key"]);
+    assert_eq!(rows[0]["status"], 200);
+    assert_eq!(rows[0]["settled"], "usage");
+    assert_eq!(rows[0]["prompt_tokens"], 3);
+    assert_eq!(rows[0]["completion_tokens"], 2);
+    assert_eq!(rows[1]["status"], 499);
+    assert_eq!(rows[1]["settled"], "reserved");
+    assert_eq!(rows[1]["usage_missing"], true);
+    assert!(rows[1].get("prompt_tokens").is_none());
+    assert_eq!(daily.budget().spend().unwrap(), 0.0);
 }

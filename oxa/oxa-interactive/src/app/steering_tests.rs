@@ -94,6 +94,17 @@ fn deps(env: &TestEnv, engine: Arc<dyn Engine>, store: Arc<dyn SessionStore>, se
 }
 
 fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, rebind: bool) {
+    gated_prompt_with_cancel(window, instructions, follow_up, rebind, "ctrl+c", false);
+}
+
+fn gated_prompt_with_cancel(
+    window: Window,
+    instructions: Option<String>,
+    follow_up: bool,
+    rebind: bool,
+    cancel_key: &str,
+    settle_before_submit: bool,
+) {
     let env = TestEnv::new();
     let mut turns: Vec<_> = ["one", "two", "summary text", "three"]
         .into_iter()
@@ -155,6 +166,7 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         open_picker: false,
         save_trust: None,
         gated: Vec::new(),
+        engine_status: None,
         yolo: None,
     };
     let mut terminal = TestTerminal::new(100, 30);
@@ -241,8 +253,23 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         );
     }
     if window == Window::AfterExplicitAbort {
-        lp.input(&mut terminal, InputEvent::Key(Key::press("ctrl+c")));
+        lp.input(&mut terminal, InputEvent::Key(Key::press(cancel_key)));
     }
+    let mut worker = Some(worker);
+    let settled = if settle_before_submit {
+        assert!(window == Window::AfterExplicitAbort);
+        release_tx.send(()).unwrap();
+        let session = worker.take().unwrap().join().unwrap();
+        let mut settled_observed = false;
+        for message in out_rx.try_iter() {
+            settled_observed |= matches!(&message, WorkerMsg::Event(AgentEvent::AgentSettled { .. }));
+            lp.worker_msg(message);
+        }
+        assert!(settled_observed, "observe real settlement before submitting");
+        Some(session)
+    } else {
+        None
+    };
     for c in "third".chars() {
         lp.input(&mut terminal, InputEvent::Key(Key::char(c)));
     }
@@ -250,9 +277,18 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
         &mut terminal,
         InputEvent::Key(Key::press(if follow_up { "alt+enter" } else { "enter" })),
     );
+    if settle_before_submit && follow_up {
+        assert!(cmd_rx.try_recv().is_err(), "idle Alt+Enter must not submit");
+        let (reply, rx) = mpsc::channel();
+        lp.ui_req(UiRequest::EditorText { reply });
+        assert_eq!(rx.recv_timeout(GATE_TIMEOUT).unwrap(), "third\n");
+        lp.input(&mut terminal, InputEvent::Key(Key::press("enter")));
+    }
     let commands: Vec<_> = cmd_rx.try_iter().collect();
-    release_tx.send(()).unwrap();
-    let mut session = worker.join().unwrap();
+    let mut session = settled.unwrap_or_else(|| {
+        release_tx.send(()).unwrap();
+        worker.take().unwrap().join().unwrap()
+    });
     assert_eq!(
         commands.len(),
         1,
@@ -260,6 +296,24 @@ fn gated_prompt(window: Window, instructions: Option<String>, follow_up: bool, r
     );
     let before_wake = server.requests().iter().filter(|r| r.max_tokens > 0).count();
     if window == Window::AfterExplicitAbort {
+        // The recovered text must reach the session unchanged, whichever side of the
+        // settlement the explicit input lands on: a bound recovery prompt while the
+        // canceled operation still holds the session, an ordinary prompt after it. An idle
+        // Alt+Enter leaves its newline in the editor and submission strips it, so both
+        // admit forms carry exactly the typed prompt.
+        let recovered = match commands.as_slice() {
+            [SessionCmd::RecoveryPrompt { handle, text, parts }] if !settle_before_submit => {
+                assert!(handle.same_instance(&control), "recovery keeps its destination");
+                assert!(parts.is_empty(), "recovery keeps its parts");
+                text
+            }
+            [SessionCmd::Prompt { text, parts }] if settle_before_submit => {
+                assert!(parts.is_empty(), "recovery keeps its parts");
+                text
+            }
+            _ => panic!("explicit input after a cancel key must be one admit"),
+        };
+        assert_eq!(recovered.trim(), "third", "the recovered text must not be lost");
         assert_eq!(*session.outcome(), oxa_core::RunOutcome::Interrupted);
     } else {
         assert_eq!(before_wake, 3);
@@ -436,4 +490,38 @@ fn explicit_recovery_overtaken_by_rebind_returns_text_and_attachments() {
 #[test]
 fn explicit_follow_up_after_ctrl_c_is_not_stranded_before_settlement() {
     gated_prompt(Window::AfterExplicitAbort, None, true, false);
+}
+
+#[test]
+fn cancel_keys_recover_explicit_input_before_settlement() {
+    for cancel_key in ["escape", "ctrl+c"] {
+        for follow_up in [false, true] {
+            eprintln!("cancel_key={cancel_key} settled=false follow_up={follow_up}");
+            gated_prompt_with_cancel(
+                Window::AfterExplicitAbort,
+                None,
+                follow_up,
+                false,
+                cancel_key,
+                false,
+            );
+        }
+    }
+}
+
+#[test]
+fn cancel_keys_preserve_idle_submit_and_newline_after_settlement() {
+    for cancel_key in ["escape", "ctrl+c"] {
+        for follow_up in [false, true] {
+            eprintln!("cancel_key={cancel_key} settled=true follow_up={follow_up}");
+            gated_prompt_with_cancel(
+                Window::AfterExplicitAbort,
+                None,
+                follow_up,
+                false,
+                cancel_key,
+                true,
+            );
+        }
+    }
 }

@@ -18,3 +18,6 @@ pub mod workspace;
 
 #[cfg(feature = "a2a")]
 pub mod follow;
+
+#[cfg(feature = "a2a")]
+pub mod control;

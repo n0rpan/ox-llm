@@ -453,3 +453,15 @@ class SwapDrill(DrillCase):
         assert_plain(self, str(raised.exception))
         self.assertEqual(self.manager.loaded_config['model_alias'], self.ALIASES[0])
         self.assertIsNone(self.manager.status()['last_error'])
+
+
+class UnexpectedStartErrorTests(StubManagerCase):
+    def test_unexpected_start_error_keeps_its_cause(self):
+        with patch.object(controller.subprocess, 'Popen', side_effect=PermissionError(13, 'denied')), \
+                redirect_stderr(io.StringIO()) as err, self.assertRaises(PermissionError):
+            self.manager.begin(allow_start=True, model_alias='stub-local')
+        failure = self.manager.status()['last_failure']
+        self.assertEqual(failure['reason'], 'Local model could not be started.')
+        self.assertIn('PermissionError', failure['detail'])
+        self.assertIn('Traceback', err.getvalue(), 'the traceback goes to the journal')
+        self.assertEqual(controller.unexpected_cause(ValueError('a\nb')), 'ValueError: a')

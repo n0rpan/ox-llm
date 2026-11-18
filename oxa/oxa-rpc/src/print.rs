@@ -345,13 +345,108 @@ pub fn run_json_outcome(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> Result<RunOutcome, OxaError> {
+    write_json_header(session, out)?;
+    run_json_prompts(session, prompts, out, err)
+}
+
+fn write_json_header(session: &Session, out: &mut dyn Write) -> Result<(), OxaError> {
     let mut header = session_header_record(&session_header(session));
     header["statusFile"] = session
         .state()
         .status_file
         .map(|p| p.to_string_lossy().into_owned())
         .into();
-    write_record(out, &header)?;
+    write_record(out, &header)
+}
+
+/// The managed frontend has authenticated the assignment before mounting this worker.
+/// The JSON header remains first. All model events and receipts share one line writer.
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
+pub fn run_json_outcome_with_steering_authority(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: crate::Out,
+    err: &mut dyn Write,
+    agent_dir: &std::path::Path,
+    authority: std::sync::Arc<oxa_core::goal::SteeringAuthority>,
+) -> Result<RunOutcome, OxaError> {
+    use crate::a2a_control::{queue_steering, write_control_receipt};
+    use serde_json::json;
+    use std::sync::{Arc, Mutex};
+
+    session.bind_lead_steering_authority(authority.clone());
+    let mut writer = SharedRecords(out.clone());
+    write_json_header(session, &mut writer)?;
+    let handle = session.handle();
+    handle.enable_goal_steering();
+    let binding = session.inner().sref.clone();
+    let session_ref = binding.clone();
+    let order = Arc::new(Mutex::new(()));
+    let _inbox = oxa_session::Inbox::watch_control(agent_dir, &binding, move |packet| {
+        if handle.wrap_up_requested() {
+            return false;
+        }
+        let _admission = order.lock().unwrap_or_else(|poison| poison.into_inner());
+        let request = match oxa_orchestrator::control::decode(packet.as_bytes()) {
+            Ok(request) => request,
+            Err(rejection) => {
+                write_control_receipt(&out, rejection);
+                return true;
+            }
+        };
+        let result_order = order.clone();
+        let result_out = out.clone();
+        let response = queue_steering(&handle, &session_ref, request, &authority, move |receipt| {
+            let _receipt = result_order.lock().unwrap_or_else(|poison| poison.into_inner());
+            write_control_receipt(&result_out, receipt);
+        })
+        .unwrap_or_else(|request| json!({"id":request.id(),"error":"unsupported_control"}));
+        write_control_receipt(&out, response);
+        true
+    })
+    .map_err(|error| OxaError::io("cannot mount managed steering inbox", &error))?;
+    run_json_prompts(session, prompts, &mut writer, err)
+}
+
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
+struct SharedRecords(crate::Out);
+
+#[cfg(all(
+    target_os = "linux",
+    any(feature = "a2a-control", feature = "managed-steering")
+))]
+impl Write for SharedRecords {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .write(bytes)
+    }
+
+    fn write_all(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .write_all(bytes)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.lock().unwrap_or_else(|poison| poison.into_inner()).flush()
+    }
+}
+
+fn run_json_prompts(
+    session: &mut Session,
+    prompts: Vec<(String, Vec<Part>)>,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<RunOutcome, OxaError> {
     let mut ui = HeadlessUi::default();
     let mut sink = JsonSink {
         out: &mut *out,

@@ -10,11 +10,15 @@ use serde_json::{json, Map, Value};
 use std::sync::{Arc, OnceLock};
 
 struct Backend {
-    gateway: Gateway,
+    gateway: Arc<Gateway>,
     driver: OnceLock<Result<tokio::runtime::Runtime, OxaError>>,
 }
 impl EmbeddedEngine {
     pub fn from_gateway(gateway: Gateway) -> Self {
+        Self::from_shared_gateway(Arc::new(gateway))
+    }
+
+    pub fn from_shared_gateway(gateway: Arc<Gateway>) -> Self {
         Self::new(Arc::new(Backend {
             gateway,
             driver: OnceLock::new(),

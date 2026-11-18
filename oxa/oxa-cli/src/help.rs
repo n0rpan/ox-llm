@@ -166,14 +166,27 @@ const BASE: &[Entry] = &[
         usage: &[
             "oxa work <taskfile> [--rerun]",
             "oxa work --issue N --model MODEL [--rerun]",
-            "oxa work status [--json]",
+            "oxa work --pr N --model MODEL [--rerun]",
+            "oxa work status [--json | --usage TASK]",
+            "oxa work board --shadow --repo OWNER/REPO --once",
         ],
         example: "oxa work tasks.json",
     },
     Entry {
+        // Migrate this command declaration to the shared registry in #1062.
+        path: &["work", "board"],
+        summary: "Sample a private read-only GitHub work board",
+        usage: &[
+            "oxa work board --shadow --repo OWNER/REPO --once",
+            "oxa work board --shadow --repo OWNER/REPO --token-stdin [--once]",
+            "oxa work board --shadow --repo OWNER/REPO --once --review-policy FILE",
+        ],
+        example: "oxa work board --shadow --repo example/project --once",
+    },
+    Entry {
         path: &["work", "status"],
-        summary: "List the saved work records and their liveness",
-        usage: &["oxa work status [--json]"],
+        summary: "List work records or read the saved usage of one task",
+        usage: &["oxa work status [--json | --usage TASK]"],
         example: "oxa work status --json",
     },
     Entry {
@@ -191,9 +204,15 @@ const BASE: &[Entry] = &[
 const SHARE: &[Entry] = &[
     Entry {
         path: &["share"],
-        summary: "Manage private guest keys and daily limits",
-        usage: &["oxa share key <add|list|revoke>"],
+        summary: "Serve native local models and manage private guest keys",
+        usage: &["oxa share <serve|key>"],
         example: "oxa share key list",
+    },
+    Entry {
+        path: &["share", "serve"],
+        summary: "Serve selected native local models to authenticated guest devices",
+        usage: &["oxa share serve --model ALIAS [--model ALIAS] [--port PORT] [--bind ADDRESS] [--tailscale-socket PATH] [--same-owner]"],
+        example: "oxa share serve --model local-model --port 8080",
     },
     Entry {
         path: &["share", "key"],
@@ -237,7 +256,52 @@ fn entries() -> Vec<&'static Entry> {
 
 /// The help text of exactly this command path, or `None` when no public command has it.
 pub fn text(path: &[&str]) -> Option<String> {
-    entries().into_iter().find(|e| e.path == path).map(render)
+    entries()
+        .into_iter()
+        .find(|e| e.path == path)
+        .map(render)
+        .or_else(|| {
+            use oxa_interactive::command_registry::{entries, ArgumentKind, Surface};
+            let entry = entries(Surface::Cli).find(|e| e.path == path || e.aliases.contains(&path))?;
+            let mut usage = format!("oxa {}", entry.path.join(" "));
+            for argument in entry.arguments {
+                let value = match argument.kind {
+                    ArgumentKind::Flag => format!("--{}", argument.name),
+                    ArgumentKind::Word => format!("<{}>", argument.name),
+                    ArgumentKind::Tail => format!("<{}...>", argument.name),
+                };
+                usage.push(' ');
+                usage.push_str(&if argument.required {
+                    value
+                } else {
+                    format!("[{value}]")
+                });
+            }
+            Some(format!(
+                "oxa {} - {}\n\nUsage:\n  {usage}\n",
+                entry.path.join(" "),
+                entry.summary
+            ))
+        })
+}
+
+/// Supported global switches before a command do not require runtime construction.
+pub(crate) fn command_words(argv: &[String]) -> &[String] {
+    &argv[argv
+        .iter()
+        .take_while(|word| word.as_str() == "--offline")
+        .count()..]
+}
+
+/// Existing table's early CLI bridge; the shared #1062 registry will generate this route.
+pub(crate) fn from_argv(argv: &[String]) -> Option<Result<String, &'static str>> {
+    let argv = command_words(argv);
+    let (name, words) = argv.split_first()?;
+    if name == "help" {
+        let path: Vec<_> = words.iter().map(String::as_str).collect();
+        return Some(text(if path.is_empty() { &["help"] } else { &path }).ok_or("unknown help command"));
+    }
+    requested(name, words).map(Ok)
 }
 
 /// The longest public command path that is a prefix of `words`.
@@ -263,7 +327,13 @@ pub fn requested(name: &str, words: &[String]) -> Option<String> {
         }
         path.push(word.as_str());
     }
-    longest(&path).map(render)
+    longest(&path).map(render).or_else(|| {
+        let argv: Vec<_> = std::iter::once(name.to_owned())
+            .chain(words.iter().cloned())
+            .collect();
+        let invocation = oxa_interactive::command_registry::parse_cli(&argv)?;
+        text(invocation.command.path)
+    })
 }
 
 /// The text of one entry: the command, its summary, the usage lines and one example.
