@@ -1124,6 +1124,53 @@ mod tests {
     }
 
     #[test]
+    fn an_over_count_task_file_keeps_its_valid_prefix_and_notifies_the_operator() {
+        let dir = crate::test_dir::PrivateDir::new("queue-over-count");
+        let many: Vec<_> = (0..129)
+            .map(|n| {
+                serde_json::json!({
+                    "id": format!("task-{n}"),
+                    "branch": format!("agent/task-{n}"),
+                    "model": "fake",
+                    "prompt": "Synthetic task"
+                })
+            })
+            .collect();
+        fs::write(dir.path().join("count.json"), serde_json::to_vec(&many).unwrap()).unwrap();
+        fs::write(
+            dir.path().join("neighbor.json"),
+            r#"[{"id":"neighbor","branch":"agent/neighbor","model":"fake","prompt":"Synthetic task"}]"#,
+        )
+        .unwrap();
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        let mut notices = vec![];
+        let result = scan(dir.path(), &mut pending, &mut inputs, &mut |event| {
+            if let QueueEvent::Error { detail, .. } = event {
+                notices.push(detail);
+            }
+            Ok(())
+        });
+        result.unwrap();
+        // The complete valid prefix is admitted instead of being discarded
+        // with the over-counting record.
+        let admitted: HashSet<_> = pending.iter().map(|job| job.task.id.clone()).collect();
+        for n in 0..128 {
+            assert!(
+                admitted.contains(&format!("task-{n}")),
+                "valid prefix task {n} was discarded"
+            );
+        }
+        // A healthy neighbor is still processed.
+        assert!(admitted.contains("neighbor"), "{admitted:?}");
+        // One actionable count notice names the limit and what was admitted.
+        assert!(
+            notices.iter().any(|detail| detail == "task file has more than 128 tasks; the first 128 were admitted and the rest were ignored"),
+            "{notices:?}"
+        );
+    }
+
+    #[test]
     fn queue_rejects_an_overfull_directory_before_admission() {
         let dir = crate::test_dir::PrivateDir::new("queue-directory-limit");
         for i in 0..257 {
