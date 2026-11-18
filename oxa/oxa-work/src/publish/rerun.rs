@@ -1,5 +1,8 @@
 use super::{github_capture, LandingPublisher, Repository};
-use crate::board::queue::{is_node_id, is_object_id};
+use crate::board::{
+    check_recovery::{JobAttempt, JobLineage},
+    queue::{is_node_id, is_object_id},
+};
 use crate::{github_http_response, Result};
 use serde::{Deserialize, Serialize};
 
@@ -23,7 +26,48 @@ pub struct RerunIntent {
     pub run_attempt: u64,
 }
 
+impl From<JobAttempt<'_>> for RerunIntent {
+    fn from(attempt: JobAttempt<'_>) -> Self {
+        let lineage = attempt.lineage;
+        Self {
+            key: RerunKey {
+                repository_id: lineage.repository_id.to_owned(),
+                head: lineage.head.to_owned(),
+                workflow_run_id: lineage.workflow_run_id,
+                logical_job: lineage.required_name.to_owned(),
+            },
+            repository: lineage.repository.to_owned(),
+            workflow_path: lineage.workflow_path.to_owned(),
+            check_suite_id: lineage.check_suite_id,
+            check_run_id: attempt.check_run_id,
+            job_id: attempt.job_id,
+            run_attempt: attempt.run_attempt,
+        }
+    }
+}
+
 impl RerunIntent {
+    pub(crate) fn replaces(&self, before: &Self) -> bool {
+        self.valid() && self.as_attempt().replaces(&before.as_attempt())
+    }
+
+    fn as_attempt(&self) -> JobAttempt<'_> {
+        JobAttempt {
+            lineage: JobLineage {
+                repository: &self.repository,
+                repository_id: &self.key.repository_id,
+                head: &self.key.head,
+                workflow_path: &self.workflow_path,
+                required_name: &self.key.logical_job,
+                check_suite_id: self.check_suite_id,
+                workflow_run_id: self.key.workflow_run_id,
+            },
+            check_run_id: self.check_run_id,
+            job_id: self.job_id,
+            run_attempt: self.run_attempt,
+        }
+    }
+
     pub(crate) fn valid(&self) -> bool {
         is_node_id(&self.key.repository_id)
             && is_object_id(&self.key.head)

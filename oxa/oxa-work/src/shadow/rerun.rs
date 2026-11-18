@@ -4,6 +4,9 @@ use crate::{LandingPublisher, RerunAcknowledgment, RerunIntent, RerunKey, Result
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
 
+mod current;
+pub use current::{run_current_once, CurrentSample};
+
 #[derive(Default)]
 pub struct Policy {
     pub enabled: bool,
@@ -15,6 +18,10 @@ pub enum Status {
     Skipped,
     Reserved,
     Acknowledged(RerunAcknowledgment),
+    Reconciled {
+        acknowledgment: RerunAcknowledgment,
+        replacement: RerunIntent,
+    },
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -22,6 +29,10 @@ pub enum Status {
 pub(super) enum Record {
     Reserved(RerunIntent),
     Acknowledged(RerunAcknowledgment),
+    Reconciled {
+        acknowledgment: RerunAcknowledgment,
+        replacement: RerunIntent,
+    },
 }
 
 #[derive(Default)]
@@ -32,10 +43,18 @@ impl History {
         let intent = match &record {
             Record::Reserved(intent) => intent,
             Record::Acknowledged(ack) => &ack.intent,
+            Record::Reconciled { acknowledgment, .. } => &acknowledgment.intent,
         };
         let valid_transition = match (&record, self.0.get(&intent.key)) {
             (Record::Reserved(_), None) => true,
             (Record::Acknowledged(_), Some(Record::Reserved(before))) => before == intent,
+            (
+                Record::Reconciled {
+                    acknowledgment,
+                    replacement,
+                },
+                Some(Record::Acknowledged(ack)),
+            ) => acknowledgment == ack && replacement.replaces(intent),
             _ => false,
         };
         if !intent.valid() || !valid_transition {
@@ -49,6 +68,13 @@ impl History {
         self.0.get(key).map(|record| match record {
             Record::Reserved(_) => Status::Reserved,
             Record::Acknowledged(ack) => Status::Acknowledged(ack.clone()),
+            Record::Reconciled {
+                acknowledgment,
+                replacement,
+            } => Status::Reconciled {
+                acknowledgment: acknowledgment.clone(),
+                replacement: replacement.clone(),
+            },
         })
     }
 }
@@ -67,6 +93,14 @@ pub fn run_once(
     if !policy.enabled || run.offline {
         return Ok(Status::Skipped);
     }
+    let (mut log, history) = locked_history(journal_path)?;
+    if let Some(status) = history.reruns.status(&intent.key) {
+        return Ok(status);
+    }
+    publish(&mut log, policy, repo, run, gh_binary, intent, read)
+}
+
+fn locked_history(journal_path: &Path) -> Result<(File, Admissions)> {
     let mut log = open_log_with_create(journal_path, false)?;
     if log
         .metadata()
@@ -77,15 +111,24 @@ pub fn run_once(
         return Err("rerun history is missing from the owner journal".into());
     }
     let history = Admissions::load(&mut log)?;
-    if let Some(status) = history.reruns.status(&intent.key) {
-        return Ok(status);
-    }
+    Ok((log, history))
+}
+
+fn publish(
+    log: &mut File,
+    policy: &Policy,
+    repo: &Path,
+    run: &RunPolicy,
+    gh_binary: &Path,
+    intent: RerunIntent,
+    read: impl FnOnce() -> Result<(Board, Option<RerunIntent>)>,
+) -> Result<Status> {
     let inherited = log
         .try_clone()
         .map_err(|_| "cannot retain the owner journal lease")?;
     let publisher = LandingPublisher::new(repo, run, gh_binary, &inherited);
     let target = publisher.rerun_target(&intent, &policy.publisher_id)?;
-    dispatch(&mut log, intent, read, |intent| {
+    dispatch(log, intent, read, |intent| {
         publisher.rerun_reserved(target, intent)
     })
 }
