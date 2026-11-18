@@ -855,6 +855,8 @@ fn apply(
             "remainingTokens": crate::Handle { shared: st.shared.clone() }.remaining_tokens(),
             "sessionId": st.sref.id,
             "model": st.model,
+            // The table mode (plan, workspace or ask): K5b resumes workers no wider than it.
+            "mode": st.mode.as_str(),
             "remote": st.info.caps.remote,
             "contextWindow": st.info.n_ctx,
             "maxOutput": st.info.max_output,

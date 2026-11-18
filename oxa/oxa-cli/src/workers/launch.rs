@@ -101,10 +101,9 @@ pub(super) fn check_value(label: &str, value: &str) -> Result<(), String> {
 }
 
 /// K5b: the level a resumed worker runs at: the level recorded when it started, never wider than
-/// the ceiling the parent's autonomy gives now. The table mode is not known when a session opens,
-/// so it is taken as `workspace`, which only matters for a record wider than that.
-pub(super) fn resume_mode(recorded: WorkerMode, parent_autonomy: Autonomy) -> WorkerMode {
-    recorded.min(ceiling(Mode::Workspace, parent_autonomy))
+/// the ceiling the parent's table mode and autonomy give now (as for a first launch).
+pub(super) fn resume_mode(recorded: WorkerMode, parent_mode: Mode, parent_autonomy: Autonomy) -> WorkerMode {
+    recorded.min(ceiling(parent_mode, parent_autonomy))
 }
 
 /// The argv of the child (without the program): `--mode json --session-id <id> --model <m>

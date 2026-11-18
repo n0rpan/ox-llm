@@ -9,7 +9,7 @@ use super::launch::{check_value, resume_mode, scope_args, WorkerMode};
 use super::registry::{WorkerRecord, WorkerState};
 use super::tool::parse_mode;
 use super::tool::ParentScope;
-use oxa_proto::Autonomy;
+use oxa_proto::{Autonomy, Mode};
 
 /// Setting: relaunch dead, unfinished workers when the parent session opens (default true).
 pub const SETTING_RESUME: &str = "oxa.workers.resumeOnStart";
@@ -22,10 +22,11 @@ pub fn due(state: &WorkerState) -> bool {
 /// The argv of the relaunched child (without the program): `--mode json --continue=<id> --model <m>
 /// --permission-mode <p>` and the parent's token allowance, tool exclusions and session directory
 /// (`scope`), as a first launch carries them. There is no `--goal`: the session carries its goal. The permission
-/// mode is the one recorded at start, never wider than the parent's autonomy allows now; a notice
+/// mode is the one recorded at start, never wider than the parent's table mode and autonomy allow now; a notice
 /// is returned when it was narrowed.
 pub fn resume_argv(
     rec: &WorkerRecord,
+    parent_mode: Mode,
     parent_autonomy: Autonomy,
     scope: &ParentScope,
 ) -> Result<(Vec<String>, Option<String>), String> {
@@ -33,7 +34,7 @@ pub fn resume_argv(
     check_value("model", &rec.model)?;
     let recorded: WorkerMode =
         parse_mode(&rec.mode).ok_or_else(|| format!("unknown recorded mode {:?}", rec.mode))?;
-    let mode = resume_mode(recorded, parent_autonomy);
+    let mode = resume_mode(recorded, parent_mode, parent_autonomy);
     let notice = (mode < recorded).then(|| {
         format!(
             "worker {}: permission mode {} is wider than this session's; resuming with {}",
@@ -91,12 +92,23 @@ mod tests {
 
     #[test]
     fn resume_argv_continues_without_goal_and_never_widens() {
-        let (args, notice) =
-            resume_argv(&rec("workspace"), Autonomy::Standard, &ParentScope::default()).unwrap();
+        let (args, notice) = resume_argv(
+            &rec("workspace"),
+            Mode::Workspace,
+            Autonomy::Standard,
+            &ParentScope::default(),
+        )
+        .unwrap();
         assert!(args.iter().any(|a| a == "--continue=p-a-1"));
         assert!(!args.iter().any(|a| a == "--goal"));
         assert!(notice.is_none());
-        let (args, notice) = resume_argv(&rec("yolo"), Autonomy::Standard, &ParentScope::default()).unwrap();
+        let (args, notice) = resume_argv(
+            &rec("yolo"),
+            Mode::Workspace,
+            Autonomy::Standard,
+            &ParentScope::default(),
+        )
+        .unwrap();
         assert!(args.windows(2).any(|w| w == ["--permission-mode", "workspace"]));
         assert!(notice.is_some());
         let scope = ParentScope {
@@ -104,7 +116,7 @@ mod tests {
             exclude_tools: vec!["bash".into()],
             session_dir: Some("/work/sessions".into()),
         };
-        let (args, _) = resume_argv(&rec("workspace"), Autonomy::Standard, &scope).unwrap();
+        let (args, _) = resume_argv(&rec("workspace"), Mode::Workspace, Autonomy::Standard, &scope).unwrap();
         for expected in [
             "--max-tokens=900",
             "--exclude-tools=bash",
@@ -112,6 +124,52 @@ mod tests {
         ] {
             assert!(args.iter().any(|a| a == expected), "{expected}: {args:?}");
         }
-        assert!(resume_argv(&rec("bogus"), Autonomy::Standard, &ParentScope::default()).is_err());
+        assert!(resume_argv(
+            &rec("bogus"),
+            Mode::Workspace,
+            Autonomy::Standard,
+            &ParentScope::default()
+        )
+        .is_err());
+    }
+
+    fn mode_arg(args: &[String]) -> &str {
+        let i = args.iter().position(|a| a == "--permission-mode").expect("flag");
+        &args[i + 1]
+    }
+
+    #[test]
+    fn plan_mode_parent_resumes_worker_at_plan() {
+        for recorded in ["workspace", "auto", "yolo", "plan"] {
+            for autonomy in [Autonomy::Standard, Autonomy::Auto, Autonomy::Yolo] {
+                let (args, _) =
+                    resume_argv(&rec(recorded), Mode::Plan, autonomy, &ParentScope::default()).unwrap();
+                assert_eq!(mode_arg(&args), "plan", "{recorded} {autonomy:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn ask_mode_parent_never_widens_resumed_worker() {
+        for recorded in ["workspace", "auto", "yolo"] {
+            let (args, notice) = resume_argv(
+                &rec(recorded),
+                Mode::Ask,
+                Autonomy::Standard,
+                &ParentScope::default(),
+            )
+            .unwrap();
+            assert_eq!(mode_arg(&args), "ask", "{recorded}");
+            assert!(notice.is_some());
+        }
+        // A worker recorded narrower than the parent stays as recorded.
+        let (args, _) = resume_argv(
+            &rec("plan"),
+            Mode::Ask,
+            Autonomy::Standard,
+            &ParentScope::default(),
+        )
+        .unwrap();
+        assert_eq!(mode_arg(&args), "plan");
     }
 }

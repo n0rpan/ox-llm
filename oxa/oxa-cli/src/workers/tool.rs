@@ -105,6 +105,8 @@ pub struct WorkerCore {
     /// (session id, model) of the parent session, as the host last reported them.
     session: Mutex<(String, String)>,
     host: Mutex<Option<Arc<dyn Host>>>,
+    /// The parent's table mode as the host last reported it (`None` until known).
+    table_mode: Mutex<Option<Mode>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -326,6 +328,7 @@ impl WorkerCore {
             gate: Mutex::new(()),
             session: Mutex::new((String::new(), String::new())),
             host: Mutex::new(None),
+            table_mode: Mutex::new(None),
         }
     }
 
@@ -355,6 +358,9 @@ impl WorkerCore {
         };
         if let Ok(v) = host.call(HostAction::EngineLimits) {
             let id = v.get("sessionId").and_then(Value::as_str).unwrap_or("");
+            if let Some(mode) = v.get("mode").and_then(Value::as_str).and_then(Mode::parse) {
+                *lock(&self.table_mode) = Some(mode);
+            }
             if !id.is_empty() {
                 let model = v.get("model").and_then(Value::as_str).unwrap_or("");
                 *lock(&self.session) = (id.to_string(), model.to_string());
@@ -669,6 +675,8 @@ impl WorkerCore {
             Err(e) => return vec![format!("worker: cannot resume workers: {e}")],
         };
         let autonomy = self.yolo.level();
+        // An unknown table mode is taken as the most restrictive one, never a wider one.
+        let table_mode = (*lock(&self.table_mode)).unwrap_or(Mode::Plan);
         let env = child_env(&self.parent_env, oxa_proto::offline());
         let mut live = records.iter().filter(|r| is_live(r, &self.sessions_dir)).count();
         let mut notices = Vec::new();
@@ -684,7 +692,7 @@ impl WorkerCore {
                 ));
                 continue;
             }
-            let (argv, notice) = match resume::resume_argv(rec, autonomy, &self.parent_scope) {
+            let (argv, notice) = match resume::resume_argv(rec, table_mode, autonomy, &self.parent_scope) {
                 Ok(v) => v,
                 Err(e) => {
                     notices.push(format!("worker {}: not resumed: {e}", rec.name));
@@ -938,6 +946,10 @@ mod tests {
         })
     }
 
+    fn set_table_mode(hooks: &WorkerHooks, mode: Mode) {
+        *lock(&hooks.core.table_mode) = Some(mode);
+    }
+
     fn set_session(hooks: &WorkerHooks, id: &str) {
         *lock(&hooks.core.session) = (id.to_string(), "model-x".to_string());
     }
@@ -1075,6 +1087,7 @@ mod tests {
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
         let hooks = hooks(&fake, &agent);
         set_session(&hooks, "parent-1");
+        set_table_mode(&hooks, Mode::Workspace);
         start_alpha(&hooks, &repo);
         let before = registry::load(&agent, "parent-1").unwrap().remove(0);
         // The parent goes away: the worker is killed but not marked stopped.
@@ -1136,6 +1149,28 @@ mod tests {
         );
         assert!(!ok.is_error, "{}", ok.text);
         assert_eq!(registry::load(&agent, "parent-1").unwrap()[0].model, "model-x");
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn saved_worker_still_auto_resumes_with_default_setting() {
+        // `resume_on_start` is what `oxa.workers.resumeOnStart` (default true) sets.
+        let key = oxa_config::schema()
+            .iter()
+            .find(|k| k.key == resume::SETTING_RESUME)
+            .expect("the setting is in the schema");
+        assert_eq!(key.default, "true");
+        let (root, repo, agent, fake) = fixture("auto-resume");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        set_table_mode(&hooks, Mode::Workspace);
+        start_alpha(&hooks, &repo);
+        let rec = registry::load(&agent, "parent-1").unwrap().remove(0);
+        hooks.core.supervisor.stop(rec.pgid).unwrap();
+        let notices = hooks.core.resume();
+        assert_eq!(notices.len(), 1, "{notices:?}");
+        assert!(notices[0].contains("relaunched"), "{notices:?}");
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
         let _ = fs::remove_dir_all(&root);
     }
