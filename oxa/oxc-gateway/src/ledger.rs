@@ -302,8 +302,15 @@ impl Entry {
         redact: &dyn Fn(&mut Value),
     ) -> io::Result<Value> {
         if fields["remote"] != true
-            || !["anthropic", "openai", "openrouter", "chatgpt", "opencode"]
-                .contains(&fields["remote_provider"].as_str().unwrap_or(""))
+            || ![
+                "anthropic",
+                "openai",
+                "openai-chat",
+                "openrouter",
+                "chatgpt",
+                "opencode",
+            ]
+            .contains(&fields["remote_provider"].as_str().unwrap_or(""))
             || crate::spend::budget_cost(fields).is_none()
         {
             return Err(io::ErrorKind::InvalidData.into());

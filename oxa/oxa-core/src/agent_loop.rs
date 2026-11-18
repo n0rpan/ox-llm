@@ -55,15 +55,26 @@ pub(crate) fn append_entry_with_id(
     } else {
         Some(leaf.to_string())
     };
+    let entry = append_to_store(st.store.as_ref(), &st.sref, id, parent, body)?;
+    st.tree.push(entry.clone());
+    st.transcript.apply(&entry);
+    Ok(entry)
+}
+
+pub(crate) fn append_to_store(
+    store: &dyn oxa_session::SessionStore,
+    session: &oxa_session::SessionRef,
+    id: String,
+    parent: Option<String>,
+    body: EntryBody,
+) -> Result<Entry, OxaError> {
     let entry = Entry {
         id,
         parent,
         ts_ms: now_ms(),
         body,
     };
-    st.store.append(&st.sref, &entry)?;
-    st.tree.push(entry.clone());
-    st.transcript.apply(&entry);
+    store.append(session, &entry)?;
     Ok(entry)
 }
 

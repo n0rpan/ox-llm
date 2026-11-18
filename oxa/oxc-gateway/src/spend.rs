@@ -32,7 +32,7 @@ pub(crate) fn budget_cost(row: &Value) -> Option<f64> {
                 && row["billing"] == "metered"
                 && matches!(
                     row["remote_provider"].as_str(),
-                    Some("anthropic" | "openai" | "openrouter")
+                    Some("anthropic" | "openai" | "openai-chat" | "openrouter")
                 ) =>
         {
             estimate
