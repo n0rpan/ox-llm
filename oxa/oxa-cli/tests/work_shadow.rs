@@ -1418,7 +1418,8 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_current_or_older_reviews(
         format!("<!-- codex-pull-request-review-summary -->\n<!-- codex-review-state:v1 {state} -->")
     };
     let mut review = json!({"data":{"repository":{"p42":{
-        "number":42,"headRefOid":head,"state":"OPEN",
+        "id":"PR_fixture","number":42,"headRefOid":head,"state":"OPEN",
+        "autoMergeRequest":{"enabledAt":"2026-01-01T00:00:00Z"},"mergeQueueEntry":null,
         "comments":{"totalCount":1,"nodes":[{
             "author":{"databaseId":199175422},"updatedAt":"2026-01-01T00:00:00Z",
             "body":summary(completed(head, false), completed(head, false))
@@ -1445,9 +1446,11 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_current_or_older_reviews(
     save_queue(&absent);
     assert_eq!(read(&review)["landing"]["42"]["next"], "wait_queue");
     save_queue(&queue);
+    review["data"]["repository"]["p42"]["mergeQueueEntry"] = json!({"id":"MQE_fixture"});
     let admitted = read(&review);
     assert_eq!(admitted["landing"]["42"]["next"], "already_queued");
     assert_eq!(admitted["landing"]["42"]["queue"]["group_head"], group);
+    assert!(admitted["landing"]["42"].get("hold_intervention").is_none());
 
     let comment = &mut review["data"]["repository"]["p42"]["comments"]["nodes"][0];
     comment["updatedAt"] = "2026-01-01T00:00:01Z".into();
@@ -1455,6 +1458,12 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_current_or_older_reviews(
     let current = read(&review);
     assert_eq!(current["landing"]["42"]["next"], "hold_findings");
     assert_eq!(current["landing"]["42"]["queue"]["group_head"], group);
+    assert_eq!(
+        current["landing"]["42"]["hold_intervention"],
+        json!({
+            "pull_request_id":"PR_fixture","head":head,"disable_auto_merge":true,"dequeue":true,
+        })
+    );
     let mut separate_security = review.clone();
     separate_security["data"]["repository"]["p42"]["comments"] = json!({
         "totalCount":2,"nodes":[{
@@ -1468,10 +1477,40 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_current_or_older_reviews(
             "body":"<!-- codex-review-receipt:v1 -->\nSecurity review completed with no findings."
         }]
     });
-    assert_eq!(read(&separate_security)["landing"]["42"]["next"], "hold_findings");
+    assert_eq!(
+        read(&separate_security)["landing"]["42"],
+        current["landing"]["42"]
+    );
+    let mut incomplete = review.clone();
+    let mut code = completed(head, true);
+    code["status"] = "in_progress".into();
+    incomplete["data"]["repository"]["p42"]["comments"]["nodes"][0]["body"] =
+        summary(code, completed(head, false)).into();
+    let incomplete = read(&incomplete);
+    assert_eq!(incomplete["landing"]["42"]["next"], "hold_findings");
+    assert!(incomplete["landing"]["42"].get("hold_intervention").is_none());
+    let mut no_auto_merge = review.clone();
+    no_auto_merge["data"]["repository"]["p42"]["autoMergeRequest"] = Value::Null;
+    assert_eq!(
+        read(&no_auto_merge)["landing"]["42"]["hold_intervention"],
+        json!({
+            "pull_request_id":"PR_fixture","head":head,"disable_auto_merge":false,"dequeue":true,
+        })
+    );
     save_queue(&absent);
-    assert_eq!(read(&review)["landing"]["42"]["next"], "hold_findings");
+    review["data"]["repository"]["p42"]["mergeQueueEntry"] = Value::Null;
+    let held_without_entry = read(&review);
+    assert_eq!(held_without_entry["landing"]["42"]["next"], "hold_findings");
+    assert_eq!(
+        held_without_entry["landing"]["42"]["hold_intervention"],
+        json!({
+            "pull_request_id":"PR_fixture","head":head,"disable_auto_merge":true,"dequeue":false,
+        })
+    );
+    review["data"]["repository"]["p42"]["autoMergeRequest"] = Value::Null;
+    assert!(read(&review)["landing"]["42"].get("hold_intervention").is_none());
     save_queue(&queue);
+    review["data"]["repository"]["p42"]["mergeQueueEntry"] = json!({"id":"MQE_fixture"});
 
     review["data"]["repository"]["p42"]["comments"]["nodes"][0]["body"] = summary(
         completed(old, true),
@@ -1481,6 +1520,7 @@ fn landing_shadow_holds_an_approved_head_on_unresolved_current_or_older_reviews(
     let observed = read(&review);
     let hold = &observed["landing"]["42"];
     assert_eq!(hold["next"], "hold_findings");
+    assert!(hold.get("hold_intervention").is_none());
     assert_eq!(hold["queue_alarm"], true);
     assert_eq!(observed["landing_main"], main);
     assert_eq!(hold["queue"]["group_head"], group);
