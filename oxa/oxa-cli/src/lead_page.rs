@@ -140,24 +140,17 @@ fn attention(html: &mut String, view: &View<'_>) {
         .flatten()
         .filter(|pr| view.overdue_queue.contains(pr))
         .collect();
-    if view.main_red
-        || view.main_merge_stalled
-        || !view.stalled_runs.is_empty()
-        || !overdue.is_empty()
-        || ask_count > 0
-    {
-        let role = if view.main_red
-            || view.main_merge_stalled
-            || !view.stalled_runs.is_empty()
-            || !overdue.is_empty()
-        {
-            "alert"
+    let alarm =
+        view.main_red || view.main_merge_stalled || !view.stalled_runs.is_empty() || !overdue.is_empty();
+    if alarm || ask_count > 0 {
+        let (role, icon, label) = if alarm {
+            ("alert", "!", "Alarm")
         } else {
-            "status"
+            ("status", "?", "Needs you")
         };
         let _ = write!(
             html,
-            "<section id=attention role={role}><h2>Needs attention</h2><ul>"
+            "<section id=attention role={role}><p class=severity><span aria-hidden=true>{icon}</span> {label}</p><h2>Needs attention</h2><ul>"
         );
         if ask_count > 0 {
             let _ = write!(
@@ -189,7 +182,11 @@ fn attention(html: &mut String, view: &View<'_>) {
             }
             html.push_str("</ul></details></li>");
         }
-        html.push_str("</ul></section>");
+        html.push_str("</ul>");
+        if alarm {
+            html.push_str("<p class=muted>Lead response observations unavailable.</p>");
+        }
+        html.push_str("</section>");
     }
 }
 
@@ -384,6 +381,11 @@ pub const STYLE: &str = concat!(
     include_str!("lead_page/style.css"),
     r#"
 :root { --nav-height:3.875rem; }
+:root { --bad:#b62c24; --bad-soft:#fde7e4; }
+@media(prefers-color-scheme:dark) { :root { --bad:#ff8a80; --bad-soft:#331917; } }
+#attention .severity { font-weight:700; color:var(--warn); }
+#attention[role=alert] { background:var(--bad-soft); }
+#attention[role=alert] h2,#attention[role=alert] .severity { color:var(--bad); }
 nav.tabs a { position:relative; flex-direction:column; gap:.125rem; font-size:.75rem; line-height:1.25; }
 nav.tabs svg { order:-1; flex:none; width:1.375rem; height:1.375rem; }
 nav.tabs .badge {
