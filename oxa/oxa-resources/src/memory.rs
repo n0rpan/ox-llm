@@ -12,6 +12,8 @@ use crate::frontmatter::{frontmatter_get, parse_frontmatter};
 use crate::skills::validate_skill_name;
 use oxa_proto::{codes, OxaError};
 use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// Largest body a memory entry may hold, in bytes.
@@ -19,6 +21,9 @@ pub const MAX_MEMORY_BODY: usize = 8 * 1024;
 /// The generated index file, inside the memory directory.
 pub const MEMORY_INDEX_FILE: &str = "MEMORY.md";
 const LOCK_FILE: &str = ".lock";
+/// How much of an entry file the index scan reads: the body cap plus room for the frontmatter.
+/// Bodies are never kept by the scan, and an oversized file on disk is read only this far.
+const SCAN_READ_MAX: u64 = (MAX_MEMORY_BODY as u64) + 4096;
 
 /// What an entry records.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +64,10 @@ pub struct MemoryEntry {
 
 /// Write (or replace) entry `name`, then rebuild the index, under the directory lock.
 ///
+/// The entry write is the commit. `MEMORY.md` is derived and [`index`] is built from the entries
+/// on disk, so when only the index file cannot be written the save still succeeds; the index is
+/// rewritten by the next save or delete (also a delete of an absent name).
+///
 /// The description is stored on one line (whitespace runs collapse to one space). Refused when
 /// the name is invalid or the body is longer than [`MAX_MEMORY_BODY`]; nothing is written then.
 pub fn save(dir: &Path, name: &str, kind: MemoryKind, description: &str, text: &str) -> Result<(), OxaError> {
@@ -73,7 +82,7 @@ pub fn save(dir: &Path, name: &str, kind: MemoryKind, description: &str, text: &
         ));
     }
     let description = one_line(description);
-    std::fs::create_dir_all(dir).map_err(|e| OxaError::io(&format!("create {}", dir.display()), &e))?;
+    ensure_private_dir(dir)?;
     let _lock = lock(dir)?;
     let doc = format!(
         "---\nkind: {}\ndescription: {}\n---\n{text}",
@@ -81,7 +90,8 @@ pub fn save(dir: &Path, name: &str, kind: MemoryKind, description: &str, text: &
         quote(&description)
     );
     write_replace(&entry_path(dir, name), doc.as_bytes())?;
-    rebuild_index(dir)
+    let _ = rebuild_index(dir);
+    Ok(())
 }
 
 /// The entry `name`, `None` when there is no such file. An invalid name is an error.
@@ -100,7 +110,8 @@ pub fn read(dir: &Path, name: &str) -> Result<Option<MemoryEntry>, OxaError> {
     }
 }
 
-/// Remove entry `name` and rebuild the index. `Ok(false)` when there was no such entry.
+/// Remove entry `name` and rebuild the index. `Ok(false)` when there was no such entry. As with
+/// [`save`], a failed index rewrite does not hide the committed removal.
 pub fn delete(dir: &Path, name: &str) -> Result<bool, OxaError> {
     check_name(name)?;
     if !dir.is_dir() {
@@ -109,10 +120,14 @@ pub fn delete(dir: &Path, name: &str) -> Result<bool, OxaError> {
     let _lock = lock(dir)?;
     match std::fs::remove_file(entry_path(dir, name)) {
         Ok(()) => {
-            rebuild_index(dir)?;
+            let _ = rebuild_index(dir);
             Ok(true)
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Nothing to remove, but repair a stale index left by an earlier failed rebuild.
+            let _ = rebuild_index(dir);
+            Ok(false)
+        }
         Err(e) => Err(OxaError::io(&format!("delete memory {name}"), &e)),
     }
 }
@@ -150,6 +165,7 @@ fn lock(dir: &Path) -> Result<File, OxaError> {
         .create(true)
         .write(true)
         .truncate(false)
+        .mode(0o600)
         .open(&path)
         .map_err(|e| OxaError::io(&format!("open {}", path.display()), &e))?;
     file.lock()
@@ -157,9 +173,38 @@ fn lock(dir: &Path) -> Result<File, OxaError> {
     Ok(file)
 }
 
-/// Write `bytes` to `path` via the shared atomic helper, mapping its I/O error.
+/// The memory directory, owner-only (0700), created when missing.
+fn ensure_private_dir(dir: &Path) -> Result<(), OxaError> {
+    let io = |e: std::io::Error| OxaError::io(&format!("create {}", dir.display()), &e);
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .map_err(io)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(io)
+}
+
+/// Write `bytes` to `path` through an owner-only (0600) temporary sibling that is synced and then
+/// renamed over `path`, so a crash never leaves a half-written entry and no mode is ever looser.
 fn write_replace(path: &Path, bytes: &[u8]) -> Result<(), OxaError> {
-    crate::write_atomic(path, bytes).map_err(|e| OxaError::io(&format!("write {}", path.display()), &e))
+    let err = |e: std::io::Error| OxaError::io(&format!("write {}", path.display()), &e);
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let written = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
+        .and_then(|()| std::fs::rename(&tmp, path));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(err(e));
+    }
+    if let Some(parent) = path.parent() {
+        let _ = File::open(parent).and_then(|d| d.sync_all());
+    }
+    Ok(())
 }
 
 /// Regenerate `MEMORY.md` from the entries on disk (uncapped). Callers hold the lock.
@@ -169,8 +214,23 @@ fn rebuild_index(dir: &Path) -> Result<(), OxaError> {
     write_replace(&dir.join(MEMORY_INDEX_FILE), text.as_bytes())
 }
 
-/// Every well-formed entry in `dir`, sorted by name. A missing directory is empty.
-fn scan(dir: &Path) -> Result<Vec<MemoryEntry>, OxaError> {
+/// The metadata of one entry, as the index needs it (no body).
+struct MemoryHead {
+    name: String,
+    kind: MemoryKind,
+    description: String,
+}
+
+/// At most `max` bytes of `path`, as text (a cut multi-byte character becomes U+FFFD).
+fn read_prefix(path: &Path, max: u64) -> std::io::Result<String> {
+    let mut buf = Vec::new();
+    File::open(path)?.take(max).read_to_end(&mut buf)?;
+    Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Every well-formed entry in `dir`, sorted by name. A missing directory is empty. Each file is
+/// read only up to [`SCAN_READ_MAX`] bytes and bodies are not retained.
+fn scan(dir: &Path) -> Result<Vec<MemoryHead>, OxaError> {
     let read_dir = match std::fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -188,15 +248,27 @@ fn scan(dir: &Path) -> Result<Vec<MemoryEntry>, OxaError> {
         if !validate_skill_name(name).is_empty() {
             continue;
         }
-        let Ok(src) = std::fs::read_to_string(item.path()) else {
+        let Ok(src) = read_prefix(&item.path(), SCAN_READ_MAX) else {
             continue;
         };
-        if let Some(entry) = parse_entry(name, &src) {
-            entries.push(entry);
+        if let Some(head) = parse_head(name, &src) {
+            entries.push(head);
         }
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(entries)
+}
+
+fn parse_head(name: &str, src: &str) -> Option<MemoryHead> {
+    let (pairs, _body) = parse_frontmatter(src);
+    let kind = MemoryKind::parse(frontmatter_get(&pairs, "kind")?)?;
+    Some(MemoryHead {
+        name: name.to_string(),
+        kind,
+        description: frontmatter_get(&pairs, "description")
+            .unwrap_or_default()
+            .to_string(),
+    })
 }
 
 fn parse_entry(name: &str, src: &str) -> Option<MemoryEntry> {
@@ -212,7 +284,7 @@ fn parse_entry(name: &str, src: &str) -> Option<MemoryEntry> {
     })
 }
 
-fn render_index(entries: &[MemoryEntry], max_bytes: usize) -> String {
+fn render_index(entries: &[MemoryHead], max_bytes: usize) -> String {
     let lines: Vec<String> = entries
         .iter()
         .map(|e| {
