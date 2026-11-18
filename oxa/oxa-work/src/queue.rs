@@ -59,6 +59,8 @@ pub enum QueueEvent {
     Error {
         file: PathBuf,
         detail: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        native_task_id: Option<String>,
     },
 }
 #[derive(Clone)]
@@ -207,6 +209,9 @@ fn free_space(repo: &Path, common: &Path, queue: &Path, df: &Path, policy: &RunP
 const MAX_INPUT_BYTES: u64 = 1024 * 1024;
 const MAX_INPUT_TASKS: usize = 128;
 const MAX_QUEUE_FILES: usize = 256;
+/// Every directory entry counts, including hidden, non-JSON and non-regular ones,
+/// so ignored entries cannot make each watch iteration unbounded.
+const MAX_QUEUE_ENTRIES: usize = 4096;
 const MAX_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RETAINED_TASKS: usize = 4096;
 
@@ -316,7 +321,12 @@ fn scan(
 ) -> Result<()> {
     let mut files = vec![];
     let mut bytes = 0;
-    for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+    for (index, entry) in fs::read_dir(directory).map_err(|e| e.to_string())?.enumerate() {
+        if index == MAX_QUEUE_ENTRIES {
+            return Err(format!(
+                "queue directory exceeds {MAX_QUEUE_ENTRIES} entries; move other files out of it"
+            ));
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -410,6 +420,7 @@ fn scan(
                     emit(QueueEvent::Error {
                         file: file.clone(),
                         detail: detail.clone(),
+                        native_task_id: None,
                     })?;
                 }
             }
@@ -639,7 +650,7 @@ fn run_queue_inner(
     let mut pending = if let Some(bindings) = prepared {
         let mut bytes = 0;
         crate::helper_queue::take_native_packets(&directory, bindings, |index, binding, packet| {
-            let task = native::from_packet(binding, &packet)?;
+            let task = native::from_packet(binding, &packet, policy)?;
             if let Some(selected) = selection {
                 selected
                     .get(&binding.native_task_id)
@@ -812,6 +823,7 @@ fn run_queue_inner(
                             emit(QueueEvent::Error {
                                 file: job.file,
                                 detail,
+                                native_task_id: job.binding.map(|binding| binding.native_task_id),
                             })?;
                             continue;
                         }
@@ -1009,30 +1021,58 @@ mod tests {
         ));
 
         targets[1].model = models[1];
+        let failed_binding = &bindings[0];
+        let failed_id = failed_binding.native_task_id.clone();
+        let run_successfully = execute.clone();
+        let mixed: Arc<NativeWorkerFn> = Arc::new(move |task, locked| {
+            if task.id == failed_id {
+                return Err("synthetic native worker failure".into());
+            }
+            run_successfully(task, locked)
+        });
         let mut both_active = false;
         let mut completed = HashSet::new();
-        let status = run()
-            .run_native_batch(&claims, &targets, execute, &mut |event| {
-                match event {
-                    QueueEvent::State { status } => both_active |= status.active.len() == 2,
-                    QueueEvent::Task { record } => {
-                        assert_eq!(record.checkpoint_kind, CheckpointKind::TaskTransition);
-                        let binding = bindings
-                            .iter()
-                            .find(|binding| record.id == binding.native_task_id)
-                            .unwrap();
-                        let rows = claims.assignments().unwrap();
-                        assert!(rows[&binding.number].state.lease.is_none());
-                        assert!(rows[&binding.number].data.native_binding.as_ref() == Some(binding));
-                        assert!(completed.insert(record.id));
-                    }
-                    QueueEvent::Error { detail, .. } => panic!("{detail}"),
+        let mut failures = 0;
+        let mut emit = |event| {
+            match event {
+                QueueEvent::State { status } => both_active |= status.active.len() == 2,
+                QueueEvent::Task { record } => {
+                    assert_eq!(record.checkpoint_kind, CheckpointKind::TaskTransition);
+                    let binding = bindings
+                        .iter()
+                        .find(|binding| record.id == binding.native_task_id)
+                        .unwrap();
+                    let rows = claims.assignments().unwrap();
+                    assert!(rows[&binding.number].state.lease.is_none());
+                    assert!(rows[&binding.number].data.native_binding.as_ref() == Some(binding));
+                    assert!(completed.insert(record.id));
                 }
-                Ok(())
-            })
+                error @ QueueEvent::Error { .. } => {
+                    let event = serde_json::to_value(error).unwrap();
+                    assert_eq!(event["detail"], "synthetic native worker failure");
+                    assert_eq!(event["native_task_id"], failed_binding.native_task_id);
+                    failures += 1;
+                }
+            }
+            Ok(())
+        };
+        let status = run()
+            .run_native_batch(&claims, &targets, mixed, &mut emit)
             .unwrap();
+        assert_eq!((status.finished, status.failed), (1, 1));
+        let rows = claims.assignments().unwrap();
+        assert_eq!(
+            rows[&failed_binding.number].state.lease.as_ref(),
+            Some(&failed_binding.lease)
+        );
+        assert!(rows[&bindings[1].number].state.lease.is_none());
+
+        let resumed = run()
+            .run_native_batch(&claims, &targets[..1], execute, &mut emit)
+            .unwrap();
+        assert_eq!((resumed.finished, resumed.failed), (1, 0));
         assert!(both_active);
-        assert_eq!((status.finished, status.failed, completed.len()), (2, 0, 2));
+        assert_eq!((completed.len(), failures), (2, 1));
     }
 
     #[test]
@@ -1097,6 +1137,34 @@ mod tests {
         let mut inputs = Inputs::default();
         let result = scan(dir.path(), &mut pending, &mut inputs, &mut |_| Ok(()));
         assert!(result.unwrap_err().contains("256 task files"));
+        assert!(pending.is_empty());
+        assert!(inputs.tasks.is_empty());
+    }
+
+    #[test]
+    fn queue_counts_ignored_entries_against_the_directory_limit() {
+        let dir = crate::test_dir::PrivateDir::new("queue-entry-limit");
+        for i in 0..MAX_QUEUE_ENTRIES {
+            let name = match i % 3 {
+                0 => format!(".hidden-{i}.json"),
+                1 => format!("notes-{i}.txt"),
+                _ => format!("dir-{i}.json"),
+            };
+            if i % 3 == 2 {
+                fs::create_dir(dir.path().join(name)).unwrap();
+            } else {
+                fs::write(dir.path().join(name), "").unwrap();
+            }
+        }
+        fs::write(
+            dir.path().join("task.json"),
+            r#"[{"id":"task","branch":"agent/task","model":"fake","prompt":"Synthetic task"}]"#,
+        )
+        .unwrap();
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        let result = scan(dir.path(), &mut pending, &mut inputs, &mut |_| Ok(()));
+        assert!(result.unwrap_err().contains("4096 entries"));
         assert!(pending.is_empty());
         assert!(inputs.tasks.is_empty());
     }

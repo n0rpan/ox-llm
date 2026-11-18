@@ -109,9 +109,32 @@ pub struct Gateway {
     runtime: Runtime,
     client: Client,
     go_base: Option<String>,
+    go_usage: tokio::sync::Mutex<Option<CachedGoUsage>>,
     #[cfg(feature = "upstream-openai")]
     openai: crate::openai::client::Client,
 }
+
+struct CachedGoUsage {
+    account: [u8; 32],
+    fetched_at: std::time::Instant,
+    observation: crate::opencode::PlanUsageObservation,
+}
+
+impl CachedGoUsage {
+    fn fresh(&self, account: [u8; 32], max_age: Duration) -> bool {
+        let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+            return false;
+        };
+        let usage = &self.observation.usage;
+        self.account == account
+            && self.fetched_at.elapsed() < max_age
+            && [&usage.rolling, &usage.weekly, &usage.monthly]
+                .into_iter()
+                .flatten()
+                .all(|window| window.resets_at.is_none_or(|reset| reset > now.as_secs()))
+    }
+}
+
 impl Gateway {
     pub fn new(runtime: Runtime) -> Result<Self, Error> {
         Self::with_read_timeout(runtime, Some(Duration::from_secs(1800)))
@@ -124,6 +147,7 @@ impl Gateway {
             runtime,
             client,
             go_base: None,
+            go_usage: tokio::sync::Mutex::new(None),
             #[cfg(feature = "upstream-openai")]
             openai,
         })
@@ -146,6 +170,9 @@ impl Gateway {
         let result = driver.block_on(self.runtime.discover_go(self.client.transport(), base, timeout));
         driver.shutdown_timeout(Duration::from_secs(1));
         if result.is_ok() {
+            if self.go_base.as_deref() != Some(base) {
+                *self.go_usage.get_mut() = None;
+            }
             self.go_base = Some(base.to_owned());
             if let Some(diagnostics) = self.runtime.diagnostics() {
                 diagnostics.clear();
@@ -153,26 +180,67 @@ impl Gateway {
         }
         result.map_err(Error::OpenCode)
     }
-    /// Refresh the Go account's Usage observation independently of chat.
-    /// The destination is the same protected base used for successful Go discovery.
+    /// Read Go Usage independently of chat, with the default one-minute freshness.
     pub async fn opencode_plan_usage(
         &self,
         timeout: Duration,
         cancel: &Cancellation,
     ) -> Result<Option<crate::opencode::PlanUsage>, Error> {
+        self.opencode_plan_observation(timeout, Duration::from_secs(60), cancel)
+            .await
+            .map(|observation| observation.map(|observation| observation.usage))
+    }
+
+    /// Read a current Go Usage observation with owner-selected freshness.
+    /// A zero maximum age explicitly refreshes. Only successful typed snapshots
+    /// are reused, scoped to the current protected credential and discovery base.
+    pub async fn opencode_plan_observation(
+        &self,
+        timeout: Duration,
+        max_age: Duration,
+        cancel: &Cancellation,
+    ) -> Result<Option<crate::opencode::PlanUsageObservation>, Error> {
+        use crate::opencode::{client, PlanUsageObservation};
         let Some(base) = &self.go_base else {
             return Ok(None);
         };
-        let Some(key) = self
-            .runtime
-            .catalog_key(crate::catalog::Provider::OpenCode)
-            .map_err(Error::Refused)?
-        else {
-            return Ok(None);
+        let operation = async {
+            let mut cache = self.go_usage.lock().await;
+            let Some(key) = self
+                .runtime
+                .catalog_key(crate::catalog::Provider::OpenCode)
+                .map_err(Error::Refused)?
+            else {
+                *cache = None;
+                return Ok(None);
+            };
+            let account = key.account_scope();
+            if let Some(hit) = cache.as_ref().filter(|hit| hit.fresh(account, max_age)) {
+                return Ok(Some(hit.observation.clone()));
+            }
+            *cache = None;
+            let observation = client::plan_usage(self.client.transport(), base, &key, timeout, cancel)
+                .await
+                .map_err(Error::OpenCode)?
+                .map(|usage| PlanUsageObservation {
+                    usage,
+                    observed_at: std::time::SystemTime::now(),
+                });
+            if let Some(observation) = &observation {
+                *cache = Some(CachedGoUsage {
+                    account,
+                    fetched_at: std::time::Instant::now(),
+                    observation: observation.clone(),
+                });
+            }
+            Ok(observation)
         };
-        crate::opencode::client::plan_usage(self.client.transport(), base, &key, timeout, cancel)
-            .await
-            .map_err(Error::OpenCode)
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(Error::OpenCode(client::Error::Cancelled)),
+            result = tokio::time::timeout(timeout, operation) =>
+                result.map_err(|_| Error::OpenCode(client::Error::Transport))?,
+        }
     }
     /// One bounded background refresh of the Go catalog cache, sharing this
     /// gateway's existing HTTP pool. It never mutates the live catalog, so a

@@ -66,6 +66,67 @@ fn refusal(error: Refusal, status: u16, code: &str) {
     assert!(!error.message.is_empty());
 }
 #[test]
+fn configured_route_requires_its_named_key_and_binds_replay_to_its_endpoint() {
+    let fixture = skeleton::Fixture::for_endpoint("https://first.example.invalid");
+    let make_runtime = |endpoint| {
+        let model = Model::new(
+            skeleton::MODEL,
+            Provider::Anthropic,
+            skeleton::UPSTREAM,
+            endpoint,
+            1024,
+            16,
+        )
+        .unwrap()
+        .with_configured_route("synthetic-provider", "synthetic-pool", "synthetic-key")
+        .unwrap();
+        let price = Price::from_model(&fixture.config["cloud"]["models"][skeleton::MODEL]).unwrap();
+        Runtime::new(
+            [(model, Some(oxc_gateway::runtime::Billing::Metered(price)))],
+            fixture.key_path.clone(),
+            fixture.ledger_dir.clone(),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: Some(1.0),
+                ledger_enabled: true,
+                subscription: None,
+                subscription_limits: None,
+            },
+        )
+        .unwrap()
+    };
+    let payload = json!({"model":skeleton::MODEL});
+    let first = make_runtime("https://first.example.invalid");
+    let second = make_runtime("https://second.example.invalid");
+    let missing = first.begin(&payload, Context::default()).err().unwrap();
+    refusal(missing, 503, "cloud_credentials_unavailable");
+
+    let credential = "synthetic-configured-credential";
+    std::fs::write(
+        &fixture.key_path,
+        json!({"synthetic-key": credential}).to_string(),
+    )
+    .unwrap();
+    let context = || Context {
+        session: Some("synthetic-conversation"),
+        ..Context::default()
+    };
+    let a = first.begin(&payload, context()).unwrap();
+    let b = second.begin(&payload, context()).unwrap();
+    assert_eq!(a.key_handle().unwrap().expose(), credential);
+    assert_eq!(b.key_handle().unwrap().expose(), credential);
+    assert_ne!(a.provider_account_scope(), b.provider_account_scope());
+    assert_ne!(
+        a.provider_session_hint().unwrap(),
+        b.provider_session_hint().unwrap()
+    );
+    let route = a.model().configured_route().unwrap();
+    assert_eq!(route.provider(), "synthetic-provider");
+    assert_eq!(route.pool(), "synthetic-pool");
+    assert!(!format!("{:?}", a.model()).contains("synthetic-key"));
+}
+
+#[test]
 fn discovery_is_borrowed_and_never_reads_a_key_or_initializes_a_ledger() {
     let mock = anthropic::MockAnthropic::start(vec![]);
     let fixture = skeleton::Fixture::new(&mock);

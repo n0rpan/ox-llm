@@ -51,7 +51,7 @@ fn start_with_situation(
             .args(["lead", "serve"])
             .env("OXA_LEAD_BOARD_LOG", sample)
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(std::fs::File::create(test.root().join("lead.stderr")).unwrap())
             .spawn()
             .unwrap(),
     );
@@ -100,8 +100,9 @@ fn form_nonce(page: &str) -> &str {
         .unwrap()
 }
 
-fn with_fixed_chat(run: impl FnOnce(u16, &str)) {
+fn with_fixed_chat(run: impl FnOnce(u16, &str, &std::path::Path)) {
     let test = TestEnv::new();
+    std::fs::set_permissions(&test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let reservation = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = reservation.local_addr().unwrap().port();
     test.write(
@@ -132,12 +133,12 @@ fn with_fixed_chat(run: impl FnOnce(u16, &str)) {
     drop(reservation);
     let _server = start_with_situation(&test, &board, Some(&situation));
     let authority = format!("127.0.0.1:{port}");
-    run(port, &authority);
+    run(port, &authority, &test.root().join("lead.stderr"));
 }
 
 #[test]
 fn fixed_chat_form_posts_without_js_and_reuses_protected_observations() {
-    with_fixed_chat(|port, authority| {
+    with_fixed_chat(|port, authority, _agent_dir| {
         let page = get(port, "/chat", authority, "");
         let nonce = form_nonce(&page);
         assert_eq!(nonce.len(), 43);
@@ -197,14 +198,14 @@ fn fixed_chat_form_posts_without_js_and_reuses_protected_observations() {
 
 #[test]
 fn fixed_form_response_preserves_browser_origin() {
-    with_fixed_chat(|port, authority| {
+    with_fixed_chat(|port, authority, _agent_dir| {
         assert!(get(port, "/chat", authority, "").contains("Referrer-Policy: same-origin\r\n"));
     });
 }
 
 #[test]
 fn fixed_post_redirects_to_the_selected_refresh_url() {
-    with_fixed_chat(|port, authority| {
+    with_fixed_chat(|port, authority, _agent_dir| {
         let page = get(port, "/chat", authority, "");
         let nonce = form_nonce(&page);
         for prompt in ["status", "workers", "attention"] {
@@ -224,7 +225,7 @@ fn fixed_post_redirects_to_the_selected_refresh_url() {
 
 #[test]
 fn same_uid_client_cannot_read_protected_situation() {
-    with_fixed_chat(|port, authority| {
+    with_fixed_chat(|port, authority, _agent_dir| {
         assert!(get(port, "/asks", authority, "").contains("Owner asks unavailable"));
     });
 }
@@ -245,14 +246,18 @@ fn registered_help_and_menu_work_without_home_or_runtime_inputs() {
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("lead serve"));
     }
-    for command_name in ["board", "status", "asks", "chat"] {
+    for command_name in ["board", "status", "asks", "chat", "run"] {
         let output = command(&test)
             .args(["lead", command_name])
             .env_remove("HOME")
             .output()
             .unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("unavailable"));
+        let diagnostic = match command_name {
+            "asks" | "run" => "HOME is not set",
+            _ => "unavailable",
+        };
+        assert!(String::from_utf8_lossy(&output.stderr).contains(diagnostic));
     }
 }
 
@@ -504,4 +509,56 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     test.write("home/.oxa/agent/settings.json", &proxy(uid ^ 1));
     let _child = start(&test, &sample);
     assert!(get(port, "/", "lead.example.invalid", login).starts_with("HTTP/1.1 403"));
+}
+
+#[test]
+fn refused_chat_posts_record_allowlisted_facts_in_the_real_service_journal() {
+    with_fixed_chat(|port, authority, stderr| {
+        let page = get(port, "/chat", authority, "");
+        let nonce = form_nonce(&page);
+        let origin = format!("http://{authority}");
+        let valid = format!("csrf={nonce}&prompt=status");
+        // Each refusal is one chat fact: identity, origin, CSRF and body.
+        for (host, source, extra, body) in [
+            ("attacker.invalid", origin.as_str(), "", valid.as_str()),
+            (authority, "https://attacker.invalid", "", valid.as_str()),
+            (authority, origin.as_str(), "", "csrf=wrong&prompt=status"),
+            (authority, origin.as_str(), "", &format!("{valid}&extra=1")),
+        ] {
+            let reply = post(port, "/chat", host, source, extra, body);
+            assert!(reply.starts_with("HTTP/1.1 403"), "{host} {body}: {reply}");
+        }
+        // A wrong-method chat request is also a chat refusal.
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        write!(stream, "DELETE /chat HTTP/1.1\r\nHost: {authority}\r\n\r\n").unwrap();
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).unwrap();
+        assert!(reply.starts_with("HTTP/1.1 405"), "{reply}");
+
+        let journal = std::fs::read_to_string(stderr).unwrap();
+        let lines: Vec<&str> = journal
+            .lines()
+            .filter_map(|line| line.strip_prefix("lead chat refusal "))
+            .collect();
+        assert_eq!(lines.len(), 5, "{journal}");
+        for (line, expected) in lines.iter().zip([
+            "status=403 stage=identity reason=not_allowed fix=",
+            "status=403 stage=origin reason=cross_origin fix=",
+            "status=403 stage=csrf reason=invalid fix=",
+            "status=403 stage=body reason=late_parse fix=",
+            "status=405 stage=body reason=method fix=",
+        ]) {
+            assert!(
+                line.starts_with(expected) && line.len() > expected.len(),
+                "{line}"
+            );
+        }
+        // No payload, CSRF, identity or authority bytes ever reach the journal.
+        assert!(!journal.contains(nonce));
+        assert!(!journal.contains("csrf=wrong"));
+        assert!(!journal.contains("attacker.invalid"));
+        assert!(!journal.contains("prompt"));
+        assert!(!journal.contains(authority));
+    });
 }

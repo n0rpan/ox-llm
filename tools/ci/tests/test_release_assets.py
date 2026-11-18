@@ -34,7 +34,12 @@ class ReleaseAssets(unittest.TestCase):
         dev = (W / 'dev-build.yml').read_text()
         self.assertRegex(dev, r'on:\s*\n  push:\s*\n    branches: \[main\]')
         self.assertNotIn('pull_request', dev)
-        self.assertIn('group: dev-build\n  cancel-in-progress: true', dev)
+        # A running dev build finishes; only the newest pending push is kept.
+        self.assertIn('group: dev-build\n  cancel-in-progress: false', dev)
+        # Publication moves only forward, checked before any create or upload.
+        publish = dev.split('  publish:', 1)[1]
+        self.assertLess(publish.index('compare/$GITHUB_SHA...main'), publish.index('gh release create dev'))
+        self.assertLess(publish.index('compare/$(cat dev-sha)...$GITHUB_SHA'), publish.index('gh release upload dev'))
         self.assertIn('uses: ./.github/workflows/release-build.yml', dev)
         self.assertIn('needs: [version, build]', dev)
         self.assertNotIn('contents: write', dev.split('  publish:', 1)[0])

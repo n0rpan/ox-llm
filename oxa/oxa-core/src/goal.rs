@@ -1,6 +1,6 @@
 //! Session-local goal controls; no worker, timer thread or external scheduler.
 use oxa_proto::{Access, Exposure, Source, Tool, ToolClass, ToolCtx, ToolOutput, ToolSpec, Value};
-use oxa_session::{Goal, GoalStatus, SessionRef};
+use oxa_session::{Goal, GoalBudget, GoalStatus, SessionRef};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Wake, Waker};
@@ -66,6 +66,7 @@ fn stale_steering() -> oxa_proto::OxaError {
 pub type SteeringAuthority = dyn Fn(&SessionRef, &mut dyn FnMut(Option<&SteeringLease>)) + Send + Sync;
 
 mod lead;
+pub use lead::checkpoint_idle_lead_goal;
 pub(crate) use lead::{deliver_saved, reanchor_resumed, BoundLeadAuthority};
 
 /// One typed steering input. Its callback reports the result of appending.
@@ -188,14 +189,9 @@ impl crate::Session {
         if applied_revision == revision {
             return result.map(|()| applied_revision);
         }
-        let state = self.inner();
-        state.store.sync(&state.sref).map_err(|error| {
-            OxaError::new("goal_sync_failed", error.message).with_hint(
-                "The goal revision advanced. Confirm durability before acknowledging the transition.",
-            )
-        })?;
+        self.sync_goal_transition()?;
         crate::progress::notify(
-            state,
+            self.inner(),
             crate::Progress::GoalControlCommitted {
                 revision: applied_revision,
             },
@@ -205,6 +201,33 @@ impl crate::Session {
                 .with_hint("The goal transition was saved. Refresh the session prefix before running again.")
         })?;
         Ok(applied_revision)
+    }
+
+    /// Make the goal revision advanced by the last transition durable. Every goal
+    /// transition goes through here before it is acknowledged, so a failed sync is
+    /// never reported as success.
+    fn sync_goal_transition(&self) -> Result<(), oxa_proto::OxaError> {
+        let state = self.inner();
+        state.store.sync(&state.sref).map_err(|error| {
+            oxa_proto::OxaError::new("goal_sync_failed", error.message).with_hint(
+                "The goal revision advanced. Confirm durability before acknowledging the transition.",
+            )
+        })
+    }
+
+    /// Apply a `/goal` set or clear and wait for the store sync before it is reported.
+    fn commit_goal(
+        &mut self,
+        goal: Option<Goal>,
+        sink: &mut dyn oxa_proto::EventSink,
+    ) -> Result<(), oxa_proto::OxaError> {
+        let before = self.goal_revision();
+        let result = self.set_goal(goal, sink);
+        if result.is_err() && self.goal_revision() == before {
+            return result;
+        }
+        self.sync_goal_transition()?;
+        result
     }
 }
 
@@ -557,4 +580,81 @@ pub(crate) fn uncertain(error: &oxa_proto::OxaError, output: bool, pre_cancelled
             | "cloud_credentials_unavailable"
             | "cloud_sdk_unavailable"
     )
+}
+
+/// A parsed `/goal` command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GoalCommand {
+    Show,
+    Set(String),
+    Clear,
+    Pause,
+    Resume,
+}
+
+/// Empty text shows the goal, a bare control word controls it, and any other
+/// text sets the objective.
+pub fn parse_goal_command(args: &str) -> GoalCommand {
+    match args.trim() {
+        "" => GoalCommand::Show,
+        "clear" => GoalCommand::Clear,
+        "pause" => GoalCommand::Pause,
+        "resume" => GoalCommand::Resume,
+        objective => GoalCommand::Set(objective.to_string()),
+    }
+}
+
+fn show_lines(goal: Option<&Goal>) -> Vec<String> {
+    let Some(goal) = goal else {
+        return vec!["No goal.".into()];
+    };
+    vec![
+        format!("Objective: {}", goal.objective),
+        format!("Status: {}", goal.status.as_str()),
+        format!("Tokens: {}", goal.tokens_used),
+        format!("Elapsed: {} ms", goal.elapsed_ms),
+        format!("Turns: {}", goal.turns),
+    ]
+}
+
+impl crate::Session {
+    /// Apply a `/goal` command on the idle session. Returns the display lines and
+    /// the prompt to run next, if any. A set or replace is refused with `busy`
+    /// during a run.
+    pub fn apply_goal_command(
+        &mut self,
+        cmd: GoalCommand,
+        now_ms: u64,
+        sink: &mut dyn oxa_proto::EventSink,
+    ) -> Result<(Vec<String>, Option<String>), oxa_proto::OxaError> {
+        match cmd {
+            GoalCommand::Show => Ok((show_lines(self.goal().as_ref()), None)),
+            GoalCommand::Set(objective) => {
+                let goal = Goal::new(objective, GoalBudget::default(), now_ms)?;
+                let line = format!("Goal set: {}", goal.objective);
+                let prompt = crate::prompt::goal_start(&goal.objective);
+                self.commit_goal(Some(goal), sink)?;
+                Ok((vec![line], Some(prompt)))
+            }
+            GoalCommand::Clear => {
+                self.commit_goal(None, sink)?;
+                Ok((vec!["Goal cleared.".into()], None))
+            }
+            GoalCommand::Pause => {
+                let bound = self.inner().sref.clone();
+                let revision = self.goal_revision();
+                self.control_goal(&bound, revision, GoalControl::Pause, sink)?;
+                Ok((vec!["Goal paused.".into()], None))
+            }
+            GoalCommand::Resume => {
+                let bound = self.inner().sref.clone();
+                let revision = self.goal_revision();
+                self.control_goal(&bound, revision, GoalControl::Resume, sink)?;
+                Ok((
+                    vec!["Goal resumed.".into()],
+                    Some(crate::prompt::GOAL_CONTINUE.into()),
+                ))
+            }
+        }
+    }
 }

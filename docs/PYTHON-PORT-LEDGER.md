@@ -325,12 +325,25 @@ wrappers and link the legacy cloud-only quickstart. For #763, reconcile the
 published asset list and native install notes, then verify checksums, membership,
 and no-Python install behavior on the approved release bytes.
 
+The [Air release-recipe proof](https://github.com/oxstack/ox-llm/issues/1378#issuecomment-6977159108)
+verified the local ARM64 archive from source `1e0f49c17a527a408a556cc7ae699c1a798104ba`
+with SHA-256 `467236bf41574692b4a3fcb47d9765b5bfc8aced961435ce28ec276a4231e651`.
+The archive has no Python files or Python shebangs. A clean Fedora 44
+container had no Python interpreter before or after installation. The
+installed `oxa` matched the executable in the archive, printed `oxa 0.2.0`,
+answered a fixture-backed chat turn, and served the synthetic Lead board on
+loopback. `0.2.0` is the pre-bump package version at that source.
+[#1394](https://github.com/oxstack/ox-llm/issues/1394) retains the standalone
+`oxe` allowlist discrepancy and the public release payload checks.
+[#1414](https://github.com/oxstack/ox-llm/pull/1414) landed the native docs
+quickstart at `b385abf1`, removing the legacy controller endpoint override.
+
 ### Remaining controller-path evidence at `7f7bfb6a`
 
-These entries account for the remaining paths in the packaged legacy subtree.
-Development tools can remain Python. Native packaging excludes the old
-controller subtree. Source removal still needs the applicable index, caller
-and native acceptance evidence.
+These entries account for remaining source paths in the legacy controller
+subtree, which native packaging excludes. Development tools can remain
+Python. Source removal still needs the applicable index, caller and native
+acceptance evidence.
 
 | Python module / feature | Status | Evidence and remaining caller gate |
 |---|---|---|

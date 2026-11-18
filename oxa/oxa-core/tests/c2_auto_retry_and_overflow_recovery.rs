@@ -155,6 +155,9 @@ fn fast_retry(max_retries: u32) -> serde_json::Value {
     json!({"retry": {"enabled": true, "maxRetries": max_retries, "baseDelayMs": 1, "maxAgentDelayMs": 5}})
 }
 
+/// The prefix of the visible provider/agent retry notice.
+const RETRY_NOTICE: &str = "retrying request";
+
 /// The `AutoRetryStart` events as (attempt, max_attempts, delay_ms).
 fn retry_starts(events: &[AgentEvent]) -> Vec<(u32, u32, u64)> {
     events
@@ -502,6 +505,58 @@ fn disabled_retry() {
     )
     .expect_err("no retry");
     assert_eq!(eng2.requests().len(), 1);
+}
+
+/// #514: `retry.provider.maxRetries` is no way around the auto-retry switch: with the switch off
+/// (settings or `set_auto_retry(false)`) a transient failure is sent once.
+#[test]
+fn provider_retries_follow_the_auto_retry_switch() {
+    let provider = json!({"retry": {"enabled": true, "baseDelayMs": 1, "provider": {"maxRetries": 2}}});
+    let env = TestEnv::new();
+    let (mut st, eng) = state(&env, vec![refuse(), ScriptTurn::text("ok")], provider.clone());
+    st.auto_retry = false;
+    say(&mut st, "hi");
+    let mut sink = VecSink::default();
+    let err = chat_with_retry(&mut st, &opts(), &mut sink, &mut HeadlessUi::default()).expect_err("no retry");
+    assert_eq!(err.code, codes::ENGINE_DOWN);
+    assert_eq!(
+        eng.requests().len(),
+        1,
+        "auto-retry off: no provider retry either"
+    );
+    assert!(
+        !sink
+            .0
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Notice { text, .. } if text.contains(RETRY_NOTICE))),
+        "the provider layer announces nothing when the switch is off"
+    );
+
+    let env2 = TestEnv::new();
+    let off = json!({"retry": {"enabled": false, "baseDelayMs": 1, "provider": {"maxRetries": 2}}});
+    let (mut st2, eng2) = state(&env2, vec![refuse(), ScriptTurn::text("ok")], off);
+    say(&mut st2, "hi");
+    chat_with_retry(
+        &mut st2,
+        &opts(),
+        &mut VecSink::default(),
+        &mut HeadlessUi::default(),
+    )
+    .expect_err("no retry");
+    assert_eq!(eng2.requests().len(), 1);
+
+    // On, the provider retry still works.
+    let env3 = TestEnv::new();
+    let (mut st3, eng3) = state(&env3, vec![refuse(), ScriptTurn::text("ok")], provider);
+    say(&mut st3, "hi");
+    chat_with_retry(
+        &mut st3,
+        &opts(),
+        &mut VecSink::default(),
+        &mut HeadlessUi::default(),
+    )
+    .expect("retried");
+    assert_eq!(eng3.requests().len(), 2);
 }
 
 // ---------------------------------------------------------------------------------------------

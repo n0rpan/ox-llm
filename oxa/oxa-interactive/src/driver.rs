@@ -336,14 +336,25 @@ impl<'a> Loop<'a> {
         opts: &'a mut InteractiveOpts,
         handle: Handle,
         cmds: Sender<SessionCmd>,
-        initial: ViewModel,
+        mut initial: ViewModel,
     ) -> Loop<'a> {
         let caps = opts.caps.unwrap_or_else(|| term.caps());
         let term_colors = crate::app::terminal_colors(&*opts, term.colors());
         let gfx_answered = term.graphics();
         let gfx_placeholders = oxa_tui::env_gfx_placeholders(&opts.env);
-        let theme = load_theme(&*opts, caps, term_colors.as_ref());
-        let theme_name = theme_name(&*opts);
+        let (theme, theme_name) = match load_theme(&*opts, caps, term_colors.as_ref()) {
+            Ok(theme) => (theme, theme_name(&*opts)),
+            Err(error) => {
+                push_notice(
+                    &mut initial,
+                    Level::Warning,
+                    format!("{}; using dark theme", error.message),
+                );
+                let theme = resolve_ui_theme(&*opts, "dark", caps, term_colors.as_ref())
+                    .unwrap_or_else(|_| Theme::plain());
+                (theme, "dark".to_string())
+            }
+        };
         let view = view_settings(&*opts, &caps);
         let editor_opts = editor_opts_from(&opts.settings);
         let mut editor = Editor::new(editor_opts.clone());
@@ -2040,7 +2051,7 @@ impl<'a> Loop<'a> {
                 self.overlay = Some(Overlay::Mode(sel));
             }
             SelectorKind::Theme => {
-                let mut themes = list_themes(&[self.opts.dirs.agent_dir.join("themes")]);
+                let mut themes = list_themes(&self.opts.theme_paths);
                 // OXA's own themes are offered with OXA's look (pi's list is pi's).
                 if self.view.skin.is_oxa() {
                     let at = oxa_tui::BUILTIN_THEME_NAMES.len().min(themes.len());

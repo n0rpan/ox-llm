@@ -75,7 +75,9 @@ fn bounded_literal_prompt_keeps_evidence_request_local_and_caps_schema_repair() 
             let Some(RunEnd::Failed(error)) = result.unwrap() else {
                 panic!("the repair should be refused when no output remains");
             };
-            assert_eq!(error.code, codes::BUDGET_EXHAUSTED);
+            // The approved behavior change: the local bounded turn reports its own
+            // literal-limit code, never the metered daily-budget class.
+            assert_eq!(error.code, codes::LITERAL_OUTPUT_EXHAUSTED);
             &[10]
         };
         let requests: Vec<_> = engine
@@ -100,6 +102,65 @@ fn bounded_literal_prompt_keeps_evidence_request_local_and_caps_schema_repair() 
         assert_eq!(last.max_tokens, session.inner().info.max_output);
         assert!(!last.messages.contains(&evidence));
     }
+}
+
+/// Live #1461: a remote bounded literal turn whose only reply stops at the
+/// limit after spending the whole bound must not schedule the recovery request
+/// (it could never reserve a token), must not inject its internal instruction
+/// into the protected Session, and must surface the typed local bound.
+#[test]
+fn bounded_literal_length_stop_fails_typed_without_a_recovery_request() {
+    use oxa_core::RunEnd;
+    use oxa_proto::{codes, Finish};
+    use std::num::NonZeroU32;
+
+    const TURN_TOKENS: u32 = 4096;
+    let env = TestEnv::new();
+    let mut cut = ScriptTurn::text(r#"{"text":"a concise answer that ran"#);
+    cut.finish = Finish::Length;
+    cut.completion_tokens = Some(TURN_TOKENS);
+    let engine = Arc::new(
+        ScriptedEngine::new(vec![
+            cut,
+            ScriptTurn::text(r#"{"text":"an impossible recovery","facts":[],"action":null}"#),
+        ])
+        .with_remote(),
+    );
+    let store = Arc::new(MemStore::new());
+    let mut session = Session::open(deps(&env, store.clone(), engine.clone()), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let result = session.prompt_literal_bounded(
+        "A concise question?".into(),
+        String::new(),
+        NonZeroU32::new(TURN_TOKENS).unwrap(),
+        &mut sink,
+        &mut ui,
+    );
+    let Some(RunEnd::Failed(error)) = result.unwrap() else {
+        panic!("a length stop at the bounded literal limit must fail typed");
+    };
+    assert_eq!(error.code, codes::LITERAL_OUTPUT_EXHAUSTED);
+    let requests: Vec<_> = engine
+        .requests()
+        .into_iter()
+        .filter(|r| r.max_tokens > 0)
+        .collect();
+    assert_eq!(
+        requests.iter().map(|r| r.max_tokens).collect::<Vec<_>>(),
+        [TURN_TOKENS],
+        "the impossible recovery request is never forwarded"
+    );
+    let entries = store.load(&session.inner().sref).unwrap();
+    let persisted = format!("{entries:?}");
+    assert!(
+        !persisted.contains("reached its output limit and was discarded"),
+        "the internal recovery instruction never enters the Session"
+    );
+    assert!(
+        persisted.contains("a concise answer that ran"),
+        "the cut stays as an audit entry"
+    );
 }
 
 #[test]
@@ -727,4 +788,217 @@ fn a_queued_turn_delivers_durably_staged_input_before_its_first_request() {
         .iter()
         .any(|message| message.content.as_deref() == Some("Synthetic durable steer.")));
     assert!(session.goal().unwrap().lead.unwrap().pending_steer.is_none());
+}
+
+#[test]
+fn goal_command_set_replace_show_clear() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    assert_eq!(parse_goal_command("  "), GoalCommand::Show);
+    assert_eq!(parse_goal_command(" resume "), GoalCommand::Resume);
+    assert_eq!(
+        parse_goal_command(" Ship it "),
+        GoalCommand::Set("Ship it".into())
+    );
+
+    let env = TestEnv::new();
+    let store = Arc::new(FsStore::new(env.root().join("sessions")));
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Show, 1000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["No goal.".to_string()]);
+    assert_eq!(prompt, None);
+
+    let (lines, prompt) = session
+        .apply_goal_command(parse_goal_command("Ship the parser"), 1000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal set: Ship the parser".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::goal_start("Ship the parser")));
+    let first = session.goal_revision();
+    assert!(first > 0);
+    assert_eq!(
+        Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+        session.goal()
+    );
+
+    session
+        .apply_goal_command(parse_goal_command("Ship the parser v2"), 2000, &mut sink)
+        .unwrap();
+    let second = session.goal_revision();
+    assert!(second > first);
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Show, 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines[0], "Objective: Ship the parser v2");
+    assert_eq!(lines[1], "Status: pursuing");
+    assert_eq!(prompt, None);
+    assert_eq!(
+        Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+        session.goal()
+    );
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Clear, 3000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal cleared.".to_string()]);
+    assert_eq!(prompt, None);
+    assert!(session.goal().is_none());
+    assert!(session.goal_revision() > second);
+    assert_eq!(
+        Goal::latest(&store.load(&session.inner().sref).unwrap()).unwrap(),
+        None
+    );
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+#[test]
+fn goal_command_pause_resume_returns_continue_prompt() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("Keep the tests green"), 1000, &mut sink)
+        .unwrap();
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Pause, 1500, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal paused.".to_string()]);
+    assert_eq!(prompt, None);
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Paused);
+
+    let (lines, prompt) = session
+        .apply_goal_command(GoalCommand::Resume, 2000, &mut sink)
+        .unwrap();
+    assert_eq!(lines, vec!["Goal resumed.".to_string()]);
+    assert_eq!(prompt, Some(oxa_core::prompt::GOAL_CONTINUE.to_string()));
+    assert_eq!(session.goal().unwrap().status, GoalStatus::Pursuing);
+}
+
+#[test]
+fn goal_command_set_is_refused_while_busy() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    let env = TestEnv::new();
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, Arc::new(MemStore::new()), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("First objective"), 1000, &mut sink)
+        .unwrap();
+    let revision = session.goal_revision();
+
+    session
+        .inner()
+        .shared
+        .busy
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = session
+        .apply_goal_command(GoalCommand::Set("Second objective".into()), 2000, &mut sink)
+        .unwrap_err();
+    assert_eq!(error.code, oxa_proto::codes::BUSY);
+    session
+        .inner()
+        .shared
+        .busy
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+
+    assert_eq!(session.goal_revision(), revision);
+    assert_eq!(session.goal().unwrap().objective, "First objective");
+}
+
+/// Delegates to a MemStore; `sync` counts its calls and fails while `fail_sync` is set.
+#[derive(Default)]
+struct SyncFailStore {
+    inner: MemStore,
+    syncs: std::sync::atomic::AtomicUsize,
+    fail_sync: std::sync::atomic::AtomicBool,
+}
+
+impl SessionStore for SyncFailStore {
+    fn create(
+        &self,
+        cwd: &std::path::Path,
+        id: Option<&str>,
+        parent: Option<&std::path::Path>,
+    ) -> Result<oxa_session::SessionRef, oxa_proto::OxaError> {
+        self.inner.create(cwd, id, parent)
+    }
+    fn append(&self, s: &oxa_session::SessionRef, e: &oxa_proto::Entry) -> Result<(), oxa_proto::OxaError> {
+        self.inner.append(s, e)
+    }
+    fn load(&self, s: &oxa_session::SessionRef) -> Result<Vec<oxa_proto::Entry>, oxa_proto::OxaError> {
+        self.inner.load(s)
+    }
+    fn header(&self, s: &oxa_session::SessionRef) -> Result<oxa_session::SessionHeader, oxa_proto::OxaError> {
+        self.inner.header(s)
+    }
+    fn list(&self, cwd: Option<&std::path::Path>) -> Vec<oxa_session::SessionMeta> {
+        self.inner.list(cwd)
+    }
+    fn resolve(&self, id_or_path: &str) -> Result<oxa_session::SessionRef, oxa_proto::OxaError> {
+        self.inner.resolve(id_or_path)
+    }
+    fn delete(&self, s: &oxa_session::SessionRef) -> Result<(), oxa_proto::OxaError> {
+        self.inner.delete(s)
+    }
+    fn sync(&self, s: &oxa_session::SessionRef) -> Result<(), oxa_proto::OxaError> {
+        self.syncs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_sync.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(oxa_proto::OxaError::new(
+                oxa_proto::codes::IO,
+                "synthetic sync failure",
+            ));
+        }
+        self.inner.sync(s)
+    }
+}
+
+#[test]
+fn goal_command_set_fails_when_store_sync_fails() {
+    use oxa_core::goal::parse_goal_command;
+    use std::sync::atomic::Ordering;
+    let env = TestEnv::new();
+    let store = Arc::new(SyncFailStore::default());
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    store.fail_sync.store(true, Ordering::SeqCst);
+
+    let error = session
+        .apply_goal_command(parse_goal_command("Ship the parser"), 1000, &mut sink)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_sync_failed");
+    assert!(store.syncs.load(Ordering::SeqCst) > 0);
+
+    store.fail_sync.store(false, Ordering::SeqCst);
+    session.shutdown(&mut HeadlessUi::default());
+}
+
+#[test]
+fn goal_command_clear_fails_when_store_sync_fails() {
+    use oxa_core::goal::{parse_goal_command, GoalCommand};
+    use std::sync::atomic::Ordering;
+    let env = TestEnv::new();
+    let store = Arc::new(SyncFailStore::default());
+    let engine = Arc::new(ScriptedEngine::new(vec![]));
+    let mut session = Session::open(deps(&env, store.clone(), engine), Open::New).unwrap();
+    let mut sink = VecSink::default();
+    session
+        .apply_goal_command(parse_goal_command("Ship the parser"), 1000, &mut sink)
+        .unwrap();
+
+    store.fail_sync.store(true, Ordering::SeqCst);
+    let error = session
+        .apply_goal_command(GoalCommand::Clear, 2000, &mut sink)
+        .unwrap_err();
+    assert_eq!(error.code, "goal_sync_failed");
+    assert!(store.syncs.load(Ordering::SeqCst) > 0);
+
+    store.fail_sync.store(false, Ordering::SeqCst);
+    session.shutdown(&mut HeadlessUi::default());
 }

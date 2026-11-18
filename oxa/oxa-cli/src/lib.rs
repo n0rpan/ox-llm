@@ -32,6 +32,7 @@ pub mod lead_access;
 pub(crate) mod lead_chat;
 pub mod lead_http;
 pub mod lead_input;
+mod lead_loop;
 pub mod lead_page;
 pub mod lead_panels;
 pub mod lead_peer;
@@ -58,6 +59,7 @@ mod work_checks;
 mod work_cmd;
 pub mod work_refill;
 mod work_reports;
+pub mod workers;
 
 pub use args::{
     no_tool_alias, parse_args, usage_text, ApiKey, Args, LoginArgs, ModeArg, RegistryArgs, Subcommand,

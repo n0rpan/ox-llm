@@ -4,7 +4,7 @@ use crate::exec::{fail_truncated_calls, reply_event, run_calls, RequestOpts};
 use crate::host::observe_hooks;
 use crate::SessionState;
 use oxa_proto::{
-    miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
+    codes, miss_cause, rebase_why, shown_why, AgentEvent, Entry, EntryBody, EventMessage, EventSink, Finish,
     HookPoint, Level, OxaError, Part, Role, StopReason, TurnKind, Ui, Usage, Value, WireMsg,
 };
 use oxa_session::new_entry_id;
@@ -55,15 +55,26 @@ pub(crate) fn append_entry_with_id(
     } else {
         Some(leaf.to_string())
     };
+    let entry = append_to_store(st.store.as_ref(), &st.sref, id, parent, body)?;
+    st.tree.push(entry.clone());
+    st.transcript.apply(&entry);
+    Ok(entry)
+}
+
+pub(crate) fn append_to_store(
+    store: &dyn oxa_session::SessionStore,
+    session: &oxa_session::SessionRef,
+    id: String,
+    parent: Option<String>,
+    body: EntryBody,
+) -> Result<Entry, OxaError> {
     let entry = Entry {
         id,
         parent,
         ts_ms: now_ms(),
         body,
     };
-    st.store.append(&st.sref, &entry)?;
-    st.tree.push(entry.clone());
-    st.transcript.apply(&entry);
+    store.append(session, &entry)?;
     Ok(entry)
 }
 
@@ -425,6 +436,44 @@ fn run_inner(
             && st.info.caps.remote
             && !wrapping_up
             && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
+            && st.shared.literal_output_remaining() == Some(0)
+        {
+            // The bounded literal turn has spent its shared output budget: the
+            // recovery request could never reserve a token, so it is neither
+            // scheduled nor described with its internal instruction, and the
+            // partial answer is never presented as a valid reply. The cut stays
+            // as the audit entry; the typed local bound reaches the caller.
+            account_discarded(st, &turn);
+            let text = turn
+                .msg
+                .content
+                .clone()
+                .filter(|t| !t.is_empty())
+                .unwrap_or_else(|| "The reply reached its output limit before answering.".to_string());
+            persist(
+                st,
+                EntryBody::Shown {
+                    text,
+                    why: shown_why::CUT,
+                },
+                sink,
+            )?;
+            let e = OxaError::new(
+                codes::LITERAL_OUTPUT_EXHAUSTED,
+                "The literal turn's output limit is exhausted.",
+            )
+            .with_hint("Ask for a shorter answer.");
+            sink.emit(&AgentEvent::Notice {
+                level: Level::Error,
+                text: e.to_string(),
+            });
+            return Ok(RunEnd::Failed(e));
+        }
+        if turn.finish == Finish::Length
+            && turn.msg.tool_calls.is_empty()
+            && st.info.caps.remote
+            && !wrapping_up
+            && st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) == 0
             && length_recoverable(st, length_recoveries)
         {
             account_discarded(st, &turn);
@@ -590,6 +639,7 @@ fn run_inner(
             crate::goal::account(st, false)?;
             if crate::goal::terminal(st) {
                 let _ = crate::done::check(st, &mut done, sink, ui);
+                crate::advice::observe_done(st, done.observation.take(), false, sink)?;
                 if st.stats.done_failed {
                     if let Some(goal) = &st.goal {
                         goal.reject_completion();
@@ -657,6 +707,7 @@ fn run_inner(
                 // The files edited so far are still checked and the result shown; the run is
                 // over, so a failure is not sent back to the model.
                 let _ = crate::done::check(st, &mut done, sink, ui);
+                crate::advice::observe_done(st, done.observation.take(), false, sink)?;
                 // Giving up is not a finished task: a caller must not read it as success.
                 return Ok(RunEnd::Failed(OxaError::new(code, text)));
             }
@@ -717,8 +768,19 @@ fn run_inner(
         if deliver_steering(st, sink, ui, run_msgs)? {
             continue;
         }
-        if let Some(text) = crate::done::check(st, &mut done, sink, ui) {
+        let failed_check = crate::done::check(st, &mut done, sink, ui);
+        let advised = crate::advice::observe_done(st, done.observation.take(), true, sink)?;
+        if matches!(advised, crate::advice::AdviceResult::Escalate) {
+            return Ok(RunEnd::Failed(OxaError::new(
+                "advisor_escalation_required",
+                "Advice did not resolve the failure. The worker needs a stronger tier.",
+            )));
+        }
+        if let Some(text) = failed_check {
             crate::done::inject(st, text, sink, ui, run_msgs)?;
+            continue;
+        }
+        if matches!(advised, crate::advice::AdviceResult::Continue) {
             continue;
         }
         if st.shared.gate.wrap_up.load(std::sync::atomic::Ordering::SeqCst) != 0 {

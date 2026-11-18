@@ -1,5 +1,5 @@
 //! Foreground opt-in native LAN listener. Only user settings can select its engine.
-use oxa_config::{Dirs, Env, Settings};
+use oxa_config::{Dirs, Settings};
 use oxa_proto::{codes, CancelToken, ChatRequest, Engine, OxaError, StreamEvent};
 use oxc_gateway::share::{
     keys::Store,
@@ -17,16 +17,6 @@ use std::{
 };
 
 const TAILSCALE_SOCKET: &str = "/var/run/tailscale/tailscaled.sock";
-
-pub(crate) fn is_agent(env: &Env) -> bool {
-    // Marker presence, including an empty value, is enough to refuse.
-    env.pairs().iter().any(|(name, _)| {
-        matches!(
-            name.as_str(),
-            "OXA_CODING_AGENT" | "AI_AGENT" | "OXA_SUBAGENT_DEPTH"
-        )
-    })
-}
 
 pub(crate) struct Prepared {
     pub engines: crate::in_process::SharedEngines,
