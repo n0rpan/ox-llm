@@ -2,7 +2,7 @@
 use super::refill_input::{text, Input, Prepared};
 use super::*;
 use crate::work_refill::{Consumer, Packet, Partition};
-use oxa_work::board::{assignment::Worker, Action};
+use oxa_work::board::Action;
 use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
 
 fn private(path: &Path, uid: u32) -> Result<Value, String> {
@@ -86,8 +86,7 @@ pub(super) fn run(
         Err(_) => return Err("cannot establish board pause state".into()),
     }
     let claims = oxa_work::board::Claims::open(&owner_path("claims")?)?;
-    let worker: Worker =
-        serde_json::from_value(value["worker"].clone()).map_err(|_| "invalid authenticated worker export")?;
+    let (worker, host) = crate::work_cmd::registered_native_worker(&value)?;
     let partition = Partition {
         modulus: value["partition"]["modulus"]
             .as_u64()
@@ -157,7 +156,7 @@ pub(super) fn run(
         crate::netguard::trusted_executable_for("gh", Some(&policy.host_path), Some(root), Some(&dirs.home))
             .ok_or("no trusted gh executable")?;
     let intake = value["intake"] == true;
-    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake);
+    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake).with_host(host);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|_| "invalid system clock")?

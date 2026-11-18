@@ -599,6 +599,42 @@ mod live_steering {
     }
 
     #[test]
+    fn managed_rpc_recovers_a_saved_steer_with_its_live_lease() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let engine = held.engine(vec![ScriptTurn::text("first"), ScriptTurn::text("second")]);
+        let mut session = owner(&env, engine, "first");
+        let binding = session.inner().sref.clone();
+        let lease = SteeringLease {
+            holder: "fixture/first".into(),
+            generation: (1, 1),
+        };
+        session
+            .stage_lead_steer(
+                &binding,
+                session.goal_revision(),
+                TEXT.into(),
+                Some(lease.clone()),
+                &mut NullSink,
+            )
+            .unwrap();
+        let mut rpc = Rpc::start_with(session, &env, move |session, dirs, input, out| {
+            oxa_rpc::serve_outcome_with_steering_authority(
+                session,
+                dirs,
+                input,
+                out,
+                Arc::new(move |_, operation| operation(Some(&lease))),
+            )
+        });
+        held.release();
+        rpc.send(json!({"type":"prompt","id":"resume","message":"Continue."}));
+        rpc.agent_settled();
+        assert!(appended(&entries(&env, &binding)).is_some());
+        rpc.finish();
+    }
+
+    #[test]
     fn held_steer_rejects_a_changed_assignment() {
         for change_holder in [false, true] {
             let env = TestEnv::new();
