@@ -144,6 +144,9 @@ fn free_space(repo: &Path, common: &Path, queue: &Path, df: &Path, policy: &RunP
 const MAX_INPUT_BYTES: u64 = 1024 * 1024;
 const MAX_INPUT_TASKS: usize = 128;
 const MAX_QUEUE_FILES: usize = 256;
+/// Every directory entry counts, including hidden, non-JSON and non-regular ones,
+/// so ignored entries cannot make each watch iteration unbounded.
+const MAX_QUEUE_ENTRIES: usize = 4096;
 const MAX_QUEUE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_RETAINED_TASKS: usize = 4096;
 
@@ -253,7 +256,12 @@ fn scan(
 ) -> Result<()> {
     let mut files = vec![];
     let mut bytes = 0;
-    for entry in fs::read_dir(directory).map_err(|e| e.to_string())? {
+    for (index, entry) in fs::read_dir(directory).map_err(|e| e.to_string())?.enumerate() {
+        if index == MAX_QUEUE_ENTRIES {
+            return Err(format!(
+                "queue directory exceeds {MAX_QUEUE_ENTRIES} entries; move other files out of it"
+            ));
+        }
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -747,6 +755,34 @@ mod tests {
         let mut inputs = Inputs::default();
         let result = scan(dir.path(), &mut pending, &mut inputs, &mut |_| Ok(()));
         assert!(result.unwrap_err().contains("256 task files"));
+        assert!(pending.is_empty());
+        assert!(inputs.tasks.is_empty());
+    }
+
+    #[test]
+    fn queue_counts_ignored_entries_against_the_directory_limit() {
+        let dir = crate::test_dir::PrivateDir::new("queue-entry-limit");
+        for i in 0..MAX_QUEUE_ENTRIES {
+            let name = match i % 3 {
+                0 => format!(".hidden-{i}.json"),
+                1 => format!("notes-{i}.txt"),
+                _ => format!("dir-{i}.json"),
+            };
+            if i % 3 == 2 {
+                fs::create_dir(dir.path().join(name)).unwrap();
+            } else {
+                fs::write(dir.path().join(name), "").unwrap();
+            }
+        }
+        fs::write(
+            dir.path().join("task.json"),
+            r#"[{"id":"task","branch":"agent/task","model":"fake","prompt":"Synthetic task"}]"#,
+        )
+        .unwrap();
+        let mut pending = vec![];
+        let mut inputs = Inputs::default();
+        let result = scan(dir.path(), &mut pending, &mut inputs, &mut |_| Ok(()));
+        assert!(result.unwrap_err().contains("4096 entries"));
         assert!(pending.is_empty());
         assert!(inputs.tasks.is_empty());
     }
