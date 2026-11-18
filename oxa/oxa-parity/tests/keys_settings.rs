@@ -250,6 +250,7 @@ fn stub(env: &TestEnv, rel: &str, body: &str) -> PathBuf {
 // (`pty::DEFAULT_TIMEOUT`) and never sleep as an assertion.
 // ---------------------------------------------------------------------------------------------
 
+/// #1512 S3: the footer's extension status row, shared with the other pty suites.
 #[path = "support/status_row.rs"]
 pub mod status_row;
 
@@ -258,7 +259,7 @@ pub mod status_row;
 mod tui {
     use super::*;
     pub use oxa_fake::{parse_script, FakeOpts, FakeServer};
-    use oxa_parity::pty::{KeyEncoding, PtyOpts, PtySession, Screen, TermProfile, DEFAULT_TIMEOUT};
+    pub use oxa_parity::pty::{KeyEncoding, PtyOpts, PtySession, Screen, TermProfile, DEFAULT_TIMEOUT};
     use oxa_proto::Role;
 
     /// What a TUI test starts with.
