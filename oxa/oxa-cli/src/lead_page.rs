@@ -87,17 +87,26 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
         _ => page.title().into(),
     };
     let mut html = format!("<main><h1 id=main tabindex=-1>{title}</h1>");
-    if page == Page::Home {
-        attention(&mut html, view);
-    }
-    html.push_str(&page.navigation());
+    html.push_str(&page.navigation(view.situation.map(|snapshot| snapshot.asks.len())));
     match page {
         Page::Home => {
+            html.push_str("<div class=home-layout><div class=home-decisions>");
+            attention(&mut html, view);
+            asks(&mut html, view);
+            html.push_str("</div><div class=home-overview><section><h2>Snapshot overview</h2>");
+            if let Some(board) = view.board {
+                let _ = write!(html,
+                    "<p><a href=/board>{} observed items</a></p><p class=muted>{} · observed at {} (Unix seconds)</p>",
+                    board.entries.len(), if stale(board, now) { "Stale snapshot" } else { "Board snapshot" }, board.observed_at);
+            } else {
+                html.push_str("<p>Board unavailable.</p>");
+            }
+            html.push_str("</section><details class=home-work><summary>Observed work</summary>");
             board(&mut html, view, now, Query::default());
             workers(&mut html, view);
             queue(&mut html, view);
             release(&mut html, view);
-            asks(&mut html, view);
+            html.push_str("</details></div></div>");
         }
         Page::Board | Page::BoardQuery(_) => {
             let query = if let Page::BoardQuery(query) = page {
@@ -109,7 +118,11 @@ pub fn content_for(page: Page, view: &View<'_>, now: u64) -> String {
             queue(&mut html, view);
         }
         Page::Workers => workers(&mut html, view),
-        Page::Asks => asks(&mut html, view),
+        Page::Asks => {
+            html.push_str("<div class=asks-layout>");
+            asks(&mut html, view);
+            html.push_str("</div>");
+        }
         Page::Item(number) => item(&mut html, view, number, now),
         Page::Chat(prompt) => chat::render(&mut html, view, prompt),
         Page::Usage => html
@@ -133,7 +146,25 @@ fn attention(html: &mut String, view: &View<'_>) {
         || !overdue.is_empty()
         || ask_count > 0
     {
-        html.push_str("<section id=attention><h2>Needs attention</h2><ul>");
+        let role = if view.main_red
+            || view.main_merge_stalled
+            || !view.stalled_runs.is_empty()
+            || !overdue.is_empty()
+        {
+            "alert"
+        } else {
+            "status"
+        };
+        let _ = write!(
+            html,
+            "<section id=attention role={role}><h2>Needs attention</h2><ul>"
+        );
+        if ask_count > 0 {
+            let _ = write!(
+                html,
+                "<li><a href=#asks>Unanswered owner decisions ({ask_count})</a></li>"
+            );
+        }
         if view.main_red {
             html.push_str("<li>Checks on main are failing.</li>");
         }
@@ -143,7 +174,7 @@ fn attention(html: &mut String, view: &View<'_>) {
         for pr in overdue {
             let _ = write!(
                 html,
-                "<li><a href=#queue>PR #{} has waited too long in the merge queue</a></li>",
+                "<li><a href=/board#queue>PR #{} has waited too long in the merge queue</a></li>",
                 pr.number
             );
         }
@@ -158,24 +189,21 @@ fn attention(html: &mut String, view: &View<'_>) {
             }
             html.push_str("</ul></details></li>");
         }
-        if ask_count > 0 {
-            let _ = write!(
-                html,
-                "<li><a href=#asks>Unanswered owner decisions ({ask_count})</a></li>"
-            );
-        }
         html.push_str("</ul></section>");
     }
+}
+
+fn stale(board: &Board, now: u64) -> bool {
+    board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900
 }
 
 fn board(html: &mut String, view: &View<'_>, now: u64, query: Query) {
     html.push_str("<section id=board><h2>Board</h2>");
     if let Some(board) = view.board {
-        let stale = board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900;
         let _ = write!(
             html,
             "<p class=muted>{} · observed at {} (Unix seconds)</p>",
-            if stale {
+            if stale(board, now) {
                 "Stale snapshot"
             } else {
                 "GitHub snapshot"
@@ -338,9 +366,11 @@ fn release(html: &mut String, view: &View<'_>) {
 fn asks(html: &mut String, view: &View<'_>) {
     html.push_str("<section id=asks><h2>For your decision</h2>");
     if let Some(s) = view.situation {
+        html.push_str("<div class=ask-cards>");
         for ask in &s.asks {
-            let _ = write!(html, "<article><p class=muted>{}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", subject(&ask.subject), escape(&ask.question));
+            let _ = write!(html, "<article><p class=muted>Ask {} · {}</p><h3>{}</h3><p>Options, recommendation and meanwhile are unavailable in these facts.</p></article>", escape(&ask.id), subject(&ask.subject), escape(&ask.question));
         }
+        html.push_str("</div>");
         if s.asks.is_empty() {
             html.push_str("<p>No open asks in these runner facts.</p>");
         }
@@ -350,7 +380,33 @@ fn asks(html: &mut String, view: &View<'_>) {
     html.push_str("</section>");
 }
 
-pub const STYLE: &str = include_str!("lead_page/style.css");
+pub const STYLE: &str = concat!(
+    include_str!("lead_page/style.css"),
+    r#"
+:root { --nav-height:3.875rem; }
+nav.tabs a { position:relative; flex-direction:column; gap:.125rem; font-size:.75rem; line-height:1.25; }
+nav.tabs svg { order:-1; flex:none; width:1.375rem; height:1.375rem; }
+nav.tabs .badge {
+  position:absolute; top:.25rem; right:.25rem; max-width:calc(100% - .5rem);
+  padding:.125rem .375rem; border-radius:1rem; font-size:.71875rem;
+  color:var(--warn); background:var(--warn-soft); white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis;
+}
+nav.tabs .badge.quiet { color:var(--muted); background:var(--raised); }
+.home-decisions,.home-overview,.ask-cards>article { min-width:0; }
+.home-work { border:1px solid var(--line); border-radius:var(--radius); padding:16px; background:var(--surface); }
+.home-work>summary { min-height:44px; font-weight:600; }
+.ask-cards { display:grid; gap:14px; }
+.ask-cards>article { margin:0; }
+@media(min-width:900px) {
+  body { padding-left:5.75rem; }
+  nav.tabs { width:5.75rem; }
+  .home-layout { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr); gap:24px; align-items:start; }
+  .asks-layout .ask-cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  nav.tabs a { min-height:4.5rem; padding:.625rem .25rem; justify-content:center; font-size:.78125rem; }
+}
+"#
+);
 
 pub const SCRIPT: &str = r#"const badge=document.getElementById('connection');
 let timer,pending;
@@ -367,7 +423,12 @@ async function refresh(){
     const doc=new DOMParser().parseFromString(await response.text(),'text/html');
     const next=doc.querySelector('main');
     if(!next)throw new Error('refresh unavailable');
-    if(pending===active){document.querySelector('main').replaceWith(next);badge.textContent='Live';}
+    if(pending===active){
+      const current=document.querySelector('main'),work=current.querySelector('details.home-work');
+      const replacement=next.querySelector('details.home-work');
+      if(work&&replacement)replacement.open=work.open;
+      current.replaceWith(next);badge.textContent='Live';
+    }
   }catch(error){if(!active.signal.aborted)badge.textContent='Refresh unavailable';}
   finally{if(pending===active){pending=null;if(!document.hidden)timer=setTimeout(refresh,15000);}}
 }
@@ -381,6 +442,180 @@ timer=setTimeout(refresh,15000);
 mod tests {
     use super::*;
     use oxa_work::board::{GitHub, Mergeability, Policy, PullRequest as BoardPr, RequiredCi};
+
+    fn observed_asks() -> Snapshot {
+        include_str!("../../oxa-proto/tests/fixtures/work/evening.jsonl")
+            .lines()
+            .filter_map(|line| Snapshot::from_json(line.as_bytes()).ok())
+            .find(|snapshot| !snapshot.asks.is_empty())
+            .unwrap()
+    }
+
+    #[test]
+    fn navigation_has_real_urls_one_current_destination_and_observed_ask_counts() {
+        let mut snapshot = observed_asks();
+        for (page, selected) in [
+            (Page::Home, "/"),
+            (Page::Asks, "/asks"),
+            (Page::Board, "/board"),
+            (Page::Workers, "/workers"),
+            (Page::Usage, "/usage"),
+            (Page::Item(17), "/board"),
+            (
+                Page::BoardQuery(Query {
+                    filter: Filter::Fix,
+                    page: 1,
+                }),
+                "/board",
+            ),
+            (Page::Chat(Prompt::Status), "/chat"),
+        ] {
+            let html = document_for(
+                page,
+                &View {
+                    situation: Some(&snapshot),
+                    ..View::default()
+                },
+                100,
+            );
+            let nav = html
+                .split("<nav class=tabs")
+                .nth(1)
+                .unwrap()
+                .split("</nav>")
+                .next()
+                .unwrap();
+            assert_eq!(nav.matches("aria-current=page").count(), 1);
+            let current = nav
+                .split("<a ")
+                .find(|anchor| anchor.split('>').next().unwrap().contains("aria-current=page"))
+                .unwrap();
+            assert!(
+                current
+                    .split('>')
+                    .next()
+                    .unwrap()
+                    .split_whitespace()
+                    .any(|attribute| attribute == format!("href={selected}")),
+                "{page:?}"
+            );
+            for path in ["/", "/asks", "/board", "/workers", "/usage", "/chat"] {
+                assert!(nav.contains(&format!("href={path}")), "{page:?} {path}");
+            }
+            assert!(nav.contains(&format!(
+                "aria-label=\"Asks, {} open in snapshot\"",
+                snapshot.asks.len()
+            )));
+            assert_eq!(nav.matches("<svg ").count(), 5);
+            assert_eq!(html.matches("<h1 ").count(), 1);
+            assert!(html.contains("href=#main>Skip to content"));
+            assert!(html.contains("id=main tabindex=-1"));
+            assert!(!nav.contains("https://") && !nav.contains("onclick="));
+        }
+        snapshot.asks.clear();
+        let quiet = content_for(
+            Page::Asks,
+            &View {
+                situation: Some(&snapshot),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(quiet.contains("aria-label=\"Asks, 0 open in snapshot\""));
+        let unknown = content_for(Page::Asks, &View::default(), 100);
+        assert!(unknown.contains("aria-label=\"Asks, observations unavailable\""));
+        assert!(!unknown.contains("Asks, 0 open in snapshot"));
+        assert!(unknown.contains("Owner asks unavailable"));
+    }
+
+    #[test]
+    fn home_prioritizes_decisions_and_keeps_observed_work_in_native_details() {
+        let snapshot = observed_asks();
+        let board = Board::default();
+        let html = content_for(
+            Page::Home,
+            &View {
+                board: Some(&board),
+                situation: Some(&snapshot),
+                main_red: true,
+                ..View::default()
+            },
+            100,
+        );
+        assert!(html.contains("<div class=home-layout>"));
+        assert!(html.find("id=attention").unwrap() < html.find("id=asks").unwrap());
+        assert!(html.find("id=asks").unwrap() < html.find("<details class=home-work>").unwrap());
+        assert!(html.contains("<details class=home-work><summary>Observed work</summary>"));
+        assert!(!html.contains("<details class=home-work open"));
+        assert!(html.contains("role=alert"));
+        for ask in &snapshot.asks {
+            assert!(html.contains(&escape(&ask.question)));
+        }
+        assert!(html.contains("No open PRs in this snapshot"));
+        assert!(html.contains("href=/board>0 observed items"));
+        assert!(html.contains("Options, recommendation and meanwhile are unavailable"));
+        assert!(!html.contains("<form") && !html.contains("onclick="));
+    }
+
+    #[test]
+    fn asks_layout_keeps_questions_and_unknown_options_read_only() {
+        let snapshot = observed_asks();
+        let html = content_for(
+            Page::Asks,
+            &View {
+                situation: Some(&snapshot),
+                ..View::default()
+            },
+            100,
+        );
+        assert!(html.contains("<div class=asks-layout>"));
+        assert!(html.contains("<div class=ask-cards>"));
+        for ask in &snapshot.asks {
+            assert!(html.contains(&escape(&ask.question)));
+            assert!(html.contains(&escape(&ask.id)));
+        }
+        assert!(html.contains("Options, recommendation and meanwhile are unavailable"));
+        assert!(!html.contains("<form") && !html.contains("<button"));
+    }
+
+    #[test]
+    fn live_refresh_keeps_the_readers_latest_work_disclosure_choice() {
+        let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
+        runtime.eval_script("dom-fixture", r#"
+let current, supplied, closeDuringFetch;
+function makeMain(open) {
+  const work={open};
+  return {work, contains:()=>false, querySelector:selector=>selector==='details.home-work'?work:null,
+    replaceWith:next=>{current=next;}};
+}
+const document={hidden:false, activeElement:{matches:()=>false}, getElementById:()=>({textContent:'Snapshot'}),
+  querySelector:()=>current, addEventListener:()=>{}};
+const setTimeout=()=>1, clearTimeout=()=>{};
+class AbortController { constructor(){this.signal={};} abort(){} }
+class URL { constructor(){this.searchParams={set(){}};} }
+const location={href:'http://example.invalid/'};
+class DOMParser { parseFromString(){return {querySelector:()=>supplied};} }
+async function fetch(){
+  if(closeDuringFetch)current.work.open=false;
+  return {ok:true, text:async()=>''};
+}
+"#).unwrap();
+        runtime.eval_script("live.js", SCRIPT).unwrap();
+        let result = runtime
+            .eval_async_body(
+                "refresh",
+                r#"
+for(const [open,close,expected] of [[false,false,false],[true,false,true],[true,true,false]]) {
+  current=makeMain(open); supplied=makeMain(false); closeDuringFetch=close;
+  await refresh();
+  if(current!==supplied||current.work.open!==expected)throw new Error('reader disclosure state lost');
+}
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
+    }
 
     #[test]
     fn queue_alarm_requires_membership_at_the_exact_head() {
