@@ -288,13 +288,9 @@ impl Runtime {
                 let max_output = offer
                     .max_output
                     .or_else(|| fallback_info.map(|info| info.max_output));
-                let Some((context, output)) = context
+                let limits = context
                     .zip(max_output)
-                    .filter(|(context, output)| output <= context)
-                else {
-                    missing_limits += 1;
-                    continue;
-                };
+                    .filter(|(context, output)| output <= context);
                 let price = match (self.billings.get(alias), offer.price.as_ref()) {
                     (Some(Billing::Metered(configured)), Some(live)) => {
                         Some(configured.clone().overlay_discovered(live))
@@ -302,17 +298,21 @@ impl Runtime {
                     (Some(Billing::Metered(configured)), None) => Some(configured.clone()),
                     (_, live) => live.cloned(),
                 };
-                let Some(price) = price.filter(|price| {
-                    price
-                        .reservation(
-                            source.provider().as_str(),
-                            &offer.id,
-                            u64::from(context),
-                            u64::from(output),
-                        )
-                        .is_some_and(f64::is_finite)
-                }) else {
-                    missing_price += 1;
+                let price = price.filter(|price| {
+                    limits.is_none_or(|(context, output)| {
+                        price
+                            .reservation(
+                                source.provider().as_str(),
+                                &offer.id,
+                                u64::from(context),
+                                u64::from(output),
+                            )
+                            .is_some_and(f64::is_finite)
+                    })
+                });
+                missing_price += usize::from(price.is_none());
+                missing_limits += usize::from(limits.is_none());
+                let (Some(price), Some((context, output))) = (price, limits) else {
                     continue;
                 };
                 let Ok(model) = Model::new(
