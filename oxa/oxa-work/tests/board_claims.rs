@@ -50,27 +50,42 @@ fn entry() -> Entry {
 }
 
 #[test]
-fn disabled_and_zero_cap_do_not_create_claim_files() {
+fn a_disabled_policy_does_not_create_claim_files() {
     let fixture = Fixture::new();
     let store = fixture.store();
-    for policy in [
-        Policy::default(),
-        Policy {
-            enabled: true,
-            max_attempts_per_day: 0,
-        },
-    ] {
-        assert!(store
-            .claim(&entry(), &policy, "worker-a", 10, 10)
-            .unwrap()
-            .is_none());
-    }
+    assert!(store
+        .claim(&entry(), &Policy::default(), "worker-a", 10, 10)
+        .unwrap()
+        .is_none());
     assert!(store.snapshot().unwrap().is_empty());
     assert_eq!(fs::read_dir(fixture.0.path()).unwrap().count(), 0);
 }
 
 #[test]
-fn durable_daily_cap_and_stale_release_fencing() {
+fn a_zero_cap_claims_and_warns_from_the_first_attempt() {
+    let fixture = Fixture::new();
+    let store = fixture.store();
+    let zero = Policy {
+        enabled: true,
+        max_attempts_per_day: 0,
+    };
+    let first = store
+        .claim(&entry(), &zero, "worker-a", 10, 10)
+        .unwrap()
+        .expect("zero is an advisory cap, not a stop");
+    assert_eq!(first.generation, (0, 1));
+    assert!(AttemptAdvisory::at(&first, &zero).is_some());
+    assert!(store.release(1, &first).unwrap());
+    let second = store
+        .claim(&entry(), &zero, "worker-a", 20, 10)
+        .unwrap()
+        .expect("zero still admits the second attempt");
+    assert_eq!(second.generation, (0, 2));
+    assert_eq!(store.snapshot().unwrap()[&1].attempts, 2);
+}
+
+#[test]
+fn durable_daily_count_and_stale_release_fencing() {
     let fixture = Fixture::new();
     let store = fixture.store();
     let first = fixture.claim(10, 10).unwrap();
@@ -81,8 +96,10 @@ fn durable_daily_cap_and_stale_release_fencing() {
     assert!(store.release(1, &second).unwrap());
     let third = fixture.claim(21, 10).unwrap();
     assert!(store.release(1, &third).unwrap());
-    assert!(fixture.claim(22, 10).is_none());
-    assert_eq!(store.snapshot().unwrap()[&1].attempts, 3);
+    // The default three is advisory: the fourth attempt is still claimed.
+    let fourth = fixture.claim(22, 10).unwrap();
+    assert!(store.release(1, &fourth).unwrap());
+    assert_eq!(store.snapshot().unwrap()[&1].attempts, 4);
     assert!(fixture.claim(86_400, 10).is_some());
     assert_eq!(fixture.store().snapshot().unwrap()[&1].attempts, 1);
 }
