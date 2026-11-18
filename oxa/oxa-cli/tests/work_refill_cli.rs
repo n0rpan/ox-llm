@@ -102,11 +102,16 @@ fn refill_startup_retains_pause_and_refuses_worker_writable_authority() {
 #[test]
 fn private_token_and_exact_task_ref_precede_one_durable_publication() {
     for pull_request in [false, true] {
-        durable_publication(pull_request);
+        durable_publication(pull_request, false);
     }
 }
 
-fn durable_publication(pull_request: bool) {
+#[test]
+fn live_fix_packet_uses_current_app_context_and_the_original_durable_binding() {
+    durable_publication(true, true);
+}
+
+fn durable_publication(pull_request: bool, live: bool) {
     use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState};
     use std::collections::BTreeMap;
     let (env, controls) = fixture();
@@ -140,7 +145,13 @@ fn durable_publication(pull_request: bool) {
     } else {
         "revision".into()
     };
-    let valid = if pull_request {
+    let live_task = format!(
+        "c44 local/fake agent/44 agent/44\n{}Address pull request #44 at {revision}: Synthetic live PR\n\nCurrent protected source",
+        oxa_work::github_runner_guidance("pull request")
+    );
+    let valid = if live {
+        live_task.as_str()
+    } else if pull_request {
         "c44 local/fake agent/44 agent/44\nSynthetic prepared packet.\n"
     } else {
         "i44 local/fake agent/44 main\nSynthetic prepared packet.\n"
@@ -148,12 +159,24 @@ fn durable_publication(pull_request: bool) {
     fs::write(&task, valid).unwrap();
     fs::set_permissions(&task, fs::Permissions::from_mode(0o600)).unwrap();
     let config = controls.join("refill.json");
-    fs::write(&config, json!({"enabled":true,"host_id":"host-a","intake":true,"queue":queue,"claims":root,
+    let mut settings = json!({"enabled":true,"host_id":"host-a","intake":true,"queue":queue,"claims":root,
         "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
         "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
         "partition":{"modulus":22,"residues":[0]},
         "packets":[{"number":44,"revision":revision,"action":if pull_request {"resolve_conflict"} else {"build_issue"},"branch":"agent/44","taskfile":task}]
-    }).to_string()).unwrap();
+    });
+    if live {
+        settings.as_object_mut().unwrap().remove("packets");
+        settings["live"] = json!(true);
+        settings["intake"] = json!(false);
+        settings["model"] = json!("local/fake");
+        fs::write(
+            &task,
+            b"Unused manual packet; live mode must fetch current context.",
+        )
+        .unwrap();
+    }
+    fs::write(&config, settings.to_string()).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
     let gh = env.write(
         "tmp/gh",
@@ -174,6 +197,11 @@ cat "$0.reply"
     fs::write(env.tmp().join("gh.reply"), json!({"data":{"repository":{
         "mergeQueue":null,"pullRequests":{"totalCount":rows.len(),"nodes":rows,"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
         "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null,
+        "pullRequest":{"title":"Synthetic live PR","body":"Current protected source",
+            "headRefOid":revision,"headRefName":"agent/44","isCrossRepository":false,
+            "comments":{"totalCount":0,"nodes":[]},"reviews":{"totalCount":0,"nodes":[]},
+            "reviewThreads":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},
+            "commits":{"nodes":[{"commit":{"oid":revision,"statusCheckRollup":null}}]}},
         "p44":{"number":44,"headRefOid":revision,"baseRefName":"main","state":"OPEN","body":"",
             "isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY",
             "baseRef":{"refUpdateRule":null,"rules":{"totalCount":0,"nodes":[]}},
@@ -183,18 +211,22 @@ cat "$0.reply"
     }}}).to_string()).unwrap();
     let missing = invoke(&env, &config, "", false);
     assert_eq!(missing.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&missing.stderr).contains("App token"));
+    if !live {
+        assert!(String::from_utf8_lossy(&missing.stderr).contains("App token"));
+    }
     assert!(!env.tmp().join("gh.calls").exists());
-    fs::write(
-        &task,
-        b"i46 local/fake agent/44 main\nSynthetic prepared packet.\n",
-    )
-    .unwrap();
-    let mismatch = invoke(&env, &config, "synthetic\n", false);
-    assert_eq!(mismatch.status.code(), Some(2));
-    assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
-    assert_eq!(fs::read_dir(&queue).unwrap().count(), 0);
-    fs::write(&task, valid).unwrap();
+    if !live {
+        fs::write(
+            &task,
+            b"i46 local/fake agent/44 main\nSynthetic prepared packet.\n",
+        )
+        .unwrap();
+        let mismatch = invoke(&env, &config, "synthetic\n", false);
+        assert_eq!(mismatch.status.code(), Some(2));
+        assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
+        assert_eq!(fs::read_dir(&queue).unwrap().count(), 0);
+        fs::write(&task, valid).unwrap();
+    }
     let original_config = fs::read(&config).unwrap();
     let mut hostless: serde_json::Value = serde_json::from_slice(&original_config).unwrap();
     hostless.as_object_mut().unwrap().remove("host_id");
@@ -203,6 +235,22 @@ cat "$0.reply"
     assert_eq!(refused.status.code(), Some(2), "native refill requires a host");
     assert!(!env.tmp().join("gh.calls").exists());
     fs::write(&config, original_config).unwrap();
+    if live {
+        let reply = env.tmp().join("gh.reply");
+        let original = fs::read(&reply).unwrap();
+        for (field, value) in [
+            ("headRefOid", json!("b".repeat(40))),
+            ("isCrossRepository", json!(true)),
+        ] {
+            let mut response: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            response["data"]["repository"]["pullRequest"][field] = value;
+            fs::write(&reply, response.to_string()).unwrap();
+            assert_eq!(invoke(&env, &config, "synthetic\n", false).status.code(), Some(2));
+            assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
+            assert_eq!(fs::read_dir(&queue).unwrap().count(), 0);
+        }
+        fs::write(&reply, original).unwrap();
+    }
     if !pull_request {
         let reply = env.tmp().join("gh.reply");
         let original = fs::read(&reply).unwrap();
