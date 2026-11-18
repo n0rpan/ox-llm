@@ -257,6 +257,20 @@ impl Model {
             }
         }
         body.insert("max_tokens".into(), output.into());
+        let reasoning = &self.capabilities["reasoning"];
+        let supported_effort = body
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .is_some_and(|effort| {
+                effort != "none"
+                    && reasoning["supported"] == true
+                    && reasoning["effort"]
+                        .as_array()
+                        .is_some_and(|levels| levels.iter().any(|level| level.as_str() == Some(effort)))
+            });
+        if !supported_effort {
+            body.remove("reasoning_effort");
+        }
         // Local-engine hints and paid/provider-routing overrides have no meaning
         // on the Go subscription endpoint and must not select another balance.
         for field in [
