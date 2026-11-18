@@ -1,4 +1,4 @@
-//! Exercise the shipped binary through loopback; no provider keys or real HOME.
+//! Exercise native goals with mock providers and an isolated home.
 use oxa_fake::{FakeOpts, FakeServer, Fault, ScriptTurn, TestEnv};
 use serde_json::Value;
 use std::io::Write;
@@ -569,4 +569,168 @@ fn lead_resume_after_kill(append_was_saved: bool, paused: bool) {
     }
     assert!(latest["lead"]["pending_steer"].is_null());
     assert_eq!(latest["status"], "done");
+}
+
+#[test]
+fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
+    use oxa_config::{Dirs, Settings};
+    use oxa_core::{Deps, Open, Session, ToolSelection};
+    use oxa_fake::ScriptedEngine;
+    use oxa_perm::ModePolicy;
+    use oxa_proto::{EntryBody, HeadlessUi, VecSink};
+    use oxa_resources::Resources;
+    use oxa_sandbox::NoSandbox;
+    use oxa_session::{FsStore, Goal, HeldGoalLease, LeadGoalState, OpenGoalAsk, SteeringLease};
+    use oxa_work::events::Facts;
+    use oxa_work::standing::{
+        Authority, Kind, Question, QuestionOption, Rule, Scope, Source, Standing, Value,
+    };
+    use serde_json::json;
+    use std::sync::Arc;
+
+    let env = TestEnv::new();
+    let facts = Facts::initialize(&env.root().join("facts")).unwrap();
+    let standing_root = env.root().join("standing");
+    let standing = Standing::initialize(&standing_root, Authority::Owner, facts.clone()).unwrap();
+    let source = Source::Command {
+        command: "synthetic owner input".into(),
+    };
+    let add_rule = |revision, kind, said: &str| {
+        standing
+            .rule(
+                revision,
+                Authority::Owner,
+                revision + 1,
+                Rule {
+                    kind,
+                    scope: Scope::Repository,
+                    value: Value::Text(said.into()),
+                    said: said.into(),
+                    source: source.clone(),
+                    supersedes: None,
+                },
+            )
+            .unwrap()
+    };
+    let decision = add_rule(0, Kind::Decided, "Keep the exact result  —  including spacing.");
+    let priority = add_rule(1, Kind::Priority, "Review the synthetic queue first.");
+    let ask = standing
+        .ask(
+            2,
+            3,
+            Question {
+                scope: Scope::Repository,
+                question: "Which result  —  A or B?".into(),
+                options: ["A", "B"]
+                    .into_iter()
+                    .map(|label| QuestionOption {
+                        label: label.into(),
+                        detail: format!("Use result {label}."),
+                    })
+                    .collect(),
+                recommended: "A".into(),
+                meanwhile: None,
+                source,
+            },
+        )
+        .unwrap();
+    let lead = LeadGoalState {
+        open_asks: vec![OpenGoalAsk {
+            id: ask.id.clone(),
+            revision: ask.revision,
+            question: ask.question.clone(),
+        }],
+        standing_refs: vec![decision.id.clone(), priority.id.clone()],
+        held_leases: vec![HeldGoalLease {
+            task: "fixture/task-1".into(),
+            lease: SteeringLease {
+                holder: "fixture/worker-1".into(),
+                generation: (7, 2),
+            },
+            expires_at: 9_999_999_999,
+        }],
+        pending_steer: None,
+    };
+
+    let engine = Arc::new(ScriptedEngine::new(vec![
+        ScriptTurn::text("First mock reply."),
+        ScriptTurn::text("Second mock reply."),
+        ScriptTurn::text("Mock compaction summary."),
+        ScriptTurn::text("Resumed mock reply."),
+    ]));
+    let sessions_root = env.root().join("sessions");
+    let deps = || Deps {
+        engine: engine.clone(),
+        store: Arc::new(FsStore::new(sessions_root.clone())),
+        tools: Vec::new(),
+        hooks: Vec::new(),
+        policy: Box::new(ModePolicy::new()),
+        sandbox: Arc::new(NoSandbox),
+        settings: Settings::from_values(json!({"compaction":{"keepRecentTokens":1}}), json!({})),
+        dirs: Dirs::under(env.root()),
+        cwd: env.work(),
+        selection: ToolSelection::default(),
+        resources: Resources::default(),
+        model: None,
+        thinking: None,
+        mode: None,
+        session_id: None,
+        jobs: oxa_core::fresh_jobs(),
+    };
+    let mut session = Session::open(deps(), Open::New).unwrap();
+    let bound = session.inner().sref.clone();
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    let objective = "Continue reviewing the synthetic queue.";
+    session
+        .set_goal(
+            Some(Goal::new(objective.into(), Default::default(), 1000).unwrap()),
+            &mut sink,
+        )
+        .unwrap();
+    session
+        .update_lead_goal(&bound, session.goal_revision(), lead.clone(), &mut sink)
+        .unwrap();
+    let old_prompt = "A synthetic turn old enough to compact.";
+    for prompt in [old_prompt, "A more recent synthetic turn."] {
+        session.prompt(prompt.into(), vec![], &mut sink, &mut ui).unwrap();
+    }
+    session.compact(None, &mut sink, &mut ui).unwrap();
+    assert!(session.inner().tree.entries().iter().any(|entry| {
+        matches!(&entry.body, EntryBody::Compaction { summary, .. } if summary.contains("Mock compaction summary."))
+    }));
+    let saved = session.goal().unwrap();
+    assert_eq!(saved.lead.as_ref(), Some(&lead));
+    let revision = session.goal_revision();
+    session.shutdown(&mut ui);
+    drop(session);
+    drop(standing);
+
+    let mut resumed = Session::open(deps(), Open::Resume(bound)).unwrap();
+    assert_eq!(resumed.goal(), Some(saved));
+    assert_eq!(resumed.goal_revision(), revision);
+    resumed
+        .prompt("Resume the synthetic review.".into(), vec![], &mut sink, &mut ui)
+        .unwrap();
+    let goal = resumed.goal().unwrap();
+    assert_eq!(goal.objective, objective);
+    let restored = goal.lead.unwrap();
+    assert_eq!(restored, lead);
+    let standing = Standing::open(&standing_root, facts).unwrap().read().unwrap();
+    for (reference, expected) in restored.standing_refs.iter().zip([decision, priority]) {
+        assert_eq!(
+            standing.live_rules().find(|rule| rule.id == *reference),
+            Some(&expected)
+        );
+    }
+    assert_eq!(standing.open_asks().find(|open| open.id == ask.id), Some(&ask));
+    let requests = engine.requests();
+    let messages = &requests.last().unwrap().messages;
+    assert!(messages.iter().any(|message| message
+        .content
+        .as_deref()
+        .is_some_and(|text| text.contains("Mock compaction summary."))));
+    assert!(!messages
+        .iter()
+        .any(|message| message.content.as_deref() == Some(old_prompt)));
 }
