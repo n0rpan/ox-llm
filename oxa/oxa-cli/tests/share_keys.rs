@@ -562,12 +562,31 @@ fn foreground_serve_lists_only_the_owner_selected_local_models_on_loopback() {
 mod metered_peer;
 
 #[cfg(feature = "share")]
+fn write_mock_provider_key(home: &Home, provider: &str, credential: &str) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let key_path = home.0.join(".config/oxc/llm/cloud-secrets.json");
+    fs::create_dir_all(key_path.parent().unwrap()).unwrap();
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&key_path)
+        .unwrap();
+    write!(
+        file,
+        "{}",
+        serde_json::json!({ (provider): {"api_key":credential} })
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "share")]
 #[test]
 fn foreground_metered_cloud_requires_owner_allowlist_and_settles_a_guest_request() {
     use metered_peer::{MockAnthropic, Reply, CREDENTIAL};
     use serde_json::json;
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
 
     let mut events = vec![
         json!({"type":"message_start","message":{"id":"msg_synthetic","type":"message","role":"assistant",
@@ -604,16 +623,7 @@ fn foreground_metered_cloud_requires_owner_allowlist_and_settles_a_guest_request
     }});
     let settings_path = agent.join("settings.json");
     fs::write(&settings_path, settings.to_string()).unwrap();
-    let key_path = home.0.join(".config/oxc/llm/cloud-secrets.json");
-    fs::create_dir_all(key_path.parent().unwrap()).unwrap();
-    let mut provider_key = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&key_path)
-        .unwrap();
-    write!(provider_key, "{}", json!({"anthropic":{"api_key":CREDENTIAL}})).unwrap();
-    drop(provider_key);
+    write_mock_provider_key(&home, "anthropic", CREDENTIAL);
 
     let bearer = add_test_guest(&home);
     let (mut disabled, announcement) = ForegroundShare::spawn(&home, &["synthetic-metered"]);
@@ -682,6 +692,88 @@ fn foreground_metered_cloud_requires_owner_allowlist_and_settles_a_guest_request
     ] {
         assert!(!rows[0].to_string().contains(private));
     }
+}
+
+#[cfg(feature = "share")]
+#[test]
+fn metered_openrouter_forwards_only_supplied_guest_sampling() {
+    use metered_peer::{MockAnthropic, Reply, CREDENTIAL};
+    use serde_json::json;
+
+    const SSE: &[u8] =
+        br#"data: {"choices":[{"index":0,"delta":{"content":"Synthetic reply"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":2}}
+
+data: [DONE]
+
+"#;
+    let cases = [
+        (Some(0.0), None),
+        (None, Some(0.5)),
+        (Some(0.25), Some(0.75)),
+        (None, None),
+    ];
+    let upstream = MockAnthropic::start(
+        cases
+            .iter()
+            .map(|_| Reply::wire("text/event-stream", SSE))
+            .collect(),
+    );
+    let home = Home::new();
+    let agent = home.0.join(".oxa/agent");
+    fs::create_dir_all(&agent).unwrap();
+    fs::write(
+        agent.join("settings.json"),
+        json!({"oxa":{
+            "engine":{"inProcessCloud":true},
+            "cloud":{"daily_budget_usd":1.0,"models":{
+                "synthetic-metered":{"provider":"openrouter","base_url":upstream.base_url(),
+                    "upstream_model":"synthetic-openrouter","context_window":4096,"max_output":16,
+                    "pricing":{"input_per_million":2,"output_per_million":3}}
+            }},
+            "share":{"remoteModels":["synthetic-metered"]}
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    write_mock_provider_key(&home, "openrouter", CREDENTIAL);
+
+    let bearer = add_test_guest(&home);
+    let (_serving, address) = ForegroundShare::start(&home, &["synthetic-metered"]);
+    for (temperature, top_p) in cases {
+        let mut body = json!({"model":"synthetic-metered","stream":true,"max_tokens":8,
+            "messages":[{"role":"user","content":"Synthetic guest question"}]});
+        for (field, value) in [("temperature", temperature), ("top_p", top_p)] {
+            if let Some(value) = value {
+                body[field] = json!(value);
+            }
+        }
+        let reply = guest_request(
+            address,
+            "POST",
+            "/v1/chat/completions",
+            &bearer,
+            &body.to_string(),
+        );
+        assert!(
+            reply.starts_with("HTTP/1.1 200") && reply.contains("[DONE]"),
+            "{reply}"
+        );
+    }
+    let calls = upstream.requests();
+    assert_eq!(calls.len(), cases.len());
+    for (call, (temperature, top_p)) in calls.iter().zip(cases) {
+        for (field, requested) in [("temperature", temperature), ("top_p", top_p)] {
+            match requested {
+                Some(value) => assert_eq!(call.body[field], json!(value), "{field}"),
+                None => assert!(call.body.get(field).is_none(), "{field}"),
+            }
+        }
+    }
+    upstream.finish();
 }
 
 #[cfg(feature = "share")]
