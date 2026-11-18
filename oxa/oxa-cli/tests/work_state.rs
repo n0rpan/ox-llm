@@ -915,20 +915,21 @@ fn acceptance_deadline_case() {
         1,
         "expired task budget refuses repair admission: {record}"
     );
-    assert_eq!(record["outcome"], "interrupted", "{record}");
-    assert_eq!(record["interruption"], "deadline");
+    assert_eq!(record["outcome"], "unverified", "{record}");
     assert_eq!(
         record["worker"]["outcome"], "done",
-        "worker success remains distinct from task interruption"
+        "worker success remains distinct from an unverified acceptance round"
     );
-    assert_eq!(git(&env, tree(&record), &["show", "HEAD:failure.txt"]), "failed");
-    assert_eq!(
-        git(&env, tree(&record), &["show", "HEAD:acceptance-started"]),
-        "started"
-    );
+    let checks = record["checks"].as_array().expect("acceptance evidence");
+    assert_eq!(checks.len(), 1, "{record}");
+    assert_eq!(checks[0]["status"], "not_run", "{record}");
+    assert_eq!(checks[0]["timed_out"], true, "{record}");
+    assert!(checks[0]["exit"].is_null(), "{record}");
+    assert!(!tree(&record).join("acceptance-started").exists(), "{record}");
+    assert!(!tree(&record).join("failure.txt").exists(), "{record}");
     let state = load(&env);
     assert_eq!(state["task"]["max_time"], 2);
-    assert!(record["checkpoint_at_ms"].as_u64().unwrap() >= state["deadline_at_ms"].as_u64().unwrap());
+    assert!(oxa_proto::time::now_ms() >= state["deadline_at_ms"].as_u64().unwrap());
 }
 
 #[test]
