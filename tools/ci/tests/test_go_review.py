@@ -1,7 +1,7 @@
 """O-397/O-398: fake GitHub/OIDC/provider controls; no live credentials or cloud calls."""
 import contextlib
 import copy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import importlib.util
 import io
 import json
@@ -23,6 +23,13 @@ PR = {'number': 7, 'state': 'open', 'draft': False, 'author_association': 'MEMBE
       'head': {'sha': SHA, 'repo': {'full_name': review.REPO}},
       'base': {'ref': 'main', 'repo': {'full_name': review.REPO}}, 'labels': [],
       'additions': 1, 'deletions': 1, 'changed_files': 1}
+
+
+def quota_comment(comment_id=11, verdict='OK', *, yesterday=False, login='github-actions[bot]'):
+    date = datetime.now(UTC) - timedelta(days=int(yesterday))
+    receipt = {'sha': 'b' * 40, 'diff_hash': 'c' * 64, 'verdict': verdict}
+    return {'id': comment_id, 'user': {'login': login}, 'created_at': date.strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'body': '<!-- go-review:v1 ' + json.dumps(receipt) + ' -->'}
 
 
 def response(rows=None):
@@ -62,24 +69,35 @@ class GoReview(unittest.TestCase):
             if '/comments?' in url:
                 return comments or []
             if url == review.ARGON_URL:
+                self.assertIn('"verdict":"RESERVED"', posted[0])
                 payload = json.loads(body)
                 self.assertEqual(payload['generationConfig']['responseMimeType'], 'application/json')
+                self.assertEqual(payload['generationConfig']['maxOutputTokens'], 8192)
                 self.assertIn('Project guidelines:', payload['systemInstruction']['parts'][0]['text'])
                 self.assertNotIn('synthetic-access', json.dumps(payload))
                 return argon if argon is not None else {'candidates': [{'finishReason': 'STOP',
                     'content': {'parts': [{'text': response()['choices'][0]['message']['content']}]}}]}
             if url == review.MODEL_URL:
+                self.assertIn('"verdict":"RESERVED"', posted[0])
                 payload = json.loads(body)
                 self.assertEqual(payload['model'], 'deepseek-v4.1-flash')
+                self.assertEqual(payload['max_tokens'], 4096)
                 self.assertFalse(payload['stream'])
                 self.assertIn('Project guidelines:', payload['messages'][0]['content'])
                 self.assertIn('# Review rubric', payload['messages'][0]['content'])
                 self.assertIn('"overall_verdict"', payload['messages'][0]['content'])
                 self.assertNotIn('synthetic-access', payload['messages'][0]['content'])
                 return answer or response()
+            body = json.loads(body)['body']
+            if kwargs.get('method') == 'PATCH':
+                self.assertEqual(url, review.API + '/issues/comments/1')
+                self.assertEqual(len(posted), 1)
+                posted[0] = body
+                return {'id': 1}
             self.assertEqual(url, review.API + '/issues/7/comments')
-            posted.append(json.loads(body)['body'])
-            return {'id': 1}
+            self.assertEqual(posted, [])
+            posted.append(body)
+            return {**quota_comment(1), 'issue_url': review.API + '/issues/7', 'body': body}
 
         with tempfile.TemporaryDirectory() as tmp:
             event = Path(tmp) / 'event.json'
@@ -109,12 +127,39 @@ class GoReview(unittest.TestCase):
                           'findings': 1, 'diff_hash': review.own_diff_hash(FILES)})
 
     def test_full_daily_quota_refuses_before_authentication(self):
-        receipt = {'sha': 'b' * 40, 'diff_hash': 'c' * 64, 'verdict': 'OK'}
-        comment = {'id': 11, 'user': {'login': 'github-actions[bot]'},
-                   'created_at': datetime.now(UTC).strftime('%Y-%m-%dT%H:%M:%SZ'),
-                   'body': '<!-- go-review:v1 ' + json.dumps(receipt) + ' -->'}
         with self.assertRaises(review.Skipped):
-            self.run_review(daily_comments=[comment], max_per_day='1')
+            self.run_review(daily_comments=[quota_comment()], max_per_day='1')
+
+    def test_default_cap_includes_other_prs_in_flight_and_ignores_yesterday_and_spoofs(self):
+        comments = [quota_comment(i) for i in range(1, 40)]
+        with self.assertRaises(review.Skipped):
+            self.run_review(daily_comments=comments + [quota_comment(40, 'RESERVED')])
+        comments += [quota_comment(40, yesterday=True), quota_comment(41, login='untrusted')]
+        self.assertEqual(self.run_review(daily_comments=comments)[2], 1)
+
+    def test_unverifiable_daily_counter_refuses(self):
+        for listing in ({'message': 'unavailable'}, [quota_comment(login='untrusted')] * 100,
+                        [{**quota_comment(), 'created_at': 'unknown'}]):
+            with self.subTest(listing_type=type(listing)), self.assertRaises(review.Refused):
+                self.run_review(daily_comments=listing)
+        with self.assertRaises(review.Refused):
+            self.run_review(max_per_day='unknown')
+
+    def test_provider_quota_refusal_is_skipped_after_one_attempt(self):
+        for url in (review.MODEL_URL, review.ARGON_URL):
+            for status in (402, 429):
+                with self.subTest(url=url, status=status), \
+                        patch.object(review.urllib.request, 'build_opener') as build:
+                    opener = build.return_value
+                    opener.open.side_effect = review.urllib.error.HTTPError(url, status, '', {}, None)
+                    with self.assertRaises(review.Skipped):
+                        review.request(url, {}, b'{}')
+                    self.assertEqual(opener.open.call_count, 1)
+
+    def test_oversized_review_input_never_reaches_provider(self):
+        with patch.object(review, 'request') as send, self.assertRaises(review.Skipped):
+            review.model_response(review.MODEL, 'synthetic', 'prompt', 'é' * review.MAX_INPUT_BYTES, 'session')
+        send.assert_not_called()
 
     def test_clean_comment_has_required_machine_readable_marker_on_its_own_line(self):
         _, posted, _ = self.run_review()
@@ -151,17 +196,14 @@ class GoReview(unittest.TestCase):
             with self.subTest(models=models), self.assertRaises(review.Refused):
                 self.run_review(models=models)
 
-    def test_two_review_label_requests_only_the_model_missing_from_cached_diff(self):
+    def test_two_review_label_does_not_consume_a_second_slot_for_the_same_diff(self):
         _, first, _ = self.run_review()
         comments = [{'user': {'login': 'github-actions[bot]'}, 'body': first[0]}]
         pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
         models = json.dumps([review.MODEL, review.ARGON])
         calls, posted, auth = self.run_review(pr=pr, comments=comments, models=models)
-        self.assertEqual((calls.count(review.MODEL_URL), calls.count(review.ARGON_URL)), (0, 1))
-        self.assertEqual((len(posted), auth), (1, 1))
-        self.assertEqual(json.loads(review.MARKER.findall(posted[0])[0])['model'], review.ARGON)
-        comments.append({'user': {'login': 'github-actions[bot]'}, 'body': posted[0]})
-        self.assertEqual(self.run_review(pr=pr, comments=comments, models=models)[1:], ([], 0))
+        self.assertEqual((calls.count(review.MODEL_URL), calls.count(review.ARGON_URL)), (0, 0))
+        self.assertEqual((posted, auth), ([], 0))
 
     def test_gemini_text_metadata_and_thoughts_preserve_the_final_review(self):
         pr = {**copy.deepcopy(PR), 'labels': [{'name': 'two-review'}]}
@@ -229,11 +271,14 @@ class GoReview(unittest.TestCase):
         with self.assertRaises(review.Skipped):
             self.run_review(files=[{**FILES[0], 'patch': '@@ -1 +1,2 @@\n-old\n+new', 'additions': 2}])
 
-    def test_stale_result_is_not_posted(self):
+    def test_stale_result_leaves_only_the_non_retryable_reservation(self):
         calls, posted, auth = self.run_review(stale=True)
         self.assertEqual(auth, 1)
         self.assertIn(review.MODEL_URL, calls)
-        self.assertEqual(posted, [])
+        self.assertEqual(len(posted), 1)
+        self.assertIn('"verdict":"RESERVED"', posted[0])
+        comments = [{'user': {'login': 'github-actions[bot]'}, 'body': posted[0]}]
+        self.assertEqual(self.run_review(comments=comments)[1:], ([], 0))
 
     def test_bad_model_paths_ranges_verdicts_and_incomplete_output_are_refused(self):
         allowed = review.changed_lines(FILES)
@@ -286,6 +331,8 @@ class GoReview(unittest.TestCase):
         self.assertIn('persist-credentials: false', text)
         self.assertIn('id-token: write', text)
         self.assertIn('GO_REVIEW_MODELS: ${{ vars.GO_REVIEW_MODELS }}', text)
+        self.assertIn('GO_REVIEW_MAX_PER_DAY: ${{ vars.GO_REVIEW_MAX_PER_DAY }}', text)
+        self.assertRegex(text, r'(?m)^    concurrency:\n      group: go-review-daily-quota\n      queue: max$')
         self.assertIn("github.event.label.name == 'two-review'", text)
         self.assertIn("vars.GO_REVIEW_ENABLED == 'true'", text)
         self.assertIn('pull-requests: write', text)
