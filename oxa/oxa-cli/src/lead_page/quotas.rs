@@ -27,8 +27,10 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
             {
                 let _ = write!(
                     html,
-                    "<dd>{} of {} remaining · resets at {} (Unix seconds)",
-                    window.remaining, window.limit, window.resets_at
+                    "<dd>{} of {} remaining · resets {}",
+                    window.remaining,
+                    window.limit,
+                    super::human_time(window.resets_at, now)
                 );
                 meter(
                     html,
@@ -72,8 +74,9 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
         if let Some(window) = window {
             let _ = write!(
                 html,
-                "<dd>{}% used · resets at {} (Unix seconds)",
-                window.used_percent, window.resets_at
+                "<dd>{}% used · resets {}",
+                window.used_percent,
+                super::human_time(window.resets_at, now)
             );
             meter(
                 html,
