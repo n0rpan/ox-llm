@@ -272,6 +272,15 @@ mod tests {
 
     #[test]
     fn native_queue_dispatches_one_canonical_attempt_and_settles_before_the_event() {
+        native_queue_settlement(Outcome::NothingToDo, 0);
+    }
+
+    #[test]
+    fn native_queue_releases_finished_unverified_without_accepting_it() {
+        native_queue_settlement(Outcome::Unverified, 1);
+    }
+
+    fn native_queue_settlement(outcome: Outcome, expected_failed: usize) {
         if crate::lock_process::in_parent() {
             return;
         }
@@ -314,7 +323,7 @@ mod tests {
             assert!(second.is_err(), "worker must receive the held task lock");
             started.fetch_add(1, Ordering::Relaxed);
             let mut saved = state::State::new(found.clone(), blocked_record(found, String::new()), true);
-            saved.record.outcome = Outcome::NothingToDo;
+            saved.record.outcome = outcome;
             let mut writer =
                 state::Writer::new(locked.policy.storage.join(format!("{}.json", found.id)), false);
             writer
@@ -339,13 +348,17 @@ mod tests {
             .run_native(&owner, worker.clone(), &mut |event| {
                 if let QueueEvent::Task { record } = event {
                     assert_eq!(record.id, task.id);
+                    assert_eq!(record.outcome, outcome);
                     assert!(claims.snapshot().unwrap()[&binding.number].lease.is_none());
                     completed += 1;
                 }
                 Ok(())
             })
             .unwrap();
-        assert_eq!((status.finished, status.failed, completed), (1, 0, 1));
+        assert_eq!(
+            (status.finished, status.failed, completed),
+            (1, expected_failed, 1)
+        );
 
         let again = run().run_native(&owner, worker, &mut |_| Ok(())).unwrap();
         assert_eq!((again.finished, again.failed), (0, 1));
