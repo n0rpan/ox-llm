@@ -90,6 +90,7 @@ pub(crate) fn run(
     session: Option<&str>,
     remaining: Duration,
     #[cfg(target_os = "linux")] managed_steering: Option<&crate::managed_steering::Launch>,
+    control_receipt: Option<&crate::queue::ControlSink>,
     on_session: &mut (dyn FnMut(&str) -> Result<()> + Send),
 ) -> Result<Worker> {
     let terminate = policy
@@ -136,13 +137,17 @@ pub(crate) fn run(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("start worker: {e}"))?;
+    #[cfg(target_os = "linux")]
+    let control_receipt = control_receipt.filter(|_| managed_steering.is_some());
+    #[cfg(not(target_os = "linux"))]
+    let control_receipt = control_receipt.filter(|_| false);
     let stdout = child.stdout.take().ok_or("worker stdout missing")?;
     let stderr = child.stderr.take().ok_or("worker stderr missing")?;
     std::thread::scope(|scope| {
         let (notice_tx, notice_rx) = std::sync::mpsc::channel();
         let header_tx = notice_tx.clone();
         let header = scope.spawn(move || {
-            read_session(stdout, &mut |id| {
+            read_session(stdout, control_receipt, &mut |id| {
                 let result = on_session(id);
                 if let Err(error) = &result {
                     let _ = header_tx.send(Some(error.clone()));
@@ -217,6 +222,7 @@ pub(crate) fn run(
 
 fn read_session(
     pipe: impl Read,
+    control_receipt: Option<&crate::queue::ControlSink>,
     on_session: &mut dyn FnMut(&str) -> Result<()>,
 ) -> Result<(Option<String>, Vec<crate::ProblemNote>)> {
     let mut reader = BufReader::new(pipe);
@@ -239,6 +245,11 @@ fn read_session(
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
             continue;
         };
+        if let Some(sink) = control_receipt {
+            if let Some(receipt) = crate::queue::ControlReceipt::from_worker(&value) {
+                sink(receipt);
+            }
+        }
         if value["type"] == "message_end" && value["message"]["role"] == "assistant" {
             let mut text = String::new();
             if let Some(parts) = value["message"]["content"].as_array() {

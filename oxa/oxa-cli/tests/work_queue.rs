@@ -205,6 +205,16 @@ fn managed_native_worker(case: ManagedCase) {
             &env.agent_dir(),
             &session,
             &json!({
+                "method":"steer","id":"fixture-stale","text":"Synthetic stale input.","revision":revision,
+                "lease":{"holder":lease.holder,"generation":[lease.generation.0, lease.generation.1 + 1]}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        send_inbox_control(
+            &env.agent_dir(),
+            &session,
+            &json!({
                 "method":"steer","id":"fixture-steer","text":steered,"revision":revision,
                 "lease":{"holder":lease.holder,"generation":lease.generation}
             })
@@ -238,9 +248,25 @@ fn managed_native_worker(case: ManagedCase) {
         return;
     }
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-    assert!(rows(&out)
+    let events = rows(&out);
+    assert!(events
         .iter()
         .any(|row| row["event"] == "task" && row["id"] == binding.native_task_id));
+    let receipts: Vec<_> = events
+        .iter()
+        .filter(|event| event["event"] == "goal_control_receipt" && event["receipt"]["id"] == "fixture-steer")
+        .collect();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0]["task"], binding.native_task_id);
+    assert_eq!(receipts[0]["receipt"]["admitted"], true);
+    assert!(receipts[0]["receipt"].get("queued").is_none());
+    let stale = events
+        .iter()
+        .find(|event| event["event"] == "goal_control_receipt" && event["receipt"]["id"] == "fixture-stale")
+        .expect("managed stale receipt reached the caller");
+    assert_eq!(stale["task"], binding.native_task_id);
+    assert_eq!(stale["receipt"]["admitted"], false);
+    assert_eq!(stale["receipt"]["error"], "goal_steer_stale");
     let requests: Vec<_> = server
         .requests()
         .into_iter()

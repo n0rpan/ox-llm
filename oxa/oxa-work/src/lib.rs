@@ -1064,6 +1064,7 @@ pub struct LockedTask<'a> {
     task: &'a Task,
     policy: &'a RunPolicy,
     lock: fs::File,
+    control_receipt: Option<Box<queue::ControlSink>>,
     #[cfg(target_os = "linux")]
     managed_steering: Option<managed_steering::Launch>,
 }
@@ -1088,6 +1089,7 @@ impl<'a> LockedTask<'a> {
             task,
             policy,
             lock,
+            control_receipt: None,
             #[cfg(target_os = "linux")]
             managed_steering: None,
         })
@@ -1237,6 +1239,7 @@ fn run_locked(
         base_alias: planned.base_alias.as_ref(),
         #[cfg(target_os = "linux")]
         managed_steering: locked.managed_steering.as_ref(),
+        control_receipt: locked.control_receipt.as_deref(),
     })
     .drive(&mut state)
     {

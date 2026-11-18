@@ -389,7 +389,8 @@ pub fn run_json_outcome_with_steering_authority(
         }
         let request = match oxa_orchestrator::control::decode(packet.as_bytes()) {
             Ok(request) => request,
-            Err(rejection) => {
+            Err(mut rejection) => {
+                rejection["admitted"] = false.into();
                 write_control_receipt(&out, rejection);
                 return true;
             }

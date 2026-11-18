@@ -60,7 +60,62 @@ pub enum QueueEvent {
         file: PathBuf,
         detail: String,
     },
+    GoalControlReceipt {
+        task: String,
+        receipt: ControlReceipt,
+    },
 }
+
+#[derive(Serialize)]
+pub struct ControlReceipt {
+    id: Option<String>,
+    admitted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<&'static str>,
+}
+
+impl ControlReceipt {
+    pub(crate) fn from_worker(value: &serde_json::Value) -> Option<Self> {
+        if value["type"] != "goal_control_receipt" {
+            return None;
+        }
+        let data = &value["data"];
+        let admitted = data["admitted"].as_bool()?;
+        let id = match data.get("id") {
+            None if !admitted => None,
+            Some(id) => Some(
+                id.as_str()
+                    .filter(|id| !id.is_empty() && id.len() <= 128 && !id.chars().any(char::is_control))?
+                    .to_owned(),
+            ),
+            None => return None,
+        };
+        let error = if admitted {
+            if data.get("error").is_some() {
+                return None;
+            }
+            None
+        } else {
+            Some(match data["error"].as_str()? {
+                "goal_steer_stale" => "goal_steer_stale",
+                "control_queue_full" => "control_queue_full",
+                "unsupported_control" => "unsupported_control",
+                "invalid_request" | "request_too_large" | "invalid_id" | "invalid_steer"
+                | "invalid_lease" => "invalid_request",
+                _ => "not_admitted",
+            })
+        };
+        Some(Self { id, admitted, error })
+    }
+}
+
+pub(crate) type ControlSink = dyn Fn(ControlReceipt) + Send + Sync;
+
+enum WorkerEvent {
+    Finished(Box<(Job, Result<Record>)>),
+    Control { task: String, receipt: ControlReceipt },
+}
+
 #[derive(Clone)]
 struct Job {
     task: Task,
@@ -87,12 +142,13 @@ struct NativeWorker {
 }
 
 impl QueueWorker {
-    fn run(&self, job: &mut Job) -> Result<Record> {
+    fn run(&self, job: &mut Job, control: Box<ControlSink>) -> Result<Record> {
         let worker = match self {
             Self::Manual(run) => return run(&job.task),
             Self::Native(worker) => worker,
         };
         let mut locked = LockedTask::acquire(&job.task, &worker.policy)?;
+        locked.control_receipt = Some(control);
         let owner = NativeQueueOwner {
             claims: &worker.claims,
             worker_id: &worker.worker_id,
@@ -499,8 +555,9 @@ fn run_queue_inner(
         .mode(0o700)
         .create(storage)
         .map_err(|e| e.to_string())?;
-    let (tx, rx) = mpsc::channel();
     let mut active = Workers::default();
+    // Drop the receiver before joining workers on early output failure.
+    let (tx, rx) = mpsc::sync_channel(32);
     let read_directory = prepared.is_none();
     let mut pending: Vec<_> = prepared
         .into_iter()
@@ -571,18 +628,27 @@ fn run_queue_inner(
             let worker = worker.clone();
             let tx = tx.clone();
             let mut input = job.clone();
+            let task = id.clone();
             match thread::Builder::new()
                 .name(format!("oxa-work-{id}"))
                 .spawn(move || {
-                    let record =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker.run(&mut input)))
-                            .unwrap_or_else(|_| {
-                                Ok(blocked_record(
-                                    &input.task,
-                                    "queue worker panicked; retained state can be resumed".into(),
-                                ))
-                            });
-                    let _ = tx.send((input, record));
+                    let control_tx = tx.clone();
+                    let control = Box::new(move |receipt| {
+                        let _ = control_tx.send(WorkerEvent::Control {
+                            task: task.clone(),
+                            receipt,
+                        });
+                    });
+                    let record = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        worker.run(&mut input, control)
+                    }))
+                    .unwrap_or_else(|_| {
+                        Ok(blocked_record(
+                            &input.task,
+                            "queue worker panicked; retained state can be resumed".into(),
+                        ))
+                    });
+                    let _ = tx.send(WorkerEvent::Finished(Box::new((input, record))));
                 }) {
                 Ok(handle) => {
                     active.handles.insert(id, handle);
@@ -640,7 +706,11 @@ fn run_queue_inner(
             continue;
         }
         match rx.recv_timeout(Duration::from_millis(250)) {
-            Ok((job, record)) => {
+            Ok(WorkerEvent::Control { task, receipt }) => {
+                emit(QueueEvent::GoalControlReceipt { task, receipt })?
+            }
+            Ok(WorkerEvent::Finished(completed)) => {
+                let (job, record) = *completed;
                 if let Some(handle) = active.handles.remove(&job.task.id) {
                     let _ = handle.join();
                 }
