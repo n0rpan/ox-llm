@@ -166,6 +166,32 @@ fn unavailable_go_reports_the_owner_fix_before_any_discovery() {
 }
 
 #[test]
+fn project_default_cannot_select_a_credential_enabled_go_route() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    settings["oxa"]["cloud"]["opencode"]
+        .as_object_mut()
+        .unwrap()
+        .remove("enabled");
+    fs::write(path, settings.to_string()).unwrap();
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"defaultModel":MODEL}).to_string(),
+    );
+
+    let output = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(!output.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
 fn a_local_model_pattern_can_use_a_go_prefixed_alias_when_cloud_is_off() {
     let env = TestEnv::new();
     let alias = "opencode/synthetic-local";
