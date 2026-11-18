@@ -323,5 +323,9 @@ matching packet into `started` and resumes from the task checkpoint after
 interruption. The original claim releases after the whole task finishes and
 its worker process exits.
 
+Set `nativeActivity` to `true` in the same protected config to record verified
+worker results on the original hosted claim. The setting defaults to off.
+A saved worker result keeps its launch identity across checkpoint replay.
+
 Problem-report workflows hold a per-user kernel lease across drafting, duplicate
 search, match reads and writing, so concurrent workers share one reporting lane.
