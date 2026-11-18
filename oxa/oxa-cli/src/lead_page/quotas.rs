@@ -4,10 +4,6 @@ use std::fmt::Write;
 
 pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
     html.push_str("<section><h2>Plans and quotas</h2>");
-    if view.github_quotas.is_none() && view.model_plan.is_none() {
-        html.push_str("<p>Usage observations unavailable.</p></section>");
-        return;
-    }
     html.push_str("<dl>");
     for (identity, label) in [(GitHubIdentity::App, "App"), (GitHubIdentity::Owner, "Owner")] {
         for (resource, api) in [
@@ -25,7 +21,7 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
                     window.remaining, window.limit, window.resets_at
                 );
             } else {
-                html.push_str("<dd>Unavailable</dd>");
+                html.push_str("<dd>Unknown</dd>");
             }
         }
     }
@@ -39,11 +35,7 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         });
-    let _ = write!(
-        html,
-        "<dt>Model plan</dt><dd>{}</dd>",
-        plan.unwrap_or("Unavailable")
-    );
+    let _ = write!(html, "<dt>Model plan</dt><dd>{}</dd>", plan.unwrap_or("Unknown"));
     let windows = view
         .model_plan
         .map_or([None; 2], |usage| model_windows(usage, now));
@@ -56,7 +48,7 @@ pub(super) fn render(html: &mut String, view: &View<'_>, now: u64) {
                 window.used_percent, window.resets_at
             );
         } else {
-            html.push_str("<dd>Unavailable</dd>");
+            html.push_str("<dd>Unknown</dd>");
         }
     }
     html.push_str("</dl></section>");
@@ -92,7 +84,7 @@ mod tests {
             100,
         );
         assert!(html.contains("GitHub App · REST core</dt><dd>0 of 5000 remaining"));
-        assert!(html.contains("GitHub Owner · REST core</dt><dd>Unavailable"));
+        assert!(html.contains("GitHub Owner · REST core</dt><dd>Unknown"));
         assert!(html.contains("Model plan</dt><dd>fixture-plan"));
         assert!(html.contains("Primary model window</dt><dd>12.5% used"));
         assert!(html.contains("Secondary model window</dt><dd>85% used"));

@@ -99,13 +99,28 @@ impl Reader<'_> {
 
     fn actions_json(&self, path: &str) -> Result<Value, String> {
         let (remaining, duration) = self.read_budget().map_err(QueryError::message)?;
-        let (code, text) = oxa_work::command_runner(self.actions_get(path), Some(remaining), duration)
+        let mut command = self.actions_get(path);
+        if self.app_quota.is_some() {
+            command.arg("--include");
+        }
+        let (code, text) = oxa_work::command_runner(command, Some(remaining), duration)
             .ok_or("GitHub Actions response exceeds its limit or timed out")?;
         self.charge_capture(text.len()).map_err(QueryError::message)?;
+        let body = if self.app_quota.is_some() {
+            let (status, body) = self
+                .response(&text, crate::lead_quota::GitHubResource::Core)
+                .map_err(QueryError::message)?;
+            if !(200..300).contains(&status) {
+                return Err("GitHub Actions metadata unavailable".into());
+            }
+            body
+        } else {
+            &text
+        };
         if code != 0 {
             return Err("GitHub Actions metadata unavailable".into());
         }
-        serde_json::from_str(&text).map_err(|_| "invalid GitHub Actions metadata".into())
+        serde_json::from_str(body).map_err(|_| "invalid GitHub Actions metadata".into())
     }
 
     pub(in crate::work_board) fn sample_test_reports(
