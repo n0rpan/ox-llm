@@ -2,10 +2,10 @@
 use super::refill_input::{text, Input, Prepared};
 use super::*;
 use crate::work_refill::{Consumer, Packet, Partition};
-use oxa_work::board::{assignment::Worker, Action};
+use oxa_work::board::Action;
 use std::{fs, os::unix::fs::MetadataExt, path::PathBuf};
 
-fn private(path: &Path, uid: u32) -> Result<Value, String> {
+pub(super) fn private(path: &Path, uid: u32) -> Result<Value, String> {
     let mut bytes = Vec::new();
     crate::lead_input::open(path, uid)?
         .take(65_537)
@@ -15,6 +15,51 @@ fn private(path: &Path, uid: u32) -> Result<Value, String> {
         return Err("board input exceeds capacity".into());
     }
     serde_json::from_slice(&bytes).map_err(|_| "invalid private board input".into())
+}
+
+pub(super) fn configuration(
+    config: &Path,
+    root: &Path,
+    env: &oxa_config::Env,
+    dirs: &oxa_config::Dirs,
+) -> Result<(Value, PathBuf, u32), String> {
+    if !crate::work_cmd::trusted(root, env, dirs)? {
+        return Err("source project is not trusted".into());
+    }
+    let config = config.canonicalize().map_err(|_| "board config unavailable")?;
+    let authority = dirs
+        .agent_dir
+        .canonicalize()
+        .map_err(|_| "owner controls unavailable")?;
+    if config.starts_with(root) || !config.starts_with(&authority) {
+        return Err("board config must be in protected owner controls outside the source project".into());
+    }
+    let uid = fs::metadata(&dirs.home)
+        .map_err(|_| "owner home unavailable")?
+        .uid();
+    Ok((private(&config, uid)?, authority, uid))
+}
+
+pub(super) fn partition(value: &Value) -> Result<Partition, String> {
+    Ok(Partition {
+        modulus: value["partition"]["modulus"]
+            .as_u64()
+            .ok_or("missing partition modulus")?,
+        residues: serde_json::from_value(value["partition"]["residues"].clone())
+            .map_err(|_| "invalid partition residues")?,
+    })
+}
+
+pub(super) fn attempt_limit(value: &Value) -> Result<u32, String> {
+    let mut value = value;
+    for field in ["budget_pools", "limits", "max_attempts_per_day"] {
+        let object = value.as_object().ok_or("invalid owner attempt policy")?;
+        let Some(next) = object.get(field) else {
+            return Ok(Policy::default().max_attempts_per_day);
+        };
+        value = next;
+    }
+    serde_json::from_value(value.clone()).map_err(|_| "invalid owner attempt limit".into())
 }
 
 pub(super) fn run(
@@ -53,23 +98,7 @@ pub(super) fn run(
     if policy.offline {
         return Err("GitHub board is unavailable in offline mode".into());
     }
-    if !crate::work_cmd::trusted(root, env, dirs)? {
-        return Err("source project is not trusted".into());
-    }
-    let config = Path::new(config)
-        .canonicalize()
-        .map_err(|_| "board config unavailable")?;
-    let authority = dirs
-        .agent_dir
-        .canonicalize()
-        .map_err(|_| "owner controls unavailable")?;
-    if config.starts_with(root) || !config.starts_with(&authority) {
-        return Err("board config must be in protected owner controls outside the source project".into());
-    }
-    let uid = fs::metadata(&dirs.home)
-        .map_err(|_| "owner home unavailable")?
-        .uid();
-    let value = private(&config, uid)?;
+    let (value, authority, uid) = configuration(Path::new(config), root, env, dirs)?;
     if value["enabled"] != true {
         return Ok(0);
     }
@@ -86,15 +115,8 @@ pub(super) fn run(
         Err(_) => return Err("cannot establish board pause state".into()),
     }
     let claims = oxa_work::board::Claims::open(&owner_path("claims")?)?;
-    let worker: Worker =
-        serde_json::from_value(value["worker"].clone()).map_err(|_| "invalid authenticated worker export")?;
-    let partition = Partition {
-        modulus: value["partition"]["modulus"]
-            .as_u64()
-            .ok_or("missing partition modulus")?,
-        residues: serde_json::from_value(value["partition"]["residues"].clone())
-            .map_err(|_| "invalid partition residues")?,
-    };
+    let (worker, host) = crate::work_cmd::registered_native_worker(&value)?;
+    let partition = partition(&value)?;
     let rows = value["packets"]
         .as_array()
         .filter(|rows| rows.len() <= 20)
@@ -157,13 +179,14 @@ pub(super) fn run(
         crate::netguard::trusted_executable_for("gh", Some(&policy.host_path), Some(root), Some(&dirs.home))
             .ok_or("no trusted gh executable")?;
     let intake = value["intake"] == true;
-    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake);
+    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake).with_host(host);
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|_| "invalid system clock")?
         .as_secs();
     let policy = Policy {
         enabled: true,
+        max_attempts_per_day: attempt_limit(&value)?,
         ..Policy::default()
     };
     let consumer = Consumer {
@@ -186,8 +209,30 @@ pub(super) fn run(
         })
         .collect();
     let mut log = oxa_work::shadow::open_log(&owner_path("log")?)?;
-    consumer.once(&mut source, &inputs, now, |board| {
-        oxa_work::shadow::run(&mut log, true, || Ok(board.board.clone()), |_| {})
-    })?;
+    consumer.once(
+        &mut source,
+        &inputs,
+        now,
+        |board| oxa_work::shadow::run(&mut log, true, || Ok(board.board.clone()), |_| {}),
+        |receipt| {
+            let prepared = packets
+                .iter()
+                .find(|packet| packet.number == receipt.number)
+                .ok_or("native admission packet unavailable")?;
+            let mut binding = oxa_work::board::NativeBinding::new(
+                receipt.number,
+                &receipt.key,
+                &receipt.lease,
+                &prepared.branch,
+            )?;
+            binding.reviewed_head =
+                (prepared.action != Action::BuildIssue).then(|| prepared.revision.clone());
+            binding.validate()?;
+            if !claims.bind_native(&worker.id, &binding)? {
+                return Err("native admission binding refused".into());
+            }
+            Ok(())
+        },
+    )?;
     Ok(0)
 }

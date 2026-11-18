@@ -44,6 +44,24 @@ fn until(mut ready: impl FnMut() -> bool) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+fn runner_clock(env: &TestEnv) -> PathBuf {
+    let clock = env.tmp().join("runner-clock.so");
+    let compiled = Command::new("cc")
+        .args(["-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-Werror"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/common/runner_clock.c"))
+        .arg("-o")
+        .arg(&clock)
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "runner clock fixture compilation failed"
+    );
+    clock
+}
+
 fn status(env: &TestEnv) -> serde_json::Value {
     let output = Command::new(env!("CARGO_BIN_EXE_oxa"))
         .args(["work", "status", "--json"])
@@ -120,6 +138,54 @@ fn red_work_is_saved_without_reporting_local_acceptance() {
     assert_eq!(record["outcome"], "red", "{record}");
     assert_eq!(git(&env, tree(&record), &["show", "HEAD:failure.txt"]), "failed");
     assert!(git(&env, tree(&record), &["status", "--porcelain"]).is_empty());
+}
+
+#[test]
+fn task_usage_retains_the_initial_worker_and_repair_after_reopening() {
+    let env = TestEnv::new();
+    setup(&env, r#"["exit 1"]"#);
+    let mut initial = ScriptTurn::text("done");
+    initial.completion_tokens = Some(5);
+    let mut repair = ScriptTurn::text("cannot repair");
+    repair.completion_tokens = Some(7);
+    let (record, requests) = run_observed(&env, vec![initial, repair], &["work", "../tasks.json"], None);
+
+    assert_eq!(record["outcome"], "red", "{record}");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(record["worker"]["tokens"]["completion"], 7);
+    let task_tokens = &record["task_tokens"];
+    assert_eq!(task_tokens["attempts"], 2, "{record}");
+    assert_eq!(task_tokens["complete_attempts"], 2, "{record}");
+    assert_eq!(task_tokens["completion"], 12, "{record}");
+    assert_eq!(task_tokens["complete"], true, "{record}");
+    assert_eq!(&load(&env)["record"]["task_tokens"], task_tokens);
+
+    let reopened = status(&env);
+    assert_eq!(&reopened[0]["task_tokens"], task_tokens);
+}
+
+#[test]
+fn a_legacy_resume_keeps_task_usage_unknown_after_a_measured_worker() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let first = run(&env, vec![ScriptTurn::text("initial")]);
+
+    let mut legacy = load(&env);
+    legacy["record"].as_object_mut().unwrap().remove("task_tokens");
+    legacy["record"]["step"] = "worker".into();
+    legacy["record"]["outcome"] = "running".into();
+    replace(&env, &legacy);
+
+    let mut turn = ScriptTurn::text("resumed");
+    turn.completion_tokens = Some(6);
+    let (resumed, requests) = run_observed(&env, vec![turn], &["work", "../tasks.json"], None);
+    assert_eq!(resumed["outcome"], "nothing_to_do", "{resumed}");
+    assert_eq!(resumed["session_id"], first["session_id"]);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(resumed["worker"]["tokens"]["completion"], 6);
+    assert!(resumed.get("task_tokens").is_none(), "{resumed}");
+    assert!(load(&env)["record"].get("task_tokens").is_none());
+    assert!(status(&env)[0].get("task_tokens").is_none());
 }
 
 #[test]
@@ -371,10 +437,19 @@ fn a_parent_crash_retains_session_and_child_lock_then_resumes_the_same_session()
         "{observed}"
     );
     assert_eq!(fs::read(path(&env)).unwrap(), before);
-    let resumed = run(&env, vec![ScriptTurn::text("resumed")]);
+    let mut resumed_turn = ScriptTurn::text("resumed");
+    resumed_turn.completion_tokens = Some(6);
+    let resumed = run(&env, vec![resumed_turn]);
     assert_eq!(resumed["outcome"], "nothing_to_do", "{resumed}");
     assert_eq!(resumed["session_id"], id);
     assert_eq!(resumed["step"], "finished");
+    assert_eq!(resumed["worker"]["tokens"]["completion"], 6, "{resumed}");
+    let task_tokens = &resumed["task_tokens"];
+    assert_eq!(task_tokens["attempts"], 2, "{resumed}");
+    assert_eq!(task_tokens["complete_attempts"], 1, "{resumed}");
+    assert_eq!(task_tokens["completion"], 6, "{resumed}");
+    assert_eq!(task_tokens["complete"], false, "{resumed}");
+    assert_eq!(&status(&env)[0]["task_tokens"], task_tokens);
 }
 
 #[test]
@@ -569,6 +644,14 @@ fn status_works_when_the_kernel_refuses_every_flock_syscall() {
 
 #[test]
 fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
+    for _ in 0..4 {
+        child_deadline_case();
+    }
+}
+
+fn child_deadline_case() {
+    use std::os::unix::fs::PermissionsExt;
+
     // Failure-only facts from this isolated fixture; never print paths, IDs or state text.
     fn diagnostics(env: &TestEnv, record: &serde_json::Value, requests: usize) -> String {
         use std::io::Read;
@@ -639,6 +722,7 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
 
     let env = TestEnv::new();
     setup(&env, "[]");
+    let clock = runner_clock(&env);
     env.write(
         "work/tasks.json",
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","max_time":1}]"#,
@@ -661,7 +745,23 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
             "main",
         ],
     );
-    let (record, requests) = run_observed(
+    let tools = env.tmp().join("deadline-tools");
+    fs::create_dir(&tools).unwrap();
+    fs::set_permissions(&tools, fs::Permissions::from_mode(0o700)).unwrap();
+    let delayed_git = tools.join("git");
+    fs::write(
+        &delayed_git,
+        "#!/bin/sh\n\
+         if [ -f \"$OXA_TEST_STARTUP_STATE\" ] && /usr/bin/mkdir \"$OXA_TEST_STARTUP_DELAYED\" 2>/dev/null; then\n\
+           /usr/bin/sleep 1.2\n\
+         fi\n\
+         exec /usr/bin/git \"$@\"\n",
+    )
+    .unwrap();
+    fs::set_permissions(&delayed_git, fs::Permissions::from_mode(0o700)).unwrap();
+    let delayed = env.tmp().join("startup-delayed");
+    let command_path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let (record, requests) = work::run_observed_with(
         &env,
         vec![
             ScriptTurn::tool(
@@ -676,7 +776,18 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
             ),
         ],
         &["work", "../tasks.json"],
-        None,
+        Some(command_path),
+        |command| {
+            command
+                .env("LD_PRELOAD", &clock)
+                .env("OXA_TEST_RUNNER_STARTED", ready_tree.join("change.txt"))
+                .env("OXA_TEST_STARTUP_STATE", path(&env))
+                .env("OXA_TEST_STARTUP_DELAYED", &delayed);
+        },
+    );
+    assert!(
+        delayed.is_dir(),
+        "the startup delay must follow the first saved task state"
     );
     let diagnostics = || diagnostics(&env, &record, requests.len());
     assert_eq!(record["outcome"], "interrupted", "{}", diagnostics());
@@ -698,13 +809,23 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
     assert_eq!(load(&env)["task"]["max_time"], 1, "{}", diagnostics());
     assert_eq!(record["step"], "finished", "{}", diagnostics());
     assert_eq!(record["interruption"], "deadline", "{}", diagnostics());
+    // After the real child's first write, ordinary runner deadline classification resumes.
+    let state = load(&env);
+    assert!(record["checkpoint_at_ms"].as_u64().unwrap() >= state["deadline_at_ms"].as_u64().unwrap());
 }
 
 #[test]
 fn a_crash_between_worker_finished_and_acceptance_entry_does_not_restart_the_worker() {
     let env = TestEnv::new();
     setup(&env, r#"["printf ran >> attempts"]"#);
-    run(&env, vec![ScriptTurn::text("done")]);
+    let mut turn = ScriptTurn::text("done");
+    turn.completion_tokens = Some(5);
+    let first = run(&env, vec![turn]);
+    let task_tokens = &first["task_tokens"];
+    assert_eq!(task_tokens["attempts"], 1, "{first}");
+    assert_eq!(task_tokens["complete_attempts"], 1, "{first}");
+    assert_eq!(task_tokens["completion"], 5, "{first}");
+    assert_eq!(task_tokens["complete"], true, "{first}");
     let mut state = load(&env);
     state["record"]["step"] = "acceptance".into();
     state["record"]["outcome"] = "running".into();
@@ -714,6 +835,8 @@ fn a_crash_between_worker_finished_and_acceptance_entry_does_not_restart_the_wor
     assert!(requests.is_empty());
     assert_eq!(record["outcome"], "done", "{record}");
     assert_eq!(record["checkpoint_kind"], "task_transition");
+    assert_eq!(&record["task_tokens"], task_tokens);
+    assert_eq!(&status(&env)[0]["task_tokens"], task_tokens);
     assert_eq!(
         fs::read_to_string(tree(&record).join("attempts")).unwrap(),
         "ranran"
@@ -722,19 +845,74 @@ fn a_crash_between_worker_finished_and_acceptance_entry_does_not_restart_the_wor
 
 #[test]
 fn acceptance_time_cannot_give_the_repair_worker_a_fresh_time_budget() {
+    for _ in 0..4 {
+        acceptance_deadline_case();
+    }
+}
+
+fn acceptance_deadline_case() {
+    use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, r#"["sleep 2.2; printf failed > failure.txt; exit 1"]"#);
+    setup(
+        &env,
+        r#"["printf started > acceptance-started; sleep 2.2; printf failed > failure.txt; exit 1"]"#,
+    );
     env.write(
         "work/tasks.json",
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","max_time":2}]"#,
     );
-    let (record, requests) = run_observed(
+    let ready_tree = env.work().join(".oxa-worktrees/project/test");
+    fs::create_dir_all(ready_tree.parent().unwrap()).unwrap();
+    git(
+        &env,
+        &project(&env),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "worktree",
+            "add",
+            "-b",
+            "agent/test",
+            ready_tree.to_str().unwrap(),
+            "main",
+        ],
+    );
+    let tools = env.tmp().join("acceptance-tools");
+    fs::create_dir(&tools).unwrap();
+    fs::set_permissions(&tools, fs::Permissions::from_mode(0o700)).unwrap();
+    let delayed_git = tools.join("git");
+    fs::write(
+        &delayed_git,
+        "#!/bin/sh\n\
+         if [ -f \"$OXA_TEST_STARTUP_STATE\" ] && /usr/bin/mkdir \"$OXA_TEST_STARTUP_DELAYED\" 2>/dev/null; then\n\
+           /usr/bin/sleep 2.2\n\
+         fi\n\
+         exec /usr/bin/git \"$@\"\n",
+    ).unwrap();
+    fs::set_permissions(&delayed_git, fs::Permissions::from_mode(0o700)).unwrap();
+    let clock = runner_clock(&env);
+    let delayed = env.tmp().join("startup-delayed");
+    let command_path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let (record, requests) = work::run_observed_with(
         &env,
         vec![ScriptTurn::text("first"), ScriptTurn::text("must not run")],
         &["work", "../tasks.json"],
-        None,
+        Some(command_path),
+        |command| {
+            command
+                .env("LD_PRELOAD", &clock)
+                .env("OXA_TEST_RUNNER_STARTED", ready_tree.join("acceptance-started"))
+                .env("OXA_TEST_RUNNER_ELAPSED", "1")
+                .env("OXA_TEST_STARTUP_STATE", path(&env))
+                .env("OXA_TEST_STARTUP_DELAYED", &delayed);
+        },
     );
-    assert_eq!(requests.len(), 1, "expired task budget refuses repair admission");
+    assert!(delayed.is_dir(), "preparation delay follows durable task state");
+    assert_eq!(
+        requests.len(),
+        1,
+        "expired task budget refuses repair admission: {record}"
+    );
     assert_eq!(record["outcome"], "interrupted", "{record}");
     assert_eq!(record["interruption"], "deadline");
     assert_eq!(
@@ -742,6 +920,13 @@ fn acceptance_time_cannot_give_the_repair_worker_a_fresh_time_budget() {
         "worker success remains distinct from task interruption"
     );
     assert_eq!(git(&env, tree(&record), &["show", "HEAD:failure.txt"]), "failed");
+    assert_eq!(
+        git(&env, tree(&record), &["show", "HEAD:acceptance-started"]),
+        "started"
+    );
+    let state = load(&env);
+    assert_eq!(state["task"]["max_time"], 2);
+    assert!(record["checkpoint_at_ms"].as_u64().unwrap() >= state["deadline_at_ms"].as_u64().unwrap());
 }
 
 #[test]

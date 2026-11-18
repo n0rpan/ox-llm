@@ -65,27 +65,36 @@ pub(crate) fn run(
         SupervisorOperation::Checkout {
             branch,
             create,
+            adopted,
             normalize,
         } => {
-            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            // Adopted content is materialized without ambient GitHub authority.
+            // The ordinary checkout path retains its existing hook policy.
+            let sandbox: Arc<dyn Sandbox> = if adopted {
+                Arc::new(b)
+            } else {
+                crate::netguard::with_net(Arc::new(b), &settings)
+            };
+            let git = if adopted {
+                "git --no-replace-objects -c core.hooksPath=/dev/null -c credential.helper="
+            } else {
+                "git --no-replace-objects"
+            };
             let mut command = if let Some(update) = normalize {
                 // Materialize filters first, then advance under the caller's Git
-                // worktree hold. All reference and checkout hooks stay sandboxed.
-                format!("git --no-replace-objects read-tree --reset -u HEAD && test $(git symbolic-ref --quiet {}; echo $?) = 1 && git --no-replace-objects update-ref --no-deref {} {} {} && checkout_head=$(git rev-parse HEAD) && git hook run --ignore-missing post-checkout -- \"$checkout_head\" \"$checkout_head\" 0", sh_quote(&update.reference), sh_quote(&update.reference), sh_quote(&update.new), sh_quote(&update.old))
+                // worktree hold, with the selected checkout callback policy.
+                format!("{git} read-tree --reset -u HEAD && test $({git} symbolic-ref --quiet {}; echo $?) = 1 && {git} update-ref --no-deref {} {} {} && checkout_head=$({git} rev-parse HEAD) && {git} hook run --ignore-missing post-checkout -- \"$checkout_head\" \"$checkout_head\" 0", sh_quote(&update.reference), sh_quote(&update.reference), sh_quote(&update.new), sh_quote(&update.old))
             } else {
-                "git --no-replace-objects checkout HEAD -- .".into()
+                format!("{git} checkout HEAD -- .")
             };
             if create {
-                command.push_str(&format!(
-                    " && git --no-replace-objects checkout -b {} HEAD",
-                    sh_quote(&branch)
-                ));
+                command.push_str(&format!(" && {git} checkout -b {} HEAD", sh_quote(&branch)));
             }
             let spec = ExecSpec {
                 command,
                 cwd: root,
                 writable: true,
-                net: sandbox.network(),
+                net: !adopted && sandbox.network(),
                 timeout_s: Some(600),
                 env: git_environment(),
             };
@@ -104,17 +113,17 @@ pub(crate) fn run(
             return Ok(0);
         }
         SupervisorOperation::Merge { base } => {
-            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            // Local Git callbacks do not need repository network authority.
             let spec = ExecSpec {
                 command: format!("git --no-replace-objects merge --no-edit -- {}", sh_quote(&base)),
                 cwd: root,
                 writable: true,
-                net: sandbox.network(),
+                net: false,
                 timeout_s: Some(600),
                 env: git_environment(),
             };
             let mut tail = Vec::new();
-            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+            let result = b.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
                 keep_tail(&mut tail, bytes, 8192);
             });
             err.write_all(&tail).map_err(|e| e.to_string())?;
@@ -124,7 +133,7 @@ pub(crate) fn run(
             return Ok(i32::from(result.exit != Some(0)));
         }
         SupervisorOperation::Save { task_id } => {
-            let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+            // Keep save callbacks local, including content from an adopted head.
             let message = sh_quote(&format!("oxa work: save task {task_id}"));
             let spec = ExecSpec {
                 command: format!(
@@ -144,12 +153,12 @@ git --no-replace-objects commit -m {message}
                 ),
                 cwd: root,
                 writable: true,
-                net: sandbox.network(),
+                net: false,
                 timeout_s: Some(600),
                 env: git_environment(),
             };
             let mut tail = Vec::new();
-            let result = sandbox.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
+            let result = b.run_streaming(&spec, &CancelToken::default(), &mut |bytes| {
                 keep_tail(&mut tail, bytes, 8192);
             });
             if result.exit != Some(0) || result.timed_out {
@@ -170,7 +179,7 @@ git --no-replace-objects commit -m {message}
         shell_path: settings.shell_path(&dirs.home),
         command_prefix: settings.shell_command_prefix(),
     };
-    let sandbox = crate::netguard::with_net(Arc::new(b), &settings);
+    let sandbox = crate::netguard::without_github(Arc::new(b), &settings);
     let mut failed = false;
     let mut diagnostics = Vec::new();
     for entry in commands {

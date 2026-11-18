@@ -2,6 +2,7 @@
 use crate::{
     accounting::{self, Hold, Outcome, Usage},
     catalog::{self, Access, Catalog, Model, ModelInfo, Provider},
+    catalog_discovery::{Offer, Source},
     ledger::{Context, Daily, Entry, Ledger},
     policy::{self, Refusal},
     secrets::{Key, KeyFile},
@@ -12,6 +13,8 @@ pub use crate::history::HistorySeal;
 use auth::Credential;
 pub use auth::{OpenAiAuthHandle, Subscription};
 use serde_json::{json, Value};
+#[cfg(feature = "share")]
+use std::collections::BTreeSet;
 #[cfg(feature = "upstream-openai")]
 use std::path::Path;
 use std::{
@@ -42,7 +45,13 @@ pub struct Runtime {
     diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    unpriced_discovered: BTreeMap<String, crate::pricing::Price>,
+    #[cfg(feature = "share")]
+    guest_models: BTreeSet<String>,
     go_models: BTreeMap<String, crate::opencode::Model>,
+    /// Bounded stale-aware Go catalog metadata, beside the ledger in the same
+    /// private agent directory. Never a key, header or transcript.
+    go_cache: Option<crate::opencode::cache::Cache>,
     key_file: Result<KeyFile, crate::secrets::Error>,
     ledger_dir: PathBuf,
     ledger: OnceLock<Result<Ledger, Refusal>>,
@@ -183,7 +192,11 @@ impl Runtime {
             diagnostics: None,
             catalog,
             billings,
+            unpriced_discovered: BTreeMap::new(),
+            #[cfg(feature = "share")]
+            guest_models: BTreeSet::new(),
             go_models: BTreeMap::new(),
+            go_cache: None,
             key_file: KeyFile::prepare(&key_path),
             ledger_dir,
             ledger: OnceLock::new(),
@@ -199,6 +212,60 @@ impl Runtime {
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
         self.catalog.models().filter(|model| supported(model.provider))
     }
+    /// Trusted user settings, keyed by the exact discovered public alias.
+    pub fn with_unpriced_discovered_pricing(mut self, raw: &Value) -> Result<Self, Refusal> {
+        let bad = || invalid("unpriced_discovered_pricing");
+        for (alias, value) in raw.as_object().ok_or_else(bad)? {
+            let price = crate::pricing::Price::conservative(value).ok_or_else(bad)?;
+            self.unpriced_discovered.insert(alias.clone(), price);
+        }
+        Ok(self)
+    }
+    /// Enable catalog writes only for the owner-selected discovery setting.
+    pub fn with_catalog_cache(mut self) -> Self {
+        self.go_cache = Some(crate::opencode::cache::Cache::new(self.catalog_cache_dir()));
+        self
+    }
+    #[cfg(feature = "share")]
+    pub(crate) fn set_metered_guest_models(&mut self, aliases: BTreeSet<String>) -> Result<(), Refusal> {
+        if aliases.len() > 64
+            || aliases.iter().any(|alias| {
+                !matches!(self.billings.get(alias), Some(Billing::Metered(_)))
+                    || !self
+                        .catalog
+                        .resolve(Some(alias))
+                        .is_ok_and(|model| supported(model.info().provider))
+            })
+        {
+            return Err(invalid("share.remoteModels"));
+        }
+        self.guest_models = aliases;
+        Ok(())
+    }
+
+    #[cfg(feature = "share")]
+    pub(crate) fn metered_guest_models(&self) -> impl Iterator<Item = ModelInfo<'_>> {
+        self.discovery()
+            .filter(|model| self.guest_models.contains(model.id))
+    }
+
+    #[cfg(feature = "share")]
+    pub(crate) fn begin_authenticated_guest(
+        &self,
+        payload: &Value,
+        guest: &crate::share::listener::Guest<'_>,
+    ) -> Result<Call<'_>, Refusal> {
+        let context = Context {
+            origin: crate::ledger::Origin::Api,
+            guest_key_name: Some(guest.key_name()),
+            ..Context::default()
+        };
+        let allowed = payload["model"]
+            .as_str()
+            .is_some_and(|alias| self.guest_models.contains(alias));
+        self.begin_with_context(payload, context, allowed)
+    }
+
     fn audit(&self, model: &str, context: Context<'_>) -> Result<(Daily, Entry), Refusal> {
         if !self.ledger_enabled {
             return Err(Refusal::ledger());
@@ -215,13 +282,128 @@ impl Runtime {
     pub(crate) fn go_model(&self, alias: &str) -> Option<&crate::opencode::Model> {
         self.go_models.get(alias)
     }
+
+    pub(crate) fn catalog_cache_dir(&self) -> &std::path::Path {
+        self.ledger_dir.parent().unwrap_or(self.ledger_dir.as_path())
+    }
+
+    pub(crate) fn catalog_key(&self, provider: Provider) -> Result<Option<Key>, Refusal> {
+        if let Err(error @ (catalog::Error::Disabled | catalog::Error::Offline)) = self.catalog.resolve(None)
+        {
+            return Err(catalog_error(error));
+        }
+        Ok(self
+            .key_file
+            .as_ref()
+            .ok()
+            .and_then(|file| file.read(provider.as_str()).ok()))
+    }
+
+    pub(crate) fn apply_provider_catalog(
+        &mut self,
+        source: &Source,
+        offers: Vec<Offer>,
+    ) -> Result<(usize, usize, usize), Refusal> {
+        let same_source = |model: &Model| {
+            model.configured_route().is_none()
+                && model.info().provider == source.provider()
+                && model.endpoint().as_str().trim_end_matches('/') == source.base().trim_end_matches('/')
+        };
+        let (configured, mut routes): (Vec<_>, Vec<_>) = self
+            .catalog
+            .models()
+            .filter_map(|info| self.catalog.configured(info.id).cloned())
+            .partition(same_source);
+        let mut billings = self.billings.clone();
+        for model in &configured {
+            billings.remove(model.info().id);
+        }
+        let mut missing_price = 0;
+        let mut missing_limits = 0;
+        let mut estimated_price = 0;
+        for offer in offers {
+            let explicit: Vec<_> = configured
+                .iter()
+                .filter(|model| model.upstream() == offer.id)
+                .collect();
+            let generated;
+            let ids: Vec<&str> = if explicit.is_empty() {
+                generated = format!("{}/{}", source.provider().as_str(), offer.id);
+                vec![generated.as_str()]
+            } else {
+                explicit.iter().map(|model| model.info().id).collect()
+            };
+            for alias in ids {
+                let existing = self.catalog.configured(alias);
+                let fallback = existing.filter(|model| same_source(model) && model.upstream() == offer.id);
+                if fallback.is_none() && existing.is_some() {
+                    // Discovery never shadows another registered route.
+                    continue;
+                }
+                let fallback_info = fallback.map(Model::info);
+                // Discovery may raise the owner's configured reservation bounds.
+                let context = offer.context.max(fallback_info.map(|info| info.context_window));
+                let max_output = offer.max_output.max(fallback_info.map(|info| info.max_output));
+                let limits = context
+                    .zip(max_output)
+                    .filter(|(context, output)| output <= context);
+                let price = match (self.billings.get(alias), offer.price.as_ref()) {
+                    (Some(Billing::Metered(configured)), live) if configured.is_estimated() => live.cloned(),
+                    (Some(Billing::Metered(configured)), Some(live)) => {
+                        Some(configured.clone().overlay_discovered(live))
+                    }
+                    (Some(Billing::Metered(configured)), None) => Some(configured.clone()),
+                    (_, live) => live.cloned(),
+                }
+                .or_else(|| self.unpriced_discovered.get(alias).cloned());
+                let price = price.filter(|price| {
+                    limits.is_none_or(|(context, output)| {
+                        price
+                            .reservation(
+                                source.provider().as_str(),
+                                &offer.id,
+                                u64::from(context),
+                                u64::from(output),
+                            )
+                            .is_some_and(f64::is_finite)
+                    })
+                });
+                missing_price += usize::from(price.is_none());
+                missing_limits += usize::from(limits.is_none());
+                let (Some(price), Some((context, output))) = (price, limits) else {
+                    continue;
+                };
+                let Ok(model) = Model::new(
+                    alias,
+                    source.provider(),
+                    &offer.id,
+                    source.base(),
+                    context,
+                    output,
+                ) else {
+                    continue;
+                };
+                estimated_price += usize::from(price.is_estimated());
+                billings.insert(alias.into(), Billing::Metered(price));
+                routes.push(model);
+            }
+        }
+        let catalog = Catalog::new(Access::Enabled, routes).map_err(catalog_error)?;
+        self.catalog = catalog;
+        self.billings = billings;
+        Ok((missing_price, missing_limits, estimated_price))
+    }
+    /// Consume the bounded stale-aware cache before any network call, then fall
+    /// back to live discovery exactly as before. A cache hit is re-validated by
+    /// the same strict parser as the wire, so it can never widen routing,
+    /// limits or admission.
     pub(crate) async fn discover_go(
         &mut self,
         client: &reqwest::Client,
         base: &str,
         timeout: std::time::Duration,
-    ) -> Result<(), crate::opencode::client::Error> {
-        use crate::opencode::client::Error;
+    ) -> Result<crate::opencode::cache::State, crate::opencode::client::Error> {
+        use crate::opencode::{cache::State, client::Error};
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.clear();
         }
@@ -231,18 +413,18 @@ impl Runtime {
         if self.subscription_limits.is_none() {
             return Err(Error::Request);
         }
-        let key = self
-            .key_file
+        // The credential store is still read before the cache, so a missing or
+        // unsafe store keeps failing at startup with the same error class and
+        // still precedes any HTTP, exactly as before.
+        let key = self.go_key()?;
+        if let Some((state, models)) = self
+            .go_cache
             .as_ref()
-            .map_err(|_| {
-                self.credential_error();
-                Error::Refused(crate::opencode::Refusal::Unauthenticated)
-            })?
-            .read("opencode")
-            .map_err(|_| {
-                self.credential_error();
-                Error::Refused(crate::opencode::Refusal::Unauthenticated)
-            })?;
+            .and_then(|cache| cache.load(base, &key, std::time::SystemTime::now()))
+        {
+            self.apply_go(&models).map_err(|_| Error::Protocol)?;
+            return Ok(state);
+        }
         let discovered = crate::opencode::client::models_observed(
             client,
             base,
@@ -252,9 +434,66 @@ impl Runtime {
             self.diagnostics.as_ref(),
         )
         .await?;
+        self.apply_go(&discovered).map_err(|_| Error::Protocol)?;
+        if let Some(cache) = &self.go_cache {
+            let _ = cache.store(base, &key, &discovered, std::time::SystemTime::now());
+        }
+        Ok(State::Fresh)
+    }
+    /// One bounded background refresh: it shares the gateway's existing HTTP
+    /// pool, never mutates the live catalog and never touches the foreground
+    /// diagnostics sink, so a catalog failure stays non-fatal to every other
+    /// local or configured route.
+    pub(crate) async fn refresh_go(
+        &self,
+        client: &reqwest::Client,
+        base: &str,
+        timeout: std::time::Duration,
+    ) -> Result<(), crate::opencode::client::Error> {
+        use crate::opencode::client::Error;
+        let cache = self.go_cache.as_ref().ok_or(Error::Request)?;
+        if let Err(catalog::Error::Disabled | catalog::Error::Offline) = self.catalog.resolve(None) {
+            return Err(Error::Request);
+        }
+        if self.subscription_limits.is_none() {
+            return Err(Error::Request);
+        }
+        let key = self.go_key()?;
+        let discovered = crate::opencode::client::models_observed(
+            client,
+            base,
+            &key,
+            timeout,
+            &oxa_proto::CancelToken::new(),
+            None,
+        )
+        .await?;
+        let _ = cache.store(base, &key, &discovered, std::time::SystemTime::now());
+        Ok(())
+    }
+    fn go_key(&self) -> Result<Key, crate::opencode::client::Error> {
+        use crate::opencode::client::Error;
+        self.key_file
+            .as_ref()
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })?
+            .read("opencode")
+            .map_err(|_| {
+                self.credential_error();
+                Error::Refused(crate::opencode::Refusal::Unauthenticated)
+            })
+    }
+    fn apply_go(
+        &mut self,
+        discovered: &[crate::opencode::Model],
+    ) -> Result<(), crate::opencode::client::Error> {
+        use crate::opencode::client::Error;
         let mut models: Vec<_> = self
             .catalog
             .models()
+            .filter(|model| !self.go_models.contains_key(model.id))
             .filter_map(|m| self.catalog.configured(m.id).cloned())
             .collect();
         let mut additions = BTreeMap::new();
@@ -275,9 +514,12 @@ impl Runtime {
                 )
                 .map_err(|_| Error::Protocol)?,
             );
-            additions.insert(alias, model);
+            additions.insert(alias, model.clone());
         }
         let catalog = Catalog::new(Access::Enabled, models).map_err(|_| Error::Protocol)?;
+        for alias in self.go_models.keys() {
+            self.billings.remove(alias);
+        }
         for alias in additions.keys() {
             self.billings.insert(alias.clone(), Billing::Subscription);
         }
@@ -286,6 +528,15 @@ impl Runtime {
         Ok(())
     }
     pub fn begin(&self, payload: &Value, context: Context<'_>) -> Result<Call<'_>, Refusal> {
+        self.begin_with_context(payload, context, false)
+    }
+
+    fn begin_with_context(
+        &self,
+        payload: &Value,
+        context: Context<'_>,
+        allow_guest: bool,
+    ) -> Result<Call<'_>, Refusal> {
         if let Some(diagnostics) = &self.diagnostics {
             diagnostics.clear();
         }
@@ -312,7 +563,8 @@ impl Runtime {
                 });
             }
             let billing = self.billings.get(alias);
-            policy::before_credentials(payload, shared, false, billing.is_some())?;
+            let guest_allowed = allow_guest && matches!(billing, Some(Billing::Metered(_)));
+            policy::before_credentials(payload, shared && !guest_allowed, false, billing.is_some())?;
             if model.info().provider == Provider::OpenCode && !owner_origin {
                 return Err(Refusal {
                     status: 403,
@@ -346,7 +598,7 @@ impl Runtime {
                         self.key_file
                             .as_ref()
                             .map_err(|_| self.credential_error())?
-                            .read(model.info().provider.as_str())
+                            .read(model.credential_name())
                             .map_err(|_| self.credential_error())?,
                     ))
                 }
@@ -452,15 +704,29 @@ impl<'a> Call<'a> {
         self.credential.key()
     }
     pub fn provider_account_scope(&self) -> [u8; 32] {
-        self.credential.account_scope()
+        let account = self.credential.account_scope();
+        let Some(route) = self.model.configured_route() else {
+            return account;
+        };
+        use sha2::{Digest, Sha256};
+        let mut scope = Sha256::new();
+        scope.update(account);
+        scope.update(route.provider().as_bytes());
+        scope.update([0]);
+        scope.update(self.model.endpoint().as_str().as_bytes());
+        scope.finalize().into()
     }
     /// Provider-bound conversation hint, distinct from the private ledger's
     /// session identifier. Neither the raw session id nor the salt leaves here.
     pub fn provider_session_hint(&self) -> Result<String, Refusal> {
-        self.entry
-            .as_ref()
-            .and_then(|entry| entry.provider_session_hint(self.model.info().provider.as_str()))
-            .ok_or_else(|| invalid("session"))
+        let entry = self.entry.as_ref().ok_or_else(|| invalid("session"))?;
+        let hint = match self.model.configured_route() {
+            Some(route) => {
+                entry.provider_session_hint(&format!("{}\0{}", route.provider(), self.model.endpoint()))
+            }
+            None => entry.provider_session_hint(self.model.info().provider.as_str()),
+        };
+        hint.ok_or_else(|| invalid("session"))
     }
     pub fn openai_auth_handle(&self) -> Result<OpenAiAuthHandle, Refusal> {
         match (self.model.info().provider, &self.credential) {
@@ -511,9 +777,10 @@ impl<'a> Call<'a> {
                 request.messages,
             )
     }
-    pub fn mark_forwarded(&mut self) {
+    pub fn mark_forwarded(&mut self) -> Result<(), Refusal> {
+        self.hold.as_mut().expect("unsettled call").mark_forwarded()?;
         self.forwarded = true;
-        self.hold.as_mut().expect("unsettled call").mark_forwarded();
+        Ok(())
     }
     pub fn observe(&mut self, chunk: &Value) {
         if self.model.info().provider == Provider::OpenCode {
@@ -580,6 +847,13 @@ impl<'a> Call<'a> {
             }
             if !self.forwarded {
                 fields["settled"] = json!("not_forwarded");
+                if fields
+                    .as_object_mut()
+                    .and_then(|row| row.remove("estimated_cost_usd"))
+                    .is_some()
+                {
+                    fields["cost_usd"] = json!(0.0);
+                }
             }
             saved = entry.append_redacting(&fields, status, error, &|value| self.credential.redact(value))?;
             Ok(())
@@ -601,5 +875,86 @@ impl Drop for Call<'_> {
         if self.hold.is_some() {
             let _ = self.settle(Outcome::Failed, 503, Some("cloud_interrupted"));
         }
+    }
+}
+
+#[cfg(test)]
+mod discovery_budget_tests {
+    use super::*;
+    use crate::pricing::Price;
+
+    #[test]
+    fn discovery_preserves_configured_price_floors_and_long_context_tiers() {
+        assert_discovered_price_floor(0, 4096, 64);
+    }
+
+    #[test]
+    fn discovery_cannot_lower_a_configured_price_with_a_positive_live_rate() {
+        assert_discovered_price_floor(1, 4096, 64);
+    }
+
+    #[test]
+    fn discovery_cannot_lower_configured_token_limits() {
+        assert_discovered_price_floor(1, 1, 1);
+    }
+
+    fn assert_discovered_price_floor(live_input: u32, context: u32, output: u32) {
+        let base = "https://example.invalid/api/v1";
+        let provider = Provider::OpenRouter;
+        let alias = "synthetic-alias";
+        let upstream = "synthetic/model";
+        let model = Model::new(alias, provider, upstream, base, 4096, 64).unwrap();
+        let configured = Price::from_model(&json!({"pricing": {"tiers": [
+            {"max_prompt_tokens": 1024, "input_per_million": 3, "output_per_million": 2},
+            {"input_per_million": 12, "output_per_million": 10, "cache_write_per_million": 15}
+        ]}}))
+        .unwrap();
+        let live = Price::from_model(&json!({"pricing": {
+            "input_per_million": live_input, "output_per_million": 4, "cache_write_per_million": 8
+        }}))
+        .unwrap();
+        let mut runtime = Runtime::new(
+            [(model, Some(Billing::Metered(configured)))],
+            PathBuf::from("/synthetic/credentials.json"),
+            PathBuf::from("/synthetic/ledger"),
+            Options {
+                access: Access::Enabled,
+                daily_budget_usd: Some(1.0),
+                ..Options::default()
+            },
+        )
+        .unwrap()
+        .with_unpriced_discovered_pricing(&json!({alias:{
+            "input_per_million":100, "output_per_million":100
+        }}))
+        .unwrap();
+        let source = Source::new(provider, base).unwrap();
+        let offer = Offer {
+            id: upstream.into(),
+            context: Some(context),
+            max_output: Some(output),
+            price: Some(live),
+        };
+        assert_eq!(
+            runtime.apply_provider_catalog(&source, vec![offer]).unwrap(),
+            (0, 0, 0)
+        );
+        let info = runtime.catalog.resolve(Some(alias)).unwrap().info();
+        assert_eq!(info.context_window, 4096);
+        assert_eq!(info.max_output, 64);
+        let Some(Billing::Metered(price)) = runtime.billings.get(alias) else {
+            panic!("the discovered model lost its metered route");
+        };
+        let tiers = price.normalized()["tiers"]
+            .as_array()
+            .expect("configured tiers survived");
+        assert_eq!(tiers.len(), 2);
+        assert_eq!(tiers[0]["max_prompt_tokens"].as_u64(), Some(1024));
+        assert_eq!(tiers[0]["input_per_million"].as_f64(), Some(3.0));
+        assert_eq!(tiers[0]["output_per_million"].as_f64(), Some(4.0));
+        assert_eq!(tiers[0]["cache_write_per_million"].as_f64(), Some(8.0));
+        assert_eq!(tiers[1]["input_per_million"].as_f64(), Some(12.0));
+        assert_eq!(tiers[1]["output_per_million"].as_f64(), Some(10.0));
+        assert_eq!(tiers[1]["cache_write_per_million"].as_f64(), Some(15.0));
     }
 }

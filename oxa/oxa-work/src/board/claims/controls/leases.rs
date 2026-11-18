@@ -24,7 +24,7 @@ impl Claims {
         if authority.is_none() {
             return Err("owner or lead assignment required".into());
         }
-        self.claim_checked(entry, policy, &worker.id, (now, ttl), |row| {
+        self.claim_checked(entry, policy, &worker.id, (now, ttl), None, |row| {
             if row.data.revision != expected_revision {
                 return Err("assignment changed; refresh it".into());
             }
@@ -65,6 +65,9 @@ impl Claims {
             return Err("owner or lead unassignment required".into());
         }
         self.end_lease(number, now, reason, |row| {
+            if row.data.item_owner.is_some() {
+                return Err("host-bound work requires authenticated completion or verified reclaim".into());
+            }
             if row.data.revision != expected_revision {
                 return Err("assignment changed; refresh it".into());
             }
@@ -72,7 +75,7 @@ impl Claims {
         })
     }
 
-    fn end_lease(
+    pub(in crate::board::claims) fn end_lease(
         &self,
         number: u64,
         now: u64,

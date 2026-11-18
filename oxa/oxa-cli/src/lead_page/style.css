@@ -32,6 +32,7 @@ td>a,p>a{display:inline-flex;align-items:center;min-height:44px}
 .pages{display:flex;gap:16px}.pages a{display:inline-flex;align-items:center;min-height:44px}
 .filters{display:flex;gap:8px;overflow:auto;padding:8px 0}.filters>*{display:inline-flex;align-items:center;min-height:44px;white-space:nowrap;padding:8px;border-radius:8px;background:var(--raised)}
 .filters a[aria-current=page]{color:var(--accent);background:var(--accent-soft)}
+.fixed-prompts fieldset{display:flex;flex-wrap:wrap;gap:8px;border:1px solid var(--line);border-radius:var(--radius)}.fixed-prompts button{min-height:44px;padding:8px 12px;font:inherit;color:var(--accent);background:var(--raised);border:1px solid var(--line);border-radius:8px}
 details>summary{cursor:pointer}details[open]>summary{margin-bottom:8px}
 article{margin:10px 0;padding:14px;border:1px solid var(--line);border-radius:var(--radius);background:var(--surface);overflow-wrap:anywhere}
 article p{margin-top:6px}.scroll{max-width:100%;overflow:auto;overscroll-behavior-x:contain;border:1px solid var(--line);border-radius:var(--radius)}

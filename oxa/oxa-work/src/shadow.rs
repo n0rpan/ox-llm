@@ -1,5 +1,10 @@
 //! Read-only sampling: this runner has no executor or GitHub mutation interface.
-use crate::board::{landing::Next, queue::RejectionEvidence, review, Board, Entry};
+use crate::board::{
+    landing,
+    landing::Next,
+    queue::{NotificationTarget, RejectionEvidence},
+    review, Board, Entry,
+};
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -14,6 +19,37 @@ use landing_history::{AdmissionEvidence, Admissions};
 
 pub const INTERVAL: Duration = Duration::from_secs(300);
 pub const MAX_LOG_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_LEAD_SAMPLE_BYTES: u64 = 1_048_576;
+
+/// Sanitized remaining quota for one GitHub API resource.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct GitHubWindow {
+    pub limit: u64,
+    pub remaining: u64,
+    pub resets_at: u64,
+}
+
+/// Only the authenticated App Reader can populate this sample field.
+#[derive(Clone, Copy, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppQuota {
+    pub core: Option<GitHubWindow>,
+    pub graphql: Option<GitHubWindow>,
+}
+
+/// Read the owner's explicit report policy through the private facts storage checks.
+pub fn read_queue_report_policy(path: &Path) -> Result<Vec<u8>> {
+    let path = std::path::absolute(path).map_err(|_| "invalid queue report policy path")?;
+    let name = path
+        .file_name()
+        .and_then(|file| file.to_str())
+        .ok_or("invalid queue report policy file")?;
+    let parent = path
+        .parent()
+        .ok_or("queue report policy needs a private directory")?;
+    crate::facts_io::Root::open(parent, false)?.read(name, 16_384)
+}
 
 #[derive(Serialize)]
 struct Sample<'a> {
@@ -31,6 +67,8 @@ struct Sample<'a> {
     landing: &'a BTreeMap<u64, LandingDecision>,
     #[serde(skip_serializing_if = "Option::is_none")]
     landing_main: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    app_quota: Option<AppQuota>,
 }
 
 pub(crate) const OWNER_FILE_FLAGS: libc::c_int = libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
@@ -159,6 +197,9 @@ mod tests {
 
     #[test]
     fn admission_replay_rejects_and_open_log_preserves_interrupted_tail_bytes() {
+        if crate::lock_process::in_parent() {
+            return;
+        }
         let full = snapshot_bytes();
         for fragment in [full.as_slice(), &full[..full.len() / 2]] {
             let dir = path("interrupted-admission");
@@ -189,6 +230,9 @@ mod tests {
 
     #[test]
     fn admission_replay_refuses_multiple_objects_on_one_complete_line() {
+        if crate::lock_process::in_parent() {
+            return;
+        }
         let journal = path("corrupt-admission");
         let snapshot = snapshot_bytes();
         let line = [&snapshot[..], &snapshot[..], b"\n"].concat();
@@ -283,6 +327,19 @@ pub struct LandingDecision {
     pub queue_alarm: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub queue: Option<QueueObservation>,
+    #[serde(skip)]
+    pub latest_reviews: landing::LatestReviews,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub would_notify_rejection: Option<RejectionNotice>,
+}
+
+#[derive(Serialize)]
+pub struct RejectionNotice {
+    pr_head: String,
+    merge_group_head: String,
+    removal_event: String,
+    target: NotificationTarget,
+    failed_tests: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -300,6 +357,7 @@ pub struct LandingSample {
     pub landing: BTreeMap<u64, LandingDecision>,
     /// Main can advance independently of the queue or its merge-group commits.
     pub landing_main: Option<String>,
+    pub app_quota: Option<AppQuota>,
 }
 
 /// Persist the board and its projections in one owner-only sample.
@@ -316,8 +374,9 @@ pub fn run_with_landing(
             board,
             reviews,
             queue_rejections,
-            landing,
+            mut landing,
             landing_main,
+            app_quota,
         } = snapshot()?;
         let matched_queue_admissions = if landing.is_empty() {
             BTreeMap::new()
@@ -331,7 +390,14 @@ pub fn run_with_landing(
                 queue_rejections.iter().map(RejectionEvidence::admission_identity),
             )
         };
-        let sample = Sample {
+        plan_matched_rejections(
+            &board,
+            &mut landing,
+            landing_main.as_deref().unwrap_or_default(),
+            &queue_rejections,
+            &matched_queue_admissions,
+        );
+        let mut sample = Sample {
             schema_version: 1,
             observed_at: board.observed_at,
             would_take: board.entries.iter().filter(|entry| entry.eligible).collect(),
@@ -341,8 +407,13 @@ pub fn run_with_landing(
             matched_queue_admissions: &matched_queue_admissions,
             landing: &landing,
             landing_main: landing_main.as_deref(),
+            app_quota,
         };
         let mut line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
+        if sample.app_quota.is_some() && line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
+            sample.app_quota = None;
+            line = serde_json::to_vec(&sample).map_err(|_| "cannot encode shadow board")?;
+        }
         line.push(b'\n');
         let length = log.metadata().map_err(|_| "cannot inspect shadow log")?.len();
         if length.saturating_add(line.len() as u64) > MAX_LOG_BYTES {
@@ -362,5 +433,70 @@ pub fn run_with_landing(
             return Ok(());
         }
         wait(INTERVAL.saturating_sub(started.elapsed()));
+    }
+}
+
+fn plan_matched_rejections(
+    board: &Board,
+    decisions: &mut BTreeMap<u64, LandingDecision>,
+    main: &str,
+    rejections: &[RejectionEvidence],
+    admissions: &BTreeMap<u64, AdmissionEvidence>,
+) {
+    let rejections: BTreeMap<_, _> = rejections
+        .iter()
+        .map(|rejection| (rejection.admission_identity().number, rejection))
+        .collect();
+    for entry in &board.entries {
+        let Some(decision) = decisions
+            .get_mut(&entry.number)
+            .filter(|decision| decision.queue.is_none())
+        else {
+            continue;
+        };
+        let (Some(admission), Some(rejection)) =
+            (admissions.get(&entry.number), rejections.get(&entry.number))
+        else {
+            continue;
+        };
+        let failed_tests = rejection.reported_failure_names();
+        let plan = landing::Policy { enabled: true }.plan(
+            entry,
+            decision.latest_reviews,
+            landing::Queue::Rejected(landing::Rejection {
+                head: &entry.head,
+                main: admission.baseline_main(),
+                merge_group_head: rejection.admission_identity().group,
+                removal_event: rejection.removal_event(),
+                cause: if failed_tests.is_empty() {
+                    landing::RejectionCause::Unknown
+                } else {
+                    landing::RejectionCause::FailedTests(&failed_tests)
+                },
+                notified_event: None,
+                retry: landing::Retry::Unknown,
+            }),
+            main,
+            board.observed_at,
+        );
+        decision.next = plan.next;
+        if let (
+            Some(landing::Notice {
+                head,
+                merge_group_head,
+                removal_event,
+                cause: landing::RejectionCause::FailedTests(tests),
+            }),
+            Some(target),
+        ) = (plan.notify_rejection, rejection.notification_target())
+        {
+            decision.would_notify_rejection = Some(RejectionNotice {
+                pr_head: head.to_owned(),
+                merge_group_head: merge_group_head.to_owned(),
+                removal_event: removal_event.to_owned(),
+                target: target.clone(),
+                failed_tests: tests.iter().map(|name| (*name).to_owned()).collect(),
+            });
+        }
     }
 }

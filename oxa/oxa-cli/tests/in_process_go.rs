@@ -586,7 +586,7 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
                 429,
                 "application/json",
                 b"not JSON".to_vec(),
-                vec![("Retry-After", "7".into())],
+                vec![("Retry-After", "0".into())],
             ),
             stream(json!({"content":"Synthetic after rate wait"}), "stop"),
         ]
@@ -620,11 +620,11 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
         .filter(|event| event["type"] == "auto_retry_start")
         .collect();
     assert_eq!(retries.len(), 1);
-    assert_eq!(retries[0]["delayMs"], 1);
+    assert_eq!(retries[0]["delayMs"], 0);
     assert!(retries[0]["errorMessage"]
         .as_str()
         .unwrap()
-        .contains("retry after 7 s"));
+        .contains("retry after 0 s"));
     assert_eq!(mock.requests().len(), 3);
     let ledger = rows(&env);
     assert_eq!(ledger.len(), 2);
@@ -634,6 +634,33 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
     assert!(ledger
         .iter()
         .any(|row| row["status"] == 200 && row["settled"] == "usage"));
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_rate_limit_defers_instead_of_retrying_before_provider_wait() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::raw(
+                429,
+                "application/json",
+                b"{}".to_vec(),
+                vec![("Retry-After", "7".into())],
+            ),
+            stream(json!({"content":"Retry attempted too early"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    enable_one_fast_retry(&env);
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(terminal(&output)["error_class"], "cloud_rate_limited");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("retry after 7 s"));
+    assert_eq!(mock.requests().len(), 2, "only discovery and the refused request");
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["settled"], "refused");
     mock.assert_healthy();
 }
 
@@ -1821,5 +1848,44 @@ fn go_private_terminal_valid_usage_has_no_diagnostic_and_settles_exactly() {
     assert_eq!(ledger[0]["settled"], "usage");
     assert!(ledger[0].get("usage_missing").is_none());
     assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
+fn a_fresh_go_catalog_cache_serves_the_next_start_without_discovery() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let settings = env.home().join(".oxa/agent/settings.json");
+    let mut doc: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+    doc["oxa"]["cloud"]["discover_models"] = json!(true);
+    fs::write(settings, doc.to_string()).unwrap();
+    let first = run(&env, &["--list-models"]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains(MODEL));
+    assert_eq!(mock.requests().len(), 1, "the first start discovers live");
+    assert!(
+        env.agent_dir().join("go-catalog-cache.json").is_file(),
+        "live discovery publishes an entry"
+    );
+    let second = run(&env, &["--list-models"]);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(String::from_utf8_lossy(&second.stdout).contains(MODEL));
+    assert_eq!(
+        mock.requests().len(),
+        1,
+        "a fresh entry is consumed without a network call"
+    );
+    assert!(!String::from_utf8_lossy(&second.stderr).contains("Using a stale OpenCode model catalog."));
     mock.assert_healthy();
 }

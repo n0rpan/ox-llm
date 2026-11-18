@@ -87,6 +87,16 @@ fn run_records(
     extra: &[(&str, &str)],
 ) -> Vec<serde_json::Value> {
     let server = FakeServer::start(turns, FakeOpts::default()).unwrap();
+    run_server_records(env, &server, args, path, extra, true)
+}
+fn run_server_records(
+    env: &TestEnv,
+    server: &FakeServer,
+    args: &[&str],
+    path: Option<String>,
+    extra: &[(&str, &str)],
+    expect_output: bool,
+) -> Vec<serde_json::Value> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
         .args(args)
@@ -104,7 +114,11 @@ fn run_records(
     let out = rx
         .recv_timeout(std::time::Duration::from_secs(90))
         .expect("runner finished");
-    assert!(!out.stdout.is_empty(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        !expect_output || !out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .map(|line| {
@@ -113,6 +127,50 @@ fn run_records(
         })
         .collect()
 }
+#[test]
+fn task_usage_reads_one_checkpoint_without_exposing_the_task_record() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let record = run(&env, vec![ScriptTurn::text("Measured worker")]);
+    assert_eq!(record["task_tokens"]["complete"], true);
+    let dir = storage(&env);
+    std::fs::write(dir.join("unrelated.json"), "not a checkpoint").unwrap();
+    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let usage = |id| {
+        let mut rows = run_server_records(&env, &server, &["work", "status", "--usage", id], None, &[], true);
+        assert_eq!(rows.len(), 1);
+        rows.remove(0)
+    };
+    let revision = &record["checkpoint_revision"];
+    assert_eq!(
+        usage("test"),
+        serde_json::json!({"task":"test","checkpoint_revision":revision,"task_tokens":record["task_tokens"]})
+    );
+    assert!(usage("missing").is_null());
+
+    let file = dir.join("test.json");
+    let mut checkpoint: serde_json::Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+    let partial = serde_json::json!({
+        "attempts":2,"complete_attempts":1,"prompt":null,"completion":0,"cached":null,"complete":false
+    });
+    checkpoint["record"]["task_tokens"] = partial.clone();
+    std::fs::write(&file, serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+    assert_eq!(
+        usage("test"),
+        serde_json::json!({"task":"test","checkpoint_revision":revision,"task_tokens":partial})
+    );
+    checkpoint["record"]
+        .as_object_mut()
+        .unwrap()
+        .remove("task_tokens");
+    std::fs::write(file, serde_json::to_vec(&checkpoint).unwrap()).unwrap();
+    assert_eq!(
+        usage("test"),
+        serde_json::json!({"task":"test","checkpoint_revision":revision,"task_tokens":null})
+    );
+    assert!(server.requests().is_empty());
+}
+
 #[test]
 fn external_checks_run_without_edits_and_retain_worktree() {
     let env = TestEnv::new();
@@ -131,6 +189,152 @@ fn clean_task_is_nothing_to_do() {
         run(&env, vec![ScriptTurn::text("nothing")])["outcome"],
         "nothing_to_do"
     );
+}
+
+#[test]
+fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
+    use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState};
+    use std::{collections::BTreeMap, fs, io::Write, os::unix::fs::PermissionsExt, process::Stdio};
+    let env = TestEnv::new();
+    setup(&env, r#"["printf checked > native-acceptance"]"#);
+    let controls = env.agent_dir().join("native-controls");
+    let queue = controls.join("queue");
+    let root = controls.join("claims");
+    for path in [&controls, &queue, &root] {
+        fs::create_dir(path).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let claims = Claims::open(&root).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    claims
+        .import_snapshot(
+            Some(ManualAuthority::Owner),
+            &BTreeMap::from([(
+                44,
+                ImportState {
+                    state: AttemptState::default(),
+                    excluded: false,
+                },
+            )]),
+            now,
+        )
+        .unwrap();
+    let taskfile = controls.join("task.txt");
+    fs::write(&taskfile, "i44 fake agent/44 main\nSynthetic admitted task.\n").unwrap();
+    fs::set_permissions(&taskfile, fs::Permissions::from_mode(0o600)).unwrap();
+    let config = controls.join("refill.json");
+    fs::write(&config, serde_json::json!({
+        "enabled":true,"host_id":"host-a","nativeExecution":true,"intake":true,"queue":queue,"claims":root,
+        "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
+        "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
+        "partition":{"modulus":22,"residues":[0]},
+        "packets":[{"number":44,"revision":"revision","action":"build_issue","branch":"agent/44","taskfile":taskfile}]
+    }).to_string()).unwrap();
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+    let tools = trusted_tools(&env);
+    let gh = tools.join("gh");
+    fs::write(&gh, "#!/bin/sh\n[ \"$GH_TOKEN\" = synthetic ] || exit 93\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n").unwrap();
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(tools.join("gh.reply"), serde_json::json!({"data":{"repository":{
+        "mergeQueue":null,"pullRequests":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
+        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null
+    }}}).to_string()).unwrap();
+    let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work().join("project"))
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .env("PATH", &path)
+        .args([
+            "work",
+            "board",
+            "--refill",
+            "--repo",
+            "example/project",
+            "--once",
+            "--token-stdin",
+            "--config",
+        ])
+        .arg(&config)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"synthetic\n").unwrap();
+    let published = child.wait_with_output().unwrap();
+    assert!(
+        published.status.success(),
+        "{}",
+        String::from_utf8_lossy(&published.stderr)
+    );
+    let binding = claims.assignments().unwrap()[&44]
+        .data
+        .native_binding
+        .clone()
+        .unwrap();
+    let name = format!("board-{}.txt", binding.key);
+    assert!(queue.join(&name).is_file());
+    assert!(claims.snapshot().unwrap()[&44].lease.as_ref() == Some(&binding.lease));
+    let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
+    let args = ["work", "--native-queue", "--config", config.to_str().unwrap()];
+    let records = run_server_records(&env, &server, &args, Some(path.clone()), &[], true);
+    assert!(records
+        .iter()
+        .any(|row| row["event"] == "task" && row["id"] == binding.native_task_id));
+    let checkpoint: serde_json::Value = serde_json::from_slice(
+        &fs::read(storage(&env).join(format!("{}.json", binding.native_task_id))).unwrap(),
+    )
+    .unwrap();
+    let record = &checkpoint["record"];
+    let launch_revision = record["worker_launch_revision"].as_u64().unwrap();
+    assert!(launch_revision > 0 && launch_revision < record["checkpoint_revision"].as_u64().unwrap());
+    assert_eq!(record["id"], binding.native_task_id);
+    assert_eq!(record["branch"], binding.branch);
+    assert_eq!(record["step"], "finished");
+    assert_eq!(record["checkpoint_kind"], "task_transition");
+    assert!(record["checkpoint_revision"].as_u64().unwrap() > 0);
+    assert_eq!(
+        fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("native-acceptance"))
+            .unwrap(),
+        "checked"
+    );
+    let completed = &claims.assignments().unwrap()[&44];
+    assert!(completed.state.lease.is_none());
+    assert_eq!(completed.state.attempts, 1);
+    assert!(completed.data.native_binding.as_ref() == Some(&binding));
+    let started = queue
+        .join("started")
+        .join(format!("native-board-{}", binding.key))
+        .join(format!("{}.txt", binding.native_task_id));
+    assert_eq!(
+        fs::read_to_string(started).unwrap(),
+        fs::read_to_string(taskfile).unwrap()
+    );
+    assert!(!queue.join(name).exists());
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(std::iter::once(requests[0].system.as_str())
+        .chain(requests[0].messages.iter().filter_map(|m| m.content.as_deref()))
+        .any(|text| text.contains("Synthetic admitted task.")));
+    run_server_records(&env, &server, &args, Some(path), &[], false);
+    assert_eq!(
+        server.requests().len(),
+        1,
+        "a released attempt must not launch again"
+    );
+    let replayed = &claims.assignments().unwrap()[&44];
+    assert_eq!(replayed.state.attempts, 1);
+    assert!(replayed.state.lease.is_none());
+    assert!(replayed.data.native_binding.as_ref() == Some(&binding));
+    let after_replay: serde_json::Value = serde_json::from_slice(
+        &fs::read(storage(&env).join(format!("{}.json", binding.native_task_id))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(after_replay, checkpoint);
 }
 #[test]
 fn failed_checks_get_exactly_one_retry() {

@@ -17,6 +17,7 @@
 //! * **Layout.** `<sessions_dir>/--<cwd with '/' -> '-'>--/<timestamp>_<id>.jsonl` (pi's scheme),
 //!   first line = the session header.
 
+pub mod advice;
 mod clock;
 mod durable;
 mod goal;
@@ -35,7 +36,10 @@ mod transcript;
 mod tree;
 
 pub use clock::{local_time, LocalTime};
-pub use goal::{Goal, GoalBudget, GoalStatus, GOAL_ENTRY};
+pub use goal::{
+    CheckResult, Goal, GoalBudget, GoalCheck, GoalPlan, GoalStatus, HeldGoalLease, LeadGoalState,
+    OpenGoalAsk, PendingGoalSteer, SteeringLease, Subgoal, GOAL_ENTRY,
+};
 pub use lifecycle::SpillLifecycleLock;
 pub use lock::{lock_path_of, SessionLock, LOCKED};
 pub use meta::{search_sessions, sort_sessions, SessionSort};

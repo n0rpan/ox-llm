@@ -1,5 +1,7 @@
 # Selected setup reproducibility audit
 
+This audit records the legacy Python setup. For v0.2.x product installation and upgrades, follow the [native installation guide](https://github.com/oxstack/ox-llm/blob/main/docs/NATIVE-INSTALL.md).
+
 The selected runtime source is exported, but a fresh Snapdragon owner cannot yet obtain a qualified equivalent installation from one completed bootstrap transaction. This is a source/install audit, not a fresh-install receipt. It excludes experimental ring, n-gram, RANDOM advice, dense repack and GPU candidates. Existing installed acceptance (private release notes) remains evidence for the test laptop only.
 
 | Selected component | Reproducible source and settings present | Remaining concrete gap |
@@ -16,7 +18,9 @@ The selected runtime source is exported, but a fresh Snapdragon owner cannot yet
 
 The remaining installation boundary is explicit in [BOOTSTRAP-INSTALL](BOOTSTRAP-INSTALL.md): native binary/model placement, hash-bound activation, structural OpenCode wiring, panel registration, normal services and crash/SIGKILL rollback acceptance are unfinished. The installer supports a sandbox source payload, not current-user activation. Preserve the canonical lease inode and existing unrelated files; do not set `ready`/`validated` merely because source staging succeeds.
 
-Source-checkout distribution currently matters. Python package data includes runtime/panel assets, but excludes repository-root examples, bootstrap/dependency manifests, patches and upstream notices. `bootstrap.project_root` explicitly requires a complete checkout or `--project`. A wheel alone is therefore insufficient for reconstruction. Use a complete source checkout or the new [immutable source archive exporter](SOURCE-ARCHIVE.md). It includes and verifies the complete tracked public resource set without Git metadata; wheel resource support remains unfinished. The recorded post-commit [271-file archive roundtrip](../benchmarks/results/source-archive-roundtrip.json) and extracted read-only default plan now pass outside the checkout without Git metadata or creating a target HOME. This verifies source distribution for that exact commit, not fresh-install/runtime parity. Build dependencies still need a fresh platform/toolchain receipt; the pinned options do not prove compiler or native-auto-detection equivalence on another SKU.
+The legacy wheel omitted repository-root examples, bootstrap and dependency manifests, patches and upstream notices. The [archived source-export procedure](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/SOURCE-ARCHIVE.md) required a standalone checkout with `src/oxc` at the root. The preservation tag contains a monorepo with that source under `oxc/src/oxc`, so the tagged commit cannot serve as input to the exporter.
+
+The [271-file archive roundtrip receipt](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/benchmarks/results/source-archive-roundtrip.json) records verified extraction and a read-only default plan without Git metadata or a target HOME for standalone commit `8c1cc846e606763fadd75429fde4f58b246291c1`. Its evidence covers source distribution for that commit. Fresh platform and toolchain qualification and runtime acceptance remained open.
 
 These existing offline checks inspect the public setup without downloading, compiling, installing, activating services or loading models:
 

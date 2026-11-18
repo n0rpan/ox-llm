@@ -26,6 +26,8 @@ pub struct Model {
     pub prompt_price_per_token: Option<BigDecimal>,
     /// `None` when OpenRouter reports the unavailable-price sentinel `-1`.
     pub completion_price_per_token: Option<BigDecimal>,
+    pub cache_read_price_per_token: Option<BigDecimal>,
+    pub cache_write_price_per_token: Option<BigDecimal>,
     pub tools: bool,
 }
 
@@ -74,6 +76,24 @@ impl Client {
     /// HTTP is allowed only on loopback, for tests. The deadline bounds each GET,
     /// including its body, rather than just waiting for response headers.
     pub fn new(base: &str, timeout: Duration) -> Result<Self, Failure> {
+        let http = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| Error::Setup)?;
+        Self::with_transport(base, timeout, http)
+    }
+
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn from_messages_transport(
+        base: &str,
+        timeout: Duration,
+        client: &crate::anthropic_client::Client,
+    ) -> Result<Self, Failure> {
+        Self::with_transport(base, timeout, client.transport().clone())
+    }
+
+    fn with_transport(base: &str, timeout: Duration, http: reqwest::Client) -> Result<Self, Failure> {
         let mut base = reqwest::Url::parse(base).map_err(|_| Error::Endpoint)?;
         let loopback = match base.host() {
             Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
@@ -96,11 +116,6 @@ impl Client {
         if !base.path().ends_with('/') {
             base.set_path(&format!("{}/", base.path()));
         }
-        let http = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|_| Error::Setup)?;
         Ok(Self { http, base, timeout })
     }
 
@@ -134,9 +149,16 @@ impl Client {
             .map(|model| {
                 let pricing = &model["pricing"];
                 // Prices are decimal strings in this API, never binary floats.
-                let prompt = pricing["prompt"].as_str().ok_or(Error::Protocol)?;
-                let completion = pricing["completion"].as_str().ok_or(Error::Protocol)?;
-                let parameters = model["supported_parameters"].as_array().ok_or(Error::Protocol)?;
+                let rate = |value: &serde_json::Value| match value {
+                    serde_json::Value::Null => Ok(None),
+                    serde_json::Value::String(text) => parse_price(text),
+                    _ => Err(Error::Protocol.into()),
+                };
+                let parameters = match &model["supported_parameters"] {
+                    serde_json::Value::Null => &[][..],
+                    serde_json::Value::Array(parameters) => parameters.as_slice(),
+                    _ => return Err(Error::Protocol.into()),
+                };
                 if parameters.iter().any(|parameter| !parameter.is_string()) {
                     return Err(Error::Protocol.into());
                 }
@@ -151,8 +173,10 @@ impl Client {
                         serde_json::Value::Null => None,
                         value => Some(value.as_u64().ok_or(Error::Protocol)?),
                     },
-                    prompt_price_per_token: parse_price(prompt)?,
-                    completion_price_per_token: parse_price(completion)?,
+                    prompt_price_per_token: rate(&pricing["prompt"])?,
+                    completion_price_per_token: rate(&pricing["completion"])?,
+                    cache_read_price_per_token: rate(&pricing["input_cache_read"])?,
+                    cache_write_price_per_token: rate(&pricing["input_cache_write"])?,
                     tools: parameters
                         .iter()
                         .any(|parameter| parameter.as_str() == Some("tools")),
@@ -383,7 +407,7 @@ mod tests {
         let fixture = Fixture::new();
         let (base, task) = mock(vec![reply(
             "models/user",
-            r#"{"data":[{"id":"synthetic/tool-model","context_length":128000,"top_provider":{"max_completion_tokens":8192},"pricing":{"prompt":"0.0000001234567890123456789","completion":"2.5e-7"},"supported_parameters":["tools","temperature"]},{"id":"synthetic/plain","context_length":1024,"top_provider":{"max_completion_tokens":null},"pricing":{"prompt":"0","completion":"0"},"supported_parameters":[]}]}"#,
+            r#"{"data":[{"id":"synthetic/tool-model","context_length":128000,"top_provider":{"max_completion_tokens":8192},"pricing":{"prompt":"0.0000001234567890123456789","completion":"2.5e-7","input_cache_read":"1e-8","input_cache_write":"3e-7"},"supported_parameters":["tools","temperature"]},{"id":"synthetic/plain","context_length":1024,"top_provider":{"max_completion_tokens":null},"pricing":{"prompt":"0","completion":"0"},"supported_parameters":[]}]}"#,
         )]);
         let models = Client::new(&base, Duration::from_secs(2))
             .unwrap()
@@ -399,9 +423,12 @@ mod tests {
             Some(decimal("0.0000001234567890123456789"))
         );
         assert_eq!(models[0].completion_price_per_token, Some(decimal("0.00000025")));
+        assert_eq!(models[0].cache_read_price_per_token, Some(decimal("0.00000001")));
+        assert_eq!(models[0].cache_write_price_per_token, Some(decimal("0.0000003")));
         assert!(models[0].tools);
         assert!(!models[1].tools);
         assert_eq!(models[1].max_completion_tokens, None);
+        assert_eq!(models[1].cache_write_price_per_token, None);
         task.join().unwrap();
     }
 

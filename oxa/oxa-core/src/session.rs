@@ -122,7 +122,7 @@ pub struct Stats {
 
 /// A running session.
 pub struct Session {
-    st: SessionState,
+    pub(crate) st: SessionState,
     /// O-152: the boot preload ran (or was skipped) for the session entered last.
     preloaded: bool,
 }
@@ -367,10 +367,53 @@ impl Session {
         result.and(triggered).and(boundary).map(|_| ())
     }
 
+    /// Run one literal user message without expanding application commands or templates.
+    /// Build the prefix from this Session's tool selection before using its normal input queue.
+    pub fn prompt_literal(
+        &mut self,
+        text: String,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<Option<RunEnd>, OxaError> {
+        crate::open_epoch(&mut self.st, "literal_prompt", false, sink)?;
+        self.handle().follow_up(text);
+        self.run_queued(sink, ui)
+    }
+
+    /// Run one literal prompt with request-only evidence and a shared output limit.
+    /// Evidence goes to chat requests for this turn and is never appended to the wire.
+    /// The limit covers generation across the turn, including follow-up provider requests.
+    pub fn prompt_literal_bounded(
+        &mut self,
+        text: String,
+        evidence_context: String,
+        max_output_tokens: std::num::NonZeroU32,
+        sink: &mut dyn EventSink,
+        ui: &mut dyn Ui,
+    ) -> Result<Option<RunEnd>, OxaError> {
+        let context = (!evidence_context.is_empty()).then(|| WireMsg::user(evidence_context));
+        let _turn = self.st.shared.begin_literal_turn(context, max_output_tokens)?;
+        self.prompt_literal(text, sink, ui)
+    }
+
     pub fn handle(&self) -> Handle {
         Handle {
             shared: self.st.shared.clone(),
         }
+    }
+
+    /// Install the existing assignment guard for recovery of this exact mounted session.
+    pub fn bind_lead_steering_authority(&mut self, authority: Arc<crate::goal::SteeringAuthority>) {
+        *self
+            .st
+            .shared
+            .gate
+            .lead_steering_authority
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = Some(crate::goal::BoundLeadAuthority {
+            session: self.st.sref.clone(),
+            authority,
+        });
     }
 
     /// Install a progress observer for this session and subsequent in-process switches.
@@ -753,7 +796,7 @@ impl Session {
     /// Replace the session goal while idle, persisting before exposing controls.
     pub fn set_goal(
         &mut self,
-        goal: Option<oxa_session::Goal>,
+        mut goal: Option<oxa_session::Goal>,
         sink: &mut dyn EventSink,
     ) -> Result<(), OxaError> {
         if self.st.shared.busy.load(Ordering::SeqCst) {
@@ -764,6 +807,10 @@ impl Session {
                 codes::USAGE,
                 "The active session preset does not support goal mode",
             ));
+        }
+        if let Some(goal) = &mut goal {
+            goal.validate()?;
+            crate::goal::reanchor_resumed(&self.st, goal);
         }
         let body = goal
             .as_ref()
@@ -1309,7 +1356,12 @@ fn queued_run(
 ) -> Result<Option<RunEnd>, OxaError> {
     let mut taken = st.shared.take_steering();
     taken.extend(st.shared.take_follow_up());
-    if taken.is_empty() {
+    if taken.is_empty()
+        && !st
+            .goal
+            .as_ref()
+            .is_some_and(|goal| goal.pursuing() && goal.has_pending_steer())
+    {
         return Ok(None);
     }
     let can_run = !turn_start || compact_before_run(st, sink, ui)?;

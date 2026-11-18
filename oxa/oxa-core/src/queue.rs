@@ -106,6 +106,8 @@ impl WrapUpReason {
 #[derive(Debug, Default)]
 pub struct Gate {
     goal_steering_enabled: std::sync::atomic::AtomicBool,
+    pub(crate) lead_steering_authority: Mutex<Option<crate::goal::BoundLeadAuthority>>,
+    pub(crate) advisor: Mutex<Option<Arc<crate::advice::BoundAdvisor>>>,
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
@@ -118,6 +120,7 @@ pub struct Gate {
     pub wrap_up: std::sync::atomic::AtomicU8,
     /// Remaining uncached prompt + completion tokens for an unattended invocation.
     pub token_budget: Mutex<Option<u64>>,
+    literal_turn: Mutex<Option<LiteralTurn>>,
     /// Total charged usage, including non-chat requests and final-turn overspend.
     pub run_tokens_used: Mutex<u64>,
     pub bg_cancel: CancelToken,
@@ -136,6 +139,28 @@ pub struct Gate {
 
 /// Holds [`Gate::in_flight`] for one request; dropping it opens the gate.
 pub(crate) struct GateGuard(Arc<Shared>);
+
+struct LiteralTurn {
+    context: Option<oxa_proto::WireMsg>,
+    remaining: u32,
+}
+
+impl std::fmt::Debug for LiteralTurn {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LiteralTurn")
+            .field("remaining", &self.remaining)
+            .finish_non_exhaustive()
+    }
+}
+
+pub(crate) struct LiteralTurnGuard(Arc<Shared>);
+
+impl Drop for LiteralTurnGuard {
+    fn drop(&mut self) {
+        lock(&self.0.gate.literal_turn).take();
+    }
+}
 
 pub(crate) struct GoalSteeringGuard(Arc<Shared>);
 
@@ -180,6 +205,60 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Shared {
+    pub(crate) fn begin_literal_turn(
+        self: &Arc<Self>,
+        context: Option<oxa_proto::WireMsg>,
+        max_output: std::num::NonZeroU32,
+    ) -> Result<LiteralTurnGuard, oxa_proto::OxaError> {
+        let mut slot = lock(&self.gate.literal_turn);
+        if slot.is_some() {
+            return Err(oxa_proto::OxaError::new(
+                oxa_proto::codes::BUSY,
+                "A literal turn is already active.",
+            ));
+        }
+        *slot = Some(LiteralTurn {
+            context,
+            remaining: max_output.get(),
+        });
+        Ok(LiteralTurnGuard(self.clone()))
+    }
+
+    /// Reserve before generation. On a failure or missing completion count, the
+    /// reservation stays charged, since the provider may already have generated.
+    pub(crate) fn reserve_literal_output(
+        &self,
+        requested: u32,
+        kind: oxa_proto::TurnKind,
+    ) -> Result<Option<(u32, Option<oxa_proto::WireMsg>)>, oxa_proto::OxaError> {
+        let mut slot = lock(&self.gate.literal_turn);
+        let Some(turn) = slot.as_mut().filter(|_| requested > 0) else {
+            return Ok(None);
+        };
+        let reserved = requested.min(turn.remaining);
+        if reserved == 0 {
+            return Err(oxa_proto::OxaError::new(
+                oxa_proto::codes::BUDGET_EXHAUSTED,
+                "The literal turn's output limit is exhausted.",
+            ));
+        }
+        turn.remaining -= reserved;
+        let context = if kind == oxa_proto::TurnKind::Chat {
+            turn.context.clone()
+        } else {
+            None
+        };
+        Ok(Some((reserved, context)))
+    }
+
+    pub(crate) fn settle_literal_output(&self, reserved: u32, completion: u32) {
+        if completion > 0 {
+            if let Some(turn) = lock(&self.gate.literal_turn).as_mut() {
+                turn.remaining += reserved.saturating_sub(completion);
+            }
+        }
+    }
+
     pub fn new(steering: QueueMode, follow_up: QueueMode) -> Shared {
         Shared {
             queue: Mutex::new(Queue::default()),

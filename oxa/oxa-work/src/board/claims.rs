@@ -8,12 +8,20 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+mod activity;
 mod controls;
+mod dependencies;
+pub use activity::{LeaseActivity, LeaseSignal, VerifiedMilestone};
 pub use controls::{Assignment, AssignmentBoard, AssignmentData, ReleaseRecord};
+pub use dependencies::{Dependency, DependencyWait};
 mod imports;
 mod native;
 pub use native::NativeBinding;
+mod ownership;
 mod reviews;
+mod timing;
+pub use ownership::{ExistingWork, ItemLease, ItemOwner};
+pub use timing::ActivityTiming;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -101,6 +109,10 @@ impl Claims {
     /// First access to a PR counts. A state file lost after a marker exists is still
     /// corruption, so a vanished marker must not reset the cap by faking a first access.
     fn load(&self, number: u64) -> Result<Saved> {
+        self.load_with_repair(number, true)
+    }
+
+    fn load_with_repair(&self, number: u64, repair_markers: bool) -> Result<Saved> {
         let path = self.path(number);
         let created = self.root.join(format!("{number}.board-claim.created"));
         match fs::symlink_metadata(&path) {
@@ -139,6 +151,29 @@ impl Claims {
                         .is_some_and(|lease| lease != &binding.lease)
             })
             || saved.review_requests.iter().any(|key| !key.valid())
+            || saved.data.dependency.as_ref().is_some_and(|wait| {
+                !wait.valid(number)
+                    || saved.data.item_owner.is_none()
+                    || saved
+                        .data
+                        .native_binding
+                        .as_ref()
+                        .is_none_or(|binding| binding.lease.claimed_at.is_none_or(|at| wait.deadline <= at))
+            })
+            || saved
+                .data
+                .lease_activity
+                .as_ref()
+                .is_some_and(|activity| saved.data.item_owner.is_none() || !activity.valid(&saved.state))
+            || saved.data.item_owner.as_ref().is_some_and(|owner| {
+                !valid_worker_id(&owner.host_id)
+                    || owner.expires_at == 0
+                    || saved
+                        .state
+                        .lease
+                        .as_ref()
+                        .is_some_and(|lease| owner.expires_at < lease.expires_at)
+            })
             || saved.state.lease.as_ref().is_some_and(|l| {
                 saved.state.attempts == 0
                     || !valid_worker_id(&l.holder)
@@ -149,7 +184,15 @@ impl Claims {
         {
             return Err("invalid board claim identity or lease".into());
         }
-        self.mark(number)?;
+        if repair_markers {
+            self.mark(number)?;
+        } else {
+            match fs::symlink_metadata(&created) {
+                Ok(_) => self.private(&created)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return io(Err(error)),
+            }
+        }
         Ok(saved)
     }
 
@@ -180,14 +223,22 @@ impl Claims {
 
     /// Atomic replacements permit a coherent per-PR read without taking execution leases.
     fn rows(&self) -> Result<BTreeMap<u64, Saved>> {
+        self.rows_with_repair(true)
+    }
+
+    fn rows_with_repair(&self, repair_markers: bool) -> Result<BTreeMap<u64, Saved>> {
         Self::open(&self.root)?;
         let lock = io(File::open(&self.root))?;
         io(lock.lock())?;
-        self.rows_locked()
+        self.rows_locked_with_repair(repair_markers)
     }
 
     /// Caller holds the directory lock used by every reservation and control update.
     fn rows_locked(&self) -> Result<BTreeMap<u64, Saved>> {
+        self.rows_locked_with_repair(true)
+    }
+
+    fn rows_locked_with_repair(&self, repair_markers: bool) -> Result<BTreeMap<u64, Saved>> {
         let mut states = BTreeMap::new();
         for entry in io(fs::read_dir(&self.root))? {
             let name = io(entry)?.file_name();
@@ -202,7 +253,7 @@ impl Claims {
             if number == 0 || id != number.to_string() {
                 return Err("invalid board claim filename".into());
             }
-            states.insert(number, self.load(number)?);
+            states.insert(number, self.load_with_repair(number, repair_markers)?);
         }
         Ok(states)
     }
@@ -225,7 +276,7 @@ impl Claims {
         now: u64,
         ttl: u64,
     ) -> Result<Option<Lease>> {
-        self.claim_checked(entry, policy, holder, (now, ttl), |row| {
+        self.claim_checked(entry, policy, holder, (now, ttl), None, |row| {
             Ok(entry.action != Action::BuildIssue && row.data.policy.is_none())
         })
     }
@@ -236,6 +287,7 @@ impl Claims {
         policy: &Policy,
         holder: &str,
         timing: (u64, u64),
+        host_id: Option<&str>,
         authorize: impl FnOnce(&mut Saved) -> Result<bool>,
     ) -> Result<Option<Lease>> {
         let (now, ttl) = timing;
@@ -258,6 +310,17 @@ impl Claims {
         }
         let _lock = self.lock(entry.number)?;
         let mut row = self.load(entry.number)?;
+        if let Some(lease) = row
+            .state
+            .lease
+            .as_ref()
+            .filter(|_| host_id.is_some() || row.data.item_owner.is_some())
+        {
+            return Err(format!("item {} is owned by {}", entry.number, lease.holder));
+        }
+        if row.data.item_owner.is_some() && host_id.is_none() {
+            return Err("host-bound item requires item admission".into());
+        }
         if self.established(entry.number)? {
             self.mark(entry.number)?;
         }
@@ -293,7 +356,13 @@ impl Claims {
             generation: (day, state.attempts),
         };
         state.lease = Some(lease.clone());
+        row.data.item_owner = host_id.map(|host_id| ItemOwner {
+            host_id: host_id.into(),
+            expires_at,
+        });
         row.data.native_binding = None;
+        row.data.lease_activity = None;
+        row.data.dependency = None;
         let replacing = self.established(entry.number)?;
         self.save(entry.number, row, replacing)?;
         self.mark(entry.number)?;

@@ -60,6 +60,12 @@ struct RejectionBaseline {
     observed_at: u64,
 }
 
+impl AdmissionEvidence {
+    pub(super) fn baseline_main(&self) -> &str {
+        self.rejection_baseline.as_ref().map_or("", |value| &value.main)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Admissions {
     queued: BTreeMap<u64, Admission>,

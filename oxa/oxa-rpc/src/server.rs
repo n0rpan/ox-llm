@@ -14,7 +14,7 @@
 // back while the job ran) and the `abort` responses that waited for it. A command a client
 // sends after reading any of those records therefore meets an idle session and fresh state.
 #[cfg(all(target_os = "linux", feature = "a2a-control"))]
-use crate::a2a_control::BoundControl;
+use crate::a2a_control::{write_control_receipt, BoundControl};
 use crate::events::{event_to_json, session_state, write_record};
 use crate::{cmd_run, handle_session, Out, RpcCx, RpcUi, UiRouter};
 use oxa_core::{Handle, RunOutcome, Session};
@@ -411,11 +411,6 @@ fn publish(cx: &RpcCx) -> Published {
     }
 }
 
-#[cfg(all(target_os = "linux", feature = "a2a-control"))]
-fn write_control_receipt(out: &Out, data: Value) {
-    write_out(out, &json!({"type": "goal_control_receipt", "data": data}));
-}
-
 /// The session thread: runs each job in order and writes its response. Returns when the job
 /// channel closes (stdin EOF), after the session has shut down.
 fn session_loop(
@@ -495,55 +490,25 @@ fn session_loop(
                                 return true;
                             }
                         };
-                        if let oxa_orchestrator::control::Request::Steer {
-                            id,
-                            revision,
-                            text,
-                            lease,
-                        } = request
-                        {
-                            use oxa_core::goal::{GoalSteering, SteeringBinding, SteeringLease};
-                            let lease = lease.map(|lease| SteeringLease {
-                                holder: lease.holder,
-                                generation: lease.generation,
-                            });
-                            let mut lease_matches = false;
-                            steering_authority(&binding, &mut |current| {
-                                lease_matches = current == lease.as_ref();
-                            });
-                            if !lease_matches {
-                                write_control_receipt(&out, json!({"id":id,"error":"goal_steer_stale"}));
+                        let result_gate = control_gate.clone();
+                        let result_out = out.clone();
+                        let request = match crate::a2a_control::queue_steering(
+                            &handle,
+                            &binding,
+                            request,
+                            &steering_authority,
+                            move |receipt| {
+                                // Mark admission before publishing a result from the owner boundary.
+                                let _gate = lock(&result_gate);
+                                write_control_receipt(&result_out, receipt);
+                            },
+                        ) {
+                            Ok(admission) => {
+                                write_control_receipt(&out, admission);
                                 return true;
                             }
-                            let result_gate = control_gate.clone();
-                            let result_out = out.clone();
-                            let result_id = id.clone();
-                            let request = GoalSteering::new(
-                                SteeringBinding {
-                                    session: binding.clone(),
-                                    revision,
-                                    lease,
-                                },
-                                text,
-                                steering_authority.clone(),
-                                move |result| {
-                                    // Admission is written under this gate first, even if
-                                    // the next owner boundary consumes the request immediately.
-                                    let _gate = lock(&result_gate);
-                                    let data = match result {
-                                        Ok(()) => json!({"id": result_id, "appended": true}),
-                                        Err(code) => json!({"id": result_id, "error": code}),
-                                    };
-                                    write_control_receipt(&result_out, data);
-                                },
-                            );
-                            let data = match handle.submit_goal_steering(request) {
-                                Ok(()) => json!({"id": id, "queued": true}),
-                                Err(code) => json!({"id": id, "error": code}),
-                            };
-                            write_control_receipt(&out, data);
-                            return true;
-                        }
+                            Err(request) => request,
+                        };
                         let control = BoundControl::new(binding.clone(), request);
                         if sender.send(Job::GoalControl(control)).is_err() {
                             return false;
@@ -802,12 +767,13 @@ pub fn serve_outcome(
 /// Serve an assigned session using the frontend's existing guarded lease read.
 #[cfg(all(target_os = "linux", feature = "a2a-control"))]
 pub fn serve_outcome_with_steering_authority(
-    session: Session,
+    mut session: Session,
     dirs: oxa_config::Dirs,
     input: Box<dyn BufRead + Send>,
     out: Out,
     authority: Arc<oxa_core::goal::SteeringAuthority>,
 ) -> Result<RunOutcome, OxaError> {
+    session.bind_lead_steering_authority(authority.clone());
     serve_inner(session, dirs, input, out, authority)
 }
 

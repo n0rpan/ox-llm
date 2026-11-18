@@ -27,23 +27,54 @@ pub enum RunEnd {
 pub fn append_entry(st: &mut SessionState, body: EntryBody) -> Result<Entry, OxaError> {
     let id = {
         let tree = &st.tree;
-        new_entry_id(&|candidate: &str| tree.get(candidate).is_some())
+        new_entry_id(&|candidate: &str| {
+            tree.get(candidate).is_some()
+                || st
+                    .goal
+                    .as_ref()
+                    .is_some_and(|goal| goal.reserves_entry_id(candidate))
+        })
     };
+    append_entry_with_id(st, id, body)
+}
+
+pub(crate) fn append_entry_with_id(
+    st: &mut SessionState,
+    id: String,
+    body: EntryBody,
+) -> Result<Entry, OxaError> {
+    if st.tree.get(&id).is_some() {
+        return Err(OxaError::new(
+            oxa_proto::codes::INVALID,
+            "Session entry identity already exists.",
+        ));
+    }
     let leaf = st.tree.leaf();
     let parent = if leaf.is_empty() {
         None
     } else {
         Some(leaf.to_string())
     };
+    let entry = append_to_store(st.store.as_ref(), &st.sref, id, parent, body)?;
+    st.tree.push(entry.clone());
+    st.transcript.apply(&entry);
+    Ok(entry)
+}
+
+pub(crate) fn append_to_store(
+    store: &dyn oxa_session::SessionStore,
+    session: &oxa_session::SessionRef,
+    id: String,
+    parent: Option<String>,
+    body: EntryBody,
+) -> Result<Entry, OxaError> {
     let entry = Entry {
         id,
         parent,
         ts_ms: now_ms(),
         body,
     };
-    st.store.append(&st.sref, &entry)?;
-    st.tree.push(entry.clone());
-    st.transcript.apply(&entry);
+    store.append(session, &entry)?;
     Ok(entry)
 }
 
@@ -67,6 +98,7 @@ pub fn run_loop(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    crate::goal::deliver_saved(st, sink)?;
     crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
     let steering = st
@@ -602,7 +634,25 @@ fn run_inner(
             }
             // The repeat guard gave up: the same call after its notices ends the run.
             if let Some(r) = results.iter().find(|r| r.stop) {
-                let text = crate::repeat::stop_text(&r.tool_name);
+                let mut text = crate::repeat::stop_text(&r.tool_name);
+                let mut code = crate::repeat::ERROR_CODE;
+                if let Some(call) = calls
+                    .iter()
+                    .find(|call| Some(&call.id) == r.msg.tool_call_id.as_ref())
+                {
+                    match crate::advice::on_repeat(st, call, &text, sink)? {
+                        crate::advice::AdviceResult::Continue => continue,
+                        crate::advice::AdviceResult::Refused => {}
+                        crate::advice::AdviceResult::Escalate => {
+                            code = "advisor_escalation_required";
+                            text = "Advice did not resolve the failure. The worker needs a stronger tier."
+                                .into();
+                        }
+                    }
+                }
+                if st.shared.cancel.is_cancelled() {
+                    return Ok(RunEnd::Aborted);
+                }
                 persist(
                     st,
                     EntryBody::Shown {
@@ -619,7 +669,7 @@ fn run_inner(
                 // over, so a failure is not sent back to the model.
                 let _ = crate::done::check(st, &mut done, sink, ui);
                 // Giving up is not a finished task: a caller must not read it as success.
-                return Ok(RunEnd::Failed(OxaError::new(crate::repeat::ERROR_CODE, text)));
+                return Ok(RunEnd::Failed(OxaError::new(code, text)));
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;

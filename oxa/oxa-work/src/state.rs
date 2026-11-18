@@ -157,6 +157,8 @@ pub(crate) fn load(path: &Path) -> Result<State> {
         "problem_notes",
         "reports",
         "acceptance_outcome",
+        "task_tokens",
+        "worker_launch_revision",
     ];
     if keys.iter().any(|key| !record.contains_key(*key))
         || record
@@ -171,6 +173,19 @@ pub(crate) fn load(path: &Path) -> Result<State> {
     }
     if state.record.id != state.task.id || state.record.branch != state.task.branch {
         return Err("task checkpoint identity disagrees with its task".into());
+    }
+    if state
+        .record
+        .task_tokens
+        .as_ref()
+        .is_some_and(|usage| !usage.valid())
+    {
+        return Err("invalid task usage evidence in checkpoint".into());
+    }
+    if state.record.worker_launch_revision.is_some_and(|revision| {
+        revision == 0 || revision >= state.record.checkpoint_revision || state.record.worker.is_none()
+    }) {
+        return Err("invalid native worker launch revision in checkpoint".into());
     }
     Ok(state)
 }
@@ -292,6 +307,7 @@ mod tests {
             model: "fake".into(),
             prompt: "Synthetic task".into(),
             max_time: crate::default_max_time(),
+            reviewed_pull_request: None,
         };
         let record = crate::blocked_record(&task, String::new());
         State::new(task, record, false)
@@ -394,6 +410,49 @@ mod tests {
             .unwrap();
         assert_eq!(replayed.load(Ordering::Relaxed), 1);
         assert_eq!(read(&fixture.path()).unwrap().record.checkpoint_revision, 1);
+    }
+
+    #[test]
+    fn native_worker_receipt_replays_the_original_launch_revision() {
+        let fixture = Fixture::new();
+        let mut writer = Writer::new(fixture.path(), false);
+        let mut state = state();
+        writer
+            .save(&mut state, Step::Worker, &|_: &Record| Ok(()))
+            .unwrap();
+        let launch = state.record.checkpoint_revision;
+        state.record.worker = Some(crate::WorkerResult {
+            outcome: crate::WorkerOutcome::Done,
+            exit_code: 0,
+            error_class: None,
+            interruption: None,
+            tokens: None,
+        });
+        state.record.worker_launch_revision = Some(launch);
+        assert!(writer
+            .save_kind(
+                &mut state,
+                Step::Acceptance,
+                CheckpointKind::WorkerFinished,
+                &|_: &Record| { Err("synthetic activity append failure".into()) }
+            )
+            .is_err());
+
+        let recovered = read(&fixture.path()).unwrap();
+        let observed = AtomicU64::new(0);
+        Writer::new(fixture.path(), true)
+            .replay(&recovered, &|record: &Record| {
+                assert_eq!(record.worker_launch_revision, Some(launch));
+                assert_eq!(record.checkpoint_kind, CheckpointKind::WorkerFinished);
+                observed.store(record.checkpoint_revision, Ordering::Relaxed);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            observed.load(Ordering::Relaxed),
+            recovered.record.checkpoint_revision
+        );
+        assert!(recovered.record.checkpoint_revision > launch);
     }
 
     #[test]

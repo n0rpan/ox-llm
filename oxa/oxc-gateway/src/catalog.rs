@@ -63,7 +63,44 @@ pub struct Model {
     endpoint: Url,
     context_window: u32,
     max_output: u32,
+    #[cfg(feature = "anthropic-gateway")]
+    configured_route: Option<ConfiguredRoute>,
 }
+
+/// Provider identity and budget pool for a route from trusted user configuration.
+/// The credential selector stays private to the gateway.
+#[cfg(feature = "anthropic-gateway")]
+#[derive(Clone)]
+pub struct ConfiguredRoute {
+    provider: String,
+    pool: String,
+    key: String,
+}
+
+#[cfg(feature = "anthropic-gateway")]
+impl ConfiguredRoute {
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    pub fn pool(&self) -> &str {
+        &self.pool
+    }
+}
+
+#[cfg(feature = "anthropic-gateway")]
+fn is_builtin(value: &str) -> bool {
+    [
+        Provider::Anthropic,
+        Provider::OpenRouter,
+        Provider::OpenAi,
+        Provider::ChatGpt,
+        Provider::OpenCode,
+    ]
+    .iter()
+    .any(|provider| value.eq_ignore_ascii_case(provider.as_str()))
+}
+
 impl fmt::Debug for Model {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.info().fmt(f)
@@ -119,8 +156,46 @@ impl Model {
             endpoint,
             context_window,
             max_output,
+            #[cfg(feature = "anthropic-gateway")]
+            configured_route: None,
         })
     }
+
+    /// Attach an HTTPS API route. Built-in credential entries stay bound to
+    /// the built-in route configuration.
+    #[cfg(feature = "anthropic-gateway")]
+    pub fn with_configured_route(mut self, provider: &str, pool: &str, key: &str) -> Result<Self, Error> {
+        if self.endpoint.scheme() != "https" {
+            return Err(Error::InvalidEndpoint);
+        }
+        if !matches!(self.provider, Provider::Anthropic | Provider::OpenAi)
+            || ![provider, pool, key]
+                .into_iter()
+                .all(oxa_config::valid_cloud_name)
+            || is_builtin(provider)
+            || is_builtin(key)
+        {
+            return Err(Error::InvalidModel);
+        }
+        self.configured_route = Some(ConfiguredRoute {
+            provider: provider.into(),
+            pool: pool.into(),
+            key: key.into(),
+        });
+        Ok(self)
+    }
+
+    #[cfg(feature = "anthropic-gateway")]
+    pub fn configured_route(&self) -> Option<&ConfiguredRoute> {
+        self.configured_route.as_ref()
+    }
+
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn credential_name(&self) -> &str {
+        self.configured_route()
+            .map_or(self.provider.as_str(), |route| &route.key)
+    }
+
     pub fn info(&self) -> ModelInfo<'_> {
         ModelInfo {
             id: &self.id,

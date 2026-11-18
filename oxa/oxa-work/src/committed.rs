@@ -121,6 +121,7 @@ pub(crate) fn verify_commit(
             operation: SupervisorOperation::Checkout {
                 branch: saved.task.branch.clone(),
                 create: false,
+                adopted: false,
                 normalize: None,
             },
         },
@@ -645,6 +646,7 @@ mod tests {
             model: "fake".into(),
             prompt: "Synthetic task".into(),
             max_time: 2700,
+            reviewed_pull_request: None,
         };
         assert!(tree::prepare(
             &fixture.source,

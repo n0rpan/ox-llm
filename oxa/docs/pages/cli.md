@@ -120,7 +120,9 @@ $ oxa share key list
 
 `oxa share serve` starts a foreground listener after the owner enables the native local engine and selects one or more local aliases with `--model`. It binds to the Tailscale interface by default and prints its `/v1` base URL. Set `--port` to use a fixed port. Explicit binds accept loopback for Tailscale Serve and addresses assigned by the local Tailscale daemon. `--same-owner` requires the connecting peer to pass the Tailscale owner check. Clients send a guest bearer and can list models or stream text chat. Ctrl+C stops admission and joins active cleanup.
 
-Start an interactive owner session with `oxa --share-model ALIAS` to share that session's native engine. A queued owner request goes before a waiting guest, and an active guest keeps its lease through cleanup. The startup notice gives the guest API address. Exiting the owner session drains the listener.
+Start an interactive owner session with `oxa --share-model ALIAS` to share that session's native engine. A queued owner request goes before a waiting guest, and an active guest keeps its lease through cleanup. The startup notice gives the guest API address. Use `/engine status` to see live guest activity and per-key usage for the UTC day. Exiting the owner session drains the listener.
+
+Metered cloud aliases need `oxa.engine.inProcessCloud`, a configured price and daily USD cap, and an entry in the user-only `oxa.share.remoteModels` allowlist. Choose each guest alias with `--model` for foreground serving or `--share-model` for an owner session. Personal subscription routes are excluded.
 
 `oxa update --self`, `--all` and `--models` report that they are not supported: oxa does not update itself and does not refresh model catalogues. Update oxa by installing a new build.
 

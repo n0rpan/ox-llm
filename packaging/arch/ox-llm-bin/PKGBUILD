@@ -3,11 +3,11 @@
 pkgname=ox-llm-bin
 pkgver=0.2.0
 pkgrel=1
-pkgdesc='oxe engine, oxc controller and oxa coding agent (CI CPU binaries)'
+pkgdesc='Native oxe engine and oxa coding agent (CI CPU binaries)'
 arch=('x86_64' 'aarch64')
 url='https://github.com/oxstack/ox-llm'
 license=('MIT')
-depends=('glibc' 'gcc-libs' 'python' 'bubblewrap')
+depends=('glibc' 'gcc-libs' 'bubblewrap')
 provides=("ox-llm=$pkgver")
 conflicts=('ox-llm')
 options=('!lto' '!debug' '!strip')

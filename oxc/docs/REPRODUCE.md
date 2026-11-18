@@ -48,12 +48,13 @@ cargo test --release -p qwen4exp --lib                     # Flash graph, cache,
 ./target/release/flash-m3 selftest                         # Flash kernel self-tests (synthetic)
 ```
 
-Lab repository (this one):
+Lab repository tests:
 
 ```sh
 PYTHONPATH=src python3 -B -m unittest discover -s tests
-PYTHONPATH=src python3 -B -m oxc doctor
 ```
+
+The [archived reproduction guide](https://github.com/oxstack/ox-llm/blob/e64b985a2ff6abf51d406471382ed95a18fd161c/oxc/docs/REPRODUCE.md) preserves the legacy Python hardware check.
 
 ## 3. Get the models
 

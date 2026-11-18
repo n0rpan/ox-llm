@@ -3,10 +3,14 @@
 use oxa_proto::{codes, Entry, EntryBody, OxaError, Value};
 use serde_json::json;
 
+mod lead;
+pub use lead::plan::{CheckResult, GoalCheck, GoalPlan, Subgoal};
+pub use lead::{HeldGoalLease, LeadGoalState, OpenGoalAsk, PendingGoalSteer, SteeringLease};
+
 pub const GOAL_ENTRY: &str = "oxa.goal.v1";
 const MAX_OBJECTIVE: usize = 64 * 1024;
 const MAX_EVIDENCE: usize = 8 * 1024;
-const CONTROL_FIELDS: [&str; 5] = ["objective", "status", "started_ms", "budget", "evidence"];
+const CONTROL_FIELDS: [&str; 6] = ["objective", "status", "started_ms", "budget", "evidence", "plan"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GoalStatus {
@@ -45,6 +49,8 @@ pub struct Goal {
     pub evidence: Option<String>,
     pub idle_stops: u8,
     pub unknown_requests: u64,
+    pub lead: Option<LeadGoalState>,
+    pub plan: Option<GoalPlan>,
 }
 fn invalid() -> OxaError {
     OxaError::new(codes::INVALID, "invalid stored goal or goal arguments")
@@ -62,11 +68,22 @@ impl Goal {
             evidence: None,
             idle_stops: 0,
             unknown_requests: 0,
+            lead: None,
+            plan: None,
         };
         goal.validate()?;
         Ok(goal)
     }
-    fn validate(&self) -> Result<(), OxaError> {
+    pub fn validate(&self) -> Result<(), OxaError> {
+        if let Some(lead) = &self.lead {
+            lead.validate()?;
+        }
+        if let Some(plan) = &self.plan {
+            plan.validate()?;
+            if self.status == GoalStatus::Done && !plan.verified() {
+                return Err(invalid());
+            }
+        }
         if self.objective.trim().is_empty()
             || self.objective.len() > MAX_OBJECTIVE
             || self
@@ -114,6 +131,7 @@ impl Goal {
     pub fn finish(&mut self, status: GoalStatus, evidence: String) -> Result<(), OxaError> {
         if self.status != GoalStatus::Pursuing
             || !matches!(status, GoalStatus::Done | GoalStatus::Blocked)
+            || status == GoalStatus::Done && self.plan.as_ref().is_some_and(|plan| !plan.verified())
             || evidence.trim().is_empty()
             || evidence.len() > MAX_EVIDENCE
         {
@@ -170,10 +188,17 @@ impl Goal {
         matches!(self.status, GoalStatus::Done | GoalStatus::Canceled)
     }
     pub fn value(&self) -> Value {
-        json!({"version":1,"objective":self.objective,"status":self.status.as_str(),"started_ms":self.started_ms,
+        let mut data = json!({"version":1,"objective":self.objective,"status":self.status.as_str(),"started_ms":self.started_ms,
             "tokens_used":self.tokens_used,"elapsed_ms":self.elapsed_ms,"turns":self.turns,
             "budget":{"max_tokens":self.budget.max_tokens,"max_time_ms":self.budget.max_time_ms,"max_turns":self.budget.max_turns},
-            "evidence":self.evidence,"idle_stops":self.idle_stops,"unknown_requests":self.unknown_requests})
+            "evidence":self.evidence,"idle_stops":self.idle_stops,"unknown_requests":self.unknown_requests});
+        if let Some(lead) = &self.lead {
+            data["lead"] = lead.value();
+        }
+        if let Some(plan) = &self.plan {
+            data["plan"] = plan.value();
+        }
+        data
     }
     pub fn body(&self) -> EntryBody {
         Self::record(self.value(), "control")
@@ -208,7 +233,8 @@ impl Goal {
             Some(Some("control" | "accounting")) => 12,
             _ => return Err(invalid()),
         };
-        if fields.len() != field_count || v["version"] != 1 {
+        let optional = usize::from(fields.contains_key("lead")) + usize::from(fields.contains_key("plan"));
+        if fields.len() != field_count + optional || v["version"] != 1 {
             return Err(invalid());
         }
         let number = |key| v[key].as_u64().ok_or_else(invalid);
@@ -249,6 +275,8 @@ impl Goal {
             evidence,
             idle_stops: u8::try_from(number("idle_stops")?).map_err(|_| invalid())?,
             unknown_requests: number("unknown_requests")?,
+            lead: fields.get("lead").map(LeadGoalState::decode).transpose()?,
+            plan: fields.get("plan").map(GoalPlan::decode).transpose()?,
         };
         goal.validate()?;
         Ok(goal)

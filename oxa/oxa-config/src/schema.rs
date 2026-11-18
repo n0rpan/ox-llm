@@ -162,6 +162,8 @@ const SCHEMA: &[KeyDef] = &[
     // Lead web access scaffold: user-layer object, disabled by default, no listener installed yet.
     // The CLI validates the fields it reads (identity mode, loopback bind, port, allow-list).
     key("oxa.lead.serve", Kind::Object, "{}"),
+    // Exact protected owner Session ID for free-text Lead chat; user settings only.
+    key("oxa.lead.sessionId", Kind::String, "null"),
     // Read-only lead shadow preset; user settings only, default off.
     key("oxa.lead.shadow", Kind::Bool, "false"),
     // Model replies per run before it ends with `turn_limit`; unset or 0 = no limit (#507).
@@ -193,6 +195,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
+    key("oxa.share.remoteModels", Kind::StringList, "[]"),
     key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
