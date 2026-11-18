@@ -32,6 +32,10 @@ const KILL_AFTER: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(50);
 /// How often the idle thread reaps workers that exited on their own.
 const REAP_EVERY: Duration = Duration::from_millis(200);
+/// The most a single `kill` helper run may take before it is killed and counted as a failed signal.
+const SIGNAL_DEADLINE: Duration = Duration::from_secs(5);
+/// Generous cap on what the `kill` helper may print; it prints nothing in normal use.
+const SIGNAL_OUTPUT_BYTES: usize = 64 * 1024;
 /// The default for `oxa.workers.stopGraceSeconds`.
 const DEFAULT_STOP_GRACE: Duration = Duration::from_secs(10);
 
@@ -46,7 +50,7 @@ enum Msg {
         reply: Sender<io::Result<Option<ExitStatus>>>,
     },
     StopAll {
-        reply: Sender<()>,
+        reply: Sender<io::Result<()>>,
     },
 }
 
@@ -94,11 +98,12 @@ impl Supervisor {
         rx.recv().map_err(|_| gone())?
     }
 
-    /// Stop every live worker, one after another.
+    /// Stop every live worker, one after another. Every worker is attempted; when any teardown
+    /// fails the first error is returned and those workers stay tracked for a later retry.
     pub fn stop_all(&self) -> io::Result<()> {
         let (reply, rx) = mpsc::channel();
         self.send(Msg::StopAll { reply })?;
-        rx.recv().map_err(|_| gone())
+        rx.recv().map_err(|_| gone())?
     }
 
     fn send(&self, msg: Msg) -> io::Result<()> {
@@ -153,8 +158,11 @@ fn run(rx: Receiver<Msg>, grace: Duration, kill: PathBuf) {
         live: HashMap::new(),
         done: HashMap::new(),
     };
+    let mut last_reap = Instant::now();
     loop {
-        match rx.recv_timeout(REAP_EVERY) {
+        // Reaping runs on its own deadline, so a steady stream of requests cannot starve it.
+        let wait = REAP_EVERY.saturating_sub(last_reap.elapsed());
+        match rx.recv_timeout(wait) {
             Ok(Msg::Spawn { argv, log, reply }) => {
                 let _ = reply.send(table.spawn(&argv, &log));
             }
@@ -162,14 +170,17 @@ fn run(rx: Receiver<Msg>, grace: Duration, kill: PathBuf) {
                 let _ = reply.send(table.stop(pgid));
             }
             Ok(Msg::StopAll { reply }) => {
-                table.stop_all();
-                let _ = reply.send(());
+                let _ = reply.send(table.stop_all());
             }
-            Err(RecvTimeoutError::Timeout) => table.reap(),
+            Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                table.stop_all();
+                let _ = table.stop_all();
                 return;
             }
+        }
+        if last_reap.elapsed() >= REAP_EVERY {
+            table.reap();
+            last_reap = Instant::now();
         }
     }
 }
@@ -258,12 +269,17 @@ impl Table {
         ))
     }
 
-    fn stop_all(&mut self) {
+    /// Attempt every live worker. Returns the first teardown error; failed workers stay in `live`.
+    fn stop_all(&mut self) -> io::Result<()> {
         let pgids: Vec<u32> = self.live.keys().copied().collect();
+        let mut first = None;
         for pgid in pgids {
-            let _ = self.stop(pgid);
+            if let Err(error) = self.stop(pgid) {
+                first.get_or_insert(error);
+            }
         }
         self.done.clear();
+        first.map_or(Ok(()), Err)
     }
 }
 
@@ -284,19 +300,18 @@ fn settle(pgid: u32, until: Instant) -> io::Result<bool> {
 /// `target` is a pid, or `-<pgid>` for a whole group. A signal that does not land is an error,
 /// never read as the worker being gone.
 fn signal(kill: &Path, target: &str, sig: &str) -> io::Result<()> {
-    let status = Command::new(kill)
-        .env_clear()
-        .arg(format!("-{sig}"))
-        .arg("--")
-        .arg(target)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(io::Error::other(format!("kill -{sig} {target} failed: {status}")))
+    let mut command = Command::new(kill);
+    command.env_clear().arg(format!("-{sig}")).arg("--").arg(target);
+    // Bounded: a stalled helper is killed at the deadline and reported as a failed signal, so it
+    // can never hold the supervisor thread back from escalating.
+    match oxa_work::command_runner(command, Some(SIGNAL_OUTPUT_BYTES), SIGNAL_DEADLINE) {
+        Some((0, _)) => Ok(()),
+        Some((code, _)) => Err(io::Error::other(format!(
+            "kill -{sig} {target} failed: exit {code}"
+        ))),
+        None => Err(io::Error::other(format!(
+            "kill -{sig} {target} did not finish within {SIGNAL_DEADLINE:?}"
+        ))),
     }
 }
 
@@ -329,15 +344,24 @@ fn group_alive(pgid: u32) -> io::Result<bool> {
 /// The state letter and process group of `pid` from `/proc/<pid>/stat`, or `None` once the
 /// process is gone.
 fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
-    let text = match fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(text) => text,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
-    };
+    match fs::read(format!("/proc/{pid}/stat")) {
+        Ok(bytes) => parse_stat(&bytes).map(Some),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+/// Parse a `/proc/<pid>/stat` record as bytes: `comm` may hold any byte (not only UTF-8), so only
+/// the ASCII fields after the last `)` are decoded.
+fn parse_stat(bytes: &[u8]) -> io::Result<(char, u32)> {
     let malformed = || io::Error::new(io::ErrorKind::InvalidData, "malformed /proc stat line");
     // `pid (comm) state ppid pgrp ...`: comm may contain spaces and parentheses, so split after
     // the last `)`.
-    let rest = text.rsplit_once(')').ok_or_else(malformed)?.1;
+    let close = bytes
+        .iter()
+        .rposition(|byte| *byte == b')')
+        .ok_or_else(malformed)?;
+    let rest = std::str::from_utf8(&bytes[close + 1..]).map_err(|_| malformed())?;
     let mut fields = rest.split_whitespace();
     let state = fields
         .next()
@@ -348,7 +372,7 @@ fn proc_stat(pid: u32) -> io::Result<Option<(char, u32)>> {
         .next()
         .and_then(|field| field.parse().ok())
         .ok_or_else(malformed)?;
-    Ok(Some((state, group)))
+    Ok((state, group))
 }
 
 #[cfg(test)]
@@ -553,6 +577,116 @@ mod tests {
             !group_alive(pgid).expect("probe"),
             "the group survived the second stop"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stop_all_reports_a_worker_that_could_not_be_stopped() {
+        let dir = scratch("stop-all-error");
+        let allow = dir.join("allow");
+        let helper = dir.join("kill");
+        script(
+            &helper,
+            &format!(
+                "[ -e '{}' ] || exit 2\nexec '{}' \"$@\"",
+                allow.display(),
+                real_kill().display()
+            ),
+        );
+        let sup = Supervisor::new(GRACE, helper).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        let pgid = sup
+            .spawn(
+                &["/bin/sh", "-c", &group_with_background(&pidfile)],
+                &dir.join("worker.log"),
+            )
+            .expect("spawn");
+        background_pid(&pidfile);
+        assert!(
+            sup.stop_all().is_err(),
+            "stop_all returned Ok although the worker is still running"
+        );
+        assert!(group_alive(pgid).expect("probe"), "the worker was lost");
+        fs::write(&allow, "").expect("allow");
+        sup.stop_all().expect("retry stop_all");
+        assert!(!group_alive(pgid).expect("probe"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_stat_accepts_a_non_utf8_process_name() {
+        let mut record = b"4242 (a".to_vec();
+        record.push(0xff);
+        record.extend_from_slice(b") b) S 1 777 777 0 -1\n");
+        assert_eq!(parse_stat(&record).expect("parse"), ('S', 777));
+        assert!(parse_stat(b"no close paren").is_err());
+    }
+
+    #[test]
+    fn a_non_utf8_process_name_does_not_block_stop() {
+        let dir = scratch("non-utf8-comm");
+        let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
+        let pidfile = dir.join("bg.pid");
+        let body = format!(
+            "printf '\\377' > /proc/$$/comm; {}",
+            group_with_background(&pidfile)
+        );
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", &body], &dir.join("worker.log"))
+            .expect("spawn");
+        background_pid(&pidfile);
+        assert!(group_alive(pgid).expect("probe"));
+        assert!(sup.stop(pgid).expect("stop").is_some());
+        assert!(!group_alive(pgid).expect("probe"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_stuck_signal_helper_cannot_hold_the_supervisor() {
+        let dir = scratch("stuck-helper");
+        let helper = dir.join("kill");
+        // Stalls far past the deadline before doing anything.
+        script(&helper, "sleep 60");
+        let sup = Supervisor::new(GRACE, helper).expect("supervisor");
+        let pgid = sup
+            .spawn(&["/bin/sh", "-c", "sleep 60 & wait"], &dir.join("worker.log"))
+            .expect("spawn");
+        let started = Instant::now();
+        assert!(
+            sup.stop(pgid).is_err(),
+            "a stalled helper must read as a failed signal"
+        );
+        assert!(
+            started.elapsed() < SIGNAL_DEADLINE + Duration::from_secs(4),
+            "the stalled helper blocked the supervisor"
+        );
+        // The supervisor still answers.
+        assert!(sup.spawn(&["/bin/sh", "-c", "true"], &dir.join("b.log")).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exited_workers_are_reaped_while_requests_keep_arriving() {
+        let dir = scratch("reap-busy");
+        let sup = Supervisor::new(GRACE, real_kill()).expect("supervisor");
+        let log = dir.join("worker.log");
+        let first = sup.spawn(&["/bin/sh", "-c", "true"], &log).expect("spawn");
+        // Requests arrive well inside REAP_EVERY, so the receive never times out.
+        let mut reaped = false;
+        let until = Instant::now() + REAP_EVERY * 4;
+        while Instant::now() < until {
+            sup.spawn(&["/bin/sh", "-c", "true"], &log).expect("spawn");
+            thread::sleep(Duration::from_millis(20));
+            if proc_stat(first).expect("stat").is_none() {
+                reaped = true;
+                break;
+            }
+        }
+        assert!(
+            reaped,
+            "an exited worker stayed unreaped under a steady request stream"
+        );
+        let _ = sup.stop_all();
         let _ = fs::remove_dir_all(&dir);
     }
 
