@@ -145,16 +145,52 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
 fn taskfile_model_does_not_authorize_keyed_go() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start(vec![]);
-    setup(&env, &format!("http://{}", mock.address()));
-    work_repo::setup(&env, "[]");
+    let (output, record) = run_go_work_taskfile(&env, &mock, false);
+    assert!(record["worker"].is_object(), "{record}");
+    assert!(!output.status.success());
+    assert!(mock.requests().is_empty());
+    assert!(!env.agent_dir().join("cloud-ledger").exists());
+    mock.assert_healthy();
+}
+
+#[test]
+fn taskfile_can_use_go_explicitly_enabled_by_the_owner() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic work answer"}), "stop"),
+        ]
+    });
+    let (_, record) = run_go_work_taskfile(&env, &mock, true);
+    assert!(
+        matches!(record["worker"]["exit_code"].as_i64(), Some(0 | 4)),
+        "{record}"
+    );
+    assert_eq!(
+        mock.requests()
+            .iter()
+            .filter(|request| request.method == "POST")
+            .count(),
+        1
+    );
+    assert_eq!(rows(&env)[0]["remote_provider"], "opencode");
+    mock.assert_healthy();
+}
+
+fn run_go_work_taskfile(env: &TestEnv, mock: &MockOpenAi, explicit: bool) -> (Output, Value) {
+    setup(env, &format!("http://{}", mock.address()));
+    work_repo::setup(env, "[]");
     let path = env.agent_dir().join("settings.json");
     let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     settings.as_object_mut().unwrap().remove("defaultModel");
     settings["oxa"].as_object_mut().unwrap().remove("engine");
-    settings["oxa"]["cloud"]["opencode"]
-        .as_object_mut()
-        .unwrap()
-        .remove("enabled");
+    if !explicit {
+        settings["oxa"]["cloud"]["opencode"]
+            .as_object_mut()
+            .unwrap()
+            .remove("enabled");
+    }
     fs::write(path, settings.to_string()).unwrap();
     env.write(
         "work/tasks.json",
@@ -172,11 +208,7 @@ fn taskfile_model_does_not_authorize_keyed_go() {
         .unwrap();
     let record: Value = serde_json::from_slice(&output.stdout)
         .unwrap_or_else(|_| panic!("missing work record: {}", String::from_utf8_lossy(&output.stderr)));
-    assert!(record["worker"].is_object(), "{record}");
-    assert!(!output.status.success());
-    assert!(mock.requests().is_empty());
-    assert!(!env.agent_dir().join("cloud-ledger").exists());
-    mock.assert_healthy();
+    (output, record)
 }
 
 #[test]
