@@ -15,7 +15,13 @@ fn trusted_ox_llm_profile_classifies_each_core_family() {
     fs::set_permissions(env.tmp(), fs::Permissions::from_mode(0o700)).unwrap();
     let gh = env.write(
         "tmp/gh",
-        "#!/bin/sh\ncase \"$*\" in *'p42:pullRequest(number:42)'*|*'pullRequests(first:100'*) cat snapshot.json ;; *) exit 92 ;; esac\n",
+        r#"#!/bin/sh
+case " $* " in *' --include '*) printf 'HTTP/2.0 200 OK\r\n\r\n' ;; esac
+case "$*" in
+  *'p42:pullRequest(number:42)'*|*'pullRequests(first:100'*) cat snapshot.json ;;
+  *) exit 92 ;;
+esac
+"#,
     );
     fs::set_permissions(gh, fs::Permissions::from_mode(0o700)).unwrap();
 
