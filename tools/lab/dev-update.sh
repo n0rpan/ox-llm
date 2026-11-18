@@ -87,7 +87,12 @@ fi
 trusted_parent() {
   local path=$1 parent owner mode
   test -n "$path" && test -d "$path" && test ! -L "$path" || return 1
-  [[ $path == / ]] || trusted_parent "${path%/*}" || return 1
+  if [[ $path != / ]]; then
+    # "/home" trims to an empty string: the root of the chain is "/" exactly as
+    # the stock ancestor check spells it.
+    parent=${path%/*}
+    trusted_parent "${parent:-/}" || return 1
+  fi
   read -r owner mode < <(stat -c '%u %a' -- "$path") || return 1
   [[ $owner == 0 || $owner == "$EUID" ]] || return 1
   (( (8#$mode & 8#022) == 0 || (8#$mode & 8#1000) != 0 ))
