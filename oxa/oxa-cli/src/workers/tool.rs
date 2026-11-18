@@ -132,24 +132,42 @@ fn git_succeeds(dir: &Path, args: &[&str]) -> bool {
         .unwrap_or(false)
 }
 
-/// Writes `text` to `path` (created with mode 0600, truncated), creating `dir` first.
+/// Writes `text` to `path`, creating `dir` first: a fresh mode-0600 file beside it, renamed over
+/// the name. An existing goal file is replaced, never followed (a symlink there stays a symlink
+/// and its target is untouched), and broader permissions cannot survive the replace.
 fn write_private(dir: &Path, path: &Path, text: &str) -> io::Result<()> {
     fs::create_dir_all(dir)?;
+    let leaf = path
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "the goal file has no name"))?;
+    let temp = dir.join(format!(".{}.{}.tmp", leaf.to_string_lossy(), std::process::id()));
     let mut file = OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
-        .open(path)?;
-    file.write_all(text.as_bytes())
+        .open(&temp)?;
+    let written = file.write_all(text.as_bytes()).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(e) = written {
+        let _ = fs::remove_file(&temp);
+        return Err(e);
+    }
+    fs::rename(&temp, path).inspect_err(|_| {
+        let _ = fs::remove_file(&temp);
+    })
 }
 
 /// The argv prefix that runs the child in `cwd` with environment `child`, given the process
 /// environment `parent`: `-u NAME` for each name the child lacks, `NAME=value` for each new or
 /// changed one. Everything else is inherited.
-fn env_wrapper(cwd: &Path, parent: &[(String, String)], child: &[(String, String)]) -> Vec<String> {
+fn env_wrapper(
+    program: &Path,
+    cwd: &Path,
+    parent: &[(String, String)],
+    child: &[(String, String)],
+) -> Vec<String> {
     let mut argv = vec![
-        "env".to_string(),
+        program.to_string_lossy().into_owned(),
         "-C".to_string(),
         cwd.to_string_lossy().into_owned(),
     ];
@@ -244,6 +262,21 @@ impl WorkerCore {
         lock(&self.session).clone()
     }
 
+    /// A host program the worker launch runs, from a trusted PATH directory only.
+    fn trusted_program(&self, program: &str, cwd: &Path) -> Option<PathBuf> {
+        let value = |name: &str| {
+            self.parent_env
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        };
+        let path = value("PATH")
+            .map(std::ffi::OsString::from)
+            .or_else(|| std::env::var_os("PATH"));
+        let home = value("HOME").map(PathBuf::from);
+        crate::netguard::trusted_executable_for(program, path.as_deref(), Some(cwd), home.as_deref())
+    }
+
     /// Learn the parent session id and model through the host (`HostAction::EngineLimits`).
     fn learn(&self) {
         let Some(host) = lock(&self.host).clone() else {
@@ -282,12 +315,23 @@ impl WorkerCore {
         if parent.is_empty() {
             return ToolOutput::error("worker: the session id is not known yet");
         }
-        let model = match str_arg(args, "model").map(str::trim).filter(|m| !m.is_empty()) {
-            Some(m) => m.to_string(),
-            None => session_model,
-        };
+        // A worker runs this session's model: the model argument cannot pick another one, so a
+        // tool call never selects a cloud or metered transport the owner did not choose.
+        if let Some(requested) = str_arg(args, "model").map(str::trim).filter(|m| !m.is_empty()) {
+            if session_model.is_empty() || requested != session_model {
+                return ToolOutput::error(format!(
+                    "worker: a worker runs this session's model ({}); start it without a model",
+                    if session_model.is_empty() {
+                        "not known yet"
+                    } else {
+                        session_model.as_str()
+                    }
+                ));
+            }
+        }
+        let model = session_model;
         if model.is_empty() {
-            return ToolOutput::error("worker: no model for the worker; pass model");
+            return ToolOutput::error("worker: the session model is not known yet");
         }
         let mut records = match registry::load(&self.agent_dir, &parent) {
             Ok(records) => records,
@@ -366,8 +410,13 @@ impl WorkerCore {
             Ok(v) => v,
             Err(e) => return ToolOutput::error(format!("worker: {e}")),
         };
-        let env = child_env(&self.parent_env);
-        let mut command = env_wrapper(&worktree, &self.parent_env, &env);
+        let env = child_env(&self.parent_env, oxa_proto::offline());
+        // `env` runs outside the sandbox: resolve it like every other host tool, never from a
+        // project-controlled PATH entry.
+        let Some(env_bin) = self.trusted_program("env", &worktree) else {
+            return ToolOutput::error("worker: env was not found in a trusted PATH directory");
+        };
+        let mut command = env_wrapper(&env_bin, &worktree, &self.parent_env, &env);
         command.push(self.oxa_bin.to_string_lossy().into_owned());
         command.extend(argv.iter().cloned());
         let refs: Vec<&str> = command.iter().map(String::as_str).collect();
@@ -699,6 +748,34 @@ mod tests {
         assert!(second.is_error);
         assert!(second.text.contains("already exists"), "{}", second.text);
         assert_eq!(registry::load(&agent, "parent-1").unwrap().len(), 1);
+        let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn worker_start_refuses_another_model() {
+        let (root, repo, agent, fake) = fixture("model");
+        let hooks = hooks(&fake, &agent);
+        set_session(&hooks, "parent-1");
+        let out = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one", "model": "cloud/expensive"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(out.is_error, "{}", out.text);
+        assert!(out.text.contains("session's model"), "{}", out.text);
+        assert!(registry::load(&agent, "parent-1").unwrap().is_empty());
+        assert!(!worktree_path(&repo, "alpha").unwrap().exists());
+        // The session's own model is accepted and passed through.
+        let ok = hooks.core.start(
+            &json!({"action": "start", "name": "alpha", "goal": "one", "model": "model-x"}),
+            &repo,
+            Mode::Workspace,
+            Autonomy::Standard,
+        );
+        assert!(!ok.is_error, "{}", ok.text);
+        assert_eq!(registry::load(&agent, "parent-1").unwrap()[0].model, "model-x");
         let _ = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
         let _ = fs::remove_dir_all(&root);
     }

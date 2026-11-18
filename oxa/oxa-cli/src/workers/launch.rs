@@ -173,18 +173,28 @@ pub fn worktree_argv(repo: &Path, name: &str, base: &str) -> Vec<Vec<String>> {
 }
 
 /// The environment of a worker: the parent's, without the trust and session-hint variables, and
-/// with `OXA_WORKER_DEPTH=1`.
-pub fn child_env(parent_env: &[(String, String)]) -> Vec<(String, String)> {
+/// with `OXA_WORKER_DEPTH=1`. `offline` is the parent's own policy (`--offline` sets it without
+/// any variable): the child is told, so it cannot reach the network behind the parent's back.
+pub fn child_env(parent_env: &[(String, String)], offline: bool) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = parent_env
         .iter()
+        .map(|(k, v)| {
+            if k == "OXA_OFFLINE" && offline {
+                (k.clone(), "1".to_string())
+            } else {
+                (k.clone(), v.clone())
+            }
+        })
         .filter(|(k, _)| {
             !matches!(
                 k.as_str(),
                 "OXA_TRUST_PROJECT" | "OXA_SESSION_HINT" | "OXA_WORKER_DEPTH"
             )
         })
-        .cloned()
         .collect();
+    if offline && !env.iter().any(|(k, _)| k == "OXA_OFFLINE") {
+        env.push(("OXA_OFFLINE".into(), "1".into()));
+    }
     env.push(("OXA_WORKER_DEPTH".into(), "1".into()));
     env
 }
@@ -345,12 +355,29 @@ mod tests {
             ("HOME".to_string(), "/home/u".to_string()),
         ];
         assert_eq!(
-            child_env(&parent),
+            child_env(&parent, false),
             vec![
                 ("HOME".to_string(), "/home/u".to_string()),
                 ("OXA_WORKER_DEPTH".to_string(), "1".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn child_env_carries_the_parent_offline_policy() {
+        let parent = vec![("HOME".to_string(), "/home/u".to_string())];
+        assert!(child_env(&parent, true)
+            .iter()
+            .any(|(k, v)| k == "OXA_OFFLINE" && v == "1"));
+        assert!(!child_env(&parent, false).iter().any(|(k, _)| k == "OXA_OFFLINE"));
+        // A value left in the parent environment cannot turn the policy off.
+        let stale = vec![("OXA_OFFLINE".to_string(), "0".to_string())];
+        assert!(child_env(&stale, true)
+            .iter()
+            .any(|(k, v)| k == "OXA_OFFLINE" && v == "1"));
+        assert!(child_env(&stale, false)
+            .iter()
+            .any(|(k, v)| k == "OXA_OFFLINE" && v == "0"));
     }
 
     #[test]
