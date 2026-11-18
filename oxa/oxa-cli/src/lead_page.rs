@@ -201,7 +201,7 @@ fn attention(html: &mut String, view: &View<'_>) {
     }
 }
 
-fn stale(board: &Board, now: u64) -> bool {
+pub(crate) fn stale(board: &Board, now: u64) -> bool {
     board.observed_at > now.saturating_add(60) || now.saturating_sub(board.observed_at) > 900
 }
 

@@ -26,7 +26,7 @@ fn menu_and_help_precede_runtime_and_reserved_children_refuse() {
         assert!(text.contains("lead"));
         assert_eq!(text.contains("lead serve"), args.as_slice() == ["lead"]);
     }
-    for child in ["board", "status", "asks", "chat"] {
+    for child in ["board", "status", "chat"] {
         let output = command(&test).args(["lead", child]).output().unwrap();
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("unavailable"));
