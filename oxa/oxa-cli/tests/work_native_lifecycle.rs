@@ -249,6 +249,7 @@ impl Fixture {
         }}}).to_string()).unwrap();
         let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
         let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .env_clear()
             .args([
                 "work",
                 "board",
@@ -261,7 +262,6 @@ impl Fixture {
             ])
             .arg(&self.config)
             .current_dir(self.env.work().join("project"))
-            .env_clear()
             .envs(self.env.envs("http://127.0.0.1:1"))
             .env("PATH", path)
             .stdin(Stdio::piped())
