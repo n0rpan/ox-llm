@@ -101,6 +101,8 @@ Commands take the place of the message. They do not start a session.
 | `oxa logout chatgpt` | remove the private ChatGPT token record |
 | `oxa status <session-id\|session-file> [--session-dir <dir>]` | read a saved session's progress and stall signal without contacting an engine |
 | `oxa send <session-id> "text"` | queue one follow-up for the session's TUI or RPC owner |
+| `oxa send <session-id> --approve <request-id> once\|session\|always\|deny` | answer a dangerous-command request filed by an unattended run (#1512). `always` also saves the rule key to the user settings. Answers go to the approval desk, never to the session's message queue |
+| `oxa send --approvals` | list the approval requests still waiting for an answer: id, session, command and reasons |
 | `oxa config [-l]` | print every setting with its value and where it comes from |
 | `oxa mcp <command>` | manage MCP servers, see below |
 | `oxa identity [--refresh] [--offline]` | show the identity text of the system prompt; `--refresh` rewrites it from this machine and the engine, and `--offline` skips the engine |

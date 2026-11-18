@@ -74,7 +74,16 @@ impl std::fmt::Debug for RegistryArgs {
 
 pub(crate) fn registry_owned(id: oxa_interactive::command_registry::CommandId) -> bool {
     use oxa_interactive::command_registry::CommandId;
-    !matches!(id, CommandId::Help | CommandId::WorkStatus | CommandId::WorkBoard)
+    // #1512 S5: `send` keeps its legacy parser (follow-ups and approval answers); it is declared
+    // for help only.
+    !matches!(
+        id,
+        CommandId::Help
+            | CommandId::WorkStatus
+            | CommandId::WorkBoard
+            | CommandId::Send
+            | CommandId::SendApprovals
+    )
 }
 
 /// Login words can contain a mistakenly pasted callback. Never expose them
@@ -275,6 +284,11 @@ const COMMANDS: &[(&str, &str)] = &[
         "oxa send <session-id> \"text\"",
         "Queue a session follow-up, waking its TUI or RPC owner",
     ),
+    (
+        "oxa send <session-id> --approve <request-id> once|session|always|deny",
+        "Answer a dangerous-command approval request of an unattended run",
+    ),
+    ("oxa send --approvals", "List the approval requests that wait for an answer"),
     ("oxa config [-l]", "Print every setting with its value and source"),
     (
         "oxa mcp <command>",

@@ -110,6 +110,12 @@ pub mod tool_errors {
     /// #1512 S2: a dangerous command in a run with no one to ask. `{why}` is the matched rules.
     pub const DANGEROUS_UNATTENDED: &str =
         "Refused: dangerous command ({why}). This run has no one to approve it; nobody declined it.";
+    /// #1512 S5: an unattended run under the OS sandbox refuses a dangerous command at once.
+    /// `{why}` is the matched rules.
+    pub const DANGEROUS_REFUSED: &str = "Refused: dangerous command ({why}). Unattended runs with the OS sandbox refuse dangerous commands. Do the task another way, or report that the owner must run it.";
+    /// #1512 S5: an unattended run without the OS sandbox files an approval request instead.
+    /// `{id}` is the request id, `{session}` the session, `{why}` the matched rules.
+    pub const DANGEROUS_REQUESTED: &str = "Needs owner approval (request {id}): {why}. The owner answers with `oxa send {session} --approve {id} once|session|always|deny` or on the lead web page. Continue with other work and retry this exact command after it is approved.";
     pub const ABORTED: &str = "Tool execution aborted";
     /// A call in a reply cut by the output limit (`Finish::Length`) is never run (pi's
     /// `failToolCallsFromTruncatedMessage`). `{name}` is replaced by the tool name.

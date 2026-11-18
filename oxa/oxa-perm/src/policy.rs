@@ -1,10 +1,11 @@
 //! A10: the mode x access policy table.
 use crate::danger::{DangerHit, DangerRules};
+use crate::desk::{ApprovalDesk, UnattendedMode};
 use crate::paths::{is_inside, is_read_only_command, resolve_real};
 use oxa_proto::guard::{
     home_protected_paths, is_home_or_above, sensitive_paths, GIT_PROTECTED_IN_CWD, PROTECTED_IN_CWD,
 };
-use oxa_proto::{Access, Decision, Mode, PathFilter, Policy, ToolClass, YoloSwitch};
+use oxa_proto::{tool_errors, Access, Decision, Mode, PathFilter, Policy, ToolClass, YoloSwitch};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -343,6 +344,14 @@ pub struct ModePolicy {
     danger_grants: Vec<String>,
     /// #1512 S2: the keys saved by "always allow" in the user settings.
     always: Arc<Vec<String>>,
+    /// #1512 S5: the approval desk of an unattended run (`None` = no desk).
+    desk: Option<Arc<ApprovalDesk>>,
+    /// #1512 S5: the session the desk files requests and grants for.
+    session_id: String,
+    /// #1512 S5: how an unattended run answers a dangerous command (`oxa.approval.unattended`).
+    unattended: UnattendedMode,
+    /// #1512 S5: this run has the OS sandbox (`oxa.sandbox.unattended`, S3).
+    os_sandbox: bool,
 }
 
 impl PartialEq for ModePolicy {
@@ -358,6 +367,10 @@ impl PartialEq for ModePolicy {
             && self.danger == other.danger
             && self.danger_grants == other.danger_grants
             && self.always == other.always
+            && self.desk == other.desk
+            && self.session_id == other.session_id
+            && self.unattended == other.unattended
+            && self.os_sandbox == other.os_sandbox
     }
 }
 
@@ -393,6 +406,22 @@ impl ModePolicy {
         self.always = Arc::new(always);
         self
     }
+    /// #1512 S5: an unattended run files its dangerous commands at `desk` for `session_id`.
+    /// `unattended` decides refuse or request (`Auto` = refuse under the OS sandbox, request
+    /// without it); `os_sandbox` is this run's OS sandbox (S3).
+    pub fn with_desk(
+        mut self,
+        desk: Arc<ApprovalDesk>,
+        session_id: String,
+        unattended: UnattendedMode,
+        os_sandbox: bool,
+    ) -> ModePolicy {
+        self.desk = Some(desk);
+        self.session_id = session_id;
+        self.unattended = unattended;
+        self.os_sandbox = os_sandbox;
+        self
+    }
     pub fn grants(&self) -> &[Access] {
         &self.grants
     }
@@ -403,14 +432,27 @@ impl ModePolicy {
         let (Access::Exec { command, .. }, Some(rules)) = (a, &self.danger) else {
             return Vec::new();
         };
-        rules
+        let open: Vec<DangerHit> = rules
             .classify(command, cwd, &self.guard)
             .into_iter()
             .filter(|h| {
                 let key = h.key();
                 !self.danger_grants.contains(&key) && !self.always.contains(&key)
             })
-            .collect()
+            .collect();
+        // #1512 S5: the desk's session or once grant covers the rest together, all or nothing.
+        // A `once` grant is consumed here, so call this only where the verdict is final.
+        match &self.desk {
+            Some(desk) if !open.is_empty() => {
+                let keys: Vec<String> = open.iter().map(DangerHit::key).collect();
+                if desk.granted(&self.session_id, &keys) {
+                    Vec::new()
+                } else {
+                    open
+                }
+            }
+            _ => open,
+        }
     }
 
     /// `true` when a remembered grant covers `a`.
@@ -552,6 +594,10 @@ impl ModePolicy {
             Decision::Ask if self.granted(a) => Decision::Allow,
             d => d,
         });
+        // A table Deny stands: a grant is not consumed for a command that cannot run.
+        if matches!(table_verdict, Verdict::Is(Decision::Deny(_))) {
+            return table_verdict;
+        }
         // #1512 S2: a dangerous command is a floor prompt: plan's Deny stands, and every other
         // mode asks (auto and standard) unless yolo allows it outside plan mode.
         if !self.danger_hits(a, cwd).is_empty() {
@@ -634,6 +680,46 @@ impl Policy for ModePolicy {
             if !self.danger_grants.contains(key) {
                 self.danger_grants.push(key.clone());
             }
+        }
+    }
+
+    fn set_session_id(&mut self, id: &str) {
+        self.session_id = id.to_string();
+    }
+
+    /// #1512 S5: an exec that needs an answer in a run with no one to ask. With no desk, `None`
+    /// (the caller asks the `Ui`, which refuses). Otherwise the refusal text, or the request
+    /// text naming the filed request id.
+    fn danger_unattended(&mut self, a: &Access, cwd: &Path) -> Option<String> {
+        let Access::Exec { command, .. } = a else {
+            return None;
+        };
+        let desk = self.desk.clone()?;
+        let hits = self.danger_hits(a, cwd);
+        if hits.is_empty() {
+            return None;
+        }
+        let why = hits
+            .iter()
+            .map(|h| format!("{}: {}", h.rule, h.reason))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let refuse = self.unattended.resolve(self.os_sandbox) == UnattendedMode::Refuse;
+        let status = if refuse { "refused" } else { "pending" };
+        let id = match desk.record(&self.session_id, cwd, command, &hits, status) {
+            Ok(id) => id,
+            // The request could not be filed: the command is still refused.
+            Err(_) => return Some(tool_errors::DANGEROUS_REFUSED.replace("{why}", &why)),
+        };
+        if refuse {
+            Some(tool_errors::DANGEROUS_REFUSED.replace("{why}", &why))
+        } else {
+            Some(
+                tool_errors::DANGEROUS_REQUESTED
+                    .replace("{id}", &id)
+                    .replace("{session}", &self.session_id)
+                    .replace("{why}", &why),
+            )
         }
     }
 

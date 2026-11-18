@@ -1496,6 +1496,75 @@ mod tests {
         assert!(gate_pinned(&mut f.st, &plain, &mut headless).is_ok());
     }
 
+    /// #1512 S5: a dangerous exec in a run with no one to ask is not paused for. The tool error
+    /// names the approval request, and the same text goes out as a Warning notice in the event
+    /// stream (the JSON stream the lead and the runner read). The tool does not run.
+    #[test]
+    fn refusal_emits_warning_notice_in_json_stream() {
+        struct ExecTool(oxa_proto::ToolSpec);
+        impl oxa_proto::Tool for ExecTool {
+            fn spec(&self) -> &oxa_proto::ToolSpec {
+                &self.0
+            }
+            fn access(
+                &self,
+                args: &oxa_proto::Value,
+                _cx: &oxa_proto::ToolCtx<'_>,
+            ) -> Result<Vec<Access>, String> {
+                let command = args
+                    .get("command")
+                    .and_then(oxa_proto::Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                Ok(vec![Access::Exec { command, net: false }])
+            }
+            fn run(
+                &self,
+                _args: &oxa_proto::Value,
+                _cx: &oxa_proto::ToolCtx<'_>,
+                _live: &mut dyn FnMut(&str),
+            ) -> oxa_proto::ToolOutput {
+                oxa_proto::ToolOutput::error("the tool ran")
+            }
+        }
+        let mut f = fixture();
+        let desk =
+            Arc::new(oxa_perm::ApprovalDesk::open(&f.env.root().join("agent")).expect("approval desk"));
+        f.st.policy = Box::new(
+            oxa_perm::ModePolicy::new()
+                .with_danger(Arc::new(oxa_perm::DangerRules::builtin()), Vec::new())
+                .with_desk(desk, "s1".into(), oxa_perm::UnattendedMode::Request, false),
+        );
+        f.st.active = crate::Toolset {
+            direct: vec![Arc::new(ExecTool(oxa_proto::ToolSpec {
+                name: "shell".into(),
+                description: "test shell".into(),
+                schema_json: "{}".into(),
+                class: oxa_proto::ToolClass::Exec,
+                exposure: oxa_proto::Exposure::Direct,
+                source: oxa_proto::Source::Builtin,
+            }))],
+            indirect: Vec::new(),
+        };
+        let call = oxa_proto::ToolCall {
+            id: "c1".into(),
+            name: "shell".into(),
+            args_raw: r#"{"command":"git push --force origin main"}"#.into(),
+        };
+        let mut sink = oxa_proto::VecSink::default();
+        let mut ui = HeadlessUi::default();
+        let results = crate::exec::run_calls(&mut f.st, &[call], &mut sink, &mut ui);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].is_error);
+        let notice = sink.0.iter().find_map(|e| match e {
+            AgentEvent::Notice { level, text } => Some((*level, text.clone())),
+            _ => None,
+        });
+        let (level, text) = notice.expect("a notice in the event stream");
+        assert!(matches!(level, Level::Warning), "{text}");
+        assert!(text.starts_with("Needs owner approval (request "), "{text}");
+    }
+
     /// #554 / #557: host writes use the same truthful unattended refusal as built-in tools,
     /// without promising workarounds that Ask mode or protected paths would refuse too.
     #[test]

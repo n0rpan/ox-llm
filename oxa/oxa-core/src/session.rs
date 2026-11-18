@@ -1646,6 +1646,8 @@ pub(crate) fn attach_ids(st: &mut SessionState) {
     st.shared.bind_session(&id);
     st.spill_dir = st.dirs.tmp_dir.join(&id);
     st.policy.set_spill_dir(&st.spill_dir);
+    // #1512 S5: the approval desk files requests for this session id.
+    st.policy.set_session_id(&id);
     // Fork/clone history still names its ancestors' spills, even after those sessions are
     // deleted. Follow trusted live/retained headers, never paths suggested by tool/model text.
     let inherited = oxa_session::inherited_spill_dirs(st.store.as_ref(), &st.dirs.tmp_dir, &st.sref);

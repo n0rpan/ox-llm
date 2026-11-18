@@ -1,0 +1,288 @@
+//! #1512 S5: the approval desk (files, answers, grants) and the unattended answer of a dangerous
+//! command in the policy. The classifier is tested in `danger_table.rs`.
+use oxa_fake::TestEnv;
+use oxa_perm::{ApprovalDesk, DangerHit, DangerRules, ModePolicy, UnattendedMode};
+use oxa_proto::{Access, Decision, Mode, Policy};
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+const DANGEROUS: &str = "git push --force origin main";
+const KEY: &str = "git-push-force git push --force origin main";
+
+fn hit() -> DangerHit {
+    DangerHit {
+        rule: "git-push-force".into(),
+        reason: "force".into(),
+        segment: DANGEROUS.into(),
+    }
+}
+
+fn exec(command: &str) -> Access {
+    Access::Exec {
+        command: command.to_string(),
+        net: false,
+    }
+}
+
+/// The desk under `<root>/agent`, and that agent directory.
+fn open_desk(env: &TestEnv) -> (Arc<ApprovalDesk>, PathBuf) {
+    let agent = env.root().join("agent");
+    let desk = ApprovalDesk::open(&agent).expect("desk opens");
+    (Arc::new(desk), agent)
+}
+
+fn policy(desk: &Arc<ApprovalDesk>, session: &str, mode: UnattendedMode, os_sandbox: bool) -> ModePolicy {
+    ModePolicy::new()
+        .with_danger(Arc::new(DangerRules::builtin()), Vec::new())
+        .with_desk(desk.clone(), session.to_string(), mode, os_sandbox)
+}
+
+/// The request id named in a request text: `... (request <id>): ...`.
+fn request_id(text: &str) -> String {
+    text.split("(request ")
+        .nth(1)
+        .and_then(|rest| rest.get(..16))
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// How many stored records of the desk carry `status`.
+fn records_with(agent: &Path, status: &str) -> usize {
+    let needle = format!("\"status\":\"{status}\"");
+    std::fs::read_dir(agent.join("approvals"))
+        .expect("desk directory")
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
+        .filter(|e| {
+            std::fs::read_to_string(e.path())
+                .unwrap_or_default()
+                .contains(&needle)
+        })
+        .count()
+}
+
+#[test]
+fn desk_files_are_private_and_nofollow() {
+    let env = TestEnv::new();
+    let (desk, agent) = open_desk(&env);
+    let cwd = env.work();
+    let id = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("record");
+    let dir = agent.join("approvals");
+    assert_eq!(
+        std::fs::metadata(&dir).expect("dir").permissions().mode() & 0o777,
+        0o700
+    );
+    let file = dir.join(format!("{id}.json"));
+    assert_eq!(
+        std::fs::metadata(&file).expect("file").permissions().mode() & 0o777,
+        0o600
+    );
+    // A symlink where a record was is never followed: the answer is refused and the target kept.
+    let outside = env.root().join("outside.txt");
+    std::fs::write(&outside, "keep").expect("write outside");
+    std::fs::remove_file(&file).expect("remove record");
+    std::os::unix::fs::symlink(&outside, &file).expect("symlink");
+    assert!(desk.answer(&id, "once").is_err());
+    assert_eq!(std::fs::read_to_string(&outside).expect("read outside"), "keep");
+    assert!(desk.pending().expect("pending").is_empty());
+}
+
+#[test]
+fn desk_record_dedups_same_session_and_keys() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let a = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("first");
+    let b = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("second");
+    assert_eq!(a, b, "the same session and keys reuse the open request");
+    let c = desk
+        .record("s2", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("other session");
+    assert_ne!(a, c);
+    assert_eq!(desk.pending().expect("pending").len(), 2);
+}
+
+#[test]
+fn desk_answer_only_from_pending() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let refused = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "refused")
+        .expect("refused");
+    assert!(
+        desk.answer(&refused, "once").is_err(),
+        "a refused record cannot be answered"
+    );
+    let id = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("pending");
+    assert!(desk.answer(&id, "maybe").is_err(), "only the four answers");
+    let answered = desk.answer(&id, "once").expect("answer");
+    assert_eq!(answered.status, "once");
+    assert!(
+        desk.answer(&id, "deny").is_err(),
+        "an answered record is not pending any more"
+    );
+}
+
+#[test]
+fn desk_once_grant_is_consumed() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let keys = vec![KEY.to_string()];
+    let id = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("pending");
+    desk.answer(&id, "once").expect("answer");
+    assert!(desk.granted("s1", &keys), "the once grant covers the retry");
+    assert!(!desk.granted("s1", &keys), "and is spent by it");
+}
+
+#[test]
+fn desk_session_grant_is_scoped_to_session() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let keys = vec![KEY.to_string()];
+    let id = desk
+        .record("s1", &cwd, DANGEROUS, &[hit()], "pending")
+        .expect("pending");
+    desk.answer(&id, "session").expect("answer");
+    assert!(!desk.granted("s2", &keys), "another session is not covered");
+    assert!(desk.granted("s1", &keys));
+    assert!(desk.granted("s1", &keys), "a session grant stays");
+}
+
+#[test]
+fn desk_symlinked_dir_is_refused() {
+    let env = TestEnv::new();
+    let agent = env.root().join("agent");
+    let elsewhere = env.root().join("elsewhere");
+    std::fs::create_dir_all(&agent).expect("agent");
+    std::fs::create_dir_all(&elsewhere).expect("elsewhere");
+    std::os::unix::fs::symlink(&elsewhere, agent.join("approvals")).expect("symlink");
+    assert!(ApprovalDesk::open(&agent).is_err());
+}
+
+#[test]
+fn unattended_auto_with_os_sandbox_refuses_and_records() {
+    let env = TestEnv::new();
+    let (desk, agent) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Auto, true);
+    assert_eq!(p.decide(Mode::Workspace, &exec(DANGEROUS), &cwd), Decision::Ask);
+    let text = p
+        .danger_unattended(&exec(DANGEROUS), &cwd)
+        .expect("a refusal text");
+    assert!(
+        text.starts_with("Refused: dangerous command (git-push-force: "),
+        "{text}"
+    );
+    assert!(
+        text.contains("Unattended runs with the OS sandbox refuse dangerous commands"),
+        "{text}"
+    );
+    assert!(
+        desk.pending().expect("pending").is_empty(),
+        "a refusal is not a request"
+    );
+    assert_eq!(records_with(&agent, "refused"), 1);
+}
+
+#[test]
+fn unattended_auto_without_os_sandbox_requests() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Auto, false);
+    let text = p
+        .danger_unattended(&exec(DANGEROUS), &cwd)
+        .expect("a request text");
+    assert!(text.starts_with("Needs owner approval (request "), "{text}");
+    assert!(text.contains("oxa send s1 --approve "), "{text}");
+    let waiting = desk.pending().expect("pending");
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(request_id(&text), waiting[0].id);
+}
+
+#[test]
+fn unattended_refuse_setting_overrides_auto() {
+    let env = TestEnv::new();
+    let (desk, agent) = open_desk(&env);
+    let cwd = env.work();
+    // Without the OS sandbox `auto` would request; `refuse` refuses.
+    let mut p = policy(&desk, "s1", UnattendedMode::Refuse, false);
+    let text = p.danger_unattended(&exec(DANGEROUS), &cwd).expect("refusal");
+    assert!(text.starts_with("Refused: dangerous command ("), "{text}");
+    assert!(desk.pending().expect("pending").is_empty());
+    assert_eq!(records_with(&agent, "refused"), 1);
+}
+
+#[test]
+fn unattended_request_setting_overrides_auto() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    // With the OS sandbox `auto` would refuse; `request` files a request.
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, true);
+    let text = p.danger_unattended(&exec(DANGEROUS), &cwd).expect("request");
+    assert!(text.starts_with("Needs owner approval (request "), "{text}");
+    assert_eq!(desk.pending().expect("pending").len(), 1);
+}
+
+#[test]
+fn retry_after_once_approval_runs_then_asks_again() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, false);
+    let cmd = exec(DANGEROUS);
+    assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask);
+    let first = p.danger_unattended(&cmd, &cwd).expect("request");
+    let id = request_id(&first);
+    desk.answer(&id, "once").expect("owner answers once");
+    // The retry runs: the once grant covers it and is spent.
+    assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Allow);
+    // The next attempt asks again.
+    assert_eq!(p.decide(Mode::Workspace, &cmd, &cwd), Decision::Ask);
+    let second = p.danger_unattended(&cmd, &cwd).expect("asks again");
+    assert!(second.starts_with("Needs owner approval (request "), "{second}");
+    assert_ne!(request_id(&second), id);
+}
+
+#[test]
+fn oxa_self_approve_rule_blocks_model_running_oxa_send_approve() {
+    let env = TestEnv::new();
+    let (desk, _) = open_desk(&env);
+    let cwd = env.work();
+    // Unattended request mode: the model tries to approve its own request.
+    let mut p = policy(&desk, "s1", UnattendedMode::Request, true);
+    let forged = exec("oxa send s1 --approve 0123456789abcdef once");
+    assert_eq!(p.decide(Mode::Workspace, &forged, &cwd), Decision::Ask);
+    let text = p.danger_unattended(&forged, &cwd).expect("request text");
+    assert!(text.contains("oxa-self-approve"), "{text}");
+    assert!(text.starts_with("Needs owner approval (request "), "{text}");
+    // Nothing was granted by the attempt.
+    assert!(!desk.granted(
+        "s1",
+        &["oxa-self-approve oxa send s1 --approve 0123456789abcdef once".to_string()]
+    ));
+}
+
+#[test]
+fn no_desk_keeps_the_ui_path() {
+    let env = TestEnv::new();
+    let cwd = env.work();
+    let mut p = ModePolicy::new().with_danger(Arc::new(DangerRules::builtin()), Vec::new());
+    assert_eq!(p.decide(Mode::Workspace, &exec(DANGEROUS), &cwd), Decision::Ask);
+    assert!(p.danger_unattended(&exec(DANGEROUS), &cwd).is_none());
+}

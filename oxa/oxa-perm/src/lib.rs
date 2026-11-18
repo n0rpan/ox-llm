@@ -33,11 +33,13 @@
 #![forbid(unsafe_code)]
 
 mod danger;
+mod desk;
 mod paths;
 mod policy;
 mod trust;
 
 pub use danger::{DangerHit, DangerRules, BUILTIN_RULES, SETTING_DANGEROUS};
+pub use desk::{ApprovalDesk, Record as ApprovalRecord, UnattendedMode};
 pub use paths::{is_inside, is_read_only_command, normalize};
 pub use policy::{deny_reasons, HiddenPaths, ModePolicy, PathGuard};
 pub use trust::{
