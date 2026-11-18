@@ -1068,9 +1068,23 @@ members = ["crates/*", "tools/pinned"]
             assert!(checks.requires_hosted, "{changed}");
             assert!(checks.commands.is_empty(), "{changed}");
         }
-        let docs = from_changed_paths(dir.path(), b"docs/cargo-config.toml\0").unwrap();
+        let other = PrivateDir::new("derived-non-cargo-docs");
+        let docs = from_changed_paths(other.path(), b"docs/cargo-config.toml\0").unwrap();
         assert!(!docs.requires_hosted);
         assert!(docs.commands.is_empty());
+    }
+
+    #[test]
+    fn a_shared_input_in_a_virtual_workspace_requires_hosted_checks() {
+        let dir = PrivateDir::new("derived-shared-input");
+        manifest(&dir, "rust/Cargo.toml", "[workspace]\nmembers = [\"app\"]\n");
+        manifest(&dir, "rust/app/Cargo.toml", "[package]\nname = \"app\"\n");
+        let checks = from_changed_paths(dir.path(), b"rust/shared/policy.txt\0").unwrap();
+        assert!(checks.requires_hosted);
+        assert!(checks.commands.is_empty());
+        let outside = from_changed_paths(dir.path(), b"shared/policy.txt\0").unwrap();
+        assert!(!outside.requires_hosted);
+        assert!(outside.commands.is_empty());
     }
 
     #[test]
