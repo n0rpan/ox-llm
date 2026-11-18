@@ -964,6 +964,29 @@ members = ["crates/*", "tools/pinned"]
     }
 
     #[test]
+    fn shared_cargo_settings_require_hosted_evidence_without_a_local_sweep() {
+        let dir = PrivateDir::new("derived-shared-cargo-settings");
+        manifest(&dir, "Cargo.toml", "[workspace]\nmembers = [\"app\"]\n");
+        manifest(&dir, "app/Cargo.toml", "[package]\nname = \"app\"\n");
+        for changed in [
+            ".cargo/config",
+            ".cargo/config.toml",
+            "rust-toolchain",
+            "rust-toolchain.toml",
+            "app/.cargo/config.toml",
+            "app/rust-toolchain.toml",
+        ] {
+            let paths = format!("{changed}\0");
+            let checks = from_changed_paths(dir.path(), paths.as_bytes()).unwrap();
+            assert!(checks.requires_hosted, "{changed}");
+            assert!(checks.commands.is_empty(), "{changed}");
+        }
+        let docs = from_changed_paths(dir.path(), b"docs/cargo-config.toml\0").unwrap();
+        assert!(!docs.requires_hosted);
+        assert!(docs.commands.is_empty());
+    }
+
+    #[test]
     fn an_excluded_member_uses_its_own_check_directory() {
         let dir = PrivateDir::new("derived-excluded");
         manifest(
