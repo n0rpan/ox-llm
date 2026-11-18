@@ -116,6 +116,15 @@ fn open(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>, sett
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, settings).unwrap();
     let settings = Settings::load(&dirs, &env.work(), false);
+    open_with_settings(env, engine, hooks, settings)
+}
+
+fn open_with_settings(
+    env: &TestEnv,
+    engine: Arc<dyn Engine>,
+    hooks: Vec<Arc<dyn Hooks>>,
+    settings: Settings,
+) -> Session {
     let store: Arc<dyn SessionStore> = Arc::new(MemStore::new());
     Session::open(
         Deps {
@@ -126,7 +135,7 @@ fn open(env: &TestEnv, engine: Arc<dyn Engine>, hooks: Vec<Arc<dyn Hooks>>, sett
             policy: Box::new(ModePolicy::new()),
             sandbox: Arc::new(NoSandbox),
             settings,
-            dirs,
+            dirs: Dirs::under(env.root()),
             cwd: env.work(),
             selection: ToolSelection::default(),
             resources: Resources::default(),
@@ -416,4 +425,23 @@ fn queued_run_applies_changed_settings_only_when_live_settings_is_on() {
             "live = {live}"
         );
     }
+}
+
+#[test]
+fn queued_run_preserves_settings_supplied_by_the_session_caller() {
+    let env = TestEnv::new();
+    let (engine, _started) = Holding::new(vec![ScriptTurn::text("answer")]);
+    let settings = Settings::from_values(serde_json::json!({"theme": "dark"}), Value::Null);
+    let mut session = open_with_settings(&env, engine, Vec::new(), settings);
+    let path = Dirs::under(env.root()).settings_file();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, r#"{"theme": "light-theme"}"#).unwrap();
+    session.handle().follow_up("waiting".to_string());
+    let mut sink = VecSink::default();
+    let mut ui = HeadlessUi::default();
+    assert_eq!(
+        session.run_queued(&mut sink, &mut ui).unwrap(),
+        Some(RunEnd::Stopped)
+    );
+    assert_eq!(session.inner().settings.string("theme").as_deref(), Some("dark"));
 }
