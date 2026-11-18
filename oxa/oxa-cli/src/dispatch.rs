@@ -1798,7 +1798,7 @@ fn run_tui(
         yolo: Some(yolo),
     };
     let result = if pinned {
-        oxa_interactive::run_pinned(session, opts)
+        oxa_interactive::run_pinned(session, opts, "oxa lead")
     } else {
         run_interactive(session, opts)
     };

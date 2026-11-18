@@ -35,22 +35,26 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// spawn the worker thread with `session`, rebuild the view model from the active branch, send
 /// the initial prompt, then [`run_loop`].
 pub fn run(session: Session, opts: InteractiveOpts) -> Result<i32, OxaError> {
-    run_terminal(session, opts, false)
+    run_terminal(session, opts, None)
 }
 
 /// An owner-controlled terminal attached to one already selected durable Session.
-pub fn run_pinned(session: Session, opts: InteractiveOpts) -> Result<i32, OxaError> {
-    run_terminal(session, opts, true)
+pub fn run_pinned(session: Session, opts: InteractiveOpts, resume_command: &str) -> Result<i32, OxaError> {
+    run_terminal(session, opts, Some(resume_command))
 }
 
-fn run_terminal(session: Session, mut opts: InteractiveOpts, pinned: bool) -> Result<i32, OxaError> {
+fn run_terminal(
+    session: Session,
+    mut opts: InteractiveOpts,
+    resume_command: Option<&str>,
+) -> Result<i32, OxaError> {
     let detected = opts.caps.unwrap_or_else(|| detect_caps(&opts.env));
     let mut term = ProcessTerminal::open(TermOpts {
         caps: detected,
         ..TermOpts::default()
     })?;
     opts.caps = Some(term.caps());
-    let (code, last) = run_session_inner(&mut term, session, &mut opts, pinned);
+    let (code, last) = run_session_inner(&mut term, session, &mut opts, resume_command.is_some());
     drop(term);
     if let Some(info) = last {
         let talked = info
@@ -59,8 +63,12 @@ fn run_terminal(session: Session, mut opts: InteractiveOpts, pinned: bool) -> Re
             .is_some_and(|f| has_conversation(opts.store.as_ref(), f, &info.id));
         // A vanished terminal cannot receive the resume hint; println! would panic on EIO.
         if talked && code != 129 {
-            for line in exit_lines(info.file.as_deref(), &info.id) {
-                println!("{line}");
+            if let Some(command) = resume_command {
+                println!("\x1b[2mTo resume this session:\x1b[22m {command}");
+            } else {
+                for line in exit_lines(info.file.as_deref(), &info.id) {
+                    println!("{line}");
+                }
             }
         }
     }

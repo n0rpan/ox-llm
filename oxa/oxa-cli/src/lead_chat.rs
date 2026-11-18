@@ -177,10 +177,7 @@ pub(crate) fn local_binding(
     project: &Path,
     env: &Env,
 ) -> Result<crate::dispatch::LeadOwnerBinding, OxaError> {
-    if ["OXA_CODING_AGENT", "AI_AGENT", "OXA_SUBAGENT_DEPTH"]
-        .iter()
-        .any(|name| env.get(name).is_some())
-    {
+    if crate::dispatch::is_agent(env) {
         return Err(OxaError::new(codes::INVALID, "Use Lead from the owner session."));
     }
     let dirs = oxa_config::dirs_from_env(env, None)?;
