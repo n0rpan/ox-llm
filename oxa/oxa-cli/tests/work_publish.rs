@@ -642,6 +642,39 @@ fn green_rerun_can_publish_after_red_remained_local() {
         .contains("pr create"));
 }
 #[test]
+fn semantic_work_report_without_evidence_stays_local() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let path = configure(&env);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultProjectTrust":"always","oxa":{"reportIssue":{"repo":"example/project","semanticDedupe":true}}}"#,
+    );
+    let gh = env.tmp().join("gh");
+    let script = fs::read_to_string(&gh).unwrap().replace(
+        "  *) exit 7 ;;",
+        "  'issue list') printf '[]' ;;\n  'issue create') printf '%s' 'https://github.com/example/project/issues/2' ;;\n  *) exit 7 ;;",
+    );
+    fs::write(gh, script).unwrap();
+    let text = concat!(
+        "<oxa-work-reports>",
+        r#"[{"title":"oxa work symptom","notes":"Synthetic reproduction","keywords":["oxa work","synthetic symptom"]}]"#,
+        "</oxa-work-reports>",
+    );
+    let record = run_args(
+        &env,
+        vec![ScriptTurn::text(text)],
+        &["work", "../tasks.json", "--report-problems"],
+        Some(path),
+    );
+    let report = &record["reports"][0];
+    assert_eq!(report["disposition"], "local", "{record}");
+    assert!(std::path::Path::new(report["draft"].as_str().unwrap()).is_file());
+    assert!(report["url"].is_null());
+    assert!(!env.home().join("gh-calls").exists());
+}
+
+#[test]
 fn a_local_report_retries_without_replaying_the_completed_task() {
     let env = TestEnv::new();
     setup(&env, "[]");
