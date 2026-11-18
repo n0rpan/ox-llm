@@ -574,6 +574,45 @@ mod tests {
     }
 
     #[test]
+    fn live_refresh_keeps_the_readers_latest_work_disclosure_choice() {
+        let mut runtime = oxa_script::Runtime::new(oxa_script::Limits::EXTENSION).unwrap();
+        runtime.eval_script("dom-fixture", r#"
+let current, supplied, closeDuringFetch;
+function makeMain(open) {
+  const work={open};
+  return {work, contains:()=>false, querySelector:selector=>selector==='details.home-work'?work:null,
+    replaceWith:next=>{current=next;}};
+}
+const document={hidden:false, activeElement:{matches:()=>false}, getElementById:()=>({textContent:'Snapshot'}),
+  querySelector:()=>current, addEventListener:()=>{}};
+const setTimeout=()=>1, clearTimeout=()=>{};
+class AbortController { constructor(){this.signal={};} abort(){} }
+class URL { constructor(){this.searchParams={set(){}};} }
+const location={href:'http://example.invalid/'};
+class DOMParser { parseFromString(){return {querySelector:()=>supplied};} }
+async function fetch(){
+  if(closeDuringFetch)current.work.open=false;
+  return {ok:true, text:async()=>''};
+}
+"#).unwrap();
+        runtime.eval_script("live.js", SCRIPT).unwrap();
+        let result = runtime
+            .eval_async_body(
+                "refresh",
+                r#"
+for(const [open,close,expected] of [[false,false,false],[true,false,true],[true,true,false]]) {
+  current=makeMain(open); supplied=makeMain(false); closeDuringFetch=close;
+  await refresh();
+  if(current.work.open!==expected)throw new Error('reader disclosure state lost');
+}
+return true;
+"#,
+            )
+            .unwrap();
+        assert_eq!(result, serde_json::json!(true));
+    }
+
+    #[test]
     fn queue_alarm_requires_membership_at_the_exact_head() {
         let active = PullRequest {
             number: 17,
