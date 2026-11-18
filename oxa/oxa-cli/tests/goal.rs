@@ -655,8 +655,6 @@ fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
     let engine = Arc::new(ScriptedEngine::new(vec![
         ScriptTurn::text("First mock reply."),
         ScriptTurn::text("Second mock reply."),
-        ScriptTurn::text("Mock compaction summary."),
-        ScriptTurn::text("Resumed mock reply."),
     ]));
     let sessions_root = env.root().join("sessions");
     let deps = || Deps {
@@ -678,6 +676,8 @@ fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
         jobs: oxa_core::fresh_jobs(),
     };
     let mut session = Session::open(deps(), Open::New).unwrap();
+    assert_eq!(session.inner().compact.keep_tokens, 1);
+    session.set_auto_compaction(false);
     let bound = session.inner().sref.clone();
     let mut sink = VecSink::default();
     let mut ui = HeadlessUi::default();
@@ -695,10 +695,20 @@ fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
     for prompt in [old_prompt, "A more recent synthetic turn."] {
         session.prompt(prompt.into(), vec![], &mut sink, &mut ui).unwrap();
     }
-    session.compact(None, &mut sink, &mut ui).unwrap();
-    assert!(session.inner().tree.entries().iter().any(|entry| {
-        matches!(&entry.body, EntryBody::Compaction { summary, .. } if summary.contains("Mock compaction summary."))
-    }));
+    engine.push(ScriptTurn::text("Mock compaction summary."));
+    session
+        .compact(Some("Summarize the earlier review."), &mut sink, &mut ui)
+        .unwrap();
+    let summary = session
+        .inner()
+        .tree
+        .entries()
+        .iter()
+        .find_map(|entry| match &entry.body {
+            EntryBody::Compaction { summary, .. } => Some(summary.clone()),
+            _ => None,
+        })
+        .expect("manual compaction recorded a new transcript head");
     let saved = session.goal().unwrap();
     assert_eq!(saved.lead.as_ref(), Some(&lead));
     let revision = session.goal_revision();
@@ -709,8 +719,10 @@ fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
     let mut resumed = Session::open(deps(), Open::Resume(bound)).unwrap();
     assert_eq!(resumed.goal(), Some(saved));
     assert_eq!(resumed.goal_revision(), revision);
+    engine.push(ScriptTurn::text("Resumed mock reply."));
+    let resume_prompt = "Resume the synthetic review.";
     resumed
-        .prompt("Resume the synthetic review.".into(), vec![], &mut sink, &mut ui)
+        .prompt(resume_prompt.into(), vec![], &mut sink, &mut ui)
         .unwrap();
     let goal = resumed.goal().unwrap();
     assert_eq!(goal.objective, objective);
@@ -725,11 +737,20 @@ fn compacted_lead_session_resumes_with_its_verbatim_standing_and_leases() {
     }
     assert_eq!(standing.open_asks().find(|open| open.id == ask.id), Some(&ask));
     let requests = engine.requests();
-    let messages = &requests.last().unwrap().messages;
-    assert!(messages.iter().any(|message| message
-        .content
-        .as_deref()
-        .is_some_and(|text| text.contains("Mock compaction summary."))));
+    let request = requests
+        .iter()
+        .find(|request| {
+            request.kind == "chat"
+                && request
+                    .messages
+                    .iter()
+                    .any(|message| message.content.as_deref() == Some(resume_prompt))
+        })
+        .expect("a new model turn ran after reopening");
+    let messages = &request.messages;
+    assert!(messages
+        .iter()
+        .any(|message| message.content.as_deref() == Some(summary.as_str())));
     assert!(!messages
         .iter()
         .any(|message| message.content.as_deref() == Some(old_prompt)));
