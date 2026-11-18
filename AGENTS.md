@@ -122,7 +122,7 @@ explicitly:
 
 ```sh
 gh workflow run lane --ref <branch>
-gh run watch <run-id> --exit-status
+gh run watch <run-id> --interval 60 --exit-status
 ```
 
 The lane workflow selects changed crates plus their local reverse dependencies and binary-fixture
@@ -137,7 +137,8 @@ workflow does not replace or change the merge queue's required checks. Start ful
 release CI only when the change is close to done. Each started job records its queue delay in its
 GitHub job summary so capacity decisions use measurements.
 
-When you may call `gh`, wait with **one blocking `gh run watch --exit-status`**, or continue an
+When you may call `gh`, wait with **one blocking `gh run watch --interval 60 --exit-status`** (the
+default 3-second interval spends the account's API rate limit when many agents wait at once), or continue an
 independent piece and read the result once later; when the runner owns GitHub, it reads the result.
 Never spend repeated model turns or API/status polls waiting for CI, and never
 post “still waiting” updates. On failure, read only the failed job's tail:
