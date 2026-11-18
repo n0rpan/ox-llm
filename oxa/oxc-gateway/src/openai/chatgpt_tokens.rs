@@ -4,8 +4,12 @@
 //! `chatgpt-auth.json`. Its persistent sibling `chatgpt-auth.lock` is also used by Python.
 //! Never unlink the lock: independent opens of that inode serialize threads and processes.
 //! Available with `upstream-openai` + `secrets`; unused code adds no default-binary code.
+#[cfg(target_os = "linux")]
+use nix::fcntl::{renameat2, RenameFlags};
+#[cfg(not(target_os = "linux"))]
+use nix::{fcntl::AtFlags, unistd::linkat};
 use nix::{
-    fcntl::{openat, renameat, renameat2, Flock, FlockArg, OFlag, RenameFlags},
+    fcntl::{openat, renameat, Flock, FlockArg, OFlag},
     sys::stat::{mkdirat, Mode},
     unistd::{getuid, unlinkat, UnlinkatFlags},
 };
@@ -397,6 +401,29 @@ impl Directory {
             file.write_all(&bytes).map_err(|_| Error::Unavailable)?;
             sync(&file).map_err(|_| Error::Unavailable)?;
             if create_only {
+                // Off Linux there is no safe dirfd-relative no-replace rename without `unsafe`:
+                // link the staging inode to the final name (EEXIST, never replaces), then drop
+                // the staging name. Between the two a reader sees nlink 2 and fails closed.
+                #[cfg(not(target_os = "linux"))]
+                {
+                    linkat(
+                        &self.file,
+                        name.as_os_str(),
+                        &self.file,
+                        self.name.as_os_str(),
+                        AtFlags::empty(),
+                    )
+                    .map_err(|e| {
+                        if e == nix::errno::Errno::EEXIST {
+                            Error::Exists
+                        } else {
+                            Error::Unavailable
+                        }
+                    })?;
+                    unlinkat(&self.file, name.as_os_str(), UnlinkatFlags::NoRemoveDir)
+                        .map_err(|_| Error::Unavailable)?;
+                }
+                #[cfg(target_os = "linux")]
                 renameat2(
                     &self.file,
                     name.as_os_str(),
@@ -838,6 +865,53 @@ mod conversion_tests {
 #[cfg(test)]
 mod publication_tests {
     use super::*;
+    #[test]
+    fn create_only_refuses_existing_target() {
+        let root = std::env::temp_dir().join(format!("create-only-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("chatgpt-auth.json");
+        let record = TokenRecord::new(
+            "synthetic-access".into(),
+            "synthetic-refresh".into(),
+            "synthetic-account".into(),
+            2_000_000_000.0,
+        )
+        .unwrap();
+        let directory = Directory::open(&path).unwrap();
+        directory.publish(&record, true).unwrap();
+        let first = std::fs::read(&path).unwrap();
+        assert_eq!(directory.publish(&record, true), Err(Error::Exists));
+        assert_eq!(std::fs::read(&path).unwrap(), first);
+        assert!(std::fs::read_dir(&root).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
+        drop(directory);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn published_file_is_0600() {
+        let root = std::env::temp_dir().join(format!("publish-mode-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::set_permissions(&root, Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("chatgpt-auth.json");
+        let record = TokenRecord::new(
+            "synthetic-access".into(),
+            "synthetic-refresh".into(),
+            "synthetic-account".into(),
+            2_000_000_000.0,
+        )
+        .unwrap();
+        let directory = Directory::open(&path).unwrap();
+        directory.publish(&record, true).unwrap();
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+        assert_eq!(meta.nlink(), 1);
+        drop(directory);
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn failed_file_sync_or_noreplace_publication_preserves_original_and_cleans_staging() {
         let root = std::env::temp_dir().join(format!("login-publication-{}", std::process::id()));
