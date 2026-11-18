@@ -10,7 +10,8 @@ fn discovery() -> Value {
         "capabilities":{"tools":true},"modalities":{"input":["text"],"output":["text"]}}]})
 }
 fn usage() -> Value {
-    json!({"prompt_tokens":100,"completion_tokens":25,"cost":0,"opencode":{"billing_source":"go","allowance":0.00012,"list_cost":0.00015,
+    json!({"prompt_tokens":100,"completion_tokens":25,"cost":0,"opencode":{"billing_source":"go","estimated":false,
+        "allowance":0.00012,"list_cost":0.00015,
         "tokens":{"input":20,"output":25,"reasoning":5,"cache_read":80,"cache_write_5m":0,"cache_write_1h":0}}})
 }
 #[test]
@@ -147,9 +148,14 @@ fn subscription_usage_keeps_token_categories_and_exact_allowance_without_paid_fa
     assert_eq!(parsed.tokens["reasoning"], 5);
     assert_eq!(parsed.allowance, json!(0.00012));
     assert_eq!(parsed.list_cost, json!(0.00015));
+    assert!(!parsed.estimated);
+    let mut estimated = usage();
+    estimated["opencode"]["estimated"] = json!(true);
+    assert!(Usage::parse(&estimated).unwrap().estimated);
     for (pointer, replacement) in [
         ("/cost", json!(-0.001)),
         ("/opencode/allowance", json!(-1)),
+        ("/opencode/estimated", json!("true")),
         ("/opencode/list_cost", Value::Null),
         ("/opencode/tokens/reasoning", json!(-1)),
     ] {
