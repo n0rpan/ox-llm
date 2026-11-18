@@ -407,7 +407,7 @@ impl DangerRules {
                     Some(dir) => {
                         self.write_hit(&dir, seg, ctx, hits);
                         for t in ops.iter().filter(|t| (*t).to_string() != dir) {
-                            self.write_hit(&Path::new(&dir).join(t).to_string_lossy(), seg, ctx, hits);
+                            self.write_hit(&Path::new(&dir).join(*t).to_string_lossy(), seg, ctx, hits);
                         }
                     }
                     None => {
@@ -596,6 +596,41 @@ fn parent_dir_after_a_link(raw: &str, cwd: &Path) -> bool {
         }
     }
     false
+}
+
+/// One pending `<<`/`<<-`: its delimiter, whether leading tabs are stripped, and whether the
+/// body is expanded by the shell (an unquoted delimiter).
+struct Heredoc {
+    delim: String,
+    strip: bool,
+    expands: bool,
+}
+
+/// The command substitutions of an expanded heredoc body: `$( ... )` and backticks.
+fn heredoc_substitutions(body: &[char]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut p = 0usize;
+    while p < body.len() {
+        match body[p] {
+            '\\' => p += 2,
+            '$' if body.get(p + 1) == Some(&'(') => match scan_paren(body, p + 2) {
+                Some((inner, np)) => {
+                    out.push(inner);
+                    p = np;
+                }
+                None => return out,
+            },
+            '`' => match scan_backtick(body, p + 1) {
+                Some((inner, np)) => {
+                    out.push(inner);
+                    p = np;
+                }
+                None => return out,
+            },
+            _ => p += 1,
+        }
+    }
+    out
 }
 
 /// A tokenized simple command. `pipe_in`: it reads the stdout of the stage before it.
