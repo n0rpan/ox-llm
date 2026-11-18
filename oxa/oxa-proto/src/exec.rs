@@ -251,10 +251,10 @@ impl PermissionMode {
     pub fn describe(self) -> &'static str {
         match self {
             PermissionMode::Standard => {
-                "prompts before actions outside the workspace; sandbox and deny-list on"
+                "prompts before actions outside the workspace; dangerous commands ask; deny-list on"
             }
             PermissionMode::Auto => {
-                "no prompts; the bash sandbox, the deny-list and the protected paths stay on"
+                "no prompts; dangerous commands still ask; the deny-list and protected paths stay on"
             }
             PermissionMode::Yolo => {
                 "full access: no prompts, bash runs without the sandbox in your own environment, \

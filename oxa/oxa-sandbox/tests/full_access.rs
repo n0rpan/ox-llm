@@ -3,7 +3,7 @@
 //! temporary directory outside it is written for real. `auto` and plan mode keep the sandbox.
 
 use oxa_fake::TestEnv;
-use oxa_proto::{Autonomy, CancelToken, ExecSpec, Sandbox, YoloSwitch};
+use oxa_proto::{Autonomy, CancelToken, ExecResult, ExecSpec, OxaError, Sandbox, YoloSwitch};
 use oxa_sandbox::{FullAccess, NoSandbox};
 use std::sync::Arc;
 
@@ -21,7 +21,7 @@ fn spec(env: &TestEnv, command: String, writable: bool) -> ExecSpec {
 fn full(level: Autonomy, env: &TestEnv) -> (FullAccess, YoloSwitch) {
     let switch = YoloSwitch::new(level);
     // The wrapped sandbox refuses everything: whatever runs did not go through it.
-    let sb = FullAccess::new(Arc::new(NoSandbox), switch.clone(), "", env.home(), false);
+    let sb = FullAccess::new(Arc::new(NoSandbox), switch.clone(), "", env.home(), false, false);
     (sb, switch)
 }
 
@@ -136,7 +136,7 @@ fn file_view_tracks_live_yolo_but_keeps_plan_and_execution_sandboxed() {
     });
     for offline in [false, true] {
         let switch = YoloSwitch::new(Autonomy::Auto);
-        let full = FullAccess::new(inner.clone(), switch.clone(), "", env.home(), offline);
+        let full = FullAccess::new(inner.clone(), switch.clone(), "", env.home(), offline, false);
         let files = full.file_view(inner.clone());
         for level in [Autonomy::Auto, Autonomy::Yolo, Autonomy::Standard] {
             switch.set_level(level);
@@ -166,4 +166,156 @@ fn file_view_tracks_live_yolo_but_keeps_plan_and_execution_sandboxed() {
     assert_ne!(r.exit, Some(0));
     let r = files.run_with_stdin(&s, b"test", &CancelToken::new(), &mut |_| {});
     assert_ne!(r.exit, Some(0));
+}
+
+/// #1512 S3: a wrapped sandbox that can run (its `check` passes) and says what it ran.
+struct Wrapped {
+    persistence: Option<&'static str>,
+}
+
+impl Sandbox for Wrapped {
+    fn check(&self) -> Result<(), OxaError> {
+        Ok(())
+    }
+    fn persistence_notice(&self) -> Option<&str> {
+        self.persistence
+    }
+    fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+        vec!["--ro-bind".into(), "/".into(), "/".into()]
+    }
+    fn run(&self, _s: &ExecSpec, _c: &CancelToken, _live: &mut dyn FnMut(&[u8])) -> ExecResult {
+        ExecResult {
+            output: b"wrapped".to_vec(),
+            exit: Some(42),
+            timed_out: false,
+        }
+    }
+}
+
+/// #1512 S3: an interactive run without the OS sandbox: a writable command runs with the
+/// user's rights (no bwrap), even though bwrap would be present.
+#[test]
+fn no_os_sandbox_bypasses_bwrap_for_writable_spec() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let target = env.root().join("no-os-sandbox-wrote.txt");
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let sb =
+        FullAccess::new(Arc::new(NoSandbox), switch, "", env.home(), false, false).with_os_sandbox(false);
+    let s = spec(&env, format!("echo made > '{}'", target.display()), true);
+    assert!(sb.check().is_ok(), "no OS sandbox needs no bwrap");
+    assert_eq!(sb.launch_argv(&s).unwrap()[0], "bash");
+    let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, Some(0), "{}", String::from_utf8_lossy(&r.output));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "made\n");
+    let _ = std::fs::remove_file(&target);
+}
+
+/// #1512 S3: a read-only (plan) spec keeps bwrap when bwrap is present, with or without the
+/// OS sandbox: only a missing bwrap lets the read-only spec run with the user's rights.
+#[test]
+fn no_os_sandbox_plan_spec_uses_bwrap_when_present() {
+    let env = TestEnv::new();
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let inner: Arc<dyn Sandbox> = Arc::new(Wrapped { persistence: None });
+    let sb = FullAccess::new(inner, switch, "", env.home(), false, false).with_os_sandbox(false);
+    let s = spec(&env, "ls".into(), false);
+    assert_eq!(sb.launch_argv(&s).unwrap()[0], "bwrap");
+    let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, Some(42), "plan keeps the wrapped sandbox");
+}
+
+/// #1512 S3: exec hooks without the OS sandbox run with the user's rights, with their stdin.
+#[test]
+fn no_os_sandbox_hooks_run_unsandboxed() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let target = env.root().join("no-os-sandbox-hook.txt");
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let sb =
+        FullAccess::new(Arc::new(NoSandbox), switch, "", env.home(), false, false).with_os_sandbox(false);
+    let s = spec(&env, format!("cat > '{}'", target.display()), true);
+    let r = sb.run_with_stdin(&s, b"payload", &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, Some(0), "{}", String::from_utf8_lossy(&r.output));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "payload");
+    let _ = std::fs::remove_file(&target);
+}
+
+/// #1512 S3: with the OS sandbox on, exec hooks stay wrapped even under yolo.
+#[test]
+fn os_sandbox_on_hooks_stay_sandboxed_under_yolo() {
+    let env = TestEnv::new();
+    std::fs::create_dir_all(env.work()).unwrap();
+    let target = env.root().join("hook-wrote-os-on.txt");
+    let switch = YoloSwitch::new(Autonomy::Yolo);
+    let sb = FullAccess::new(Arc::new(NoSandbox), switch, "", env.home(), false, false).with_os_sandbox(true);
+    let s = spec(&env, format!("cat > '{}'", target.display()), true);
+    let r = sb.run_with_stdin(&s, b"payload", &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, None, "{}", String::from_utf8_lossy(&r.output));
+    assert!(!target.exists(), "the hook ran outside the wrapped sandbox");
+}
+
+/// #1512 S3: `oxa.sandbox.net = off` holds without the OS sandbox: the command runs through
+/// bwrap with the network unshared, never with the user's network.
+#[test]
+fn no_os_sandbox_net_off_uses_offline_argv() {
+    let env = TestEnv::new();
+    let path = std::env::var("PATH").unwrap_or_default();
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let sb =
+        FullAccess::new(Arc::new(NoSandbox), switch, &path, env.home(), false, true).with_os_sandbox(false);
+    let s = spec(&env, "true".into(), true);
+    let argv = match sb.launch_argv(&s) {
+        Ok(argv) => argv,
+        // Without bwrap on this machine the owner's setting refuses instead (next test).
+        Err(_) => return,
+    };
+    assert!(argv[0].ends_with("bwrap"), "{argv:?}");
+    assert!(argv.iter().any(|a| a == "--unshare-net"), "{argv:?}");
+}
+
+/// #1512 S3: `oxa.sandbox.net = off` without bwrap is refused, never run with the network.
+#[test]
+fn no_os_sandbox_net_off_without_bwrap_refuses() {
+    let env = TestEnv::new();
+    let switch = YoloSwitch::new(Autonomy::Standard);
+    let sb = FullAccess::new(Arc::new(NoSandbox), switch, "", env.home(), false, true).with_os_sandbox(false);
+    let s = spec(&env, "echo must-not-run".into(), true);
+    assert!(sb.launch_argv(&s).is_err());
+    let r = sb.run(&s, &CancelToken::new(), &mut |_| {});
+    assert_eq!(r.exit, None);
+    assert!(
+        String::from_utf8_lossy(&r.output).contains("needs the network"),
+        "{}",
+        String::from_utf8_lossy(&r.output)
+    );
+}
+
+/// #1512 S3: the model's persistence note (the /tmp scratch claim) is not made when commands
+/// run without the OS sandbox; it stays with the sandboxed run.
+#[test]
+fn no_os_sandbox_persistence_notice_is_none() {
+    let env = TestEnv::new();
+    let inner: Arc<dyn Sandbox> = Arc::new(Wrapped {
+        persistence: Some("scratch"),
+    });
+    let off = FullAccess::new(
+        inner.clone(),
+        YoloSwitch::new(Autonomy::Standard),
+        "",
+        env.home(),
+        false,
+        false,
+    )
+    .with_os_sandbox(false);
+    assert_eq!(off.persistence_notice(), None);
+    let on = FullAccess::new(
+        inner,
+        YoloSwitch::new(Autonomy::Standard),
+        "",
+        env.home(),
+        false,
+        false,
+    );
+    assert_eq!(on.persistence_notice(), Some("scratch"));
 }

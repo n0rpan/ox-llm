@@ -622,6 +622,8 @@ struct Built {
     /// #202: the sandbox of the bash tool and its background jobs: the session's sandbox,
     /// bypassed while the switch is at yolo (full access).
     bash_sandbox: Arc<oxa_sandbox::FullAccess>,
+    /// #1512 S3: this run has the OS sandbox (`run_kind::os_sandbox_wanted`); the HUD shows it.
+    os_sandbox: bool,
     /// #1512 S2: the dangerous-command rules of the user settings, shared by every session.
     danger: Arc<DangerRules>,
 }
@@ -969,6 +971,26 @@ fn prepare(
     };
     notices.extend(crate::themes::theme_diagnostics(&theme_sources));
     let theme_paths = crate::themes::theme_paths(&theme_sources);
+    // O-182, #202: one switch for the policy of every session and for the subagent children.
+    // The command line wins; else `permissions.defaultMode` (a project may only lower it).
+    // `--permission-mode workspace|ask` alone keeps its old meaning: the table asks you.
+    let level = a
+        .level
+        .or(match a.permission_mode {
+            Some(Mode::Workspace | Mode::Ask) => Some(oxa_proto::PermissionMode::Standard),
+            _ => None,
+        })
+        .unwrap_or_else(|| settings.default_permission_mode());
+    let yolo = oxa_proto::YoloSwitch::new(level.autonomy());
+    // #1512 S3: who is at the keyboard decides the OS sandbox (`run_kind.rs`): attended runs
+    // have none by default, unattended runs keep bwrap, yolo has none. bwrap is detected either
+    // way: plan mode and offline/net-off commands need it.
+    let kind = crate::run_kind::run_kind(a, env, &child, mode);
+    let yolo_level = matches!(level, oxa_proto::PermissionMode::Yolo);
+    let os_sandbox = crate::run_kind::os_sandbox_wanted(kind, a, &user_settings, yolo_level);
+    if let Some(text) = crate::run_kind::no_sandbox_notice(kind, os_sandbox, yolo_level) {
+        notices.push((Level::Info, text.to_string()));
+    }
     let sandbox: Arc<dyn Sandbox> = match Bwrap::detect(env.get("PATH").unwrap_or(""), &dirs.home) {
         Ok(mut b) => {
             b.layout = crate::sandbox_layout::layout(env, dirs, cwd, home_workspace, &mut notices);
@@ -986,10 +1008,10 @@ fn prepare(
             Arc::new(b)
         }
         Err(e) => {
-            notices.push((
-                Level::Warning,
-                format!("bwrap is missing or unusable ({}); bash is disabled", e.message),
-            ));
+            // Fail closed only where the OS sandbox is wanted; an attended run works without it.
+            if let Some(text) = crate::run_kind::bwrap_missing_notice(os_sandbox, &e.message) {
+                notices.push((Level::Warning, text));
+            }
             Arc::new(NoSandbox)
         }
     };
@@ -1028,17 +1050,6 @@ fn prepare(
         }
     }
 
-    // O-182, #202: one switch for the policy of every session and for the subagent children.
-    // The command line wins; else `permissions.defaultMode` (a project may only lower it).
-    // `--permission-mode workspace|ask` alone keeps its old meaning: the table asks you.
-    let level = a
-        .level
-        .or(match a.permission_mode {
-            Some(Mode::Workspace | Mode::Ask) => Some(oxa_proto::PermissionMode::Standard),
-            _ => None,
-        })
-        .unwrap_or_else(|| settings.default_permission_mode());
-    let yolo = oxa_proto::YoloSwitch::new(level.autonomy());
     let table_mode = match (a.permission_mode, level) {
         (None, oxa_proto::PermissionMode::Plan) => Some(Mode::Plan),
         (m, _) => m,
@@ -1049,20 +1060,31 @@ fn prepare(
             format!("permission mode {}: {}", level.as_str(), level.describe()),
         ));
     }
-    let bash_sandbox = Arc::new(oxa_sandbox::FullAccess::new(
-        sandbox.clone(),
-        yolo.clone(),
-        env.get("PATH").unwrap_or(""),
-        dirs.home.clone(),
-        oxa_proto::offline(),
-    ));
+    // The owner's `oxa.sandbox.net = off` (or a runner that owns GitHub) holds for unsandboxed
+    // commands too (#1512 S3).
+    let net_off = env.get(oxa_work::RUNNER_GITHUB_ENV) == Some("1")
+        || !oxa_sandbox::sandbox_net_setting(settings.string(oxa_sandbox::SETTING_SANDBOX_NET).as_deref());
+    let bash_sandbox = Arc::new(
+        oxa_sandbox::FullAccess::new(
+            sandbox.clone(),
+            yolo.clone(),
+            env.get("PATH").unwrap_or(""),
+            dirs.home.clone(),
+            oxa_proto::offline(),
+            net_off,
+        )
+        .with_os_sandbox(os_sandbox),
+    );
+    // Exec hooks go through the same switch: without the OS sandbox they run with the user's
+    // rights (#1512 S3); with it they stay in `sandbox` as before.
+    let hook_sandbox: Arc<dyn Sandbox> = bash_sandbox.clone();
     let hook_inputs = HookInputs {
         args: a,
         dirs,
         cwd,
         settings: &settings,
         resources: &resources,
-        sandbox: &sandbox,
+        sandbox: &hook_sandbox,
         trusted: direct_project_trust,
         nested: child.nested(),
         env,
@@ -1141,6 +1163,7 @@ fn prepare(
         hook_sets,
         yolo,
         bash_sandbox,
+        os_sandbox,
         danger: Arc::new(danger),
     };
     Ok(Prep {
@@ -1832,6 +1855,7 @@ fn run_tui(a: &Args, env: &Env, dirs: &Dirs, cwd: &Path, prep: Prep, stderr: &mu
         #[cfg(not(feature = "share"))]
         engine_status: None,
         yolo: Some(yolo),
+        os_sandbox: built.os_sandbox,
     };
     let result = run_interactive(session, opts);
     let result = match &built.status {
@@ -2733,7 +2757,9 @@ mod session_scratch_tests {
                 "",
                 home,
                 false,
+                false,
             )),
+            os_sandbox: false,
             yolo,
             danger: Arc::new(oxa_perm::DangerRules::builtin()),
         };
@@ -2832,7 +2858,9 @@ mod session_scratch_tests {
                     "",
                     env.home(),
                     false,
+                    false,
                 )),
+                os_sandbox: false,
                 yolo,
                 danger: Arc::new(oxa_perm::DangerRules::builtin()),
             }

@@ -199,9 +199,13 @@ const SCHEMA: &[KeyDef] = &[
     ),
     key("oxa.sampling.seed", Kind::Number, "null"),
     key("oxa.sandbox.allowHomeWrite", Kind::Bool, "false"),
+    // #1512 S3: the OS sandbox of an interactive (attended) run; user settings only.
+    key("oxa.sandbox.interactive", Kind::Bool, "false"),
     key("oxa.sandbox.net", Kind::Enum(&["on", "off"]), "\"on\""),
     // B2 (lane harden): extra binds of the bash sandbox; user settings only.
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
+    // #1512 S3: the OS sandbox of an unattended run (workers, subagents, headless goals).
+    key("oxa.sandbox.unattended", Kind::Bool, "true"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
     key("oxa.share.remoteModels", Kind::StringList, "[]"),

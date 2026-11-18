@@ -121,6 +121,22 @@ pub fn run_unsandboxed_capture(
     execute(cmd, "bash", None, s.timeout_s, cancel, live, capture)
 }
 
+/// [`run_unsandboxed`] with `stdin` written to the command's standard input and then closed
+/// (#1512: exec hooks without the OS sandbox run with the user's rights, as bash does).
+pub fn run_unsandboxed_stdin(
+    s: &ExecSpec,
+    stdin: &[u8],
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+) -> ExecResult {
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(&s.command)
+        .current_dir(&s.cwd)
+        .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true)
+}
+
 /// Bounded capture: the first and last `cap / 2` bytes, with a count of what was dropped.
 struct Capture {
     half: usize,

@@ -302,6 +302,7 @@ impl World {
             gated: Vec::new(),
             engine_status: None,
             yolo: None,
+            os_sandbox: false,
         }
     }
 

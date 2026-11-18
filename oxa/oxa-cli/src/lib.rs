@@ -47,6 +47,7 @@ mod netguard;
 mod pkg_cmd;
 mod report_cmd;
 mod result_facts;
+mod run_kind;
 mod sandbox_layout;
 #[cfg(feature = "share")]
 mod share_cmd;

@@ -112,14 +112,15 @@ pub(crate) fn run(
         .env("PATH", &policy.host_path)
         .env_remove("OXA_TRUST_PROJECT")
         .env_remove(crate::WORKTREE_TRUST_SOURCE_ENV)
-        .current_dir(root)
-        .args([
-            "--mode=json",
-            "--model",
-            &task.model,
-            "--max-time",
-            &remaining.as_secs_f64().to_string(),
-        ]);
+        .env_remove(oxa_proto::names::ENV_UNATTENDED);
+    mark_unattended(&mut command);
+    command.current_dir(root).args([
+        "--mode=json",
+        "--model",
+        &task.model,
+        "--max-time",
+        &remaining.as_secs_f64().to_string(),
+    ]);
     if let Some(source) = source.to_str() {
         command.env(crate::WORKTREE_TRUST_SOURCE_ENV, source);
     } else {
@@ -335,10 +336,25 @@ pub(crate) fn keep_tail(tail: &mut Vec<u8>, bytes: &[u8], cap: usize) {
     }
 }
 
+/// #1512 S3: a worker is unattended: no person watches it, so the OS sandbox stays on. The
+/// inherited marker is dropped first, then the worker's own is set.
+pub(crate) fn mark_unattended(command: &mut Command) {
+    command.env(oxa_proto::names::ENV_UNATTENDED, "1");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn oxa_work_worker_command_sets_oxa_unattended() {
+        let mut command = Command::new("true");
+        mark_unattended(&mut command);
+        assert!(command
+            .get_envs()
+            .any(|(k, v)| k == "OXA_UNATTENDED" && v == Some(std::ffi::OsStr::new("1"))));
+    }
 
     #[test]
     fn terminal_process_usage_survives_serializing_the_worker_result() {

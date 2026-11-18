@@ -286,6 +286,7 @@ fn run_on(
         gated: Vec::new(),
         engine_status: None,
         yolo: Some(oxa_proto::YoloSwitch::new(oxa_proto::Autonomy::Standard)),
+        os_sandbox: false,
     };
     let mut term = ScriptTerm::new(size.0, size.1, steps);
     // A test-only variable: this terminal answers the graphics query.
@@ -983,4 +984,25 @@ fn a_graphics_terminal_gets_the_pixel_scene_once_per_frame_and_is_left_clean() {
         write_notes,
     );
     assert!(!off.raw().contains("\x1b_G") && !off.raw().contains('\u{10EEEE}'));
+}
+
+/// #1512 S3: the HUD tells the truth: with no OS sandbox it says so, and dangerous commands ask.
+#[test]
+fn hud_shows_no_sandbox_dangerous_commands_ask() {
+    let term = run_on(
+        slow_engine(),
+        read_then_answer(),
+        json!({}),
+        UTF8,
+        (110, 34),
+        vec![step(
+            "start",
+            &["READY", "no sandbox · dangerous commands ask"],
+            vec![key("ctrl+d")],
+        )],
+        write_notes,
+    );
+    let text = term.all_text();
+    assert!(text.contains("no sandbox · dangerous commands ask"), "HUD guard");
+    assert!(!text.contains("sandbox on"), "never claims a sandbox that is off");
 }

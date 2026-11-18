@@ -740,7 +740,7 @@ pub fn cycle_mode(current: Mode) -> (Mode, String) {
     let next = current.next();
     let text = match next {
         Mode::Plan => "Mode: plan (read-only)",
-        Mode::Workspace => "Mode: workspace (writes inside cwd, sandboxed bash; the rest asks)",
+        Mode::Workspace => "Mode: workspace (writes inside cwd; the rest asks)",
         Mode::Ask => "Mode: ask (each write or command asks once per scope)",
     };
     (next, text.to_string())

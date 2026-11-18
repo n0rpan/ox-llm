@@ -114,6 +114,7 @@ fn interactive_opts(env: &TestEnv) -> InteractiveOpts {
         gated: Vec::new(),
         engine_status: None,
         yolo: None,
+        os_sandbox: false,
     }
 }
 
