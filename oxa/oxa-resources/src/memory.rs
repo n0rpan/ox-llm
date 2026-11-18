@@ -157,19 +157,9 @@ fn lock(dir: &Path) -> Result<File, OxaError> {
     Ok(file)
 }
 
-/// Write `bytes` to a temporary sibling of `path`, then rename it over `path`.
+/// Write `bytes` to `path` via the shared atomic helper, mapping its I/O error.
 fn write_replace(path: &Path, bytes: &[u8]) -> Result<(), OxaError> {
-    let mut tmp_name = path.as_os_str().to_owned();
-    tmp_name.push(format!(".tmp.{}", std::process::id()));
-    let tmp = PathBuf::from(tmp_name);
-    if let Err(e) = std::fs::write(&tmp, bytes) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(OxaError::io(&format!("write {}", tmp.display()), &e));
-    }
-    std::fs::rename(&tmp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        OxaError::io(&format!("replace {}", path.display()), &e)
-    })
+    crate::write_atomic(path, bytes).map_err(|e| OxaError::io(&format!("write {}", path.display()), &e))
 }
 
 /// Regenerate `MEMORY.md` from the entries on disk (uncapped). Callers hold the lock.

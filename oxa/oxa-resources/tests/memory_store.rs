@@ -111,3 +111,19 @@ fn bad_name_or_oversize_is_refused() {
         MAX_MEMORY_BODY
     );
 }
+
+#[test]
+fn write_atomic_removes_temp_sibling_when_rename_fails() {
+    let env = TestEnv::new();
+    let dir = memory_dir(&env);
+    // A directory at the target makes the final rename fail after the temp write succeeded.
+    let target = dir.join("blocked.md");
+    std::fs::create_dir_all(&target).unwrap();
+    assert!(oxa_resources::write_atomic(&target, b"data").is_err());
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.contains(".tmp."))
+        .collect();
+    assert!(leftovers.is_empty(), "temp file left behind: {leftovers:?}");
+}
