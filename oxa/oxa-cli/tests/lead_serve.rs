@@ -175,7 +175,7 @@ fn real_server_is_user_enabled_authorized_and_rereads_private_board() {
     assert!(get(port, "/board", &authority, "").contains("href=/items/17"));
     for path in ["/items/17", "/items/17?fragment=1"] {
         let response = get(port, path, &authority, "");
-        assert!(response.starts_with("HTTP/1.1 200"), "{path}");
+        assert_eq!(response.lines().next(), Some("HTTP/1.1 200 OK"), "{path}");
         for text in [
             "Item #17",
             "Fix findings",
