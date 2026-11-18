@@ -840,19 +840,70 @@ fn a_crash_between_worker_finished_and_acceptance_entry_does_not_restart_the_wor
 
 #[test]
 fn acceptance_time_cannot_give_the_repair_worker_a_fresh_time_budget() {
+    for _ in 0..4 {
+        acceptance_deadline_case();
+    }
+}
+
+fn acceptance_deadline_case() {
+    use std::os::unix::fs::PermissionsExt;
     let env = TestEnv::new();
-    setup(&env, r#"["sleep 2.2; printf failed > failure.txt; exit 1"]"#);
+    setup(
+        &env,
+        r#"["printf started > acceptance-started; sleep 2.2; printf failed > failure.txt; exit 1"]"#,
+    );
     env.write(
         "work/tasks.json",
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","max_time":2}]"#,
     );
-    let (record, requests) = run_observed(
+    let ready_tree = env.work().join(".oxa-worktrees/project/test");
+    fs::create_dir_all(ready_tree.parent().unwrap()).unwrap();
+    git(
+        &env,
+        &project(&env),
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "worktree",
+            "add",
+            "-b",
+            "agent/test",
+            ready_tree.to_str().unwrap(),
+            "main",
+        ],
+    );
+    let tools = env.tmp().join("acceptance-tools");
+    fs::create_dir(&tools).unwrap();
+    fs::set_permissions(&tools, fs::Permissions::from_mode(0o700)).unwrap();
+    let delayed_git = tools.join("git");
+    fs::write(
+        &delayed_git,
+        "#!/bin/sh\n\
+         if [ -f \"$OXA_TEST_STARTUP_STATE\" ] && /usr/bin/mkdir \"$OXA_TEST_STARTUP_DELAYED\" 2>/dev/null; then\n\
+           /usr/bin/sleep 2.2\n\
+         fi\n\
+         exec /usr/bin/git \"$@\"\n",
+    ).unwrap();
+    fs::set_permissions(&delayed_git, fs::Permissions::from_mode(0o700)).unwrap();
+    let delayed = env.tmp().join("startup-delayed");
+    let command_path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+    let (record, requests) = work::run_observed_with(
         &env,
         vec![ScriptTurn::text("first"), ScriptTurn::text("must not run")],
         &["work", "../tasks.json"],
-        None,
+        Some(command_path),
+        |command| {
+            command
+                .env("OXA_TEST_STARTUP_STATE", path(&env))
+                .env("OXA_TEST_STARTUP_DELAYED", &delayed);
+        },
     );
-    assert_eq!(requests.len(), 1, "expired task budget refuses repair admission");
+    assert!(delayed.is_dir(), "preparation delay follows durable task state");
+    assert_eq!(
+        requests.len(),
+        1,
+        "expired task budget refuses repair admission: {record}"
+    );
     assert_eq!(record["outcome"], "interrupted", "{record}");
     assert_eq!(record["interruption"], "deadline");
     assert_eq!(
@@ -860,6 +911,11 @@ fn acceptance_time_cannot_give_the_repair_worker_a_fresh_time_budget() {
         "worker success remains distinct from task interruption"
     );
     assert_eq!(git(&env, tree(&record), &["show", "HEAD:failure.txt"]), "failed");
+    assert_eq!(
+        git(&env, tree(&record), &["show", "HEAD:acceptance-started"]),
+        "started"
+    );
+    assert_eq!(load(&env)["task"]["max_time"], 2);
 }
 
 #[test]
