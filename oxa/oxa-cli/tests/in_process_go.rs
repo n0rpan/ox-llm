@@ -134,6 +134,33 @@ fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
 }
 
 #[test]
+fn explicit_go_opt_in_still_selects_its_catalog_without_a_default_model() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings.as_object_mut().unwrap().remove("defaultModel");
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    fs::write(path, settings.to_string()).unwrap();
+
+    let output = run(&env, &["--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
 fn unavailable_go_reports_the_owner_fix_before_any_discovery() {
     for (disabled, reason) in [(true, "disabled"), (false, "no key")] {
         let env = TestEnv::new();
