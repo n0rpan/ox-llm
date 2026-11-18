@@ -3,6 +3,8 @@
 #[allow(dead_code, unexpected_cfgs)] // Shared gateway mock; CLI exercises JSON, not feature-gated form auth.
 #[path = "../../oxc-gateway/tests/common/openai.rs"]
 mod upstream;
+#[path = "common/work_repo.rs"]
+mod work_repo;
 use oxa_fake::TestEnv;
 use serde_json::{json, Value};
 use std::{
@@ -81,6 +83,152 @@ fn rows(env: &TestEnv) -> Vec<Value> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+#[test]
+fn bound_local_fix_uses_the_go_provider_and_retains_a_publication_hold() {
+    use oxa_work::board::{assignment::*, *};
+    use sha2::{Digest, Sha256};
+    use std::{collections::BTreeMap, os::unix::fs::PermissionsExt, path::Path};
+
+    let env = TestEnv::new();
+    work_repo::setup(&env, r#"["test -s native-fix.txt"]"#);
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(
+                json!({"role":"assistant","tool_calls":[{"index":0,"id":"write-fix","type":"function",
+                    "function":{"name":"write","arguments":r#"{"path":"native-fix.txt","content":"synthetic fix"}"#}}]}),
+                "tool_calls",
+            ),
+            stream(json!({"role":"assistant","content":"Finished the fix."}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+
+    let controls = env.agent_dir().join("local-fix");
+    let claims_dir = controls.join("claims");
+    let queue = controls.join("queue");
+    for dir in [&controls, &claims_dir, &queue] {
+        fs::create_dir(dir).unwrap();
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let number = 42;
+    let now = oxa_proto::time::now_ms() / 1000;
+    let claims = Claims::open(&claims_dir).unwrap();
+    claims
+        .import_snapshot(
+            Some(ManualAuthority::Owner),
+            &BTreeMap::from([(
+                number,
+                ImportState {
+                    state: AttemptState::default(),
+                    excluded: false,
+                },
+            )]),
+            now,
+        )
+        .unwrap();
+    let worker: Worker = serde_json::from_value(json!({
+        "id":"oxa:fixture/worker","kind":"oxa","roles":["builder"],"skills":[]
+    }))
+    .unwrap();
+    let policy = Policy {
+        enabled: true,
+        ..Policy::default()
+    };
+    let entry = Entry {
+        number,
+        head: "synthetic-revision".into(),
+        release_pinned: false,
+        action: Action::BuildIssue,
+        lease: None,
+        attempts_today: 0,
+        eligible: true,
+    };
+    let receipt = claims
+        .claim_item_for(&entry, &policy, &worker, "host-a", (now, 600), |_| Ok(None))
+        .unwrap()
+        .unwrap();
+    let binding = NativeBinding::new(number, &"a".repeat(64), &receipt.lease, "agent/42").unwrap();
+    assert!(claims.bind_native(&worker.id, &binding).unwrap());
+    assert!(oxa_work::helper_queue::publish(
+        &queue,
+        &binding.key,
+        &format!("i42 {MODEL} agent/42 main\nWrite the synthetic fix.\n"),
+        false,
+        &policy,
+    )
+    .unwrap());
+    let config = env.write(
+        "home/.oxa/agent/local-fix/config.json",
+        &json!({
+            "enabled":true,"nativeExecution":true,"nativeLocalFix":true,"worker":worker,"host_id":"host-a",
+            "queue":queue,"claims":claims_dir,"pause":controls.join("paused")
+        })
+        .to_string(),
+    );
+    fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let project = env.work().join("project");
+    let gh = env.write(
+        "home/.local/bin/gh",
+        "#!/bin/sh\nprintf invoked > \"$0.called\"\nexit 97\n",
+    );
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(gh.parent().unwrap().to_path_buf())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let invoke = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .current_dir(&project)
+            .env_clear()
+            .envs(env.envs("http://127.0.0.1:9"))
+            .env("PATH", &path)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let output = invoke(&["work", "--native-queue", "--config", config.to_str().unwrap()]);
+    let common = project.join(".git").canonicalize().unwrap();
+    let key = format!("{:x}", Sha256::digest(common.as_os_str().as_encoded_bytes()));
+    let checkpoint = env
+        .agent_dir()
+        .join("work")
+        .join(key)
+        .join(format!("{}.json", binding.native_task_id));
+    assert!(output.status.success(), "native Go execution: {output:?}");
+    let before_publish = fs::read(&checkpoint).unwrap();
+    let saved: Value = serde_json::from_slice(&before_publish).unwrap();
+    let record = &saved["record"];
+    assert_eq!(record["step"], "finished");
+    assert_eq!(
+        fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("native-fix.txt")).unwrap(),
+        "synthetic fix"
+    );
+    assert_eq!(mock.requests().len(), 3);
+    let complete = &claims.assignments().unwrap()[&number];
+    assert!(complete.state.lease.is_none());
+    assert!(complete.data.native_binding.as_ref() == Some(&binding));
+
+    let taskfile = env.write("work/local-fix.json", &json!([saved["task"]]).to_string());
+    let publish = invoke(&["work", taskfile.to_str().unwrap(), "--publish"]);
+    assert!(!publish.status.success(), "{publish:?}");
+    assert!(
+        String::from_utf8_lossy(&publish.stderr).contains("local-only native attempt"),
+        "{publish:?}"
+    );
+    assert_eq!(fs::read(&checkpoint).unwrap(), before_publish);
+    assert!(!gh.with_extension("called").exists());
+    assert!(work_repo::git(
+        &env,
+        &env.work().join("remote.git"),
+        &["for-each-ref", "--format=%(refname)", "refs/heads/agent"]
+    )
+    .is_empty());
+    mock.assert_healthy();
 }
 #[test]
 fn native_go_review_skill_schema_and_tool_loop_settle_subscription_rows() {
