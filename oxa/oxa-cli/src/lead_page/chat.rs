@@ -3,6 +3,7 @@ use super::{Prompt, View};
 use std::fmt::Write;
 
 pub(super) fn render(html: &mut String, view: &View<'_>, prompt: Prompt, now: u64) {
+    super::goal::render(html, view, now);
     if let Some(csrf) = view.fixed_prompt_csrf {
         let _ = write!(html, "<form class=fixed-prompts method=post action=/chat><input type=hidden name=csrf value=\"{}\"><fieldset><legend>Ask about this observation</legend><button name=prompt value=status>Status</button><button name=prompt value=workers>Are workers on goal?</button><button name=prompt value=attention>What needs me?</button></fieldset></form>", super::escape(csrf));
     }
