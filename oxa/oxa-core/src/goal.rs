@@ -338,7 +338,11 @@ impl GoalRuntime {
             state.goal.stopped(true);
         }
     }
-    pub(crate) fn tools(self: &Arc<Self>, interrupt: oxa_proto::CancelToken) -> Vec<Arc<dyn Tool>> {
+    pub(crate) fn tools(
+        self: &Arc<Self>,
+        interrupt: oxa_proto::CancelToken,
+        wait_wake: oxa_proto::CancelToken,
+    ) -> Vec<Arc<dyn Tool>> {
         [
             (
                 "goal_done",
@@ -356,6 +360,7 @@ impl GoalRuntime {
             Arc::new(Control {
                 goal: self.clone(),
                 interrupt: interrupt.clone(),
+                wait_wake: wait_wake.clone(),
                 spec: ToolSpec {
                     name: name.into(),
                     description: description.into(),
@@ -372,6 +377,8 @@ impl GoalRuntime {
 struct Control {
     goal: Arc<GoalRuntime>,
     interrupt: oxa_proto::CancelToken,
+    /// Cancelled when input for the active session arrives; a wait ends early on it.
+    wait_wake: oxa_proto::CancelToken,
     spec: ToolSpec,
 }
 impl Tool for Control {
@@ -420,10 +427,13 @@ impl Tool for Control {
             });
             remaining.map_or(asked, |remaining| asked.min(remaining))
         };
+        self.wait_wake.reset();
         live("Waiting; cancellation remains available.");
-        wait_cancelled(cx.cancel, &self.interrupt, duration);
+        wait_cancelled(cx.cancel, &self.interrupt, &self.wait_wake, duration);
         if cx.cancel.is_cancelled() {
             ToolOutput::error("Wait cancelled.")
+        } else if self.wait_wake.is_cancelled() {
+            ToolOutput::ok("Wait ended: input arrived.")
         } else {
             ToolOutput::ok("Wait ended.")
         }
@@ -456,15 +466,22 @@ impl Wake for Unpark {
         self.0.unpark();
     }
 }
-fn wait_cancelled(cancel: &oxa_proto::CancelToken, interrupt: &oxa_proto::CancelToken, duration: Duration) {
+fn wait_cancelled(
+    cancel: &oxa_proto::CancelToken,
+    interrupt: &oxa_proto::CancelToken,
+    wake: &oxa_proto::CancelToken,
+    duration: Duration,
+) {
     let deadline = Instant::now() + duration;
     let waker = Waker::from(Arc::new(Unpark(std::thread::current())));
     let mut cancelled = std::pin::pin!(cancel.cancelled());
     let mut interrupted = std::pin::pin!(interrupt.cancelled());
+    let mut woken = std::pin::pin!(wake.cancelled());
     let mut context = Context::from_waker(&waker);
     loop {
         if cancelled.as_mut().poll(&mut context).is_ready()
             || interrupted.as_mut().poll(&mut context).is_ready()
+            || woken.as_mut().poll(&mut context).is_ready()
         {
             return;
         }
