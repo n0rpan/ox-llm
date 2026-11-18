@@ -195,6 +195,12 @@ fn init_creates_a_dedicated_session_offline_and_refuses_a_configured_replacement
     let store = FsStore::new(dirs.sessions_dir.clone());
     assert_eq!(store.resolve(id).unwrap().id, id);
 
+    std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let unsafe_state = run_init();
+    assert!(!unsafe_state.status.success(), "{unsafe_state:?}");
+    assert_eq!(std::fs::metadata(&dirs.agent_dir).unwrap().mode() & 0o777, 0o755);
+    std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
     let settings = dirs.settings_file();
     std::fs::write(
         &settings,

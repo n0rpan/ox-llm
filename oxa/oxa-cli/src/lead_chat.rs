@@ -3,7 +3,11 @@ use crate::lead_page::Prompt;
 use oxa_config::Env;
 use oxa_proto::{codes, work::Snapshot, OxaError};
 use oxa_work::board::Board;
-use std::{io::Write, os::unix::fs::MetadataExt, path::Path};
+use std::{
+    io::Write,
+    os::unix::fs::{DirBuilderExt, MetadataExt},
+    path::{Component, Path},
+};
 
 pub(crate) struct QuickReply {
     pub text: String,
@@ -136,8 +140,37 @@ fn provision(project: &Path, env: &Env, out: &mut dyn Write) -> Result<i32, OxaE
             "A dedicated Lead Session is already configured",
         ));
     }
+    prepare_default_state(&dirs)?;
     let id = LeadOwnerBinding::create(&dirs, &project, uid)?;
     writeln!(out, "{id}")
         .map_err(|error| OxaError::io("cannot write the dedicated Lead Session ID", &error))?;
     Ok(0)
+}
+
+fn prepare_default_state(dirs: &oxa_config::Dirs) -> Result<(), OxaError> {
+    let agent = dirs.agent_dir.as_path();
+    if dirs.sessions_dir.parent() != Some(agent) {
+        return Ok(());
+    }
+    match std::fs::symlink_metadata(agent) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(OxaError::io("cannot inspect Lead state directory", &error)),
+    }
+    let canonical_parent = agent
+        .ancestors()
+        .skip(1)
+        .find(|path| path.exists())
+        .is_some_and(|path| path.canonicalize().ok().as_deref() == Some(path));
+    if !canonical_parent || agent.components().any(|part| part == Component::ParentDir) {
+        return Err(OxaError::new(
+            codes::INVALID,
+            "Lead state directory has an unsafe parent",
+        ));
+    }
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(agent)
+        .map_err(|error| OxaError::io("cannot create Lead state directory", &error))
 }
