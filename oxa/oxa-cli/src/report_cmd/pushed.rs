@@ -64,6 +64,18 @@ fn setting_values(name: &str, value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// Whether the value of a `name = value` assignment, a `Bearer ..` header or a URL
+/// password could be a credential rather than code or prose: long enough, free of
+/// expression characters, and with a digit or a symbol (a bare identifier such as
+/// `next_token` or a word such as `configuration` is not).
+fn opaque_value(value: &str) -> bool {
+    value.chars().count() >= MIN_SECRET_VALUE_CHARS
+        && !value.contains(['(', ')', '<', '>', '{', '}', '[', ']', '&', '*', '$'])
+        && value
+            .chars()
+            .any(|ch| ch.is_ascii_digit() || !(ch.is_alphabetic() || matches!(ch, '_' | '.' | ':')))
+}
+
 fn basename(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_ascii_lowercase()
 }
@@ -155,6 +167,22 @@ impl PushScan {
         }
         if p.known.is_match(text) {
             return Some("a known access token format");
+        }
+        // The scrubber's keyed, `Bearer ..` and URL-credential patterns, which catch
+        // an opaque credential copied from a project file that no configured value matches.
+        let value_of = |text: &str| text.split_whitespace().last().unwrap_or_default().to_string();
+        if p.keyed.captures_iter(text).any(|found| opaque_value(&found[2]))
+            || p.bearer
+                .find_iter(text)
+                .any(|found| opaque_value(&value_of(found.as_str())))
+            || p.url_cred.find_iter(text).any(|found| {
+                let userinfo = found.as_str().trim_end_matches('@');
+                userinfo
+                    .rsplit_once(':')
+                    .is_some_and(|(_, password)| opaque_value(password))
+            })
+        {
+            return Some("a credential assignment, authorization header or URL password");
         }
         if self.values.iter().any(|value| text.contains(value.as_str())) {
             return Some("the value of a secret environment variable or setting");
@@ -283,6 +311,30 @@ mod tests {
         let scan = PushScan::new(&env, &Settings::from_values(json!({}), json!({})));
         for text in ["synthetic-first-half", "x synthetic-second-half"] {
             assert!(scan.check(&line("notes.txt", text)).is_some(), "{text}");
+        }
+    }
+
+    #[test]
+    fn scrubber_credential_patterns_are_refused_in_added_lines() {
+        let scan = PushScan::new(&Env::default(), &Settings::from_values(json!({}), json!({})));
+        for text in [
+            "PASSWORD=opaque-pass-value-17",
+            "\"api_key\": \"abcd1234efgh\"",
+            "Authorization: Bearer abcd1234efgh5678",
+            "url = https://deploy:s3cr3t-pass-9@example.invalid/repo.git",
+        ] {
+            let found = scan.check(&line("notes.txt", text)).expect(text);
+            assert!(!found.secret_path, "{text}");
+        }
+        for text in [
+            "let token = next_token();",
+            "token: String,",
+            "password = read_password(prompt)",
+            "see the basic configuration guide",
+            "https://user:${PASSWORD}@example.invalid/",
+            "Bearer {token}",
+        ] {
+            assert!(scan.check(&line("src/main.rs", text)).is_none(), "{text}");
         }
     }
 

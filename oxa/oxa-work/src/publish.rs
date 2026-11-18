@@ -88,7 +88,9 @@ fn diff_path(header: &str) -> Option<String> {
     let path = if path.starts_with('"') {
         unquote(path)?
     } else {
-        path.to_string()
+        // Git ends an unquoted `+++` path that contains a space with a tab. A tab in
+        // a real name would make Git quote the path, so one trailing tab is never part of it.
+        path.strip_suffix('\t').unwrap_or(path).to_string()
     };
     Some(path.strip_prefix("b/").map(str::to_string).unwrap_or(path))
 }
@@ -868,6 +870,33 @@ mod scan_tests {
         let error = scan_pushed(&policy, dir.path(), &[head.as_str()], &containing(secret)).unwrap_err();
         assert!(!error.contains("etic-value"), "{error}");
         assert!(!error.contains("nth"), "{error}");
+    }
+
+    #[test]
+    fn a_tab_after_an_unquoted_patch_path_is_not_part_of_the_name() {
+        assert_eq!(
+            diff_path("b/app config/.env\t"),
+            Some("app config/.env".to_string())
+        );
+        assert_eq!(diff_path("b/plain/.env"), Some("plain/.env".to_string()));
+        let (dir, policy) = repo();
+        std::fs::create_dir(dir.path().join("app config")).unwrap();
+        std::fs::write(dir.path().join("app config/.env"), "PLACEHOLDER=1\n").unwrap();
+        git_ok(dir.path(), &["add", "-A"]);
+        git_ok(dir.path(), &["commit", "-q", "-m", "base"]);
+        let base = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        std::fs::write(dir.path().join("app config/.env"), "PLACEHOLDER=opaque\n").unwrap();
+        git_ok(dir.path(), &["commit", "-q", "-am", "edit"]);
+        let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        let revisions = [head.as_str(), "--not", base.as_str()];
+        let error = scan_pushed(&policy, dir.path(), &revisions, &|item| {
+            (item.line.is_some() && item.path.ends_with("/.env")).then_some(ContentFinding {
+                label: "content to a file name used for secrets",
+                secret_path: false,
+            })
+        })
+        .unwrap_err();
+        assert!(error.contains("app config/.env:1"), "{error}");
     }
 
     #[test]
