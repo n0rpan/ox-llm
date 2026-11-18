@@ -626,6 +626,12 @@ fn status_works_when_the_kernel_refuses_every_flock_syscall() {
 
 #[test]
 fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
+    for _ in 0..4 {
+        child_deadline_case();
+    }
+}
+
+fn child_deadline_case() {
     use std::os::unix::fs::PermissionsExt;
 
     // Failure-only facts from this isolated fixture; never print paths, IDs or state text.
@@ -698,6 +704,20 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
 
     let env = TestEnv::new();
     setup(&env, "[]");
+    let clock = env.tmp().join("runner-clock.so");
+    let compiled = Command::new("cc")
+        .args(["-shared", "-fPIC", "-O2", "-Wall", "-Wextra", "-Werror"])
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/common/runner_clock.c"))
+        .arg("-o")
+        .arg(&clock)
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:1"))
+        .output()
+        .unwrap();
+    assert!(
+        compiled.status.success(),
+        "runner clock fixture compilation failed"
+    );
     env.write(
         "work/tasks.json",
         r#"[{"id":"test","branch":"agent/test","model":"fake","prompt":"Finish task","max_time":1}]"#,
@@ -754,6 +774,7 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
         Some(command_path),
         |command| {
             command
+                .env("LD_PRELOAD", &clock)
                 .env("OXA_TEST_STARTUP_STATE", path(&env))
                 .env("OXA_TEST_STARTUP_DELAYED", &delayed);
         },
@@ -782,6 +803,12 @@ fn the_owner_time_limit_reaches_the_real_child_and_keeps_its_wrap_up_work() {
     assert_eq!(load(&env)["task"]["max_time"], 1, "{}", diagnostics());
     assert_eq!(record["step"], "finished", "{}", diagnostics());
     assert_eq!(record["interruption"], "deadline", "{}", diagnostics());
+    // The outer clock never expired: the real child's own timer reported this.
+    let state = load(&env);
+    assert_eq!(
+        state["deadline_at_ms"].as_u64().unwrap() - record["checkpoint_at_ms"].as_u64().unwrap(),
+        1_000
+    );
 }
 
 #[test]
