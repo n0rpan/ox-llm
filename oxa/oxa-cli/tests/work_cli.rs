@@ -462,14 +462,11 @@ fn native_refill_completion(source: NativeSource) {
         assert_eq!(server.requests()[0].model, "fake-alternative");
         return;
     }
-    let server = FakeServer::start(
-        vec![ScriptTurn::text("finished")],
-        FakeOpts {
-            model: "fake".into(),
-            ..FakeOpts::default()
-        },
-    )
-    .unwrap();
+    let catalog = FakeOpts {
+        model: "fake".into(),
+        ..FakeOpts::default()
+    };
+    let server = FakeServer::start(vec![ScriptTurn::text("finished")], catalog.clone()).unwrap();
     if let Some(reason) = refusal {
         let result = run_server(&env, &server, &args, Some(path), &[]);
         assert!(!result.status.success(), "{source:?}: {result:?}");
@@ -600,7 +597,7 @@ fn native_refill_completion(source: NativeSource) {
         assert_ne!(next.key, binding.key);
         assert_ne!(next.lease.generation, binding.lease.generation);
         assert_eq!(next.reviewed_head.as_deref(), Some(reviewed.as_str()));
-        let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
+        let server = FakeServer::start(vec![ScriptTurn::text("finished")], catalog).unwrap();
         let result = run_server(&env, &server, &args, Some(path), &[]);
         assert!(result.status.success(), "{result:?}");
         assert_eq!(server.requests().len(), 1);
