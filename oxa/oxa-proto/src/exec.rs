@@ -140,6 +140,7 @@ pub trait Sandbox: Send + Sync {
             output: b"this sandbox cannot pass standard input to a command".to_vec(),
             exit: None,
             timed_out: false,
+            unsandboxed: false,
         }
     }
 }

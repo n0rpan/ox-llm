@@ -97,6 +97,7 @@ impl FullAccess {
                 },
                 exit: None,
                 timed_out: false,
+                unsandboxed: false,
             },
         }
     }

@@ -118,7 +118,28 @@ pub fn run_unsandboxed_capture(
         .arg(&s.command)
         .current_dir(&s.cwd)
         .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
-    execute(cmd, "bash", None, s.timeout_s, cancel, live, capture)
+    let mut r = execute(cmd, "bash", None, s.timeout_s, cancel, live, capture);
+    // Linux keeps `false`: only a platform without bwrap reports a command as unsandboxed.
+    r.unsandboxed = !cfg!(target_os = "linux");
+    r
+}
+
+/// [`run_unsandboxed`] with `stdin` fed to the command and then closed (exec hooks).
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn run_unsandboxed_stdin(
+    s: &ExecSpec,
+    stdin: &[u8],
+    cancel: &CancelToken,
+    live: &mut dyn FnMut(&[u8]),
+) -> ExecResult {
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(&s.command)
+        .current_dir(&s.cwd)
+        .envs(s.env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    let mut r = execute(cmd, "bash", Some(stdin), s.timeout_s, cancel, live, true);
+    r.unsandboxed = true;
+    r
 }
 
 /// Bounded capture: the first and last `cap / 2` bytes, with a count of what was dropped.
@@ -170,6 +191,7 @@ fn spawn_failed(text: String) -> ExecResult {
         output: text.into_bytes(),
         exit: None,
         timed_out: false,
+        unsandboxed: false,
     }
 }
 
@@ -311,6 +333,7 @@ fn execute(
         output: out.finish(),
         exit,
         timed_out,
+        unsandboxed: false,
     }
 }
 
@@ -319,6 +342,7 @@ fn execute(
 /// spawned it (the parent pid is taken before the fork); if the parent already died, the child
 /// exits at once. Linux only: the signal fires when the thread that forked the child exits, so
 /// the forking thread must stay alive until the child is waited for.
+#[cfg(target_os = "linux")]
 pub fn die_with_parent(cmd: &mut Command) {
     let parent = std::process::id() as libc::pid_t;
     // SAFETY: the closure runs in the forked child before exec and calls only async-signal-safe
@@ -332,6 +356,11 @@ pub fn die_with_parent(cmd: &mut Command) {
         });
     }
 }
+
+/// Off Linux there is no parent-death signal: the child is not supervised (a no-op, never a
+/// refusal). A child that outlives a crashed parent is the platform's known gap.
+#[cfg(not(target_os = "linux"))]
+pub fn die_with_parent(_cmd: &mut Command) {}
 
 /// A checked, resolved working directory held open until process spawn.
 /// Opening walks each component without following symlinks; applying it uses `fchdir`,
@@ -357,11 +386,13 @@ impl PinnedCwd {
             let name = std::ffi::CString::new(name.as_bytes()).map_err(std::io::Error::other)?;
             // SAFETY: dir is open and name is a valid single-component C string.
             let fd = unsafe {
-                libc::openat(
-                    dir.as_raw_fd(),
-                    name.as_ptr(),
-                    libc::O_PATH | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                )
+                libc::openat(dir.as_raw_fd(), name.as_ptr(), {
+                    #[cfg(target_os = "linux")]
+                    let access = libc::O_PATH;
+                    #[cfg(not(target_os = "linux"))]
+                    let access = libc::O_RDONLY;
+                    access | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC
+                })
             };
             if fd < 0 {
                 return Err(std::io::Error::last_os_error());
@@ -460,6 +491,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn die_with_parent_command_runs_normally() {
         let mut cmd = Command::new("true");
         die_with_parent(&mut cmd);

@@ -25,7 +25,9 @@ use oxa_perm::{
 use oxa_proto::{codes, Engine, Level, Mode, OxaError, Part, Sandbox, ThinkingLevel, Value};
 use oxa_resources::{discover, DiscoverOpts, Resources};
 use oxa_rpc::{run_json_outcome, run_print_outcome, serve_outcome, Out};
-use oxa_sandbox::{Bwrap, NoSandbox};
+use oxa_sandbox::Bwrap;
+#[cfg(target_os = "linux")]
+use oxa_sandbox::NoSandbox;
 use oxa_session::{decode_entry, decode_header, FsStore, MemStore, SessionStore};
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -957,6 +959,19 @@ fn prepare(
             notices.extend(b.layout.git.notes.iter().map(|n| (Level::Warning, n.clone())));
             Arc::new(b)
         }
+        // No bubblewrap on this platform: run unsandboxed and say so, never claim isolation.
+        #[cfg(not(target_os = "linux"))]
+        Err(_) => {
+            notices.push((
+                Level::Warning,
+                format!(
+                    "{}; bash and hooks run with no isolation",
+                    oxa_sandbox::NO_OS_SANDBOX_NOTICE
+                ),
+            ));
+            Arc::new(oxa_sandbox::Unsandboxed)
+        }
+        #[cfg(target_os = "linux")]
         Err(e) => {
             notices.push((
                 Level::Warning,

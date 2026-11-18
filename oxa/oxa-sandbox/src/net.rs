@@ -358,6 +358,7 @@ mod tests {
                     output: b"ghp_SECRET123".to_vec(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -386,6 +387,7 @@ mod tests {
                     output: b"ghp_LAZY123".to_vec(),
                     exit: Some(0),
                     timed_out: false,
+                    unsandboxed: false,
                 }
             }
         }
@@ -422,6 +424,7 @@ mod tests {
                 output: out.into_bytes(),
                 exit: Some(0),
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
@@ -447,6 +450,7 @@ mod tests {
                 output: Vec::new(),
                 exit: Some(0),
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
@@ -582,6 +586,7 @@ mod tests {
                 output: out,
                 exit: Some(0),
                 timed_out: false,
+                unsandboxed: false,
             }
         }
     }
