@@ -829,8 +829,9 @@ fn tui_005() {
         let Some(&bottom) = rules.last() else {
             return Vec::new();
         };
-        let (rows_n, _) = s.size();
-        rows[bottom + 1..(rows_n as usize).saturating_sub(2)].to_vec()
+        // #1512 S3: the footer ends above the extension status row.
+        let cwd_row = usize::from(last_footer_row(s)).saturating_sub(1);
+        rows[bottom + 1..cwd_row.max(bottom + 1)].to_vec()
     };
     rig.pty.send_text("/");
     let s = rig
@@ -1523,7 +1524,12 @@ fn tui_026() {
     // Alt+M cycles the mode; the footer follows.
     rig.pty.send_key("alt+m");
     rig.pty
-        .wait_for_named("mode changed", |s| !footer(s).1.contains("auto"), WAIT)
+        // The mode word itself (the context line also shows `(auto)` compaction).
+        .wait_for_named(
+            "mode changed",
+            |s| !footer(s).1.split_whitespace().any(|w| w == "auto"),
+            WAIT,
+        )
         .unwrap();
     // Prefill progress and speed come from the engine's comments and timings (the fake sends
     // neither for a chat request): the footer renders them from the status.
