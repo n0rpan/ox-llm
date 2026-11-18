@@ -247,9 +247,9 @@ mod tests {
     fn auto_parent_keeps_auto_worker_not_workspace() {
         // A workspace table with auto autonomy is the effective `auto` mode: an auto child is
         // passed as auto (not clamped to workspace, which the CLI reads as standard prompts).
-        let (args, notice) =
+        let (auto_args, notice) =
             child_argv(&spec(Some(WorkerMode::Auto)), Mode::Workspace, Autonomy::Auto).unwrap();
-        assert_eq!(perm(&args), "auto");
+        assert_eq!(perm(&auto_args), "auto");
         assert!(notice.is_none());
         // The same effective mode with an ask table: auto as well.
         let (args, notice) = child_argv(&spec(Some(WorkerMode::Auto)), Mode::Ask, Autonomy::Auto).unwrap();
@@ -266,9 +266,13 @@ mod tests {
         assert_eq!(perm(&args), "workspace");
         assert!(notice.is_none());
         // The argv value is read back by the real CLI parser as auto, not as standard prompts.
-        let pair = ["--permission-mode".to_string(), perm(&args).to_string()];
+        let pair = ["--permission-mode".to_string(), perm(&auto_args).to_string()];
         let parsed = crate::parse_args(&pair, &[]).unwrap();
         assert_eq!(parsed.level, Some(oxa_proto::PermissionMode::Auto));
+        // The workspace child above is the standard-prompts case, and it still reads that way.
+        let pair = ["--permission-mode".to_string(), "workspace".to_string()];
+        let parsed = crate::parse_args(&pair, &[]).unwrap();
+        assert_eq!(parsed.level, Some(oxa_proto::PermissionMode::Standard));
     }
 
     #[test]
