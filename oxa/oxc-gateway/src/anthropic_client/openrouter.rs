@@ -2,7 +2,7 @@
 //! cancellation, bounded SSE decoder and connection pool. Never forwards provider
 //! errors or unrecognized response fields to the caller.
 use super::*;
-use crate::routing::ProviderRouting;
+use crate::routing::{ProviderRouting, Sort};
 use reqwest::header::AUTHORIZATION;
 use serde_json::json;
 
@@ -112,6 +112,15 @@ impl Client {
 fn request(chat: &Chat<'_>) -> Result<Value, Error> {
     let mut body = json!({"model":chat.upstream_model,"stream":true,
         "stream_options":{"include_usage":true}});
+    // The last sorting suffix wins. Preserve the configured model's other variants.
+    if let Some(suffix) = chat
+        .routing
+        .and_then(|routing| routing.sort)
+        .and_then(Sort::model_suffix)
+        .filter(|suffix| !chat.upstream_model.ends_with(*suffix))
+    {
+        body["model"] = json!(format!("{}{suffix}", chat.upstream_model));
+    }
     // O-384: oxa enforces no provider policy. Only the user's own preferences are sent;
     // with none configured the request carries no `provider` object at all.
     if let Some(provider) = chat.routing.and_then(ProviderRouting::to_json) {

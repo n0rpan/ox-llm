@@ -103,6 +103,10 @@ fn global_routing(cloud: &Value) -> Result<ProviderRouting, OxaError> {
 /// O-384: the active OpenRouter provider routing per model alias, for the model view.
 /// Display only: a malformed entry is skipped here and refused by [`select`].
 pub(crate) fn routing_descriptions(user: &Settings) -> BTreeMap<String, String> {
+    // When both native backends are active, Routed requires disjoint model aliases.
+    if !user.bool(SETTING, false) {
+        return BTreeMap::new();
+    }
     let Some(cloud) = user.get("oxa.cloud") else {
         return BTreeMap::new();
     };

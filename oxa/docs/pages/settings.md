@@ -268,11 +268,11 @@ is optional and is passed through as written:
 |---|---|---|
 | `zdr` | bool | require zero-data-retention providers |
 | `data_collection` | `allow` / `deny` | allow or deny providers that store your prompts |
-| `sort` | `price` / `throughput` / `latency` | order providers by price, speed or latency; `:floor` and `:nitro` are accepted as the shortcuts for `price` and `throughput` |
+| `sort` | `price` / `throughput` / `latency` | order providers by price, speed or latency. `:floor` and `:nitro` append a model suffix and also admit flex or priority tier endpoints, respectively |
 | `order` | list | try these providers first, in this order |
 | `only` | list | use only these providers |
 | `ignore` | list | never use these providers |
-| `allow_fallbacks` | bool | allow providers outside `order`/`only` when the preferred ones are unavailable |
+| `allow_fallbacks` | bool | allow fallback beyond the preferred `order` when its providers are unavailable, subject to `only` and `ignore` |
 
 `only` and `ignore` cannot be combined. A per-model object overrides the global
 fields it sets, and setting `only` or `ignore` there replaces the global pair

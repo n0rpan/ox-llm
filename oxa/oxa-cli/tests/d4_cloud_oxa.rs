@@ -98,6 +98,12 @@ fn a_remote_model_runs_a_tool_loop_without_local_only_wire_features() {
 #[test]
 fn the_context_size_comes_from_the_remote_capability_row() {
     let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"oxa":{"engine":{"inProcessCloud":false},"cloud":{"models":{"cloud-model":{
+            "provider":"openrouter","provider_routing":{"zdr":true}
+        }}}}}"#,
+    );
     let server = cloud_engine(vec![ScriptTurn::text("ok")]);
     let out = run(&env, &server.url(), &["--list-models"], &[]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -106,6 +112,8 @@ fn the_context_size_comes_from_the_remote_capability_row() {
     assert!(stdout.contains("cloud-model"), "{stdout}");
     // FakeOpts has n_ctx 8000, but the model's capability row says 64000.
     assert!(stdout.contains("64K"), "the row's context wins: {stdout}");
+    let row = stdout.lines().nth(1).expect("model row");
+    assert_eq!(row.split_whitespace().last(), Some("-"), "{row}");
 }
 
 /// Subscription models must be discoverable by provider, without guessing capabilities.

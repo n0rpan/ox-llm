@@ -641,7 +641,7 @@ fn native_openrouter_provider_routing_reaches_the_wire_and_the_model_view() {
         .find(|line| line.split_whitespace().nth(1) == Some(MODEL))
         .unwrap_or_else(|| panic!("no {MODEL} row in {stdout}"));
     assert!(
-        row.ends_with("zdr=true,data=deny,sort=throughput,only=synthetic-a"),
+        row.ends_with("zdr=true,data=deny,sort=:nitro,only=synthetic-a"),
         "{row}"
     );
     assert!(mock.requests().is_empty());
@@ -654,9 +654,10 @@ fn native_openrouter_provider_routing_reaches_the_wire_and_the_model_view() {
     success(&output);
     let request = mock.requests().pop().unwrap();
     assert_eq!(request.target, "/v1/chat/completions");
+    assert_eq!(request.body["model"], format!("{UPSTREAM}:nitro"));
     assert_eq!(
         request.body["provider"],
-        json!({"zdr":true,"data_collection":"deny","sort":"throughput","only":["synthetic-a"]})
+        json!({"zdr":true,"data_collection":"deny","only":["synthetic-a"]})
     );
     mock.finish();
 }

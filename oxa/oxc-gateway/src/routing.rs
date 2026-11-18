@@ -22,14 +22,14 @@ impl DataCollection {
     }
 }
 
-/// `sort` of the OpenRouter `provider` object. `:nitro` and `:floor` are OpenRouter's
-/// documented shortcuts for `throughput` and `price`; both spellings are accepted and
-/// sent as the canonical value.
+/// OpenRouter provider sorting and model routing variants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sort {
     Price,
     Throughput,
     Latency,
+    Nitro,
+    Floor,
 }
 impl Sort {
     pub fn as_str(self) -> &'static str {
@@ -37,6 +37,15 @@ impl Sort {
             Self::Price => "price",
             Self::Throughput => "throughput",
             Self::Latency => "latency",
+            Self::Nitro => ":nitro",
+            Self::Floor => ":floor",
+        }
+    }
+
+    pub(crate) fn model_suffix(self) -> Option<&'static str> {
+        match self {
+            Self::Nitro | Self::Floor => Some(self.as_str()),
+            Self::Price | Self::Throughput | Self::Latency => None,
         }
     }
 }
@@ -105,9 +114,11 @@ impl ProviderRouting {
                     })
                 }
                 "sort" => routing.sort = Some(match value.as_str() {
-                    Some("price" | ":floor" | "floor") => Sort::Price,
-                    Some("throughput" | ":nitro" | "nitro") => Sort::Throughput,
+                    Some("price") => Sort::Price,
+                    Some("throughput") => Sort::Throughput,
                     Some("latency") => Sort::Latency,
+                    Some(":nitro" | "nitro") => Sort::Nitro,
+                    Some(":floor" | "floor") => Sort::Floor,
                     _ => return Err(Error::new(
                         "sort",
                         "must be \"price\", \"throughput\" or \"latency\" (or the :floor / :nitro shortcut)",
@@ -138,11 +149,8 @@ impl ProviderRouting {
         self == &Self::default()
     }
 
-    /// The `provider` object to send, or `None` when nothing is configured.
+    /// The `provider` object to send, or `None` when there are no provider fields.
     pub fn to_json(&self) -> Option<Value> {
-        if self.is_empty() {
-            return None;
-        }
         let mut object = Map::new();
         if let Some(zdr) = self.zdr {
             object.insert("zdr".to_string(), json!(zdr));
@@ -150,7 +158,7 @@ impl ProviderRouting {
         if let Some(data_collection) = self.data_collection {
             object.insert("data_collection".to_string(), json!(data_collection.as_str()));
         }
-        if let Some(sort) = self.sort {
+        if let Some(sort) = self.sort.filter(|sort| sort.model_suffix().is_none()) {
             object.insert("sort".to_string(), json!(sort.as_str()));
         }
         for (key, list) in [
@@ -165,7 +173,7 @@ impl ProviderRouting {
         if let Some(allow_fallbacks) = self.allow_fallbacks {
             object.insert("allow_fallbacks".to_string(), json!(allow_fallbacks));
         }
-        Some(Value::Object(object))
+        (!object.is_empty()).then_some(Value::Object(object))
     }
 
     /// The active preferences as one compact cell of the model view; `-` when none.
@@ -298,18 +306,22 @@ mod tests {
     }
 
     #[test]
-    fn sort_shortcuts_map_to_their_canonical_value() {
-        for (written, canonical) in [
-            (":nitro", "throughput"),
-            ("nitro", "throughput"),
-            ("throughput", "throughput"),
-            (":floor", "price"),
-            ("floor", "price"),
-            ("price", "price"),
-            ("latency", "latency"),
+    fn sort_shortcuts_select_a_model_suffix_without_sending_provider_sort() {
+        for (written, suffix) in [
+            (":nitro", ":nitro"),
+            ("nitro", ":nitro"),
+            (":floor", ":floor"),
+            ("floor", ":floor"),
         ] {
             let routing = ProviderRouting::parse(&json!({"sort":written})).unwrap();
-            assert_eq!(routing.to_json().unwrap(), json!({"sort":canonical}), "{written}");
+            assert_eq!(routing.sort.and_then(Sort::model_suffix), Some(suffix));
+            assert_eq!(routing.to_json(), None, "{written}");
+            assert_eq!(routing.describe(), format!("sort={suffix}"));
+        }
+        for sort in ["throughput", "price", "latency"] {
+            let routing = ProviderRouting::parse(&json!({"sort":sort})).unwrap();
+            assert_eq!(routing.sort.and_then(Sort::model_suffix), None);
+            assert_eq!(routing.to_json(), Some(json!({"sort":sort})));
         }
     }
 

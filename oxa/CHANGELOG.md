@@ -18,7 +18,7 @@
 
 ### Added
 
-- OpenRouter provider routing preferences (#887, O-384): `oxa.cloud.provider_routing` sets `zdr`, `data_collection` (`allow`/`deny`), `sort` (`price`/`throughput`/`latency`, with `:floor`/`:nitro` accepted as shortcuts), `order`, `only`/`ignore` and `allow_fallbacks` for every `openrouter` route, and `oxa.cloud.models.<name>.provider_routing` overrides them for one model. Every preference is passed through exactly as written; an unknown key, a wrong type or an unknown value is refused while the settings are read, before any credential or provider I/O, and `provider_routing` on a route that is not `openrouter` is refused the same way. `--list-models` shows the active preferences in its new `routing` column. See [settings.md](docs/pages/settings.md#native-cloud-gateway).
+- OpenRouter provider routing preferences (#887, O-384): `oxa.cloud.provider_routing` sets `zdr`, `data_collection` (`allow`/`deny`), `sort` (`price`/`throughput`/`latency`, with `:floor`/`:nitro` selecting the corresponding OpenRouter model suffixes), `order`, `only`/`ignore` and `allow_fallbacks` for every `openrouter` route, and `oxa.cloud.models.<name>.provider_routing` overrides them for one model. Preferences are sent to OpenRouter. An unknown key, a wrong type or an unknown value is refused while the settings are read, before any credential or provider I/O, and `provider_routing` on a route that is not `openrouter` is refused the same way. `--list-models` shows the active preferences in its new `routing` column. See [settings.md](docs/pages/settings.md#native-cloud-gateway).
 
 ## [0.2.0] - 2026-11-13
 
