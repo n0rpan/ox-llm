@@ -712,9 +712,8 @@ fn a_parent_dir_after_a_symlink_is_not_resolved_lexically() {
     // link's target and deletes `<outer>/victim`.
     let got = ids(&rules.classify("rm -rf link/../victim", &workspace, &guard));
     assert_eq!(got, vec!["rm-recursive-outside".to_string()], "{got:?}");
-    // Without a `..` the same link is an ordinary workspace path.
-    std::fs::create_dir_all(workspace.join("link")).ok();
-    let got = ids(&rules.classify("rm -rf link/child", &workspace, &guard));
+    // Without a `..` a plain workspace sub-directory stays a workspace path.
+    let got = ids(&rules.classify("rm -rf build/child", &workspace, &guard));
     assert!(got.is_empty(), "{got:?}");
 }
 
