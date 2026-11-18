@@ -89,8 +89,17 @@ impl TrustStore {
         let Some(approved) = self.approved.get(&key_string(&source)) else {
             return false;
         };
+        let config = worktree.join(names::PROJECT_DIR);
+        let extensions = config.join("extensions");
+        let mcp = config.join("mcp.json");
+        let settings = config.join("settings.json");
+        // The approval manifest does not bind executable dependencies loaded
+        // through these entry points. Inherit only resources the manifest covers.
         manifest(&worktree).into_iter().all(|(name, hash)| {
             let path = Path::new(&name);
+            if path == mcp || path.starts_with(&extensions) {
+                return false;
+            }
             let Ok(relative) = path.strip_prefix(&worktree) else {
                 // Parent resources are inherited only at an already approved absolute path.
                 return approved.get(&name) == Some(&hash);
@@ -100,6 +109,7 @@ impl TrustStore {
             path.canonicalize().ok().as_deref() == Some(path)
                 && original.canonicalize().ok().as_deref() == Some(original.as_path())
                 && original.to_str().and_then(|name| approved.get(name)) == Some(&hash)
+                && (path != settings || settings_allow_worktree_inheritance(path))
         })
     }
 
@@ -150,6 +160,23 @@ impl TrustStore {
         self.approved = approved;
         Ok(())
     }
+}
+
+/// A settings hash binds the declarations, but cannot bind the resources they
+/// reference. A managed worker can still use the approved source's done checks
+/// through the runner, which resolves and runs them in its existing sandbox.
+fn settings_allow_worktree_inheritance(path: &Path) -> bool {
+    let Some(serde_json::Value::Object(settings)) = std::fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+    else {
+        return false;
+    };
+    EXECUTABLE_SETTINGS
+        .iter()
+        .filter(|&&key| key != "done")
+        .filter_map(|key| settings.get(*key))
+        .all(|value| value.is_null() || value.as_array().is_some_and(Vec::is_empty))
 }
 
 /// B4: the approval state of a trusted project's executable files.
