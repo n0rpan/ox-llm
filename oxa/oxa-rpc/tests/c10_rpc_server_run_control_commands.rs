@@ -503,6 +503,45 @@ mod live_steering {
     }
 
     #[test]
+    fn held_steer_returns_explicit_stale_for_a_replaced_objective() {
+        let env = TestEnv::new();
+        let held = HeldRun::default();
+        let engine = held.engine(vec![ScriptTurn::text("first"), ScriptTurn::text("second")]);
+        let mut session = owner(&env, engine, "first");
+        let binding = session.inner().sref.clone();
+        let replaced = session.goal_revision();
+        let goal = Goal::new(
+            "Review the replacement objective".into(),
+            GoalBudget::default(),
+            11,
+        )
+        .unwrap();
+        session.set_goal(Some(goal), &mut NullSink).unwrap();
+        assert!(session.goal_revision() > replaced);
+        let mut rpc = Rpc::start(session, &env);
+        held.start(&mut rpc);
+        send(
+            &env,
+            &binding,
+            json!({
+                "method":"steer","id":"old-goal","revision":replaced,"text":TEXT
+            }),
+        );
+        assert_eq!(
+            receipt(&rpc, "old-goal", "queued"),
+            json!({"id":"old-goal","queued":true})
+        );
+        held.release();
+        assert_eq!(
+            receipt(&rpc, "old-goal", "appended"),
+            json!({"id":"old-goal","error":"goal_steer_stale"}),
+        );
+        rpc.agent_settled();
+        assert!(appended(&entries(&env, &binding)).is_none());
+        rpc.finish();
+    }
+
+    #[test]
     fn held_steer_rejects_a_changed_assignment() {
         for change_holder in [false, true] {
             let env = TestEnv::new();
