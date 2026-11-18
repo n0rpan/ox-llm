@@ -2,6 +2,8 @@
 use super::{queue::is_object_id, Action, Board, Entry};
 use std::collections::BTreeMap;
 
+const MIN_RETRY_SPACING_SECS: u64 = 30 * 60;
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Policy {
     pub enabled: bool,
@@ -31,7 +33,11 @@ impl RejectionCause<'_> {
 
 #[derive(Clone, Copy, Debug)]
 pub enum Retry<'a> {
-    Unused,
+    /// The caller has no authoritative receipt history for this PR head.
+    Unknown,
+    /// The owner has reconciled the retry ledger and verified the last
+    /// admission of this PR head. Sample time alone is insufficient.
+    Unused { last_admission_at: u64 },
     /// Durable retry receipt for this PR head. Group identities come from the
     /// queue observations before and after retry admission.
     Consumed {
@@ -89,6 +95,7 @@ pub enum Next {
     WaitNotification,
     WaitMain,
     WaitReconciliation,
+    WaitRetrySpacing,
     RetryExhausted,
     Enqueue,
     Retry,
@@ -187,15 +194,26 @@ impl Policy {
             (_, Queue::Queued { .. }) => Next::AlreadyQueued,
             _ if entry.action != Action::Ready || !entry.eligible => Next::WaitBoard,
             (_, Queue::Unknown) => Next::WaitQueue,
-            (_, Queue::Absent) if !main.is_empty() => Next::Enqueue,
+            (_, Queue::Absent) if is_object_id(main) => Next::Enqueue,
             (_, Queue::Absent) => Next::WaitReconciliation,
-            (_, Queue::Rejected(r)) if !r.matches_head(entry) || r.main.is_empty() || main.is_empty() => {
+            (_, Queue::Rejected(r))
+                if !r.matches_head(entry) || !is_object_id(r.main) || !is_object_id(main) =>
+            {
                 Next::WaitReconciliation
             }
             (_, Queue::Rejected(r)) if !r.notified || !r.cause.known() => Next::WaitNotification,
-            (_, Queue::Rejected(r)) if matches!(r.retry, Retry::Consumed { .. }) => Next::RetryExhausted,
-            (_, Queue::Rejected(r)) if r.main == main => Next::WaitMain,
-            (_, Queue::Rejected(_)) => Next::Retry,
+            (_, Queue::Rejected(r)) => match r.retry {
+                Retry::Unknown => Next::WaitReconciliation,
+                Retry::Consumed { .. } => Next::RetryExhausted,
+                Retry::Unused { last_admission_at } if last_admission_at == 0 || last_admission_at > now => {
+                    Next::WaitReconciliation
+                }
+                Retry::Unused { .. } if r.main == main => Next::WaitMain,
+                Retry::Unused { last_admission_at } if now - last_admission_at < MIN_RETRY_SPACING_SECS => {
+                    Next::WaitRetrySpacing
+                }
+                Retry::Unused { .. } => Next::Retry,
+            },
         };
         Plan {
             next,

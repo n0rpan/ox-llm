@@ -16,13 +16,15 @@ pub(crate) fn process(
     args: &[String],
     cwd: &Path,
     lock: &File,
-    github: bool,
+    gate: &File,
+    semantic_github: bool,
 ) -> Option<(i32, String)> {
     let mut command = Command::new(program);
     command.args(args).current_dir(cwd);
-    if github {
+    if semantic_github {
         command.env("GH_HOST", "github.com");
     }
+    oxa_work::inherit_report_lease(&mut command, gate).ok()?;
     oxa_work::command_runner_with_stdin(
         command,
         Some(1_048_576),
@@ -86,6 +88,26 @@ fn matches(note: &ProblemNote, candidate: &Value) -> bool {
         .collect();
     terms.len() >= 3 && terms.iter().all(|word| all.contains(word))
 }
+fn with_report_lease(
+    dirs: &Dirs,
+    mut run: impl FnMut(&str, &[String], &File) -> Option<(i32, String)>,
+    report: impl FnOnce(Runner<'_>) -> Result<ReportRecord, String>,
+) -> Result<ReportRecord, String> {
+    // Retain the queue's per-user reporting lease across every effect.
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::create_dir_all(&dirs.agent_dir).map_err(|e| e.to_string())?;
+    let gate = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(dirs.agent_dir.join("work-report.lock"))
+        .map_err(|e| e.to_string())?;
+    gate.lock().map_err(|e| e.to_string())?;
+    report(&mut |program, args| run(program, args, &gate))
+}
+
 pub(crate) fn report_semantic(
     note: &ProblemNote,
     origin: (&Record, &Path),
@@ -93,7 +115,7 @@ pub(crate) fn report_semantic(
     settings: &Settings,
     ctx: &ScrubCtx,
     confirm: Confirm<'_>,
-    runner: Runner<'_>,
+    run_command: impl FnMut(&str, &[String], &File) -> Option<(i32, String)>,
 ) -> Result<ReportRecord, String> {
     let (record, storage) = origin;
     let title = visible(&note.title);
@@ -109,32 +131,49 @@ pub(crate) fn report_semantic(
     key.update(record.id.as_bytes());
     let task = format!("{:x}", key.finalize());
     let occurrence = format!("Task: {task}\nWorker: oxa-work\nRun: {run}\n{notes}");
-    let (draft, _, _) = save_draft(&title, &occurrence, dirs, ctx, runner).map_err(|err| err.to_string())?;
-    let submission = report_cmd::submit_record(
-        &draft,
-        &report_cmd::report_ledger(dirs),
-        settings,
-        ctx,
-        confirm,
-        runner,
-        &mut std::io::sink(),
-    )
-    .map_err(|err| err.to_string())?;
-    let (disposition, url, detail) = match submission {
-        report_cmd::Submission::Created(url) => ("filed", Some(url), String::new()),
-        report_cmd::Submission::Commented(url) => ("existing_issue", Some(url), String::new()),
-        report_cmd::Submission::Local(reason) => ("local", None, reason),
-        report_cmd::Submission::Disabled => ("local", None, "issue reporting is not configured".into()),
-    };
-    Ok(ReportRecord {
-        disposition: disposition.into(),
-        draft,
-        url,
-        detail,
+    with_report_lease(dirs, run_command, |runner| {
+        let (draft, _, _) =
+            save_draft(&title, &occurrence, dirs, ctx, runner).map_err(|err| err.to_string())?;
+        let submission = report_cmd::submit_record(
+            &draft,
+            &report_cmd::report_ledger(dirs),
+            settings,
+            ctx,
+            confirm,
+            runner,
+            &mut std::io::sink(),
+        )
+        .map_err(|err| err.to_string())?;
+        let (disposition, url, detail) = match submission {
+            report_cmd::Submission::Created(url) => ("filed", Some(url), String::new()),
+            report_cmd::Submission::Commented(url) => ("existing_issue", Some(url), String::new()),
+            report_cmd::Submission::Local(reason) => ("local", None, reason),
+            report_cmd::Submission::Disabled => ("local", None, "issue reporting is not configured".into()),
+        };
+        Ok(ReportRecord {
+            disposition: disposition.into(),
+            draft,
+            url,
+            detail,
+        })
     })
 }
 
 pub(crate) fn report(
+    note: &ProblemNote,
+    dirs: &Dirs,
+    settings: &Settings,
+    ctx: &ScrubCtx,
+    offline: bool,
+    confirm: Confirm<'_>,
+    run: impl FnMut(&str, &[String], &File) -> Option<(i32, String)>,
+) -> Result<ReportRecord, String> {
+    with_report_lease(dirs, run, |runner| {
+        report_legacy(note, dirs, settings, ctx, offline, confirm, runner)
+    })
+}
+
+fn report_legacy(
     note: &ProblemNote,
     dirs: &Dirs,
     settings: &Settings,
@@ -343,7 +382,7 @@ mod tests {
         let env = TestEnv::new();
         let lock = File::open("/dev/null").unwrap();
         let args = words(&["-c", "1048577", "/dev/zero"]);
-        assert!(process("/usr/bin/head", &args, &env.work(), &lock, false).is_none());
+        assert!(process("/usr/bin/head", &args, &env.work(), &lock, &lock, false).is_none());
     }
 
     fn note() -> ProblemNote {
@@ -379,7 +418,7 @@ mod tests {
                 approved = true;
                 Some(false)
             },
-            &mut |program, _| {
+            |program, _, _| {
                 if program == "gh" {
                     calls += 1;
                 }
@@ -408,7 +447,7 @@ mod tests {
                 prompts.push(prompt.to_owned());
                 Some(true)
             },
-            &mut |program, args| {
+            |program, args: &[String], _: &File| {
                 if program != "gh" {
                     return Some((0, "{}".into()));
                 }
@@ -437,7 +476,7 @@ mod tests {
         let env = TestEnv::new();
         let dirs = Dirs::under(env.root());
         let mut log = vec![];
-        let mut runner = |program: &str, args: &[String]| {
+        let runner = |program: &str, args: &[String], _: &File| {
             if program != "gh" {
                 return Some((0, "{}".into()));
             }
@@ -457,7 +496,7 @@ mod tests {
             &ScrubCtx::default(),
             false,
             &mut |_| Some(true),
-            &mut runner,
+            runner,
         )
         .unwrap();
         assert_eq!(result.disposition, "existing_issue");
@@ -470,7 +509,7 @@ mod tests {
             let env = TestEnv::new();
             let dirs = Dirs::under(env.root());
             let mut gh_calls = 0;
-            let mut runner = |program: &str, _: &[String]| {
+            let runner = |program: &str, _: &[String], _: &File| {
                 if program == "gh" {
                     gh_calls += 1;
                     None
@@ -485,7 +524,7 @@ mod tests {
                 &ScrubCtx::default(),
                 offline,
                 &mut |_| Some(true),
-                &mut runner,
+                runner,
             )
             .unwrap();
             assert_eq!(result.disposition, "local");
@@ -498,7 +537,7 @@ mod tests {
     fn an_open_fixing_pr_prevents_issue_or_comment_writes() {
         let env = TestEnv::new();
         let dirs = Dirs::under(env.root());
-        let mut runner = |program: &str, args: &[String]| {
+        let runner = |program: &str, args: &[String], _: &File| {
             if program != "gh" {
                 return Some((0, "{}".into()));
             }
@@ -523,7 +562,7 @@ mod tests {
             &ScrubCtx::default(),
             false,
             &mut |_| Some(true),
-            &mut runner,
+            runner,
         )
         .unwrap();
         assert_eq!(result.disposition, "existing_pr");
@@ -535,7 +574,7 @@ mod tests {
         let mut n = note();
         n.notes = "Synthetic reproduction token=example at /home/synthetic/project with user@example.invalid"
             .into();
-        let mut runner = |program: &str, args: &[String]| {
+        let runner = |program: &str, args: &[String], _: &File| {
             if program != "gh" {
                 return Some((0, "{}".into()));
             }
@@ -553,7 +592,7 @@ mod tests {
             &ScrubCtx::default(),
             false,
             &mut |_| Some(true),
-            &mut runner,
+            runner,
         )
         .unwrap();
         assert_eq!(result.disposition, "filed");

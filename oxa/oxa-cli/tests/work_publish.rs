@@ -700,6 +700,11 @@ fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
   'issue view')
     printf '%s' '{"number":2,"title":"Original symptom","body":"Original failure","labels":[]}' ;;
   'issue create')
+    for fd in /proc/self/fd/*; do
+      if test "$fd" -ef "$HOME/.oxa/agent/work-report.lock"; then
+        touch "$HOME/report-lease-inherited"
+      fi
+    done
     printf '%s' 'https://github.com/example/project/issues/2' ;;
   'issue comment')
     printf '%s' 'https://github.com/example/project/issues/2#issuecomment-3' ;;
@@ -744,6 +749,8 @@ fn semantic_work_reports_file_once_and_comment_on_four_paraphrases() {
         assert_eq!(report["disposition"], "existing_issue", "{record}");
     }
     assert_eq!(requests.len(), 6);
+    #[cfg(target_os = "linux")]
+    assert!(env.home().join("report-lease-inherited").is_file());
     let calls = fs::read_to_string(env.home().join("gh-calls")).unwrap();
     assert_eq!(
         calls
