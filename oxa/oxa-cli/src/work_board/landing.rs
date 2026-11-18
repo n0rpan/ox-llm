@@ -10,6 +10,8 @@ use oxa_work::shadow::{LandingDecision, QueueObservation};
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt::Write};
 
+pub(super) mod report;
+
 const BATCH: usize = 8;
 
 pub(super) fn review_decisions(

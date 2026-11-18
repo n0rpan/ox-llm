@@ -4,6 +4,8 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+pub mod report;
+
 const BATCH: usize = 8;
 const MAX_PRS: usize = 1000;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -18,6 +20,8 @@ pub struct RejectionEvidence {
     failed_required_check_runs: Vec<u64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     failed_required_workflows: BTreeMap<u64, WorkflowIdentity>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    verified_test_reports: Vec<report::VerifiedReports>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -212,6 +216,7 @@ fn rejection(row: &Value, entry: &Entry, queue_id: &str) -> Result<Option<Reject
             .into_iter()
             .filter_map(|(id, workflow)| workflow.map(|workflow| (id, workflow)))
             .collect(),
+        verified_test_reports: Vec::new(),
     }))
 }
 

@@ -18,6 +18,22 @@ and verified merge-group rejection evidence in `queue_rejections`, including the
 removal event time.
 Use `--queue-evidence` to record only the rejection evidence alongside the board.
 
+To verify the provenance of test-report archives, pass `--queue-report-policy FILE` with an owner-only
+JSON file in a private directory. Set the trusted workflow path, the exact names
+of required checks that consume those reports, and every JUnit producer and artifact.
+
+```json
+{
+  "workflow_path": ".github/workflows/checks.yml",
+  "required_check_names": ["workspace test gate"],
+  "reports": [{"producer_name": "Workspace shard 1", "artifact_name": "test-report-1"}]
+}
+```
+
+That option also enables queue evidence. The shadow journal records the checked
+run, attempt, required check IDs, and SHA-256 digests after verifying every
+configured archive for that attempt.
+
 Limit: 100 PRs/items per connection. Reported checks are matched against the base's
 classic protection and active repository/organization rulesets; missing required
 contexts and unknown/no required checks stay pending. Review

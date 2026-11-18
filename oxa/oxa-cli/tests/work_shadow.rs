@@ -52,6 +52,10 @@ if [ -e oversized ]; then
   exit 0
 fi
 case "$*" in
+  *'actions/runs/61/attempts/1/jobs?per_page=100'*) cat report-jobs.json ;;
+  *'actions/runs/61/attempts/1'*) cat report-attempt.json ;;
+  *'actions/runs/61/artifacts?per_page=100'*) cat report-artifacts.json ;;
+  *'actions/artifacts/71/zip'*) printf 'read\n' >> report-reads; cat report.zip ;;
   *'enqueuedAt headCommit'*) cat queue-state.json ;;
   *'comments(last:100)'*) cat review.json ;;
   *'REMOVED_FROM_MERGE_QUEUE_EVENT'*) printf 'read\n' >> queue-calls; cat queue.json ;;
@@ -736,12 +740,8 @@ fn opt_in_review_policy_observes_pinned_diff_and_authenticated_reviews() {
     }
 }
 
-#[test]
-fn real_shadow_cli_records_exact_queue_evidence_only_when_opted_in() {
-    use serde_json::{json, Value};
-    let (env, _) = fixture();
-    let group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    let queue = json!({"data":{"repository":{
+fn queue_rejection(group: &str) -> serde_json::Value {
+    serde_json::json!({"data":{"repository":{
         "mergeQueue":{"id":"queue-1"},
         "p42":{
             "number":42,"headRefOid":"synthetic-head","state":"OPEN","baseRefName":"main",
@@ -756,7 +756,15 @@ fn real_shadow_cli_records_exact_queue_evidence_only_when_opted_in() {
                 }}
             }]}
         }
-    }}});
+    }}})
+}
+
+#[test]
+fn real_shadow_cli_records_exact_queue_evidence_only_when_opted_in() {
+    use serde_json::{json, Value};
+    let (env, _) = fixture();
+    let group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let queue = queue_rejection(group);
     fs::write(env.work().join("queue.json"), queue.to_string()).unwrap();
 
     let args = "work board --shadow --repo example/repo --once";
@@ -793,6 +801,116 @@ fn real_shadow_cli_records_exact_queue_evidence_only_when_opted_in() {
             "removed_at":"2026-01-01T00:00:01Z",
             "failed_required_check_runs":[11]
         }])
+    );
+}
+
+#[test]
+fn report_policy_records_only_archives_verified_for_all_required_failed_checks() {
+    use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
+    let (env, _) = fixture();
+    let group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let workflow_path = ".github/workflows/checks.yml";
+    let mut queue = queue_rejection(group);
+    let contexts = queue
+        .pointer_mut("/data/repository/p42/timelineItems/nodes/0/beforeCommit/statusCheckRollup/contexts")
+        .unwrap();
+    contexts["nodes"][0]["checkSuite"] = json!({
+        "databaseId":51,"commit":{"oid":group},
+        "workflowRun":{"databaseId":61,"event":"merge_group","runAttempt":1}
+    });
+    let mut second = contexts["nodes"][0].clone();
+    second["databaseId"] = 12.into();
+    contexts["nodes"].as_array_mut().unwrap().push(second);
+    contexts["totalCount"] = 2.into();
+    let write = |file: &str, value: Value| {
+        fs::write(env.work().join(file), value.to_string()).unwrap();
+    };
+    write("queue.json", queue);
+    write(
+        "report-attempt.json",
+        json!({"id":61,"run_attempt":1,"check_suite_id":51,"head_sha":group,
+        "event":"merge_group","status":"completed","path":workflow_path,"run_started_at":"2025-12-31T23:59:40Z"}),
+    );
+    write(
+        "report-jobs.json",
+        json!({"total_count":3,"jobs":[
+            {"id":11,"name":"Test aggregate","run_id":61,"run_attempt":1,"head_sha":group,
+             "status":"completed","conclusion":"failure","completed_at":"2026-01-01T00:00:00Z"},
+            {"id":12,"name":"Gate","run_id":61,"run_attempt":1,"head_sha":group,
+             "status":"completed","conclusion":"failure","completed_at":"2026-01-01T00:00:00Z"},
+            {"id":21,"name":"Test shard","run_id":61,"run_attempt":1,"head_sha":group,
+             "status":"completed","started_at":"2025-12-31T23:59:50Z",
+             "completed_at":"2025-12-31T23:59:58Z"}
+        ]}),
+    );
+    let policy = env.write(
+        "tmp/report-policy.json",
+        &json!({
+            "workflow_path":workflow_path,
+            "required_check_names":["Test aggregate","Gate"],
+            "reports":[{"producer_name":"Test shard","artifact_name":"report-1"}]
+        })
+        .to_string(),
+    );
+    fs::set_permissions(&policy, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let bytes = b"synthetic opaque report bytes";
+    fs::write(env.work().join("report.zip"), bytes).unwrap();
+    let digest = format!("{:x}", Sha256::digest(bytes));
+    let listing = |sha256: &str| {
+        json!({"total_count":1,"artifacts":[{"id":71,"name":"report-1",
+        "size_in_bytes":bytes.len(),"digest":format!("sha256:{sha256}"),"expired":false,
+        "created_at":"2025-12-31T23:59:57Z","updated_at":"2025-12-31T23:59:57Z",
+        "workflow_run":{"id":61,"head_sha":group}}]})
+    };
+    write("report-artifacts.json", listing(&digest));
+    let args = format!(
+        "work board --shadow --repo example/repo --once --queue-report-policy {}",
+        policy.display()
+    );
+    let result = invoke(&env, &args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let log = log_for(&env, "example/repo");
+    let saved = fs::read_to_string(&log).unwrap();
+    let sample: Value = serde_json::from_str(saved.trim()).unwrap();
+    assert_eq!(
+        sample["queue_rejections"][0]["verified_test_reports"],
+        json!([{
+            "failed_check_runs":[11,12],"workflow_run":61,"run_attempt":1,
+            "archives":[{"id":71,"sha256":digest}]
+        }])
+    );
+    assert_eq!(
+        fs::read_to_string(env.work().join("report-reads")).unwrap(),
+        "read\n"
+    );
+
+    write("report-artifacts.json", listing(&"0".repeat(64)));
+    let result = invoke(&env, &args);
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("GitHub test archive digest mismatch"));
+    assert_eq!(fs::read_to_string(&log).unwrap(), saved);
+
+    let job_path = env.work().join("report-jobs.json");
+    let mut jobs: Value = serde_json::from_str(&fs::read_to_string(job_path).unwrap()).unwrap();
+    jobs["jobs"][1]["name"] = "Unrelated check".into();
+    write("report-jobs.json", jobs);
+    let result = invoke(&env, &args);
+    assert!(result.status.success());
+    let updated = fs::read_to_string(log).unwrap();
+    assert!(updated.starts_with(&saved));
+    let sample: Value = serde_json::from_str(updated.lines().last().unwrap()).unwrap();
+    assert!(sample["queue_rejections"][0]
+        .get("verified_test_reports")
+        .is_none());
+    assert_eq!(
+        fs::read_to_string(env.work().join("report-reads")).unwrap(),
+        "read\nread\n"
     );
 }
 

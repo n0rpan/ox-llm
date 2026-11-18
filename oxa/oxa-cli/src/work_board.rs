@@ -157,20 +157,8 @@ impl<'a> Reader<'a> {
         let invalid = QueryError::Other;
         let (owner, name) = self.repo.split_once('/').ok_or(invalid("expected OWNER/REPO"))?;
         let query = format!("query{{repository(owner:{owner:?},name:{name:?}){{{fields}}}}}");
-        let mut command = Command::new(self.gh);
-        command
-            .env("PATH", self.path)
-            .env("GH_TOKEN", self.token)
-            .env_remove("GH_DEBUG")
-            .args([
-                "api",
-                "--include",
-                "--hostname",
-                "github.com",
-                "graphql",
-                "-f",
-                &format!("query={query}"),
-            ]);
+        let mut command = self.api_command();
+        command.args(["--include", "graphql", "-f", &format!("query={query}")]);
         let (code, text) = oxa_work::command_runner(command, Some(MAX_RESPONSE), oxa_work::COMMAND_DEADLINE)
             .ok_or(invalid(
                 "GitHub read failed, exceeded its byte limit or timed out",
@@ -208,6 +196,16 @@ impl<'a> Reader<'a> {
             .cloned()
             .ok_or(invalid("missing GitHub repository"))?;
         Ok((repository, text.len()))
+    }
+
+    fn api_command(&self) -> Command {
+        let mut command = Command::new(self.gh);
+        command
+            .env("PATH", self.path)
+            .env("GH_TOKEN", self.token)
+            .env_remove("GH_DEBUG")
+            .args(["api", "--hostname", "github.com"]);
+        command
     }
 }
 
@@ -428,10 +426,11 @@ pub(crate) fn run(
     // Existing parser declaration; migrate command/flag metadata together in #1062.
     let (repo, options) = match args {
         [shadow, flag, repo, options @ ..] if shadow == "--shadow" && flag == "--repo" => (repo, options),
-        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--review-policy FILE] [--queue-evidence] [--landing-shadow]".into()),
+        _ => return Err("usage: oxa work board --shadow --repo OWNER/REPO [--once] [--token-stdin] [--review-policy FILE] [--queue-evidence] [--landing-shadow] [--queue-report-policy FILE]".into()),
     };
     let (mut once, mut streamed, mut review_file) = (false, false, None);
     let (mut queue_evidence, mut landing_shadow) = (false, false);
+    let mut report_file = None;
     let mut options = options.iter();
     while let Some(option) = options.next() {
         match option.as_str() {
@@ -439,6 +438,9 @@ pub(crate) fn run(
             "--token-stdin" => streamed = true,
             "--queue-evidence" => queue_evidence = true,
             "--landing-shadow" => landing_shadow = true,
+            "--queue-report-policy" if report_file.is_none() => {
+                report_file = Some(options.next().ok_or("missing queue report policy file")?);
+            }
             "--review-policy" if review_file.is_none() => {
                 review_file = Some(options.next().ok_or("missing board review policy file")?);
             }
@@ -467,6 +469,9 @@ pub(crate) fn run(
     }
     let review_settings = review_file
         .map(|path| review::Settings::read(Path::new(path)))
+        .transpose()?;
+    let mut report_settings = report_file
+        .map(|path| landing::report::Settings::read(Path::new(path)))
         .transpose()?;
     let inherited = env.get("GH_TOKEN").filter(|s| !s.is_empty());
     if !streamed && inherited.is_none() {
@@ -514,11 +519,14 @@ pub(crate) fn run(
                 Board::read(&mut reader, &board_policy, &BTreeMap::new(), now)
                     .map(|board| (board, BTreeMap::new()))
             }?;
-            let queue_rejections = if queue_evidence || landing_shadow {
+            let mut queue_rejections = if queue_evidence || landing_shadow || report_settings.is_some() {
                 oxa_work::board::queue::read(&board, |fields| reader.repository_read(fields))?
             } else {
                 Vec::new()
             };
+            if let Some(settings) = &mut report_settings {
+                reader.sample_test_reports(&mut queue_rejections, settings)?;
+            }
             let (landing, landing_main) = if landing_shadow {
                 landing::review_decisions(&reader, &board)?
             } else {
