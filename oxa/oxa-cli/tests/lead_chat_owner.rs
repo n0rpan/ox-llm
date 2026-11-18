@@ -227,6 +227,8 @@ try:
     wait_for(b'READY')
     busy = subprocess.run([sys.argv[1], 'lead', '-p', 'Do not overlap.'], capture_output=True, timeout=10)
     assert busy.returncode != 0 and b'busy' in busy.stderr, busy.stderr
+    os.write(master, b'/clone\r')
+    wait_for(b'attached to its dedicated session')
     os.write(master, b'Terminal follow-up.\r')
     wait_for(b'Interactive reply')
     child.send_signal(signal.SIGHUP)

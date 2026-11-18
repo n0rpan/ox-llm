@@ -1708,6 +1708,7 @@ fn run_tui(
     let settings = built.settings.clone();
     let store = built.store.clone();
     let base = built.clone();
+    let pinned = owner.is_some();
     let reopen: ReopenFn = Box::new(move |request, carry| {
         if let Some(binding) = &owner {
             if !matches!(&request, Reopen::Resume(session) if session == binding.session_ref()) {
@@ -1782,7 +1783,11 @@ fn run_tui(
         engine_status: None,
         yolo: Some(yolo),
     };
-    let result = run_interactive(session, opts);
+    let result = if pinned {
+        oxa_interactive::run_pinned(session, opts)
+    } else {
+        run_interactive(session, opts)
+    };
     let result = match &built.status {
         Some(status) => status.finish_interactive(result, stderr),
         None => result,
