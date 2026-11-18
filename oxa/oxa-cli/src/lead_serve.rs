@@ -1,5 +1,8 @@
 //! Minimal local board caller. Transport, policy, peer proof and rendering stay shared.
+use crate::dispatch::LeadOwnerBinding;
 use crate::lead_access::{self, proxy, Config, IdentityProvider, Mode, VerifiedIdentity};
+use crate::lead_chat::conversation::ConversationReply;
+use crate::lead_http::{OwnerForm, OwnerSubmission};
 use oxa_config::{Dirs, Env};
 use oxa_proto::{codes, OxaError};
 use std::{
@@ -7,6 +10,7 @@ use std::{
     net::{TcpListener, TcpStream},
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -44,7 +48,7 @@ fn authorized(
         },
     };
     if request.method == "POST" {
-        return lead_access::fixed_prompt(config, peer.ip(), request, &proof);
+        return lead_access::chat_post(config, peer.ip(), request, &proof);
     }
     lead_access::read_only(
         config,
@@ -58,10 +62,64 @@ fn authorized(
     .is_ok()
 }
 
+struct ChatReply {
+    reply: ConversationReply,
+    proposal: Option<(String, serde_json::Value)>,
+    confirmed: bool,
+}
+
+struct OwnerChat {
+    binding: LeadOwnerBinding,
+    csrf: String,
+    latest: Mutex<Option<ChatReply>>,
+}
+
+impl OwnerChat {
+    fn post(&self, submission: OwnerSubmission, env: &Env) -> Result<(), &'static str> {
+        let mut state = self.latest.try_lock().map_err(|_| "409 Conflict")?;
+        self.binding.recheck().map_err(|_| "503 Service Unavailable")?;
+        match submission {
+            OwnerSubmission::Message(message) => {
+                let reply = crate::lead_chat::converse_bound(&message, &self.binding, env)
+                    .map_err(|_| "503 Service Unavailable")?;
+                self.binding.recheck().map_err(|_| "503 Service Unavailable")?;
+                let proposal = reply.action.as_ref().map(proposal_for_confirmation).transpose()?;
+                *state = Some(ChatReply {
+                    reply,
+                    proposal,
+                    confirmed: false,
+                });
+            }
+            OwnerSubmission::Confirm(id) => {
+                let current = state.as_mut().ok_or("409 Conflict")?;
+                let (expected, proposal) = current.proposal.as_ref().ok_or("409 Conflict")?;
+                if id != *expected || current.confirmed {
+                    return Err("409 Conflict");
+                }
+                self.binding
+                    .record_confirmation(&id, proposal.clone())
+                    .map_err(|_| "503 Service Unavailable")?;
+                current.confirmed = true;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn proposal_for_confirmation(
+    draft: &crate::lead_chat::conversation::ProposedAction,
+) -> Result<(String, serde_json::Value), &'static str> {
+    let unavailable = "503 Service Unavailable";
+    let id = oxa_mcp::pkce_pair(&oxa_mcp::random_bytes().map_err(|_| unavailable)?).0;
+    let proposal = serde_json::to_value(draft).map_err(|_| unavailable)?;
+    Ok((id, proposal))
+}
+
 struct Source {
     uid: u32,
     board: Option<PathBuf>,
     form: Option<crate::lead_http::FixedForm>,
+    owner: Option<Arc<OwnerChat>>,
 }
 impl Source {
     fn new(env: &Env, uid: u32) -> Result<Self, OxaError> {
@@ -73,6 +131,7 @@ impl Source {
             uid,
             board,
             form: None,
+            owner: None,
         })
     }
 
@@ -89,7 +148,19 @@ impl Source {
         let github_quotas = sample.as_ref().and_then(|(board, app_quota)| {
             crate::lead_quota::GitHubQuotas::from_app_sample((*app_quota)?, board.observed_at, now)
         });
+        let owner = self.owner.as_ref().filter(|owner| {
+            matches!(page, crate::lead_page::Page::Chat(_)) && owner.binding.recheck().is_ok()
+        });
+        let latest = owner.and_then(|owner| owner.latest.try_lock().ok());
         let view = crate::lead_page::View {
+            owner_chat: owner
+                .zip(latest.as_deref())
+                .map(|(owner, latest)| crate::lead_page::OwnerChatView {
+                    csrf: &owner.csrf,
+                    reply: latest.as_ref().map(|latest| &latest.reply),
+                    proposal: latest.as_ref().and_then(|latest| latest.proposal.as_ref()),
+                    confirmed: latest.as_ref().is_some_and(|latest| latest.confirmed),
+                }),
             board: sample.as_ref().map(|(board, _)| board),
             github_quotas: github_quotas.as_ref(),
             fixed_prompt_csrf: self.form.as_ref().map(|form| form.csrf.as_str()),
@@ -127,6 +198,26 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
             },
         });
     }
+    let owner = if config.owner_chat() {
+        let project = cwd
+            .canonicalize()
+            .map_err(|_| invalid("Lead project unavailable"))?;
+        let binding = LeadOwnerBinding::load(dirs, &project, uid)?
+            .ok_or_else(|| invalid("Lead owner chat needs its selected Session"))?;
+        let chat = Arc::new(OwnerChat {
+            binding,
+            csrf: oxa_mcp::pkce_pair(&oxa_mcp::random_bytes()?).0,
+            latest: Mutex::new(None),
+        });
+        source.owner = Some(chat.clone());
+        let env = env.clone();
+        Some(OwnerForm {
+            csrf: chat.csrf.clone(),
+            post: Arc::new(move |submission| chat.post(submission, &env)),
+        })
+    } else {
+        None
+    };
     let form = source.form.clone();
     let listener = TcpListener::bind(config.endpoint()).map_err(|_| invalid("cannot bind lead endpoint"))?;
     writeln!(out, "lead board: listening on configured loopback endpoint")
@@ -137,6 +228,7 @@ pub fn run(dirs: &Dirs, cwd: &Path, env: &Env, out: &mut dyn Write) -> Result<i3
         move |stream, request| authorized(&config, uid, stream, request),
         move |page, fragment| source.render(page, fragment),
         form,
+        owner,
     )
     .map_err(|_| invalid("lead listener failed"))?;
     Ok(0)
@@ -147,6 +239,97 @@ mod tests {
     use super::*;
     use oxa_fake::TestEnv;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn owner_chat_records_only_the_displayed_proposal_and_renders_text() {
+        use oxa_fake::{FakeOpts, FakeServer, ScriptTurn};
+        use oxa_session::SessionStore;
+
+        let test = TestEnv::new();
+        let dirs = Dirs::under(test.root());
+        let project = test.work().canonicalize().unwrap();
+        let uid = std::fs::metadata(&project).unwrap().uid();
+        let fake = FakeServer::start(vec![ScriptTurn::text(
+            r#"{"text":"fixture <b>reply</b>","facts":[],"action":{"kind":"rule","rule":"note","scope":{"kind":"repository"},"value":{"kind":"text","value":"fixture note"}}}"#,
+        )], FakeOpts::default()).unwrap();
+        let pairs = test.envs(&fake.url());
+        let borrowed: Vec<_> = pairs
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        let env = Env::from_pairs(&borrowed);
+        std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let id = LeadOwnerBinding::create(&dirs, &project, uid).unwrap();
+        let settings = dirs.settings_file();
+        std::fs::write(
+            &settings,
+            serde_json::json!({"oxa":{"lead":{"sessionId":id}}}).to_string(),
+        )
+        .unwrap();
+        std::fs::set_permissions(&settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let owner = Arc::new(OwnerChat {
+            binding: LeadOwnerBinding::load(&dirs, &project, uid).unwrap().unwrap(),
+            csrf: "fixture".into(),
+            latest: Mutex::new(None),
+        });
+        let mut source = Source::new(&env, uid).unwrap();
+        source.owner = Some(owner.clone());
+        {
+            let _busy = owner.latest.lock().unwrap();
+            assert_eq!(
+                owner.post(OwnerSubmission::Message("blocked".into()), &env),
+                Err("409 Conflict")
+            );
+        }
+        owner
+            .post(OwnerSubmission::Message("/goal is literal".into()), &env)
+            .unwrap();
+        let page = crate::lead_page::Page::Chat(crate::lead_page::Prompt::Status);
+        let html = source.render(page, false);
+        assert!(html.contains("fixture &lt;b&gt;reply&lt;/b&gt;"));
+        assert!(!html.contains("fixture <b>reply</b>"));
+        assert!(html.contains("Confirm proposal"));
+        assert_eq!(
+            owner.post(OwnerSubmission::Confirm("wrong".into()), &env),
+            Err("409 Conflict")
+        );
+        let store = oxa_session::FsStore::new(dirs.sessions_dir.clone());
+        let selected = store.resolve(&id).unwrap();
+        let before = store.load(&selected).unwrap();
+        let proposal_id = owner
+            .latest
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .proposal
+            .as_ref()
+            .unwrap()
+            .0
+            .clone();
+        owner
+            .post(OwnerSubmission::Confirm(proposal_id.clone()), &env)
+            .unwrap();
+        assert_eq!(
+            owner.post(OwnerSubmission::Confirm(proposal_id.clone()), &env),
+            Err("409 Conflict")
+        );
+        let after = store.load(&selected).unwrap();
+        assert_eq!(after.len(), before.len() + 1);
+        assert!(
+            matches!(&after.last().unwrap().body, oxa_proto::EntryBody::Custom { custom_type, data } if custom_type == "oxa.lead.proposal_confirmed" && data["proposal_id"] == proposal_id)
+        );
+        assert!(source
+            .render(page, true)
+            .contains("Confirmation recorded. Application is pending."));
+        assert_eq!(
+            fake.requests()
+                .iter()
+                .filter(|request| request.max_tokens > 0)
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn request_proof_composes_actual_kernel_owner_and_unchanged_authority() {
