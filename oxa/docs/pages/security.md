@@ -119,8 +119,8 @@ When a dangerous command asks, the prompt offers four answers:
 To change the rules, set `oxa.approval.dangerous` in your user settings. It is user settings only, and a project file cannot set it.
 
 - `[]` (the default) is every built-in rule.
-- `+id` adds a built-in rule, `-id` removes one, and `cmd:<words>` adds a rule for a command. For example, `["-sudo", "cmd:terraform destroy"]` drops the `sudo` rule and asks before `terraform destroy`.
-- A list of plain ids, with no `+` or `-`, replaces the built-in set.
+- `+id` adds a built-in rule, `-id` removes one, and `+cmd:<words>` adds a rule for a command. For example, `["-sudo", "+cmd:terraform destroy"]` drops the `sudo` rule, keeps the others and asks before `terraform destroy`.
+- A plain entry (an id or `cmd:<words>` with no `+` or `-`) replaces the built-in set: `["cmd:terraform destroy"]` turns every built-in rule off and keeps only that one.
 
 Unknown entries are ignored, with a warning.
 

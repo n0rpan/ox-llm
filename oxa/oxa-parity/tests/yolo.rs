@@ -403,7 +403,12 @@ fn auto_bash_keeps_session_scratch_between_commands() {
         FakeOpts::default(),
     )
     .unwrap();
-    let out = run_oxa(&env, &srv.url(), &["-p", "--auto", "--sandbox", "save then load"], "");
+    let out = run_oxa(
+        &env,
+        &srv.url(),
+        &["-p", "--auto", "--sandbox", "save then load"],
+        "",
+    );
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let reqs = srv.requests();
     let result = reqs
