@@ -1,18 +1,28 @@
 //! The report-issue workflow for an explicit user-launched --report-problems run.
 //! Normal `report-issue submit` retains its controlling-terminal confirmation.
-use crate::report_cmd::{clean_notes, report_repo, save_draft, scrub, Confirm, Runner, ScrubCtx};
+use crate::report_cmd::{self, clean_notes, report_repo, save_draft, scrub, Confirm, Runner, ScrubCtx};
 use oxa_config::{Dirs, Settings};
-use oxa_work::{ProblemNote, ReportRecord};
+use oxa_work::{ProblemNote, Record, ReportRecord};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     path::Path,
     process::{Command, Stdio},
 };
 
-pub(crate) fn process(program: &str, args: &[String], cwd: &Path, lock: &File) -> Option<(i32, String)> {
+pub(crate) fn process(
+    program: &str,
+    args: &[String],
+    cwd: &Path,
+    lock: &File,
+    github: bool,
+) -> Option<(i32, String)> {
     let mut command = Command::new(program);
     command.args(args).current_dir(cwd);
+    if github {
+        command.env("GH_HOST", "github.com");
+    }
     oxa_work::command_runner_with_stdin(
         command,
         Some(1_048_576),
@@ -76,6 +86,54 @@ fn matches(note: &ProblemNote, candidate: &Value) -> bool {
         .collect();
     terms.len() >= 3 && terms.iter().all(|word| all.contains(word))
 }
+pub(crate) fn report_semantic(
+    note: &ProblemNote,
+    origin: (&Record, &Path),
+    dirs: &Dirs,
+    settings: &Settings,
+    ctx: &ScrubCtx,
+    confirm: Confirm<'_>,
+    runner: Runner<'_>,
+) -> Result<ReportRecord, String> {
+    let (record, storage) = origin;
+    let title = visible(&note.title);
+    let notes = visible(&note.notes);
+    let run = record.session_id.as_deref().unwrap_or_default();
+
+    // Use the protected project and task identity for caps, and the saved native
+    // session for occurrence attribution. The local work runner shares one daily
+    // allowance across invocations. Worker text supplies only symptom and evidence.
+    let mut key = Sha256::new();
+    key.update(storage.as_os_str().as_encoded_bytes());
+    key.update([0]);
+    key.update(record.id.as_bytes());
+    let task = format!("{:x}", key.finalize());
+    let occurrence = format!("Task: {task}\nWorker: oxa-work\nRun: {run}\n{notes}");
+    let (draft, _, _) = save_draft(&title, &occurrence, dirs, ctx, runner).map_err(|err| err.to_string())?;
+    let submission = report_cmd::submit_record(
+        &draft,
+        &report_cmd::report_ledger(dirs),
+        settings,
+        ctx,
+        confirm,
+        runner,
+        &mut std::io::sink(),
+    )
+    .map_err(|err| err.to_string())?;
+    let (disposition, url, detail) = match submission {
+        report_cmd::Submission::Created(url) => ("filed", Some(url), String::new()),
+        report_cmd::Submission::Commented(url) => ("existing_issue", Some(url), String::new()),
+        report_cmd::Submission::Local(reason) => ("local", None, reason),
+        report_cmd::Submission::Disabled => ("local", None, "issue reporting is not configured".into()),
+    };
+    Ok(ReportRecord {
+        disposition: disposition.into(),
+        draft,
+        url,
+        detail,
+    })
+}
+
 pub(crate) fn report(
     note: &ProblemNote,
     dirs: &Dirs,
@@ -285,7 +343,7 @@ mod tests {
         let env = TestEnv::new();
         let lock = File::open("/dev/null").unwrap();
         let args = words(&["-c", "1048577", "/dev/zero"]);
-        assert!(process("/usr/bin/head", &args, &env.work(), &lock).is_none());
+        assert!(process("/usr/bin/head", &args, &env.work(), &lock, false).is_none());
     }
 
     fn note() -> ProblemNote {

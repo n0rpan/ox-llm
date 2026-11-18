@@ -347,12 +347,26 @@ pub(crate) fn run(
                     if reports && !record.worktree.as_os_str().is_empty() {
                         let settings = oxa_config::Settings::load(dirs, &root, false);
                         let ctx = crate::report_cmd::ScrubCtx::from_env(env, dirs);
+                        let semantic = crate::report_cmd::semantic_reporting(&settings);
                         record = oxa_work::report_notes(
                             plan.task(),
                             &policy,
                             &|_: &oxa_work::Record| Ok(()),
-                            &mut |note, lock, offline| {
+                            &mut |note, saved, lock, offline| {
                                 let mut runner = |program: &str, args: &[String]| {
+                                    if offline {
+                                        return None;
+                                    }
+                                    if semantic && program == "oxa" {
+                                        return crate::report_cmd::judge_report(
+                                            args.first()?,
+                                            dirs,
+                                            &settings,
+                                            env,
+                                        )
+                                        .map(|reply| (0, reply));
+                                    }
+                                    let semantic_github = semantic && program == "gh";
                                     let executable = crate::netguard::trusted_executable_for(
                                         program,
                                         Some(policy.host_path.as_os_str()),
@@ -362,17 +376,30 @@ pub(crate) fn run(
                                     crate::work_reports::process(
                                         &executable.to_string_lossy(),
                                         args,
-                                        &root,
+                                        if semantic_github { &dirs.home } else { &root },
                                         lock,
+                                        semantic_github,
                                     )
                                 };
+                                let mut confirm = crate::report_cmd::tty_confirm(env);
+                                if semantic && !offline {
+                                    return crate::work_reports::report_semantic(
+                                        note,
+                                        (saved, &policy.storage),
+                                        dirs,
+                                        &settings,
+                                        &ctx,
+                                        &mut confirm,
+                                        &mut runner,
+                                    );
+                                }
                                 crate::work_reports::report(
                                     note,
                                     dirs,
                                     &settings,
                                     &ctx,
                                     offline,
-                                    &mut crate::report_cmd::tty_confirm(env),
+                                    &mut confirm,
                                     &mut runner,
                                 )
                             },

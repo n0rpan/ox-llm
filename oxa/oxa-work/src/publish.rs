@@ -395,7 +395,7 @@ pub fn report_notes(
     task: &Task,
     policy: &RunPolicy,
     observer: &dyn CheckpointObserver,
-    reporter: &mut dyn FnMut(&super::ProblemNote, &File, bool) -> Result<super::ReportRecord>,
+    reporter: &mut impl FnMut(&super::ProblemNote, &Record, &File, bool) -> Result<super::ReportRecord>,
 ) -> Result<Record> {
     let (mut writer, lock, mut value) = context(task, policy, observer)?;
     let prior_step = value.record.step;
@@ -415,15 +415,18 @@ pub fn report_notes(
             continue;
         }
         writer.save(&mut value, reporting_step, observer)?;
-        let report =
-            reporter(&value.record.problem_notes[index], &lock, policy.offline).unwrap_or_else(|detail| {
-                super::ReportRecord {
-                    disposition: "failed".into(),
-                    draft: PathBuf::new(),
-                    url: None,
-                    detail,
-                }
-            });
+        let report = reporter(
+            &value.record.problem_notes[index],
+            &value.record,
+            &lock,
+            policy.offline || value.offline,
+        )
+        .unwrap_or_else(|detail| super::ReportRecord {
+            disposition: "failed".into(),
+            draft: PathBuf::new(),
+            url: None,
+            detail,
+        });
         if index < value.record.reports.len() {
             value.record.reports[index] = report;
         } else {
