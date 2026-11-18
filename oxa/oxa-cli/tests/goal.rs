@@ -417,3 +417,130 @@ fn explicit_continue_resumes_a_paused_goal_without_resetting_its_budget_or_objec
             .contains("Keep reviewing synthetic work and wait between sweeps."));
     }
 }
+
+#[test]
+fn lead_goal_resumes_after_a_killed_turn_without_redelivering_a_saved_steer() {
+    use oxa_proto::{Entry, EntryBody};
+    use oxa_session::{FsStore, Goal, SessionStore, GOAL_ENTRY};
+    use serde_json::json;
+    use std::time::{Duration, Instant};
+
+    let env = TestEnv::new();
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"retry":{"enabled":false},"oxa":{"bootPreload":false,"envNote":false},"cacheWarming":"off"}"#,
+    );
+    let store = FsStore::new(env.agent_dir().join("sessions"));
+    let session = store.create(&env.work(), None, None).unwrap();
+    let objective = "Finish the synthetic lead task.";
+    let steering = "Inspect the synthetic outcome before reporting.";
+    let steering_id = "abcdef02";
+    let state = json!({
+        "open_asks": [{"id":"question-1","revision":4,"question":"Which synthetic result should be used?"}],
+        "standing_refs": ["rule-1"],
+        "held_leases": [{"task":"task-1","holder":"fixture","generation":[1,1],"expires_at":9999999999_u64}],
+        "pending_steer": {"entry_id":steering_id,"revision":1,"text":steering,"lease":null}
+    });
+    let mut data = Goal::new(objective.into(), Default::default(), 1)
+        .unwrap()
+        .value();
+    data["change"] = "control".into();
+    data["lead"] = state.clone();
+    store
+        .append(
+            &session,
+            &Entry {
+                id: "abcdef01".into(),
+                parent: None,
+                ts_ms: 1,
+                body: EntryBody::Custom {
+                    custom_type: GOAL_ENTRY.into(),
+                    data,
+                },
+            },
+        )
+        .unwrap();
+    store.sync(&session).unwrap();
+
+    let held = FakeServer::start(
+        vec![ScriptTurn::text("held")],
+        FakeOpts {
+            hold_headers_ms: 10_000,
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs(&held.url()))
+        .args(["-p", "--tools", "goal_done,wait", "--continue", &session.id])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while held.requests().is_empty() {
+        if child.try_wait().unwrap().is_some() {
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "lead did not reach the held turn: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("lead did not reach the mock provider");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    child.kill().unwrap();
+    assert!(!child.wait().unwrap().success());
+
+    let steer_count = |request: &oxa_fake::Recorded| {
+        request
+            .messages
+            .iter()
+            .filter(|message| message.content.as_deref() == Some(steering))
+            .count()
+    };
+    assert_eq!(steer_count(&held.requests()[0]), 1);
+
+    let resumed = FakeServer::start(
+        vec![ScriptTurn::tool(
+            "done",
+            "goal_done",
+            r#"{"status":"complete","evidence":"Synthetic resume verified."}"#,
+        )],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let output = run(&env, &resumed, &["--continue", &session.id]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = resumed.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].system.contains(objective));
+    assert_eq!(steer_count(&requests[0]), 1);
+    let entries = store.load(&session).unwrap();
+    assert_eq!(entries.iter().filter(|entry| entry.id == steering_id).count(), 1);
+    let latest = entries
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.body {
+            EntryBody::Custom { custom_type, data } if custom_type == GOAL_ENTRY => Some(data),
+            _ => None,
+        })
+        .unwrap();
+    for key in ["open_asks", "standing_refs", "held_leases"] {
+        assert_eq!(latest["lead"][key], state[key], "{key}");
+    }
+    assert!(latest["lead"]["pending_steer"].is_null());
+    assert_eq!(latest["status"], "done");
+}
