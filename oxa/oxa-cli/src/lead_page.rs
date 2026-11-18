@@ -266,10 +266,18 @@ fn workers(html: &mut String, view: &View<'_>) {
             "<p class=muted>Runner facts · sequence {} · observed at {} (Unix milliseconds)</p>",
             s.as_of_seq, s.at_ms
         );
-        for running in &s.running {
-            let stalled = s.incidents.iter().any(|i| {
-                i.kind == IncidentKind::WorkerStalled && i.subject == Subject::Task(running.task.clone())
-            });
+        let mut ordered: Vec<_> = s
+            .running
+            .iter()
+            .map(|running| {
+                let stalled = s.incidents.iter().any(|i| {
+                    i.kind == IncidentKind::WorkerStalled && i.subject == Subject::Task(running.task.clone())
+                });
+                (stalled, running)
+            })
+            .collect();
+        ordered.sort_by_key(|(stalled, _)| !stalled);
+        for (stalled, running) in ordered {
             let _ = write!(
                 html,
                 "<article><b>{}</b><p>{}</p></article>",
