@@ -274,6 +274,9 @@ mod tests {
 
     #[test]
     fn native_queue_dispatches_one_canonical_attempt_and_settles_before_the_event() {
+        if crate::lock_process::in_parent() {
+            return;
+        }
         let (directory, claims, binding, prepared, policy) = setup();
         let owner = NativeQueueOwner {
             claims: &claims,
