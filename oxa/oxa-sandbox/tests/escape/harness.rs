@@ -64,7 +64,7 @@ pub fn run_result_with_timeout(
     command: &str,
     writable: bool,
     net: bool,
-    timeout_s: u64,
+    timeout_s: u32,
 ) -> ExecResult {
     let spec = ExecSpec {
         command: command.to_string(),
