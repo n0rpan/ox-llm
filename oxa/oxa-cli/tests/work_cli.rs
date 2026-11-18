@@ -209,6 +209,7 @@ fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
 enum NativeSource {
     Issue,
     Reviewed,
+    LiveReviewed,
     MissingHead,
     MismatchedPacket,
     AdvancedBranch,
@@ -217,6 +218,11 @@ enum NativeSource {
 #[test]
 fn native_refill_executes_the_exact_reviewed_pull_request() {
     native_refill_completion(NativeSource::Reviewed);
+}
+
+#[test]
+fn native_refill_delivers_live_review_context_to_the_bound_runner() {
+    native_refill_completion(NativeSource::LiveReviewed);
 }
 
 #[test]
@@ -270,6 +276,7 @@ fn native_refill_completion(source: NativeSource) {
             now,
         )
         .unwrap();
+    let live = source == NativeSource::LiveReviewed;
     let taskfile = controls.join("task.txt");
     let header = if reviewed_head.is_some() {
         "c44 fake agent/44 agent/44"
@@ -279,9 +286,7 @@ fn native_refill_completion(source: NativeSource) {
     fs::write(&taskfile, format!("{header}\nSynthetic admitted task.\n")).unwrap();
     fs::set_permissions(&taskfile, fs::Permissions::from_mode(0o600)).unwrap();
     let config = controls.join("refill.json");
-    fs::write(
-        &config,
-        serde_json::json!({
+    let mut settings = serde_json::json!({
             "enabled":true,"host_id":"host-a","nativeExecution":true,"intake":true,"queue":queue,"claims":root,
             "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
             "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
@@ -289,14 +294,18 @@ fn native_refill_completion(source: NativeSource) {
             "packets":[{"number":44,"revision":reviewed_head.as_deref().unwrap_or("revision"),
                 "action":if reviewed_head.is_some() { "resolve_conflict" } else { "build_issue" },
                 "branch":"agent/44","taskfile":taskfile}]
-        })
-        .to_string(),
-    )
-    .unwrap();
+    });
+    if live {
+        settings.as_object_mut().unwrap().remove("packets");
+        settings["live"] = true.into();
+        settings["intake"] = false.into();
+        settings["model"] = "fake".into();
+    }
+    fs::write(&config, settings.to_string()).unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
     let tools = trusted_tools(&env);
     let gh = tools.join("gh");
-    fs::write(&gh, "#!/bin/sh\n[ \"$GH_TOKEN\" = synthetic ] || exit 93\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n").unwrap();
+    fs::write(&gh, "#!/bin/sh\nprintf 'call\\n' >> \"$0.calls\"\n[ \"$GH_TOKEN\" = synthetic ] || exit 93\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n").unwrap();
     fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
     let rows: Vec<_> = reviewed_head
         .as_ref()
@@ -310,6 +319,11 @@ fn native_refill_completion(source: NativeSource) {
         "mergeQueue":null,"pullRequests":{"totalCount":rows.len(),"nodes":rows,
             "pageInfo":{"hasNextPage":false,"endCursor":"last"}},
         "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null,
+        "pullRequest":{"title":"Synthetic live PR","body":"Synthetic live PR body.",
+            "headRefOid":reviewed_head,"headRefName":"agent/44","isCrossRepository":false,
+            "comments":{"totalCount":1,"nodes":[{"author":{"login":"fixture"},"body":"Synthetic live review note."}]},
+            "reviews":{"totalCount":0,"nodes":[]},"reviewThreads":{"totalCount":0,"nodes":[]},
+            "files":{"totalCount":0,"nodes":[]},"commits":{"nodes":[{"commit":{"oid":reviewed_head,"statusCheckRollup":null}}]}},
         "p44":{"number":44,"headRefOid":reviewed_head,"baseRefName":"main","state":"OPEN","body":"",
             "isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY",
             "baseRef":{"refUpdateRule":null,"rules":{"totalCount":0,"nodes":[]}},
@@ -355,7 +369,14 @@ fn native_refill_completion(source: NativeSource) {
         .clone()
         .unwrap();
     let name = format!("board-{}.txt", binding.key);
-    assert!(queue.join(&name).is_file());
+    let live_app_reads = live.then(|| fs::read(tools.join("gh.calls")).unwrap());
+    let packet = fs::read_to_string(queue.join(&name)).unwrap();
+    if live {
+        assert!(packet.contains("Synthetic live review note."));
+        assert!(!packet.contains("Synthetic admitted task."));
+    } else {
+        assert_eq!(packet, fs::read_to_string(&taskfile).unwrap());
+    }
     assert!(claims.snapshot().unwrap()[&44].lease.as_ref() == Some(&binding.lease));
     assert_eq!(binding.reviewed_head, reviewed_head);
     let rows = claims.assignments().unwrap();
@@ -391,7 +412,7 @@ fn native_refill_completion(source: NativeSource) {
             git(&env, &project, &["switch", "main"]);
             Some("not at the reviewed head")
         }
-        NativeSource::Issue | NativeSource::Reviewed => None,
+        NativeSource::Issue | NativeSource::Reviewed | NativeSource::LiveReviewed => None,
     };
     let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
     let args = ["work", "--native-queue", "--config", config.to_str().unwrap()];
@@ -424,6 +445,9 @@ fn native_refill_completion(source: NativeSource) {
         &fs::read(storage(&env).join(format!("{}.json", binding.native_task_id))).unwrap(),
     )
     .unwrap();
+    if live {
+        assert_eq!(checkpoint["task"]["model"], "fake");
+    }
     let record = &checkpoint["record"];
     let launch_revision = record["worker_launch_revision"].as_u64().unwrap();
     assert!(launch_revision > 0 && launch_revision < record["checkpoint_revision"].as_u64().unwrap());
@@ -454,16 +478,20 @@ fn native_refill_completion(source: NativeSource) {
         .join("started")
         .join(format!("native-board-{}", binding.key))
         .join(format!("{}.txt", binding.native_task_id));
-    assert_eq!(
-        fs::read_to_string(started).unwrap(),
-        fs::read_to_string(taskfile).unwrap()
-    );
+    assert_eq!(fs::read_to_string(started).unwrap(), packet);
     assert!(!queue.join(name).exists());
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
-    assert!(std::iter::once(requests[0].system.as_str())
-        .chain(requests[0].messages.iter().filter_map(|m| m.content.as_deref()))
-        .any(|text| text.contains("Synthetic admitted task.")));
+    let request_text = || {
+        std::iter::once(requests[0].system.as_str())
+            .chain(requests[0].messages.iter().filter_map(|m| m.content.as_deref()))
+    };
+    if live {
+        assert!(request_text().any(|text| text.contains("Synthetic live review note.")));
+        assert!(request_text().any(|text| text.contains("Do not invoke gh or authenticated GitHub HTTP")));
+    } else {
+        assert!(request_text().any(|text| text.contains("Synthetic admitted task.")));
+    }
     run_server_records(&env, &server, &args, Some(path.clone()), &[], false);
     assert_eq!(
         server.requests().len(),
@@ -479,6 +507,9 @@ fn native_refill_completion(source: NativeSource) {
     )
     .unwrap();
     assert_eq!(after_replay, checkpoint);
+    if let Some(app_reads) = live_app_reads {
+        assert_eq!(fs::read(tools.join("gh.calls")).unwrap(), app_reads);
+    }
 
     if source == NativeSource::Reviewed {
         let first_receipt = storage(&env).join(format!("{}.json", binding.native_task_id));
