@@ -747,9 +747,10 @@ impl<'a> Call<'a> {
                 request.messages,
             )
     }
-    pub fn mark_forwarded(&mut self) {
+    pub fn mark_forwarded(&mut self) -> Result<(), Refusal> {
+        self.hold.as_mut().expect("unsettled call").mark_forwarded()?;
         self.forwarded = true;
-        self.hold.as_mut().expect("unsettled call").mark_forwarded();
+        Ok(())
     }
     pub fn observe(&mut self, chunk: &Value) {
         if self.model.info().provider == Provider::OpenCode {
