@@ -1,5 +1,11 @@
 #![cfg(all(feature = "anthropic-client", feature = "ledger"))]
 //! Bounded stale-aware Go catalog cache: no network, no key, no transcript.
+#![allow(dead_code, unexpected_cfgs)] // Shared synthetic gateway fixture.
+#[path = "common/anthropic.rs"]
+mod anthropic;
+#[path = "common/skeleton.rs"]
+mod skeleton;
+
 use oxc_gateway::opencode::{
     cache::{Cache, State, FRESH, MAX_BYTES, STALE},
     models, Model,
@@ -7,9 +13,8 @@ use oxc_gateway::opencode::{
 use oxc_gateway::secrets::{self, Key};
 use serde_json::{json, Map, Value};
 use std::{
-    fs::{self, DirBuilder, OpenOptions},
-    io::Write,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
+    fs,
+    os::unix::fs::PermissionsExt,
     path::PathBuf,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -25,47 +30,19 @@ fn discovery() -> Value {
         "api":{"messages":{"base_url":"https://example.invalid/inference/go/anthropic/v1"}}}]})
 }
 
-/// A private directory of this test only; never the real home.
-struct Dir(PathBuf);
-impl Dir {
-    fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "oxc-go-cache-{}-{}",
-            std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
-        ));
-        DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&path)
-            .unwrap();
-        Self(path)
-    }
+impl skeleton::Fixture {
     fn cache(&self) -> Cache {
-        Cache::new(&self.0)
+        Cache::new(self.ledger_dir.parent().unwrap())
     }
     fn key(&self, value: &str) -> Key {
-        let path = self.0.join("credentials.json");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .unwrap();
-        write!(file, "{}", json!({"opencode": value})).unwrap();
-        secrets::read(&path, "opencode").unwrap()
+        fs::write(&self.key_path, json!({"opencode": value}).to_string()).unwrap();
+        secrets::read(&self.key_path, "opencode").unwrap()
     }
     fn file(&self) -> PathBuf {
-        self.0.join("go-catalog-cache.json")
+        self.ledger_dir.parent().unwrap().join("go-catalog-cache.json")
     }
     fn write(&self, bytes: &[u8]) {
         fs::write(self.file(), bytes).unwrap();
-    }
-}
-impl Drop for Dir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -88,7 +65,7 @@ fn shape(model: &Model) -> Value {
 
 #[test]
 fn fresh_and_stale_entries_are_consumed_and_expired_ones_are_misses() {
-    let dir = Dir::new();
+    let dir = skeleton::Fixture::for_endpoint(BASE);
     let cache = dir.cache();
     let key = dir.key(CREDENTIAL);
     let models = models(&discovery(), BASE).unwrap();
@@ -116,7 +93,7 @@ fn fresh_and_stale_entries_are_consumed_and_expired_ones_are_misses() {
 
 #[test]
 fn missing_malformed_oversized_and_foreign_base_entries_are_misses() {
-    let dir = Dir::new();
+    let dir = skeleton::Fixture::for_endpoint(BASE);
     let cache = dir.cache();
     let key = dir.key(CREDENTIAL);
     assert!(cache.load(BASE, &key, at(1_000)).is_none(), "missing");
@@ -139,7 +116,7 @@ fn missing_malformed_oversized_and_foreign_base_entries_are_misses() {
 
 #[test]
 fn a_tampered_entry_cannot_widen_routing_or_limits() {
-    let dir = Dir::new();
+    let dir = skeleton::Fixture::for_endpoint(BASE);
     let cache = dir.cache();
     let key = dir.key(CREDENTIAL);
     let models = models(&discovery(), BASE).unwrap();
@@ -194,7 +171,7 @@ fn a_tampered_entry_cannot_widen_routing_or_limits() {
 
 #[test]
 fn replacement_is_atomic_and_leaves_no_temporary_file() {
-    let dir = Dir::new();
+    let dir = skeleton::Fixture::for_endpoint(BASE);
     let cache = dir.cache();
     let key = dir.key(CREDENTIAL);
     let first = models(&discovery(), BASE).unwrap();
@@ -210,11 +187,12 @@ fn replacement_is_atomic_and_leaves_no_temporary_file() {
     assert_eq!(state, State::Fresh);
     assert_eq!(loaded.len(), 1, "last rename wins");
     assert_eq!(loaded[0].id, "synthetic-other");
-    let names: Vec<_> = fs::read_dir(&dir.0)
+    let names: Vec<_> = fs::read_dir(dir.ledger_dir.parent().unwrap())
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
-    assert_eq!(names.len(), 2);
+    assert_eq!(names.len(), 3);
+    assert!(names.iter().any(|name| name == "ledger"));
     assert!(names.iter().any(|name| name == "go-catalog-cache.json"));
     assert!(names.iter().any(|name| name == "credentials.json"));
     let mode = fs::metadata(dir.file()).unwrap().permissions().mode();
@@ -223,7 +201,7 @@ fn replacement_is_atomic_and_leaves_no_temporary_file() {
 
 #[test]
 fn only_validated_metadata_is_persisted() {
-    let dir = Dir::new();
+    let dir = skeleton::Fixture::for_endpoint(BASE);
     let cache = dir.cache();
     let key = dir.key(CREDENTIAL);
     let models = models(&discovery(), BASE).unwrap();

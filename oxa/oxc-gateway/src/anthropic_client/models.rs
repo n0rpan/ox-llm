@@ -220,6 +220,13 @@ mod tests {
         json!({"data":data,"has_more":more,"last_id":last,"future_field":true}).to_string()
     }
 
+    #[test]
+    fn catalog_parser_refuses_oversized_model_ids() {
+        let id = "m".repeat(129);
+        let model = json!({"id":id,"display_name":"Synthetic"});
+        assert!(matches!(parse_model(&model), Err(Error::Protocol)));
+    }
+
     #[tokio::test]
     async fn discovers_two_pages_and_optional_fields() {
         let first = page(

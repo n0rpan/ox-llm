@@ -850,15 +850,20 @@ mod discovery_budget_tests {
 
     #[test]
     fn discovery_preserves_configured_price_floors_and_long_context_tiers() {
-        assert_discovered_price_floor(0);
+        assert_discovered_price_floor(0, 4096, 64);
     }
 
     #[test]
     fn discovery_cannot_lower_a_configured_price_with_a_positive_live_rate() {
-        assert_discovered_price_floor(1);
+        assert_discovered_price_floor(1, 4096, 64);
     }
 
-    fn assert_discovered_price_floor(live_input: u32) {
+    #[test]
+    fn discovery_cannot_lower_configured_token_limits() {
+        assert_discovered_price_floor(1, 1, 1);
+    }
+
+    fn assert_discovered_price_floor(live_input: u32, context: u32, output: u32) {
         let base = "https://example.invalid/api/v1";
         let provider = Provider::OpenRouter;
         let alias = "synthetic-alias";
@@ -887,14 +892,17 @@ mod discovery_budget_tests {
         let source = Source::new(provider, base).unwrap();
         let offer = Offer {
             id: upstream.into(),
-            context: Some(4096),
-            max_output: Some(64),
+            context: Some(context),
+            max_output: Some(output),
             price: Some(live),
         };
         assert_eq!(
             runtime.apply_provider_catalog(&source, vec![offer]).unwrap(),
             (0, 0)
         );
+        let info = runtime.catalog.resolve(Some(alias)).unwrap().info();
+        assert_eq!(info.context_window, 4096);
+        assert_eq!(info.max_output, 64);
         let Some(Billing::Metered(price)) = runtime.billings.get(alias) else {
             panic!("the discovered model lost its metered route");
         };
