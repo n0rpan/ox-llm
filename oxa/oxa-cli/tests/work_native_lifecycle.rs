@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read,
+    io::{Read, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
@@ -134,7 +134,7 @@ impl Fixture {
     }
 
     fn invoke(&self, server: &FakeServer, args: &[&str]) -> (Child, Output) {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        let child = Command::new(env!("CARGO_BIN_EXE_oxa"))
             .args(args)
             .current_dir(self.env.work().join("project"))
             .env_clear()
@@ -143,6 +143,10 @@ impl Fixture {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
+        self.joined(child)
+    }
+
+    fn joined(&self, mut child: Child) -> (Child, Output) {
         let deadline = Instant::now() + Duration::from_secs(90);
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() {
@@ -171,6 +175,102 @@ impl Fixture {
 
     fn reopened(&self) -> Claims {
         Claims::open(self.config.parent().unwrap().join("claims").as_path()).unwrap()
+    }
+
+    fn park(&self) -> DependencyWait {
+        renew(self);
+        let rows = self.reopened().assignments().unwrap();
+        let row = &rows[&42];
+        let receipt = ItemLease {
+            lease: self.original.lease.clone(),
+            host_id: "host-a".into(),
+            expires_at: row.data.item_owner.as_ref().unwrap().expires_at,
+        };
+        let wait = DependencyWait {
+            dependency: Dependency::RequiredCi(99),
+            deadline: self.now + 300,
+        };
+        // This fixture has not launched a process or acquired a task lock.
+        assert!(self
+            .claims
+            .wait_for_dependency(
+                &self.original.lease.holder,
+                "host-a",
+                &self.binding,
+                &receipt,
+                self.now,
+                row.data.revision,
+                &wait,
+                |observed| Ok(observed == &wait),
+            )
+            .unwrap());
+        wait
+    }
+
+    fn refill_next(&self) -> Output {
+        self.claims
+            .import_snapshot(
+                Some(ManualAuthority::Owner),
+                &BTreeMap::from([(
+                    44,
+                    ImportState {
+                        state: AttemptState::default(),
+                        excluded: false,
+                    },
+                )]),
+                self.now,
+            )
+            .unwrap();
+        let controls = self.config.parent().unwrap();
+        let taskfile = controls.join("next.txt");
+        fs::write(&taskfile, "i44 fake agent/44 main\nSynthetic next task.\n").unwrap();
+        fs::set_permissions(&taskfile, fs::Permissions::from_mode(0o600)).unwrap();
+        let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&self.config).unwrap()).unwrap();
+        config.as_object_mut().unwrap().remove("nativeSteering");
+        config["intake"] = json!(true);
+        config["partition"] = json!({"modulus":22,"residues":[0]});
+        config["log"] = json!(controls.join("audit.jsonl"));
+        config["packets"] = json!([{
+            "number":44,"revision":"revision","action":"build_issue",
+            "branch":"agent/44","taskfile":taskfile
+        }]);
+        fs::write(&self.config, config.to_string()).unwrap();
+
+        let tools = self.env.tmp().join("parked-tools");
+        fs::create_dir(&tools).unwrap();
+        fs::set_permissions(&tools, fs::Permissions::from_mode(0o700)).unwrap();
+        let gh = tools.join("gh");
+        fs::write(&gh, "#!/bin/sh\n[ \"$GH_TOKEN\" = synthetic ] || exit 93\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n").unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(tools.join("gh.reply"), json!({"data":{"repository":{
+            "mergeQueue":null,
+            "pullRequests":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
+            "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null
+        }}}).to_string()).unwrap();
+        let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
+        let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+            .args([
+                "work",
+                "board",
+                "--refill",
+                "--repo",
+                "example/project",
+                "--once",
+                "--token-stdin",
+                "--config",
+            ])
+            .arg(&self.config)
+            .current_dir(self.env.work().join("project"))
+            .env_clear()
+            .envs(self.env.envs("http://127.0.0.1:1"))
+            .env("PATH", path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"synthetic\n").unwrap();
+        self.joined(child).1
     }
 }
 
@@ -365,6 +465,68 @@ fn checkpoint(fixture: &Fixture) -> serde_json::Value {
         .unwrap(),
     )
     .unwrap()
+}
+
+#[test]
+fn all_parked_native_work_keeps_its_packet_and_claim_without_a_model_call() {
+    let fixture = Fixture::new();
+    fixture.park();
+    let claim = serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap();
+    let queue = files(&fixture.queue);
+    let server = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let (_, output) = fixture.run(&server);
+    assert_eq!(files(&fixture.queue), queue, "a parked packet must not be taken");
+    assert!(output.status.success(), "{output:?}");
+    assert!(server.requests().is_empty());
+    assert!(!fixture
+        .storage
+        .join(format!("{}.json", fixture.binding.native_task_id))
+        .exists());
+    assert_eq!(
+        serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap(),
+        claim
+    );
+}
+
+#[test]
+fn parked_native_work_yields_to_one_refilled_task_and_retains_its_original_receipt() {
+    let fixture = Fixture::new();
+    fixture.park();
+    let parked = serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap();
+    let parked_packet = fixture.queue.join(format!("board-{}.txt", fixture.binding.key));
+    let parked_bytes = fs::read(&parked_packet).unwrap();
+    let refilled = fixture.refill_next();
+    assert!(refilled.status.success(), "{refilled:?}");
+    let next = fixture.reopened().assignments().unwrap()[&44]
+        .data
+        .native_binding
+        .clone()
+        .expect("a verified parked lease must permit the real refill");
+    assert!(fixture.queue.join(format!("board-{}.txt", next.key)).is_file());
+    let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
+    let (_, output) = fixture.run(&server);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.requests().len(), 1);
+    let rows = fixture.reopened().assignments().unwrap();
+    assert_eq!(serde_json::to_value(&rows[&42]).unwrap(), parked);
+    assert_eq!(fs::read(&parked_packet).unwrap(), parked_bytes);
+    assert!(rows[&44].state.lease.is_none());
+    assert_eq!(rows[&44].state.attempts, 1);
+    assert!(rows[&44].data.native_binding.as_ref() == Some(&next));
+    let completed: serde_json::Value = serde_json::from_slice(
+        &fs::read(fixture.storage.join(format!("{}.json", next.native_task_id))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(completed["record"]["id"], next.native_task_id);
+    assert_eq!(completed["record"]["step"], "finished");
+    let (_, idle) = fixture.run(&server);
+    assert!(idle.status.success(), "{idle:?}");
+    assert_eq!(server.requests().len(), 1, "all remaining work is still parked");
+    assert_eq!(
+        serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap(),
+        parked
+    );
+    assert_eq!(fs::read(parked_packet).unwrap(), parked_bytes);
 }
 
 #[test]
