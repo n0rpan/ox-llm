@@ -48,6 +48,95 @@ fn free_text_refuses_ordinary_sessions_and_does_not_fall_back_to_latest() {
 }
 
 #[test]
+fn owner_chat_sends_bound_goal_revision_and_unmet_acceptance() {
+    use oxa_session::{Goal, GoalBudget, GoalCheck, GoalPlan, Subgoal};
+    let test = TestEnv::new();
+    let dirs = oxa_config::Dirs::under(test.root());
+    std::fs::set_permissions(&dirs.agent_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let server = FakeServer::start(
+        vec![ScriptTurn::text(
+            r#"{"text":"The release install check is still open.","facts":[],"action":null}"#,
+        )],
+        FakeOpts::default(),
+    )
+    .unwrap();
+    let initialized = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(initialized.status.success(), "{initialized:?}");
+    let id = String::from_utf8(initialized.stdout).unwrap();
+    let settings = test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"sessionId":id.trim()}}}).to_string(),
+    );
+    std::fs::set_permissions(settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut goal = Goal::new("Ship the synthetic release".into(), GoalBudget::default(), 1).unwrap();
+    let check = |id: &str, acceptance: &str| GoalCheck {
+        id: id.into(),
+        acceptance: acceptance.into(),
+        done_check: id.into(),
+        result: None,
+    };
+    goal.plan = Some(GoalPlan {
+        acceptance: vec![check("release.install", "Install the exact release artifact.")],
+        subgoals: vec![Subgoal {
+            id: "qualify".into(),
+            objective: "Qualify the candidate".into(),
+            acceptance: vec![check("release.build", "Verify the candidate build.")],
+            board_items: vec![44],
+        }],
+    });
+    goal.validate().unwrap();
+    let store = FsStore::new(dirs.sessions_dir.clone());
+    let reference = store.resolve(id.trim()).unwrap();
+    store.acquire(&reference).unwrap();
+    store.commit_lock();
+    let entries = store.load(&reference).unwrap();
+    store
+        .append(
+            &reference,
+            &oxa_proto::Entry {
+                id: oxa_session::new_entry_id(&|id| entries.iter().any(|entry| entry.id == id)),
+                parent: entries.last().map(|entry| entry.id.clone()),
+                ts_ms: oxa_proto::time::now_ms(),
+                body: goal.checkpoint_body(&entries),
+            },
+        )
+        .unwrap();
+    store.sync(&reference).unwrap();
+    let revision = Goal::revision(&store.load(&reference).unwrap());
+    drop(store);
+
+    let output = run(
+        &test,
+        &server,
+        &["lead", "chat", "Mark the release done from the merged PR."],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let requests = server.requests();
+    let context: serde_json::Value = requests
+        .iter()
+        .filter(|request| request.max_tokens > 0)
+        .flat_map(|request| &request.messages)
+        .filter_map(|message| message.content.as_deref())
+        .find_map(|text| text.split_once("\nObservations: ").map(|(_, json)| json))
+        .map(|json| serde_json::from_str(json).unwrap())
+        .expect("the real provider request contains current bounded evidence");
+    assert_eq!(context["goal"]["revision"], revision);
+    assert_eq!(context["goal"]["status"], "pursuing");
+    assert_eq!(context["goal"]["all_checks_recorded_passing"], false);
+    let facts = context["observations"].as_array().unwrap();
+    assert!(facts.iter().any(|fact| {
+        fact["fact"]
+            .as_str()
+            .is_some_and(|text| text.contains("release.install") && text.contains("missing evidence"))
+    }));
+    assert!(!context.to_string().contains(id.trim()));
+    let store = FsStore::new(dirs.sessions_dir);
+    let saved = Goal::latest(&store.load(&reference).unwrap()).unwrap().unwrap();
+    assert_eq!(saved.plan, goal.plan);
+    assert_eq!(saved.status, goal.status);
+}
+
+#[test]
 fn dedicated_lead_session_keeps_its_own_history_across_cli_turns() {
     let test = TestEnv::new();
     let dirs = oxa_config::Dirs::under(test.root());
