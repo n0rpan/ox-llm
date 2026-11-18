@@ -791,12 +791,13 @@ fn prepare(
             &mut notices,
         )?
     };
-    // Inherited trust covers the verified resources, while worker configuration
-    // comes from the user layer. Worktree settings must not change sandbox policy.
-    let mut settings = child.apply(if inherited_source.is_some() {
-        user_settings.clone()
+    // Inherited trust covers verified resources. Project settings, MCP and
+    // agent definitions need direct approval.
+    let direct_project_trust = trusted && inherited_source.is_none();
+    let mut settings = child.apply(if direct_project_trust {
+        Settings::load(dirs, cwd, true)
     } else {
-        Settings::load(dirs, cwd, trusted)
+        user_settings.clone()
     });
     if inherited_source.is_some() {
         // The work runner owns acceptance. The child must not run a second
@@ -1034,7 +1035,7 @@ fn prepare(
         settings: &settings,
         resources: &resources,
         sandbox: &sandbox,
-        trusted,
+        trusted: direct_project_trust,
         nested: child.nested(),
         env,
         yolo: yolo.clone(),

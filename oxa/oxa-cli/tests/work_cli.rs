@@ -1720,8 +1720,19 @@ fn a_managed_worker_uses_the_sources_approved_project_resources() {
         "work/project/.oxa/settings.json",
         r#"{"done":["test -f .oxa/settings.json"],"defaultTools":["write"]}"#,
     );
-    env.write("home/.oxa/agent/settings.json", r#"{"defaultTools":["read"]}"#);
-    git(&env, &project, &["add", ".oxa/SYSTEM.md", ".oxa/settings.json"]);
+    env.write(
+        "home/.oxa/agent/settings.json",
+        r#"{"defaultTools":["read","subagent"],"oxa":{"subagent":{"enabled":true}}}"#,
+    );
+    env.write(
+        "home/.oxa/agent/agents/scout.md",
+        "---\nname: scout\ndescription: Owner scout definition\ntools: read\n---\nRead files.\n",
+    );
+    env.write(
+        "work/project/.oxa/agents/scout.md",
+        "---\nname: scout\ndescription: Project scout definition\ntools: read\n---\nRead files.\n",
+    );
+    git(&env, &project, &["add", ".oxa"]);
     git(&env, &project, &["commit", "-m", "Add approved resource fixture"]);
     git(&env, &project, &["push", "origin", "main"]);
 
@@ -1733,6 +1744,8 @@ fn a_managed_worker_uses_the_sources_approved_project_resources() {
     let tools = &requests[0].tools_json;
     assert!(tools.contains("\"name\":\"read\""), "{tools}");
     assert!(!tools.contains("\"name\":\"write\""), "{tools}");
+    assert!(tools.contains("Owner scout definition"), "{tools}");
+    assert!(!tools.contains("Project scout definition"), "{tools}");
 }
 
 fn child_trust_case(mode: &str) {

@@ -69,8 +69,8 @@ a managed worktree before reusing that approval. An explicit worktree denial
 still wins. Inheritance is per launch, and creates no permanent worktree grant.
 The managed worker refuses inherited approval when project MCP, extensions,
 or settings can load dependencies outside the approval record. Worker
-configuration comes from the user settings. The work runner takes acceptance
-checks from the approved source.
+settings, MCP and agent definitions come from the user configuration. The
+work runner takes acceptance checks from the approved source.
 
 `oxa work tasks.json` opts into sequential tasks in separate git worktrees.
 Run it inside the project repository. The JSON file is an array:
