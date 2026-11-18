@@ -463,7 +463,15 @@ fn catalog_default_output_limit_is_visible_and_reaches_a_native_response() {
             ],
             None,
         );
-        success(&output);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result = terminal(&output);
+        assert_eq!(result["error_class"], "output_limit");
+        assert_eq!(result["requests"], 1);
         let requests = peer.requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].body["max_output_tokens"], expected);
