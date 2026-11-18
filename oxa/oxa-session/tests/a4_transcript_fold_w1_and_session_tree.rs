@@ -597,3 +597,62 @@ fn f1_expected_cache_drops_the_last_generated_token() {
     t.set_usage(&usage(0, 0));
     assert_eq!(t.expected_cache(), 0);
 }
+
+/// A reply the embedded gateway accepted without usage (0 prompt, 0 completion) is not a
+/// measurement: it must not reset the context baseline to zero, or compaction would be skipped
+/// while the conversation keeps growing.
+#[test]
+fn unreported_usage_keeps_the_previous_context_baseline() {
+    let mut t = Transcript::default();
+    let user = |text: &str| WireMsg {
+        role: Role::User,
+        content: Some(text.to_string()),
+        reasoning: None,
+        tool_calls: Vec::new(),
+        provider_history: None,
+        tool_call_id: None,
+    };
+    let reply = |text: &str| WireMsg {
+        role: Role::Assistant,
+        content: Some(text.to_string()),
+        reasoning: None,
+        tool_calls: Vec::new(),
+        provider_history: None,
+        tool_call_id: None,
+    };
+    t.apply(&entry("u1", None, msg(user("first"))));
+    t.apply(&entry("a1", Some("u1"), msg(reply("first reply"))));
+    t.apply(&entry(
+        "use1",
+        Some("a1"),
+        EntryBody::Usage {
+            kind: TurnKind::Chat.as_str().to_string(),
+            usage: usage(100, 20),
+        },
+    ));
+    assert_eq!(t.context(), 120);
+    assert_eq!(t.usage_wire_len(), Some(t.wire().len()));
+
+    t.apply(&entry("u2", Some("use1"), msg(user("second"))));
+    t.apply(&entry("a2", Some("u2"), msg(reply("second reply"))));
+    let before = t.usage_wire_len();
+    t.apply(&entry(
+        "use2",
+        Some("a2"),
+        EntryBody::Usage {
+            kind: TurnKind::Chat.as_str().to_string(),
+            usage: Usage {
+                prompt: 0,
+                completion: 0,
+                cached: 0,
+                cached_missing: true,
+            },
+        },
+    ));
+    assert_eq!(t.context(), 120, "an unreported usage is not a zero context");
+    assert_eq!(
+        t.usage_wire_len(),
+        before,
+        "the baseline stays where it was counted"
+    );
+}

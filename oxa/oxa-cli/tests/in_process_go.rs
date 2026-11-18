@@ -1841,6 +1841,25 @@ fn done_without_usage_settles_as_usage_missing() {
     assert_eq!(ledger[0]["usage_missing"], true);
 }
 #[test]
+fn usage_before_finish_rejects_generation_after_it() {
+    // Usage that arrives before the finish frame is provisional: any content after it would be
+    // delivered to the client but never charged, because the provisional counts settle the
+    // request. The stream fails closed instead.
+    check_private_stream_details(
+        "terminal_usage",
+        Some("frame_after_usage"),
+        terminal_frames(
+            &[
+                terminal_content(),
+                json!({"choices":[],"usage":usage()}),
+                json!({"choices":[{"index":0,"delta":{"content":"Uncharged tail"},"finish_reason":null}]}),
+                terminal_finish(),
+            ],
+            true,
+        ),
+    );
+}
+#[test]
 fn usage_after_finish_still_counts() {
     let (_env, ledger) = settled_success(&[
         terminal_content(),

@@ -206,6 +206,13 @@ pub fn request(
     .account_tokens(
         u64::from(turn.usage.prompt.saturating_sub(turn.usage.cached)) + u64::from(turn.usage.completion),
     );
+    if turn.usage.is_unreported() {
+        // The reply carried no usage: its spend is unknown, not zero. The goal records an
+        // uncertain request so its token cap still applies (the answer itself is kept).
+        if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+            goal.uncertain_request()?;
+        }
+    }
     if opts.events {
         // The closing `*_end` records go through the same sink, so `message_update` sees them.
         stream.finish(&turn, &mut hooks.sink(st, sink, ui));
@@ -854,6 +861,15 @@ fn start_tool_prefill(
                             if let Err(error) = goal.uncertain_request() {
                                 res = Err(error);
                             }
+                        }
+                    }
+                }
+                // A reply without usage has no measured spend: the prefill is charged to the
+                // goal as an uncertain request, exactly like a failed one.
+                if res.as_ref().is_ok_and(|turn| turn.usage.is_unreported()) {
+                    if let Some(goal) = &goal {
+                        if let Err(error) = goal.uncertain_request() {
+                            res = Err(error);
                         }
                     }
                 }

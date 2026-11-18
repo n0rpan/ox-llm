@@ -261,6 +261,16 @@ pub struct Usage {
     pub cached_missing: bool,
 }
 
+impl Usage {
+    /// The reply carried no usage at all. The embedded gateway accepts a stream that ends with a
+    /// valid finish and no usage (it settles as `usage_missing` in the ledger); the zeros it
+    /// reports are not a measured cost. Every request carries a prompt, so a reply with neither
+    /// prompt nor completion tokens is an unreported one.
+    pub fn is_unreported(&self) -> bool {
+        self.prompt == 0 && self.completion == 0
+    }
+}
+
 /// Why the engine stopped. An aborted or failed stream has no `Finish`: it is an `Err`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Finish {
