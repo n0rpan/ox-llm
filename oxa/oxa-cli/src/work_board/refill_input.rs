@@ -106,6 +106,23 @@ impl<'a> Input<'a> {
             if oxa_work::helper_queue::is_published(consumer.queue, &consumer.key(entry)?)? {
                 continue;
             }
+            // Fork-controlled rich text must not consume the shared snapshot budget.
+            let fields =
+                format!("pullRequest(number:{number}) {{ headRefOid headRefName isCrossRepository }}");
+            let (identity, _) = self.reader.repository_read(&fields)?;
+            let identity = &identity["pullRequest"];
+            match identity["isCrossRepository"].as_bool() {
+                Some(true) => continue,
+                Some(false) => {}
+                None => return Err("missing pull request repository identity".into()),
+            }
+            if identity["headRefOid"].as_str() != Some(entry.head.as_str()) {
+                return Err("pull request changed since the reviewed head".into());
+            }
+            let branch = text(identity, "headRefName")?;
+            if !NativeBinding::is_valid_branch(branch) {
+                continue;
+            }
             let fields = oxa_work::pull_request_fields(number)?;
             let (snapshot, _) = self.reader.repository_read(&fields)?;
             if snapshot["pullRequest"]["isCrossRepository"] == true {
@@ -113,8 +130,8 @@ impl<'a> Input<'a> {
             }
             let context =
                 oxa_work::prepare_pull_request_context(number, &entry.head, &snapshot["pullRequest"])?;
-            if !NativeBinding::is_valid_branch(&context.branch) {
-                continue;
+            if context.branch != branch {
+                return Err("pull request branch changed during context acquisition".into());
             }
             let mut prompt = String::with_capacity(context.prompt.len());
             for line in context.prompt.split_inclusive('\n') {
