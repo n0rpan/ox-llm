@@ -623,7 +623,25 @@ fn run_inner(
             }
             // The repeat guard gave up: the same call after its notices ends the run.
             if let Some(r) = results.iter().find(|r| r.stop) {
-                let text = crate::repeat::stop_text(&r.tool_name);
+                let mut text = crate::repeat::stop_text(&r.tool_name);
+                let mut code = crate::repeat::ERROR_CODE;
+                if let Some(call) = calls
+                    .iter()
+                    .find(|call| Some(&call.id) == r.msg.tool_call_id.as_ref())
+                {
+                    match crate::advice::on_repeat(st, call, &text, sink)? {
+                        crate::advice::AdviceResult::Continue => continue,
+                        crate::advice::AdviceResult::Refused => {}
+                        crate::advice::AdviceResult::Escalate => {
+                            code = "advisor_escalation_required";
+                            text = "Advice did not resolve the failure. The worker needs a stronger tier."
+                                .into();
+                        }
+                    }
+                }
+                if st.shared.cancel.is_cancelled() {
+                    return Ok(RunEnd::Aborted);
+                }
                 persist(
                     st,
                     EntryBody::Shown {
@@ -640,7 +658,7 @@ fn run_inner(
                 // over, so a failure is not sent back to the model.
                 let _ = crate::done::check(st, &mut done, sink, ui);
                 // Giving up is not a finished task: a caller must not read it as success.
-                return Ok(RunEnd::Failed(OxaError::new(crate::repeat::ERROR_CODE, text)));
+                return Ok(RunEnd::Failed(OxaError::new(code, text)));
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
