@@ -99,12 +99,19 @@ impl<'a> Input<'a> {
             let (snapshot, _) = self.reader.repository_read(&fields)?;
             let context =
                 oxa_work::prepare_pull_request_context(number, &entry.head, &snapshot["pullRequest"])?;
+            let mut prompt = String::with_capacity(context.prompt.len());
+            for line in context.prompt.split_inclusive('\n') {
+                if line.trim() == "---" {
+                    prompt.push('\\');
+                }
+                prompt.push_str(line);
+            }
             let branch = context.branch;
             prepared.push(Prepared {
                 number,
                 revision: entry.head.clone(),
                 action: entry.action,
-                task: format!("c{number} {model} {branch} {branch}\n{}", context.prompt),
+                task: format!("c{number} {model} {branch} {branch}\n{prompt}"),
                 branch,
             });
             if prepared.len() == 20 {
