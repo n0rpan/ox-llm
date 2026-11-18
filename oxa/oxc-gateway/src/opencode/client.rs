@@ -429,6 +429,13 @@ where
                 };
                 buffer.push_str(&args);
             }
+            // Usage that arrived before the finish frame is still provisional: only the finish
+            // may follow it. Content or tool output after it would be delivered to the client
+            // but never charged, because the provisional counts are what settle the request.
+            // The usage frame itself is exempt: a second one is rejected below.
+            if pending_usage.is_some() && ending.is_none() && chunk.get("usage").is_none_or(Value::is_null) {
+                return Err(terminal(TerminalCheck::FrameAfterUsage));
+            }
             if let Some(value) = chunk.get("usage").filter(|v| !v.is_null()) {
                 if let Some(diagnostics) = diagnostics {
                     diagnostics
