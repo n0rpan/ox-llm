@@ -835,6 +835,89 @@ fn unknown_price_without_budget_is_admitted() {
 }
 
 #[test]
+fn pending_unknown_cost_hold_closes_later_capped_admission() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    // Admitted uncapped with no computable bound, and still in flight.
+    let hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    // The same daily ledger reopened (as after a restart) with a cap configured: the paid
+    // request's cost is committed but not established, so capped admission fails closed.
+    let reopened = Budget::new(path.clone());
+    assert_eq!(
+        reopened
+            .reserve(&json!(1), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+    // Uncapped requests keep working, before and after the pending hold is released.
+    assert!(reopened.reserve(&json!(null), true, &model(), 32).is_ok());
+    drop(hold);
+    assert!(Budget::new(path)
+        .reserve(&json!(null), true, &model(), 32)
+        .is_ok());
+}
+
+#[test]
+fn settled_usage_with_a_computed_cost_does_not_close_a_later_cap() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    let row = hold
+        .finish(
+            &Usage {
+                prompt: Some(1_000_000),
+                output: Some(4),
+                ..Usage::default()
+            },
+            Outcome::Complete,
+            |row| append(&path, row),
+        )
+        .unwrap();
+    // Settlement priced the usage, so the row's cost is known even though the admission
+    // bound was not; a marker here would close a later cap forever.
+    assert!(row.get("cost_unknown").is_none());
+    assert_eq!(row["settled"], "usage");
+    let cost = row["cost_usd"].as_f64().unwrap();
+    assert!((cost - 1.000_008).abs() < 1e-9, "{cost}");
+    let reopened = Budget::new(path.clone());
+    assert!(reopened.reserve(&json!(10), true, &model(), 32).is_ok());
+    assert_eq!(
+        reopened
+            .reserve(&json!(1), true, &model(), 32)
+            .err()
+            .map(|error| (error.status, error.code)),
+        Some((429, "budget_exceeded"))
+    );
+}
+
+#[test]
+fn refused_uncapped_request_does_not_close_a_later_cap() {
+    let home = Home::new();
+    let path = home.ledger();
+    let mut unknown = model();
+    unknown.context = 200_000_000;
+    let budget = Budget::new(path.clone());
+    let mut hold = budget.reserve(&json!(null), true, &unknown, 32).unwrap();
+    hold.mark_forwarded().unwrap();
+    let row = hold
+        .finish(&Usage::default(), Outcome::Refused, |row| append(&path, row))
+        .unwrap();
+    assert_eq!(row["settled"], "refused");
+    assert_eq!(row["cost_usd"], 0.0);
+    assert!(row.get("cost_unknown").is_none());
+    let reopened = Budget::new(path.clone());
+    assert!(reopened.reserve(&json!(1), true, &model(), 32).is_ok());
+}
+
+#[test]
 fn unknown_cost_row_closes_later_capped_admission() {
     let home = Home::new();
     let path = home.ledger();

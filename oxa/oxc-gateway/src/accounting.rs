@@ -209,7 +209,14 @@ impl Budget {
             return Err(exhausted());
         }
         policy::daily_budget(cap, ledger_enabled, Some(spent), shared.reserved(), required)?;
-        let id = shared.insert(required).map_err(|_| Refusal::ledger())?;
+        let id = if cost_unknown {
+            // A pending hold with no established cost is recorded as such, so another
+            // process (or this one after a restart) that applies a cap fails closed until
+            // the settled row carries the cost.
+            shared.insert_unknown().map_err(|_| Refusal::ledger())?
+        } else {
+            shared.insert(required).map_err(|_| Refusal::ledger())?
+        };
         shared.save().map_err(|_| Refusal::ledger())?;
         Ok(Hold {
             budget: self.clone(),
@@ -339,15 +346,22 @@ impl Hold {
         Ok(())
     }
     fn record(&self, usage: &Usage, outcome: Outcome) -> Value {
+        let mut row = self.record_row(usage, outcome);
+        // The admission-time bound was unknown. The settled row is marked unknown only when
+        // settlement could not determine the cost either: a usage-priced or an unpaid refused
+        // row is a known cost, and a marker on it would close every later configured cap.
+        if self.cost_unknown && row["settled"].as_str() == Some("reserved") {
+            row["cost_unknown"] = json!(true);
+        }
+        row
+    }
+    fn record_row(&self, usage: &Usage, outcome: Outcome) -> Value {
         let model = &self.model;
         let Billing::Metered(price) = &model.billing else {
             return self.subscription_record(usage, outcome);
         };
         let mut row = json!({"remote":true,"remote_provider":model.provider,"remote_model":model.upstream});
         row["billing"] = json!("metered");
-        if self.cost_unknown {
-            row["cost_unknown"] = json!(true);
-        }
         if matches!(outcome, Outcome::Refused) {
             row["cost_usd"] = json!(0.0);
             row["settled"] = json!("refused");
