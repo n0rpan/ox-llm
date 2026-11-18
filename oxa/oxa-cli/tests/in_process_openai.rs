@@ -412,6 +412,77 @@ fn new_process_chatgpt_continuation_is_pinned_to_the_saved_account() {
     peer.assert_healthy();
 }
 
+// Preserve the native equivalent of the SDK controller contract's default output limit.
+#[test]
+fn catalog_default_output_limit_is_visible_and_reaches_a_native_response() {
+    for (override_limit, expected) in [(None, 16), (Some(4), 4)] {
+        let env = TestEnv::new();
+        let peer = mock::MockOpenAi::start(vec![mock::Reply::events(vec![json!({
+            "type":"response.incomplete",
+            "response":{
+                "status":"incomplete",
+                "incomplete_details":{"reason":"max_output_tokens"},
+                "output":[{"type":"message","id":"msg_capped","role":"assistant",
+                    "content":[{"type":"output_text","text":"Synthetic capped answer"}]}],
+                "usage":{"input_tokens":7,"output_tokens":expected,"total_tokens":7 + expected}
+            }
+        })])]);
+        settings(&env, &peer.base_url(), false);
+        if let Some(limit) = override_limit {
+            let path = env.home().join(".oxa/agent/settings.json");
+            let mut config: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            config["oxa"]["cloud"]["models"][MODEL]["max_output"] = json!(limit);
+            fs::write(path, config.to_string()).unwrap();
+        }
+        private_file(
+            &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+            &json!({"openai":KEY}).to_string(),
+        );
+
+        let listing = run(&env, &["--list-models", MODEL], None);
+        success(&listing);
+        let listing = String::from_utf8(listing.stdout).unwrap();
+        let model = listing.lines().nth(1).unwrap();
+        let fields: Vec<_> = model.split_whitespace().collect();
+        assert_eq!(fields[1], MODEL);
+        assert_eq!(fields[3].parse::<u64>().unwrap(), expected);
+        assert!(
+            peer.requests().is_empty(),
+            "listing must not send an upstream request"
+        );
+
+        let output = run(
+            &env,
+            &[
+                "--mode",
+                "json",
+                "--no-session",
+                "--no-tools",
+                "-p",
+                "Synthetic length request",
+            ],
+            None,
+        );
+        success(&output);
+        let requests = peer.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].body["max_output_tokens"], expected);
+        let messages: Vec<_> = output
+            .stdout
+            .split(|b| *b == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| serde_json::from_slice::<Value>(line).unwrap())
+            .filter(|event| event["type"] == "message_end" && event["message"]["role"] == "assistant")
+            .collect();
+        assert_eq!(messages.len(), 1);
+        let message = &messages[0]["message"];
+        assert_eq!(message["stopReason"], "length");
+        assert_eq!(message["usage"]["output"], expected);
+        assert_eq!(message["content"][0]["text"], "Synthetic capped answer");
+        peer.assert_healthy();
+    }
+}
+
 #[test]
 fn both_provider_clients_honor_the_selected_silence_timeout() {
     for subscription in [false, true] {
