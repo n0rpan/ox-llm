@@ -47,16 +47,50 @@ pub struct ContentFinding {
 /// Classifies pushed content before publication.
 pub type ContentScan<'a> = &'a dyn Fn(&PushedContent<'_>) -> Option<ContentFinding>;
 
+/// Decode a path Git printed in C-style quotes (`"b/a\"b\\c\303\251"`).
+fn unquote(quoted: &str) -> Option<String> {
+    let inner = quoted.strip_prefix('"')?.strip_suffix('"')?;
+    let mut bytes = Vec::with_capacity(inner.len());
+    let mut chars = inner.bytes();
+    while let Some(byte) = chars.next() {
+        if byte != b'\\' {
+            bytes.push(byte);
+            continue;
+        }
+        let escaped = chars.next()?;
+        bytes.push(match escaped {
+            b'a' => 0x07,
+            b'b' => 0x08,
+            b'f' => 0x0c,
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'v' => 0x0b,
+            b'0'..=b'7' => {
+                let mut value = u32::from(escaped - b'0');
+                for _ in 0..2 {
+                    let digit = chars.next().filter(|digit| (b'0'..=b'7').contains(digit))?;
+                    value = value * 8 + u32::from(digit - b'0');
+                }
+                u8::try_from(value).ok()?
+            }
+            other => other,
+        });
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn diff_path(header: &str) -> Option<String> {
-    let path = header.trim_end();
+    let path = header.trim_end_matches(['\r', '\n']);
     if path == "/dev/null" {
         return None;
     }
-    let path = path
-        .strip_prefix('"')
-        .and_then(|quoted| quoted.strip_suffix('"'))
-        .unwrap_or(path);
-    Some(path.strip_prefix("b/").unwrap_or(path).to_string())
+    let path = if path.starts_with('"') {
+        unquote(path)?
+    } else {
+        path.to_string()
+    };
+    Some(path.strip_prefix("b/").map(str::to_string).unwrap_or(path))
 }
 
 fn refusal(path: &str, line: Option<usize>, finding: ContentFinding) -> String {
@@ -130,7 +164,27 @@ fn destination_tips(policy: &RunPolicy, repo: &Path, url: &str) -> Result<Vec<St
 fn scan_pushed(policy: &RunPolicy, tree: &Path, revisions: &[&str], scan: ContentScan<'_>) -> Result<()> {
     let unreadable = |_: String| "publishing refused: cannot scan the commits to publish".to_string();
     let log = |options: &[&str]| {
-        let mut args = vec!["-c", "core.quotePath=false", "log"];
+        // No user or repository preference may change what the scan sees.
+        let mut args = vec![
+            "-c",
+            "core.quotePath=false",
+            "-c",
+            "log.showRoot=true",
+            "-c",
+            "log.showSignature=false",
+            "-c",
+            "diff.noprefix=false",
+            "-c",
+            "diff.mnemonicPrefix=false",
+            "-c",
+            "diff.relative=false",
+            "-c",
+            "color.ui=false",
+            "-c",
+            "color.diff=false",
+            "log",
+            "--root",
+        ];
         args.extend_from_slice(options);
         args.extend_from_slice(revisions);
         args.push("--");
@@ -167,7 +221,7 @@ fn scan_pushed(policy: &RunPolicy, tree: &Path, revisions: &[&str], scan: Conten
         "--no-renames",
         "--no-relative",
     ])?;
-    for name in names.split('\0').map(str::trim).filter(|name| !name.is_empty()) {
+    for name in names.split('\0').filter(|name| !name.is_empty()) {
         let item = PushedContent {
             path: name,
             line: None,
@@ -547,7 +601,14 @@ fn publish_locked(
                 "protocol.ssh.allow=always",
                 "-c",
                 "protocol.file.allow=always",
+                // Only the scanned commit is sent: no implicit tags or submodule pushes.
+                "-c",
+                "push.followTags=false",
+                "-c",
+                "push.recurseSubmodules=no",
                 "push",
+                "--no-follow-tags",
+                "--recurse-submodules=no",
                 "origin",
                 &format!("{head}:refs/heads/{}", task.branch),
             ],
@@ -744,6 +805,75 @@ impl LockedTask<'_> {
 #[cfg(test)]
 mod scan_tests {
     use super::*;
+
+    fn repo() -> (crate::test_dir::PrivateDir, RunPolicy) {
+        let dir = crate::test_dir::PrivateDir::new("publish-scan");
+        let policy = RunPolicy {
+            git_binary: "/usr/bin/git".into(),
+            host_path: std::env::var_os("PATH").unwrap(),
+            terminate_binary: None,
+            offline: false,
+            runner_owns_github: false,
+            storage: dir.path().join("storage"),
+        };
+        git_ok(dir.path(), &["init", "-q", "-b", "main"]);
+        (dir, policy)
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("/usr/bin/git")
+            .current_dir(dir)
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn containing(needle: &'static str) -> impl Fn(&PushedContent<'_>) -> Option<ContentFinding> {
+        move |item| {
+            (item.path.contains(needle) || item.text.contains(needle)).then_some(ContentFinding {
+                label: "a test secret",
+                secret_path: item.path.contains(needle),
+            })
+        }
+    }
+
+    #[test]
+    fn quoted_paths_are_decoded_before_the_secret_check() {
+        assert_eq!(
+            diff_path("\"b/a\\\"q\\\\z\\303\\251\""),
+            Some("a\"q\\z\u{e9}".to_string())
+        );
+        let (dir, policy) = repo();
+        let secret = "sy\"nth\\etic-value";
+        std::fs::write(dir.path().join(format!("{secret}.txt")), "plain\n").unwrap();
+        git_ok(dir.path(), &["add", "-A"]);
+        git_ok(dir.path(), &["commit", "-q", "-m", "fixture"]);
+        let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        let error = scan_pushed(&policy, dir.path(), &[head.as_str()], &containing(secret)).unwrap_err();
+        assert!(!error.contains("etic-value"), "{error}");
+        assert!(!error.contains("nth"), "{error}");
+    }
+
+    #[test]
+    fn the_root_commit_is_scanned_whatever_log_show_root_says() {
+        let (dir, policy) = repo();
+        git_ok(dir.path(), &["config", "log.showRoot", "false"]);
+        std::fs::write(dir.path().join("root.txt"), "synthetic-root-secret\n").unwrap();
+        git_ok(dir.path(), &["add", "root.txt"]);
+        git_ok(dir.path(), &["commit", "-q", "-m", "root"]);
+        let head = git_ok(dir.path(), &["rev-parse", "HEAD"]);
+        let error = scan_pushed(
+            &policy,
+            dir.path(),
+            &[head.as_str()],
+            &containing("synthetic-root-secret"),
+        )
+        .unwrap_err();
+        assert!(error.contains("root.txt:1"), "{error}");
+    }
 
     fn items(text: &str) -> Vec<(String, Option<usize>, String)> {
         let seen = std::cell::RefCell::new(vec![]);

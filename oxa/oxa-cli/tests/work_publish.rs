@@ -1156,3 +1156,23 @@ fn publication_checks_the_push_url_not_the_fetch_url() {
     );
     assert_refused_before_push(&env, &record, "local.txt:1", &token);
 }
+
+#[test]
+fn publication_never_pushes_tags_implicitly() {
+    let env = TestEnv::new();
+    setup(&env, "[]");
+    let repo = env.work().join("project");
+    let token = format!("ghp_{}", "x".repeat(36));
+    git(&env, &repo, &["config", "push.followTags", "true"]);
+    git(&env, &repo, &["tag", "-a", "synthetic-tag", "-m", &format!("Note {token}")]);
+    let record = run_args(
+        &env,
+        edits(),
+        &["work", "../tasks.json", "--publish"],
+        Some(configure(&env)),
+    );
+    assert_eq!(record["outcome"], "done", "{record}");
+    assert!(env.home().join("push-calls").exists());
+    let tags = git(&env, &env.work(), &["--git-dir", "remote.git", "tag", "--list"]);
+    assert!(tags.is_empty(), "{tags}");
+}
