@@ -1,5 +1,5 @@
 //! Resolve a CI report from the rejected group's authenticated GitHub metadata.
-use super::{github_utc, positive_id, RejectionEvidence};
+use super::{github_utc, positive_id, RejectionEvidence, WorkflowIdentity};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -40,6 +40,17 @@ pub struct VerifiedReports {
     pub workflow_run: u64,
     pub run_attempt: u64,
     pub archives: Vec<VerifiedArchive>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub failed_tests: Vec<String>,
+}
+
+/// The removal and exact job identities an earlier archive verification used.
+#[derive(PartialEq, Eq)]
+pub struct ReportAttemptIdentity {
+    number: u64,
+    group: String,
+    removed_at: String,
+    checks: Vec<(u64, WorkflowIdentity)>,
 }
 
 impl RejectionEvidence {
@@ -49,6 +60,24 @@ impl RejectionEvidence {
 
     pub fn workflow_checks(&self) -> impl Iterator<Item = u64> + '_ {
         self.failed_required_workflows.keys().copied()
+    }
+
+    pub fn report_attempt_identity(&self, checks: &[u64]) -> Option<ReportAttemptIdentity> {
+        let checks = checks
+            .iter()
+            .map(|id| {
+                self.failed_required_workflows
+                    .get(id)
+                    .copied()
+                    .map(|workflow| (*id, workflow))
+            })
+            .collect::<Option<_>>()?;
+        Some(ReportAttemptIdentity {
+            number: self.number,
+            group: self.merge_group_head.clone(),
+            removed_at: self.removed_at.clone(),
+            checks,
+        })
     }
 
     pub fn record_verified_reports(&mut self, report: VerifiedReports) {
@@ -191,6 +220,21 @@ mod tests {
             artifact_name: "test-report-2",
             max_archive_bytes: 1024,
         };
+        let identity = evidence.report_attempt_identity(&[42]).unwrap();
+        assert!(evidence.report_attempt_identity(&[9]).is_none());
+        let mut shifted = evidence.clone();
+        shifted.merge_group_head = DIGEST.into();
+        assert!(shifted.report_attempt_identity(&[42]).unwrap() != identity);
+        shifted = evidence.clone();
+        shifted.removed_at = "2026-01-01T00:08:58Z".into();
+        assert!(shifted.report_attempt_identity(&[42]).unwrap() != identity);
+        shifted = evidence.clone();
+        shifted
+            .failed_required_workflows
+            .get_mut(&42)
+            .unwrap()
+            .check_suite_id = 52;
+        assert!(shifted.report_attempt_identity(&[42]).unwrap() != identity);
         let failed = json!({"id":42,"run_id":61,"run_attempt":2,"head_sha":HEAD,
             "status":"completed","name":"required aggregate",
             "conclusion":"failure","completed_at":"2026-01-01T00:08:59Z"});

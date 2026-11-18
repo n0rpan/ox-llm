@@ -31,8 +31,8 @@ of required checks that consume those reports, and every JUnit producer and arti
 ```
 
 That option also enables queue evidence. The shadow journal records the checked
-run, attempt, required check IDs, and SHA-256 digests after verifying every
-configured archive for that attempt.
+run, attempt, required check IDs, SHA-256 digests, and failed test identities after
+verifying and reading every configured JUnit archive for that attempt.
 
 Limit: 100 PRs/items per connection. Reported checks are matched against the base's
 classic protection and active repository/organization rulesets; missing required
