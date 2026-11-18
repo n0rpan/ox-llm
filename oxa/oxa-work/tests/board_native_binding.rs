@@ -94,9 +94,56 @@ fn every_original_lease_component_and_holder_authentication_are_fenced() {
             3 => stale.generation.0 += 1,
             _ => stale.generation.1 += 1,
         }
-        assert!(!store.bind_native(&stale.holder, &binding(&stale)).unwrap());
+        for reviewed_head in [None, Some("b".repeat(40))] {
+            let mut receipt = binding(&stale);
+            receipt.reviewed_head = reviewed_head;
+            assert!(!store.bind_native(&stale.holder, &receipt).unwrap());
+        }
     }
     assert_eq!(fs::read(dir.path().join("1.board-claim.json")).unwrap(), before);
+}
+
+#[test]
+fn guarded_native_append_uses_only_the_current_bound_lease() {
+    let (dir, store, lease) = setup();
+    let original = binding(&lease);
+    let append = |_: &Lease| panic!("the append must not run with an invalid binding");
+    assert_eq!(
+        store.with_live_native_lease(&original, || 11, append).unwrap(),
+        None::<()>
+    );
+
+    assert!(store.bind_native(&lease.holder, &original).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let before = fs::read(&path).unwrap();
+    let generation = store
+        .with_live_native_lease(&original, || 11, |live| live.generation)
+        .unwrap();
+    assert_eq!(generation, Some(lease.generation));
+    assert_eq!(fs::read(&path).unwrap(), before);
+    assert_eq!(
+        store
+            .with_live_native_lease(&original, || lease.expires_at, append)
+            .unwrap(),
+        None,
+    );
+    assert!(store.release_for(1, &lease.holder, &lease, 20, "done").unwrap());
+    let replacement = store
+        .claim_for(&entry(), &policy(), &worker(), 21, 20)
+        .unwrap()
+        .unwrap();
+    let next = binding(&replacement);
+    assert!(store.bind_native(&replacement.holder, &next).unwrap());
+    assert_eq!(
+        store.with_live_native_lease(&original, || 22, append).unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .with_live_native_lease(&next, || 22, |live| live.generation)
+            .unwrap(),
+        Some(replacement.generation),
+    );
 }
 
 #[test]
@@ -245,4 +292,129 @@ fn a_failed_binding_write_preserves_the_reservation_without_refund() {
         .claim_idle_for(&entry(), &policy(), &worker(), 40, 20)
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn reviewed_source_survives_reopening_and_cannot_change_within_a_lease() {
+    let (dir, store, lease) = setup();
+    let original = binding(&lease);
+    let mut value = serde_json::to_value(&original).unwrap();
+    value["reviewed_head"] = serde_json::json!("b".repeat(40));
+    let reviewed: NativeBinding =
+        serde_json::from_value(value.clone()).expect("reviewed admission must decode");
+    assert!(store.bind_native(&worker().id, &reviewed).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let bytes = fs::read(&path).unwrap();
+    let reopened = Claims::open(dir.path()).unwrap();
+    let retained = reopened
+        .native_binding(&reviewed.native_task_id, &reviewed.branch)
+        .unwrap()
+        .unwrap();
+    assert_eq!(serde_json::to_value(&retained).unwrap(), value);
+    assert!(reopened.bind_native(&worker().id, &retained).unwrap());
+    value["reviewed_head"] = serde_json::json!("c".repeat(40));
+    let changed = serde_json::from_value(value).unwrap();
+    assert!(!reopened.bind_native(&worker().id, &changed).unwrap());
+    assert!(!reopened.bind_native(&worker().id, &original).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert!(reopened
+        .release_for(1, &worker().id, &lease, 20, "finished")
+        .unwrap());
+    assert!(
+        reopened
+            .native_binding(&retained.native_task_id, &retained.branch)
+            .unwrap()
+            == Some(retained)
+    );
+}
+
+#[test]
+fn legacy_issue_binding_without_review_evidence_retains_its_encoding() {
+    let (dir, store, lease) = setup();
+    let original = binding(&lease);
+    assert!(store.bind_native(&worker().id, &original).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let bytes = fs::read(&path).unwrap();
+    let row: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(row["data"]["native_binding"].get("reviewed_head").is_none());
+    let reopened = Claims::open(dir.path()).unwrap();
+    assert!(reopened.bind_native(&worker().id, &original).unwrap());
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn reviewed_constructor_and_complete_validation_reuse_full_object_ids() {
+    let (dir, store, lease) = setup();
+    let key = "a".repeat(64);
+    let original = binding(&lease);
+    assert!(original.validate().is_ok());
+    assert!(original.reviewed_head.is_none());
+    for width in [40, 64] {
+        let head = "b".repeat(width);
+        let reviewed = NativeBinding::new_reviewed(1, &key, &lease, "agent/test", &head).unwrap();
+        assert_eq!(reviewed.reviewed_head.as_deref(), Some(head.as_str()));
+        assert_eq!(reviewed.native_task_id, original.native_task_id);
+        assert!(reviewed.validate().is_ok());
+    }
+    for head in [
+        String::new(),
+        "a".repeat(39),
+        "a".repeat(41),
+        "a".repeat(63),
+        "a".repeat(65),
+        "A".repeat(40),
+        "g".repeat(40),
+        "refs/heads/main".into(),
+        format!("{}\n", "a".repeat(40)),
+    ] {
+        assert!(NativeBinding::new_reviewed(1, &key, &lease, "agent/test", &head).is_err());
+    }
+    let before = fs::read(dir.path().join("1.board-claim.json")).unwrap();
+    for field in 0..6 {
+        let mut invalid =
+            NativeBinding::new_reviewed(1, &key, &lease, "agent/test", &"b".repeat(40)).unwrap();
+        match field {
+            0 => invalid.number = 0,
+            1 => invalid.key = "A".repeat(64),
+            2 => invalid.lease.expires_at = 10,
+            3 => invalid.native_task_id.push('x'),
+            4 => invalid.branch = "bad..branch".into(),
+            _ => invalid.reviewed_head = Some("bad".into()),
+        }
+        assert!(invalid.validate().is_err());
+        assert!(store.bind_native(&worker().id, &invalid).is_err());
+    }
+    assert_eq!(fs::read(dir.path().join("1.board-claim.json")).unwrap(), before);
+}
+
+#[test]
+fn review_evidence_cannot_upgrade_a_retained_issue_binding() {
+    let (dir, store, lease) = setup();
+    assert!(store.bind_native(&worker().id, &binding(&lease)).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let bytes = fs::read(&path).unwrap();
+    let reviewed =
+        NativeBinding::new_reviewed(1, &"a".repeat(64), &lease, "agent/test", &"b".repeat(40)).unwrap();
+    assert!(!store.bind_native(&worker().id, &reviewed).unwrap());
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn malformed_reviewed_evidence_in_the_saved_row_fails_closed() {
+    let (dir, store, lease) = setup();
+    let reviewed =
+        NativeBinding::new_reviewed(1, &"a".repeat(64), &lease, "agent/test", &"b".repeat(40)).unwrap();
+    assert!(store.bind_native(&worker().id, &reviewed).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for head in [
+        serde_json::json!("short"),
+        serde_json::json!("A".repeat(40)),
+        serde_json::json!(42),
+    ] {
+        let mut invalid = saved.clone();
+        invalid["data"]["native_binding"]["reviewed_head"] = head;
+        fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(Claims::open(dir.path()).unwrap().assignments().is_err());
+    }
 }

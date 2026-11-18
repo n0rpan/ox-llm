@@ -9,6 +9,8 @@ pub struct NativeBinding {
     pub lease: Lease,
     pub native_task_id: String,
     pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed_head: Option<String>,
 }
 
 impl NativeBinding {
@@ -20,11 +22,31 @@ impl NativeBinding {
             lease: lease.clone(),
             native_task_id: format!("board-{key}-{}-{}", lease.generation.0, lease.generation.1),
             branch: branch.into(),
+            reviewed_head: None,
         };
-        if !binding.valid() {
-            return Err("invalid native attempt binding".into());
-        }
+        binding.validate()?;
         Ok(binding)
+    }
+
+    /// The reviewed head comes from the trusted, revalidated prepared PR revision.
+    pub fn new_reviewed(
+        number: u64,
+        key: &str,
+        lease: &Lease,
+        branch: &str,
+        reviewed_head: &str,
+    ) -> Result<Self> {
+        let mut binding = Self::new(number, key, lease, branch)?;
+        binding.reviewed_head = Some(reviewed_head.into());
+        binding.validate()?;
+        Ok(binding)
+    }
+
+    /// Validate the complete receipt, including optional reviewed-source evidence.
+    pub fn validate(&self) -> Result<()> {
+        self.valid()
+            .then_some(())
+            .ok_or_else(|| "invalid native attempt binding".into())
     }
 
     pub(super) fn valid(&self) -> bool {
@@ -55,10 +77,45 @@ impl NativeBinding {
                 .branch
                 .split('/')
                 .all(|part| !part.is_empty() && !part.starts_with('.') && !part.ends_with(".lock"))
+            && self
+                .reviewed_head
+                .as_deref()
+                .is_none_or(crate::board::queue::is_object_id)
     }
 }
 
 impl Claims {
+    /// Guard an append for a trusted frontend's original native binding. Reassignment
+    /// and release use the same lock. The operation must only perform the append
+    /// and must not call back into Claims.
+    pub fn with_live_native_lease<T>(
+        &self,
+        binding: &NativeBinding,
+        now: impl FnOnce() -> u64,
+        operation: impl FnOnce(&Lease) -> T,
+    ) -> Result<Option<T>> {
+        if !binding.valid() || Self::open(&self.root)?.uid != self.uid {
+            return Err("invalid native attempt or board claim directory".into());
+        }
+        let lock = io(File::open(&self.root))?;
+        io(lock.lock())?;
+        let row = self.load(binding.number)?;
+        let Some(lease) = row.state.lease.as_ref() else {
+            return Ok(None);
+        };
+        if row.data.native_binding.as_ref() != Some(binding)
+            || lease.holder != binding.lease.holder
+            || lease.generation != binding.lease.generation
+        {
+            return Ok(None);
+        }
+        let now = now();
+        if !lease.claimed_at.is_some_and(|start| start <= now) || now >= lease.expires_at {
+            return Ok(None);
+        }
+        Ok(Some(operation(lease)))
+    }
+
     /// Persist before queue publication. Identity is authenticated by the trusted frontend.
     /// Failure leaves the original reservation charged and must prevent the ready hardlink.
     pub fn bind_native(&self, worker_id: &str, binding: &NativeBinding) -> Result<bool> {

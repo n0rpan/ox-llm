@@ -69,6 +69,11 @@ pub fn run_loop(
 ) -> Result<RunEnd, OxaError> {
     crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
+    let steering = st
+        .goal
+        .as_ref()
+        .filter(|goal| goal.pursuing())
+        .and_then(|_| st.shared.open_goal_steering(&st.sref));
     sink.emit(&AgentEvent::AgentStart);
     observe_hooks(st, HookPoint::AgentStart, &Value::Null, sink, ui);
     let mut run_msgs: Vec<EventMessage> = Vec::new();
@@ -77,6 +82,7 @@ pub fn run_loop(
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
     crate::goal::checkpoint(st, false, sink)?;
+    drop(steering);
     crate::think::end_run(st, ui);
     sink.emit(&AgentEvent::AgentEnd {
         messages: run_msgs.clone(),
@@ -746,13 +752,18 @@ fn deliver_steering(
     run_msgs: &mut Vec<EventMessage>,
 ) -> Result<bool, OxaError> {
     let taken = drain_steering(st, sink);
-    if taken.is_empty() {
-        return Ok(false);
-    }
+    let mut appended = !taken.is_empty();
     for text in taken {
         push_user(st, text, sink, ui, run_msgs)?;
     }
-    Ok(true)
+    if let Some(request) = st.shared.take_goal_steering() {
+        // The assignment guard covers the write, then releases before events or hooks.
+        if let Some(entry) = request.deliver(st, append_user_entry)? {
+            announce_user_entry(st, entry, sink, ui, run_msgs);
+            appended = true;
+        }
+    }
+    Ok(appended)
 }
 
 /// Append one user message to the transcript and announce it.
@@ -763,10 +774,35 @@ pub(crate) fn push_user(
     ui: &mut dyn Ui,
     run_msgs: &mut Vec<EventMessage>,
 ) -> Result<(), OxaError> {
-    let wire = WireMsg::user(text.clone());
+    let entry = append_user_entry(st, text)?;
+    announce_user_entry(st, entry, sink, ui, run_msgs);
+    Ok(())
+}
+
+fn append_user_entry(st: &mut SessionState, text: String) -> Result<Entry, OxaError> {
+    append_entry(
+        st,
+        EntryBody::Msg {
+            wire: WireMsg::user(text.clone()),
+            parts: vec![Part::Text(text)],
+            tool: None,
+        },
+    )
+}
+
+fn announce_user_entry(
+    st: &mut SessionState,
+    entry: Entry,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    run_msgs: &mut Vec<EventMessage>,
+) {
+    let EntryBody::Msg { wire, .. } = &entry.body else {
+        unreachable!("the user append only creates messages");
+    };
     let msg = EventMessage {
         msg: wire.clone(),
-        ts_ms: now_ms(),
+        ts_ms: entry.ts_ms,
         stop: None,
         usage: None,
         model: None,
@@ -775,18 +811,9 @@ pub(crate) fn push_user(
         error_message: None,
     };
     run_msgs.push(msg.clone());
-    persist(
-        st,
-        EntryBody::Msg {
-            wire,
-            parts: vec![Part::Text(text)],
-            tool: None,
-        },
-        sink,
-    )?;
+    sink.emit(&AgentEvent::EntryAppended { entry });
     crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
     crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
-    Ok(())
 }
 
 /// Take steering messages from the shared queue (`Shared::take_steering` applies the mode)
