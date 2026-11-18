@@ -87,6 +87,7 @@ pub fn run_loop(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    crate::goal::deliver_saved(st, sink)?;
     crate::goal::ensure_begin(st);
     crate::goal::checkpoint(st, false, sink)?;
     let steering = st

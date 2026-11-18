@@ -66,7 +66,7 @@ fn stale_steering() -> oxa_proto::OxaError {
 pub type SteeringAuthority = dyn Fn(&SessionRef, &mut dyn FnMut(Option<&SteeringLease>)) + Send + Sync;
 
 mod lead;
-pub(crate) use lead::deliver_saved;
+pub(crate) use lead::{deliver_saved, reanchor_resumed, BoundLeadAuthority};
 
 /// One typed steering input. Its callback reports the result of appending.
 pub struct GoalSteering {
@@ -232,6 +232,14 @@ impl GoalRuntime {
     }
     fn replace_snapshot(&self, goal: Goal) {
         self.lock().goal = goal;
+    }
+
+    pub(crate) fn has_pending_steer(&self) -> bool {
+        self.lock()
+            .goal
+            .lead
+            .as_ref()
+            .is_some_and(|lead| lead.pending_steer.is_some())
     }
 
     pub(crate) fn reserves_entry_id(&self, id: &str) -> bool {

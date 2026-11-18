@@ -2,8 +2,40 @@
 use super::{stale_steering, SteeringAuthority, SteeringBinding, SteeringLease};
 use crate::{Session, SessionState};
 use oxa_proto::{codes, AgentEvent, EntryBody, EventSink, OxaError, Part, WireMsg};
-use oxa_session::{Goal, LeadGoalState, PendingGoalSteer, SessionRef};
-use std::sync::atomic::Ordering;
+use oxa_session::{Goal, GoalStatus, LeadGoalState, PendingGoalSteer, SessionRef};
+use std::sync::{atomic::Ordering, Arc};
+
+pub(crate) struct BoundLeadAuthority {
+    pub(crate) session: SessionRef,
+    pub(crate) authority: Arc<SteeringAuthority>,
+}
+
+impl std::fmt::Debug for BoundLeadAuthority {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BoundLeadAuthority")
+            .finish_non_exhaustive()
+    }
+}
+
+/// Explicitly resuming the exact paused or blocked goal preserves a steer
+/// admitted at its current, still-valid revision.
+pub(crate) fn reanchor_resumed(st: &SessionState, next: &mut Goal) {
+    let Some(mut previous) = st.goal.as_ref().map(|goal| goal.snapshot()) else {
+        return;
+    };
+    if !matches!(previous.status, GoalStatus::Paused | GoalStatus::Blocked)
+        || previous.resume().is_err()
+        || previous != *next
+    {
+        return;
+    }
+    if let Some(pending) = next.lead.as_mut().and_then(|lead| lead.pending_steer.as_mut()) {
+        if Goal::allows_steering(st.tree.entries(), pending.revision) {
+            pending.revision = st.tree.entries().len() as u64 + 1;
+        }
+    }
+}
 
 impl Session {
     /// Save verified facts from the lead without replacing an already admitted steer.
@@ -88,14 +120,13 @@ fn save(st: &mut SessionState, goal: Goal, sink: &mut dyn EventSink) -> Result<u
 
 /// Called before the continuation prompt. A crash after the message append
 /// but before the goal update leaves the saved user entry as the witness.
-pub(crate) fn deliver_saved(
-    st: &mut SessionState,
-    authority: Option<&SteeringAuthority>,
-    sink: &mut dyn EventSink,
-) -> Result<(), OxaError> {
+pub(crate) fn deliver_saved(st: &mut SessionState, sink: &mut dyn EventSink) -> Result<(), OxaError> {
     let Some(mut goal) = st.goal.as_ref().map(|runtime| runtime.snapshot()) else {
         return Ok(());
     };
+    if matches!(goal.status, GoalStatus::Paused | GoalStatus::Blocked) {
+        return Ok(());
+    }
     let Some(pending) = goal.lead.as_mut().and_then(|lead| lead.pending_steer.take()) else {
         return Ok(());
     };
@@ -114,6 +145,15 @@ pub(crate) fn deliver_saved(
         revision: pending.revision,
         lease: pending.lease,
     };
+    let authority = st
+        .shared
+        .gate
+        .lead_steering_authority
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_ref()
+        .filter(|bound| bound.session == st.sref)
+        .map(|bound| bound.authority.clone());
     if authority.is_none() && binding.lease.is_some() {
         return Err(stale_steering());
     }
