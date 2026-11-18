@@ -23,11 +23,15 @@
 //!   `.oxa/agents/*.md` (`discover_agents`). The child binary is this executable
 //!   (`std::env::current_exe`). It comes before codemode, so a codemode script can call it
 //!   (through the same serial gate: one child at a time).
+//! * **builtin:worker** (K5a): the `worker` tool (start, list, stop background workers in their
+//!   own git worktrees). Not built in a worker child (`OXA_WORKER_DEPTH`); `oxa.workers.enabled`
+//!   false switches it off. Shut down with the process (`Hooks::shutdown` stops the workers).
 //! * **codemode**: off by default, because its tool is part of the frozen prefix (W3). It is
 //!   on with the setting `codemode.enabled`, or when an enabled MCP server has codemode tools
 //!   (`McpManager::wants_codemode`, pi's `autoEnableCodemode`); `tool_search` / `call_tool`
 //!   with `codemode.toolSearch` or when a server has deferred tools. Both depend on
 //!   configuration only, never on connection state.
+use crate::workers::tool::{self as worker_tool, WorkerConfig, WorkerHooks};
 use crate::Args;
 use oxa_codemode::{CodemodeConfig, CodemodeHooks, Namespace};
 use oxa_config::{Dirs, Settings};
@@ -54,6 +58,8 @@ pub struct HookSets {
     pub mcp: Option<Arc<McpManager>>,
     /// Shared instance: the run timer publishes its exact deadline after startup.
     pub subagent: Option<Arc<SubagentHooks>>,
+    /// K5a: the `worker` tool's hook set (start, list, stop; shut down with the process).
+    pub workers: Option<Arc<WorkerHooks>>,
     /// The flags the loaded extensions registered (`registerFlag`), for the second pass of the
     /// argument parse.
     pub flags: Vec<oxa_proto::FlagSpec>,
@@ -226,6 +232,38 @@ pub fn build_hooks(i: &HookInputs<'_>, notices: &mut Vec<(Level, String)>) -> Re
             Err(e) => notices.push((
                 Level::Warning,
                 format!("subagent: the oxa executable is not known ({e}); the tool is off"),
+            )),
+        }
+    }
+
+    // ---- builtin:worker (K5a) ----
+    // Off in a worker child (`OXA_WORKER_DEPTH` set) and when `oxa.workers.enabled` is false.
+    if worker_tool::built(
+        i.env.get(worker_tool::ENV_WORKER_DEPTH),
+        i.settings.bool(worker_tool::SETTING_ENABLED, true),
+    ) {
+        match std::env::current_exe() {
+            Ok(bin) => {
+                let cfg = WorkerConfig {
+                    oxa_bin: bin,
+                    agent_dir: i.dirs.agent_dir.clone(),
+                    max: usize::try_from(i.settings.u32(worker_tool::SETTING_MAX, 4)).unwrap_or(4),
+                    grace: Duration::from_secs(u64::from(i.settings.u32(worker_tool::SETTING_GRACE, 10))),
+                    parent_env: i.env.pairs().to_vec(),
+                    yolo: i.yolo.clone(),
+                };
+                match WorkerHooks::new(cfg) {
+                    Ok(workers) => {
+                        let workers = Arc::new(workers);
+                        sets.hooks.push(workers.clone());
+                        sets.workers = Some(workers);
+                    }
+                    Err(e) => notices.push((Level::Warning, format!("worker: the tool is off ({e})"))),
+                }
+            }
+            Err(e) => notices.push((
+                Level::Warning,
+                format!("worker: the oxa executable is not known ({e}); the tool is off"),
             )),
         }
     }
