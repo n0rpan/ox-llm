@@ -14,8 +14,8 @@ use crate::selectors::{
     TreeFilter, TreePick, TreeSelector,
 };
 use crate::skin::{
-    env_reduced_motion, frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash,
-    oxa_title_text, oxa_yolo_banner, Animation, ArcadeScene, ArcadeState, HintContext, SPRITE_FRAME_MS,
+    frame_box, frame_inner_width, hot_theme, oxa_arcade_line, oxa_footer, oxa_splash, oxa_title_text,
+    oxa_yolo_banner, reduced_motion, Animation, ArcadeScene, ArcadeState, HintContext, SPRITE_FRAME_MS,
 };
 use crate::{
     activity_text, choose_clip_method, compose_fullscreen, copy_text, debug_dump, dispatch_slash,
@@ -317,9 +317,12 @@ pub(crate) struct Loop<'a> {
     /// Assume focus until the terminal reports otherwise (unsupported terminals stay quiet).
     focused: bool,
     run_finished: bool,
+    /// Enter after explicit Ctrl+C starts a new prompt, even before settlement is observed.
+    abort_requested: bool,
     pub(crate) dirty: bool,
-    /// Ctrl+C was pressed on an empty editor; a second press quits.
+    /// Ctrl+C was pressed on an empty editor; a second press within two seconds quits.
     armed: bool,
+    armed_at: Option<std::time::Instant>,
     reset_screen: bool,
     header_pending: bool,
     pub(crate) quit: Option<i32>,
@@ -380,12 +383,13 @@ impl<'a> Loop<'a> {
             .and_then(Value::as_bool)
         {
             Some(on) => on,
+            // The shared true words (`1`, `true`, `yes`, `on`), under either name.
             None => opts
                 .env
                 .iter()
                 .rev()
                 .find(|(k, _)| k == "OXA_CLEAR_ON_SHRINK" || k == "PI_CLEAR_ON_SHRINK")
-                .is_some_and(|(_, v)| v == "1"),
+                .is_some_and(|(_, v)| oxa_config::EnvFlag::parse(Some(v)) == oxa_config::EnvFlag::On),
         };
         let header_pending = !view.quiet_startup;
         let open_picker = opts.open_picker;
@@ -459,8 +463,10 @@ impl<'a> Loop<'a> {
             sent_title: None,
             focused: true,
             run_finished: false,
+            abort_requested: false,
             dirty: true,
             armed: false,
+            armed_at: None,
             reset_screen: false,
             header_pending,
             quit: None,
@@ -480,18 +486,19 @@ impl<'a> Loop<'a> {
     /// `OXA_REDUCED_MOTION`), a theme with colour (not `NO_COLOR` / `TERM=dumb`) and the
     /// Unicode glyph set.
     fn motion(&self) -> bool {
-        self.view.skin == crate::Skin::Oxa
-            && !self.theme.is_plain()
-            && !self.opts.settings.bool("ui.reducedMotion", false)
-            && !env_reduced_motion(&self.opts.env)
+        self.view.skin == crate::Skin::Oxa && !self.theme.is_plain() && !self.reduced_motion()
+    }
+
+    /// `OXA_REDUCED_MOTION` overrides `ui.reducedMotion` for one run when it names one of the
+    /// eight words (`0`/`false`/`no`/`off` turn motion back on).
+    fn reduced_motion(&self) -> bool {
+        reduced_motion(self.opts.settings.bool("ui.reducedMotion", false), &self.opts.env)
     }
 
     /// The `ui.animation` setting (`arcade`, `minimal`, `off`); `Off` whenever motion is.
     /// Like [`Self::motion`], but the ASCII glyph set animates too (in ASCII).
     fn animation(&self) -> Animation {
-        let reduced =
-            self.opts.settings.bool("ui.reducedMotion", false) || env_reduced_motion(&self.opts.env);
-        if self.view.skin.is_oxa() && !self.theme.is_plain() && !reduced {
+        if self.view.skin.is_oxa() && !self.theme.is_plain() && !self.reduced_motion() {
             Animation::from_setting(self.opts.settings.string("ui.animation").as_deref())
         } else {
             Animation::Off
@@ -754,8 +761,28 @@ impl<'a> Loop<'a> {
                         inbox.retry();
                     }
                     self.run_finished = true;
+                    self.abort_requested = false;
                 }
                 apply_event(&mut self.vm, &e);
+            }
+            WorkerMsg::UnsentPrompt { text, mut parts } => {
+                self.editor.prepend_text(&text);
+                parts.append(&mut self.pending_parts);
+                self.pending_parts = parts;
+                if !self.pending_parts.is_empty() {
+                    self.vm.widgets_above.insert(
+                        "oxa.attachments".to_string(),
+                        vec![format!(
+                            "{} image(s) attached to the next prompt",
+                            self.pending_parts.len()
+                        )],
+                    );
+                }
+                self.push_notice(
+                    Level::Warning,
+                    "Recovery prompt was not sent after the session changed; it is back in the editor."
+                        .to_string(),
+                );
             }
             WorkerMsg::Done(result) => {
                 // The wire may have changed: the same draft is a new prefill.
@@ -811,6 +838,7 @@ impl<'a> Loop<'a> {
     /// and its tree, selectors and attachments are closed. Abort, steer and follow-up target
     /// the new session from here on.
     fn rebind(&mut self, handle: Handle) {
+        self.abort_requested = false;
         // Join the old callback before draining its queue back into the editor.
         self.inbox = None;
         let old = std::mem::replace(&mut self.handle, handle);
@@ -1056,6 +1084,14 @@ impl<'a> Loop<'a> {
     }
 
     pub(crate) fn tick(&mut self, animating: bool) {
+        if self
+            .armed_at
+            .is_some_and(|at| at.elapsed() >= std::time::Duration::from_secs(2))
+        {
+            self.armed = false;
+            self.armed_at = None;
+            self.dirty = true;
+        }
         // pi's look redraws on every turn of an animating loop. OXA's look redraws when its
         // animation steps: 8 times a second with the sprite, once a second (the elapsed time)
         // without motion. Everything else that changes the screen marks it dirty itself.
@@ -1193,6 +1229,7 @@ impl<'a> Loop<'a> {
             self.handle.cancel_background();
         }
         match ev {
+            InputEvent::TerminalClosed => self.quit = Some(129),
             InputEvent::Key(key) => self.key(term, key),
             InputEvent::Paste(text) => self.paste(&text),
             InputEvent::Mouse(m) => self.mouse(term, m),
@@ -1290,8 +1327,28 @@ impl<'a> Loop<'a> {
     }
 
     fn key(&mut self, term: &mut dyn Terminal, key: Key) {
+        // Kitty sends release events too. They must not consume the two-press exit arm.
+        if key.kind == KeyKind::Release {
+            return;
+        }
         self.dirty = true;
-        let was_armed = std::mem::take(&mut self.armed);
+        let was_armed = std::mem::take(&mut self.armed)
+            && self
+                .armed_at
+                .take()
+                .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(2));
+        // Ctrl+C during a turn uses the existing cancel path, not idle clear/exit.
+        // Do this before dialogs/overlays and selection-copy can consume the key.
+        if self.opts.keymap.actions_for(&key.id).contains(&"app.clear")
+            && (self.running() || matches!(self.vm.status.activity, Activity::Retrying { .. }))
+        {
+            self.abort_requested = true;
+            self.handle.abort();
+            self.handle.abort_retry();
+            self.dialogs.key(&key, &self.opts.keymap);
+            self.restore_queue();
+            return;
+        }
         if self.dialogs.is_open() {
             match self.dialogs.key(&key, &self.opts.keymap) {
                 DialogKey::NotOpen => {}
@@ -1301,9 +1358,6 @@ impl<'a> Loop<'a> {
                 }
                 DialogKey::Consumed | DialogKey::Closed => return,
             }
-        }
-        if key.kind == KeyKind::Release {
-            return;
         }
         if self.overlay.is_some() {
             self.overlay_key(term, &key);
@@ -1360,6 +1414,7 @@ impl<'a> Loop<'a> {
                 self.quit = Some(0);
             } else {
                 self.armed = true;
+                self.armed_at = Some(std::time::Instant::now());
             }
             return;
         }
@@ -1376,6 +1431,7 @@ impl<'a> Loop<'a> {
                 return;
             }
             if self.running() {
+                self.abort_requested = true;
                 self.handle.abort();
             }
             if matches!(self.vm.status.activity, Activity::Retrying { .. }) {
@@ -1389,18 +1445,23 @@ impl<'a> Loop<'a> {
             return;
         }
         if has("app.message.followUp") {
+            if !self.running() {
+                // Idle: Alt+Enter adds a line instead of sending (queueing is for a live run).
+                self.editor.insert("\n");
+                return;
+            }
             let text = self.editor.expanded_text();
             if text.trim().is_empty() {
                 return;
             }
             self.editor.set_text("");
             self.editor.add_history(&text);
-            if self.running() {
+            if self.running() && !self.abort_requested {
                 self.handle.follow_up(text);
+                self.wake_queued();
                 self.sync_queue();
             } else {
-                let parts = self.take_attachments();
-                self.send(SessionCmd::Prompt { text, parts });
+                self.send_prompt(text);
             }
             return;
         }
@@ -1665,13 +1726,31 @@ impl<'a> Loop<'a> {
         if self.fullscreen {
             self.viewport.scroll_to_bottom();
         }
-        if self.running() {
+        // Explicit input after a cancel key (Ctrl+C or Escape) is a new prompt, not steering
+        // for the canceled run. The worker channel runs it after that operation releases the
+        // session. Ordinary queued input still uses the existing unsuccessful-outcome guard.
+        if self.running() && !self.abort_requested {
             self.handle.steer(trimmed);
+            self.wake_queued();
             self.sync_queue();
         } else {
-            let parts = self.take_attachments();
-            self.send(SessionCmd::Prompt { text: trimmed, parts });
+            self.send_prompt(trimmed);
         }
+    }
+
+    /// Both Enter forms use the same explicit recovery path and retain attachments.
+    fn send_prompt(&mut self, text: String) {
+        let recovering = std::mem::take(&mut self.abort_requested);
+        let parts = self.take_attachments();
+        self.send(if recovering {
+            SessionCmd::RecoveryPrompt {
+                handle: self.handle.clone(),
+                text,
+                parts,
+            }
+        } else {
+            SessionCmd::Prompt { text, parts }
+        });
     }
 
     /// Run a built-in slash command line; `false` when it is not one.
@@ -1695,6 +1774,7 @@ impl<'a> Loop<'a> {
                 engine_url: &self.session.engine_url,
                 models: &self.session.models,
                 queue: (!self.session.engine_url.is_empty()).then_some(self.session.queue),
+                engine_status: self.opts.engine_status.as_deref(),
             };
             dispatch_slash(line, &cx)
         };
@@ -1712,6 +1792,19 @@ impl<'a> Loop<'a> {
             Block::Assistant { text, .. } if !text.is_empty() => Some(text.clone()),
             _ => None,
         })
+    }
+
+    /// An active run may consume this input, but its final queue take may already be past.
+    /// Keep one handle-bound wake on the existing worker channel for that handoff window.
+    fn wake_queued(&self) {
+        if self.handle.request_queued_wake()
+            && self
+                .cmds
+                .send(SessionCmd::QueuedInput(self.handle.clone()))
+                .is_err()
+        {
+            self.handle.clear_queued_wake();
+        }
     }
 
     /// Show the queues as they are now (the core reports them only when it takes from them).
@@ -2522,6 +2615,8 @@ impl<'a> Loop<'a> {
     /// the session file). A relative path is taken from the working directory; with no path the
     /// HTML goes to the default name (`default_output_name`, as `--export` and RPC do).
     fn export(&mut self, path: Option<PathBuf>) {
+        use std::os::unix::fs::MetadataExt;
+
         let Some(source) = self.session.file.clone() else {
             self.push_notice(
                 Level::Warning,
@@ -2530,9 +2625,23 @@ impl<'a> Loop<'a> {
             return;
         };
         let cwd = self.cwd();
-        let target = path.map(|p| if p.is_absolute() { p } else { cwd.join(p) });
+        let target = path
+            .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+            .unwrap_or_else(|| default_output_name(Some(&source), &self.session.id, &cwd));
+        let aliases_source = source == target
+            || match (std::fs::metadata(&source), std::fs::metadata(&target)) {
+                (Ok(source), Ok(target)) => source.dev() == target.dev() && source.ino() == target.ino(),
+                _ => false,
+            };
+        if aliases_source {
+            self.push_notice(
+                Level::Error,
+                "/export: destination is the session file; choose a different path.".to_string(),
+            );
+            return;
+        }
         match target {
-            Some(target) if target.extension().is_some_and(|e| e == "jsonl") => {
+            target if target.extension().is_some_and(|e| e == "jsonl") => {
                 match std::fs::copy(&source, &target) {
                     Ok(_) => self.push_notice(
                         Level::Info,
@@ -2544,11 +2653,7 @@ impl<'a> Loop<'a> {
                     }
                 }
             }
-            Some(path) => self.send(SessionCmd::Export { path }),
-            None => {
-                let path = default_output_name(self.session.file.as_deref(), &self.session.id, &cwd);
-                self.send(SessionCmd::Export { path });
-            }
+            path => self.send(SessionCmd::Export { path }),
         }
     }
 
@@ -2620,6 +2725,7 @@ impl<'a> Loop<'a> {
             version: env!("CARGO_PKG_VERSION").to_string(),
             resources: self.resources.clone(),
             engine_url: self.session.engine_url.clone(),
+            memory_policy: self.session.memory_policy,
             model: self.vm.status.model.clone(),
             model_remote: self.vm.status.model_remote,
             model_provider: self.vm.status.model_provider,
@@ -2851,6 +2957,13 @@ impl<'a> Loop<'a> {
             self.vm.status = saved;
         } else {
             lines.extend(render_footer(&self.vm, width, &self.theme));
+        }
+        // Regular mode commits its splash once; policy changes belong in the live
+        // region so a cold load, switch or idle unload remains observable.
+        if !self.fullscreen {
+            if let Some(policy) = self.session.memory_policy {
+                lines.push(self.theme.dim(&format!("Memory: {policy}")));
+            }
         }
         (lines, cursor)
     }
@@ -3164,13 +3277,14 @@ fn write_private(path: &Path, text: &str) -> Result<(), OxaError> {
 /// The project trust question (D10 `ask_trust`'s question) drawn directly on `term`, for the
 /// one question asked before the session (and with it the app loop) exists. `None` when
 /// dismissed (Escape, Ctrl+C, Ctrl+D): untrusted for this run, asked again next time.
+/// Terminal loss is an error, so callers cannot continue startup after the terminal disappears.
 pub fn ask_trust_on(
     term: &mut dyn Terminal,
     keymap: &Keymap,
     theme: &Theme,
     cwd: &str,
     gated: &[String],
-) -> Option<TrustChoice> {
+) -> Result<Option<TrustChoice>, OxaError> {
     let (title, options, choices) = trust_question(cwd, gated);
     let mut host = DialogHost::new();
     let mut vm = ViewModel::default();
@@ -3186,10 +3300,10 @@ pub fn ask_trust_on(
         now_ms(),
     );
     let mut renderer = Renderer::new(ScreenMode::Main);
-    let answer = loop {
+    let answer = 'dialog: loop {
         match rx.try_recv() {
-            Ok(answer) => break answer,
-            Err(TryRecvError::Disconnected) => break None,
+            Ok(answer) => break Ok(answer),
+            Err(TryRecvError::Disconnected) => break Ok(None),
             Err(TryRecvError::Empty) => {}
         }
         let (cols, _) = term.size();
@@ -3197,6 +3311,13 @@ pub fn ask_trust_on(
         renderer.draw(&Frame { lines, cursor: None }, term);
         term.flush();
         for ev in term.poll(250) {
+            if ev == InputEvent::TerminalClosed {
+                host.close_all();
+                break 'dialog Err(OxaError::new(
+                    oxa_proto::codes::TERMINAL_CLOSED,
+                    "terminal disconnected",
+                ));
+            }
             if let InputEvent::Key(key) = ev {
                 // Ctrl+C and Ctrl+D leave the question unanswered.
                 if keymap.matches(&key.id, "app.clear") || keymap.matches(&key.id, "app.exit") {
@@ -3209,7 +3330,7 @@ pub fn ask_trust_on(
     };
     renderer.clear(term);
     term.flush();
-    answer.and_then(|i| choices.get(i).copied())
+    answer.map(|answer| answer.and_then(|i| choices.get(i).copied()))
 }
 
 /// [`ask_trust_on`] on the process terminal (raw mode for the time of the question).
@@ -3226,7 +3347,7 @@ pub fn ask_trust_interactive(
         ..TermOpts::default()
     })?;
     let theme = resolve_theme("dark", &[], term.caps().color, None).unwrap_or_else(|_| Theme::plain());
-    let choice = ask_trust_on(&mut term, keymap, &theme, cwd, gated);
+    let choice = ask_trust_on(&mut term, keymap, &theme, cwd, gated)?;
     drop(term);
     Ok(choice)
 }
@@ -3450,3 +3571,6 @@ mod block_cache_tests {
 
 #[cfg(test)]
 mod catalog_tests;
+
+#[cfg(test)]
+mod export_tests;

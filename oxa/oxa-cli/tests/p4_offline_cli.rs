@@ -61,6 +61,9 @@ fn every_way_to_turn_offline_on_refuses_a_remote_engine_with_one_shape() {
         (vec![("OXA_OFFLINE", "1")], vec!["-p", "--no-session", "x"]),
         (vec![("OXA_OFFLINE", "TRUE")], vec!["-p", "--no-session", "x"]),
         (vec![("OXA_OFFLINE", "yes")], vec!["-p", "--no-session", "x"]),
+        // UX/DX item 5: `on` is one of the shared true words.
+        (vec![("OXA_OFFLINE", "on")], vec!["-p", "--no-session", "x"]),
+        (vec![("OXA_OFFLINE", "ON")], vec!["-p", "--no-session", "x"]),
     ];
     for (extra, words) in cases {
         let (code, _, err) = go(&env, remote, &extra, &words);
@@ -99,7 +102,7 @@ fn other_values_leave_offline_off_and_the_loopback_engine_always_works() {
     );
     // `OXA_OFFLINE=0` is not offline: the startup check passes (the remote engine is allowed),
     // which shows as the remote-engine notice path, not as the offline refusal.
-    for v in ["0", "no", "false"] {
+    for v in ["0", "no", "false", "off", "maybe"] {
         let _ = go(
             &env,
             "http://127.0.0.1:9",
@@ -118,6 +121,62 @@ fn other_values_leave_offline_off_and_the_loopback_engine_always_works() {
     assert_eq!(code, 0, "{err}");
     assert_eq!(out.trim(), "a");
     assert_eq!(server.requests().len(), 1);
+}
+
+#[test]
+fn offline_refusal_names_the_selected_model_not_the_first_catalog_entry() {
+    let _g = POLICY.lock().unwrap_or_else(|p| p.into_inner());
+    let env = TestEnv::new();
+    let server = FakeServer::start(
+        Vec::new(),
+        FakeOpts {
+            no_engine: true,
+            remote: Some("openai"),
+            models: ["provider-a/first", "provider-b/selected"]
+                .into_iter()
+                .map(|alias| oxa_fake::FakeModel {
+                    alias: alias.to_string(),
+                    cap: 64000,
+                    max_output: Some(4096),
+                    caps: None,
+                })
+                .collect(),
+            ..FakeOpts::default()
+        },
+    )
+    .unwrap();
+    for selection in [
+        vec!["--model", "provider-b/selected"],
+        vec!["--model", "selected:high"],
+        vec!["--models", "*selected*"],
+    ] {
+        let mut words = vec!["--offline", "-p", "--no-session"];
+        words.extend(selection);
+        words.push("hi");
+        let (code, _, err) = go(&env, &server.url(), &[], &words);
+        assert_eq!(code, 7, "{err}");
+        assert!(
+            err.contains("the cloud model provider-b/selected needs the network"),
+            "{err}"
+        );
+        assert!(!err.contains("provider-a/first"), "{err}");
+        let record: serde_json::Value = serde_json::from_str(err.lines().last().unwrap()).unwrap();
+        assert_eq!(record["outcome"], "blocked");
+        assert_eq!(record["error_class"], "offline");
+    }
+    // Untargeted catalog discovery is allowed, but choosing its default must still refuse.
+    let (code, _, err) = go(
+        &env,
+        &server.url(),
+        &[],
+        &["--offline", "-p", "--no-session", "hi"],
+    );
+    assert_eq!(code, 7, "{err}");
+    assert!(
+        err.contains("the cloud model provider-a/first needs the network"),
+        "{err}"
+    );
+    assert!(server.requests().is_empty(), "offline must never generate");
 }
 
 #[test]

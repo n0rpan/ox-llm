@@ -85,7 +85,9 @@ impl Credential {
     }
     pub fn redact(&self, value: &mut Value) {
         match self {
-            Self::ApiKey(key) => redaction::value(value, key),
+            Self::ApiKey(key) => {
+                redaction::value(value, key);
+            }
             #[cfg(feature = "upstream-openai")]
             Self::Subscription(record) => {
                 redaction::secret(value, record.access_token());
@@ -94,12 +96,12 @@ impl Credential {
         }
     }
     pub fn account_scope(&self) -> [u8; 32] {
+        #[cfg(feature = "upstream-openai")]
         use sha2::{Digest, Sha256};
-        let identity = match self {
-            Self::ApiKey(key) => key.expose(),
+        match self {
+            Self::ApiKey(key) => key.account_scope(),
             #[cfg(feature = "upstream-openai")]
-            Self::Subscription(record) => record.account_id(),
-        };
-        Sha256::digest(identity.as_bytes()).into()
+            Self::Subscription(record) => Sha256::digest(record.account_id().as_bytes()).into(),
+        }
     }
 }

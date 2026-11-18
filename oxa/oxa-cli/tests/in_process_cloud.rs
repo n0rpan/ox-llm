@@ -10,19 +10,21 @@ use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use serde_json::{json, Value};
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Read, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
 };
 
 const MODEL: &str = "synthetic-cloud";
 const UPSTREAM: &str = "synthetic-anthropic";
 
 fn cloud_env() -> TestEnv {
-    // This Linux-only proof needs credentials outside any repository. Harnesses can
-    // put TMPDIR inside the checkout; honoring it here would correctly trip the
-    // production key-file guard (and inherit repository project settings).
+    // Credentials AND the usage ledger deliberately refuse repository paths, and this
+    // Linux-only proof needs them outside any repository. Harnesses can put TMPDIR
+    // inside the checkout; honoring it here would correctly trip the production
+    // key-file guard (and inherit repository project settings), so do not relax those
+    // production checks or mutate the process environment to accommodate it.
     TestEnv::new_in(Path::new("/tmp"))
 }
 
@@ -58,6 +60,45 @@ fn write_key(env: &TestEnv, text: &str) {
 }
 fn run(env: &TestEnv, args: &[&str], trace: Option<&Path>) -> Output {
     run_to(env, "http://127.0.0.1:9", args, trace)
+}
+
+#[test]
+fn live_anthropic_discovery_keeps_the_priced_overlay_and_uses_the_cache() {
+    let env = cloud_env();
+    let document = json!({
+        "has_more": false,
+        "data": [
+            {"id": UPSTREAM, "display_name": "Synthetic configured model"},
+            {"id": "synthetic-without-price", "display_name": "Synthetic unknown model",
+                "max_input_tokens": 4096, "max_tokens": 64}
+        ]
+    });
+    let mock = MockAnthropic::start(vec![Reply::wire(
+        "application/json",
+        document.to_string().as_bytes(),
+    )]);
+    settings(&env, &mock.base_url(), true);
+    let path = env.agent_dir().join("settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["discover_models"] = json!(true);
+    fs::write(path, settings.to_string()).unwrap();
+    write_key(&env, &json!({"anthropic": CREDENTIAL}).to_string());
+
+    for _ in 0..2 {
+        let output = run(&env, &["--list-models"], None);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        assert!(stdout.contains(MODEL));
+        assert!(!stdout.contains("synthetic-without-price"));
+        assert!(stderr.contains("1 offers with unknown pricing"), "{stderr}");
+        assert!(!stdout.contains(CREDENTIAL) && !stderr.contains(CREDENTIAL));
+    }
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, "/v1/models?limit=100");
+    mock.finish();
 }
 fn run_to(env: &TestEnv, url: &str, args: &[&str], trace: Option<&Path>) -> Output {
     let mut cmd = if let Some(path) = trace {
@@ -107,6 +148,72 @@ fn success(output: &Output) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// The public RPC statistic must not label a settled, priced cloud call as free.
+#[test]
+fn native_rpc_session_cost_is_unknown_after_priced_settlement() {
+    let env = cloud_env();
+    let mock = MockAnthropic::start(vec![Reply::text("Synthetic answer", 11, 0, 0, 5)]);
+    settings(&env, &mock.base_url(), true);
+    write_key(&env, &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .args([
+            "--mode",
+            "rpc",
+            "--no-tools",
+            "--no-skills",
+            "--no-extensions",
+            "--no-context-files",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    writeln!(
+        input,
+        "{}",
+        json!({"id":"prompt","type":"prompt","message":"Synthetic request"})
+    )
+    .unwrap();
+    input.flush().unwrap();
+    loop {
+        let mut line = String::new();
+        assert_ne!(
+            output.read_line(&mut line).unwrap(),
+            0,
+            "RPC exited before settlement"
+        );
+        let record: Value = serde_json::from_str(&line).unwrap();
+        if record["type"] == "agent_settled" {
+            break;
+        }
+    }
+    writeln!(input, "{}", json!({"id":"stats","type":"get_session_stats"})).unwrap();
+    input.flush().unwrap();
+    drop(input);
+    let mut tail = String::new();
+    output.read_to_string(&mut tail).unwrap();
+    success(&child.wait_with_output().unwrap());
+    let stats = tail
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|record| record["id"] == "stats")
+        .expect("stats response");
+    assert_eq!(stats["success"], true, "{stats}");
+    assert_eq!(stats["data"]["tokens"]["total"], 16);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert!((ledger[0]["cost_usd"].as_f64().unwrap() - 0.000037).abs() < 1e-12);
+    assert_eq!(stats["data"].get("cost"), Some(&Value::Null), "{stats}");
+    mock.finish();
 }
 
 // These regressions must exercise the ordinary protected reader, not a test bypass.
@@ -828,4 +935,76 @@ fn invalid_enabled_factory_refuses_without_http_fallback() {
     assert!(!result.status.success());
     assert!(String::from_utf8_lossy(&result.stderr).contains("Invalid user cloud configuration"));
     assert!(http.requests().is_empty());
+}
+
+#[test]
+fn composed_factory_lists_all_configured_providers_without_credentials_or_http() {
+    let env = TestEnv::new();
+    let mut models = serde_json::Map::new();
+    for provider in ["anthropic", "openrouter", "openai", "chatgpt"] {
+        models.insert(
+            format!("synthetic-{provider}"),
+            json!({"provider":provider,"upstream_model":"synthetic-model",
+                "context_window":32768,"max_output":64,"pricing":{
+                    "input_per_million":1,"output_per_million":2}}),
+        );
+    }
+    env.write(
+        "home/.oxa/agent/settings.json",
+        &json!({"oxa":{"engine":{"inProcessCloud":true,"inProcessLocal":false},
+            "cloud":{"models":models,"daily_budget_usd":1,
+                "subscription_limits":{"daily_requests":3,"daily_tokens":100000}}}})
+        .to_string(),
+    );
+    let http = FakeServer::start(vec![], FakeOpts::default()).unwrap();
+    let result = run_to(&env, &http.url(), &["--list-models"], None);
+    success(&result);
+    let output = String::from_utf8_lossy(&result.stdout);
+    for provider in ["anthropic", "openrouter", "openai", "chatgpt"] {
+        assert!(output.contains(&format!("synthetic-{provider}")), "{output}");
+    }
+    assert_eq!(http.hits("GET", "/v1/models"), 0);
+    assert!(http.requests().is_empty());
+    assert!(!key_path(&env).exists());
+    assert!(!env.home().join(".config/oxc/llm/chatgpt-auth.json").exists());
+    assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+}
+
+#[test]
+fn both_native_switches_route_cloud_model_without_selecting_local() {
+    for configured_local in [false, true] {
+        let env = cloud_env();
+        let mock = MockAnthropic::start(vec![Reply::text("Resolved cloud route", 11, 7, 3, 5)]);
+        settings(&env, &mock.base_url(), true);
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut value: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        value["oxa"]["engine"]["inProcessLocal"] = json!(true);
+        if configured_local {
+            value["defaultModel"] = json!("synthetic-local");
+            value["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+                "models":{"synthetic-local":{"model":"/synthetic/model.gguf"}},
+                "limits":{"synthetic-local":{"context_window":4096,"max_output":64,
+                    "required_available_bytes":1048576}}});
+        }
+        fs::write(path, value.to_string()).unwrap();
+        write_key(&env, &json!({"anthropic":{"api_key":CREDENTIAL}}).to_string());
+        let output = run(
+            &env,
+            &[
+                "--model",
+                MODEL,
+                "--no-session",
+                "--no-tools",
+                "-p",
+                "Synthetic routing",
+            ],
+            None,
+        );
+        success(&output);
+        assert!(String::from_utf8_lossy(&output.stdout).contains("Resolved cloud route"));
+        assert_eq!(mock.requests().len(), 1);
+        assert_eq!(rows(&env)[0]["remote_provider"], "anthropic");
+        assert!(!env.home().join(".oxa/agent/local-engine").exists());
+        mock.finish();
+    }
 }

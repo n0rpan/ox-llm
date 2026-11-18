@@ -1,6 +1,11 @@
 use crate::{CancelToken, Mode, OxaError, ToolClass};
 use std::path::{Path, PathBuf};
 
+/// Quote a value as one POSIX shell word, including empty strings.
+pub fn sh_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
 /// One thing a tool, extension host function or MCP server wants to do. `Policy` decides on it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Access {

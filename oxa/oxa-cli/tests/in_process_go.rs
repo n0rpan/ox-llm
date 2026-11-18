@@ -165,6 +165,295 @@ fn native_go_review_skill_schema_and_tool_loop_settle_subscription_rows() {
     mock.assert_healthy();
 }
 #[test]
+fn native_go_plus_usage_on_finish_settles_subscription() {
+    let env = TestEnv::new();
+    let mut final_usage = usage();
+    final_usage["opencode"]["billing_source"] = json!("go-plus");
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            terminal_frames(
+                &[
+                    json!({"choices":[{"index":0,"delta":{"content":"Synthetic Go Plus complete"},"finish_reason":null}],"usage":null}),
+                    json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":final_usage}),
+                ],
+                true,
+            ),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Synthetic Go Plus complete"));
+    let requests = mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1].body["stream_options"]["include_usage"], true);
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["billing"], "subscription");
+    assert_eq!(ledger[0]["cost_usd"], 0.0);
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert_eq!(ledger[0]["subscription_tokens"], 105);
+    assert!(ledger[0].get("usage_missing").is_none());
+    mock.assert_healthy();
+}
+#[test]
+fn native_go_records_bounded_plan_labels_in_usage_and_status() {
+    for (source, expected) in [
+        (json!("go"), "go"),
+        (json!("go-plus"), "go-plus"),
+        (json!("future-plan"), "future-plan"),
+        (json!("bad plan"), "unknown"),
+        (json!(CREDENTIAL), "unknown"),
+        (Value::Null, "unknown"),
+        (json!("x".repeat(33)), "unknown"),
+    ] {
+        check_go_billing(source, expected, 0.0, true);
+    }
+}
+#[test]
+fn native_go_paid_balance_settles_cost_and_caps_new_process() {
+    check_go_billing(json!("balance"), "balance", 0.01, true);
+}
+#[test]
+fn native_go_subcent_paid_cost_reaches_exact_cap_after_restart() {
+    check_go_billing(json!("balance"), "balance", 4e-9, true);
+}
+#[test]
+fn native_go_paid_byok_without_usd_cap_keeps_existing_admission() {
+    check_go_billing(json!("byok"), "byok", 0.01, false);
+}
+
+fn capped_go(env: &TestEnv, base: &str) {
+    setup(env, base);
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    settings["oxa"]["cloud"]["daily_budget_usd"] = json!(0.01);
+    fs::write(path, settings.to_string()).unwrap();
+}
+
+#[test]
+fn native_go_unknown_price_reserves_usd_before_another_process_forwards() {
+    let env = TestEnv::new();
+    let (held, release) = stream(json!({"content":"Synthetic held reply"}), "stop").gated();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            held,
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Unexpected concurrent forwarding"}), "stop"),
+        ]
+    });
+    capped_go(&env, &format!("http://{}", mock.address()));
+    let first = Command::new(env!("CARGO_BIN_EXE_oxa"))
+        .current_dir(env.work())
+        .env_clear()
+        .envs(env.envs("http://127.0.0.1:9"))
+        .args(["--no-session", "--no-tools", "-p", "Synthetic first request"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    mock.wait_for_requests(2);
+    let second = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic second request"],
+    );
+    release.send(()).unwrap();
+    let first = first.wait_with_output().unwrap();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
+    assert_eq!(
+        mock.requests().len(),
+        3,
+        "only discovery may follow the held request"
+    );
+    assert!(rows(&env).iter().any(|row| row["settled"] == "usage"));
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_unknown_cost_keeps_usd_reserved_after_process_restart() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            terminal_frames(
+                &[json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})],
+                true,
+            ),
+            Reply::json(discovery(base)),
+            stream(
+                json!({"content":"Unexpected forwarding after unknown usage"}),
+                "stop",
+            ),
+        ]
+    });
+    capped_go(&env, &format!("http://{}", mock.address()));
+    let first = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic unknown usage"],
+    );
+    assert!(!first.status.success());
+    let second = run(
+        &env,
+        &["--no-session", "--no-tools", "-p", "Synthetic next process"],
+    );
+    assert_eq!(terminal(&second)["error_class"], "budget_exhausted");
+    assert_eq!(mock.requests().len(), 3);
+    let ledger = rows(&env);
+    let unknown = ledger.iter().find(|row| row["settled"] == "reserved").unwrap();
+    assert_eq!(unknown["cost_usd"], 0.01);
+    assert_eq!(unknown["billing"], "metered");
+    assert_eq!(unknown["usage_missing"], true);
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_settled_paid_and_free_usage_release_unused_usd_across_processes() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        [0.002, 0.0, 0.002]
+            .into_iter()
+            .flat_map(|cost| {
+                let mut reported = usage();
+                reported["cost"] = json!(cost);
+                reported["opencode"]["billing_source"] = json!("balance");
+                [
+                    Reply::json(discovery(base)),
+                    terminal_frames(
+                        &[json!({"choices":[{"index":0,"delta":{"content":"Synthetic settlement"},"finish_reason":"stop"}],"usage":reported})],
+                        true,
+                    ),
+                ]
+            })
+            .collect()
+    });
+    capped_go(&env, &format!("http://{}", mock.address()));
+    for _ in 0..3 {
+        let output = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic settlement"],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 3);
+    assert!(ledger.iter().all(|row| row["settled"] == "usage"));
+    let spent: f64 = ledger.iter().map(|row| row["cost_usd"].as_f64().unwrap()).sum();
+    assert_eq!(spent, 0.004);
+    assert_eq!(mock.requests().len(), 6);
+    mock.assert_healthy();
+}
+fn check_go_billing(source: Value, expected: &str, cost: f64, cap: bool) {
+    let env = TestEnv::new();
+    let mut final_usage = usage();
+    final_usage["opencode"]["billing_source"] = source;
+    final_usage["cost"] = json!(cost);
+    let mock = MockOpenAi::start_with(|base| {
+        let reply = || {
+            terminal_frames(
+                &[
+                    json!({"choices":[{"index":0,"delta":{"content":"Synthetic billing result"},"finish_reason":"stop"}],"usage":final_usage}),
+                ],
+                true,
+            )
+        };
+        vec![
+            Reply::json(discovery(base)),
+            reply(),
+            Reply::json(discovery(base)),
+            reply(),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    if cap {
+        settings["oxa"]["cloud"]["daily_budget_usd"] = json!(if cost > 0.0 { cost } else { 0.01 });
+    }
+    fs::write(path, settings.to_string()).unwrap();
+    let output = run(&env, &["--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["opencode"]["billing_source"], expected);
+    assert_eq!(ledger[0]["cost_usd"], cost);
+    assert_eq!(ledger[0]["settled"], "usage");
+    let last = &terminal(&output)["last_billing"];
+    assert_eq!(last["plan"], expected);
+    assert_eq!(last["cost_usd"], cost);
+    assert_eq!(
+        last["display"],
+        if cost > 0.0 {
+            format!("billed USD {cost:.2}")
+        } else {
+            format!("plan {expected}")
+        }
+    );
+    let session = terminal(&output)["session_id"].as_str().unwrap().to_string();
+    let status = run(&env, &["status", &session]);
+    assert!(
+        status.status.success(),
+        "{}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["last_billing"], *last);
+
+    assert_eq!(
+        ledger[0]["billing"],
+        if cost > 0.0 { "metered" } else { "subscription" }
+    );
+    if cost > 0.0 && cap {
+        let next = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic next request"],
+        );
+        assert_eq!(terminal(&next)["error_class"], "budget_exhausted");
+        assert_eq!(mock.requests().len(), 3);
+        assert_eq!(rows(&env)[0]["cost_usd"], cost);
+    } else if cost > 0.0 {
+        let next = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic next request"],
+        );
+        assert_eq!(
+            next.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&next.stderr)
+        );
+        assert_eq!(mock.requests().len(), 4);
+        let ledger = rows(&env);
+        assert_eq!(ledger.len(), 2);
+        assert_eq!(ledger[0]["cost_usd"], cost);
+        assert_eq!(ledger[1]["cost_usd"], cost);
+    } else {
+        assert_eq!(mock.requests().len(), 2);
+    }
+    mock.assert_healthy();
+}
+#[test]
 fn region_and_rate_refusals_stay_typed_without_paid_fallback() {
     for (status,message,expected) in [(400,"Model is hosted outside Europe and the United States; https://example.invalid/workspaces/synthetic","region_blocked"),
         (429,"Synthetic subscription allowance exhausted","cloud_rate_limited")] {
@@ -297,7 +586,7 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
                 429,
                 "application/json",
                 b"not JSON".to_vec(),
-                vec![("Retry-After", "7".into())],
+                vec![("Retry-After", "0".into())],
             ),
             stream(json!({"content":"Synthetic after rate wait"}), "stop"),
         ]
@@ -331,11 +620,11 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
         .filter(|event| event["type"] == "auto_retry_start")
         .collect();
     assert_eq!(retries.len(), 1);
-    assert_eq!(retries[0]["delayMs"], 1);
+    assert_eq!(retries[0]["delayMs"], 0);
     assert!(retries[0]["errorMessage"]
         .as_str()
         .unwrap()
-        .contains("retry after 7 s"));
+        .contains("retry after 0 s"));
     assert_eq!(mock.requests().len(), 3);
     let ledger = rows(&env);
     assert_eq!(ledger.len(), 2);
@@ -345,6 +634,33 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
     assert!(ledger
         .iter()
         .any(|row| row["status"] == 200 && row["settled"] == "usage"));
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_rate_limit_defers_instead_of_retrying_before_provider_wait() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::raw(
+                429,
+                "application/json",
+                b"{}".to_vec(),
+                vec![("Retry-After", "7".into())],
+            ),
+            stream(json!({"content":"Retry attempted too early"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    enable_one_fast_retry(&env);
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(terminal(&output)["error_class"], "cloud_rate_limited");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("retry after 7 s"));
+    assert_eq!(mock.requests().len(), 2, "only discovery and the refused request");
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["settled"], "refused");
     mock.assert_healthy();
 }
 
@@ -484,7 +800,12 @@ fn native_go_text_deltas_allow_null_or_empty_tool_calls_and_keep_final_usage() {
 
 #[test]
 fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
-    for calls in [json!({}), json!(CREDENTIAL), json!(0), json!(false)] {
+    for (case, calls) in [
+        ("object", json!({})),
+        ("string", json!(CREDENTIAL)),
+        ("number", json!(0)),
+        ("boolean", json!(false)),
+    ] {
         let env = TestEnv::new();
         let mock = MockOpenAi::start_with(|base| {
             vec![
@@ -498,6 +819,10 @@ fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
         setup(&env, &format!("http://{}", mock.address()));
         let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
         assert_eq!(terminal(&output)["error_class"], "stream_broken");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("cause=tool_shape"),
+            "malformed tool shape must be rejected before a framing/EOF error"
+        );
         assert!(!String::from_utf8_lossy(&output.stdout).contains("Synthetic invalid shape"));
         assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
         let ledger = rows(&env);
@@ -506,6 +831,7 @@ fn native_go_wrong_tool_call_shapes_still_fail_closed_with_unknown_usage() {
         assert_eq!(ledger[0]["subscription_tokens"], 32768 + 512);
         assert_eq!(ledger[0]["usage_missing"], true);
         assert_eq!(mock.requests().len(), 2);
+        eprintln!("synthetic_tool_shape_case={case}");
         mock.assert_healthy();
     }
 }
@@ -515,6 +841,17 @@ fn live_discovery_lists_chat_models_only_and_offline_precedes_credentials() {
     let env = TestEnv::new();
     let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
     setup(&env, &format!("http://{}", mock.address()));
+    // Live Go discovery must extend, rather than replace, the same factory's
+    // static routes. No other provider credential is installed by setup().
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    settings["oxa"]["engine"]["inProcessLocal"] = json!(false);
+    for provider in ["anthropic", "openrouter", "openai", "chatgpt"] {
+        settings["oxa"]["cloud"]["models"][format!("synthetic-{provider}")] = json!({"provider":provider,"upstream_model":"synthetic-model",
+                "context_window":32768,"max_output":64,"pricing":{
+                    "input_per_million":1,"output_per_million":2}});
+    }
+    fs::write(&path, settings.to_string()).unwrap();
     let output = run(&env, &["--list-models"]);
     assert_eq!(
         output.status.code(),
@@ -523,7 +860,11 @@ fn live_discovery_lists_chat_models_only_and_offline_precedes_credentials() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(String::from_utf8_lossy(&output.stdout).contains(MODEL));
+    for provider in ["anthropic", "openrouter", "openai", "chatgpt"] {
+        assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("synthetic-{provider}")));
+    }
     assert!(!String::from_utf8_lossy(&output.stdout).contains("synthetic-messages"));
+    assert!(!env.home().join(".config/oxc/llm/chatgpt-auth.json").exists());
     assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
     fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
     let output = run(&env, &["--offline", "-p", "Synthetic request"]);
@@ -832,6 +1173,141 @@ fn encoded_credentials_in_streamed_tool_arguments_never_execute() {
     }
 }
 
+#[test]
+fn dynamic_go_startup_errors_keep_provider_ownership_with_usable_local() {
+    for (mode, expected, hits) in [
+        ("offline", "offline", 0),
+        ("missing-key", "cloud_credentials_unavailable", 0),
+        ("discovery-401", "cloud_credentials_unavailable", 1),
+        ("discovery-json", "cloud_discovery_invalid", 1),
+    ] {
+        for explicit in [false, true] {
+            let replies = match mode {
+                "discovery-401" => vec![Reply::error(401, "invalid_request_error", "Synthetic refusal")],
+                "discovery-json" => vec![Reply::raw(
+                    200,
+                    "application/json",
+                    b"invalid synthetic JSON".to_vec(),
+                    vec![],
+                )],
+                _ => vec![],
+            };
+            let mock = MockOpenAi::start(replies);
+            let env = TestEnv::new();
+            setup(&env, &format!("http://{}", mock.address()));
+            let path = env.home().join(".oxa/agent/settings.json");
+            let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            settings["oxa"]["engine"]["inProcessLocal"] = json!(true);
+            settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+                "models":{"synthetic-local":{"model":"/synthetic/model.gguf"}},
+                "limits":{"synthetic-local":{"context_window":4096,"max_output":64,
+                    "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}});
+            if explicit {
+                settings["defaultModel"] = json!("synthetic-local");
+            }
+            fs::write(path, settings.to_string()).unwrap();
+            if mode == "missing-key" {
+                fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
+            }
+            let mut args = vec![];
+            if mode == "offline" {
+                args.push("--offline");
+            }
+            if explicit {
+                args.extend(["--model", MODEL]);
+            }
+            args.extend(["--no-session", "--no-tools", "-p", "Synthetic Go routing"]);
+            let output = run(&env, &args);
+            assert_eq!(
+                terminal(&output)["error_class"],
+                expected,
+                "mode={mode}, explicit={explicit}, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(!output.status.success());
+            assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+            assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+            assert!(!env.home().join(".oxa/agent/local-engine").exists());
+            assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+            let local = run(&env, &["--offline", "--list-models"]);
+            assert!(
+                local.status.success(),
+                "{}",
+                String::from_utf8_lossy(&local.stderr)
+            );
+            assert!(String::from_utf8_lossy(&local.stdout).contains("synthetic-local"));
+            if mode == "offline" && !explicit {
+                let scoped = run(
+                    &env,
+                    &[
+                        "--offline",
+                        "--models",
+                        "synthetic-local",
+                        "--no-session",
+                        "--no-tools",
+                        "-p",
+                        "Synthetic local scope",
+                    ],
+                );
+                // The explicitly scoped local backend reaches its missing-weight
+                // guard, without an unused Go default hijacking the request.
+                assert_eq!(terminal(&scoped)["error_class"], "not_found");
+                assert!(String::from_utf8_lossy(&scoped.stderr).contains("Local weights are missing"));
+            }
+            assert_eq!(mock.requests().len(), hits);
+            assert!(mock.requests().iter().all(|request| request.method == "GET"));
+            mock.assert_healthy();
+        }
+    }
+}
+
+#[test]
+fn local_go_namespace_alias_with_thinking_suffix_keeps_local_ownership_offline() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start(vec![]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    settings["oxa"]["engine"]["inProcessLocal"] = json!(true);
+    settings["oxa"]["local"] = json!({"binary":"/synthetic/not-launched-oxe",
+        "models":{"opencode/custom-local":{"model":"/synthetic/model.gguf"}},
+        "limits":{"opencode/custom-local":{"context_window":4096,"max_output":64,
+            "allocation_budget":{"kv_bytes_per_position":1,"scratch_bytes":0,"mtp_state_bytes":0,"margin_bytes":1044480}}}});
+    fs::write(path, settings.to_string()).unwrap();
+    for model in [
+        "opencode/custom-local",
+        "opencode/custom-local:high",
+        "opencode/CUSTOM-LOCAL",
+        "opencode/CUSTOM-LOCAL:high",
+    ] {
+        let output = run(
+            &env,
+            &[
+                "--offline",
+                "--model",
+                model,
+                "--no-session",
+                "--no-tools",
+                "-p",
+                "Synthetic local suffix",
+            ],
+        );
+        assert_eq!(
+            terminal(&output)["error_class"],
+            "not_found",
+            "model={model}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Local weights are missing"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(CREDENTIAL));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(CREDENTIAL));
+        assert!(!env.home().join(".oxa/agent/local-engine").exists());
+        assert!(!env.home().join(".oxa/agent/cloud-ledger").exists());
+        assert!(mock.requests().is_empty());
+    }
+    mock.assert_healthy();
+}
+
 // #798 composition controls: the ordinary reader is the only credential reader.
 // Fixtures stay outside source repositories and use only loopback HTTP.
 fn go_diagnostic_env() -> TestEnv {
@@ -1138,4 +1614,278 @@ fn go_private_discovery_diagnostic_is_absent_for_rpc_and_supervised_children() {
         assert_eq!(mock.requests().len(), 1);
         mock.assert_healthy();
     }
+}
+
+fn check_private_stream_cause(cause: &str, reply: Reply) {
+    check_private_stream_details(cause, None, reply);
+}
+fn check_private_stream_details(cause: &str, check: Option<&str>, reply: Reply) {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        let mut replies = vec![Reply::json(discovery(base)), reply];
+        if check.is_some() {
+            replies.push(Reply::json(discovery(base)));
+        }
+        replies
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    if check.is_some() {
+        set_one_request_token_cap(&env);
+    }
+    let output = run(&env, &["--no-tools", "--mode", "json", "-p", "Synthetic request"]);
+    assert!(!output.status.success());
+    assert_eq!(
+        terminal(&output)["error_class"],
+        if cause == "transport" {
+            "engine_http"
+        } else {
+            "stream_broken"
+        }
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "cause={cause}{}\n",
+            check.map(|s| format!(" terminal_check={s}")).unwrap_or_default()
+        )),
+        "missing finite cause {cause}"
+    );
+    assert!(stderr.contains("stage=chat_http status=200"));
+    assert!(!stderr.contains(CREDENTIAL));
+    assert!(!stderr.contains("synthetic-private-frame"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("cause="));
+    assert!(!stdout.contains("terminal_check="));
+    assert!(!stdout.contains(CREDENTIAL));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 502);
+    assert_eq!(ledger[0]["settled"], "reserved");
+    assert_eq!(ledger[0]["usage_missing"], true);
+    assert_eq!(ledger[0]["subscription_tokens"], 33280);
+    for path in session_files(&env.home().join(".oxa/agent/sessions")) {
+        let history = fs::read_to_string(path).unwrap();
+        assert!(!history.contains("cause="));
+        assert!(!history.contains("terminal_check="));
+        assert!(!history.contains(CREDENTIAL));
+    }
+    assert_eq!(mock.requests().len(), 2);
+    if check.is_some() {
+        let continued = run(
+            &env,
+            &["--no-session", "--no-tools", "-p", "Synthetic continuation"],
+        );
+        assert!(!continued.status.success());
+        assert!(String::from_utf8_lossy(&continued.stderr).contains("subscription_limit_exceeded"));
+        assert_eq!(mock.requests().len(), 3, "discovery only; no second chat");
+        assert_eq!(mock.requests().iter().filter(|r| r.method == "POST").count(), 1);
+        assert_eq!(rows(&env)[0]["subscription_tokens"], 33280);
+    }
+    mock.assert_healthy();
+}
+fn cause_reply(bytes: &[u8]) -> Reply {
+    Reply::raw(200, "text/event-stream", bytes.to_vec(), vec![])
+}
+#[test]
+fn go_private_stream_cause_content_type() {
+    check_private_stream_cause(
+        "content_type",
+        Reply::raw(
+            200,
+            "application/json",
+            b"synthetic-private-frame".to_vec(),
+            vec![],
+        )
+        .buffer_header_refusal(),
+    );
+}
+#[test]
+fn go_private_stream_cause_transport() {
+    let mut reply = cause_reply(b"data: ");
+    reply.truncate_transfer = true;
+    check_private_stream_cause("transport", reply);
+}
+#[test]
+fn go_private_stream_cause_eof() {
+    check_private_stream_cause("eof", cause_reply(b""));
+}
+#[test]
+fn go_private_stream_cause_frame_shape() {
+    check_private_stream_cause("frame_shape", cause_reply(b"data: synthetic-private-frame\n\n"));
+}
+#[test]
+fn go_private_stream_cause_tool_shape() {
+    check_private_stream_cause("tool_shape", stream(json!({"tool_calls":{}}), "stop"));
+}
+#[test]
+fn go_private_stream_cause_tool_arguments() {
+    check_private_stream_cause(
+        "tool_arguments",
+        stream(
+            json!({"tool_calls":[{"index":0,"id":"synthetic-call","type":"function","function":{"name":"read","arguments":json!({"path":CREDENTIAL}).to_string()}}]}),
+            "tool_calls",
+        ),
+    );
+}
+#[test]
+fn go_private_stream_cause_terminal_usage() {
+    check_private_stream_details("terminal_usage",Some("done_without_usage"),cause_reply(b"data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"));
+}
+
+fn terminal_frames(frames: &[Value], done: bool) -> Reply {
+    let mut bytes = Vec::new();
+    for frame in frames {
+        bytes.extend_from_slice(format!("data: {frame}\n\n").as_bytes());
+    }
+    if done {
+        bytes.extend_from_slice(b"data: [DONE]\n\n");
+    }
+    cause_reply(&bytes)
+}
+fn terminal_finish() -> Value {
+    json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]})
+}
+#[test]
+fn go_private_terminal_done_without_finish() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("done_without_finish"),
+        terminal_frames(&[], true),
+    );
+}
+#[test]
+fn go_private_terminal_done_without_usage() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("done_without_usage"),
+        terminal_frames(&[terminal_finish()], true),
+    );
+}
+#[test]
+fn go_private_terminal_frame_after_usage() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("frame_after_usage"),
+        terminal_frames(
+            &[
+                terminal_finish(),
+                json!({"choices":[],"usage":usage()}),
+                json!({"choices":[]}),
+            ],
+            true,
+        ),
+    );
+}
+#[test]
+fn go_private_terminal_choices_after_finish() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("choices_after_finish"),
+        terminal_frames(
+            &[
+                terminal_finish(),
+                json!({"choices":[{"index":0,"delta":{},"finish_reason":null}]}),
+            ],
+            true,
+        ),
+    );
+}
+#[test]
+fn go_private_terminal_usage_before_finish() {
+    check_private_stream_details(
+        "terminal_usage",
+        Some("usage_before_finish"),
+        terminal_frames(&[json!({"choices":[],"usage":usage()})], true),
+    );
+}
+#[test]
+fn go_private_terminal_usage_record_invalid() {
+    let mut invalids = Vec::new();
+    for mutation in 0..6 {
+        let mut invalid = usage();
+        match mutation {
+            0 => invalid["cost"] = json!("synthetic-private-frame"),
+            1 => invalid["cost"] = json!(-1),
+            2 => invalid["opencode"]["allowance"] = json!("synthetic-private-frame"),
+            3 => {
+                invalid.as_object_mut().unwrap().remove("prompt_tokens");
+            }
+            4 => {
+                invalid["prompt_tokens"] = json!(u64::MAX);
+                invalid["completion_tokens"] = json!(1);
+            }
+            _ => invalid["prompt_tokens_details"] = json!([]),
+        }
+        invalids.push(invalid);
+    }
+    for invalid in invalids {
+        check_private_stream_details(
+            "terminal_usage",
+            Some("usage_record_invalid"),
+            terminal_frames(&[terminal_finish(), json!({"choices":[],"usage":invalid})], true),
+        );
+    }
+}
+
+#[test]
+fn go_private_terminal_valid_usage_has_no_diagnostic_and_settles_exactly() {
+    let env = go_diagnostic_env();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            stream(json!({"content":"Synthetic success"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("native diagnostic"));
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("terminal_check="));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["status"], 200);
+    assert_eq!(ledger[0]["subscription_tokens"], 105);
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert!(ledger[0].get("usage_missing").is_none());
+    assert_eq!(mock.requests().len(), 2);
+    mock.assert_healthy();
+}
+
+#[test]
+fn a_fresh_go_catalog_cache_serves_the_next_start_without_discovery() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| vec![Reply::json(discovery(base))]);
+    setup(&env, &format!("http://{}", mock.address()));
+    let settings = env.home().join(".oxa/agent/settings.json");
+    let mut doc: Value = serde_json::from_slice(&fs::read(&settings).unwrap()).unwrap();
+    doc["oxa"]["cloud"]["discover_models"] = json!(true);
+    fs::write(settings, doc.to_string()).unwrap();
+    let first = run(&env, &["--list-models"]);
+    assert_eq!(
+        first.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(String::from_utf8_lossy(&first.stdout).contains(MODEL));
+    assert_eq!(mock.requests().len(), 1, "the first start discovers live");
+    assert!(
+        env.agent_dir().join("go-catalog-cache.json").is_file(),
+        "live discovery publishes an entry"
+    );
+    let second = run(&env, &["--list-models"]);
+    assert_eq!(
+        second.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(String::from_utf8_lossy(&second.stdout).contains(MODEL));
+    assert_eq!(
+        mock.requests().len(),
+        1,
+        "a fresh entry is consumed without a network call"
+    );
+    assert!(!String::from_utf8_lossy(&second.stderr).contains("Using a stale OpenCode model catalog."));
+    mock.assert_healthy();
 }

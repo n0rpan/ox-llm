@@ -39,6 +39,13 @@ Offline mode refuses the native cloud path; project settings cannot enable it.
 Keys stay in `~/.config/oxc/llm/cloud-secrets.json`, outside the checkout, owned by
 this user with mode `0600`. The Anthropic entry is an object with an `api_key`
 string under `anthropic`; never put the key in settings. It is read per request.
+Provision this exact existing location under the HOME used to launch oxa, including
+when upgrading; `OXA_AGENT_DIR` and `XDG_CONFIG_HOME` do not relocate this store.
+There is no fallback store, automatic migration or search for credentials.
+Local credential failures report that credentials are unavailable; use the exact
+store location above when troubleshooting. Upstream authentication failures do not
+imply that the local file is missing.
+Remote/API errors and usage ledger rows never include the store path.
 Private usage rows live in `<agent directory>/cloud-ledger/`, normally
 `~/.oxa/agent/cloud-ledger/` (`OXA_AGENT_DIR` changes the agent directory).
 Missing prices or a daily cap refuse requests before credentials or provider I/O.

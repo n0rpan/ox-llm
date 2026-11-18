@@ -191,6 +191,14 @@ fn input(
     text: &mut String,
     cancelled: &AtomicBool,
 ) -> Result<Option<String>, OxaError> {
+    // A terminal closure cancels the entire batch before a queued Enter can accept input.
+    if events.contains(&InputEvent::TerminalClosed) {
+        cancelled.store(true, Ordering::SeqCst);
+        return Err(OxaError::new(
+            oxa_proto::codes::TERMINAL_CLOSED,
+            "terminal disconnected",
+        ));
+    }
     for event in events {
         match event {
             InputEvent::Key(key) if key.is("ctrl+c") || key.is("escape") => {
@@ -219,6 +227,27 @@ fn input(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn terminal_loss_cancels_before_queued_callback_acceptance() {
+        for paste in [false, true] {
+            for closed_first in [false, true] {
+                let stop = AtomicBool::new(false);
+                let mut text = "synthetic callback".to_string();
+                let mut events = vec![
+                    InputEvent::Key(oxa_tui::Key::press("enter")),
+                    InputEvent::TerminalClosed,
+                ];
+                if closed_first {
+                    events.reverse();
+                }
+                let error = input(&events, paste, &mut text, &stop).unwrap_err();
+                assert_eq!(error.code, oxa_proto::codes::TERMINAL_CLOSED);
+                assert!(stop.load(Ordering::SeqCst));
+                assert_eq!(text, "synthetic callback");
+            }
+        }
+    }
+
     fn words(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| s.to_string()).collect()
     }

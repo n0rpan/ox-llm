@@ -48,7 +48,8 @@ pub fn run(session: Session, mut opts: InteractiveOpts) -> Result<i32, OxaError>
             .file
             .as_deref()
             .is_some_and(|f| has_conversation(opts.store.as_ref(), f, &info.id));
-        if talked {
+        // A vanished terminal cannot receive the resume hint; println! would panic on EIO.
+        if talked && code != 129 {
             for line in exit_lines(info.file.as_deref(), &info.id) {
                 println!("{line}");
             }
@@ -362,8 +363,9 @@ pub const WORKER_IDLE_TICK: Duration = Duration::from_millis(50);
 ///
 /// Key rules (pi): Enter while a run is active = steer, Alt+Enter = follow-up
 /// (`Handle::steer` / `Handle::follow_up`); Escape = abort (`Handle::abort`), or
-/// `Handle::abort_retry` during a retry wait; Ctrl+C clears the editor, twice = quit; Ctrl+D on
-/// an empty editor = quit; `!cmd` and `!!cmd` become `SessionCmd::UserBash`.
+/// `Handle::abort_retry` during a retry wait; Ctrl+C aborts an active turn too. While idle,
+/// Ctrl+C clears the editor, or on empty input hints then quits on a second press within
+/// two seconds. Ctrl+D on an empty editor quits; `!cmd` / `!!cmd` become `SessionCmd::UserBash`.
 pub fn run_loop(
     term: &mut dyn Terminal,
     opts: &mut InteractiveOpts,
@@ -481,6 +483,7 @@ pub fn worker_loop_with(
     let mut ui_proxy = UiProxy::new(ui.clone());
     let mut last = StatusModel::default();
     stop.enter(session.handle());
+    let mut memory_status = session.inner().engine.local_memory_status(&session.state().model);
     let _ = out.send(WorkerMsg::Session(session_info(&session)));
     let mut session = Some(session);
     // Commands are taken through a backlog so a `Shutdown` anywhere behind queued work is
@@ -491,6 +494,13 @@ pub fn worker_loop_with(
         // An extension's `ctx.newSession()` / `ctx.switchSession()` is applied as a reopen
         // before the next command (the commands queued behind it run in the new session).
         if let Some(s) = session.as_mut() {
+            // A prompt/preload may load the child; idle unload may remove it without
+            // a session swap. Publish only changed in-process observations (no I/O).
+            let observed = s.inner().engine.local_memory_status(&s.state().model);
+            if observed != memory_status {
+                memory_status = observed;
+                let _ = out.send(WorkerMsg::Session(session_info(s)));
+            }
             s.enable_swap();
             let asked = match s.take_swap_request() {
                 None => None,
@@ -780,6 +790,11 @@ fn session_info(s: &Session) -> SessionInfo {
         id: state.session_id,
         commands: s.commands(),
         engine_url: info.base_url.clone(),
+        memory_policy: s
+            .inner()
+            .engine
+            .local_memory_status(&state.model)
+            .map(|(_, policy, _)| policy),
         models,
         queue: info.queue,
         shortcuts: s
@@ -1506,6 +1521,25 @@ fn execute(
     out: &Sender<WorkerMsg>,
 ) -> (Result<(), OxaError>, bool) {
     match cmd {
+        SessionCmd::QueuedInput(handle) => {
+            handle.clear_queued_wake();
+            let (steering, follow_up) = handle.queued();
+            // A failed/blocked/interrupted run retains queued input for explicit recovery.
+            // A wake may bridge successful completion, never override that stop boundary.
+            let can_continue = matches!(
+                s.outcome(),
+                oxa_core::RunOutcome::Done | oxa_core::RunOutcome::NothingToDo
+            );
+            let result = if handle.same_instance(&s.handle())
+                && can_continue
+                && (!steering.is_empty() || !follow_up.is_empty())
+            {
+                s.run_queued(sink, ui).map(|_| ())
+            } else {
+                Ok(())
+            };
+            (result, false)
+        }
         SessionCmd::Inbox { session_id } => {
             s.handle().clear_inbox_wake();
             // A coalesced wake may carry an older destination. Only run the
@@ -1516,6 +1550,14 @@ fn execute(
                 Ok(())
             };
             (result, false)
+        }
+        SessionCmd::RecoveryPrompt { handle, text, parts } => {
+            if handle.same_instance(&s.handle()) {
+                (run_prompt(s, text, parts, sink, ui), false)
+            } else {
+                let _ = out.send(WorkerMsg::UnsentPrompt { text, parts });
+                (Ok(()), false)
+            }
         }
         SessionCmd::Prompt { text, parts } => (run_prompt(s, text, parts, sink, ui), false),
         SessionCmd::Compact { instructions } => {
@@ -2418,3 +2460,6 @@ mod toolcall_stream_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod steering_tests;

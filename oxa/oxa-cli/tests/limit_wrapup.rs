@@ -1,7 +1,7 @@
 //! #332 step 4: limits finish active tools, save a final commit/session, and exit interrupted.
 use oxa_fake::{FakeOpts, FakeServer, ScriptTurn, TestEnv};
 use oxa_session::{FsStore, SessionStore};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -31,15 +31,44 @@ fn fixture() -> TestEnv {
     env
 }
 
-fn server() -> FakeServer {
-    FakeServer::start(vec![
-        ScriptTurn::tool("edit","bash",r#"{"command":"printf draft > change.txt; printf started > started; sleep 0.5; printf finished > tool-finished"}"#),
-        ScriptTurn::tool("save","bash",r#"{"command":"git add change.txt tool-finished && git commit -m 'Save interrupted work'"}"#),
-    ],FakeOpts::default()).unwrap()
+/// The time limit is measured from the run's start, which includes opening the session and
+/// sending the first request. On a loaded runner that interval can take longer than a few
+/// hundred milliseconds, so a limit that short was sometimes reached before the first turn:
+/// that turn wrapped up on its own and the final commit turn was never requested. Two
+/// seconds leave startup headroom while the held tool below still spans the deadline.
+const TIME_LIMIT: &str = "2";
+/// The first scripted tool holds past [`TIME_LIMIT`] (the limit runs from before the request).
+const TOOL_HOLD: &str = "2.5";
+
+/// The server for [`TIME_LIMIT`]: one held tool call, then the final commit turn.
+fn held_server() -> FakeServer {
+    server_holding(TOOL_HOLD)
 }
 
-fn start(env: &TestEnv, server: &FakeServer, mode: &str, limit: bool) -> Child {
-    start_with_max_time(env, server, mode, limit.then_some("0.2"))
+fn server() -> FakeServer {
+    server_holding("0.5")
+}
+
+fn server_holding(hold: &str) -> FakeServer {
+    let edit = format!(
+        r#"{{"command":"printf draft > change.txt; printf started > started; sleep {hold}; printf finished > tool-finished"}}"#
+    );
+    FakeServer::start(
+        vec![
+            ScriptTurn::tool("edit", "bash", &edit),
+            ScriptTurn::tool(
+                "save",
+                "bash",
+                r#"{"command":"git add change.txt tool-finished && git commit -m 'Save interrupted work'"}"#,
+            ),
+        ],
+        FakeOpts::default(),
+    )
+    .unwrap()
+}
+
+fn start(env: &TestEnv, server: &FakeServer, mode: &str) -> Child {
+    start_with_limits(env, server, mode, None)
 }
 
 fn start_with_max_time(env: &TestEnv, server: &FakeServer, mode: &str, max_time: Option<&str>) -> Child {
@@ -219,8 +248,8 @@ fn max_tokens_finishes_the_active_tool_then_allows_one_final_commit() {
 fn max_time_finishes_the_active_tool_then_allows_one_final_commit() {
     for mode in ["print", "json", "rpc"] {
         let env = fixture();
-        let server = server();
-        let mut child = start(&env, &server, mode, true);
+        let server = held_server();
+        let mut child = start_with_limits(&env, &server, mode, Some(("--max-time", TIME_LIMIT)));
         let _input = child.stdin.take();
         check(&env, &server, child.wait_with_output().unwrap());
     }
@@ -231,7 +260,7 @@ fn sigterm_finishes_the_active_tool_then_allows_one_final_commit() {
     for mode in ["print", "json", "rpc"] {
         let env = fixture();
         let server = server();
-        let mut child = start(&env, &server, mode, false);
+        let mut child = start(&env, &server, mode);
         let started = Instant::now();
         while !env.work().join("started").exists() {
             if child.try_wait().unwrap().is_some() {
@@ -254,6 +283,95 @@ fn sigterm_finishes_the_active_tool_then_allows_one_final_commit() {
     }
 }
 
+// Failure-only facts: no stderr, request bodies, paths, IDs or session text.
+fn wrap_up_diagnostics(env: &TestEnv, server: &FakeServer, output: &Output) -> String {
+    const SUMMARY: &str = "Work retained; continue this session.";
+    fn tag(value: Option<&str>) -> &'static str {
+        match value {
+            None => "none",
+            Some("done") => "done",
+            Some("interrupted") => "interrupted",
+            Some("failed") => "failed",
+            Some("blocked") => "blocked",
+            Some("aborted") => "aborted",
+            Some("engine_http") => "engine_http",
+            Some("engine_down") => "engine_down",
+            Some("stream_broken") => "stream_broken",
+            Some("timeout") => "timeout",
+            Some("budget_exhausted") => "budget_exhausted",
+            Some("chat") => "chat",
+            Some("compaction") => "compaction",
+            Some("branch_summary") => "branch_summary",
+            Some("prefill") => "prefill",
+            Some("subagent") => "subagent",
+            _ => "other",
+        }
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let terminal = stderr
+        .lines()
+        .filter(|line| line.len() <= 16 * 1024)
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|value| value["type"] == "oxa_result")
+        .next_back()
+        .unwrap_or_default();
+    let requests = server.requests();
+    let mut facts = format!(
+        "exit={:?} stdout_bytes={} stdout_summary={} stderr_summary={} outcome={} error_class={} terminal_requests={:?} requests={}",
+        output.status.code(), output.stdout.len(), stdout.contains(SUMMARY), stderr.contains(SUMMARY),
+        tag(terminal["outcome"].as_str()), tag(terminal["error_class"].as_str()),
+        terminal["requests"].as_u64(), requests.len(),
+    );
+    for (index, request) in requests.iter().take(4).enumerate() {
+        facts.push_str(&format!(
+            " request{index}[max_tokens={} thinking={} kind={} wrap_up={} later_instruction={} reply_text={} reply_tools={}]",
+            request.max_tokens, request.thinking, tag(Some(&request.kind)),
+            request.messages.iter().any(|m| m.content.as_deref().is_some_and(|s| s.contains("Wrap up now: this run is ending."))),
+            request.messages.iter().any(|m| m.content.as_deref().is_some_and(|s| s.contains("later instruction"))),
+            request.reply.as_ref().is_some_and(|m| m.content.as_deref().is_some_and(|s| !s.is_empty())),
+            request.reply.as_ref().map_or(0, |m| m.tool_calls.len()),
+        ));
+    }
+    let mut marker = String::new();
+    let marker_read = std::fs::File::open(env.work().join("tool-finished"))
+        .and_then(|file| file.take(16).read_to_string(&mut marker))
+        .is_ok();
+    facts.push_str(&format!(" tool_complete={}", marker_read && marker == "finished"));
+    let sessions = FsStore::new(env.agent_dir().join("sessions")).list(None);
+    facts.push_str(&format!(" sessions={}", sessions.len()));
+    for (index, session) in sessions.iter().take(2).enumerate() {
+        let mut bytes = Vec::new();
+        let read = std::fs::File::open(&session.sref.path)
+            .and_then(|file| file.take(256 * 1024 + 1).read_to_end(&mut bytes))
+            .is_ok();
+        let truncated = bytes.len() > 256 * 1024;
+        let (mut summary_msg, mut summary_shown) = (false, false);
+        let (mut last_visible, mut shown_why) = ("none", "none");
+        if read && !truncated {
+            for line in bytes.split(|b| *b == b'\n') {
+                if let Ok(entry) = oxa_session::decode_entry(line) {
+                    match entry.body {
+                        oxa_proto::EntryBody::Msg { wire, .. } => {
+                            summary_msg |= wire.content.as_deref().is_some_and(|s| s.contains(SUMMARY));
+                            last_visible = wire.role.as_str();
+                            shown_why = "none";
+                        }
+                        oxa_proto::EntryBody::Shown { text, why } => {
+                            summary_shown |= text.contains(SUMMARY);
+                            last_visible = "shown";
+                            shown_why = why;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        facts.push_str(&format!(" session{index}[read={read} truncated={truncated} summary_msg={summary_msg} summary_shown={summary_shown} last_msg_or_shown={last_visible} shown_why={shown_why}]"));
+    }
+    facts
+}
+
 #[test]
 fn wrap_up_can_summarize_and_stops_before_later_prompts() {
     let env = fixture();
@@ -262,7 +380,7 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
             ScriptTurn::tool(
                 "edit",
                 "bash",
-                r#"{"command":"printf draft > change.txt; sleep 0.5; printf finished > tool-finished"}"#,
+                r#"{"command":"printf draft > change.txt; printf finished > tool-finished"}"#,
             ),
             ScriptTurn::text("Work retained; continue this session."),
         ],
@@ -279,39 +397,59 @@ fn wrap_up_can_summarize_and_stops_before_later_prompts() {
             "-p",
             "first instruction",
             "later instruction",
-            "--max-time",
-            "0.2",
+            "--max-tokens",
+            "1",
         ])
         .output()
         .unwrap();
-    assert_eq!(
-        output.status.code(),
-        Some(130),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let diagnostics = || wrap_up_diagnostics(&env, &server, &output);
+    assert_eq!(output.status.code(), Some(130), "{}", diagnostics());
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "Work retained; continue this session."
+        "Work retained; continue this session.",
+        "{}",
+        diagnostics()
     );
-    assert_eq!(server.requests().len(), 2);
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2, "{}", diagnostics());
+    let has_wrap_up = |index: usize| {
+        requests[index].messages.iter().any(|message| {
+            message
+                .content
+                .as_deref()
+                .is_some_and(|text| text.contains("Wrap up now: this run is ending."))
+        })
+    };
+    assert!(!has_wrap_up(0), "{}", diagnostics());
+    assert!(has_wrap_up(1), "{}", diagnostics());
+    assert!(
+        requests[1].max_tokens <= 1024 && !requests[1].thinking,
+        "{}",
+        diagnostics()
+    );
     assert_eq!(
-        std::fs::read_to_string(env.work().join("tool-finished")).unwrap(),
-        "finished"
+        std::fs::read_to_string(env.work().join("tool-finished"))
+            .unwrap_or_else(|_| panic!("tool marker unreadable: {}", diagnostics())),
+        "finished",
+        "{}",
+        diagnostics()
     );
-    assert!(!format!("{:?}", server.requests()).contains("later instruction"));
+    assert!(
+        !format!("{requests:?}").contains("later instruction"),
+        "{}",
+        diagnostics()
+    );
 }
 
 #[test]
 fn a_failed_final_request_retains_the_session_and_typed_failure() {
     let env = fixture();
+    let held_tool = format!(
+        r#"{{"command":"printf draft > change.txt; sleep {TOOL_HOLD}; printf finished > tool-finished"}}"#
+    );
     let server = FakeServer::start(
         vec![
-            ScriptTurn::tool(
-                "edit",
-                "bash",
-                r#"{"command":"printf draft > change.txt; sleep 0.5; printf finished > tool-finished"}"#,
-            ),
+            ScriptTurn::tool("edit", "bash", &held_tool),
             ScriptTurn::fault(oxa_fake::Fault::Http {
                 status: 429,
                 body:
@@ -322,11 +460,26 @@ fn a_failed_final_request_retains_the_session_and_typed_failure() {
         FakeOpts::default(),
     )
     .unwrap();
-    let output = start(&env, &server, "print", true).wait_with_output().unwrap();
+    // The held tool spans the deadline, so the refusal comes from the bounded wrap-up turn.
+    let mut child = start_with_max_time(&env, &server, "print", Some(TIME_LIMIT));
+    let _input = child.stdin.take();
+    let output = child.wait_with_output().unwrap();
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(oxa_proto::EXIT_BUDGET), "{stderr}");
     assert!(stderr.contains("budget_exceeded"));
-    assert_eq!(server.requests().len(), 2, "the final turn is not retried");
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2, "the final turn is not retried");
+    assert_eq!(
+        requests[1].max_tokens, 1024,
+        "the refused turn must be bounded wrap-up"
+    );
+    assert!(
+        requests[1].messages.iter().any(|message| message
+            .content
+            .as_deref()
+            .is_some_and(|text| text.contains("Wrap up now: this run is ending."))),
+        "the refused turn must carry the actual wrap-up instruction"
+    );
     assert_eq!(
         std::fs::read_to_string(env.work().join("tool-finished")).unwrap(),
         "finished"
@@ -435,7 +588,8 @@ fn sigterm_during_wrap_up_restores_default_termination() {
             FakeOpts::default(),
         )
         .unwrap();
-        let mut child = start(&env, &server, "print", limit);
+        // This control sends the next signal after 300ms; keep its original 200ms deadline.
+        let mut child = start_with_max_time(&env, &server, "print", limit.then_some("0.2"));
         let started = Instant::now();
         while !env.work().join("started").exists() && started.elapsed() < Duration::from_secs(10) {
             std::thread::sleep(Duration::from_millis(5));

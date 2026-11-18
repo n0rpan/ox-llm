@@ -9,6 +9,7 @@ use crate::{
     accounting::{Outcome, Usage},
     anthropic_client::{self, Cancellation, Chat, Client, Control},
     catalog::Provider,
+    catalog_discovery::{Source, Status},
     ledger::Context,
     policy::Refusal,
     runtime::{Call, HistorySeal, Runtime},
@@ -106,9 +107,33 @@ impl std::error::Error for Error {}
 pub struct Gateway {
     runtime: Runtime,
     client: Client,
+    go_base: Option<String>,
+    go_usage: tokio::sync::Mutex<Option<CachedGoUsage>>,
     #[cfg(feature = "upstream-openai")]
     openai: crate::openai::client::Client,
 }
+
+struct CachedGoUsage {
+    account: [u8; 32],
+    fetched_at: std::time::Instant,
+    observation: crate::opencode::PlanUsageObservation,
+}
+
+impl CachedGoUsage {
+    fn fresh(&self, account: [u8; 32], max_age: Duration) -> bool {
+        let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+            return false;
+        };
+        let usage = &self.observation.usage;
+        self.account == account
+            && self.fetched_at.elapsed() < max_age
+            && [&usage.rolling, &usage.weekly, &usage.monthly]
+                .into_iter()
+                .flatten()
+                .all(|window| window.resets_at.is_none_or(|reset| reset > now.as_secs()))
+    }
+}
+
 impl Gateway {
     pub fn new(runtime: Runtime) -> Result<Self, Error> {
         Self::with_read_timeout(runtime, Some(Duration::from_secs(1800)))
@@ -120,13 +145,20 @@ impl Gateway {
         Ok(Self {
             runtime,
             client,
+            go_base: None,
+            go_usage: tokio::sync::Mutex::new(None),
             #[cfg(feature = "upstream-openai")]
             openai,
         })
     }
     /// Startup-only bounded live discovery. Reuses this gateway's HTTP pool;
     /// the temporary current-thread driver creates no second queue or daemon.
-    pub fn discover_opencode(&mut self, base: &str, timeout: Duration) -> Result<(), Error> {
+    /// A bounded stale-aware cache entry is consumed before any network call.
+    pub fn discover_opencode(
+        &mut self,
+        base: &str,
+        timeout: Duration,
+    ) -> Result<crate::opencode::cache::State, Error> {
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(Error::OpenCode(crate::opencode::client::Error::Request));
         }
@@ -137,14 +169,213 @@ impl Gateway {
         let result = driver.block_on(self.runtime.discover_go(self.client.transport(), base, timeout));
         driver.shutdown_timeout(Duration::from_secs(1));
         if result.is_ok() {
+            if self.go_base.as_deref() != Some(base) {
+                *self.go_usage.get_mut() = None;
+            }
+            self.go_base = Some(base.to_owned());
             if let Some(diagnostics) = self.runtime.diagnostics() {
                 diagnostics.clear();
             }
         }
         result.map_err(Error::OpenCode)
     }
+    /// Read Go Usage independently of chat, with the default one-minute freshness.
+    pub async fn opencode_plan_usage(
+        &self,
+        timeout: Duration,
+        cancel: &Cancellation,
+    ) -> Result<Option<crate::opencode::PlanUsage>, Error> {
+        self.opencode_plan_observation(timeout, Duration::from_secs(60), cancel)
+            .await
+            .map(|observation| observation.map(|observation| observation.usage))
+    }
+
+    /// Read a current Go Usage observation with owner-selected freshness.
+    /// A zero maximum age explicitly refreshes. Only successful typed snapshots
+    /// are reused, scoped to the current protected credential and discovery base.
+    pub async fn opencode_plan_observation(
+        &self,
+        timeout: Duration,
+        max_age: Duration,
+        cancel: &Cancellation,
+    ) -> Result<Option<crate::opencode::PlanUsageObservation>, Error> {
+        use crate::opencode::{client, PlanUsageObservation};
+        let Some(base) = &self.go_base else {
+            return Ok(None);
+        };
+        let operation = async {
+            let mut cache = self.go_usage.lock().await;
+            let Some(key) = self
+                .runtime
+                .catalog_key(crate::catalog::Provider::OpenCode)
+                .map_err(Error::Refused)?
+            else {
+                *cache = None;
+                return Ok(None);
+            };
+            let account = key.account_scope();
+            if let Some(hit) = cache.as_ref().filter(|hit| hit.fresh(account, max_age)) {
+                return Ok(Some(hit.observation.clone()));
+            }
+            *cache = None;
+            let observation = client::plan_usage(self.client.transport(), base, &key, timeout, cancel)
+                .await
+                .map_err(Error::OpenCode)?
+                .map(|usage| PlanUsageObservation {
+                    usage,
+                    observed_at: std::time::SystemTime::now(),
+                });
+            if let Some(observation) = &observation {
+                *cache = Some(CachedGoUsage {
+                    account,
+                    fetched_at: std::time::Instant::now(),
+                    observation: observation.clone(),
+                });
+            }
+            Ok(observation)
+        };
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(Error::OpenCode(client::Error::Cancelled)),
+            result = tokio::time::timeout(timeout, operation) =>
+                result.map_err(|_| Error::OpenCode(client::Error::Transport))?,
+        }
+    }
+    /// One bounded background refresh of the Go catalog cache, sharing this
+    /// gateway's existing HTTP pool. It never mutates the live catalog, so a
+    /// failure cannot make any other local or configured route fatal.
+    pub fn refresh_opencode(&self, base: &str, timeout: Duration) -> Result<(), Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(Error::OpenCode(crate::opencode::client::Error::Request));
+        }
+        let driver = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| Error::OpenCode(crate::opencode::client::Error::Transport))?;
+        let result = driver.block_on(self.runtime.refresh_go(self.client.transport(), base, timeout));
+        driver.shutdown_timeout(Duration::from_secs(1));
+        result.map_err(Error::OpenCode)
+    }
+    /// Owner-requested catalog discovery, using the established provider pool.
+    /// Missing credentials leave the configured fallback catalog in place.
+    pub fn discover_cloud(&mut self, source: &Source, timeout: Duration) -> Result<Option<Status>, Error> {
+        let Some(key) = self
+            .runtime
+            .catalog_key(source.provider())
+            .map_err(Error::Refused)?
+        else {
+            return Ok(None);
+        };
+        let directory = self.runtime.catalog_cache_dir();
+        use crate::catalog_cache::State;
+        let (state, offers) = match source.load(directory, &key) {
+            // OpenRouter discovery can supply the rates used to reserve spend.
+            Some((State::Stale, _)) if source.provider() == Provider::OpenRouter => {
+                (State::Fresh, self.fetch_catalog(source, &key, timeout)?)
+            }
+            Some(cached) => cached,
+            None => (State::Fresh, self.fetch_catalog(source, &key, timeout)?),
+        };
+        let (missing_price, missing_limits, estimated_price) = self
+            .runtime
+            .apply_provider_catalog(source, offers)
+            .map_err(Error::Refused)?;
+        Ok(Some(Status {
+            state,
+            missing_price,
+            missing_limits,
+            estimated_price,
+        }))
+    }
+    /// Replace only the private cache on a stale refresh.
+    pub fn refresh_cloud(&self, source: &Source, timeout: Duration) -> Result<(), Error> {
+        if let Some(key) = self
+            .runtime
+            .catalog_key(source.provider())
+            .map_err(Error::Refused)?
+        {
+            self.fetch_catalog(source, &key, timeout)?;
+        }
+        Ok(())
+    }
+    fn fetch_catalog(
+        &self,
+        source: &Source,
+        key: &crate::secrets::Key,
+        timeout: Duration,
+    ) -> Result<Vec<crate::catalog_discovery::Offer>, Error> {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            return Err(Error::Upstream(anthropic_client::Error::Request("discovery")));
+        }
+        let driver = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|_| Error::Upstream(anthropic_client::Error::Setup))?;
+        let result =
+            driver.block_on(source.fetch(&self.client, key, timeout, self.runtime.catalog_cache_dir()));
+        driver.shutdown_timeout(Duration::from_secs(1));
+        result.map_err(Error::Upstream)
+    }
     pub fn discovery(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
         self.runtime.discovery()
+    }
+
+    #[cfg(feature = "share")]
+    pub fn with_metered_guest_models(
+        mut self,
+        aliases: std::collections::BTreeSet<String>,
+    ) -> Result<Self, Error> {
+        self.runtime
+            .set_metered_guest_models(aliases)
+            .map_err(Error::Refused)?;
+        Ok(self)
+    }
+
+    #[cfg(feature = "share")]
+    pub fn metered_guest_models(&self) -> impl Iterator<Item = crate::catalog::ModelInfo<'_>> {
+        self.runtime.metered_guest_models()
+    }
+
+    #[cfg(feature = "share")]
+    pub(crate) async fn chat_authenticated_guest<F>(
+        &self,
+        request: &oxa_proto::ChatRequest<'_>,
+        guest: &crate::share::listener::Guest<'_>,
+        temperature: Option<f64>,
+        top_p: Option<f64>,
+        cancel: &Cancellation,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
+        if request.messages.iter().any(|message| {
+            !matches!(
+                message.role,
+                oxa_proto::Role::User | oxa_proto::Role::Assistant | oxa_proto::Role::System
+            ) || message.tool_call_id.is_some()
+                || !message.tool_calls.is_empty()
+                || message.reasoning.is_some()
+        }) {
+            return Err(Error::Refused(guest_history_refusal()));
+        }
+        let mut payload = payload(request).map_err(Error::Refused)?;
+        for (field, value) in [("temperature", temperature), ("top_p", top_p)] {
+            if let Some(value) = value {
+                payload[field] = json!(value);
+            }
+        }
+        if !payload["tools"].as_array().is_some_and(Vec::is_empty) {
+            return Err(Error::Refused(guest_history_refusal()));
+        }
+        if cancel.is_cancelled() {
+            return Err(Error::Upstream(anthropic_client::Error::Cancelled));
+        }
+        let call = self
+            .runtime
+            .begin_authenticated_guest(&payload, guest)
+            .map_err(Error::Refused)?;
+        self.forward(call, &payload, None, cancel, on).await
     }
 
     /// Admit, read the current key, reserve, forward, meter, and settle exactly
@@ -200,7 +431,7 @@ impl Gateway {
         if cancel.is_cancelled() {
             return Err(Error::Upstream(anthropic_client::Error::Cancelled));
         }
-        let mut call = self.runtime.begin(payload, context).map_err(Error::Refused)?;
+        let call = self.runtime.begin(payload, context).map_err(Error::Refused)?;
         if let Some(request) = history {
             if let Err(error) = call.verify_history(request) {
                 call.finish(Outcome::Complete, error.status, Some(error.code))
@@ -208,13 +439,27 @@ impl Gateway {
                 return Err(Error::Refused(error));
             }
         }
+        self.forward(call, payload, history, cancel, on).await
+    }
+
+    async fn forward<F>(
+        &self,
+        mut call: Call<'_>,
+        payload: &Value,
+        history: Option<&oxa_proto::ChatRequest<'_>>,
+        cancel: &Cancellation,
+        on: &mut F,
+    ) -> Result<Completed, Error>
+    where
+        F: FnMut(Event) -> Control + ?Sized,
+    {
         let model = call.model();
-        if model.info().provider == Provider::OpenCode {
-            return self.chat_go(call, payload, cancel, on).await;
-        }
         #[cfg(feature = "upstream-openai")]
         if matches!(model.info().provider, Provider::OpenAi | Provider::ChatGpt) {
             return self.openai_chat(call, payload, history, cancel, on).await;
+        }
+        if model.info().provider == Provider::OpenCode {
+            return self.chat_go(call, payload, cancel, on).await;
         }
         // Transport dispatch is added with the provider client; an admitted
         // foreign route must never be sent using the Anthropic protocol.
@@ -242,12 +487,16 @@ impl Gateway {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
         };
+        let mut forwarding_error = None;
         let mut deliver = |event| match event {
             anthropic_client::Event::Sending => {
                 if cancel.is_cancelled() {
                     return Control::Stop;
                 }
-                call.mark_forwarded();
+                if let Err(error) = call.mark_forwarded() {
+                    forwarding_error = Some(error);
+                    return Control::Stop;
+                }
                 Control::Continue
             }
             anthropic_client::Event::Chunk(chunk) => {
@@ -285,6 +534,9 @@ impl Gateway {
                 )
                 .await
         };
+        if let Some(error) = forwarding_error {
+            return self.finish(call, Err(Error::Refused(error)), history, false, on);
+        }
         // This record survives cancellation during final chunk delivery and
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
@@ -396,6 +648,7 @@ impl Gateway {
         let mut payload = payload.clone();
         payload["max_tokens"] = call.max_output().into();
         let mut usage = None;
+        let mut forwarding_error = None;
         let result = client::stream_observed(
             self.client.transport(),
             client::Chat {
@@ -411,7 +664,10 @@ impl Gateway {
                     if cancel.is_cancelled() {
                         return Control::Stop;
                     }
-                    call.mark_forwarded();
+                    if let Err(error) = call.mark_forwarded() {
+                        forwarding_error = Some(error);
+                        return Control::Stop;
+                    }
                     Control::Continue
                 }
                 client::Event::Chunk(chunk) => {
@@ -423,6 +679,9 @@ impl Gateway {
             self.runtime.diagnostics(),
         )
         .await;
+        if let Some(error) = forwarding_error {
+            return self.finish(call, Err(Error::Refused(error)), None, false, on);
+        }
         let result = self.finish_go(call, result, usage, on);
         if result.is_ok() {
             if let Some(diagnostics) = self.runtime.diagnostics() {
@@ -470,6 +729,16 @@ impl Gateway {
 
 /// Provider conversion consumes the same borrowed request the core passed to
 /// Engine. No request body or stream chunk is encoded/reparsed across that boundary.
+#[cfg(feature = "share")]
+fn guest_history_refusal() -> Refusal {
+    Refusal {
+        status: 403,
+        code: "guest_chat_only",
+        param: "messages",
+        message: "Guest cloud sharing supports text chat only.",
+    }
+}
+
 fn payload(request: &oxa_proto::ChatRequest<'_>) -> Result<Value, Refusal> {
     let mut messages = Vec::with_capacity(request.messages.len() + 1);
     messages.push(json!({"role":"system","content":request.prefix.system_text()}));

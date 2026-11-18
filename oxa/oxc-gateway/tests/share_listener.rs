@@ -261,6 +261,12 @@ async fn authenticated_stream_is_guest_only_settles_usage_and_revocation_is_fres
         / 86400;
     assert_eq!(r.keys.guest_usage(day, &r.id).unwrap(), (1, 8));
     r.keys.revoke(&r.id).unwrap();
+    let usage = r.keys.guest_usage_snapshot(day).unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].key.name, "Device");
+    assert_eq!(usage[0].key.id, r.id);
+    assert!(usage[0].key.revoked);
+    assert_eq!((usage[0].requests, usage[0].tokens), (1, 8));
     assert!(r.models().await.starts_with("HTTP/1.1 401"));
     r.close().await;
 }
@@ -735,4 +741,118 @@ async fn successful_stream_retries_contended_settlement_and_finishes() {
         stop.cancel();
         serving.await.unwrap().unwrap();
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn authenticated_native_bridge_streams_only_guest_text_and_settles_usage() {
+    use oxa_proto::{AssistantTurn, ChatRequest, StreamEvent, ThinkingLevel, WireMsg};
+    use oxc_gateway::share::native::Native;
+
+    let directory = Directory::new();
+    let keys = Arc::new(directory.store());
+    let key = keys.create("Device", limits()).unwrap();
+    let answer = Native::new(
+        vec![Model {
+            alias: "local-model".into(),
+            context_window: 100,
+            max_output: 10,
+            access: Access::Local,
+        }],
+        |request: &ChatRequest<'_>, _: &CancelToken, on: &mut dyn FnMut(StreamEvent)| {
+            assert_eq!(request.model, "local-model");
+            assert_eq!(request.prefix.tools_json, "[]");
+            assert_eq!(request.prefix.system_text(), "Synthetic guest instructions");
+            assert_eq!(request.messages, &[WireMsg::user("Synthetic request")]);
+            assert_eq!(request.max_tokens, 10);
+            on(StreamEvent::Reasoning("Synthetic private reasoning".into()));
+            on(StreamEvent::Text("Synthetic native reply".into()));
+            Ok(AssistantTurn {
+                msg: WireMsg::assistant("Synthetic native reply"),
+                finish: oxa_proto::Finish::Stop,
+                usage: oxa_proto::Usage {
+                    prompt: 3,
+                    completion: 2,
+                    ..oxa_proto::Usage::default()
+                },
+                timings: None,
+                model: "local-model".into(),
+                level: ThinkingLevel::Off,
+            })
+        },
+    )
+    .unwrap();
+    #[cfg(feature = "ledger")]
+    let ledger_path = directory.0.join("request-ledger");
+    #[cfg(feature = "ledger")]
+    let answer = answer.with_ledger(oxc_gateway::ledger::Ledger::open(&ledger_path).unwrap());
+    let server = Server::bind(
+        keys.clone(),
+        Arc::new(answer),
+        Arc::new(Network::local()),
+        config(),
+    )
+    .await
+    .unwrap();
+    let address = server.address().unwrap();
+    let stop = CancelToken::new();
+    let task = tokio::spawn(server.serve(stop.clone()));
+    let mut request = body("local-model");
+    request["messages"].as_array_mut().unwrap().insert(
+        0,
+        json!({"role":"system","content":"Synthetic guest instructions"}),
+    );
+    let request = request.to_string();
+    let response = exchange(
+        address,
+        format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{request}",
+            key.bearer.expose(), request.len()
+        ),
+    ).await;
+    assert!(response.starts_with("HTTP/1.1 200"));
+    assert!(response.contains("Synthetic native reply"));
+    assert!(response.contains("data: [DONE]"));
+    assert!(response.contains("\"prompt_tokens\":3"));
+    assert!(response.contains("\"completion_tokens\":2"));
+    assert!(!response.contains("Synthetic private reasoning"));
+    assert!(!response.contains(key.bearer.expose()));
+    #[cfg(feature = "ledger")]
+    {
+        let paths: Vec<_> = std::fs::read_dir(ledger_path)
+            .unwrap()
+            .map(|item| item.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+            .collect();
+        assert_eq!(paths.len(), 1);
+        let row = std::fs::read_to_string(&paths[0]).unwrap();
+        for private in [
+            key.bearer.expose(),
+            "Device",
+            "Synthetic request",
+            "Synthetic native reply",
+            "Synthetic private reasoning",
+        ] {
+            assert!(!row.contains(private));
+        }
+        let row: Value = serde_json::from_str(&row).unwrap();
+        assert_eq!(row["model"], "local-model");
+        assert_eq!(row["origin"], "api");
+        assert_eq!(row["remote"], false);
+        assert_eq!(row["guest_key"].as_str().unwrap().len(), 32);
+        assert_eq!(row["prompt_tokens"], 3);
+        assert_eq!(row["completion_tokens"], 2);
+    }
+
+    stop.cancel();
+    tokio::time::timeout(Duration::from_secs(3), task)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let day = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        / 86400;
+    assert_eq!(keys.guest_usage(day, &key.info.id).unwrap(), (1, 5));
 }

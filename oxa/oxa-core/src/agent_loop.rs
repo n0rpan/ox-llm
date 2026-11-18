@@ -27,23 +27,54 @@ pub enum RunEnd {
 pub fn append_entry(st: &mut SessionState, body: EntryBody) -> Result<Entry, OxaError> {
     let id = {
         let tree = &st.tree;
-        new_entry_id(&|candidate: &str| tree.get(candidate).is_some())
+        new_entry_id(&|candidate: &str| {
+            tree.get(candidate).is_some()
+                || st
+                    .goal
+                    .as_ref()
+                    .is_some_and(|goal| goal.reserves_entry_id(candidate))
+        })
     };
+    append_entry_with_id(st, id, body)
+}
+
+pub(crate) fn append_entry_with_id(
+    st: &mut SessionState,
+    id: String,
+    body: EntryBody,
+) -> Result<Entry, OxaError> {
+    if st.tree.get(&id).is_some() {
+        return Err(OxaError::new(
+            oxa_proto::codes::INVALID,
+            "Session entry identity already exists.",
+        ));
+    }
     let leaf = st.tree.leaf();
     let parent = if leaf.is_empty() {
         None
     } else {
         Some(leaf.to_string())
     };
+    let entry = append_to_store(st.store.as_ref(), &st.sref, id, parent, body)?;
+    st.tree.push(entry.clone());
+    st.transcript.apply(&entry);
+    Ok(entry)
+}
+
+pub(crate) fn append_to_store(
+    store: &dyn oxa_session::SessionStore,
+    session: &oxa_session::SessionRef,
+    id: String,
+    parent: Option<String>,
+    body: EntryBody,
+) -> Result<Entry, OxaError> {
     let entry = Entry {
         id,
         parent,
         ts_ms: now_ms(),
         body,
     };
-    st.store.append(&st.sref, &entry)?;
-    st.tree.push(entry.clone());
-    st.transcript.apply(&entry);
+    store.append(session, &entry)?;
     Ok(entry)
 }
 
@@ -67,6 +98,14 @@ pub fn run_loop(
     sink: &mut dyn EventSink,
     ui: &mut dyn Ui,
 ) -> Result<RunEnd, OxaError> {
+    crate::goal::deliver_saved(st, sink)?;
+    crate::goal::ensure_begin(st);
+    crate::goal::checkpoint(st, false, sink)?;
+    let steering = st
+        .goal
+        .as_ref()
+        .filter(|goal| goal.pursuing())
+        .and_then(|_| st.shared.open_goal_steering(&st.sref));
     sink.emit(&AgentEvent::AgentStart);
     observe_hooks(st, HookPoint::AgentStart, &Value::Null, sink, ui);
     let mut run_msgs: Vec<EventMessage> = Vec::new();
@@ -74,6 +113,8 @@ pub fn run_loop(
     // last reply): `message_start` / `message_end` each, and they open `agent_end.messages`.
     let opening = crate::fire::opening_messages(st);
     let result = run_inner(st, sink, ui, &mut run_msgs, &opening);
+    crate::goal::checkpoint(st, false, sink)?;
+    drop(steering);
     crate::think::end_run(st, ui);
     sink.emit(&AgentEvent::AgentEnd {
         messages: run_msgs.clone(),
@@ -93,6 +134,7 @@ fn run_inner(
 ) -> Result<RunEnd, OxaError> {
     let mut turn_index: u32 = 0;
     let mut schema_repaired = None;
+    let mut pending_completion = None;
     let mut done = crate::done::DoneState::default();
     done.begin(st);
     let mut wrapping_up = false;
@@ -101,6 +143,9 @@ fn run_inner(
     // `oxa.maxTurns` (default unset: no limit): model replies of this run (#507).
     let max_turns = st.settings.u32(crate::repeat::MAX_TURNS, 0);
     'turns: loop {
+        if crate::goal::terminal(st) {
+            return Ok(RunEnd::Stopped);
+        }
         if max_turns > 0 && turn_index >= max_turns && !wrapping_up {
             let e = crate::repeat::turn_limit_error(max_turns);
             persist(
@@ -479,6 +524,7 @@ fn run_inner(
         run_msgs.push(reply.clone());
         account_reply(st, turn.timings, usage);
         st.last_usage = Some(usage);
+        crate::goal::checkpoint(st, true, sink)?;
         // F4: capabilities that only a loaded engine reports (`/props` `oxe_hints`): re-read
         // once after the first reply while `prefill_only` is still false, and after a request
         // that recovered from a model load or restart. Never per request otherwise.
@@ -494,6 +540,9 @@ fn run_inner(
 
         let calls = turn.msg.tool_calls.clone();
         if !calls.is_empty() {
+            if let Some(goal) = &st.goal {
+                goal.note_tools();
+            }
             // A reply cut by the output limit may carry truncated arguments: fail, never run.
             let results = if turn.finish == Finish::Length {
                 fail_truncated_calls(st, &calls, sink, ui)
@@ -549,6 +598,34 @@ fn run_inner(
             );
             turn_index += 1;
 
+            crate::goal::account(st, false)?;
+            if crate::goal::terminal(st) {
+                let _ = crate::done::check(st, &mut done, sink, ui);
+                if st.stats.done_failed {
+                    if let Some(goal) = &st.goal {
+                        goal.reject_completion();
+                    }
+                }
+                if let Some(goal) = st
+                    .goal
+                    .clone()
+                    .filter(|goal| goal.snapshot().status == oxa_session::GoalStatus::Done)
+                {
+                    match crate::repair::schema_repair_turn(st, &turn, &mut schema_repaired, sink) {
+                        Ok(false) => {}
+                        repair => {
+                            pending_completion = goal.defer_completion();
+                            crate::goal::checkpoint(st, false, sink)?;
+                            repair?;
+                            continue;
+                        }
+                    }
+                }
+                crate::goal::checkpoint(st, false, sink)?;
+                return Ok(RunEnd::Stopped);
+            }
+            crate::goal::checkpoint(st, false, sink)?;
+
             if st.shared.cancel.is_cancelled() || wrapping_up {
                 return Ok(wrap_up_failure.map_or(RunEnd::Aborted, RunEnd::Failed));
             }
@@ -557,7 +634,25 @@ fn run_inner(
             }
             // The repeat guard gave up: the same call after its notices ends the run.
             if let Some(r) = results.iter().find(|r| r.stop) {
-                let text = crate::repeat::stop_text(&r.tool_name);
+                let mut text = crate::repeat::stop_text(&r.tool_name);
+                let mut code = crate::repeat::ERROR_CODE;
+                if let Some(call) = calls
+                    .iter()
+                    .find(|call| Some(&call.id) == r.msg.tool_call_id.as_ref())
+                {
+                    match crate::advice::on_repeat(st, call, &text, sink)? {
+                        crate::advice::AdviceResult::Continue => continue,
+                        crate::advice::AdviceResult::Refused => {}
+                        crate::advice::AdviceResult::Escalate => {
+                            code = "advisor_escalation_required";
+                            text = "Advice did not resolve the failure. The worker needs a stronger tier."
+                                .into();
+                        }
+                    }
+                }
+                if st.shared.cancel.is_cancelled() {
+                    return Ok(RunEnd::Aborted);
+                }
                 persist(
                     st,
                     EntryBody::Shown {
@@ -574,7 +669,7 @@ fn run_inner(
                 // over, so a failure is not sent back to the model.
                 let _ = crate::done::check(st, &mut done, sink, ui);
                 // Giving up is not a finished task: a caller must not read it as success.
-                return Ok(RunEnd::Failed(OxaError::new(crate::repeat::ERROR_CODE, text)));
+                return Ok(RunEnd::Failed(OxaError::new(code, text)));
             }
             // Steering drains after the tool batch, each message as a user message.
             deliver_steering(st, sink, ui, run_msgs)?;
@@ -643,6 +738,22 @@ fn run_inner(
         if crate::repair::schema_repair_turn(st, &turn, &mut schema_repaired, sink)? {
             continue;
         }
+        if let Some(goal) = st.goal.clone().filter(|g| g.engaged()) {
+            crate::goal::checkpoint(st, false, sink)?;
+            if let Some(evidence) = pending_completion.take() {
+                if goal.pursuing() {
+                    goal.finish_completion(evidence)?;
+                }
+                crate::goal::checkpoint(st, false, sink)?;
+                return Ok(RunEnd::Stopped);
+            }
+            let snapshot = goal.stopped();
+            crate::goal::save_checkpoint(st, &snapshot, sink)?;
+            if goal.pursuing() {
+                push_user(st, crate::prompt::GOAL_CONTINUE.into(), sink, ui, run_msgs)?;
+                continue;
+            }
+        }
         return Ok(RunEnd::Stopped);
     }
 }
@@ -691,13 +802,18 @@ fn deliver_steering(
     run_msgs: &mut Vec<EventMessage>,
 ) -> Result<bool, OxaError> {
     let taken = drain_steering(st, sink);
-    if taken.is_empty() {
-        return Ok(false);
-    }
+    let mut appended = !taken.is_empty();
     for text in taken {
         push_user(st, text, sink, ui, run_msgs)?;
     }
-    Ok(true)
+    if let Some(request) = st.shared.take_goal_steering() {
+        // The assignment guard covers the write, then releases before events or hooks.
+        if let Some(entry) = request.deliver(st, append_user_entry)? {
+            announce_user_entry(st, entry, sink, ui, run_msgs);
+            appended = true;
+        }
+    }
+    Ok(appended)
 }
 
 /// Append one user message to the transcript and announce it.
@@ -708,10 +824,35 @@ pub(crate) fn push_user(
     ui: &mut dyn Ui,
     run_msgs: &mut Vec<EventMessage>,
 ) -> Result<(), OxaError> {
-    let wire = WireMsg::user(text.clone());
+    let entry = append_user_entry(st, text)?;
+    announce_user_entry(st, entry, sink, ui, run_msgs);
+    Ok(())
+}
+
+fn append_user_entry(st: &mut SessionState, text: String) -> Result<Entry, OxaError> {
+    append_entry(
+        st,
+        EntryBody::Msg {
+            wire: WireMsg::user(text.clone()),
+            parts: vec![Part::Text(text)],
+            tool: None,
+        },
+    )
+}
+
+fn announce_user_entry(
+    st: &mut SessionState,
+    entry: Entry,
+    sink: &mut dyn EventSink,
+    ui: &mut dyn Ui,
+    run_msgs: &mut Vec<EventMessage>,
+) {
+    let EntryBody::Msg { wire, .. } = &entry.body else {
+        unreachable!("the user append only creates messages");
+    };
     let msg = EventMessage {
         msg: wire.clone(),
-        ts_ms: now_ms(),
+        ts_ms: entry.ts_ms,
         stop: None,
         usage: None,
         model: None,
@@ -720,18 +861,9 @@ pub(crate) fn push_user(
         error_message: None,
     };
     run_msgs.push(msg.clone());
-    persist(
-        st,
-        EntryBody::Msg {
-            wire,
-            parts: vec![Part::Text(text)],
-            tool: None,
-        },
-        sink,
-    )?;
+    sink.emit(&AgentEvent::EntryAppended { entry });
     crate::fire::message(st, HookPoint::MessageStart, &msg, sink, ui);
     crate::fire::message(st, HookPoint::MessageEnd, &msg, sink, ui);
-    Ok(())
 }
 
 /// Take steering messages from the shared queue (`Shared::take_steering` applies the mode)
