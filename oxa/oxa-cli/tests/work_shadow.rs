@@ -1023,7 +1023,7 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     second["headRefOid"] = second_head.into();
     second["timelineItems"]["nodes"][0]["id"] = "removal-2".into();
     rows["p43"] = second;
-    write("queue.json", queue);
+    write("queue.json", queue.clone());
     write(
         "report-attempt.json",
         json!({"id":61,"run_attempt":1,"check_suite_id":51,"head_sha":group,
@@ -1099,6 +1099,7 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
 
     let job_path = env.work().join("report-jobs.json");
     let mut jobs: Value = serde_json::from_str(&fs::read_to_string(job_path).unwrap()).unwrap();
+    let valid_jobs = jobs.clone();
     jobs["jobs"][1]["name"] = "Unrelated check".into();
     write("report-jobs.json", jobs);
     let result = invoke(&env, &args);
@@ -1117,6 +1118,7 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     // This REST reply fits in isolation, but the board has already used part of the budget.
     let attempt_path = env.work().join("report-attempt.json");
     let mut attempt: Value = serde_json::from_str(&fs::read_to_string(&attempt_path).unwrap()).unwrap();
+    let valid_attempt = attempt.clone();
     let cap = 4 * 1024 * 1024;
     attempt["padding"] = "a".repeat(cap - 512).into();
     assert!(attempt.to_string().len() < cap);
@@ -1124,7 +1126,41 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     let result = invoke(&env, &args);
     assert_eq!(result.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&result.stderr).contains("GitHub Actions response exceeds its limit"));
-    assert_eq!(fs::read_to_string(log).unwrap(), updated);
+    assert_eq!(fs::read_to_string(&log).unwrap(), updated);
+
+    write("report-jobs.json", valid_jobs);
+    write("report-attempt.json", valid_attempt);
+    write("report-artifacts.json", listing(&digest));
+    let early = &mut queue["data"]["repository"]["p43"]["timelineItems"]["nodes"][0];
+    let before_completion = json!("2025-12-31T23:59:59Z");
+    early["createdAt"] = before_completion.clone();
+    for check in early["beforeCommit"]["statusCheckRollup"]["contexts"]["nodes"]
+        .as_array_mut()
+        .unwrap()
+    {
+        check["completedAt"] = before_completion.clone();
+    }
+    write("queue.json", queue);
+    let result = invoke(&env, &args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let text = fs::read_to_string(log).unwrap();
+    let sample: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert_eq!(
+        sample["queue_rejections"][0]["verified_test_reports"][0]["failed_check_runs"],
+        json!([11, 12])
+    );
+    assert_eq!(sample["queue_rejections"][1]["removal_event"], "removal-2");
+    assert!(sample["queue_rejections"][1]
+        .get("verified_test_reports")
+        .is_none());
+    assert_eq!(
+        fs::read_to_string(env.work().join("report-reads")).unwrap(),
+        "read\nread\nread\n"
+    );
 }
 
 #[test]

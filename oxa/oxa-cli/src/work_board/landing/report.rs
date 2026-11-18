@@ -9,10 +9,17 @@ use oxa_work::board::queue::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
     path::Path,
     process::Command,
 };
+
+struct AttemptRead {
+    workflow: Value,
+    jobs: Value,
+    artifacts: Value,
+    verified_archives: BTreeSet<(u64, u64, String)>,
+}
 
 pub(in crate::work_board) struct Settings {
     workflow_path: String,
@@ -99,6 +106,7 @@ impl Reader<'_> {
         settings: &mut Settings,
     ) -> Result<(), String> {
         let mut previous = std::mem::take(&mut settings.verified);
+        let mut attempts_read = BTreeMap::new();
         for rejection in rejections {
             let mut attempts = BTreeMap::<_, Vec<_>>::new();
             for id in rejection.workflow_checks() {
@@ -110,7 +118,16 @@ impl Reader<'_> {
                 let key = (rejection.removal_event().to_owned(), run, attempt);
                 let proof = match previous.remove(&key) {
                     Some(saved) if saved.failed_check_runs == checks => Some(saved),
-                    _ => self.verify_attempt_reports(rejection, checks, (run, attempt), settings)?,
+                    _ => {
+                        let sources = match attempts_read.entry((run, attempt)) {
+                            Entry::Occupied(entry) => entry.into_mut(),
+                            Entry::Vacant(entry) => {
+                                entry.insert(self.read_attempt(run, attempt, &settings.workflow_path)?)
+                            }
+                        };
+                        let Some(sources) = sources else { continue };
+                        self.verify_attempt_reports(rejection, checks, (run, attempt), settings, sources)?
+                    }
                 };
                 if let Some(proof) = proof {
                     rejection.record_verified_reports(proof.clone());
@@ -121,23 +138,36 @@ impl Reader<'_> {
         Ok(())
     }
 
+    fn read_attempt(
+        &self,
+        run: u64,
+        attempt: u64,
+        workflow_path: &str,
+    ) -> Result<Option<AttemptRead>, String> {
+        let workflow = self.actions_json(&format!("runs/{run}/attempts/{attempt}"))?;
+        if workflow["path"].as_str() != Some(workflow_path) {
+            return Ok(None);
+        }
+        Ok(Some(AttemptRead {
+            workflow,
+            jobs: self.actions_json(&format!("runs/{run}/attempts/{attempt}/jobs?per_page=100"))?,
+            artifacts: self.actions_json(&format!("runs/{run}/artifacts?per_page=100"))?,
+            verified_archives: BTreeSet::new(),
+        }))
+    }
+
     fn verify_attempt_reports(
         &self,
         rejection: &RejectionEvidence,
         checks: Vec<u64>,
         (run, attempt): (u64, u64),
         settings: &Settings,
+        sources: &mut AttemptRead,
     ) -> Result<Option<VerifiedReports>, String> {
-        let workflow = self.actions_json(&format!("runs/{run}/attempts/{attempt}"))?;
-        if workflow["path"].as_str() != Some(settings.workflow_path.as_str()) {
-            return Ok(None);
-        }
-        let producer_jobs = self.actions_json(&format!("runs/{run}/attempts/{attempt}/jobs?per_page=100"))?;
-        let artifacts = self.actions_json(&format!("runs/{run}/artifacts?per_page=100"))?;
         let metadata = ActionMetadata {
-            attempt: &workflow,
-            jobs: &producer_jobs,
-            artifact_listing: &artifacts,
+            attempt: &sources.workflow,
+            jobs: &sources.jobs,
+            artifact_listing: &sources.artifacts,
         };
         let mut archives = Vec::new();
         for (producer_name, artifact_name) in &settings.reports {
@@ -159,7 +189,11 @@ impl Reader<'_> {
         }
         let mut verified = Vec::new();
         for report in archives {
-            self.verify_archive(&report)?;
+            let key = (report.artifact_id, report.size_bytes, report.sha256.to_owned());
+            if !sources.verified_archives.contains(&key) {
+                self.verify_archive(&report)?;
+                sources.verified_archives.insert(key);
+            }
             verified.push(VerifiedArchive {
                 id: report.artifact_id,
                 sha256: report.sha256.to_owned(),
