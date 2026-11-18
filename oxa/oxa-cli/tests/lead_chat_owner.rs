@@ -138,7 +138,8 @@ fn dedicated_lead_session_keeps_its_own_history_across_cli_turns() {
     assert_eq!(requests.len(), 3);
     for request in &requests[1..] {
         assert!(request.max_tokens <= 4096);
-        assert_eq!(request.tools_json, "[]");
+        // M1: the live owner Lead session declares the worker tool and nothing else.
+        assert!(request.tools_json.contains("\"worker\"") && !request.tools_json.contains("\"bash\""));
         assert!(request.messages.iter().all(|message| {
             !message
                 .content
@@ -254,7 +255,8 @@ fn one_shot_lead_message_shares_the_bounded_owner_conversation_path() {
     assert_eq!(requests.len(), 2);
     for request in &requests {
         assert!(request.max_tokens <= 4096);
-        assert_eq!(request.tools_json, "[]");
+        // M1: the live owner Lead session declares the worker tool and nothing else.
+        assert!(request.tools_json.contains("\"worker\"") && !request.tools_json.contains("\"bash\""));
     }
     assert!(requests[0]
         .messages
