@@ -586,7 +586,7 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
                 429,
                 "application/json",
                 b"not JSON".to_vec(),
-                vec![("Retry-After", "7".into())],
+                vec![("Retry-After", "0".into())],
             ),
             stream(json!({"content":"Synthetic after rate wait"}), "stop"),
         ]
@@ -620,11 +620,11 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
         .filter(|event| event["type"] == "auto_retry_start")
         .collect();
     assert_eq!(retries.len(), 1);
-    assert_eq!(retries[0]["delayMs"], 1);
+    assert_eq!(retries[0]["delayMs"], 0);
     assert!(retries[0]["errorMessage"]
         .as_str()
         .unwrap()
-        .contains("retry after 7 s"));
+        .contains("retry after 0 s"));
     assert_eq!(mock.requests().len(), 3);
     let ledger = rows(&env);
     assert_eq!(ledger.len(), 2);
@@ -634,6 +634,33 @@ fn native_go_rate_limit_uses_existing_bounded_retry_then_completes() {
     assert!(ledger
         .iter()
         .any(|row| row["status"] == 200 && row["settled"] == "usage"));
+    mock.assert_healthy();
+}
+
+#[test]
+fn native_go_rate_limit_defers_instead_of_retrying_before_provider_wait() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::raw(
+                429,
+                "application/json",
+                b"{}".to_vec(),
+                vec![("Retry-After", "7".into())],
+            ),
+            stream(json!({"content":"Retry attempted too early"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    enable_one_fast_retry(&env);
+    let output = run(&env, &["--no-session", "--no-tools", "-p", "Synthetic request"]);
+    assert_eq!(terminal(&output)["error_class"], "cloud_rate_limited");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("retry after 7 s"));
+    assert_eq!(mock.requests().len(), 2, "only discovery and the refused request");
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["settled"], "refused");
     mock.assert_healthy();
 }
 

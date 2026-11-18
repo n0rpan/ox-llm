@@ -45,6 +45,7 @@ pub struct Runtime {
     diagnostics: Option<crate::diagnostics::Diagnostics>,
     catalog: Catalog,
     billings: BTreeMap<String, Billing>,
+    unpriced_discovered: BTreeMap<String, crate::pricing::Price>,
     #[cfg(feature = "share")]
     guest_models: BTreeSet<String>,
     go_models: BTreeMap<String, crate::opencode::Model>,
@@ -191,6 +192,7 @@ impl Runtime {
             diagnostics: None,
             catalog,
             billings,
+            unpriced_discovered: BTreeMap::new(),
             #[cfg(feature = "share")]
             guest_models: BTreeSet::new(),
             go_models: BTreeMap::new(),
@@ -209,6 +211,15 @@ impl Runtime {
     }
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
         self.catalog.models().filter(|model| supported(model.provider))
+    }
+    /// Trusted user settings, keyed by the exact discovered public alias.
+    pub fn with_unpriced_discovered_pricing(mut self, raw: &Value) -> Result<Self, Refusal> {
+        let bad = || invalid("unpriced_discovered_pricing");
+        for (alias, value) in raw.as_object().ok_or_else(bad)? {
+            let price = crate::pricing::Price::conservative(value).ok_or_else(bad)?;
+            self.unpriced_discovered.insert(alias.clone(), price);
+        }
+        Ok(self)
     }
     /// Enable catalog writes only for the owner-selected discovery setting.
     pub fn with_catalog_cache(mut self) -> Self {
@@ -292,9 +303,10 @@ impl Runtime {
         &mut self,
         source: &Source,
         offers: Vec<Offer>,
-    ) -> Result<(usize, usize), Refusal> {
+    ) -> Result<(usize, usize, usize), Refusal> {
         let same_source = |model: &Model| {
-            model.info().provider == source.provider()
+            model.configured_route().is_none()
+                && model.info().provider == source.provider()
                 && model.endpoint().as_str().trim_end_matches('/') == source.base().trim_end_matches('/')
         };
         let (configured, mut routes): (Vec<_>, Vec<_>) = self
@@ -308,6 +320,7 @@ impl Runtime {
         }
         let mut missing_price = 0;
         let mut missing_limits = 0;
+        let mut estimated_price = 0;
         for offer in offers {
             let explicit: Vec<_> = configured
                 .iter()
@@ -335,12 +348,14 @@ impl Runtime {
                     .zip(max_output)
                     .filter(|(context, output)| output <= context);
                 let price = match (self.billings.get(alias), offer.price.as_ref()) {
+                    (Some(Billing::Metered(configured)), live) if configured.is_estimated() => live.cloned(),
                     (Some(Billing::Metered(configured)), Some(live)) => {
                         Some(configured.clone().overlay_discovered(live))
                     }
                     (Some(Billing::Metered(configured)), None) => Some(configured.clone()),
                     (_, live) => live.cloned(),
-                };
+                }
+                .or_else(|| self.unpriced_discovered.get(alias).cloned());
                 let price = price.filter(|price| {
                     limits.is_none_or(|(context, output)| {
                         price
@@ -368,6 +383,7 @@ impl Runtime {
                 ) else {
                     continue;
                 };
+                estimated_price += usize::from(price.is_estimated());
                 billings.insert(alias.into(), Billing::Metered(price));
                 routes.push(model);
             }
@@ -375,7 +391,7 @@ impl Runtime {
         let catalog = Catalog::new(Access::Enabled, routes).map_err(catalog_error)?;
         self.catalog = catalog;
         self.billings = billings;
-        Ok((missing_price, missing_limits))
+        Ok((missing_price, missing_limits, estimated_price))
     }
     /// Consume the bounded stale-aware cache before any network call, then fall
     /// back to live discovery exactly as before. A cache hit is re-validated by
@@ -582,7 +598,7 @@ impl Runtime {
                         self.key_file
                             .as_ref()
                             .map_err(|_| self.credential_error())?
-                            .read(model.info().provider.as_str())
+                            .read(model.credential_name())
                             .map_err(|_| self.credential_error())?,
                     ))
                 }
@@ -688,15 +704,29 @@ impl<'a> Call<'a> {
         self.credential.key()
     }
     pub fn provider_account_scope(&self) -> [u8; 32] {
-        self.credential.account_scope()
+        let account = self.credential.account_scope();
+        let Some(route) = self.model.configured_route() else {
+            return account;
+        };
+        use sha2::{Digest, Sha256};
+        let mut scope = Sha256::new();
+        scope.update(account);
+        scope.update(route.provider().as_bytes());
+        scope.update([0]);
+        scope.update(self.model.endpoint().as_str().as_bytes());
+        scope.finalize().into()
     }
     /// Provider-bound conversation hint, distinct from the private ledger's
     /// session identifier. Neither the raw session id nor the salt leaves here.
     pub fn provider_session_hint(&self) -> Result<String, Refusal> {
-        self.entry
-            .as_ref()
-            .and_then(|entry| entry.provider_session_hint(self.model.info().provider.as_str()))
-            .ok_or_else(|| invalid("session"))
+        let entry = self.entry.as_ref().ok_or_else(|| invalid("session"))?;
+        let hint = match self.model.configured_route() {
+            Some(route) => {
+                entry.provider_session_hint(&format!("{}\0{}", route.provider(), self.model.endpoint()))
+            }
+            None => entry.provider_session_hint(self.model.info().provider.as_str()),
+        };
+        hint.ok_or_else(|| invalid("session"))
     }
     pub fn openai_auth_handle(&self) -> Result<OpenAiAuthHandle, Refusal> {
         match (self.model.info().provider, &self.credential) {
@@ -747,9 +777,10 @@ impl<'a> Call<'a> {
                 request.messages,
             )
     }
-    pub fn mark_forwarded(&mut self) {
+    pub fn mark_forwarded(&mut self) -> Result<(), Refusal> {
+        self.hold.as_mut().expect("unsettled call").mark_forwarded()?;
         self.forwarded = true;
-        self.hold.as_mut().expect("unsettled call").mark_forwarded();
+        Ok(())
     }
     pub fn observe(&mut self, chunk: &Value) {
         if self.model.info().provider == Provider::OpenCode {
@@ -816,6 +847,13 @@ impl<'a> Call<'a> {
             }
             if !self.forwarded {
                 fields["settled"] = json!("not_forwarded");
+                if fields
+                    .as_object_mut()
+                    .and_then(|row| row.remove("estimated_cost_usd"))
+                    .is_some()
+                {
+                    fields["cost_usd"] = json!(0.0);
+                }
             }
             saved = entry.append_redacting(&fields, status, error, &|value| self.credential.redact(value))?;
             Ok(())
@@ -885,6 +923,10 @@ mod discovery_budget_tests {
                 ..Options::default()
             },
         )
+        .unwrap()
+        .with_unpriced_discovered_pricing(&json!({alias:{
+            "input_per_million":100, "output_per_million":100
+        }}))
         .unwrap();
         let source = Source::new(provider, base).unwrap();
         let offer = Offer {
@@ -895,7 +937,7 @@ mod discovery_budget_tests {
         };
         assert_eq!(
             runtime.apply_provider_catalog(&source, vec![offer]).unwrap(),
-            (0, 0)
+            (0, 0, 0)
         );
         let info = runtime.catalog.resolve(Some(alias)).unwrap().info();
         assert_eq!(info.context_window, 4096);

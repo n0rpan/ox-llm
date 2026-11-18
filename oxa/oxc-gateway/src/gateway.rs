@@ -107,9 +107,33 @@ impl std::error::Error for Error {}
 pub struct Gateway {
     runtime: Runtime,
     client: Client,
+    go_base: Option<String>,
+    go_usage: tokio::sync::Mutex<Option<CachedGoUsage>>,
     #[cfg(feature = "upstream-openai")]
     openai: crate::openai::client::Client,
 }
+
+struct CachedGoUsage {
+    account: [u8; 32],
+    fetched_at: std::time::Instant,
+    observation: crate::opencode::PlanUsageObservation,
+}
+
+impl CachedGoUsage {
+    fn fresh(&self, account: [u8; 32], max_age: Duration) -> bool {
+        let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+            return false;
+        };
+        let usage = &self.observation.usage;
+        self.account == account
+            && self.fetched_at.elapsed() < max_age
+            && [&usage.rolling, &usage.weekly, &usage.monthly]
+                .into_iter()
+                .flatten()
+                .all(|window| window.resets_at.is_none_or(|reset| reset > now.as_secs()))
+    }
+}
+
 impl Gateway {
     pub fn new(runtime: Runtime) -> Result<Self, Error> {
         Self::with_read_timeout(runtime, Some(Duration::from_secs(1800)))
@@ -121,6 +145,8 @@ impl Gateway {
         Ok(Self {
             runtime,
             client,
+            go_base: None,
+            go_usage: tokio::sync::Mutex::new(None),
             #[cfg(feature = "upstream-openai")]
             openai,
         })
@@ -143,11 +169,77 @@ impl Gateway {
         let result = driver.block_on(self.runtime.discover_go(self.client.transport(), base, timeout));
         driver.shutdown_timeout(Duration::from_secs(1));
         if result.is_ok() {
+            if self.go_base.as_deref() != Some(base) {
+                *self.go_usage.get_mut() = None;
+            }
+            self.go_base = Some(base.to_owned());
             if let Some(diagnostics) = self.runtime.diagnostics() {
                 diagnostics.clear();
             }
         }
         result.map_err(Error::OpenCode)
+    }
+    /// Read Go Usage independently of chat, with the default one-minute freshness.
+    pub async fn opencode_plan_usage(
+        &self,
+        timeout: Duration,
+        cancel: &Cancellation,
+    ) -> Result<Option<crate::opencode::PlanUsage>, Error> {
+        self.opencode_plan_observation(timeout, Duration::from_secs(60), cancel)
+            .await
+            .map(|observation| observation.map(|observation| observation.usage))
+    }
+
+    /// Read a current Go Usage observation with owner-selected freshness.
+    /// A zero maximum age explicitly refreshes. Only successful typed snapshots
+    /// are reused, scoped to the current protected credential and discovery base.
+    pub async fn opencode_plan_observation(
+        &self,
+        timeout: Duration,
+        max_age: Duration,
+        cancel: &Cancellation,
+    ) -> Result<Option<crate::opencode::PlanUsageObservation>, Error> {
+        use crate::opencode::{client, PlanUsageObservation};
+        let Some(base) = &self.go_base else {
+            return Ok(None);
+        };
+        let operation = async {
+            let mut cache = self.go_usage.lock().await;
+            let Some(key) = self
+                .runtime
+                .catalog_key(crate::catalog::Provider::OpenCode)
+                .map_err(Error::Refused)?
+            else {
+                *cache = None;
+                return Ok(None);
+            };
+            let account = key.account_scope();
+            if let Some(hit) = cache.as_ref().filter(|hit| hit.fresh(account, max_age)) {
+                return Ok(Some(hit.observation.clone()));
+            }
+            *cache = None;
+            let observation = client::plan_usage(self.client.transport(), base, &key, timeout, cancel)
+                .await
+                .map_err(Error::OpenCode)?
+                .map(|usage| PlanUsageObservation {
+                    usage,
+                    observed_at: std::time::SystemTime::now(),
+                });
+            if let Some(observation) = &observation {
+                *cache = Some(CachedGoUsage {
+                    account,
+                    fetched_at: std::time::Instant::now(),
+                    observation: observation.clone(),
+                });
+            }
+            Ok(observation)
+        };
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => Err(Error::OpenCode(client::Error::Cancelled)),
+            result = tokio::time::timeout(timeout, operation) =>
+                result.map_err(|_| Error::OpenCode(client::Error::Transport))?,
+        }
     }
     /// One bounded background refresh of the Go catalog cache, sharing this
     /// gateway's existing HTTP pool. It never mutates the live catalog, so a
@@ -184,7 +276,7 @@ impl Gateway {
             Some(cached) => cached,
             None => (State::Fresh, self.fetch_catalog(source, &key, timeout)?),
         };
-        let (missing_price, missing_limits) = self
+        let (missing_price, missing_limits, estimated_price) = self
             .runtime
             .apply_provider_catalog(source, offers)
             .map_err(Error::Refused)?;
@@ -192,6 +284,7 @@ impl Gateway {
             state,
             missing_price,
             missing_limits,
+            estimated_price,
         }))
     }
     /// Replace only the private cache on a stale refresh.
@@ -394,12 +487,16 @@ impl Gateway {
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |t| t.as_secs()),
         };
+        let mut forwarding_error = None;
         let mut deliver = |event| match event {
             anthropic_client::Event::Sending => {
                 if cancel.is_cancelled() {
                     return Control::Stop;
                 }
-                call.mark_forwarded();
+                if let Err(error) = call.mark_forwarded() {
+                    forwarding_error = Some(error);
+                    return Control::Stop;
+                }
                 Control::Continue
             }
             anthropic_client::Event::Chunk(chunk) => {
@@ -437,6 +534,9 @@ impl Gateway {
                 )
                 .await
         };
+        if let Some(error) = forwarding_error {
+            return self.finish(call, Err(Error::Refused(error)), history, false, on);
+        }
         // This record survives cancellation during final chunk delivery and
         // public usage opt-out; both must settle the actual cache categories.
         if let Some(usage) = terminal_usage {
@@ -548,6 +648,7 @@ impl Gateway {
         let mut payload = payload.clone();
         payload["max_tokens"] = call.max_output().into();
         let mut usage = None;
+        let mut forwarding_error = None;
         let result = client::stream_observed(
             self.client.transport(),
             client::Chat {
@@ -563,7 +664,10 @@ impl Gateway {
                     if cancel.is_cancelled() {
                         return Control::Stop;
                     }
-                    call.mark_forwarded();
+                    if let Err(error) = call.mark_forwarded() {
+                        forwarding_error = Some(error);
+                        return Control::Stop;
+                    }
                     Control::Continue
                 }
                 client::Event::Chunk(chunk) => {
@@ -575,6 +679,9 @@ impl Gateway {
             self.runtime.diagnostics(),
         )
         .await;
+        if let Some(error) = forwarding_error {
+            return self.finish(call, Err(Error::Refused(error)), None, false, on);
+        }
         let result = self.finish_go(call, result, usage, on);
         if result.is_ok() {
             if let Some(diagnostics) = self.runtime.diagnostics() {

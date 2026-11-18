@@ -26,6 +26,35 @@ pub fn serve(
     authorize: impl Fn(&TcpStream, &Request<'_>) -> bool + Send + Sync + 'static,
     render: impl Fn(Page, bool) -> String + Send + Sync + 'static,
 ) -> std::io::Result<()> {
+    serve_fixed(listener, authorize, render, None, None)
+}
+
+#[derive(Clone)]
+pub(crate) struct FixedForm {
+    pub csrf: String,
+    pub scheme: &'static str,
+}
+
+pub(crate) enum OwnerSubmission {
+    Message(String),
+    Confirm(String),
+}
+
+pub(crate) type OwnerPost = dyn Fn(OwnerSubmission) -> Result<(), &'static str> + Send + Sync;
+
+#[derive(Clone)]
+pub(crate) struct OwnerForm {
+    pub csrf: String,
+    pub post: Arc<OwnerPost>,
+}
+
+pub(crate) fn serve_fixed(
+    listener: TcpListener,
+    authorize: impl Fn(&TcpStream, &Request<'_>) -> bool + Send + Sync + 'static,
+    render: impl Fn(Page, bool) -> String + Send + Sync + 'static,
+    form: Option<FixedForm>,
+    owner: Option<OwnerForm>,
+) -> std::io::Result<()> {
     if !listener.local_addr()?.ip().is_loopback() {
         return Err(std::io::ErrorKind::PermissionDenied.into());
     }
@@ -38,12 +67,16 @@ pub fn serve(
             continue;
         }
         let (authorize, render, slot) = (authorize.clone(), render.clone(), Slot(active.clone()));
+        let form = form.clone();
+        let owner = owner.clone();
         std::thread::spawn(move || {
             let _slot = slot;
-            let _ = connection(
+            let _ = connection_fixed(
                 stream,
                 |s, r| authorize(s, r),
                 |page, fragment| render(page, fragment),
+                form.as_ref(),
+                owner.as_ref(),
             );
         });
     }
@@ -63,9 +96,19 @@ pub struct Request<'a> {
 /// The callback receives the actual stream so the identity provider can bind OS/proxy
 /// provenance to this request. Neither an address nor a header is a proof by itself.
 pub fn connection(
+    stream: TcpStream,
+    authorize: impl FnOnce(&TcpStream, &Request<'_>) -> bool,
+    render: impl FnOnce(Page, bool) -> String,
+) -> std::io::Result<()> {
+    connection_fixed(stream, authorize, render, None, None)
+}
+
+fn connection_fixed(
     mut stream: TcpStream,
     authorize: impl FnOnce(&TcpStream, &Request<'_>) -> bool,
     render: impl FnOnce(Page, bool) -> String,
+    form: Option<&FixedForm>,
+    owner: Option<&OwnerForm>,
 ) -> std::io::Result<()> {
     let start = Instant::now();
     let mut bytes = Vec::new();
@@ -81,17 +124,63 @@ pub fn connection(
         }
         bytes.push(byte[0]);
     }
-    let allowed = request(&bytes).and_then(|r| {
-        if r.method != "GET" {
+    let allowed = request(&bytes, form.is_some(), owner.is_some()).and_then(|(r, fields)| {
+        let post = r.method == "POST" && r.path == "/chat" && (form.is_some() || owner.is_some());
+        if r.method != "GET" && !post {
             return Err("405 Method Not Allowed");
         }
         if !authorize(&stream, &r) {
             return Err("403 Forbidden");
         }
-        Ok(r.path)
+        let page = if post {
+            let scheme = form.map_or("https", |form| form.scheme);
+            if fields.origin != Some(format!("{scheme}://{}", r.authority).as_str())
+                || fields.kind != Some("application/x-www-form-urlencoded")
+                || (form.is_none() && fields.fetch_site != Some("same-origin"))
+            {
+                return Err("403 Forbidden");
+            }
+            let mut body = vec![0; fields.length];
+            for byte in &mut body {
+                let left = Duration::from_secs(5)
+                    .checked_sub(start.elapsed())
+                    .filter(|d| !d.is_zero())
+                    .ok_or("400 Bad Request")?;
+                stream
+                    .set_read_timeout(Some(left))
+                    .map_err(|_| "400 Bad Request")?;
+                stream
+                    .read_exact(std::slice::from_mut(byte))
+                    .map_err(|_| "400 Bad Request")?;
+            }
+            let fixed = form.and_then(|form| {
+                (body.len() <= 256)
+                    .then(|| fixed_target(&body, &form.csrf))
+                    .flatten()
+            });
+            if let Some(target) = fixed {
+                Some(target)
+            } else {
+                let owner = owner.ok_or("403 Forbidden")?;
+                if scheme != "https" || fields.fetch_site != Some("same-origin") {
+                    return Err("403 Forbidden");
+                }
+                let submission = owner_submission(&body, &owner.csrf).ok_or("403 Forbidden")?;
+                (owner.post)(submission)?;
+                Some("/chat".into())
+            }
+        } else {
+            None
+        };
+        Ok((r.path, page))
     });
+    let location = match &allowed {
+        Ok((_, Some(target))) => format!("Location: {target}\r\n"),
+        _ => String::new(),
+    };
     let (status, kind, body) = match allowed {
-        Ok("/events") => (
+        Ok((_, Some(_))) => ("303 See Other", "text/plain", String::new()),
+        Ok(("/events", None)) => (
             "200 OK",
             "text/event-stream",
             format!(
@@ -99,15 +188,18 @@ pub fn connection(
                 render(Page::Home, true)
             ),
         ),
-        Ok("/style.css") => ("200 OK", "text/css", crate::lead_page::STYLE.into()),
-        Ok("/live.js") => ("200 OK", "text/javascript", crate::lead_page::SCRIPT.into()),
-        Ok(path) => match Page::request(path) {
+        Ok(("/style.css", None)) => ("200 OK", "text/css", crate::lead_page::STYLE.into()),
+        Ok(("/live.js", None)) => ("200 OK", "text/javascript", crate::lead_page::SCRIPT.into()),
+        Ok((path, None)) => match Page::request(path) {
             Some((page, fragment)) => ("200 OK", "text/html", render(page, fragment)),
             None => ("404 Not Found", "text/plain", "Not found".into()),
         },
         Err(status) => (status, "text/plain", "Request refused".into()),
     };
-    let headers = format!("HTTP/1.1 {status}\r\nContent-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'\r\nReferrer-Policy: no-referrer\r\n\r\n", body.len());
+    let has_form = form.is_some() || owner.is_some();
+    let form_action = if has_form { "'self'" } else { "'none'" };
+    let referrer = if has_form { "same-origin" } else { "no-referrer" };
+    let headers = format!("HTTP/1.1 {status}\r\n{location}Content-Type: {kind}; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action {form_action}\r\nReferrer-Policy: {referrer}\r\n\r\n", body.len());
     write_response(
         &mut stream,
         &[headers.as_bytes(), body.as_bytes()],
@@ -142,7 +234,83 @@ fn write_response(stream: &mut TcpStream, parts: &[&[u8]], budget: Duration) -> 
     Ok(())
 }
 
-fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
+#[derive(Default)]
+struct Fields<'a> {
+    origin: Option<&'a str>,
+    fetch_site: Option<&'a str>,
+    kind: Option<&'a str>,
+    length: usize,
+}
+
+fn fixed_target(bytes: &[u8], expected: &str) -> Option<String> {
+    let (mut csrf, mut prompt) = (None, None);
+    for field in std::str::from_utf8(bytes).ok()?.split('&') {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "csrf" if csrf.replace(value).is_none() => {}
+            "prompt" if prompt.replace(value).is_none() => {}
+            _ => return None,
+        }
+    }
+    if csrf != Some(expected) {
+        return None;
+    }
+    let target = format!("/chat?prompt={}", prompt?);
+    let (Page::Chat(_), false) = Page::request(&target)? else {
+        return None;
+    };
+    Some(target)
+}
+
+fn owner_submission(bytes: &[u8], expected: &str) -> Option<OwnerSubmission> {
+    let (mut csrf, mut input) = (None, None);
+    for field in std::str::from_utf8(bytes).ok()?.split('&') {
+        let (key, value) = field.split_once('=')?;
+        match key {
+            "csrf" if csrf.replace(value).is_none() => {}
+            "message" | "proposal_id" if input.replace((key, value)).is_none() => {}
+            _ => return None,
+        }
+    }
+    if csrf != Some(expected) {
+        return None;
+    }
+    match input? {
+        ("message", value) => decode_message(value).map(OwnerSubmission::Message),
+        ("proposal_id", value)
+            if value.len() == 43
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')) =>
+        {
+            Some(OwnerSubmission::Confirm(value.to_owned()))
+        }
+        _ => None,
+    }
+}
+
+fn decode_message(value: &str) -> Option<String> {
+    let mut encoded = value.bytes();
+    let mut decoded = Vec::new();
+    while let Some(byte) = encoded.next() {
+        decoded.push(match byte {
+            b'+' => b' ',
+            b'%' => {
+                let digit = |byte| char::from(byte).to_digit(16).map(|digit| digit as u8);
+                digit(encoded.next()?)? * 16 + digit(encoded.next()?)?
+            }
+            byte => byte,
+        });
+    }
+    let message = String::from_utf8(decoded).ok()?;
+    (!message.trim().is_empty()
+        && !message
+            .chars()
+            .any(|ch| ch.is_control() && !matches!(ch, '\t' | '\r' | '\n')))
+    .then_some(message)
+}
+
+fn request(bytes: &[u8], fixed: bool, owner: bool) -> Result<(Request<'_>, Fields<'_>), &'static str> {
     let text = std::str::from_utf8(bytes).map_err(|_| "400 Bad Request")?;
     if !text.ends_with("\r\n\r\n") {
         return Err("431 Request Header Fields Too Large");
@@ -154,6 +322,7 @@ fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
     }
     let mut login = None;
     let mut authority = None;
+    let (mut fields, mut length) = (Fields::default(), None);
     for line in lines {
         let (name, value) = line.split_once(':').ok_or("400 Bad Request")?;
         if name.is_empty()
@@ -168,24 +337,129 @@ fn request(bytes: &[u8]) -> Result<Request<'_>, &'static str> {
         if name.eq_ignore_ascii_case("host") && authority.replace(value.trim()).is_some() {
             return Err("400 Bad Request");
         }
-        if name.eq_ignore_ascii_case("transfer-encoding")
-            || (name.eq_ignore_ascii_case("content-length") && value.trim() != "0")
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            return Err("400 Bad Request");
+        }
+        if name.eq_ignore_ascii_case("content-length") && length.replace(value.trim()).is_some()
+            || name.eq_ignore_ascii_case("origin") && fields.origin.replace(value.trim()).is_some()
+            || name.eq_ignore_ascii_case("content-type") && fields.kind.replace(value.trim()).is_some()
+            || name.eq_ignore_ascii_case("sec-fetch-site")
+                && fields.fetch_site.replace(value.trim()).is_some()
         {
             return Err("400 Bad Request");
         }
     }
-    Ok(Request {
-        method: first[0],
-        path: first[1],
-        authority: authority.filter(|s| !s.is_empty()).ok_or("400 Bad Request")?,
-        forwarded_login: login,
-    })
+    fields.length = length.unwrap_or("0").parse().map_err(|_| "400 Bad Request")?;
+    if length.is_some_and(|text| text != fields.length.to_string())
+        || fields.length > if owner { 4096 } else { 256 }
+        || fields.length != 0 && !((fixed || owner) && first[0] == "POST" && first[1] == "/chat")
+    {
+        return Err("400 Bad Request");
+    }
+    Ok((
+        Request {
+            method: first[0],
+            path: first[1],
+            authority: authority.filter(|s| !s.is_empty()).ok_or("400 Bad Request")?,
+            forwarded_login: login,
+        },
+        fields,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::net::TcpListener;
+    #[test]
+    fn owner_chat_refuses_bad_identity_origin_fetch_site_and_framing_before_dispatch() {
+        let body = "csrf=fixture&message=hello+Lead";
+        for (allowed, origin, site, framing, expected) in [
+            (false, "https://example.invalid", "same-origin", "", "403"),
+            (true, "https://other.invalid", "same-origin", "", "403"),
+            (true, "https://example.invalid", "same-site", "", "403"),
+            (true, "https://example.invalid", "", "", "403"),
+            (
+                true,
+                "https://example.invalid",
+                "same-origin",
+                "Transfer-Encoding: chunked\r\n",
+                "400",
+            ),
+            (
+                true,
+                "https://example.invalid",
+                "same-origin",
+                "Content-Length: 4097\r\n",
+                "400",
+            ),
+            (true, "https://example.invalid", "same-origin", "", "303"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+            let (server, _) = listener.accept().unwrap();
+            let count = Arc::new(AtomicUsize::new(0));
+            let invoked = count.clone();
+            let handler = std::thread::spawn(move || {
+                let owner = OwnerForm {
+                    csrf: "fixture".into(),
+                    post: Arc::new(move |submission| {
+                        assert!(
+                            matches!(submission, OwnerSubmission::Message(message) if message == "hello Lead")
+                        );
+                        invoked.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    }),
+                };
+                connection_fixed(
+                    server,
+                    |_, _| allowed,
+                    |_, _| panic!("unexpected render"),
+                    None,
+                    Some(&owner),
+                )
+                .unwrap();
+            });
+            let length = if framing.starts_with("Content-Length:") {
+                String::new()
+            } else {
+                format!("Content-Length: {}\r\n", body.len())
+            };
+            // Refused headers never reach the body reader. Do not queue an unread payload
+            // that would turn the fixture's TCP close into a reset.
+            let payload = if expected == "303" { body } else { "" };
+            client.set_read_timeout(Some(Duration::from_secs(6))).unwrap();
+            write!(client, "POST /chat HTTP/1.1\r\nHost: example.invalid\r\nOrigin: {origin}\r\nSec-Fetch-Site: {site}\r\nContent-Type: application/x-www-form-urlencoded\r\n{framing}{length}\r\n{payload}").unwrap();
+            let mut reply = String::new();
+            client.read_to_string(&mut reply).unwrap();
+            handler.join().unwrap();
+            assert!(
+                reply.starts_with(&format!("HTTP/1.1 {expected}")),
+                "authorized={allowed}, origin={origin}, fetch_site={site:?}, framing={framing:?}: {reply}"
+            );
+            assert_eq!(count.load(Ordering::SeqCst), usize::from(expected == "303"));
+            assert_eq!(reply.contains("Location: /chat\r\n"), expected == "303");
+        }
+    }
+
+    #[test]
+    fn owner_confirmation_requires_the_proposal_id_as_the_only_submission() {
+        let id = "a".repeat(43);
+        let allowed = format!("csrf=fixture&proposal_id={id}");
+        assert!(matches!(
+            owner_submission(allowed.as_bytes(), "fixture"),
+            Some(OwnerSubmission::Confirm(received)) if received == id
+        ));
+        for refused in [
+            format!("{allowed}&message=also+run"),
+            format!("{allowed}&proposal_id={id}"),
+            "csrf=fixture&proposal_id=short".into(),
+        ] {
+            assert!(owner_submission(refused.as_bytes(), "fixture").is_none());
+        }
+        assert!(owner_submission(allowed.as_bytes(), "different").is_none());
+    }
+
     fn exchange(request: &str, permitted: bool) -> (String, usize) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();

@@ -112,6 +112,34 @@ fn chat_payload_preserves_tools_reasoning_and_history_but_uses_discovered_route_
     }
 }
 #[test]
+fn chat_only_sends_explicit_reasoning_effort_supported_by_discovery() {
+    let mut model = opencode::models(&discovery(), "https://example.invalid/inference/go")
+        .unwrap()
+        .remove(0);
+    let request = |effort: &str| json!({"messages":[],"reasoning_effort":effort});
+    assert!(model
+        .request(&request("medium"))
+        .unwrap()
+        .get("reasoning_effort")
+        .is_none());
+    model.capabilities["reasoning"] = json!({"supported":true,"effort":["max","none"]});
+    assert_eq!(model.request(&request("max")).unwrap()["reasoning_effort"], "max");
+    for unsupported in ["medium", "none"] {
+        assert!(model
+            .request(&request(unsupported))
+            .unwrap()
+            .get("reasoning_effort")
+            .is_none());
+    }
+    model.capabilities["reasoning"]["supported"] = json!(false);
+    assert!(model
+        .request(&request("max"))
+        .unwrap()
+        .get("reasoning_effort")
+        .is_none());
+}
+
+#[test]
 fn subscription_usage_keeps_token_categories_and_exact_allowance_without_paid_fallback() {
     let parsed = Usage::parse(&usage()).unwrap();
     assert_eq!((parsed.prompt, parsed.completion), (100, 25));

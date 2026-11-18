@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 use std::str::FromStr;
 
 #[derive(Clone, Debug)]
-pub struct Price(Value);
+pub struct Price(Value, bool);
 #[derive(Clone, Copy, Debug)]
 pub enum Cache {
     Tokens { read: u64, write: u64 },
@@ -80,13 +80,22 @@ impl Price {
                     normalized["max_prompt_tokens"] = bound.clone();
                     result.push(normalized);
                 }
-                return Some(Self(json!({"tiers":result})));
+                return Some(Self(json!({"tiers":result}), false));
             }
             if let Some(price) = rates(price) {
-                return Some(Self(price));
+                return Some(Self(price, false));
             }
         }
-        (raw["free"] == true).then(|| Self(json!({"input_per_million":0.0,"output_per_million":0.0})))
+        (raw["free"] == true).then(|| Self(json!({"input_per_million":0.0,"output_per_million":0.0}), false))
+    }
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn conservative(raw: &Value) -> Option<Self> {
+        let price = rates(raw)?;
+        (price["input_per_million"].as_f64()? > 0.0 && price["output_per_million"].as_f64()? > 0.0)
+            .then_some(Self(price, true))
+    }
+    pub fn is_estimated(&self) -> bool {
+        self.1
     }
     pub fn normalized(&self) -> &Value {
         &self.0

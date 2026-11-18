@@ -6,7 +6,7 @@ use serde::{
 };
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     io::{self, Read},
     path::{Path, PathBuf},
@@ -59,6 +59,8 @@ pub enum QueueEvent {
     Error {
         file: PathBuf,
         detail: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        native_task_id: Option<String>,
     },
 }
 #[derive(Clone)]
@@ -81,9 +83,64 @@ enum QueueWorker {
 
 struct NativeWorker {
     claims: board::Claims,
-    worker_id: String,
+    selection: NativeSelection,
     policy: RunPolicy,
     run: Arc<NativeWorkerFn>,
+}
+
+enum NativeSelection {
+    Worker(String),
+    Bound(HashMap<String, BoundNative>),
+}
+
+/// One attempt selected by the trusted Lead caller from the existing Board.
+/// The caller supplies its registered host and selected model independently of the packet.
+pub struct NativeQueueTarget<'a> {
+    pub binding: &'a board::NativeBinding,
+    pub host_id: &'a str,
+    pub model: &'a str,
+}
+
+struct BoundNative {
+    binding: board::NativeBinding,
+    host_id: String,
+    model: String,
+}
+
+impl BoundNative {
+    fn verify(&self, rows: &BTreeMap<u64, board::Assignment>) -> Result<()> {
+        let now = state::now_ms() / 1000;
+        let binding = &self.binding;
+        let already_assigned = rows
+            .values()
+            .any(|row| row.number != binding.number && row.data.busy_for(&row.state, &binding.lease.holder));
+        let valid = rows.get(&binding.number).is_some_and(|row| {
+            row.state.lease.as_ref() == Some(&binding.lease)
+                && row.data.native_binding.as_ref() == Some(binding)
+                && !row.data.import_hold
+                && row.data.dependency.is_none()
+                && row
+                    .data
+                    .item_owner
+                    .as_ref()
+                    .is_some_and(|owner| owner.host_id == self.host_id && now < owner.expires_at)
+        });
+        if !valid || already_assigned {
+            return Err("selected native assignment is no longer runnable on its host".into());
+        }
+        Ok(())
+    }
+
+    fn verify_task(&self, task: &Task) -> Result<()> {
+        if task.id != self.binding.native_task_id
+            || task.branch != self.binding.branch
+            || task.model != self.model
+            || !task.runner_owns_github()
+        {
+            return Err("native packet disagrees with its selected attempt or model".into());
+        }
+        Ok(())
+    }
 }
 
 impl QueueWorker {
@@ -93,11 +150,19 @@ impl QueueWorker {
             Self::Native(worker) => worker,
         };
         let mut locked = LockedTask::acquire(&job.task, &worker.policy)?;
-        let owner = NativeQueueOwner {
-            claims: &worker.claims,
-            worker_id: &worker.worker_id,
-        };
-        job.binding = Some(owner.admit(&job.task)?);
+        job.binding = Some(match &worker.selection {
+            NativeSelection::Worker(worker_id) => NativeQueueOwner {
+                claims: &worker.claims,
+                worker_id,
+            }
+            .admit(&job.task)?,
+            NativeSelection::Bound(selected) => {
+                let target = selected.get(&job.task.id).ok_or("native task was not selected")?;
+                target.verify_task(&job.task)?;
+                target.verify(&worker.claims.assignments()?)?;
+                target.binding.clone()
+            }
+        });
         (worker.run)(&job.task, &mut locked)
     }
 }
@@ -355,6 +420,7 @@ fn scan(
                     emit(QueueEvent::Error {
                         file: file.clone(),
                         detail: detail.clone(),
+                        native_task_id: None,
                     })?;
                 }
             }
@@ -413,7 +479,6 @@ pub fn run_queue(
             df,
         },
         None,
-        None,
         QueueWorker::Manual(worker),
         emit,
     )
@@ -435,7 +500,13 @@ impl QueueRun<'_> {
         worker: Arc<NativeWorkerFn>,
         emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
     ) -> Result<QueueStatus> {
-        self.run_native_with(owner, None, worker, emit)
+        self.run_native_with(
+            owner.claims,
+            NativeSelection::Worker(owner.worker_id.into()),
+            None,
+            worker,
+            emit,
+        )
     }
 
     /// Consume one protected spool packet in memory using the existing queue and worker lifecycle.
@@ -452,32 +523,82 @@ impl QueueRun<'_> {
         if binding.lease.holder != owner.worker_id {
             return Err("native packet belongs to a different worker".into());
         }
-        let packet = crate::helper_queue::take_native_packet(self.directory, binding)?;
-        let task = native::from_packet(binding, &packet)?;
-        self.run_native_with(owner, Some(task), worker, emit)
+        self.run_native_with(
+            owner.claims,
+            NativeSelection::Worker(owner.worker_id.into()),
+            Some(&[binding]),
+            worker,
+            emit,
+        )
+    }
+
+    /// Run a bounded selection in the same queue controller. Every job has its
+    /// own immutable Claims receipt, task lock, worker and model.
+    pub fn run_native_batch(
+        self,
+        claims: &board::Claims,
+        targets: &[NativeQueueTarget<'_>],
+        worker: Arc<NativeWorkerFn>,
+        emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
+    ) -> Result<QueueStatus> {
+        if !self.options.once || targets.is_empty() || targets.len() > MAX_INPUT_TASKS {
+            return Err("native batch requires a bounded one-shot selection".into());
+        }
+        let mut selected = HashMap::new();
+        let mut items = HashSet::new();
+        let mut workers = HashSet::new();
+        let mut branches = HashSet::new();
+        let mut bindings = Vec::with_capacity(targets.len());
+        for target in targets {
+            let binding = target.binding;
+            binding.validate()?;
+            if !items.insert(binding.number)
+                || !workers.insert(&binding.lease.holder)
+                || !branches.insert(&binding.branch)
+                || selected.contains_key(&binding.native_task_id)
+            {
+                return Err("native batch repeats an item, worker, branch or attempt".into());
+            }
+            bindings.push(binding);
+            selected.insert(
+                binding.native_task_id.clone(),
+                BoundNative {
+                    binding: binding.clone(),
+                    host_id: target.host_id.into(),
+                    model: target.model.into(),
+                },
+            );
+        }
+        self.run_native_with(
+            claims,
+            NativeSelection::Bound(selected),
+            Some(&bindings),
+            worker,
+            emit,
+        )
     }
 
     fn run_native_with(
         self,
-        owner: &NativeQueueOwner<'_>,
-        prepared: Option<Task>,
+        claims: &board::Claims,
+        selection: NativeSelection,
+        prepared: Option<&[&board::NativeBinding]>,
         worker: Arc<NativeWorkerFn>,
         emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
     ) -> Result<QueueStatus> {
         let worker = QueueWorker::Native(Arc::new(NativeWorker {
-            claims: owner.claims.clone(),
-            worker_id: owner.worker_id.into(),
+            claims: claims.clone(),
+            selection,
             policy: self.policy.clone(),
             run: worker,
         }));
-        run_queue_inner(self, Some(owner), prepared, worker, emit)
+        run_queue_inner(self, prepared, worker, emit)
     }
 }
 
 fn run_queue_inner(
     queue: QueueRun<'_>,
-    native: Option<&NativeQueueOwner<'_>>,
-    prepared: Option<Task>,
+    prepared: Option<&[&board::NativeBinding]>,
     worker: QueueWorker,
     emit: &mut dyn FnMut(QueueEvent) -> Result<()>,
 ) -> Result<QueueStatus> {
@@ -491,11 +612,27 @@ fn run_queue_inner(
     if options.max == 0 {
         return Err("--max must be positive".into());
     }
+    if prepared.is_some() {
+        crate::helper_queue::directory(directory)?;
+    }
     let directory = directory.canonicalize().map_err(|e| e.to_string())?;
     if !directory.is_dir() {
         return Err("queue path is not a directory".into());
     }
     let _controller = state::lock(&directory.join(".oxa-queue.lock"))?;
+    let selection = match &worker {
+        QueueWorker::Native(native) => match &native.selection {
+            NativeSelection::Bound(selected) => {
+                let rows = native.claims.assignments()?;
+                for target in selected.values() {
+                    target.verify(&rows)?;
+                }
+                Some(selected)
+            }
+            NativeSelection::Worker(_) => None,
+        },
+        QueueWorker::Manual(_) => None,
+    };
     let common = PathBuf::from(checked(super::git(
         policy,
         repo,
@@ -510,16 +647,31 @@ fn run_queue_inner(
     let (tx, rx) = mpsc::channel();
     let mut active = Workers::default();
     let read_directory = prepared.is_none();
-    let mut pending: Vec<_> = prepared
-        .into_iter()
-        .map(|task| Job {
-            task,
-            modified: SystemTime::UNIX_EPOCH,
-            file: directory.clone(),
-            index: 0,
-            binding: None,
-        })
-        .collect();
+    let mut pending = if let Some(bindings) = prepared {
+        let mut bytes = 0;
+        crate::helper_queue::take_native_packets(&directory, bindings, |index, binding, packet| {
+            let task = native::from_packet(binding, &packet)?;
+            if let Some(selected) = selection {
+                selected
+                    .get(&binding.native_task_id)
+                    .ok_or("native task was not selected")?
+                    .verify_task(&task)?;
+            }
+            bytes += task_bytes(&task);
+            if bytes > MAX_QUEUE_BYTES {
+                return Err("native queue exceeds the task input capacity".into());
+            }
+            Ok(Job {
+                task,
+                modified: SystemTime::UNIX_EPOCH,
+                file: directory.clone(),
+                index,
+                binding: None,
+            })
+        })?
+    } else {
+        vec![]
+    };
     let (mut external, mut inputs) = (vec![], Inputs::default());
     let (mut finished, mut failed, mut last) = (0, 0, None);
     loop {
@@ -652,13 +804,17 @@ fn run_queue_inner(
                 if let Some(handle) = active.handles.remove(&job.task.id) {
                     let _ = handle.join();
                 }
-                let record = if let Some(native) = native {
+                let record = if let QueueWorker::Native(native) = &worker {
                     match record.and_then(|record| {
                         let binding = job
                             .binding
                             .as_ref()
                             .ok_or("native admission was not established")?;
-                        native.finish(policy, &job.task, binding, &record)?;
+                        NativeQueueOwner {
+                            claims: &native.claims,
+                            worker_id: &binding.lease.holder,
+                        }
+                        .finish(policy, &job.task, binding, &record)?;
                         Ok(record)
                     }) {
                         Ok(record) => record,
@@ -667,6 +823,7 @@ fn run_queue_inner(
                             emit(QueueEvent::Error {
                                 file: job.file,
                                 detail,
+                                native_task_id: job.binding.map(|binding| binding.native_task_id),
                             })?;
                             continue;
                         }
@@ -693,6 +850,231 @@ fn run_queue_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_controller_runs_two_selected_native_workers_and_settles_each_original_lease() {
+        use crate::{CheckpointKind, Outcome, Step};
+        use board::{assignment::*, *};
+        if crate::lock_process::in_parent() {
+            return;
+        }
+        let directory = crate::test_dir::PrivateDir::new("native-worker-batch");
+        let repo = directory.path().join("repo");
+        let queue = directory.path().join("queue");
+        let claims_dir = directory.path().join("claims");
+        for path in [&repo, &queue, &claims_dir] {
+            fs::DirBuilder::new().mode(0o700).create(path).unwrap();
+        }
+        let claims = Claims::open(&claims_dir).unwrap();
+        let now = state::now_ms() / 1000;
+        claims
+            .import_snapshot(
+                Some(ManualAuthority::Owner),
+                &BTreeMap::from_iter((1..=2).map(|number| {
+                    (
+                        number,
+                        ImportState {
+                            state: AttemptState::default(),
+                            excluded: false,
+                        },
+                    )
+                })),
+                now,
+            )
+            .unwrap();
+        let assignment = Policy {
+            enabled: true,
+            ..Policy::default()
+        };
+        let models = ["gpt-fixture", "deepseek-fixture"];
+        let bindings: Vec<_> = models
+            .iter()
+            .enumerate()
+            .map(|(index, model)| {
+                let number = (index + 1) as u64;
+                let worker = Worker {
+                    id: format!("oxa:fixture/worker-{number}"),
+                    kind: WorkerKind::Oxa,
+                    roles: [Role::Builder].into(),
+                    skills: Default::default(),
+                };
+                let entry = Entry {
+                    number,
+                    head: "fixture-revision".into(),
+                    release_pinned: false,
+                    action: Action::BuildIssue,
+                    lease: None,
+                    attempts_today: 0,
+                    eligible: true,
+                };
+                let receipt = claims
+                    .claim_item_for(&entry, &assignment, &worker, "host-a", (now, 600), |_| Ok(None))
+                    .unwrap()
+                    .unwrap();
+                let branch = format!("agent/{number}");
+                let binding =
+                    NativeBinding::new(number, &format!("{number:064x}"), &receipt.lease, &branch).unwrap();
+                assert!(claims.bind_native(&worker.id, &binding).unwrap());
+                assert!(crate::helper_queue::publish(
+                    &queue,
+                    &binding.key,
+                    &format!("i{number} {model} {branch} main\nSynthetic task\n"),
+                    false,
+                    &assignment,
+                )
+                .unwrap());
+                binding
+            })
+            .collect();
+        let policy = RunPolicy {
+            git_binary: "/usr/bin/git".into(),
+            host_path: "/usr/bin".into(),
+            terminate_binary: None,
+            offline: true,
+            runner_owns_github: false,
+            storage: directory.path().join("runner"),
+        };
+        assert!(Command::new(&policy.git_binary)
+            .current_dir(&repo)
+            .env_clear()
+            .env("HOME", directory.path())
+            .args(["init", "--quiet"])
+            .status()
+            .unwrap()
+            .success());
+        let options = QueueOptions {
+            max: 2,
+            min_free_bytes: 0,
+            once: true,
+        };
+        let run = || QueueRun {
+            repo: &repo,
+            directory: &queue,
+            options: &options,
+            policy: &policy,
+            df: Path::new("/usr/bin/df"),
+        };
+        let models_by_id: HashMap<_, _> = bindings
+            .iter()
+            .zip(models)
+            .map(|(binding, model)| (binding.native_task_id.clone(), model))
+            .collect();
+        let execute: Arc<NativeWorkerFn> = Arc::new(move |task, locked| {
+            assert_eq!(task.model, models_by_id[&task.id]);
+            let mut value = state::State::new(task.clone(), blocked_record(task, String::new()), true);
+            value.record.outcome = Outcome::NothingToDo;
+            let mut writer =
+                state::Writer::new(locked.policy.storage.join(format!("{}.json", task.id)), false);
+            writer
+                .save(&mut value, Step::Finished, &|_: &Record| Ok(()))
+                .unwrap();
+            Ok(value.record)
+        });
+        let mut targets: Vec<_> = bindings
+            .iter()
+            .zip(models)
+            .map(|(binding, model)| NativeQueueTarget {
+                binding,
+                host_id: "host-a",
+                model,
+            })
+            .collect();
+
+        targets[1].host_id = "different-host";
+        assert!(run()
+            .run_native_batch(&claims, &targets, execute.clone(), &mut |_| Ok(()))
+            .is_err());
+        for binding in &bindings {
+            assert!(queue.join(format!("board-{}.txt", binding.key)).is_file());
+        }
+        targets[1].host_id = "host-a";
+        let ready: Vec<_> = bindings
+            .iter()
+            .map(|binding| queue.join(format!("board-{}.txt", binding.key)))
+            .collect();
+        let saved: Vec<_> = ready.iter().map(|path| fs::read(path).unwrap()).collect();
+        let held = directory.path().join("withheld-packet");
+        fs::rename(&ready[1], &held).unwrap();
+        assert!(run()
+            .run_native_batch(&claims, &targets, execute.clone(), &mut |_| Ok(()))
+            .unwrap_err()
+            .contains("packet unavailable"));
+        assert_eq!(
+            fs::read(&ready[0]).expect("missing second packet must leave the first ready"),
+            saved[0]
+        );
+        fs::rename(&held, &ready[1]).unwrap();
+
+        targets[1].model = models[0];
+        assert!(run()
+            .run_native_batch(&claims, &targets, execute.clone(), &mut |_| Ok(()))
+            .is_err());
+        for (path, bytes) in ready.iter().zip(&saved) {
+            assert_eq!(
+                &fs::read(path).expect("rejected batch must leave both packets ready"),
+                bytes
+            );
+        }
+        assert_eq!(fs::read_dir(queue.join("started")).unwrap().count(), 0);
+        assert!(bindings.iter().all(
+            |binding| claims.snapshot().unwrap()[&binding.number].lease.as_ref() == Some(&binding.lease)
+        ));
+
+        targets[1].model = models[1];
+        let failed_binding = &bindings[0];
+        let failed_id = failed_binding.native_task_id.clone();
+        let run_successfully = execute.clone();
+        let mixed: Arc<NativeWorkerFn> = Arc::new(move |task, locked| {
+            if task.id == failed_id {
+                return Err("synthetic native worker failure".into());
+            }
+            run_successfully(task, locked)
+        });
+        let mut both_active = false;
+        let mut completed = HashSet::new();
+        let mut failures = 0;
+        let mut emit = |event| {
+            match event {
+                QueueEvent::State { status } => both_active |= status.active.len() == 2,
+                QueueEvent::Task { record } => {
+                    assert_eq!(record.checkpoint_kind, CheckpointKind::TaskTransition);
+                    let binding = bindings
+                        .iter()
+                        .find(|binding| record.id == binding.native_task_id)
+                        .unwrap();
+                    let rows = claims.assignments().unwrap();
+                    assert!(rows[&binding.number].state.lease.is_none());
+                    assert!(rows[&binding.number].data.native_binding.as_ref() == Some(binding));
+                    assert!(completed.insert(record.id));
+                }
+                error @ QueueEvent::Error { .. } => {
+                    let event = serde_json::to_value(error).unwrap();
+                    assert_eq!(event["detail"], "synthetic native worker failure");
+                    assert_eq!(event["native_task_id"], failed_binding.native_task_id);
+                    failures += 1;
+                }
+            }
+            Ok(())
+        };
+        let status = run()
+            .run_native_batch(&claims, &targets, mixed, &mut emit)
+            .unwrap();
+        assert_eq!((status.finished, status.failed), (1, 1));
+        let rows = claims.assignments().unwrap();
+        assert_eq!(
+            rows[&failed_binding.number].state.lease.as_ref(),
+            Some(&failed_binding.lease)
+        );
+        assert!(rows[&bindings[1].number].state.lease.is_none());
+
+        let resumed = run()
+            .run_native_batch(&claims, &targets[..1], execute, &mut emit)
+            .unwrap();
+        assert_eq!((resumed.finished, resumed.failed), (1, 0));
+        assert!(both_active);
+        assert_eq!((completed.len(), failures), (2, 1));
+    }
+
     #[test]
     fn queue_refuses_oversized_inputs_without_admitting_their_tasks() {
         let dir = std::env::temp_dir().join(format!(

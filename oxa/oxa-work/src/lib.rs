@@ -11,6 +11,7 @@ use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 pub mod board;
+pub mod budget_policy;
 mod checkpoint;
 mod committed;
 pub use committed::{verify_saved_task, VerifiedTask};
@@ -24,7 +25,10 @@ mod publish;
 mod queue;
 pub use notes::{ProblemNote, ReportRecord};
 pub use publish::{inherit_report_lease, publish, report_notes};
-pub use queue::{native_task, run_queue, NativeQueueOwner, QueueEvent, QueueOptions, QueueRun, QueueStatus};
+pub use queue::{
+    native_task, run_queue, NativeQueueOwner, NativeQueueTarget, QueueEvent, QueueOptions, QueueRun,
+    QueueStatus,
+};
 pub mod mirrors;
 pub mod shadow;
 mod state;
@@ -34,6 +38,7 @@ mod tree;
 pub use state::{CheckpointKind, CheckpointObserver, Step};
 mod worker;
 mod worker_wait;
+pub use worker::owner_cli;
 pub use worker::{WorkerInterruption, WorkerOutcome, WorkerResult, WorkerTokens};
 
 #[cfg(test)]
@@ -51,10 +56,17 @@ pub mod events;
 mod facts_io;
 pub use facts_io::require_private_directory;
 mod github;
-pub use github::{pull_request_task, ReviewedPullRequest};
+pub use github::{
+    prepare_pull_request_context, pull_request_fields, pull_request_task, PullRequestContext,
+    ReviewedPullRequest,
+};
 pub mod incidents;
 pub mod situation;
 pub mod standing;
+pub use publish::{
+    Admission, AdmissionAcknowledgment, AdmissionReceipt, DeliveryReceipt, LandingPublisher, NoticeIntent,
+    RejectedLanding, RetryIntent,
+};
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1230,6 +1242,14 @@ fn run_locked(
             return Err("task specification changed; use a new task id".into());
         }
         writer.replay(&old, observer).map_err(RunError::Checkpoint)?;
+        if planned.native
+            && old.record.checkpoint_kind == CheckpointKind::WorkerFinished
+            && old.record.worker_launch_revision.is_some()
+        {
+            // Other tasks can acknowledge the shared repository cursor. The task lock
+            // still fences this exact worker result and the consumer deduplicates it.
+            observer.checkpoint(&old.record).map_err(RunError::Checkpoint)?;
+        }
         // Action recovery cannot turn a changed HEAD into fresh acceptance.
         // Only an explicit rerun starts a new execution for these checkpoints.
         if !rerun && matches!(old.record.step, Step::Publishing | Step::Reporting) {

@@ -54,6 +54,45 @@ fn fields() -> Value {
         "cached_tokens":80,"cache_write_tokens":10,"finish_reason":"stop"})
 }
 #[test]
+fn chat_completions_records_actual_and_estimated_debits() {
+    let home = Home::new();
+    let ledger = Ledger::open(&home.0).unwrap();
+    let daily = ledger.day("20260102").unwrap();
+    let entry = || daily.entry("synthetic-alias", Context::default()).unwrap();
+    let mut fields = json!({"remote":true,"remote_provider":"openai-chat",
+        "remote_model":"synthetic-model","billing":"metered","settled":"usage","cost_usd":0.125});
+
+    let actual = entry().append(&fields, 200, None, None).unwrap();
+    assert_eq!(actual["remote_provider"], "openai-chat");
+    assert_eq!(actual["cost_usd"], 0.125);
+    assert!(actual.get("estimated_cost_usd").is_none());
+
+    fields.as_object_mut().unwrap().remove("cost_usd");
+    fields["settled"] = json!("estimated");
+    fields["estimated_cost_usd"] = json!(0.25);
+    let estimated = entry().append(&fields, 200, None, None).unwrap();
+    assert_eq!(estimated["estimated_cost_usd"], 0.25);
+    assert!(estimated.get("cost_usd").is_none());
+
+    fields["settled"] = json!("reserved");
+    fields["estimated_cost_usd"] = json!(0.5);
+    assert_eq!(
+        entry().append(&fields, 200, None, None).unwrap()["settled"],
+        "reserved"
+    );
+
+    fields["cost_usd"] = json!(0.125);
+    assert!(entry().append(&fields, 200, None, None).is_err());
+    fields.as_object_mut().unwrap().remove("cost_usd");
+    fields["remote_provider"] = json!("synthetic-configured-provider");
+    assert!(entry().append(&fields, 200, None, None).is_err());
+
+    let reopened = Ledger::open(&home.0).unwrap().day("20260102").unwrap();
+    assert_eq!(reopened.budget().spend().unwrap(), 0.875);
+    assert_eq!(home.rows("20260102").len(), 3);
+}
+
+#[test]
 #[cfg(feature = "anthropic-client")]
 fn go_allowance_receipts_accept_only_checked_numeric_fields() {
     let home = Home::new();
@@ -431,7 +470,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         ..Context::default()
     };
     let entry = first.entry("synthetic-alias", context()).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
     })
@@ -442,7 +481,7 @@ fn daily_handles_share_admission_and_record_one_row_before_releasing_each_hold()
         .reserve(&json!(0.005), true, &model(), 1000)
         .unwrap();
     let entry = second.entry("synthetic-alias", context()).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     hold.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
     })
@@ -461,7 +500,7 @@ fn append_failure_stops_all_handles_and_is_not_retried() {
     let daily = ledger.day("20260102").unwrap();
     let mut hold = daily.budget().reserve(&json!(1), true, &model(), 1000).unwrap();
     let entry = daily.entry("synthetic-alias", Context::default()).unwrap();
-    hold.mark_forwarded();
+    hold.mark_forwarded().unwrap();
     let path = home.0.join("requests-20260102.jsonl");
     fs::create_dir(&path).unwrap();
     assert!(hold
@@ -501,7 +540,7 @@ fn midnight_does_not_move_an_admitted_charge_or_discard_an_outstanding_hold() {
         .reserve(&json!(0.005), true, &model(), 1000)
         .is_err());
     let entry = before.entry("synthetic-alias", Context::default()).unwrap();
-    held.mark_forwarded();
+    held.mark_forwarded().unwrap();
     held.finish(&usage(), Outcome::Complete, |fields| {
         entry.append(fields, 200, None, None).map(|_| ())
     })

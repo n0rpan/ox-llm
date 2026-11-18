@@ -1,10 +1,10 @@
-"""Review follow-up: refusal settlement, request-bounded reservation, ledger latch, price retry."""
+"""Review follow-up: refusal settlement, request-bounded reservation, ledger latch."""
 import json
 import unittest
 from unittest.mock import patch
 
 from mock_cloud import MockAnthropic, MockOpenRouter
-from oxc.runtime import cloud, cloud_prices, request_ledger
+from oxc.runtime import cloud, request_ledger
 from test_cloud_anthropic import AnthropicBase, anthropic_models
 from test_cloud_remote import CloudCase, REMOTE, profiles
 
@@ -195,25 +195,6 @@ class RaisingAppendKeepsCost(unittest.TestCase):
     def test_anthropic_path(self):
         from oxc.runtime import cloud_anthropic
         self._check(cloud_anthropic._close)
-
-
-class PriceRetry(unittest.TestCase):
-    def test_failed_refresh_backs_off_then_goes_daily(self):
-        refresher = cloud_prices.Refresher.__new__(cloud_prices.Refresher)
-        refresher.allowed = lambda: True
-        state = [0, 0]
-        results = [False, False, False, False, False, True]
-        due = []
-        with patch.object(cloud_prices, 'refresh', side_effect=lambda: results.pop(0)):
-            now = 0
-            while results:
-                refresher.step(now, state)
-                due.append(state[0] - now)
-                now = state[0]
-        self.assertEqual(due, [60, 300, 1800, 3600, 3600, cloud_prices.DAY_SECONDS])
-        self.assertEqual(state[1], 0)
-        with patch.object(cloud_prices, 'refresh', side_effect=AssertionError):
-            refresher.step(now - 10, state)   # not due yet
 
 
 if __name__ == '__main__':

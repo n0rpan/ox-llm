@@ -68,6 +68,53 @@ async fn bounded(
         out.extend_from_slice(&bytes);
     }
 }
+
+fn versioned_endpoint(base: &str, resource: &str) -> Result<reqwest::Url, Error> {
+    let mut url = super::endpoint(base).map_err(|_| Error::Endpoint)?;
+    url.path_segments_mut()
+        .map_err(|_| Error::Endpoint)?
+        .pop_if_empty()
+        .push("v1")
+        .push(resource);
+    Ok(url)
+}
+
+pub(crate) async fn plan_usage(
+    client: &Client,
+    base: &str,
+    key: &Key,
+    timeout: Duration,
+    cancel: &CancelToken,
+) -> Result<Option<super::PlanUsage>, Error> {
+    const MAX_USAGE: usize = 16 * 1024;
+    let url = versioned_endpoint(base, "usage")?;
+    let operation = async {
+        let request = client
+            .get(url)
+            .header(USER_AGENT, concat!("oxa/", env!("CARGO_PKG_VERSION")))
+            .header(AUTHORIZATION, bearer(key)?);
+        let response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(Error::Cancelled),
+            response = request.send() => response.map_err(|_| Error::Transport)?,
+        };
+        let status = response.status().as_u16();
+        if status != 200 {
+            let retry = crate::rate_limits::retry_after(response.headers())
+                .and_then(|delay| u32::try_from(delay.as_secs()).ok());
+            return Err(Error::Refused(
+                super::refusal(status, &Value::Null).with_retry_after(retry),
+            ));
+        }
+        let bytes = bounded(response, MAX_USAGE, cancel).await?;
+        let body = serde_json::from_slice(&bytes).map_err(|_| Error::Protocol)?;
+        Ok(super::plan_usage::parse(&body))
+    };
+    tokio::time::timeout(timeout, operation)
+        .await
+        .map_err(|_| Error::Transport)?
+}
+
 pub async fn models(
     client: &Client,
     base: &str,
@@ -85,12 +132,7 @@ pub(crate) async fn models_observed(
     cancel: &CancelToken,
     diagnostics: Option<&crate::diagnostics::Diagnostics>,
 ) -> Result<Vec<Model>, Error> {
-    let mut url = super::endpoint(base).map_err(|_| Error::Endpoint)?;
-    url.path_segments_mut()
-        .map_err(|_| Error::Endpoint)?
-        .pop_if_empty()
-        .push("v1")
-        .push("models");
+    let url = versioned_endpoint(base, "models")?;
     let operation = async {
         let request = client
             .get(url)
