@@ -54,6 +54,7 @@ mod sandbox_layout;
 mod share_cmd;
 mod status;
 mod themes;
+mod wait_probe;
 mod wipe_cmd;
 mod work_board;
 pub use work_board::refill_input;

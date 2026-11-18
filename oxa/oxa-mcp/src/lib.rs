@@ -43,6 +43,7 @@ mod manager;
 mod names;
 mod oauth;
 mod offline;
+mod private_file;
 mod proto;
 mod stdio;
 mod transport;
