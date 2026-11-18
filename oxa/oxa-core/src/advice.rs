@@ -143,8 +143,7 @@ pub(crate) fn observe_done(
             identity,
             rounds,
             evidence,
-        } if allow_advice && rounds >= advisor.done_checks_after.get() =>
-        {
+        } if allow_advice && rounds >= advisor.done_checks_after.get() => {
             let key = format!("done_checks:{:x}", Sha256::digest(identity.as_bytes()));
             let point = StuckPoint::for_lease(&advisor.lease_identity, key.as_bytes())?;
             request(
