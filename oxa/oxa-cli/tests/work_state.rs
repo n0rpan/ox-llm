@@ -123,6 +123,29 @@ fn red_work_is_saved_without_reporting_local_acceptance() {
 }
 
 #[test]
+fn task_usage_retains_the_initial_worker_and_repair_after_reopening() {
+    let env = TestEnv::new();
+    setup(&env, r#"["exit 1"]"#);
+    let mut initial = ScriptTurn::text("done");
+    initial.completion_tokens = Some(5);
+    let mut repair = ScriptTurn::text("cannot repair");
+    repair.completion_tokens = Some(7);
+    let (record, requests) = run_observed(&env, vec![initial, repair], &["work", "../tasks.json"], None);
+
+    assert_eq!(record["outcome"], "red", "{record}");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(record["worker"]["tokens"]["completion"], 7);
+    let task_tokens = &record["task_tokens"];
+    assert_eq!(task_tokens["attempts"], 2, "{record}");
+    assert_eq!(task_tokens["complete_attempts"], 2, "{record}");
+    assert_eq!(task_tokens["completion"], 12, "{record}");
+    assert_eq!(&load(&env)["record"]["task_tokens"], task_tokens);
+
+    let reopened = status(&env);
+    assert_eq!(&reopened[0]["task_tokens"], task_tokens);
+}
+
+#[test]
 fn finished_success_is_cached_and_explicit_rerun_keeps_revisions_monotonic() {
     let env = TestEnv::new();
     setup(&env, "[]");
@@ -371,10 +394,18 @@ fn a_parent_crash_retains_session_and_child_lock_then_resumes_the_same_session()
         "{observed}"
     );
     assert_eq!(fs::read(path(&env)).unwrap(), before);
-    let resumed = run(&env, vec![ScriptTurn::text("resumed")]);
+    let mut resumed_turn = ScriptTurn::text("resumed");
+    resumed_turn.completion_tokens = Some(6);
+    let resumed = run(&env, vec![resumed_turn]);
     assert_eq!(resumed["outcome"], "nothing_to_do", "{resumed}");
     assert_eq!(resumed["session_id"], id);
     assert_eq!(resumed["step"], "finished");
+    assert_eq!(resumed["worker"]["tokens"]["completion"], 6, "{resumed}");
+    let task_tokens = &resumed["task_tokens"];
+    assert_eq!(task_tokens["attempts"], 2, "{resumed}");
+    assert_eq!(task_tokens["complete_attempts"], 1, "{resumed}");
+    assert_eq!(task_tokens["completion"], 6, "{resumed}");
+    assert_eq!(&status(&env)[0]["task_tokens"], task_tokens);
 }
 
 #[test]
