@@ -455,6 +455,12 @@ pub enum SessionCmd {
     Inbox {
         session_id: String,
     },
+    /// A finished background job's wake (W4). Unlike `Inbox` it honours the stop boundary: a
+    /// run that ended failed, blocked or interrupted (`oxa.maxTurns` among them) keeps the
+    /// message queued instead of starting a fresh run with a fresh turn budget.
+    JobWake {
+        session_id: String,
+    },
     /// `Session::prompt`. Slash commands that are templates, `/skill:name` or extension
     /// commands are sent as a prompt and expanded by the core.
     Prompt {

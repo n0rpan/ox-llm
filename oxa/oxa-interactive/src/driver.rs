@@ -881,7 +881,7 @@ impl<'a> Loop<'a> {
             let job_cmds = self.cmds.clone();
             self.handle
                 .set_wake_notifier(std::sync::Arc::new(move |session_id: &str| {
-                    let _ = job_cmds.send(SessionCmd::Inbox {
+                    let _ = job_cmds.send(SessionCmd::JobWake {
                         session_id: session_id.to_string(),
                     });
                 }));

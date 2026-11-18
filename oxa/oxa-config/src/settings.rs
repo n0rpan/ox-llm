@@ -113,6 +113,18 @@ impl Settings {
     pub fn bool(&self, key: &str, default: bool) -> bool {
         self.get(key).and_then(Value::as_bool).unwrap_or(default)
     }
+    /// A bool read from the user layer only; a project file never changes it (use for settings
+    /// that start unattended model work). A missing or mistyped value yields `default`.
+    pub fn user_bool(&self, key: &str, default: bool) -> bool {
+        let mut cur = &self.user;
+        for part in key.split('.') {
+            match cur.as_object().and_then(|o| o.get(part)) {
+                Some(v) => cur = v,
+                None => return default,
+            }
+        }
+        cur.as_bool().unwrap_or(default)
+    }
     pub fn u32(&self, key: &str, default: u32) -> u32 {
         self.get(key)
             .and_then(Value::as_u64)

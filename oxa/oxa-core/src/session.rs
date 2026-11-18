@@ -210,8 +210,9 @@ impl Session {
             session_id,
             jobs,
         } = d;
-        // W4: `oxa.jobs.wakeOnFinish` (default on): a finished background job wakes the session.
-        let wake_on_finish = settings.bool("oxa.jobs.wakeOnFinish", true);
+        // W4: `oxa.jobs.wakeOnFinish` (default off, user settings only): a finished background
+        // job wakes the session. A project file cannot turn it on: it starts model turns.
+        let wake_on_finish = settings.user_bool("oxa.jobs.wakeOnFinish", false);
         // H: `defaultModel` (pi settings.md "Startup model ID") when no model was chosen and the
         // engine serves it; otherwise the engine's own model, as before.
         let model = match model {
@@ -306,13 +307,14 @@ impl Session {
         let mut ui = HeadlessUi::default();
         enter(&mut st, how, Some(&cli), &mut sink, &mut ui)?;
         let session = Session { st, preloaded: false };
+        session.bind_jobs_owner();
         if wake_on_finish {
             let handle = session.handle();
             session
                 .st
                 .jobs
                 .set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
-                    handle.wake_active(job.wake_text());
+                    handle.wake_job(&job);
                 }));
         }
         Ok(session)
@@ -521,6 +523,12 @@ impl Session {
         crate::navigate(&mut self.st, target, summarize, instructions, sink, ui)
     }
 
+    /// W4: name the session now bound as the owner of the jobs started from here on. A job
+    /// that started earlier keeps its own owner, so its wake never lands in a later session.
+    fn bind_jobs_owner(&self) {
+        self.st.jobs.set_owner(&self.st.sref.id);
+    }
+
     /// `/fork`: new session file from the branch ending at `entry`; this session switches to it.
     pub fn fork(&mut self, entry: &str) -> Result<SessionRef, OxaError> {
         let _guard = self.begin()?;
@@ -528,6 +536,7 @@ impl Session {
         let r = crate::fork_at(&mut self.st, entry, &mut ui);
         if r.is_ok() {
             self.st.jobs.reset();
+            self.bind_jobs_owner();
         }
         r
     }
@@ -539,6 +548,7 @@ impl Session {
         let r = crate::clone_current(&mut self.st, &mut ui);
         if r.is_ok() {
             self.st.jobs.reset();
+            self.bind_jobs_owner();
         }
         r
     }
@@ -553,6 +563,7 @@ impl Session {
         crate::fire::session_shutdown(&mut self.st, reason, target.as_deref(), sink, ui);
         self.st.jobs.reset();
         enter(&mut self.st, how, None, sink, ui)?;
+        self.bind_jobs_owner();
         self.preloaded = false;
         Ok(())
     }

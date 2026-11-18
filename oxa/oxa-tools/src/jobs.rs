@@ -50,8 +50,13 @@ pub struct JobDone {
     pub id: String,
     /// `Exited(code)` for a normal exit; `Killed` for a signal or a timeout.
     pub status: JobStatus,
-    /// The command as the job ran it, shown truncated in the wake message.
+    /// The command as the model wrote it (never the configured shell prefix, which may carry
+    /// credentials), shown truncated in the wake message. Empty when the caller gave none.
     pub command: String,
+    /// The session that owned the registry when the job started (see
+    /// [`JobRegistry::set_owner`]); the wake is delivered to it, not to whichever session is
+    /// active when the job exits. Empty when no owner was set.
+    pub session: String,
     /// The last [`WAKE_TAIL_LINES`] lines (and at most [`WAKE_TAIL_BYTES`]) of the output.
     pub tail: String,
 }
@@ -64,8 +69,13 @@ impl JobDone {
             _ => "killed".to_string(),
         };
         let command: String = self.command.chars().take(WAKE_COMMAND_CAP).collect();
+        let command = if command.is_empty() {
+            String::new()
+        } else {
+            format!(" {command};")
+        };
         format!(
-            "[background job {} finished: {outcome}; {command}; last lines:]\n{}",
+            "[background job {} finished: {outcome};{command} last lines:]\n{}",
             self.id, self.tail
         )
     }
@@ -165,6 +175,8 @@ pub struct JobRegistry {
     sandbox: Mutex<Option<Arc<dyn Sandbox>>>,
     /// W4: the hook a job's thread calls when it finishes on its own; `None` = no wake.
     on_finish: Arc<Mutex<Option<FinishHook>>>,
+    /// W4: the id of the session these jobs belong to; each job records it at its start.
+    owner: Mutex<String>,
 }
 
 impl Default for JobRegistry {
@@ -173,6 +185,7 @@ impl Default for JobRegistry {
             state: Mutex::new(State::default()),
             sandbox: Mutex::new(None),
             on_finish: Arc::new(Mutex::new(None)),
+            owner: Mutex::new(String::new()),
         }
     }
 }
@@ -200,6 +213,12 @@ impl JobRegistry {
         *self.on_finish.lock().unwrap() = Some(hook);
     }
 
+    /// W4: name the session the next jobs belong to. Set at open and again once a fork, clone
+    /// or switch has rebound the session; a job keeps the owner it started under.
+    pub fn set_owner(&self, session_id: &str) {
+        *self.owner.lock().unwrap() = session_id.to_string();
+    }
+
     /// How many jobs are currently running.
     pub fn running(&self) -> usize {
         self.state
@@ -214,6 +233,12 @@ impl JobRegistry {
     /// Start `spec` detached and return its id. `Err` when [`MAX_JOBS`] jobs are already
     /// running, or when no sandbox has been set.
     pub fn spawn(&self, spec: ExecSpec) -> Result<String, String> {
+        self.spawn_labeled(spec, "")
+    }
+
+    /// Like [`JobRegistry::spawn`], with `label`, the command as the model wrote it, for the
+    /// wake message. `spec.command` is never shown: it carries the configured shell prefix.
+    pub fn spawn_labeled(&self, spec: ExecSpec, label: &str) -> Result<String, String> {
         let sandbox = self
             .sandbox
             .lock()
@@ -266,7 +291,8 @@ impl JobRegistry {
         drop(state);
 
         let job_id = id.clone();
-        let command = spec.command.clone();
+        let command = label.to_string();
+        let session = self.owner.lock().unwrap().clone();
         let on_finish = self.on_finish.clone();
         std::thread::spawn(move || {
             let mut sink = |chunk: &[u8]| {
@@ -295,6 +321,7 @@ impl JobRegistry {
                     id: job_id,
                     status: final_status,
                     command,
+                    session,
                     tail,
                 });
             }
@@ -759,5 +786,51 @@ mod tests {
         }
         let line = reg.list()[0].last_line.clone();
         assert_eq!(line, format!("{}...", "x".repeat(LAST_LINE_CAP)));
+    }
+
+    /// The wake shows the command the model wrote and the owner the job started under, never
+    /// the prefixed execution command (which may hold a credential) nor the session active
+    /// when the job exits.
+    #[test]
+    fn wake_carries_label_and_start_owner_not_the_execution_command() {
+        struct Quick;
+        impl Sandbox for Quick {
+            fn check(&self) -> Result<(), OxaError> {
+                Ok(())
+            }
+            fn bwrap_args(&self, _s: &ExecSpec) -> Vec<String> {
+                Vec::new()
+            }
+            fn run(&self, _s: &ExecSpec, _c: &CancelToken, _l: &mut dyn FnMut(&[u8])) -> ExecResult {
+                ExecResult {
+                    output: Vec::new(),
+                    exit: Some(0),
+                    timed_out: false,
+                }
+            }
+        }
+        let reg = JobRegistry::new();
+        reg.set_sandbox(Arc::new(Quick));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = Mutex::new(tx);
+        reg.set_on_finish(Arc::new(move |job: JobDone| {
+            let _ = tx.lock().unwrap().send(job);
+        }));
+        reg.set_owner("old");
+        let mut s = spec();
+        s.command = "export API_TOKEN=example-secret\nmake test".to_string();
+        reg.spawn_labeled(s, "make test").unwrap();
+        // The owner changes before the job exits: the job keeps the one it started under.
+        reg.set_owner("new");
+        let job = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(job.session, "old");
+        let text = job.wake_text();
+        assert!(text.contains("make test"), "{text}");
+        assert!(!text.contains("example-secret"), "{text}");
+        // A spawn without a label never falls back to the execution command.
+        reg.spawn(spec()).unwrap();
+        let job = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        assert_eq!(job.session, "new");
+        assert!(!job.wake_text().contains("sleep 100"), "{}", job.wake_text());
     }
 }

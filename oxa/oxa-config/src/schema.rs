@@ -160,8 +160,9 @@ const SCHEMA: &[KeyDef] = &[
     // The per-prompt environment note (date, time, runtime facts): unset = on.
     key("oxa.envNote", Kind::Bool, "null"),
     // W4: a finished background bash job (not one stopped) queues one follow-up message with its
-    // exit code and last lines; false = the job's output waits for a read, as before.
-    key("oxa.jobs.wakeOnFinish", Kind::Bool, "true"),
+    // exit code and last lines; false (the default) = the job's output waits for a read. User
+    // settings only: a project file cannot enable it.
+    key("oxa.jobs.wakeOnFinish", Kind::Bool, "false"),
     // The owner's explicit route for the Lead conversation: an exact model id for
     // the normal `--model` selector and the normal gateway. User settings only;
     // unset keeps the ordinary startup model.

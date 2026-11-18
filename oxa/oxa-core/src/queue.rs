@@ -434,12 +434,20 @@ impl Handle {
         *lock(&self.shared.wake) = Some(WakeNotify(notify));
     }
 
-    /// W4: queue a finished background job's wake for the active session. Jobs are reset when
-    /// the session changes, so the active session is the one that started them. Without a
-    /// frontend wake the message waits for the next run, as a normal follow-up does.
-    pub fn wake_active(&self, text: String) -> bool {
-        let session_id = lock(&self.shared.queue).session_id.clone();
-        if !self.follow_up_for(&session_id, text) {
+    /// W4: queue a finished background job's wake for the session the job started under
+    /// (`JobDone::session`), never for whichever session is active when it exits: a job that
+    /// ends during `/fork`, `/clone` or a switch, after the identity changed but before the jobs
+    /// were reset, must not write into the new conversation. A job with no recorded owner falls
+    /// back to the active session. Without a frontend wake the message waits for the next run,
+    /// as a normal follow-up does. The wake carries the destination so the frontend runs it
+    /// only when that session is current.
+    pub fn wake_job(&self, job: &oxa_tools::JobDone) -> bool {
+        let session_id = if job.session.is_empty() {
+            lock(&self.shared.queue).session_id.clone()
+        } else {
+            job.session.clone()
+        };
+        if !self.follow_up_for(&session_id, job.wake_text()) {
             return false;
         }
         let notify = lock(&self.shared.wake).as_ref().map(|w| w.0.clone());
@@ -953,9 +961,14 @@ mod tests {
         jobs.set_sandbox(Arc::new(WakeSandbox { block: false }));
         let hook = h.clone();
         jobs.set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
-            hook.wake_active(job.wake_text());
+            hook.wake_job(&job);
         }));
-        let id = jobs.spawn(wake_spec("gh run watch 1 --exit-status")).unwrap();
+        let id = jobs
+            .spawn_labeled(
+                wake_spec("gh run watch 1 --exit-status"),
+                "gh run watch 1 --exit-status",
+            )
+            .unwrap();
         wait_until("the wake is queued", || h.has_inbox_input());
         let msgs = h.shared.take_follow_up();
         assert_eq!(msgs.len(), 1, "{msgs:?}");
@@ -976,6 +989,31 @@ mod tests {
     }
 
     #[test]
+    fn job_finishing_after_a_rebind_wakes_its_originating_session_only() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("old");
+        // /fork rebinds the identity before the jobs are reset; the old job exits in between.
+        h.shared.bind_session("new");
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "old".into(),
+            tail: "done".into(),
+        };
+        assert!(h.wake_job(&job));
+        assert!(
+            !h.has_input(),
+            "the new session must not see the old job's output"
+        );
+        assert!(h.shared.take_follow_up().is_empty());
+        h.shared.bind_session("old");
+        let msgs = h.shared.take_follow_up();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].contains("job-1 finished: exit 0"), "{}", msgs[0]);
+    }
+
+    #[test]
     fn stopped_job_does_not_wake() {
         let h = handle(QueueMode::All, QueueMode::All);
         h.shared.bind_session("active");
@@ -983,9 +1021,14 @@ mod tests {
         jobs.set_sandbox(Arc::new(WakeSandbox { block: true }));
         let hook = h.clone();
         jobs.set_on_finish(Arc::new(move |job: oxa_tools::JobDone| {
-            hook.wake_active(job.wake_text());
+            hook.wake_job(&job);
         }));
-        let id = jobs.spawn(wake_spec("gh run watch 1 --exit-status")).unwrap();
+        let id = jobs
+            .spawn_labeled(
+                wake_spec("gh run watch 1 --exit-status"),
+                "gh run watch 1 --exit-status",
+            )
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
         let killed = jobs.kill(&id).unwrap();
         assert_eq!(killed.status, oxa_tools::JobStatus::Killed);
@@ -1001,7 +1044,12 @@ mod tests {
         h.shared.bind_session("active");
         let jobs = oxa_tools::JobRegistry::new();
         jobs.set_sandbox(Arc::new(WakeSandbox { block: false }));
-        let id = jobs.spawn(wake_spec("gh run watch 1 --exit-status")).unwrap();
+        let id = jobs
+            .spawn_labeled(
+                wake_spec("gh run watch 1 --exit-status"),
+                "gh run watch 1 --exit-status",
+            )
+            .unwrap();
         wait_until("the job exits", || {
             jobs.read(&id).unwrap().status == oxa_tools::JobStatus::Exited(3)
         });
