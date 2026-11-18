@@ -332,7 +332,7 @@ class DevPromote(Fixture):
     def elf(self, sha):
         # A real ELF that stays alive so /proc/<pid>/exe is inspectable, with
         # per-build trailing bytes so each build's executable digest differs.
-        return pathlib.Path('/bin/sleep').read_bytes() + sha.encode()
+        return Path('/bin/sleep').read_bytes() + sha.encode()
 
     def install(self, sha):
         self.build(sha, payload=self.elf(sha))
@@ -370,7 +370,7 @@ class DevPromote(Fixture):
 
     def running_digest(self):
         pid = int((self.remote / 'service.pid').read_text().strip())
-        return hashlib.sha256(pathlib.Path(f'/proc/{pid}/exe').read_bytes()).hexdigest()
+        return hashlib.sha256(Path(f'/proc/{pid}/exe').read_bytes()).hexdigest()
 
     def compare(self, mapping):
         (self.remote / 'compare.json').write_text(json.dumps(mapping))
