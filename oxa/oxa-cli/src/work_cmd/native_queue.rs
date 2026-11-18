@@ -51,6 +51,7 @@ fn runnable_claim<'a>(
     worker: &str,
     host: &str,
 ) -> Result<Option<(&'a NativeBinding, &'a ItemOwner)>, String> {
+    let now = oxa_proto::time::now_ms() / 1000;
     let mut runnable = None;
     for row in rows.filter(|row| {
         row.state
@@ -59,7 +60,13 @@ fn runnable_claim<'a>(
             .is_some_and(|lease| lease.holder == worker)
     }) {
         let (binding, owner) = authenticate_native_claim(row, host)?;
-        if row.data.dependency.is_none() && runnable.replace((binding, owner)).is_some() {
+        if row.data.dependency.is_some() {
+            continue;
+        }
+        if now >= owner.expires_at {
+            return Err("native assignment owner has expired".into());
+        }
+        if runnable.replace((binding, owner)).is_some() {
             return Err("native worker has multiple runnable assignments".into());
         }
     }
