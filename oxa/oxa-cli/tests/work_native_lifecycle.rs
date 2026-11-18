@@ -133,6 +133,12 @@ impl Fixture {
         fs::write(&self.config, serde_json::to_vec(&config).unwrap()).unwrap();
     }
 
+    fn without_steering(&self) {
+        let mut config: serde_json::Value = serde_json::from_slice(&fs::read(&self.config).unwrap()).unwrap();
+        config.as_object_mut().unwrap().remove("nativeSteering");
+        fs::write(&self.config, serde_json::to_vec(&config).unwrap()).unwrap();
+    }
+
     fn invoke(&self, server: &FakeServer, args: &[&str]) -> (Child, Output) {
         let child = Command::new(env!("CARGO_BIN_EXE_oxa"))
             .args(args)
@@ -361,6 +367,59 @@ fn renewed_owner_executes_and_settles_the_original_expired_receipt() {
         .queue
         .join(format!("board-{}.txt", fixture.binding.key))
         .exists());
+}
+
+#[test]
+fn expired_current_owner_without_steering_never_takes_native_packet() {
+    let fixture = Fixture::new();
+    fixture.without_steering();
+    let before = serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap();
+    assert!(before["data"]["item_owner"]["expires_at"].as_u64().unwrap() < fixture.now);
+    let queue = files(&fixture.queue);
+    let server = FakeServer::start(vec![ScriptTurn::text("must not run")], FakeOpts::default()).unwrap();
+    let (_, output) = fixture.run(&server);
+    assert!(
+        server.requests().is_empty(),
+        "expired current owner reached model: {output:?}"
+    );
+    assert_eq!(files(&fixture.queue), queue, "ready packet must not move");
+    assert_eq!(
+        serde_json::to_value(&fixture.reopened().assignments().unwrap()[&42]).unwrap(),
+        before,
+        "expiry alone cannot settle or change the original assignment/lease/attempt"
+    );
+    assert!(
+        !fixture
+            .storage
+            .join(format!("{}.json", fixture.binding.native_task_id))
+            .exists(),
+        "refusal precedes the first task checkpoint"
+    );
+}
+
+#[test]
+fn renewed_current_owner_without_steering_keeps_the_original_attempt() {
+    let fixture = Fixture::new();
+    renew(&fixture);
+    fixture.without_steering();
+    let before = &fixture.reopened().assignments().unwrap()[&42];
+    assert!(fixture.original.lease.expires_at < fixture.now);
+    assert!(before.data.item_owner.as_ref().unwrap().expires_at > fixture.now);
+    let server = FakeServer::start(vec![ScriptTurn::text("done")], FakeOpts::default()).unwrap();
+    let (_, output) = fixture.run(&server);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(server.requests().len(), 1);
+    let saved = checkpoint(&fixture);
+    assert_eq!(saved["record"]["id"], fixture.binding.native_task_id);
+    assert_eq!(saved["record"]["step"], "finished");
+    let after = &fixture.reopened().assignments().unwrap()[&42];
+    assert!(after.state.lease.is_none());
+    assert_eq!(after.state.attempts, before.state.attempts);
+    assert!(after.data.native_binding.as_ref() == Some(&fixture.binding));
+    assert_eq!(
+        serde_json::to_value(&after.data.item_owner).unwrap(),
+        serde_json::to_value(&before.data.item_owner).unwrap()
+    );
 }
 
 #[test]
