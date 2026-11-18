@@ -105,6 +105,23 @@ pub struct RetryIntent {
     pub last_admission_at: u64,
 }
 
+impl RetryIntent {
+    fn check(&self) -> Result<()> {
+        let rejection = &self.delivery.intent.rejection;
+        rejection.check()?;
+        if !is_node_id(&self.delivery.comment_id)
+            || self.delivery.created_at < rejection.removed_at
+            || self.observed_at < self.delivery.created_at
+            || self.observed_at.saturating_sub(self.last_admission_at) < 1800
+            || self.last_admission_at >= rejection.removed_at
+            || !is_object_id(&self.observed_main)
+        {
+            return Err("invalid landing retry reservation".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AdmissionReceipt {
     pub acknowledgment: AdmissionAcknowledgment,
@@ -214,17 +231,8 @@ impl<'a> LandingPublisher<'a> {
     /// A queue acknowledgment may precede assignment of a merge group. In
     /// that case the owner journal retains the pending reservation.
     pub fn enqueue(&self, intent: &RetryIntent) -> Result<Admission> {
+        intent.check()?;
         let rejection = &intent.delivery.intent.rejection;
-        rejection.check()?;
-        if !is_node_id(&intent.delivery.comment_id)
-            || intent.delivery.created_at <= rejection.removed_at
-            || intent.observed_at < intent.delivery.created_at
-            || intent.observed_at.saturating_sub(intent.last_admission_at) < 1800
-            || intent.last_admission_at >= rejection.removed_at
-            || !is_object_id(&intent.observed_main)
-        {
-            return Err("invalid landing retry reservation".into());
-        }
         let location = self.location(&rejection.repository_id, &intent.delivery.intent.publisher_id)?;
         let result = self.graphql(
             &location.host,
@@ -276,7 +284,9 @@ fn delivery(intent: &NoticeIntent, node: &Value) -> Result<DeliveryReceipt> {
         intent: intent.clone(),
         comment_id: receipt_id(&node["id"])?,
         created_at: timestamp(&node["createdAt"])
-            .filter(|time| *time > intent.rejection.removed_at)
+            // The mutation is sent after observing the removal. Both events
+            // can be reported in the same UTC second.
+            .filter(|time| *time >= intent.rejection.removed_at)
             .ok_or("invalid delivery receipt timestamp")?,
     })
 }
@@ -332,7 +342,7 @@ mod tests {
                 pr_head: "a".repeat(40),
                 rejected_group: "b".repeat(40),
                 removal_id: "E_removed".into(),
-                removed_at: 3_500,
+                removed_at: 3_600,
             },
             recipient_id: "U_author".into(),
             recipient_login: "synthetic-author".into(),
@@ -403,8 +413,10 @@ esac
             "id":"IC_comment","repository":{"id":"R_repo"},
             "pullRequest":{"id":"PR_pull","headRefOid":intent.rejection.pr_head,
                 "author":{"id":"U_author","login":"synthetic-author"}},
-            "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T01:00:00Z"
+            "author":{"__typename":"User","id":"U_publisher"},"createdAt":"1970-01-01T00:59:59Z"
         });
+        assert!(delivery(&intent, &node).is_err());
+        node["createdAt"] = json!("1970-01-01T01:00:00Z");
         let delivered = delivery(&intent, &node).unwrap();
         node["pullRequest"]["author"]["id"] = json!("U_wrong_recipient");
         assert!(delivery(&intent, &node).is_err());
@@ -419,6 +431,10 @@ esac
             observed_at: 3_600,
             last_admission_at: 1_000,
         };
+        assert!(retry.check().is_ok());
+        let mut stale = retry.clone();
+        stale.delivery.created_at -= 1;
+        assert!(stale.check().is_err());
         let mut entry = json!({
             "id":"MQE_entry","enqueuedAt":"1970-01-01T01:00:00Z",
             "mergeQueue":{"id":"MQ_main","repository":{"id":"R_repo"}},
