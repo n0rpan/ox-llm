@@ -8,10 +8,7 @@ use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
 
-const PR_QUERY: &str = r#"
-query($owner: String!, $repo: String!, $number: Int!) {
-  repository(owner: $owner, name: $repo) {
-    pullRequest(number: $number) {
+const PR_FIELDS: &str = r#"
       title body headRefOid headRefName isCrossRepository
       comments(first:100) { totalCount nodes { author { login } body } }
       reviews(first:100) { totalCount nodes { author { login } body state } }
@@ -29,9 +26,57 @@ query($owner: String!, $repo: String!, $number: Int!) {
           ... on StatusContext { context state }
         } } }
       } } }
+"#;
+
+/// Bounded repository fields for the existing GitHub reader to fetch.
+pub fn pull_request_fields(number: u64) -> Result<String> {
+    if number == 0 {
+        return Err("pull request number must be positive".into());
     }
-  }
-}"#;
+    Ok(format!("pullRequest(number:{number}) {{ {PR_FIELDS} }}"))
+}
+
+/// Fresh, bounded context for one immutable pull request head.
+pub struct PullRequestContext {
+    pub branch: String,
+    pub prompt: String,
+}
+
+fn pull_request_identity(pr: &Value) -> Result<(&str, &str)> {
+    if pr["isCrossRepository"] != false {
+        return Err("pull request must have a branch in the source repository".into());
+    }
+    let head = pr["headRefOid"]
+        .as_str()
+        .filter(|value| oid(value))
+        .ok_or("reviewed head missing")?;
+    let branch = pr["headRefName"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .ok_or("pull request branch missing")?;
+    Ok((head, branch))
+}
+
+/// Validate a reader snapshot against the frozen head without transport or checkpoints.
+pub fn prepare_pull_request_context(
+    number: u64,
+    expected_head: &str,
+    pr: &Value,
+) -> Result<PullRequestContext> {
+    if number == 0 {
+        return Err("pull request number must be positive".into());
+    }
+    let (head, branch) = pull_request_identity(pr)?;
+    if head != expected_head {
+        return Err("pull request changed since the reviewed head".into());
+    }
+    let mut prompt = github_runner_guidance("pull request");
+    prompt.push_str(&pull_request_prompt(number, head, pr)?);
+    Ok(PullRequestContext {
+        branch: branch.into(),
+        prompt,
+    })
+}
 
 fn oid(value: &str) -> bool {
     value.len() == 40 && crate::board::queue::is_object_id(value)
@@ -87,13 +132,18 @@ pub fn pull_request_task(
     if number == 0 {
         return Err("pull request number must be positive".into());
     }
+    let query = format!(
+        "query($owner: String!, $repo: String!, $number: Int!) {{ \
+         repository(owner: $owner, name: $repo) {{ \
+         pullRequest(number: $number) {{ {PR_FIELDS} }} }} }}"
+    );
     let mut command = Command::new(gh);
     isolate_git_environment(&mut command);
     command.env("PATH", &policy.host_path).current_dir(repo).args([
         "api",
         "graphql",
         "-f",
-        &format!("query={PR_QUERY}"),
+        &format!("query={query}"),
         "-F",
         "owner={owner}",
         "-F",
@@ -106,17 +156,7 @@ pub fn pull_request_task(
         return Err("GitHub returned an incomplete pull request snapshot".into());
     }
     let pr = &response["data"]["repository"]["pullRequest"];
-    if pr["isCrossRepository"] != false {
-        return Err("pull request must have a branch in the source repository".into());
-    }
-    let head = pr["headRefOid"]
-        .as_str()
-        .filter(|value| oid(value))
-        .ok_or("reviewed head missing")?;
-    let branch = pr["headRefName"]
-        .as_str()
-        .filter(|name| !name.is_empty())
-        .ok_or("pull request branch missing")?;
+    let (head, branch) = pull_request_identity(pr)?;
     let id = format!("pr-{number}-{head}");
     if let Some(saved) = load_task_checkpoint(policy, &id)? {
         let task = saved.task;
@@ -128,14 +168,13 @@ pub fn pull_request_task(
     // Capture acceptance from the trusted local main lineage. The branch can
     // be behind main without changing the reviewed tree before the worker runs.
     let base = reviewed_base(repo, policy, head)?;
-    let mut prompt = github_runner_guidance("pull request");
-    prompt.push_str(&pull_request_prompt(number, head, pr)?);
+    let context = prepare_pull_request_context(number, head, pr)?;
     Ok(Task {
         id,
         model,
-        branch: branch.into(),
+        branch: context.branch,
         base,
-        prompt,
+        prompt: context.prompt,
         max_time: default_max_time(),
         reviewed_pull_request: None,
     })
@@ -308,12 +347,51 @@ mod tests {
         json!({
             "title": "Synthetic PR",
             "body": "Fixture",
+            "headRefOid": HEAD,
+            "headRefName": "agent/fixture",
+            "isCrossRepository": false,
             "reviews": {"totalCount": 0, "nodes": []},
             "comments": {"totalCount": 0, "nodes": []},
             "reviewThreads": {"totalCount": 0, "nodes": []},
             "files": {"totalCount": 0, "nodes": []},
             "commits": {"nodes": [{"commit": {"oid": HEAD, "statusCheckRollup": null}}]}
         })
+    }
+
+    #[test]
+    fn prepared_context_keeps_runner_authority_and_refreshes_same_head_data() {
+        let mut pr = packet();
+        let context = prepare_pull_request_context(1, HEAD, &pr).unwrap();
+        assert_eq!(context.branch, "agent/fixture");
+        assert_eq!(
+            context.prompt,
+            github_runner_guidance("pull request") + &pull_request_prompt(1, HEAD, &pr).unwrap()
+        );
+        pr["body"] = json!("Fresh context at the same reviewed head");
+        let refreshed = prepare_pull_request_context(1, HEAD, &pr).unwrap();
+        assert!(refreshed
+            .prompt
+            .contains("Fresh context at the same reviewed head"));
+        assert_ne!(refreshed.prompt, context.prompt);
+    }
+
+    #[test]
+    fn prepared_context_refuses_missing_identity_foreign_or_changed_heads() {
+        assert!(pull_request_fields(0).is_err());
+        assert!(prepare_pull_request_context(0, HEAD, &packet()).is_err());
+        assert!(prepare_pull_request_context(1, &"a".repeat(40), &packet()).is_err());
+        for (field, value) in [
+            ("isCrossRepository", json!(true)),
+            ("isCrossRepository", Value::Null),
+            ("headRefOid", json!("a".repeat(64))),
+            ("headRefOid", Value::Null),
+            ("headRefName", json!("")),
+            ("headRefName", Value::Null),
+        ] {
+            let mut pr = packet();
+            pr[field] = value;
+            assert!(prepare_pull_request_context(1, HEAD, &pr).is_err(), "{field}");
+        }
     }
 
     #[test]
@@ -330,6 +408,7 @@ mod tests {
         let mut pr = packet();
         pr["commits"]["nodes"][0]["commit"]["oid"] = json!("stale-head");
         assert!(pull_request_prompt(1, HEAD, &pr).is_err());
+        assert!(prepare_pull_request_context(1, HEAD, &pr).is_err());
         let mut pr = packet();
         pr["reviews"] = json!(3);
         assert!(pull_request_prompt(1, HEAD, &pr).is_err());
@@ -351,7 +430,7 @@ mod tests {
                 "nodes": [{"name": "failure".repeat(1000), "conclusion": "FAILURE"}]
             }
         });
-        let prompt = pull_request_prompt(1, HEAD, &pr).unwrap();
+        let prompt = prepare_pull_request_context(1, HEAD, &pr).unwrap().prompt;
         assert!(prompt.contains("NEED-METADATA"));
         assert!(prompt.contains("Ask the runner"));
         assert!(prompt.contains("by unknown"));

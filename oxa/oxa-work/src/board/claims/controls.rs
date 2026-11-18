@@ -21,6 +21,8 @@ pub struct AssignmentData {
     pub item_owner: Option<super::ownership::ItemOwner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lease_activity: Option<super::activity::LeaseActivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dependency: Option<super::dependencies::DependencyWait>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

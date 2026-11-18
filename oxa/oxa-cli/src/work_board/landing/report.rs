@@ -12,7 +12,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     path::Path,
-    process::Command,
 };
 
 mod junit;
@@ -91,23 +90,6 @@ impl Settings {
 }
 
 impl Reader<'_> {
-    fn actions_get(&self, path: &str) -> Command {
-        let mut command = self.api_command();
-        command.args(["--method", "GET", &format!("repos/{}/actions/{path}", self.repo)]);
-        command
-    }
-
-    fn actions_json(&self, path: &str) -> Result<Value, String> {
-        let (remaining, duration) = self.read_budget().map_err(QueryError::message)?;
-        let (code, text) = oxa_work::command_runner(self.actions_get(path), Some(remaining), duration)
-            .ok_or("GitHub Actions response exceeds its limit or timed out")?;
-        self.charge_capture(text.len()).map_err(QueryError::message)?;
-        if code != 0 {
-            return Err("GitHub Actions metadata unavailable".into());
-        }
-        serde_json::from_str(&text).map_err(|_| "invalid GitHub Actions metadata".into())
-    }
-
     pub(in crate::work_board) fn sample_test_reports(
         &self,
         rejections: &mut [RejectionEvidence],
