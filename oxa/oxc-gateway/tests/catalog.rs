@@ -98,6 +98,32 @@ fn token_limits_are_positive_integers_and_output_fits_context() {
 }
 
 #[test]
+fn configured_routes_reject_http_and_builtin_credentials() {
+    let http = Model::new(
+        "route",
+        Provider::Anthropic,
+        "upstream",
+        "http://localhost",
+        4096,
+        512,
+    )
+    .unwrap();
+    assert_eq!(
+        http.with_configured_route("synthetic", "synthetic-pool", "synthetic-key")
+            .unwrap_err(),
+        Error::InvalidEndpoint
+    );
+    for (provider, key) in [("synthetic", "Anthropic"), ("OPENAI", "synthetic-key")] {
+        assert_eq!(
+            model("route", Provider::Anthropic, 4096, 512)
+                .with_configured_route(provider, "synthetic-pool", key)
+                .unwrap_err(),
+            Error::InvalidModel
+        );
+    }
+}
+
+#[test]
 fn invalid_endpoints_cannot_embed_credentials_or_url_secrets() {
     for endpoint in [
         "bad-url",

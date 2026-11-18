@@ -63,7 +63,49 @@ pub struct Model {
     endpoint: Url,
     context_window: u32,
     max_output: u32,
+    configured_route: Option<ConfiguredRoute>,
 }
+
+/// Provider identity and budget pool for a route from trusted user configuration.
+/// The credential selector stays private to the gateway.
+#[derive(Clone)]
+pub struct ConfiguredRoute {
+    provider: String,
+    pool: String,
+    #[cfg_attr(not(feature = "anthropic-gateway"), allow(dead_code))]
+    key: String,
+}
+
+impl ConfiguredRoute {
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    pub fn pool(&self) -> &str {
+        &self.pool
+    }
+}
+
+fn is_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+}
+
+fn is_builtin(value: &str) -> bool {
+    [
+        Provider::Anthropic,
+        Provider::OpenRouter,
+        Provider::OpenAi,
+        Provider::ChatGpt,
+        Provider::OpenCode,
+    ]
+    .iter()
+    .any(|provider| value.eq_ignore_ascii_case(provider.as_str()))
+}
+
 impl fmt::Debug for Model {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.info().fmt(f)
@@ -119,8 +161,41 @@ impl Model {
             endpoint,
             context_window,
             max_output,
+            configured_route: None,
         })
     }
+
+    /// Attach an HTTPS API route. Built-in credential entries stay bound to
+    /// the built-in route configuration.
+    pub fn with_configured_route(mut self, provider: &str, pool: &str, key: &str) -> Result<Self, Error> {
+        if self.endpoint.scheme() != "https" {
+            return Err(Error::InvalidEndpoint);
+        }
+        if !matches!(self.provider, Provider::Anthropic | Provider::OpenAi)
+            || ![provider, pool, key].into_iter().all(is_identifier)
+            || is_builtin(provider)
+            || is_builtin(key)
+        {
+            return Err(Error::InvalidModel);
+        }
+        self.configured_route = Some(ConfiguredRoute {
+            provider: provider.into(),
+            pool: pool.into(),
+            key: key.into(),
+        });
+        Ok(self)
+    }
+
+    pub fn configured_route(&self) -> Option<&ConfiguredRoute> {
+        self.configured_route.as_ref()
+    }
+
+    #[cfg(feature = "anthropic-gateway")]
+    pub(crate) fn credential_name(&self) -> &str {
+        self.configured_route()
+            .map_or(self.provider.as_str(), |route| &route.key)
+    }
+
     pub fn info(&self) -> ModelInfo<'_> {
         ModelInfo {
             id: &self.id,
