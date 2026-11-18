@@ -127,11 +127,6 @@ impl Gateway {
             openai,
         })
     }
-    /// Supply local owner plan limits after validating the shared catalog.
-    pub fn set_default_subscription_limits(&mut self, limits: crate::billing::SubscriptionLimits) {
-        self.runtime.set_default_subscription_limits(limits);
-    }
-
     /// Startup-only bounded live discovery. Reuses this gateway's HTTP pool;
     /// the temporary current-thread driver creates no second queue or daemon.
     /// A bounded stale-aware cache entry is consumed before any network call.
