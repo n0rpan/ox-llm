@@ -97,6 +97,28 @@ fn run_server_records(
     extra: &[(&str, &str)],
     expect_output: bool,
 ) -> Vec<serde_json::Value> {
+    let out = run_server(env, server, args, path, extra);
+    assert!(
+        !expect_output || !out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|line| {
+            serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("{e}: {line} / {}", String::from_utf8_lossy(&out.stderr)))
+        })
+        .collect()
+}
+
+fn run_server(
+    env: &TestEnv,
+    server: &FakeServer,
+    args: &[&str],
+    path: Option<String>,
+    extra: &[(&str, &str)],
+) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_oxa"));
     command
         .args(args)
@@ -111,21 +133,8 @@ fn run_server_records(
     std::thread::spawn(move || {
         tx.send(command.output().unwrap()).unwrap();
     });
-    let out = rx
-        .recv_timeout(std::time::Duration::from_secs(90))
-        .expect("runner finished");
-    assert!(
-        !expect_output || !out.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .map(|line| {
-            serde_json::from_str(line)
-                .unwrap_or_else(|e| panic!("{e}: {line} / {}", String::from_utf8_lossy(&out.stderr)))
-        })
-        .collect()
+    rx.recv_timeout(std::time::Duration::from_secs(90))
+        .expect("runner finished")
 }
 #[test]
 fn external_checks_run_without_edits_and_retain_worktree() {
@@ -149,10 +158,49 @@ fn clean_task_is_nothing_to_do() {
 
 #[test]
 fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
+    native_refill_completion(NativeSource::Issue);
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NativeSource {
+    Issue,
+    Reviewed,
+    MissingHead,
+    MismatchedPacket,
+    AdvancedBranch,
+}
+
+#[test]
+fn native_refill_executes_the_exact_reviewed_pull_request() {
+    native_refill_completion(NativeSource::Reviewed);
+}
+
+#[test]
+fn native_refill_refuses_unverified_pull_request_sources_before_model_use() {
+    for source in [
+        NativeSource::MissingHead,
+        NativeSource::MismatchedPacket,
+        NativeSource::AdvancedBranch,
+    ] {
+        native_refill_completion(source);
+    }
+}
+
+fn native_refill_completion(source: NativeSource) {
     use oxa_work::board::{assignment::ManualAuthority, AttemptState, Claims, ImportState};
     use std::{collections::BTreeMap, fs, io::Write, os::unix::fs::PermissionsExt, process::Stdio};
     let env = TestEnv::new();
     setup(&env, r#"["printf checked > native-acceptance"]"#);
+    let project = env.work().join("project");
+    let reviewed_head = (source != NativeSource::Issue).then(|| {
+        git(&env, &project, &["switch", "-c", "agent/44"]);
+        env.write("work/project/reviewed.txt", "reviewed fixture\n");
+        git(&env, &project, &["add", "reviewed.txt"]);
+        git(&env, &project, &["commit", "-m", "reviewed fixture"]);
+        let head = git(&env, &project, &["rev-parse", "HEAD"]);
+        git(&env, &project, &["switch", "main"]);
+        head
+    });
     let controls = env.agent_dir().join("native-controls");
     let queue = controls.join("queue");
     let root = controls.join("claims");
@@ -179,24 +227,51 @@ fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
         )
         .unwrap();
     let taskfile = controls.join("task.txt");
-    fs::write(&taskfile, "i44 fake agent/44 main\nSynthetic admitted task.\n").unwrap();
+    let header = if reviewed_head.is_some() {
+        "c44 fake agent/44 agent/44"
+    } else {
+        "i44 fake agent/44 main"
+    };
+    fs::write(&taskfile, format!("{header}\nSynthetic admitted task.\n")).unwrap();
     fs::set_permissions(&taskfile, fs::Permissions::from_mode(0o600)).unwrap();
     let config = controls.join("refill.json");
-    fs::write(&config, serde_json::json!({
-        "enabled":true,"nativeExecution":true,"intake":true,"queue":queue,"claims":root,
-        "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
-        "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
-        "partition":{"modulus":22,"residues":[0]},
-        "packets":[{"number":44,"revision":"revision","action":"build_issue","branch":"agent/44","taskfile":taskfile}]
-    }).to_string()).unwrap();
+    fs::write(
+        &config,
+        serde_json::json!({
+            "enabled":true,"nativeExecution":true,"intake":true,"queue":queue,"claims":root,
+            "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
+            "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
+            "partition":{"modulus":22,"residues":[0]},
+            "packets":[{"number":44,"revision":reviewed_head.as_deref().unwrap_or("revision"),
+                "action":if reviewed_head.is_some() { "resolve_conflict" } else { "build_issue" },
+                "branch":"agent/44","taskfile":taskfile}]
+        })
+        .to_string(),
+    )
+    .unwrap();
     fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
     let tools = trusted_tools(&env);
     let gh = tools.join("gh");
     fs::write(&gh, "#!/bin/sh\n[ \"$GH_TOKEN\" = synthetic ] || exit 93\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n").unwrap();
     fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
+    let rows: Vec<_> = reviewed_head
+        .as_ref()
+        .map(|head| {
+            serde_json::json!({"number":44,"headRefOid":head,"headRefName":"agent/44",
+            "closingIssuesReferences":{"totalCount":0,"nodes":[]}})
+        })
+        .into_iter()
+        .collect();
     fs::write(tools.join("gh.reply"), serde_json::json!({"data":{"repository":{
-        "mergeQueue":null,"pullRequests":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
-        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"}
+        "mergeQueue":null,"pullRequests":{"totalCount":rows.len(),"nodes":rows,
+            "pageInfo":{"hasNextPage":false,"endCursor":"last"}},
+        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},
+        "p44":{"number":44,"headRefOid":reviewed_head,"baseRefName":"main","state":"OPEN","body":"",
+            "isDraft":false,"reviewDecision":null,"mergeable":"CONFLICTING","mergeStateStatus":"DIRTY",
+            "baseRef":{"refUpdateRule":null,"rules":{"totalCount":0,"nodes":[]}},
+            "labels":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},
+            "reviewThreads":{"totalCount":0,"nodes":[]},"latestOpinionatedReviews":{"totalCount":0,"nodes":[]},
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]}}
     }}}).to_string()).unwrap();
     let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))
@@ -235,8 +310,56 @@ fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
     let name = format!("board-{}.txt", binding.key);
     assert!(queue.join(&name).is_file());
     assert!(claims.snapshot().unwrap()[&44].lease.as_ref() == Some(&binding.lease));
+    assert_eq!(binding.reviewed_head, reviewed_head);
+    let refusal = match source {
+        NativeSource::MissingHead => {
+            // Exercise a legacy persisted receipt with no reviewed-source field.
+            let saved = root.join("44.board-claim.json");
+            let mut row: serde_json::Value = serde_json::from_slice(&fs::read(&saved).unwrap()).unwrap();
+            assert!(row["data"]["native_binding"]
+                .as_object_mut()
+                .unwrap()
+                .remove("reviewed_head")
+                .is_some());
+            fs::write(saved, serde_json::to_vec(&row).unwrap()).unwrap();
+            Some("retained reviewed head")
+        }
+        NativeSource::MismatchedPacket => {
+            fs::write(
+                queue.join(&name),
+                "c45 fake agent/44 agent/44\nMismatched PR source.\n",
+            )
+            .unwrap();
+            Some("bound source")
+        }
+        NativeSource::AdvancedBranch => {
+            git(&env, &project, &["switch", "agent/44"]);
+            git(
+                &env,
+                &project,
+                &["commit", "--allow-empty", "-m", "unreviewed fixture"],
+            );
+            git(&env, &project, &["switch", "main"]);
+            Some("not at the reviewed head")
+        }
+        NativeSource::Issue | NativeSource::Reviewed => None,
+    };
     let server = FakeServer::start(vec![ScriptTurn::text("finished")], FakeOpts::default()).unwrap();
     let args = ["work", "--native-queue", "--config", config.to_str().unwrap()];
+    if let Some(reason) = refusal {
+        let result = run_server(&env, &server, &args, Some(path), &[]);
+        assert!(!result.status.success(), "{source:?}: {result:?}");
+        assert!(
+            String::from_utf8_lossy(&result.stderr).contains(reason)
+                || String::from_utf8_lossy(&result.stdout).contains(reason),
+            "{source:?}: {result:?}"
+        );
+        assert!(server.requests().is_empty(), "{source:?} reached the model");
+        let state = &claims.assignments().unwrap()[&44].state;
+        assert!(state.lease.as_ref() == Some(&binding.lease));
+        assert_eq!(state.attempts, 1);
+        return;
+    }
     let records = run_server_records(&env, &server, &args, Some(path.clone()), &[], true);
     assert!(records
         .iter()
@@ -251,6 +374,15 @@ fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
     assert_eq!(record["step"], "finished");
     assert_eq!(record["checkpoint_kind"], "task_transition");
     assert!(record["checkpoint_revision"].as_u64().unwrap() > 0);
+    if let Some(head) = reviewed_head {
+        assert_eq!(checkpoint["task"]["reviewed_pull_request"]["head"], head);
+        assert_eq!(checkpoint["task"]["reviewed_pull_request"]["number"], 44);
+        assert_eq!(checkpoint["execution"]["initial"], head);
+        assert_eq!(
+            fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("reviewed.txt")).unwrap(),
+            "reviewed fixture\n"
+        );
+    }
     assert_eq!(
         fs::read_to_string(Path::new(record["worktree"].as_str().unwrap()).join("native-acceptance"))
             .unwrap(),
