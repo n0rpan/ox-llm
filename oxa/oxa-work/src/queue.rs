@@ -109,15 +109,9 @@ impl BoundNative {
     fn verify(&self, rows: &BTreeMap<u64, board::Assignment>) -> Result<()> {
         let now = state::now_ms() / 1000;
         let binding = &self.binding;
-        let already_assigned = rows.values().any(|row| {
-            row.number != binding.number
-                && (row.data.import_hold || row.data.dependency.is_none())
-                && row
-                    .state
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.holder == binding.lease.holder)
-        });
+        let already_assigned = rows
+            .values()
+            .any(|row| row.number != binding.number && row.data.busy_for(&row.state, &binding.lease.holder));
         let valid = rows.get(&binding.number).is_some_and(|row| {
             row.state.lease.as_ref() == Some(&binding.lease)
                 && row.data.native_binding.as_ref() == Some(binding)
