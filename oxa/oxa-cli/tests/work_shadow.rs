@@ -53,7 +53,7 @@ if [ -e oversized ]; then
 fi
 case "$*" in
   *'actions/runs/61/attempts/1/jobs?per_page=100'*) cat report-jobs.json ;;
-  *'actions/runs/61/attempts/1'*) cat report-attempt.json ;;
+  *'actions/runs/61/attempts/1'*) printf 'read\n' >> report-attempt-reads; cat report-attempt.json ;;
   *'actions/runs/61/artifacts?per_page=100'*) cat report-artifacts.json ;;
   *'actions/artifacts/71/zip'*) printf 'read\n' >> report-reads; cat report.zip ;;
   *'enqueuedAt headCommit'*) cat queue-state.json ;;
@@ -987,7 +987,8 @@ fn real_shadow_cli_records_exact_queue_evidence_only_when_opted_in() {
 fn report_policy_records_only_archives_verified_for_all_required_failed_checks() {
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
-    let (env, _) = fixture();
+    let (env, mut detail) = fixture();
+    let second_head = "second-synthetic-head";
     let group = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     let workflow_path = ".github/workflows/checks.yml";
     let mut queue = queue_rejection(group);
@@ -1005,6 +1006,23 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     let write = |file: &str, value: Value| {
         fs::write(env.work().join(file), value.to_string()).unwrap();
     };
+    let repo = &mut detail["data"]["repository"];
+    let mut second = repo["p42"].clone();
+    second["number"] = 43.into();
+    second["headRefOid"] = second_head.into();
+    repo["p43"] = second;
+    repo["pullRequests"]["totalCount"] = 2.into();
+    repo["pullRequests"]["nodes"].as_array_mut().unwrap().push(json!({
+        "number":43,"headRefOid":second_head
+    }));
+    write("first.json", detail.clone());
+    write("detail.json", detail);
+    let rows = &mut queue["data"]["repository"];
+    let mut second = rows["p42"].clone();
+    second["number"] = 43.into();
+    second["headRefOid"] = second_head.into();
+    second["timelineItems"]["nodes"][0]["id"] = "removal-2".into();
+    rows["p43"] = second;
     write("queue.json", queue);
     write(
         "report-attempt.json",
@@ -1057,17 +1075,21 @@ fn report_policy_records_only_archives_verified_for_all_required_failed_checks()
     let log = log_for(&env, "example/repo");
     let saved = fs::read_to_string(&log).unwrap();
     let sample: Value = serde_json::from_str(saved.trim()).unwrap();
-    assert_eq!(
-        sample["queue_rejections"][0]["verified_test_reports"],
-        json!([{
-            "failed_check_runs":[11,12],"workflow_run":61,"run_attempt":1,
-            "archives":[{"id":71,"sha256":digest}]
-        }])
-    );
-    assert_eq!(
-        fs::read_to_string(env.work().join("report-reads")).unwrap(),
-        "read\n"
-    );
+    for (index, number, event) in [(0, 42, "removal-1"), (1, 43, "removal-2")] {
+        let row = &sample["queue_rejections"][index];
+        assert_eq!(row["number"], number);
+        assert_eq!(row["removal_event"], event);
+        assert_eq!(
+            row["verified_test_reports"],
+            json!([{
+                "failed_check_runs":[11,12],"workflow_run":61,"run_attempt":1,
+                "archives":[{"id":71,"sha256":digest}]
+            }])
+        );
+    }
+    for log in ["report-reads", "report-attempt-reads"] {
+        assert_eq!(fs::read_to_string(env.work().join(log)).unwrap(), "read\n");
+    }
 
     write("report-artifacts.json", listing(&"0".repeat(64)));
     let result = invoke(&env, &args);
