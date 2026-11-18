@@ -479,24 +479,22 @@ impl Manifests {
     /// The directories at and above `dir` with a package or workspace manifest, deepest
     /// first, reading manifests on the way.
     fn ancestors(&mut self, root: &Path, dir: &str) -> Result<Vec<String>, String> {
-        let mut chain = vec![dir.to_owned()];
-        let mut current = dir;
-        while let Some(at) = current.rfind('/') {
-            current = &current[..at];
-            chain.push(current.to_owned());
+        // Apply the manifest reader's existing path limit before expanding ancestors.
+        if !dir.is_empty() && !valid_member_path(dir) {
+            return Err("changed file is outside the supported manifest directory format".into());
         }
-        if dir.is_empty() {
-            chain.clear();
-        }
-        chain.push(String::new());
         let mut found = Vec::new();
-        for dir in chain {
-            let manifest = self.at(root, &dir)?;
+        let mut current = dir;
+        loop {
+            let manifest = self.at(root, current)?;
             if manifest.package.is_some() || manifest.workspace {
-                found.push(dir);
+                found.push(current.to_owned());
             }
+            if current.is_empty() {
+                return Ok(found);
+            }
+            current = parent_dir(current);
         }
-        Ok(found)
     }
     /// The directory a cargo command for the crate at `dir` runs in: the nearest workspace
     /// root at or above it, or the crate directory itself for a standalone crate.
