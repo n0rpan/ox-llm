@@ -118,7 +118,11 @@ pub fn attempt_for(rejection: &RejectionEvidence, failed_check_id: u64) -> Optio
     Some((expected.workflow_run_id, expected.observed_run_attempt))
 }
 
-fn unique_row<'a>(listing: &'a Value, key: &str, matches: impl Fn(&Value) -> bool) -> Option<&'a Value> {
+pub(in crate::board) fn unique_row<'a>(
+    listing: &'a Value,
+    key: &str,
+    matches: impl Fn(&Value) -> bool,
+) -> Option<&'a Value> {
     let rows = listing[key].as_array()?;
     if rows.len() > 100 || listing["total_count"].as_u64() != Some(rows.len() as u64) {
         return None;
