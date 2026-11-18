@@ -316,8 +316,11 @@ fn changed_paths(sandbox: &Bwrap, root: &Path, base: &str, out: &mut dyn Write) 
             overflow = true;
         }
     });
-    if result.exit != Some(0) || result.timed_out || overflow {
-        return Err("sandboxed Git change inventory did not complete within its limits".into());
+    if result.timed_out || overflow {
+        return Err("sandboxed Git change inventory exceeded its limits".into());
+    }
+    if result.exit != Some(0) {
+        return Err("sandboxed Git change inventory failed".into());
     }
     out.write_all(&paths).map_err(|error| error.to_string())?;
     Ok(0)

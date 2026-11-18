@@ -1475,7 +1475,7 @@ fn final_inspection_keeps_worker_edited_clean_filters_in_the_sandbox() {
 }
 
 #[test]
-fn failed_git_inspection_is_blocked_instead_of_clean_or_dirty() {
+fn failed_git_inventory_leaves_acceptance_unverified_and_retains_the_work() {
     let env = TestEnv::new();
     setup(&env, "[]");
     let project = env.work().join("project");
@@ -1507,12 +1507,19 @@ fn failed_git_inspection_is_blocked_instead_of_clean_or_dirty() {
             ScriptTurn::text("finished"),
         ],
     );
-    assert_eq!(record["outcome"], "blocked", "{record}");
+    assert_eq!(record["outcome"], "unverified", "{record}");
+    assert!(record.get("checks").is_none(), "{record}");
+    assert!(record["head_sha"].is_null(), "{record}");
     assert_eq!(record["worker"]["outcome"], "done", "{record}");
-    assert!(record["detail"]
-        .as_str()
-        .unwrap()
-        .contains("synthetic-filter-failure"));
+    let detail = record["detail"].as_str().unwrap();
+    assert!(detail.contains("change inventory could not run"), "{record}");
+    assert!(detail.contains("no acceptance checks"), "{record}");
+    assert!(detail.contains("synthetic-filter-failure"), "{record}");
+    let tree = std::path::Path::new(record["worktree"].as_str().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(tree.join("tracked.txt")).unwrap(),
+        "bravo\n"
+    );
 }
 
 fn checkout_hook_fixture(env: &TestEnv) {
