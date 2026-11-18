@@ -98,13 +98,17 @@ impl AdviceHistory {
     pub fn load(entries: &[Entry]) -> Result<Self, OxaError> {
         let mut history = Self::default();
         for entry in entries {
-            let EntryBody::Custom { custom_type, data } = &entry.body else {
-                continue;
+            let (data, in_wire) = match &entry.body {
+                EntryBody::Custom { custom_type, data } if custom_type == ENTRY => (data, false),
+                EntryBody::CustomMessage {
+                    custom_type, details, ..
+                } if custom_type == ENTRY => (details, true),
+                _ => continue,
             };
-            if custom_type != ENTRY {
-                continue;
-            }
             let receipt = AdviceReceipt::decode(data)?;
+            if in_wire != (receipt.phase == AdvicePhase::Delivered) {
+                return Err(invalid());
+            }
             let previous = history.0.get(&receipt.grant.point);
             match previous {
                 None if receipt.phase == AdvicePhase::Reserved => {}
@@ -187,15 +191,33 @@ impl AdviceReceipt {
 
     /// Private metadata only. Provider usage remains in the existing gateway ledger.
     pub fn body(&self) -> EntryBody {
-        let grant = &self.grant;
         EntryBody::Custom {
             custom_type: ENTRY.into(),
-            data: json!({
-                "point": grant.point.0, "trigger": grant.trigger.as_str(), "worker": grant.worker.as_str(),
-                "tier": grant.advisor.tier.as_str(), "model": grant.advisor.model, "pool": grant.advisor.pool,
-                "max_output": grant.max_output.get(), "phase": self.phase.as_str(),
-            }),
+            data: self.data(),
         }
+    }
+
+    /// Persist delivery and its native worker-wire message in a single append.
+    pub fn delivery_body(&self, content: String) -> Result<EntryBody, OxaError> {
+        let delivered = self.advance(AdvicePhase::Delivered)?;
+        if content.trim().is_empty() || content.len() > 8192 {
+            return Err(invalid());
+        }
+        Ok(EntryBody::CustomMessage {
+            custom_type: ENTRY.into(),
+            content,
+            display: false,
+            details: delivered.data(),
+        })
+    }
+
+    fn data(&self) -> Value {
+        let grant = &self.grant;
+        json!({
+            "point": grant.point.0, "trigger": grant.trigger.as_str(), "worker": grant.worker.as_str(),
+            "tier": grant.advisor.tier.as_str(), "model": grant.advisor.model, "pool": grant.advisor.pool,
+            "max_output": grant.max_output.get(), "phase": self.phase.as_str(),
+        })
     }
 
     fn decode(value: &Value) -> Result<Self, OxaError> {

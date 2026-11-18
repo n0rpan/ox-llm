@@ -921,3 +921,92 @@ fn max_turns_leaves_a_run_within_the_limit_alone() {
     assert_eq!(run(&mut st, "first").0, RunEnd::Stopped);
     assert_eq!(run(&mut st, "second").0, RunEnd::Stopped);
 }
+
+#[test]
+fn advisor_returns_to_the_same_worker_and_does_not_repeat_the_call() {
+    use oxa_core::advice::{AdviceContext, AdviceDispatcher, BoundAdvisor};
+    use oxa_session::{
+        advice::{AdviceGrant, AdvicePolicy, AdviceTier, AdviceTrigger, AdvisorRoute},
+        SessionRef,
+    };
+    use std::{
+        num::{NonZeroU16, NonZeroU32},
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    struct Advisor(AtomicUsize);
+    impl AdviceDispatcher for Advisor {
+        fn authorized(&self, _: &SessionRef, _: u64) -> bool {
+            true
+        }
+
+        fn call(
+            &self,
+            grant: &AdviceGrant,
+            context: &AdviceContext,
+            cancel: &CancelToken,
+        ) -> Result<String, OxaError> {
+            assert_eq!(grant.advisor.pool, "fixture-advisor");
+            assert_eq!(grant.max_output.get(), 64);
+            assert_eq!(context.objective, "Review the synthetic file.");
+            assert!(context.delta.contains("read"));
+            assert!(context.delta.contains("line 5"));
+            assert!(context.failing_evidence.contains("same tool call"));
+            assert!(!cancel.is_cancelled());
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok("Use the current contents to write the patch.".into())
+        }
+    }
+
+    for retry_same in [false, true] {
+        let env = TestEnv::new();
+        let stop = LIMIT + NOTICES_BEFORE_STOP + 1;
+        let mut turns: Vec<_> = (0..stop).map(|i| read(&format!("c{i}"), RANGE)).collect();
+        if retry_same {
+            turns.extend((0..stop).map(|i| {
+                read(
+                    &format!("retry{i}"),
+                    r#"{ "limit":3, "offset":5, "path":"a.txt" }"#,
+                )
+            }));
+        } else {
+            turns.push(ScriptTurn::text("Continued on the original worker."));
+        }
+        let (mut st, worker) = state(&env, turns, Settings::default());
+        let advisor = Arc::new(Advisor(AtomicUsize::new(0)));
+        st.shared.bind_advisor(BoundAdvisor {
+            session: st.sref.clone(),
+            lease_identity: [1; 32],
+            objective: "Review the synthetic file.".into(),
+            worker: AdviceTier::Bulk,
+            policy: AdvicePolicy {
+                triggers: vec![AdviceTrigger::RepeatGuard],
+                max_calls: NonZeroU16::new(2).unwrap(),
+                failures_before_escalation: NonZeroU16::new(1).unwrap(),
+                max_output: NonZeroU32::new(64).unwrap(),
+            },
+            route: AdvisorRoute {
+                tier: AdviceTier::Main,
+                model: "fixture-main".into(),
+                pool: "fixture-advisor".into(),
+            },
+            dispatcher: advisor.clone(),
+        });
+        let (end, _) = run(&mut st, "find the bug in a.txt");
+        if retry_same {
+            assert!(matches!(end, RunEnd::Failed(error) if error.code == "advisor_escalation_required"));
+        } else {
+            assert_eq!(end, RunEnd::Stopped);
+        }
+        assert_eq!(advisor.0.load(Ordering::SeqCst), 1);
+        let requests = worker.requests();
+        assert!(requests.iter().all(|request| request.model == "fake-model"));
+        assert!(requests
+            .iter()
+            .flat_map(|request| &request.messages)
+            .any(|message| message
+                .content
+                .as_deref()
+                .is_some_and(|text| text.contains("write the patch"))));
+    }
+}

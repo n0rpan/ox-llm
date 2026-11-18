@@ -46,7 +46,7 @@ fn advice_restart_preserves_one_call_per_point_and_escalates_only_advised_failur
         panic!("first point should reserve advice");
     };
     assert_eq!(first.grant().max_output, policy.max_output);
-    let append = |store: &FsStore, index: u8, receipt: &oxa_session::advice::AdviceReceipt| {
+    let append = |store: &FsStore, index: u8, body: oxa_proto::EntryBody| {
         store
             .append(
                 &session,
@@ -54,13 +54,13 @@ fn advice_restart_preserves_one_call_per_point_and_escalates_only_advised_failur
                     id: format!("{index:08x}"),
                     parent: (index > 1).then(|| format!("{:08x}", index - 1)),
                     ts_ms: 1000,
-                    body: receipt.body(),
+                    body,
                 },
             )
             .unwrap();
         store.sync(&session).unwrap();
     };
-    append(&store, 1, &first);
+    append(&store, 1, first.body());
     drop(store);
 
     let store = FsStore::new(root);
@@ -70,16 +70,20 @@ fn advice_restart_preserves_one_call_per_point_and_escalates_only_advised_failur
         AlreadyRequested
     );
     assert!(first.advance(Failed).is_err());
-    append(&store, 2, &first.advance(NotDelivered).unwrap());
+    append(&store, 2, first.advance(NotDelivered).unwrap().body());
     let second = StuckPoint::from_evidence(b"synthetic next error").unwrap();
     let Reserve(receipt) = history().admit(Some(&policy), second.clone(), WorkerAsk, Bulk, Some(&main))
     else {
         panic!("an uncertain first dispatch should not count as an advised failure");
     };
-    append(&store, 3, &receipt);
+    append(&store, 3, receipt.body());
     let delivered = receipt.advance(Delivered).unwrap();
-    append(&store, 4, &delivered);
-    append(&store, 5, &delivered.advance(Failed).unwrap());
+    append(
+        &store,
+        4,
+        receipt.delivery_body("Synthetic advice.".into()).unwrap(),
+    );
+    append(&store, 5, delivered.advance(Failed).unwrap().body());
     assert_eq!(history().receipt(&second).unwrap().phase(), Failed);
 
     let next = StuckPoint::from_evidence(b"synthetic later error").unwrap();
