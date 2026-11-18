@@ -1611,7 +1611,7 @@ fn execute(
             (result, false)
         }
         SessionCmd::JobWake { session_id } => {
-            s.handle().clear_inbox_wake();
+            s.handle().clear_job_wake();
             // Same stop boundary as `QueuedInput`: the job's message stays queued after a
             // failed run and runs with the next explicit one. Only the job's own session runs.
             let result = if s.inner().sref.id == session_id && may_continue(s.outcome()) {

@@ -124,6 +124,9 @@ pub struct Gate {
     pub(crate) advisor: Mutex<Option<Arc<crate::advice::BoundAdvisor>>>,
     /// Coalesce frontend inbox wakes while a model run drains follow-ups internally.
     pub inbox_wake_pending: std::sync::atomic::AtomicBool,
+    /// Coalesce finished-background-job wakes, independently of inbox wakes: the two kinds
+    /// have different run conditions, so one must not swallow the other.
+    pub job_wake_pending: std::sync::atomic::AtomicBool,
     /// Coalesce worker wakes for ordinary editor queues, independently of bound inbox wakes.
     pub queued_wake_pending: std::sync::atomic::AtomicBool,
     pub progress: Mutex<Option<Arc<dyn crate::ProgressObserver>>>,
@@ -466,7 +469,7 @@ impl Handle {
         }
         let notify = lock(&self.shared.wake).as_ref().map(|w| w.0.clone());
         if let Some(notify) = notify {
-            if self.request_inbox_wake() {
+            if self.request_job_wake() {
                 notify(&session_id);
             }
         }
@@ -503,6 +506,16 @@ impl Handle {
     /// The frontend has taken its wake job, before running the queued input.
     pub fn clear_inbox_wake(&self) {
         self.shared.gate.inbox_wake_pending.store(false, Ordering::SeqCst);
+    }
+
+    /// Claim the single pending job wake (separate from the inbox wake, see `Gate`).
+    pub fn request_job_wake(&self) -> bool {
+        !self.shared.gate.job_wake_pending.swap(true, Ordering::SeqCst)
+    }
+
+    /// The frontend has taken its job wake job, before running the queued input.
+    pub fn clear_job_wake(&self) {
+        self.shared.gate.job_wake_pending.store(false, Ordering::SeqCst);
     }
 
     /// Whether the active session has admitted inbox input (including after switching back).
@@ -1026,6 +1039,34 @@ mod tests {
         let msgs = h.shared.take_follow_up();
         assert_eq!(msgs.len(), 1, "{msgs:?}");
         assert!(msgs[0].contains("job-1 finished: exit 0"), "{}", msgs[0]);
+    }
+
+    #[test]
+    fn inbox_message_during_pending_job_wake_is_delivered() {
+        let h = handle(QueueMode::All, QueueMode::All);
+        h.shared.bind_session("s");
+        let woken = Arc::new(Mutex::new(0usize));
+        let seen = woken.clone();
+        h.set_wake_notifier(Arc::new(move |_| *lock(&seen) += 1));
+        let job = oxa_tools::JobDone {
+            id: "job-1".into(),
+            status: oxa_tools::JobStatus::Exited(0),
+            command: "make".into(),
+            session: "s".into(),
+            tail: "done".into(),
+        };
+        assert!(h.wake_job(&job));
+        assert_eq!(*lock(&woken), 1);
+        // The JobWake is still pending: an inbox message must still get its own wake.
+        assert!(h.follow_up_for("s", "from inbox".into()));
+        assert!(
+            h.request_inbox_wake(),
+            "a pending job wake must not swallow the inbox wake"
+        );
+        // And the reverse: a pending inbox wake does not swallow a job wake.
+        h.clear_job_wake();
+        assert!(h.wake_job(&job));
+        assert_eq!(*lock(&woken), 2);
     }
 
     #[test]
