@@ -19,8 +19,14 @@ pub(crate) const SETTING: &str = "oxa.engine.inProcessCloud";
 const GO_SETTING: &str = "oxa.cloud.opencode.enabled";
 type Selected = (Arc<dyn Engine>, Vec<String>);
 
+pub(crate) struct ModelSelection<'a> {
+    pub pattern: Option<&'a str>,
+    pub endpoint: &'a str,
+    pub owner_selected: bool,
+}
+
 enum SelectPurpose<'a> {
-    Model(Option<&'a str>),
+    Model(ModelSelection<'a>),
     Inventory,
 }
 
@@ -105,7 +111,11 @@ pub(crate) fn select(
         user,
         effective,
         dirs,
-        requested,
+        ModelSelection {
+            pattern: requested,
+            endpoint: "",
+            owner_selected: requested.is_some(),
+        },
         None,
         SharedEngines::default(),
         http,
@@ -225,7 +235,7 @@ pub(crate) fn select_observed(
     user: &Settings,
     effective: &Settings,
     dirs: &Dirs,
-    requested: Option<&str>,
+    requested: ModelSelection<'_>,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
     shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
@@ -250,9 +260,14 @@ fn select_for(
     shared: SharedEngines,
     http: impl FnOnce() -> Result<Arc<dyn Engine>, OxaError>,
 ) -> Result<Selected, OxaError> {
-    let (requested, show_status) = match purpose {
-        SelectPurpose::Model(requested) => (requested, false),
-        SelectPurpose::Inventory => (None, true),
+    let (requested, endpoint, owner_selected, show_status) = match purpose {
+        SelectPurpose::Model(selection) => (
+            selection.pattern,
+            selection.endpoint,
+            selection.owner_selected,
+            false,
+        ),
+        SelectPurpose::Inventory => (None, "", false, true),
     };
     let local_engine = || match shared.local {
         Some(engine) => Ok(engine as Arc<dyn Engine>),
@@ -264,9 +279,18 @@ fn select_for(
     let go = go_state(user, dirs);
     let go_error = go.refusal();
     let go_enabled = go_error.is_none();
-    let go_requested = requested.is_some_and(routing::is_go_model);
+    let go_requested = requested.is_some_and(|pattern| routing::is_go_model(pattern, endpoint));
     let native_local = user.bool(oxc_local::LOCAL_SETTING, false);
-    let native_cloud = user.bool(SETTING, false) || (go_enabled && (requested.is_none() || go_requested));
+    let explicit_cloud = user.bool(SETTING, false);
+    // User-only credentials make the catalog available. A project default
+    // cannot use that fact to select a new transport for an ordinary session.
+    let native_cloud = explicit_cloud || (go_enabled && (show_status || owner_selected));
+    let aliases = |path| {
+        user.get(path)
+            .and_then(Value::as_object)
+            .map(|models| models.keys().cloned().collect::<std::collections::BTreeSet<_>>())
+            .unwrap_or_default()
+    };
     let availability_notice = || {
         if show_status {
             vec![go.notice("OpenCode Go", GO_SETTING)]
@@ -293,7 +317,7 @@ fn select_for(
             go_failure,
         } = match shared.cloud {
             Some(opened) => opened,
-            None => open_gateway_with_go(user, effective, dirs, diagnostics, Ok, go_enabled)?,
+            None => open_gateway_with_go(user, effective, dirs, diagnostics, Ok, Some(go_enabled))?,
         };
         if show_status {
             let notice = go_failure
@@ -308,12 +332,6 @@ fn select_for(
         ))
     };
     if native_local && native_cloud {
-        let aliases = |path| {
-            user.get(path)
-                .and_then(Value::as_object)
-                .map(|models| models.keys().cloned().collect())
-                .unwrap_or_default()
-        };
         let (cloud, catalog_notices, go_failure) = match cloud_engine() {
             Ok((engine, notices, go_failure)) => (Ok(engine), notices, go_failure),
             Err(error) => {
@@ -328,6 +346,7 @@ fn select_for(
             local_models: aliases("oxa.local.models"),
             cloud_models: aliases("oxa.cloud.models"),
             go_error: go_error.cloned().or(go_failure),
+            endpoint: endpoint.to_owned(),
             default: effective.string("defaultModel"),
         }
         .into_engine(requested)
@@ -337,9 +356,7 @@ fn select_for(
         go_requested
             && !requested.is_some_and(|model| {
                 native_local
-                    && user
-                        .get("oxa.local.models")
-                        .is_some_and(|aliases| aliases.get(model).is_some())
+                    && routing::resolve_in_catalog(model, endpoint, aliases("oxa.local.models")).is_some()
             })
     }) {
         return Err(error.clone());
@@ -350,7 +367,21 @@ fn select_for(
     if !native_cloud {
         return http().map(|engine| (engine, availability_notice()));
     }
-    let (engine, notices, go_failure) = cloud_engine()?;
+    let selected = cloud_engine();
+    if !explicit_cloud && !show_status && !go_requested {
+        let resolves_go = selected.as_ref().ok().is_some_and(|(engine, _, _)| {
+            requested
+                .zip(engine.info(None).ok())
+                .is_some_and(|(pattern, info)| {
+                    routing::resolve_in_catalog(pattern, endpoint, info.models)
+                        .is_some_and(|model| routing::is_go_model(&model, ""))
+                })
+        });
+        if !resolves_go {
+            return http().map(|engine| (engine, Vec::new()));
+        }
+    }
+    let (engine, notices, go_failure) = selected?;
     if let Some(error) = go_failure.filter(|_| go_requested) {
         return Err(error);
     }
@@ -365,14 +396,7 @@ pub(crate) fn open_gateway(
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
     configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
 ) -> Result<OpenedGateway, OxaError> {
-    open_gateway_with_go(
-        user,
-        effective,
-        dirs,
-        diagnostics,
-        configure,
-        user.get(GO_SETTING) == Some(&Value::Bool(true)),
-    )
+    open_gateway_with_go(user, effective, dirs, diagnostics, configure, None)
 }
 
 fn open_gateway_with_go(
@@ -381,22 +405,24 @@ fn open_gateway_with_go(
     dirs: &Dirs,
     diagnostics: Option<oxc_gateway::diagnostics::Diagnostics>,
     configure: impl FnOnce(Gateway) -> Result<Gateway, OxaError>,
-    go_enabled: bool,
+    go_enabled: Option<bool>,
 ) -> Result<OpenedGateway, OxaError> {
+    // Shared callers defer key checks until the guest catalog is validated.
+    let go_configured = go_enabled == Some(true);
     let empty_cloud = Value::Object(serde_json::Map::new());
     let cloud = match user.get("oxa.cloud") {
         Some(cloud) if cloud.is_object() => cloud,
-        None if go_enabled => &empty_cloud,
+        None if go_configured => &empty_cloud,
         _ => return Err(invalid()),
     };
     let discover = cloud.get("discover_models") == Some(&Value::Bool(true));
     let empty = serde_json::Map::new();
     let models = match cloud.get("models") {
-        None | Some(Value::Null) if go_enabled || discover => &empty,
+        None | Some(Value::Null) if go_configured || discover => &empty,
         Some(value) => value.as_object().ok_or_else(invalid)?,
         None => return Err(invalid()),
     };
-    if models.is_empty() && !go_enabled && !discover {
+    if models.is_empty() && !go_configured && !discover {
         return Err(invalid());
     }
     let mut routes = Vec::with_capacity(models.len());
@@ -431,10 +457,10 @@ fn open_gateway_with_go(
         routes.push((model, billing));
     }
     let (subscription, mut subscription_limits) = subscription_options(cloud, needs_subscription)?;
-    if go_enabled && subscription_limits.is_none() {
+    if go_configured && subscription_limits.is_none() {
         // Local plan ceiling when the owner has supplied no limit. This is
         // enforced by the existing durable subscription reservation.
-        subscription_limits = Some(SubscriptionLimits::new(1_000, 64_000_000).map_err(|_| invalid())?);
+        subscription_limits = Some(go_default_limits()?);
     }
     let cap = match cloud.get("daily_budget_usd") {
         None | Some(Value::Null) => None,
@@ -497,6 +523,10 @@ fn open_gateway_with_go(
     })?;
     // Validate guest selection before discovery can read provider credentials.
     let mut gateway = configure(gateway)?;
+    let go_enabled = go_enabled.unwrap_or_else(|| go_state(user, dirs).refusal().is_none());
+    if go_enabled && !go_configured {
+        gateway.set_default_subscription_limits(go_default_limits()?);
+    }
     let mut refresh_go = None;
     let mut go_failure = None;
     let mut refresh_cloud = Vec::new();
@@ -557,6 +587,10 @@ fn open_gateway_with_go(
         notices,
         go_failure,
     })
+}
+
+fn go_default_limits() -> Result<SubscriptionLimits, OxaError> {
+    SubscriptionLimits::new(1_000, 64_000_000).map_err(|_| invalid())
 }
 
 fn discover_go<'a>(gateway: &mut Gateway, cloud: &'a Value) -> Result<(State, &'a str), OxaError> {

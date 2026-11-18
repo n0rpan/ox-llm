@@ -4,11 +4,34 @@ use std::{collections::BTreeSet, sync::Arc};
 
 type Backend = Result<Arc<dyn Engine>, OxaError>;
 
-pub(super) fn is_go_model(model: &str) -> bool {
-    model
-        .trim()
-        .split_once('/')
-        .is_some_and(|(provider, _)| provider.eq_ignore_ascii_case("opencode"))
+pub(super) fn is_go_model(model: &str, endpoint: &str) -> bool {
+    let model = model.trim();
+    let mut parts = model.split('/');
+    let first = parts.next().unwrap_or_default();
+    let provider = if !endpoint.is_empty() && first.eq_ignore_ascii_case(endpoint) {
+        parts.next().unwrap_or_default()
+    } else {
+        first
+    };
+    provider.eq_ignore_ascii_case("opencode") && parts.next().is_some()
+}
+
+pub(super) fn resolve_in_catalog(
+    pattern: &str,
+    endpoint: &str,
+    models: impl IntoIterator<Item = String>,
+) -> Option<String> {
+    let available: Vec<_> = models
+        .into_iter()
+        .map(|model| oxa_config::ModelRef {
+            endpoint: endpoint.to_owned(),
+            model,
+            thinking: None,
+        })
+        .collect();
+    oxa_config::resolve_model(pattern, None, &available)
+        .ok()
+        .map(|resolved| resolved.model)
 }
 
 pub(super) struct Routed {
@@ -17,6 +40,7 @@ pub(super) struct Routed {
     pub local_models: BTreeSet<String>,
     pub cloud_models: BTreeSet<String>,
     pub go_error: Option<OxaError>,
+    pub endpoint: String,
     pub default: Option<String>,
 }
 impl Routed {
@@ -38,21 +62,9 @@ impl Routed {
         // CLI model resolution needs a catalog first. If that catalog cannot
         // be discovered, retain the selected dynamic provider's saved failure
         // before the caller can replace it with a model-not-found error.
-        let requested_local = requested.is_some_and(|pattern| {
-            // Preflight only catalog IDs, without opening either backend. The
-            // caller remains responsible for endpoint/provider resolution.
-            let available: Vec<_> = self
-                .models()
-                .into_iter()
-                .map(|model| oxa_config::ModelRef {
-                    endpoint: String::new(),
-                    model,
-                    thinking: None,
-                })
-                .collect();
-            oxa_config::resolve_model(pattern, None, &available)
-                .is_ok_and(|resolved| self.local_models.contains(&resolved.model))
-        });
+        let requested_local = requested
+            .and_then(|pattern| resolve_in_catalog(pattern, &self.endpoint, self.models()))
+            .is_some_and(|model| self.local_models.contains(&model));
         if !requested_local {
             if let Some(error) = requested.and_then(|model| self.dynamic_error(model)) {
                 return Err(error.clone());
@@ -64,7 +76,7 @@ impl Routed {
         Ok(Arc::new(self))
     }
     fn dynamic_error(&self, model: &str) -> Option<&OxaError> {
-        if is_go_model(model) && !self.local_models.contains(model) {
+        if is_go_model(model, &self.endpoint) && !self.local_models.contains(model) {
             self.go_error.as_ref().or_else(|| self.cloud.as_ref().err())
         } else {
             None

@@ -824,7 +824,14 @@ fn prepare(
         &user_settings,
         &settings,
         dirs,
-        requested_model.as_deref(),
+        crate::in_process::ModelSelection {
+            pattern: requested_model.as_deref(),
+            endpoint: &endpoint.name,
+            owner_selected: a.model.is_some()
+                || requested_model
+                    .as_ref()
+                    .is_some_and(|model| user_settings.string("defaultModel").as_ref() == Some(model)),
+        },
         (!child.nested() && mode != RunMode::Rpc).then(|| cloud_diagnostics.clone()),
         shared,
         || engine_with_settings(&endpoint, &settings),

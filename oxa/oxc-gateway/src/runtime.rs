@@ -209,6 +209,9 @@ impl Runtime {
             token_path,
         })
     }
+    pub(crate) fn set_default_subscription_limits(&mut self, limits: crate::billing::SubscriptionLimits) {
+        self.subscription_limits.get_or_insert(limits);
+    }
     pub fn discovery(&self) -> impl Iterator<Item = ModelInfo<'_>> {
         self.catalog.models().filter(|model| supported(model.provider))
     }
