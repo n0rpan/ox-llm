@@ -192,6 +192,60 @@ fn rows(env: &TestEnv) -> Vec<Value> {
 }
 
 #[test]
+fn unpriced_discovery_uses_owner_rates_for_admission_and_estimated_ledger_spend() {
+    let env = TestEnv::new();
+    let peer = mock::MockOpenAi::start(vec![
+        mock::Reply::json(json!({"data":[{"id":"synthetic-openai"}]})),
+        final_reply("Synthetic priced estimate"),
+    ]);
+    settings(&env, &format!("http://{}/v1", peer.address()), false);
+    let path = env.agent_dir().join("settings.json");
+    let mut user: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    let cloud = &mut user["oxa"]["cloud"];
+    cloud["discover_models"] = json!(true);
+    cloud["models"][MODEL].as_object_mut().unwrap().remove("pricing");
+    let pricing = json!({MODEL:{"input_per_million":2,"output_per_million":3}});
+    env.write(
+        "work/.oxa/settings.json",
+        &json!({"oxa":{"cloud":{"unpriced_discovered_pricing":pricing}}}).to_string(),
+    );
+    private_file(
+        &env.home().join(".config/oxc/llm/cloud-secrets.json"),
+        &json!({"openai":KEY}).to_string(),
+    );
+    fs::write(&path, user.to_string()).unwrap();
+    let unpriced = run(&env, &["--list-models"], None);
+    assert!(!String::from_utf8_lossy(&unpriced.stdout).contains(MODEL));
+    assert_eq!(peer.requests().len(), 1);
+
+    user["oxa"]["cloud"]["unpriced_discovered_pricing"] = pricing;
+    user["oxa"]["cloud"]["daily_budget_usd"] = json!(0.008239);
+    fs::write(&path, user.to_string()).unwrap();
+    let args = ["-p", "--no-session", "--no-tools", "Synthetic prompt"];
+    let refused = run(&env, &args, None);
+    assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
+    assert_eq!(peer.requests().len(), 1);
+
+    user["oxa"]["cloud"]["daily_budget_usd"] = json!(0.00825);
+    fs::write(&path, user.to_string()).unwrap();
+    let output = run(&env, &args, None);
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("owner-estimated prices"));
+    let row = rows(&env).pop().unwrap();
+    assert_eq!(row["settled"], "estimated");
+    assert_eq!(row["estimated_cost_usd"], 0.000020);
+    assert!(row.get("cost_usd").is_none() && row.get("catalog_cost_usd").is_none());
+    let refused = run(&env, &args, None);
+    assert_eq!(refused.status.code(), Some(oxa_proto::EXIT_BUDGET));
+    assert_eq!(
+        peer.requests().len(),
+        2,
+        "the persisted estimate counts against the cap"
+    );
+    peer.assert_healthy();
+}
+
+#[test]
 fn chatgpt_token_read_failure_does_not_claim_an_api_key_store_failure() {
     let env = TestEnv::new();
     let upstream = mock::MockOpenAi::start(vec![]);
