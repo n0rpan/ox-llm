@@ -515,6 +515,107 @@ mod tests {
     }
 
     #[test]
+    fn timestamps_use_the_host_zone_on_every_page() {
+        const CHILD: &str = "OXA_TEST_LEAD_TIME_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "lead_page::tests::timestamps_use_the_host_zone_on_every_page",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env(CHILD, "1")
+                .env("TZ", "CET-1")
+                .env("RUST_TEST_THREADS", "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(stdout.contains("running 1 test"), "{stdout}");
+            assert!(output.status.success(), "{stdout}");
+            return;
+        }
+        let mut situation = observed_asks();
+        situation.at_ms = 0;
+        let mut board = Board {
+            observed_at: 0,
+            entries: vec![Entry {
+                number: 17,
+                head: "synthetic-head".into(),
+                release_pinned: false,
+                action: Action::Ready,
+                lease: Some(oxa_work::board::Lease {
+                    holder: "worker-example".into(),
+                    expires_at: 3600,
+                    claimed_at: None,
+                    generation: (0, 1),
+                }),
+                attempts_today: 0,
+                eligible: true,
+            }],
+        };
+        let mut quota = crate::lead_quota::GitHubQuotas::default();
+        assert!(quota.observe(
+            crate::lead_quota::GitHubIdentity::App,
+            crate::lead_quota::GitHubResource::Core,
+            "x-ratelimit-resource: core\nx-ratelimit-limit: 10\nx-ratelimit-remaining: 7\nx-ratelimit-reset: 3600",
+        ));
+        let model = oxc_gateway::status::chatgpt_usage::parse(&serde_json::json!({
+            "rate_limit": {"primary_window": {"used_percent": 0, "reset_at": 3600}}
+        }));
+        let view = View {
+            board: Some(&board),
+            situation: Some(&situation),
+            github_quotas: Some(&quota),
+            model_plan: Some(&model),
+            ..Default::default()
+        };
+        for page in [
+            Page::Home,
+            Page::Board,
+            Page::Workers,
+            Page::Asks,
+            Page::Item(17),
+            Page::Chat(Prompt::Status),
+        ] {
+            let html = document_for(page, &view, 100);
+            assert!(html.contains("01:00 CET"), "{page:?}");
+            assert!(
+                !html.contains("Unix seconds") && !html.contains("Unix milliseconds"),
+                "{page:?}"
+            );
+            assert!(!html.contains("1970-01-01"), "today needs no date: {page:?}");
+        }
+        for page in [Page::Board, Page::Item(17), Page::Usage] {
+            let html = document_for(page, &view, 100);
+            assert!(html.contains("02:00 CET"), "lease or quota reset: {page:?}");
+            assert!(!html.contains("expires 3600") && !html.contains("resets at 3600"));
+        }
+        let older = document_for(Page::Board, &view, 86_400);
+        assert!(older.contains("1970-01-01 01:00 CET"));
+        board.observed_at = 82_800; // 23:00 UTC is midnight of the next host-local day.
+        let midnight = document_for(
+            Page::Board,
+            &View {
+                board: Some(&board),
+                ..Default::default()
+            },
+            86_400,
+        );
+        assert!(midnight.contains("00:00 CET") && !midnight.contains("1970-01-02"));
+        board.observed_at = u64::MAX;
+        let invalid = document_for(
+            Page::Board,
+            &View {
+                board: Some(&board),
+                ..Default::default()
+            },
+            100,
+        );
+        assert!(!invalid.contains(&u64::MAX.to_string()));
+    }
+
+    #[test]
     fn navigation_has_real_urls_one_current_destination_and_observed_ask_counts() {
         let mut snapshot = observed_asks();
         for (page, selected) in [
