@@ -83,6 +83,81 @@ fn rows(env: &TestEnv) -> Vec<Value> {
         .collect()
 }
 #[test]
+fn a_key_enables_go_catalog_and_plan_chat_without_legacy_enable_or_limits() {
+    let env = TestEnv::new();
+    let mock = MockOpenAi::start_with(|base| {
+        vec![
+            Reply::json(discovery(base)),
+            Reply::json(discovery(base)),
+            stream(json!({"content":"synthetic plan reply"}), "stop"),
+        ]
+    });
+    setup(&env, &format!("http://{}", mock.address()));
+    let path = env.home().join(".oxa/agent/settings.json");
+    let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    settings["oxa"].as_object_mut().unwrap().remove("engine");
+    let cloud = settings["oxa"]["cloud"].as_object_mut().unwrap();
+    cloud.remove("subscription_limits");
+    cloud["opencode"].as_object_mut().unwrap().remove("enabled");
+    fs::write(&path, settings.to_string()).unwrap();
+
+    let list = run(&env, &["--list-models"]);
+    let status = String::from_utf8_lossy(&list.stderr);
+    assert!(list.status.success(), "{status}");
+    assert!(String::from_utf8_lossy(&list.stdout).contains(MODEL));
+    assert!(status.contains("OpenCode Go: on"), "{status}");
+    assert!(status.contains("oxa.cloud.opencode.enabled"), "{status}");
+    assert!(!status.contains(CREDENTIAL));
+
+    let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("synthetic plan reply"));
+    let ledger = rows(&env);
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger[0]["billing"], "subscription");
+    assert_eq!(ledger[0]["cost_usd"].as_f64(), Some(0.0));
+    assert_eq!(ledger[0]["settled"], "usage");
+    assert_eq!(mock.requests().len(), 3);
+    mock.assert_healthy();
+}
+
+#[test]
+fn unavailable_go_reports_the_owner_fix_before_any_discovery() {
+    for (disabled, reason) in [(true, "disabled"), (false, "no key")] {
+        let env = TestEnv::new();
+        let mock = MockOpenAi::start(vec![]);
+        setup(&env, &format!("http://{}", mock.address()));
+        let path = env.home().join(".oxa/agent/settings.json");
+        let mut settings: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        settings["oxa"]["cloud"]["opencode"]
+            .as_object_mut()
+            .unwrap()
+            .remove("enabled");
+        if disabled {
+            settings["oxa"]["cloud"]["opencode"]["enabled"] = json!(false);
+        } else {
+            fs::remove_file(env.home().join(".config/oxc/llm/cloud-secrets.json")).unwrap();
+        }
+        fs::write(&path, settings.to_string()).unwrap();
+
+        let output = run(&env, &["--model", MODEL, "--no-tools", "-p", "Synthetic task"]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success());
+        assert_ne!(terminal(&output)["error_class"], "not_found", "{stderr}");
+        assert!(stderr.contains("OpenCode Go"), "{stderr}");
+        assert!(stderr.contains(reason), "{stderr}");
+        assert!(stderr.contains("oxa.cloud.opencode.enabled"), "{stderr}");
+        assert!(!stderr.contains(CREDENTIAL));
+        assert!(mock.requests().is_empty());
+        mock.assert_healthy();
+    }
+}
+
+#[test]
 fn native_go_review_skill_schema_and_tool_loop_settle_subscription_rows() {
     let env = TestEnv::new();
     env.write("work/note.txt", "Synthetic review evidence.");
