@@ -66,15 +66,12 @@ fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
         "#!/bin/sh\n[ \"$GH_TOKEN\" = synthetic ] || exit 93\nprintf 'HTTP/2.0 200 OK\\r\\n\\r\\n'\ncat \"$0.reply\"\n",
     );
     fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
-    env.write(
-        "home/.local/bin/gh.reply",
-        &json!({"data":{"repository":{
-            "mergeQueue":null,"pullRequests":{"totalCount":0,"nodes":[],
-            "pageInfo":{"hasNextPage":false,"endCursor":"last"}},
-            "i44":{"number":number,"state":"OPEN","updatedAt":"fixture-revision"},"b44":null
-        }}})
-        .to_string(),
-    );
+    let mut reply = json!({"data":{"repository":{
+        "mergeQueue":null,"pullRequests":{"totalCount":0,"nodes":[],
+        "pageInfo":{"hasNextPage":false,"endCursor":"last"}},
+        "i44":{"number":number,"state":"OPEN","updatedAt":"fixture-revision"},"b44":null
+    }}});
+    env.write("home/.local/bin/gh.reply", &reply.to_string());
     let path = std::env::join_paths(
         std::iter::once(gh.parent().unwrap().to_path_buf())
             .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
@@ -126,6 +123,10 @@ fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(claims.snapshot().unwrap()[&number].attempts, 3);
     assert!(claims.snapshot().unwrap()[&number].lease.is_none());
+    let output = readback();
+    assert!(output.status.success(), "{output:?}");
+    let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(receipt["max_attempts_per_day"], 3);
 
     owner["budget_pools"]["limits"]["max_attempts_per_day"] = json!(4);
     write_config(&owner);
@@ -142,17 +143,60 @@ fn an_explicit_owner_limit_admits_the_fourth_attempt_and_readback_agrees() {
     let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(receipt["max_attempts_per_day"], 4);
 
+    assert!(claims
+        .release_for(
+            number,
+            &binding.lease.holder,
+            &binding.lease,
+            oxa_proto::time::now_ms() / 1000,
+            "verified synthetic completion",
+        )
+        .unwrap());
+    let charged = claims.snapshot().unwrap()[&number].clone();
+    assert_eq!(charged.attempts, 4);
+    assert!(charged.lease.is_none());
+    // A new revision has a different publication key, so refusal proves the cap,
+    // rather than the already published packet or the released original lease.
+    owner["packets"][0]["revision"] = json!("fixture-revision-2");
+    reply["data"]["repository"]["i44"]["updatedAt"] = json!("fixture-revision-2");
+    env.write("home/.local/bin/gh.reply", &reply.to_string());
+    for cap in [json!(4), json!(2), json!(0)] {
+        owner["budget_pools"]["limits"]["max_attempts_per_day"] = cap.clone();
+        write_config(&owner);
+        let output = refill();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(claims.snapshot().unwrap()[&number], charged);
+        let output = readback();
+        assert!(output.status.success(), "{output:?}");
+        let receipt: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(receipt["max_attempts_per_day"], cap);
+    }
+
     for cap in [
         Value::Null,
         json!("4"),
         json!(-1),
         json!(4.5),
         json!(4294967296_u64),
+        json!(true),
+        json!([]),
+        json!({}),
     ] {
         owner["budget_pools"]["limits"]["max_attempts_per_day"] = cap;
         write_config(&owner);
         assert_eq!(readback().status.code(), Some(2));
         assert_eq!(refill().status.code(), Some(2));
-        assert_eq!(claims.snapshot().unwrap()[&number], row.state);
+        assert_eq!(claims.snapshot().unwrap()[&number], charged);
     }
+    owner["budget_pools"]["limits"]["max_attempts_per_day"] = json!(4);
+    let project_config = env.work().join("project/owner-policy.json");
+    fs::write(&project_config, owner.to_string()).unwrap();
+    fs::set_permissions(&project_config, fs::Permissions::from_mode(0o600)).unwrap();
+    let output = command()
+        .args(["--offline", "work", "board", "--claims-readback", "--config"])
+        .arg(&project_config)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(claims.snapshot().unwrap()[&number], charged);
 }
