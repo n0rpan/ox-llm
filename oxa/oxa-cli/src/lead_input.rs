@@ -39,7 +39,7 @@ pub fn board(path: &Path, uid: u32) -> Result<Board> {
     board_and_app_quota(path, uid).map(|(board, _)| board)
 }
 
-/// Read the most recent complete shadow sample, excluding an interrupted final append.
+/// Read the most recent complete Reader sample within the existing tail bound.
 pub(crate) fn board_and_app_quota(path: &Path, uid: u32) -> Result<(Board, Option<AppQuota>)> {
     let mut file = open(path, uid)?;
     let length = file.metadata().map_err(|_| "cannot inspect board sample")?.len();
@@ -50,15 +50,26 @@ pub(crate) fn board_and_app_quota(path: &Path, uid: u32) -> Result<(Board, Optio
     file.take(length - start)
         .read_to_end(&mut tail)
         .map_err(|_| "cannot read board sample")?;
-    let end = tail
+    let mut end = tail
         .iter()
         .rposition(|b| *b == b'\n')
         .ok_or("no complete board sample")?;
-    let previous = tail[..end].iter().rposition(|b| *b == b'\n');
-    if previous.is_none() && start != 0 {
-        return Err("board sample exceeds limit");
+    loop {
+        let previous = tail[..end].iter().rposition(|b| *b == b'\n');
+        if previous.is_none() && start != 0 {
+            return Err("board sample exceeds limit");
+        }
+        let line = &tail[previous.map_or(0, |p| p + 1)..end];
+        let (board, app_quota, publication) = decode_board_sample(line)?;
+        if !publication {
+            return Ok((board, app_quota));
+        }
+        // Publication rows carry a Board for journal replay, not a Reader observation.
+        end = previous.ok_or("no Reader board sample")?;
     }
-    let line = &tail[previous.map_or(0, |p| p + 1)..end];
+}
+
+fn decode_board_sample(line: &[u8]) -> Result<(Board, Option<AppQuota>, bool)> {
     if line.len() as u64 > MAX_LEAD_SAMPLE_BYTES {
         return Err("board sample exceeds limit");
     }
@@ -89,7 +100,12 @@ pub(crate) fn board_and_app_quota(path: &Path, uid: u32) -> Result<(Board, Optio
     let app_quota = sample
         .get("app_quota")
         .and_then(|quota| serde_json::from_value(quota.clone()).ok());
-    Ok((board, app_quota))
+    let publication = match sample.get("landing_publication") {
+        Some(record) if record.is_object() => true,
+        Some(_) => return Err("invalid publication sample"),
+        None => false,
+    };
+    Ok((board, app_quota, publication))
 }
 
 /// Consume the runner's existing versioned situation document, not worker transcripts/logs.
