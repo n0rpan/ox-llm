@@ -24,9 +24,38 @@ pub struct Evidence<'a> {
 }
 
 pub struct Verified<'a> {
-    pub workflow_run_id: u64,
-    pub required_name: &'a str,
+    pub attempt: JobAttempt<'a>,
     pub observation: Observation<'a>,
+}
+
+/// The unchanged identity across the original Actions job and its replacement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JobLineage<'a> {
+    pub repository: &'a str,
+    pub head: &'a str,
+    pub workflow_path: &'a str,
+    pub required_name: &'a str,
+    pub check_suite_id: u64,
+    pub workflow_run_id: u64,
+}
+
+/// Exact verified observation. The publisher owns the durable dispatch record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JobAttempt<'a> {
+    pub lineage: JobLineage<'a>,
+    pub check_run_id: u64,
+    pub job_id: u64,
+    pub run_attempt: u64,
+}
+
+impl JobAttempt<'_> {
+    /// A later observed replacement is distinct from acceptance of a request.
+    pub fn replaces(&self, original: &JobAttempt<'_>) -> bool {
+        self.lineage == original.lineage
+            && self.run_attempt > original.run_attempt
+            && self.job_id != original.job_id
+            && self.check_run_id != original.check_run_id
+    }
 }
 
 /// Join the required check with the exact Actions attempt and job. The
@@ -47,12 +76,12 @@ pub fn verify(evidence: Evidence<'_>) -> Option<Verified<'_>> {
         || check["__typename"] != "CheckRun"
         || check["isRequired"] != true
         || check["name"].as_str() != Some(required_name)
-        || check["status"] != "IN_PROGRESS"
     {
         return None;
     }
-    let completed_at = github_utc(&check["completedAt"])?;
-    let conclusion = check["conclusion"].as_str()?;
+    let status = check["status"].as_str()?;
+    let completed_at = github_utc(&check["completedAt"]);
+    let conclusion = check["conclusion"].as_str();
     let event = match trigger {
         Trigger::PullRequest => "pull_request",
         Trigger::MergeGroup => "merge_group",
@@ -76,13 +105,24 @@ pub fn verify(evidence: Evidence<'_>) -> Option<Verified<'_>> {
         return None;
     }
     Some(Verified {
-        workflow_run_id: identity.workflow_run_id,
-        required_name,
+        attempt: JobAttempt {
+            lineage: JobLineage {
+                repository,
+                head,
+                workflow_path,
+                required_name,
+                check_suite_id: identity.check_suite_id,
+                workflow_run_id: identity.workflow_run_id,
+            },
+            check_run_id: check_id,
+            job_id,
+            run_attempt: identity.observed_run_attempt,
+        },
         observation: Observation {
             required: true,
-            status: "in_progress",
-            conclusion: Some(conclusion),
-            completed_at: Some(completed_at),
+            status,
+            conclusion,
+            completed_at,
             job_id,
             run_attempt: identity.observed_run_attempt,
         },
@@ -122,7 +162,7 @@ const STALE_CHECK_SECONDS: u64 = 10 * 60;
 pub fn decide(enabled: bool, check: &Observation<'_>, now: u64, history: History) -> Decision {
     if !enabled
         || !check.required
-        || check.status != "in_progress"
+        || !check.status.eq_ignore_ascii_case("in_progress")
         || check.job_id == 0
         || check.run_attempt == 0
         || !check.conclusion.is_some_and(|conclusion| {
@@ -197,8 +237,8 @@ mod tests {
             job: &job,
         };
         let matched = verify(evidence).unwrap();
-        assert_eq!(matched.workflow_run_id, 12);
-        assert_eq!(matched.required_name, name);
+        assert_eq!(matched.attempt.lineage.workflow_run_id, 12);
+        assert_eq!(matched.attempt.lineage.required_name, name);
         assert_eq!(
             decide(true, &matched.observation, 87_001, History::Unused),
             Decision::RerunJob(23)
@@ -228,6 +268,51 @@ mod tests {
             ..evidence
         })
         .is_none());
+
+        assert!(!matched.attempt.replaces(&matched.attempt));
+        assert_eq!(
+            decide(true, &matched.observation, 87_001, History::Reserved),
+            Decision::WaitForReceipt
+        );
+        let mut replacement = check.clone();
+        replacement["databaseId"] = 32.into();
+        replacement["status"] = "COMPLETED".into();
+        replacement["checkSuite"]["workflowRun"]["runAttempt"] = 3.into();
+        let mut later_attempt = attempt.clone();
+        later_attempt["run_attempt"] = 3.into();
+        let mut later_job = job.clone();
+        later_job["id"] = 24.into();
+        later_job["run_attempt"] = 3.into();
+        later_job["check_run_url"] = "https://api.github.com/repos/example/project/check-runs/32".into();
+        let later = verify(Evidence {
+            check: &replacement,
+            attempt: &later_attempt,
+            job: &later_job,
+            ..evidence
+        })
+        .unwrap();
+        assert!(later.attempt.replaces(&matched.attempt));
+        let reconciled = History::Requested {
+            before_attempt: matched.attempt.run_attempt,
+        };
+        assert_eq!(
+            decide(true, &later.observation, 87_001, reconciled),
+            Decision::Quiet
+        );
+
+        let mut stale_again = replacement.clone();
+        stale_again["status"] = "IN_PROGRESS".into();
+        let later = verify(Evidence {
+            check: &stale_again,
+            attempt: &later_attempt,
+            job: &later_job,
+            ..evidence
+        })
+        .unwrap();
+        assert_eq!(
+            decide(true, &later.observation, 87_001, reconciled),
+            Decision::Alarm
+        );
     }
 
     fn check() -> Observation<'static> {
