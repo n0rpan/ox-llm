@@ -994,14 +994,14 @@ pub fn run_task_with_policy(
         .map_err(|e| e.to_string())
 }
 
-fn lock_task(policy: &RunPolicy, id: &str) -> Result<fs::File> {
+fn lock_task(policy: &RunPolicy, id: &str, create: bool) -> Result<fs::File> {
     let lock_path = policy.storage.join(format!("{id}.lock"));
     let lock_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .mode(0o600)
         .custom_flags(shadow::OWNER_FILE_FLAGS)
-        .create(true)
+        .create(create)
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("cannot lock task {id}: {e}"))?;
@@ -1069,25 +1069,7 @@ impl<'a> LockedTask<'a> {
                 .map_err(|error| format!("task storage: {error}"))?;
         }
         verify_task_storage(&policy.storage).map_err(|error| format!("task storage: {error}"))?;
-        let lock_path = policy.storage.join(format!("{}.lock", task.id));
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .mode(0o600)
-            .custom_flags(shadow::OWNER_FILE_FLAGS)
-            .create(create)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|e| format!("cannot lock task {}: {e}", task.id))?;
-        let lock_metadata = lock
-            .metadata()
-            .map_err(|e| format!("cannot inspect task lock: {e}"))?;
-        // SAFETY: geteuid has no preconditions and returns this process's effective owner.
-        if !shadow::regular_file_owned_by(&lock_metadata, unsafe { libc::geteuid() }) {
-            return Err("cannot lock task: lock must be an owner-controlled regular file".into());
-        }
-        lock.try_lock()
-            .map_err(|e| format!("task {} is already running: {e}", task.id))?;
+        let lock = lock_task(policy, &task.id, create)?;
         Ok(Self { task, policy, lock })
     }
 

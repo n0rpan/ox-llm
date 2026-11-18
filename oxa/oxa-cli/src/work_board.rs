@@ -296,6 +296,15 @@ fn nodes(value: &Value) -> Result<&Vec<Value>, String> {
     Ok(rows)
 }
 
+fn check_outcome(check: &Value) -> Option<&str> {
+    match check["status"].as_str() {
+        Some("COMPLETED") => check["conclusion"].as_str(),
+        // GitHub can retain a prior conclusion while the check is active.
+        Some(_) => None,
+        None => check["state"].as_str(),
+    }
+}
+
 fn required_contexts(base: &Value) -> Result<BTreeSet<&str>, String> {
     if !base.is_object() {
         return Err("missing PR base requirements".into());
@@ -419,7 +428,7 @@ impl Reader<'_> {
                 };
                 let required_ci = if checks.iter().any(|c| {
                     matches!(
-                        c["state"].as_str().or(c["conclusion"].as_str()),
+                        check_outcome(c),
                         Some(
                             "FAILURE"
                                 | "ERROR"
@@ -438,12 +447,9 @@ impl Reader<'_> {
                             .iter()
                             .any(|c| c["name"].as_str().or(c["context"].as_str()) == Some(*name))
                     })
-                    || checks.iter().any(|c| {
-                        !matches!(
-                            c["state"].as_str().or(c["conclusion"].as_str()),
-                            Some("SUCCESS" | "NEUTRAL" | "SKIPPED")
-                        )
-                    })
+                    || checks
+                        .iter()
+                        .any(|c| !matches!(check_outcome(c), Some("SUCCESS" | "NEUTRAL" | "SKIPPED")))
                 {
                     RequiredCi::Pending
                 } else {
