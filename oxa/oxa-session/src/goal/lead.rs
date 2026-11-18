@@ -4,6 +4,8 @@ use oxa_proto::{work::MAX_ITEMS, OxaError, Value};
 use serde_json::json;
 use std::collections::BTreeSet;
 
+pub(super) mod plan;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LeadGoalState {
     pub open_asks: Vec<OpenGoalAsk>,
