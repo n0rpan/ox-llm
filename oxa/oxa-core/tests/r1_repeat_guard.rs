@@ -1007,12 +1007,31 @@ fn advisor_returns_to_the_same_worker_and_does_not_repeat_the_call() {
             dispatcher: advisor.clone(),
             scrub: Arc::new(str::to_owned),
         });
-        let (end, _) = run(&mut st, "find the bug in a.txt");
+        let (end, events) = run(&mut st, "find the bug in a.txt");
         if retry_same {
             assert!(matches!(end, RunEnd::Failed(error) if error.code == "advisor_escalation_required"));
         } else {
+            // #1448 Stage 1 review: with advice delivered the user still sees exactly one
+            // repeat warning — persisted and live — before the worker's final reply.
             assert_eq!(end, RunEnd::Stopped);
+            let shown: Vec<_> = shown_entries(&st)
+                .into_iter()
+                .filter(|(text, _)| text.starts_with(WARN_HEAD))
+                .collect();
+            assert_eq!(shown.len(), 1, "{shown:?}");
+            assert_eq!(shown[0].1, shown_why::NOTICE);
+            let live: Vec<_> = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        AgentEvent::Notice { level: Level::Warning, text, .. } if text.starts_with(WARN_HEAD)
+                    )
+                })
+                .collect();
+            assert_eq!(live.len(), 1, "{events:?}");
         }
+        // One dispatch on the same worker, and the advice reached the model.
         assert_eq!(advisor.0.load(Ordering::SeqCst), 1);
         let requests = worker.requests();
         assert!(requests.iter().all(|request| request.model == "fake-model"));

@@ -637,8 +637,8 @@ fn run_inner(
             }
             // The repeat guard's give-up point: the same call again after its notices (#1448).
             // The run no longer ends here. The advisor keeps its authority: a delivered
-            // suggestion continues the run, an escalation still ends it. Otherwise the user is
-            // warned once — shown and persisted with the remedy — and the next model reply
+            // suggestion continues the run, an escalation still ends it. Either way the user
+            // is warned once — shown and persisted with the remedy — and the next model reply
             // proceeds (steering and compaction run as on any turn).
             if let Some(r) = results.iter().find(|r| r.warn) {
                 let mut text = crate::repeat::warning_text(&r.tool_name);
@@ -648,7 +648,9 @@ fn run_inner(
                     .find(|call| Some(&call.id) == r.msg.tool_call_id.as_ref())
                 {
                     match crate::advice::on_repeat(st, call, &text, sink)? {
-                        crate::advice::AdviceResult::Continue => continue,
+                        // The advisor delivered: the run continues through the warning below.
+                        crate::advice::AdviceResult::Continue => {}
+                        // No advisor, or none delivered: same warning path.
                         crate::advice::AdviceResult::Refused => {}
                         crate::advice::AdviceResult::Escalate => {
                             text = "Advice did not resolve the failure. The worker needs a stronger tier."
