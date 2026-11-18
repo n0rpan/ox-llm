@@ -195,6 +195,7 @@ fn builtins_list() {
         "new",
         "compact",
         "resume",
+        "goal",
         "reload",
         "help",
         "usage",
