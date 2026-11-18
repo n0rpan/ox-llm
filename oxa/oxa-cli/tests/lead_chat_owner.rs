@@ -313,3 +313,47 @@ fn one_shot_lead_message_shares_the_bounded_owner_conversation_path() {
     }
     assert!(second.requests().is_empty());
 }
+
+#[test]
+fn cli_chat_hides_private_engine_response_details() {
+    let test = TestEnv::new();
+    std::fs::set_permissions(test.agent_dir(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let private_detail = "synthetic-private-endpoint-detail";
+    let mut rejected = ScriptTurn::text("");
+    rejected.fault = Some(oxa_fake::Fault::Http {
+        status: 400,
+        body: serde_json::json!({"error":{"message":private_detail}}).to_string(),
+    });
+    let server = FakeServer::start(vec![rejected.clone(), rejected], FakeOpts::default()).unwrap();
+    let init = run(&test, &server, &["lead", "chat", "--init"]);
+    assert!(init.status.success(), "{init:?}");
+    let id = String::from_utf8(init.stdout).unwrap();
+    let settings = test.write(
+        "home/.oxa/agent/settings.json",
+        &serde_json::json!({"oxa":{"lead":{"sessionId":id.trim()}}}).to_string(),
+    );
+    std::fs::set_permissions(settings, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+    for words in [
+        &["lead", "show the board status"][..],
+        &["lead", "chat", "show the board status"][..],
+    ] {
+        let result = run(&test, &server, words);
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        assert!(!result.status.success());
+        assert!(result.stdout.is_empty());
+        assert!(
+            !stderr.contains(private_detail),
+            "CLI exposed a private response detail"
+        );
+        assert!(stderr.contains("The Lead provider request failed."), "{stderr}");
+    }
+    assert_eq!(
+        server
+            .requests()
+            .iter()
+            .filter(|request| request.max_tokens > 0)
+            .count(),
+        2
+    );
+}
