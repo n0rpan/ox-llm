@@ -23,6 +23,10 @@ maintainer, who says in the PR when a hardware check is needed.
   refused. Do not flag the absence of a block the owner has not configured. This applies to
   authenticated, allowlisted share guests too: their authority, tokens and request quotas stay, an
   uncapped metered spend by guests is shown as a clear warning in the owner UI, not refused.
+- OpenCode Go reserves subscription tokens only, including when the provider falls back to its
+  paid balance. `oxa.cloud.daily_budget_usd` applies to metered API admission. Record actual Go
+  charges reported by the provider in the ledger and include them in the shared daily spend.
+  Preserve subscription token accounting and provider-side limits.
 - Go/OpenRouter parsing should tolerate compatible optional fields and stream variations,
   while validating numeric type, sign, range and finiteness before accounting or execution.
 - v0.2.1 has no Python in the product/runtime path; build/test tooling is separate.

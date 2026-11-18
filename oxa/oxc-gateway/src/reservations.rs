@@ -36,9 +36,14 @@ fn options() -> OpenOptions {
     options
 }
 
+/// A subscription or Go request reserves tokens only; its cost is unknown to
+/// oxa. The USD fields of `Subscription` and `Go` holds never reserve headroom:
+/// they exist solely so records written by older binaries round-trip unchanged
+/// and stay readable.
 pub(crate) enum Reserved {
     Metered(f64),
     Subscription(u64, f64),
+    Go(u64, f64),
     /// An admitted uncapped request whose cost no price bound could establish. It owns the
     /// USD headroom until its settled row records the cost, across crashes and restarts.
     Unknown,
@@ -55,20 +60,29 @@ impl Reserved {
         }
         let object = value
             .as_object()
-            .filter(|o| o.len() == 1 || o.len() == 2 && o.contains_key("reserved_usd"))
+            .filter(|o| {
+                o.len() == 1 || o.len() == 2 && (o.contains_key("reserved_usd") || o.contains_key("go_usd"))
+            })
             .ok_or(io::ErrorKind::InvalidData)?;
         let tokens = object
             .get("subscription_tokens")
             .and_then(Value::as_u64)
             .filter(|n| *n > 0)
             .ok_or(io::ErrorKind::InvalidData)?;
-        let usd = match object.get("reserved_usd") {
-            Some(value) => value
+        let positive_usd = |value: &Value| {
+            value
                 .as_f64()
                 .filter(|cost| cost.is_finite() && *cost > 0.0)
-                .ok_or(io::ErrorKind::InvalidData)?,
-            None => 0.0,
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
         };
+        if let Some(usd) = object.get("go_usd") {
+            return Ok(Self::Go(tokens, positive_usd(usd)?));
+        }
+        let usd = object
+            .get("reserved_usd")
+            .map(positive_usd)
+            .transpose()?
+            .unwrap_or(0.0);
         Ok(Self::Subscription(tokens, usd))
     }
     fn to_value(&self) -> Value {
@@ -78,12 +92,13 @@ impl Reserved {
                 json!({"subscription_tokens":tokens,"reserved_usd":usd})
             }
             Self::Subscription(tokens, _) => json!({"subscription_tokens":tokens}),
+            Self::Go(tokens, usd) => json!({"subscription_tokens":tokens,"go_usd":usd}),
             Self::Unknown => json!({"unknown":true}),
         }
     }
     fn usd(&self) -> f64 {
         match self {
-            Self::Metered(cost) | Self::Subscription(_, cost) => *cost,
+            Self::Metered(cost) | Self::Subscription(_, cost) | Self::Go(_, cost) => *cost,
             Self::Unknown => 0.0,
         }
     }
@@ -167,23 +182,30 @@ impl Shared {
         }
         Ok(shared)
     }
+    /// USD headroom held against the daily metered cap. Subscription and Go
+    /// requests hold no USD; legacy stored reservation USD in both shapes
+    /// (`reserved_usd`, `go_usd`) stays readable but reserves nothing.
     pub fn reserved(&self) -> f64 {
-        self.holds.values().map(Reserved::usd).sum()
+        self.holds
+            .values()
+            .filter_map(|amount| match amount {
+                Reserved::Metered(cost) => Some(*cost),
+                _ => None,
+            })
+            .sum()
     }
-    /// An unpriced call owns the remaining USD headroom until settlement.
-    /// Do not let floating-point summation or a changed cap admit another call.
-    pub fn has_conservative_hold(&self) -> bool {
-        self.holds.values().any(|amount| {
-            matches!(amount, Reserved::Unknown)
-                || matches!(amount, Reserved::Subscription(_, usd) if *usd > 0.0)
-        })
+    /// An uncapped metered call with no price bound makes a later cap unverifiable.
+    pub fn has_unknown_metered_hold(&self) -> bool {
+        self.holds
+            .values()
+            .any(|amount| matches!(amount, Reserved::Unknown))
     }
     pub fn subscription_reserved(&self) -> io::Result<Counts> {
         self.holds
             .values()
             .try_fold(Counts::default(), |counts, amount| match amount {
                 Reserved::Metered(_) | Reserved::Unknown => Ok(counts),
-                Reserved::Subscription(tokens, _) => counts
+                Reserved::Subscription(tokens, _) | Reserved::Go(tokens, _) => counts
                     .add(Counts {
                         requests: 1,
                         tokens: *tokens,
@@ -198,11 +220,13 @@ impl Shared {
     pub fn insert_unknown(&mut self) -> io::Result<String> {
         self.insert_amount(Reserved::Unknown)
     }
-    pub fn insert_subscription_with_usd(&mut self, tokens: u64, usd: f64) -> io::Result<String> {
-        if tokens == 0 || !usd.is_finite() || usd < 0.0 {
+    /// A subscription or Go request reserves tokens only. Its cost is unknown
+    /// to oxa, so no USD headroom is ever held for it.
+    pub fn insert_subscription(&mut self, tokens: u64) -> io::Result<String> {
+        if tokens == 0 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        self.insert_amount(Reserved::Subscription(tokens, usd))
+        self.insert_amount(Reserved::Subscription(tokens, 0.0))
     }
     fn insert_amount(&mut self, amount: Reserved) -> io::Result<String> {
         if self.holds.len() >= MAX_HOLDS {
@@ -248,17 +272,26 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn monetary_subscription_holds_preserve_legacy_forms_and_reject_malformed_usd() {
+    fn legacy_subscription_usd_stays_readable_and_new_subscription_holds_are_token_only() {
         for valid in [
             json!(0.01),
             json!({"subscription_tokens":120}),
             json!({"subscription_tokens":120,"reserved_usd":0.01}),
+            json!({"subscription_tokens":120,"go_usd":0.25}),
         ] {
             let hold = Reserved::from_value(&valid).unwrap();
             assert_eq!(hold.to_value(), valid);
         }
+        // New subscription holds never carry USD. The legacy field is
+        // read-only round-trip storage, never a reservation.
+        assert_eq!(
+            Reserved::Subscription(120, 0.0).to_value(),
+            json!({"subscription_tokens":120})
+        );
         for invalid in [
             json!({"subscription_tokens":120,"reserved_usd":null}),
+            json!({"subscription_tokens":120,"go_usd":0}),
+            json!({"subscription_tokens":120,"go_usd":0.25,"reserved_usd":0.25}),
             json!({"subscription_tokens":120,"reserved_usd":"0.01"}),
             json!({"subscription_tokens":120,"reserved_usd":-0.01}),
             json!({"subscription_tokens":120,"reserved_usd":0}),
