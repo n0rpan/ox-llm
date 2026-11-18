@@ -177,7 +177,11 @@ fn claim_child() {
 
 #[test]
 fn active_and_capped_claims_repair_the_missing_creation_witness() {
-    for now in [11, 21] {
+    // At 11 the original lease is still live and fences the claim; at 21 it has
+    // expired and the capped attempt is admitted past its threshold. Both
+    // repair the removed creation witness, and both still fail when the
+    // authoritative state is lost.
+    for (now, claimed) in [(11, false), (21, true)] {
         let fixture = Fixture::new();
         fixture.claim(10, 10).unwrap();
         fs::remove_file(fixture.0.path().join("1.board-claim.created")).unwrap();
@@ -185,11 +189,14 @@ fn active_and_capped_claims_repair_the_missing_creation_witness() {
             enabled: true,
             max_attempts_per_day: 1,
         };
-        assert!(fixture
-            .store()
-            .claim(&entry(), &capped, "worker", now, 10)
-            .unwrap()
-            .is_none());
+        assert_eq!(
+            fixture
+                .store()
+                .claim(&entry(), &capped, "worker", now, 10)
+                .unwrap()
+                .is_some(),
+            claimed
+        );
         assert!(fixture.0.path().join("1.board-claim.created").exists());
         fs::remove_file(fixture.0.path().join("1.board-claim.json")).unwrap();
         fs::remove_file(fixture.0.path().join("1.board-claim.lock")).unwrap();
