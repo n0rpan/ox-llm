@@ -1,9 +1,7 @@
 //! Read-only prepared-input normalization through the existing board Reader.
 use super::*;
-use crate::work_refill::{Partition, Source};
-use oxa_work::board::{
-    assignment::Worker, Action, Claims, Entry, ExistingWork, Issue, NativeBinding, Snapshot,
-};
+use crate::work_refill::{Consumer, Source};
+use oxa_work::board::{Action, Entry, ExistingWork, Issue, NativeBinding, Snapshot};
 pub(super) fn text<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
     value[key]
         .as_str()
@@ -72,17 +70,20 @@ impl<'a> Input<'a> {
     /// Generate only current fix packets; Consumer still owns all admission and publication.
     pub(super) fn prepare_live(
         &mut self,
-        claims: &Claims,
-        policy: &Policy,
-        worker: &Worker,
-        partition: &Partition,
+        consumer: &Consumer<'_>,
         now: u64,
         model: &str,
     ) -> Result<Vec<Prepared>, String> {
         self.host_id()?;
-        let board = partition.assignment_board(claims, self, policy, worker, now)?;
+        let board = consumer.partition.assignment_board(
+            consumer.claims,
+            self,
+            consumer.policy,
+            consumer.worker,
+            now,
+        )?;
         let mut prepared = vec![];
-        for number in board.candidates(&worker.id)? {
+        for number in board.candidates(&consumer.worker.id)? {
             if board
                 .assignments
                 .get(&number)
@@ -100,6 +101,9 @@ impl<'a> Input<'a> {
                 entry.action,
                 Action::FixFindings | Action::FixRequiredCi | Action::ResolveConflict | Action::AddRemoves
             ) {
+                continue;
+            }
+            if oxa_work::helper_queue::is_published(consumer.queue, &consumer.key(entry)?)? {
                 continue;
             }
             let fields = oxa_work::pull_request_fields(number)?;

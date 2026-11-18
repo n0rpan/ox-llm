@@ -89,6 +89,13 @@ pub struct Consumer<'a> {
     pub ttl: u64,
 }
 impl Consumer<'_> {
+    /// Preparation and locked admission share this exact immutable identity.
+    pub(crate) fn key(&self, entry: &Entry) -> Result<String> {
+        let identity = serde_json::to_vec(&(self.repository, entry.number, &entry.head, entry.action))
+            .map_err(|_| "cannot encode board queue identity")?;
+        Ok(format!("{:x}", Sha256::digest(identity)))
+    }
+
     fn paused(&self) -> Result<bool> {
         match fs::symlink_metadata(self.pause) {
             Ok(_) => Ok(true),
@@ -134,9 +141,7 @@ impl Consumer<'_> {
             if packet.revision != entry.head || packet.action != entry.action {
                 continue;
             }
-            let identity = serde_json::to_vec(&(self.repository, number, &entry.head, entry.action))
-                .map_err(|_| "cannot encode board queue identity")?;
-            let key = format!("{:x}", Sha256::digest(identity));
+            let key = self.key(entry)?;
             let mut receipt = None;
             let published = helper_queue::publish_reserved(
                 self.queue,

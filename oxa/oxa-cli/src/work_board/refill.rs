@@ -206,12 +206,6 @@ pub(super) fn run(
         max_attempts_per_day: attempt_limit(&value)?,
         ..Policy::default()
     };
-    if let Some(model) = model {
-        packets = Input::new(&gh, &policy.host_path, repo, &token, &[], false)
-            .with_host(host)
-            .prepare_live(&claims, &board_policy, &worker, &partition, now, model)?;
-    }
-    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake).with_host(host);
     let consumer = Consumer {
         repository: repo,
         queue: &queue,
@@ -222,6 +216,12 @@ pub(super) fn run(
         policy: &board_policy,
         ttl: 1800,
     };
+    if let Some(model) = model {
+        packets = Input::new(&gh, &policy.host_path, repo, &token, &[], false)
+            .with_host(host)
+            .prepare_live(&consumer, now, model)?;
+    }
+    let mut source = Input::new(&gh, &policy.host_path, repo, &token, &packets, intake).with_host(host);
     let inputs: Vec<_> = packets
         .iter()
         .map(|p| Packet {
