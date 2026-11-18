@@ -33,6 +33,15 @@ fn normalize(error: Error) -> OxaError {
     if refusal.code == "cloud_rate_limited" {
         return OxaError::new("cloud_rate_limited", format!("HTTP 429: {error}"));
     }
+    // Owner/share admission refusals carry their own stable gateway code and a
+    // fixed message: keep both so the journal and the CLI can name the refusal
+    // instead of folding it into a generic HTTP error. Admission is unchanged.
+    if matches!(refusal.code, "cloud_provider_forbidden" | "cloud_not_shared") {
+        return OxaError::new(
+            refusal.code,
+            format!("HTTP {} {}: {}", refusal.status, refusal.code, refusal.message),
+        );
+    }
     if refusal.code == "cloud_signed_out" {
         return OxaError::new("cloud_signed_out", "HTTP 401: ChatGPT is signed out.")
             .with_hint("Sign in to ChatGPT, then retry.");
