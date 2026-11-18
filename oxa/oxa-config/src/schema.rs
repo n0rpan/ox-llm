@@ -193,6 +193,7 @@ const SCHEMA: &[KeyDef] = &[
     key("oxa.sandbox.readPaths", Kind::StringList, "[]"),
     key("oxa.sandbox.writePaths", Kind::StringList, "[]"),
     // Skills another product synced into `~/.agents/skills` (`synced/`); off = skipped.
+    key("oxa.share.remoteModels", Kind::StringList, "[]"),
     key("oxa.skills.includeSynced", Kind::Bool, "false"),
     // O-146: unset = on except on Flash and below 32K (`SubagentHooks::declared_for`).
     key("oxa.subagent.enabled", Kind::Bool, "null"),
