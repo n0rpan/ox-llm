@@ -2838,7 +2838,7 @@ mod session_scratch_tests {
     /// key in the user file allows the command.
     #[test]
     fn approval_keys_are_read_from_user_layer_only() {
-        use oxa_proto::{Access, Decision, Mode, Policy};
+        use oxa_proto::{Access, Decision, Mode};
         let env = oxa_fake::TestEnv::new();
         let dirs = Dirs::under(env.root());
         let cwd = env.work();

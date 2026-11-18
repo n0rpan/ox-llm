@@ -43,7 +43,8 @@ pub(crate) fn parse(words: &[String]) -> Result<SendCmd, OxaError> {
                 answer: answer.clone(),
             })
         }
-        [id, text] if oxa_session::valid_inbox_id(id) => Ok(SendCmd::Text {
+        // A bare flag is not a message: `oxa send <id> --approve` is an incomplete answer.
+        [id, text] if oxa_session::valid_inbox_id(id) && text != "--approve" => Ok(SendCmd::Text {
             session: id.clone(),
             text: text.clone(),
         }),
