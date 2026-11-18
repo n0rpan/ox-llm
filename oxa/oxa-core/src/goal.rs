@@ -32,6 +32,7 @@ pub struct SteeringLease {
 }
 
 /// Identity captured for a steering request at submission.
+#[derive(Debug)]
 pub struct SteeringBinding {
     pub session: SessionRef,
     pub revision: u64,
@@ -50,12 +51,85 @@ impl SteeringBinding {
             || self.lease.as_ref() != current_lease
             || !Goal::allows_steering(owner.tree.entries(), self.revision)
         {
-            return Err(oxa_proto::OxaError::new(
-                "goal_steer_stale",
-                "The goal or its assignment changed. Read the current binding before resending.",
-            ));
+            return Err(stale_steering());
         }
         Ok(())
+    }
+}
+
+const STEER_STALE: &str = "goal_steer_stale";
+
+fn stale_steering() -> oxa_proto::OxaError {
+    oxa_proto::OxaError::new(
+        STEER_STALE,
+        "The goal or its assignment changed. Read the current binding before resending.",
+    )
+}
+
+/// Invoke the supplied operation while the frontend's existing assignment
+/// guard holds, supplying the current lease identity. If verification is
+/// unavailable or fails, never invoke the operation.
+pub type SteeringAuthority = dyn Fn(&SessionRef, &mut dyn FnMut(Option<&SteeringLease>)) + Send + Sync;
+
+/// One typed steering input. Its callback reports the result of appending.
+pub struct GoalSteering {
+    pub(crate) binding: SteeringBinding,
+    text: String,
+    authority: Arc<SteeringAuthority>,
+    receipt: Box<dyn FnOnce(Result<(), &'static str>) + Send>,
+}
+
+impl std::fmt::Debug for GoalSteering {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("GoalSteering").finish_non_exhaustive()
+    }
+}
+
+impl GoalSteering {
+    pub fn new(
+        binding: SteeringBinding,
+        text: String,
+        authority: Arc<SteeringAuthority>,
+        receipt: impl FnOnce(Result<(), &'static str>) + Send + 'static,
+    ) -> Self {
+        Self {
+            binding,
+            text,
+            authority,
+            receipt: Box::new(receipt),
+        }
+    }
+
+    pub(crate) fn reject(self) {
+        (self.receipt)(Err(STEER_STALE));
+    }
+
+    pub(crate) fn deliver<T>(
+        self,
+        owner: &mut crate::SessionState,
+        append: impl FnOnce(&mut crate::SessionState, String) -> Result<T, oxa_proto::OxaError>,
+    ) -> Result<Option<T>, oxa_proto::OxaError> {
+        let Self {
+            binding,
+            text,
+            authority,
+            receipt,
+        } = self;
+        let mut delivery = Some((append, text));
+        let mut result = Err(stale_steering());
+        authority(&binding.session, &mut |current| {
+            if let Some((append, text)) = delivery.take() {
+                result = binding
+                    .validate(owner, current)
+                    .and_then(|()| append(owner, text));
+            }
+        });
+        receipt(result.as_ref().map(|_| ()).map_err(|error| error.code));
+        match result {
+            Ok(entry) => Ok(Some(entry)),
+            Err(error) if error.code == STEER_STALE => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 }
 
