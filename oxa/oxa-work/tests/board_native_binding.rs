@@ -94,7 +94,11 @@ fn every_original_lease_component_and_holder_authentication_are_fenced() {
             3 => stale.generation.0 += 1,
             _ => stale.generation.1 += 1,
         }
-        assert!(!store.bind_native(&stale.holder, &binding(&stale)).unwrap());
+        for reviewed_head in [None, Some("b".repeat(40))] {
+            let mut receipt = binding(&stale);
+            receipt.reviewed_head = reviewed_head;
+            assert!(!store.bind_native(&stale.holder, &receipt).unwrap());
+        }
     }
     assert_eq!(fs::read(dir.path().join("1.board-claim.json")).unwrap(), before);
 }
@@ -336,4 +340,81 @@ fn legacy_issue_binding_without_review_evidence_retains_its_encoding() {
     let reopened = Claims::open(dir.path()).unwrap();
     assert!(reopened.bind_native(&worker().id, &original).unwrap());
     assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn reviewed_constructor_and_complete_validation_reuse_full_object_ids() {
+    let (dir, store, lease) = setup();
+    let key = "a".repeat(64);
+    let original = binding(&lease);
+    assert!(original.validate().is_ok());
+    assert!(original.reviewed_head.is_none());
+    for width in [40, 64] {
+        let head = "b".repeat(width);
+        let reviewed = NativeBinding::new_reviewed(1, &key, &lease, "agent/test", &head).unwrap();
+        assert_eq!(reviewed.reviewed_head.as_deref(), Some(head.as_str()));
+        assert_eq!(reviewed.native_task_id, original.native_task_id);
+        assert!(reviewed.validate().is_ok());
+    }
+    for head in [
+        String::new(),
+        "a".repeat(39),
+        "a".repeat(41),
+        "a".repeat(63),
+        "a".repeat(65),
+        "A".repeat(40),
+        "g".repeat(40),
+        "refs/heads/main".into(),
+        format!("{}\n", "a".repeat(40)),
+    ] {
+        assert!(NativeBinding::new_reviewed(1, &key, &lease, "agent/test", &head).is_err());
+    }
+    let before = fs::read(dir.path().join("1.board-claim.json")).unwrap();
+    for field in 0..6 {
+        let mut invalid =
+            NativeBinding::new_reviewed(1, &key, &lease, "agent/test", &"b".repeat(40)).unwrap();
+        match field {
+            0 => invalid.number = 0,
+            1 => invalid.key = "A".repeat(64),
+            2 => invalid.lease.expires_at = 10,
+            3 => invalid.native_task_id.push('x'),
+            4 => invalid.branch = "bad..branch".into(),
+            _ => invalid.reviewed_head = Some("bad".into()),
+        }
+        assert!(invalid.validate().is_err());
+        assert!(store.bind_native(&worker().id, &invalid).is_err());
+    }
+    assert_eq!(fs::read(dir.path().join("1.board-claim.json")).unwrap(), before);
+}
+
+#[test]
+fn review_evidence_cannot_upgrade_a_retained_issue_binding() {
+    let (dir, store, lease) = setup();
+    assert!(store.bind_native(&worker().id, &binding(&lease)).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let bytes = fs::read(&path).unwrap();
+    let reviewed =
+        NativeBinding::new_reviewed(1, &"a".repeat(64), &lease, "agent/test", &"b".repeat(40)).unwrap();
+    assert!(!store.bind_native(&worker().id, &reviewed).unwrap());
+    assert_eq!(fs::read(path).unwrap(), bytes);
+}
+
+#[test]
+fn malformed_reviewed_evidence_in_the_saved_row_fails_closed() {
+    let (dir, store, lease) = setup();
+    let reviewed =
+        NativeBinding::new_reviewed(1, &"a".repeat(64), &lease, "agent/test", &"b".repeat(40)).unwrap();
+    assert!(store.bind_native(&worker().id, &reviewed).unwrap());
+    let path = dir.path().join("1.board-claim.json");
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    for head in [
+        serde_json::json!("short"),
+        serde_json::json!("A".repeat(40)),
+        serde_json::json!(42),
+    ] {
+        let mut invalid = saved.clone();
+        invalid["data"]["native_binding"]["reviewed_head"] = head;
+        fs::write(&path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        assert!(Claims::open(dir.path()).unwrap().assignments().is_err());
+    }
 }
