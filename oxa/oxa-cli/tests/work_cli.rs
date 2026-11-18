@@ -183,7 +183,7 @@ fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
     fs::set_permissions(&taskfile, fs::Permissions::from_mode(0o600)).unwrap();
     let config = controls.join("refill.json");
     fs::write(&config, serde_json::json!({
-        "enabled":true,"nativeExecution":true,"intake":true,"queue":queue,"claims":root,
+        "enabled":true,"host_id":"host-a","nativeExecution":true,"intake":true,"queue":queue,"claims":root,
         "pause":controls.join("paused"),"log":controls.join("audit.jsonl"),
         "worker":{"id":"oxa:node/helper","kind":"oxa","roles":["builder"],"skills":[]},
         "partition":{"modulus":22,"residues":[0]},
@@ -196,7 +196,7 @@ fn native_refill_runs_one_bound_attempt_through_real_cli_completion() {
     fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(tools.join("gh.reply"), serde_json::json!({"data":{"repository":{
         "mergeQueue":null,"pullRequests":{"totalCount":0,"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
-        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"}
+        "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null
     }}}).to_string()).unwrap();
     let path = format!("{}:{}", tools.display(), std::env::var("PATH").unwrap());
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxa"))

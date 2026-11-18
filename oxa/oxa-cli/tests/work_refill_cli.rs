@@ -203,6 +203,34 @@ cat "$0.reply"
     assert_eq!(refused.status.code(), Some(2), "native refill requires a host");
     assert!(!env.tmp().join("gh.calls").exists());
     fs::write(&config, original_config).unwrap();
+    if !pull_request {
+        let reply = env.tmp().join("gh.reply");
+        let original = fs::read(&reply).unwrap();
+        for observed in [
+            Some(json!({"name":"agent/44","target":{"committer":{"user":{"login":"worker-a[bot]"}}}})),
+            None,
+        ] {
+            let mut response: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            if let Some(branch) = observed {
+                response["data"]["repository"]["b44"] = branch;
+            } else {
+                response["data"]["repository"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("b44");
+            }
+            fs::write(&reply, response.to_string()).unwrap();
+            let refused = invoke(&env, &config, "synthetic\n", false);
+            assert_eq!(refused.status.code(), Some(2));
+            let reason = String::from_utf8_lossy(&refused.stderr);
+            assert!(
+                reason.contains("worker-a[bot]") || reason.contains("branch observation"),
+                "{reason}"
+            );
+            assert_eq!(claims.snapshot().unwrap()[&44].attempts, 0);
+        }
+        fs::write(&reply, original).unwrap();
+    }
     let result = invoke(&env, &config, "synthetic\n", false);
     assert!(
         result.status.success(),

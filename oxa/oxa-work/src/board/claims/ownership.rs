@@ -43,6 +43,7 @@ impl Saved {
 }
 
 impl Claims {
+    /// Hosted automatic admission retains the existing atomic idle/bootstrap fence.
     pub fn claim_idle_item_for(
         &self,
         entry: &Entry,
@@ -50,16 +51,9 @@ impl Claims {
         worker: &Worker,
         host_id: &str,
         timing: (u64, u64),
-        _observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
+        observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
     ) -> Result<Option<ItemLease>> {
-        self.claim_idle_for(entry, policy, worker, timing.0, timing.1)
-            .map(|lease| {
-                lease.map(|lease| ItemLease {
-                    expires_at: lease.expires_at,
-                    lease,
-                    host_id: host_id.into(),
-                })
-            })
+        self.claim_item_checked(entry, policy, worker, host_id, timing, true, observe)
     }
 
     /// Explicit opt-in before any new work. The trusted observer must check complete, fresh
@@ -74,17 +68,33 @@ impl Claims {
         timing: (u64, u64),
         observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
     ) -> Result<Option<ItemLease>> {
+        self.claim_item_checked(entry, policy, worker, host_id, timing, false, observe)
+    }
+
+    fn claim_item_checked(
+        &self,
+        entry: &Entry,
+        policy: &Policy,
+        worker: &Worker,
+        host_id: &str,
+        timing: (u64, u64),
+        idle: bool,
+        observe: impl FnOnce(u64) -> Result<Option<ExistingWork>>,
+    ) -> Result<Option<ItemLease>> {
         if !valid_worker_id(host_id) {
             return Err("authenticated host identity required".into());
         }
         self.claim_checked(entry, policy, &worker.id, timing, Some(host_id), |row| {
+            if idle && !self.idle_for(entry.number, &worker.id, row)? {
+                return Ok(false);
+            }
             if let Some(existing) = observe(entry.number)? {
                 let (owner, kind) = match existing {
                     ExistingWork::PullRequest { number, owner } if number > 0 => (owner, "open PR"),
                     ExistingWork::Branch { name, owner } if !name.is_empty() => (owner, "branch"),
                     _ => return Err("invalid existing work evidence".into()),
                 };
-                if !valid_worker_id(&owner) {
+                if !valid_worker_id(owner.strip_suffix("[bot]").unwrap_or(&owner)) {
                     return Err("existing work requires an identified owner".into());
                 }
                 return Err(format!("item {}: {kind} owned by {owner}", entry.number));

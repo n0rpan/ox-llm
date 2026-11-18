@@ -6,9 +6,12 @@ use std::{collections::BTreeSet, fs, path::Path};
 /// Read-only acquisition and authoritative revision/action revalidation; no write capability.
 pub trait Source: GitHub {
     fn revalidate(&mut self, entry: &Entry) -> Result<bool>;
+    /// Only legacy adapters may report no host; native adapters must refuse it.
     fn host_id(&self) -> Result<Option<&str>> {
         Ok(None)
     }
+    /// Revalidate source and complete existing-work facts under the Claims lock.
+    /// This callback must not call Claims; unavailable evidence must fail closed.
     fn existing_work(&mut self, _entry: &Entry) -> Result<Option<ExistingWork>> {
         Err("hosted admission requires complete existing-work evidence".into())
     }
@@ -80,6 +83,7 @@ impl Consumer<'_> {
         if !self.policy.enabled || self.paused()? {
             return Ok(vec![]);
         }
+        let host = source.host_id()?.map(str::to_owned);
         if self.partition.modulus == 0
             || self.partition.residues.is_empty()
             || self
@@ -139,15 +143,33 @@ impl Consumer<'_> {
                                 .is_some_and(|l| l.holder == self.worker.id)
                         })
                         || rows[&number].state.lease.is_some()
-                        || !source.revalidate(entry)?
+                        || (host.is_none() && !source.revalidate(entry)?)
                         || self.paused()?
                     {
                         return Ok(false);
                     }
-                    let Some(lease) =
+                    let claimed = if let Some(host) = &host {
+                        self.claims
+                            .claim_idle_item_for(
+                                entry,
+                                self.policy,
+                                self.worker,
+                                host,
+                                (now, self.ttl),
+                                |_| {
+                                    let existing = source.existing_work(entry)?;
+                                    if self.paused()? {
+                                        return Err("refill paused during observation".into());
+                                    }
+                                    Ok(existing)
+                                },
+                            )?
+                            .map(|receipt| receipt.lease)
+                    } else {
                         self.claims
                             .claim_idle_for(entry, self.policy, self.worker, now, self.ttl)?
-                    else {
+                    };
+                    let Some(lease) = claimed else {
                         return Ok(false);
                     };
                     let original = Receipt {

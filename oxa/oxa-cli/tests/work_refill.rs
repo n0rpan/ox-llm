@@ -10,6 +10,7 @@ struct Fake<'a> {
     on_check: Option<(&'a Claims, &'a Worker, &'a Policy)>,
     host: Option<&'a str>,
     existing: Option<ExistingWork>,
+    on_observe: Option<&'a std::path::Path>,
 }
 impl GitHub for Fake<'_> {
     fn snapshot(&mut self) -> oxa_work::Result<Snapshot> {
@@ -44,6 +45,9 @@ impl Source for Fake<'_> {
         Ok(self.host)
     }
     fn existing_work(&mut self, _entry: &Entry) -> oxa_work::Result<Option<ExistingWork>> {
+        if let Some(path) = self.on_observe {
+            fs::write(path, b"owner paused").unwrap();
+        }
         Ok(self.existing.take())
     }
     fn revalidate(&mut self, entry: &Entry) -> oxa_work::Result<bool> {
@@ -409,29 +413,32 @@ fn two_hosts_share_one_item_reservation_and_persist_the_winning_host() {
 }
 
 #[test]
-fn hosted_refill_refuses_existing_pr_or_branch_before_publication() {
+fn hosted_refill_checks_existing_work_and_late_pause_before_publication() {
     for existing in [
-        ExistingWork::PullRequest {
+        Some(ExistingWork::PullRequest {
             number: 45,
-            owner: "worker-a".into(),
-        },
-        ExistingWork::Branch {
+            owner: "worker-a[bot]".into(),
+        }),
+        Some(ExistingWork::Branch {
             name: "agent/existing".into(),
             owner: "worker-a".into(),
-        },
+        }),
+        None,
     ] {
         let fixture = Fixture::new();
         seed(&fixture.claims, 44, false);
+        let on_observe = existing.is_none().then_some(fixture.pause.as_path());
         let mut source = Fake {
             host: Some("host-b"),
-            existing: Some(existing),
+            existing,
+            on_observe,
             ..Fake::default()
         };
         let result =
             fixture
                 .target()
                 .once(&mut source, &PACKETS, 10, |_| Ok(()), |_| panic!("existing work"));
-        assert!(result.is_err_and(|reason| reason.contains("worker-a")));
+        assert!(result.is_err_and(|reason| reason.contains("worker-a") || reason.contains("paused")));
         assert_eq!(fixture.claims.snapshot().unwrap()[&44].attempts, 0);
     }
 }

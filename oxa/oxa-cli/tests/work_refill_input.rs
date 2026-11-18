@@ -3,7 +3,7 @@ use oxa_cli::{
     work_refill::Source,
 };
 use oxa_fake::TestEnv;
-use oxa_work::board::{Action, Board, GitHub, Policy};
+use oxa_work::board::{Action, Board, ExistingWork, GitHub, Policy};
 use serde_json::{json, Value};
 use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
 
@@ -46,7 +46,7 @@ esac
     let metadata: Vec<_> = (100..100 + count)
         .map(|n| {
             json!({"number":n,
-        "headRefOid":format!("head-{n}"),"headRefName":format!("agent/{n}"),
+        "headRefOid":format!("head-{n}"),"headRefName":format!("agent/{n}"),"author":{"login":"worker-a[bot]"},
         "closingIssuesReferences":if linked && n == 99+count {
             json!({"totalCount":1,"nodes":[{"number":44}]})
         } else { json!({"totalCount":0,"nodes":[]}) }})
@@ -62,7 +62,7 @@ esac
             name,
             &json!({"data":{"repository":{
             "pullRequests":{"totalCount":count,"nodes":rows,"pageInfo":{"hasNextPage":more,"endCursor":"next"}},
-            "i44":{"number":44,"state":"OPEN","updatedAt":"revision"}}}}),
+            "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null}}}),
         );
     }
     let packets = vec![Prepared {
@@ -85,6 +85,22 @@ fn all_metadata_pages_preserve_linked_issue_refusal_and_explicit_intake() {
     assert_eq!(snapshot.pull_requests.len(), 2);
     assert!(snapshot.issues[0].approved);
     assert!(snapshot.issues[0].has_open_pull_request);
+    let mut hosted =
+        Input::new(&gh, &path, "example/project", "synthetic", &packets, true).with_host("host-a");
+    let policy = Policy {
+        enabled: true,
+        ..Policy::default()
+    };
+    let mut entry = Board::read(&mut source, &policy, &BTreeMap::new(), 10)
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|row| row.number == 44)
+        .unwrap();
+    entry.action = Action::BuildIssue;
+    assert!(
+        matches!(hosted.existing_work(&entry).unwrap(), Some(ExistingWork::PullRequest { number: 101, owner }) if owner == "worker-a[bot]")
+    );
     let mut off = Input::new(&gh, &path, "example/project", "synthetic", &packets, false);
     assert!(!off.snapshot().unwrap().issues[0].approved);
     let mut second: Value = serde_json::from_slice(&fs::read(env.tmp().join("gh.second")).unwrap()).unwrap();
