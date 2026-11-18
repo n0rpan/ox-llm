@@ -197,6 +197,26 @@ fn env_wrapper(
     argv
 }
 
+/// A single safe path component for a parent session id (`workers/<slug>/`): session ids are
+/// alphanumeric with dashes, and anything else becomes a dash so no path escapes the directory.
+fn artifact_slug(parent: &str) -> String {
+    let slug: String = parent
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    if slug.is_empty() {
+        "session".to_string()
+    } else {
+        slug
+    }
+}
+
 /// The status file of the worker session `session_id` that ran in `worktree`: the sibling
 /// `<session>.status.json` of its session file (`<stamp>_<id>.jsonl`, written by the status writer
 /// as `session_file.with_extension("status.json")`), in the session directory of the worktree.
@@ -404,7 +424,9 @@ impl WorkerCore {
             }
         }
 
-        let dir = self.agent_dir.join("workers");
+        // Artifacts are per parent session: two sessions of one agent directory may start a
+        // worker with the same name and must not share a goal file or a log.
+        let dir = self.agent_dir.join("workers").join(artifact_slug(&parent));
         let goal_file = dir.join(format!("{name}.goal.md"));
         if let Err(e) = write_private(&dir, &goal_file, goal) {
             return ToolOutput::error(format!("worker: cannot write the goal file: {e}"));
@@ -741,7 +763,10 @@ mod tests {
         assert_eq!(rec.branch, "agent/alpha");
         assert_eq!(rec.worktree, worktree_path(&repo, "alpha").unwrap());
         assert!(rec.worktree.is_dir());
-        assert_eq!(rec.goal_file, agent.join("workers").join("alpha.goal.md"));
+        assert_eq!(
+            rec.goal_file,
+            agent.join("workers").join("parent-1").join("alpha.goal.md")
+        );
         assert_eq!(fs::read_to_string(&rec.goal_file).unwrap(), "write the thing");
         assert!(!rec.stopped);
         let stopped = hooks.core.stop(&json!({"action": "stop", "name": "alpha"}));
