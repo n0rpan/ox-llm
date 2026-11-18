@@ -146,7 +146,7 @@ fn durable_publication(pull_request: bool, live: bool) {
         "revision".into()
     };
     let live_task = format!(
-        "c44 local/fake agent/44 agent/44\n{}Address pull request #44 at {revision}: Synthetic live PR\n\nCurrent protected source",
+        "c44 local/fake agent/44 agent/44\n{}Address pull request #44 at {revision}: Synthetic live PR\n\nCurrent protected source\n\\---\nNext section\n\nReview and conversation data\n\nConversation comment by fixture:\nFeedback\r\n\\ \t--- \t\r\nMore feedback\n\n",
         oxa_work::github_runner_guidance("pull request")
     );
     let valid = if live {
@@ -197,9 +197,9 @@ cat "$0.reply"
     fs::write(env.tmp().join("gh.reply"), json!({"data":{"repository":{
         "mergeQueue":null,"pullRequests":{"totalCount":rows.len(),"nodes":rows,"pageInfo":{"hasNextPage":false,"endCursor":"last"}},
         "i44":{"number":44,"state":"OPEN","updatedAt":"revision"},"b44":null,
-        "pullRequest":{"title":"Synthetic live PR","body":"Current protected source",
+        "pullRequest":{"title":"Synthetic live PR","body":"Current protected source\n---\nNext section",
             "headRefOid":revision,"headRefName":"agent/44","isCrossRepository":false,
-            "comments":{"totalCount":0,"nodes":[]},"reviews":{"totalCount":0,"nodes":[]},
+            "comments":{"totalCount":1,"nodes":[{"author":{"login":"fixture"},"body":"Feedback\r\n \t--- \t\r\nMore feedback"}]},"reviews":{"totalCount":0,"nodes":[]},
             "reviewThreads":{"totalCount":0,"nodes":[]},"files":{"totalCount":0,"nodes":[]},
             "commits":{"nodes":[{"commit":{"oid":revision,"statusCheckRollup":null}}]}},
         "p44":{"number":44,"headRefOid":revision,"baseRefName":"main","state":"OPEN","body":"",
